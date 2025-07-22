@@ -1,0 +1,34 @@
+name: multi-animal-tracker
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.11
+  
+  # Scientific computing stack
+  - numpy
+  - scipy
+  - matplotlib
+  - scikit-image
+  
+  # Computer vision
+  - opencv
+  
+  # GUI framework (Qt5 only, no Qt6)
+  - pyside2=5.15.*
+  - qt=5.15.*
+  
+  # Development tools
+  - pip
+  - setuptools
+  - wheel
+  
+  # Optional: development dependencies
+  - pytest
+  - black
+  - flake8
+  
+  # Install your package via pip (after conda deps are resolved)
+  - pip:
+    - -e .
