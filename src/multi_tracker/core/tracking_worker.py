@@ -10,13 +10,16 @@ import sys, time, gc, math, logging, os, random
 import numpy as np
 import cv2
 from collections import deque
-from scipy.optimize import linear_sum_assignment
 from PySide2.QtCore import QThread, Signal, QMutex
 
 from ..utils.image_processing import apply_image_adjustments, stabilize_lighting
 from ..utils.csv_writer import CSVWriterThread
 from ..utils.video_io import create_reversed_video
 from ..utils.geometry import wrap_angle_degs
+from .kalman_filters import KalmanFilterManager
+from .background_models import BackgroundModel
+from .detection import ObjectDetector  
+from .assignment import TrackAssigner
 
 
 logger = logging.getLogger(__name__)
@@ -76,7 +79,6 @@ class TrackingWorker(QThread):
         self._stop_requested = False
 
         # Per-track state arrays (initialized based on MAX_TARGETS parameter)
-        self.kalman_filters = []        # Kalman filter objects for motion prediction
         self.trajectories_pruned = []   # Recent trajectory points for visualization
         self.trajectories_full = []     # Complete trajectory history  
         self.position_deques = []       # Recent positions for velocity calculation
@@ -90,19 +92,17 @@ class TrackingWorker(QThread):
         self.trajectory_ids = []        # Current trajectory ID for each track slot
         self.next_trajectory_id = 0     # Counter for assigning new trajectory IDs
 
-        # Background subtraction and detection state
-        self.background_model_lightest = None  # Lightest-pixel background model
+        # Detection and tracking state
         self.detection_initialized = False     # Whether detection system is stable
         self.tracking_stabilized = False       # Whether tracking system is stable
         self.detection_counts = 0              # Consecutive frames with correct detections
         self.tracking_counts = 0               # Consecutive frames with good tracking
 
-        # Lighting stabilization components
-        self.reference_intensity = None        # Global intensity reference from background
-        self.intensity_history = deque(maxlen=50)  # Rolling history of frame intensities
-        self.lighting_smooth_alpha = 0.95      # Smoothing factor for lighting adaptation
-        self.adaptive_background = None        # Smoothly updated background model
-        self.lighting_state = {}               # Dictionary to store smoothing state
+        # Component managers (initialized when parameters are set)
+        self.kalman_manager = None
+        self.background_model = None
+        self.object_detector = None
+        self.track_assigner = None
 
         # Performance monitoring
         self.fps_list = []        # Frame processing rates over time
@@ -111,14 +111,24 @@ class TrackingWorker(QThread):
 
     def set_parameters(self, p: dict):
         """
-        Thread-safe parameter update.
+        Thread-safe parameter update and component initialization.
         
         Args:
             p (dict): Dictionary of tracking parameters
         """
         self.params_mutex.lock()
-        self.parameters = p
-        self.params_mutex.unlock()
+        try:
+            self.parameters = p
+            
+            # Initialize component managers with new parameters
+            num_targets = p["MAX_TARGETS"]
+            self.kalman_manager = KalmanFilterManager(num_targets, p)
+            self.background_model = BackgroundModel(p)
+            self.object_detector = ObjectDetector(p)
+            self.track_assigner = TrackAssigner(p)
+            
+        finally:
+            self.params_mutex.unlock()
 
     def get_current_params(self):
         """
@@ -135,180 +145,6 @@ class TrackingWorker(QThread):
     def stop(self):
         """Signal the tracking thread to stop processing."""
         self._stop_requested = True
-
-    def init_kalman_filters(self, p):
-        """
-        Initialize Kalman filters for motion prediction and state estimation.
-        
-        Each filter tracks a 5-dimensional state vector:
-        [x, y, theta, vx, vy] where:
-        - x, y: Position coordinates (pixels)
-        - theta: Orientation angle (radians) 
-        - vx, vy: Velocity components (pixels/frame)
-        
-        The measurement vector is 3-dimensional: [x, y, theta]
-        
-        Args:
-            p (dict): Parameters containing MAX_TARGETS and noise covariances
-            
-        Returns:
-            list: List of initialized cv2.KalmanFilter objects
-        """
-        kfs = []
-        for _ in range(p["MAX_TARGETS"]):
-            # Create 5-state, 3-measurement Kalman filter
-            kf = cv2.KalmanFilter(5, 3)
-            
-            # Measurement matrix: maps state [x,y,theta,vx,vy] to observation [x,y,theta]
-            kf.measurementMatrix = np.array([
-                [1, 0, 0, 0, 0],  # x position
-                [0, 1, 0, 0, 0],  # y position  
-                [0, 0, 1, 0, 0]   # orientation
-            ], np.float32)
-            
-            # Transition matrix: constant velocity model
-            kf.transitionMatrix = np.array([
-                [1, 0, 0, 1, 0],  # x(t+1) = x(t) + vx(t)
-                [0, 1, 0, 0, 1],  # y(t+1) = y(t) + vy(t)
-                [0, 0, 1, 0, 0],  # theta(t+1) = theta(t) (constant orientation)
-                [0, 0, 0, 1, 0],  # vx(t+1) = vx(t) (constant velocity)
-                [0, 0, 0, 0, 1]   # vy(t+1) = vy(t) (constant velocity)
-            ], np.float32)
-            
-            # Process noise: models uncertainty in motion model
-            kf.processNoiseCov = np.eye(5, dtype=np.float32) * p["KALMAN_NOISE_COVARIANCE"]
-            
-            # Measurement noise: models uncertainty in observations
-            kf.measurementNoiseCov = np.eye(3, dtype=np.float32) * p["KALMAN_MEASUREMENT_NOISE_COVARIANCE"]
-            
-            # Initial error covariance
-            kf.errorCovPre = np.eye(5, dtype=np.float32)
-            kfs.append(kf)
-        return kfs
-
-    def prime_lightest_background(self, cap, p):
-        """
-        Initialize background model using "lightest pixel" method with lighting reference.
-        
-        This method samples random frames from the video and builds a background
-        model by taking the maximum intensity at each pixel across all samples.
-        This approach works well when objects are darker than the background
-        (e.g., dark flies on light surfaces).
-        
-        Additionally establishes reference intensity for lighting stabilization.
-        
-        Args:
-            cap (cv2.VideoCapture): Video capture object
-            p (dict): Parameters including BACKGROUND_PRIME_FRAMES, image adjustments
-        """
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total <= 0 or p["BACKGROUND_PRIME_FRAMES"] < 1:
-            return
-            
-        # Limit sampling to available frames
-        count = min(p["BACKGROUND_PRIME_FRAMES"], total)
-        br, ct, gm = p["BRIGHTNESS"], p["CONTRAST"], p["GAMMA"]
-        ROI_mask = p.get("ROI_MASK", None)  # Get ROI mask for background priming
-        resize_f = p.get("RESIZE_FACTOR", 1.0)
-        
-        # Sample random frame indices to avoid temporal bias
-        idxs = random.sample(range(total), count)
-        bg_temp = None
-        intensity_samples = []
-        
-        for idx in idxs:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if not ret: 
-                continue
-                
-            # Apply resize early if needed
-            if resize_f < 1.0:
-                frame = cv2.resize(frame, (0, 0), fx=resize_f, fy=resize_f, interpolation=cv2.INTER_AREA)
-                
-            # Convert to grayscale and apply adjustments
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = apply_image_adjustments(gray, br, ct, gm)
-            
-            # Apply ROI mask EARLY - before background modeling
-            if ROI_mask is not None:
-                # Resize ROI mask to match current frame dimensions
-                if resize_f != 1.0:
-                    roi_resized = cv2.resize(ROI_mask, (gray.shape[1], gray.shape[0]), interpolation=cv2.INTER_NEAREST)
-                else:
-                    roi_resized = ROI_mask
-                # Zero out everything outside ROI
-                gray = cv2.bitwise_and(gray, gray, mask=roi_resized)
-            
-            # Collect intensity statistics for reference (robust mean excluding outliers)
-            # Only from ROI area if mask is applied
-            if ROI_mask is not None:
-                # Calculate statistics only from ROI pixels
-                roi_pixels = gray[roi_resized > 0]
-                if len(roi_pixels) > 100:  # Ensure enough pixels
-                    p25, p75 = np.percentile(roi_pixels, [25, 75])
-                    mask = (roi_pixels >= p25) & (roi_pixels <= p75)
-                    if np.sum(mask) > 0:
-                        intensity_samples.append(np.mean(roi_pixels[mask]))
-            else:
-                # Use entire frame if no ROI
-                frame_flat = gray.flatten()
-                p25, p75 = np.percentile(frame_flat, [25, 75])
-                mask = (frame_flat >= p25) & (frame_flat <= p75)
-                if np.sum(mask) > 0:
-                    intensity_samples.append(np.mean(frame_flat[mask]))
-            
-            # Build maximum intensity background model
-            if bg_temp is None:
-                bg_temp = gray.astype(np.float32)
-            else:
-                bg_temp = np.maximum(bg_temp, gray.astype(np.float32))
-        
-        if bg_temp is not None:
-            self.background_model_lightest = bg_temp
-            self.adaptive_background = bg_temp.copy()  # Initialize adaptive background
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to beginning
-            
-            # Establish reference intensity from sampled frames
-            if intensity_samples:
-                self.reference_intensity = np.median(intensity_samples)
-                logger.info(f"Reference intensity established: {self.reference_intensity:.1f}")
-            else:
-                # Fallback: use background model statistics
-                if ROI_mask is not None:
-                    roi_resized = cv2.resize(ROI_mask, (bg_temp.shape[1], bg_temp.shape[0]), interpolation=cv2.INTER_NEAREST) if resize_f != 1.0 else ROI_mask
-                    roi_bg_pixels = bg_temp[roi_resized > 0]
-                    self.reference_intensity = np.mean(roi_bg_pixels) if len(roi_bg_pixels) > 0 else np.mean(bg_temp)
-                else:
-                    self.reference_intensity = np.mean(bg_temp)
-                logger.info(f"Fallback reference intensity: {self.reference_intensity:.1f}")
-
-    def _local_conservative_split(self, sub, p):
-        """
-        Apply conservative morphological operations to split merged objects.
-        
-        When multiple objects are detected as a single large contour (due to
-        proximity or lighting), this method attempts to split them using
-        erosion followed by opening operations.
-        
-        Args:
-            sub (np.ndarray): Binary mask region to process
-            p (dict): Parameters with CONSERVATIVE_KERNEL_SIZE and CONSERVATIVE_ERODE_ITER
-            
-        Returns:
-            np.ndarray: Processed binary mask with potential object separation
-        """
-        k = p["CONSERVATIVE_KERNEL_SIZE"]
-        it = p["CONSERVATIVE_ERODE_ITER"]
-        
-        # Create elliptical structuring element for natural object shapes
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-        
-        # Erode to separate touching objects
-        out = cv2.erode(sub, kernel, iterations=it)
-        
-        # Open to remove noise and smooth boundaries
-        return cv2.morphologyEx(out, cv2.MORPH_OPEN, kernel)
 
     def post_process_trajectories(self, trajectories_full, params):
         """
@@ -602,9 +438,10 @@ class TrackingWorker(QThread):
                 mode_str = "backward" if self.backward_mode else "forward"
                 logger.info(f"Video output initialized ({mode_str}): {self.video_output_path} ({width}x{height} @ {fps:.1f}fps)")
 
-        # Initialize background model and Kalman filters
-        self.prime_lightest_background(cap, p)
-        self.kalman_filters = self.init_kalman_filters(p)
+        # Initialize background model using component manager
+        roi_mask = p.get("ROI_MASK", None)
+        resize_factor = p.get("RESIZE_FACTOR", 1.0)
+        self.background_model.prime_background(cap, roi_mask, resize_factor)
 
         # Initialize per-track data structures
         N = p["MAX_TARGETS"]
@@ -622,6 +459,9 @@ class TrackingWorker(QThread):
         self.trajectory_ids = list(range(N))             # Assign initial trajectory IDs 0, 1, 2, ..., N-1
         self.next_trajectory_id = N                      # Next available trajectory ID for reassignments
 
+        # Reference to the Kalman filters from the manager (for compatibility with existing code)
+        self.kalman_filters = self.kalman_manager.filters
+
         # Performance monitoring
         self.fps_list = []
         self.frame_count = 0
@@ -638,6 +478,10 @@ class TrackingWorker(QThread):
         
         # Set lighting stabilization parameters
         self.lighting_smooth_alpha = p.get("LIGHTING_SMOOTH_FACTOR", 0.95)
+        
+        # Initialize lighting state - ensure consistency with original implementation
+        self.intensity_history = deque(maxlen=50)
+        self.lighting_state = {}
 
         # Setup frame iteration - both forward and backward use normal iteration
         # For backward mode, the video file itself is already reversed by FFmpeg
@@ -695,166 +539,33 @@ class TrackingWorker(QThread):
             if params.get("ENABLE_LIGHTING_STABILIZATION", True):
                 median_window = params.get("LIGHTING_MEDIAN_WINDOW", 5)
                 gray, self.intensity_history, current_intensity = stabilize_lighting(
-                    gray, self.reference_intensity, self.intensity_history, 
+                    gray, self.background_model.reference_intensity, self.intensity_history, 
                     self.lighting_smooth_alpha, ROI_mask_current, median_window, self.lighting_state
                 )
 
             # === BACKGROUND MODEL UPDATE ===
-            # Initialize background model with first frame
-            if self.background_model_lightest is None:
-                self.background_model_lightest = gray.astype(np.float32)
-                self.adaptive_background = gray.astype(np.float32)
+            # Update background model and get background for subtraction
+            bg_u8 = self.background_model.update_background(gray, ROI_mask_current, self.tracking_stabilized)
+            
+            # Handle first frame initialization - skip tracking on first frame
+            if self.frame_count == 1 or bg_u8 is gray:  # First frame case
                 self.emit_frame(frame)
                 continue
-                
-            # Update background using maximum intensity (lightest pixel method)
-            # Only update within ROI if mask is defined
-            if ROI_mask_current is not None:
-                # Update only ROI regions, preserve background outside ROI
-                roi_mask_bool = ROI_mask_current > 0
-                self.background_model_lightest[roi_mask_bool] = np.maximum(
-                    self.background_model_lightest[roi_mask_bool], 
-                    gray.astype(np.float32)[roi_mask_bool]
-                )
-            else:
-                # Update entire background if no ROI
-                self.background_model_lightest = np.maximum(self.background_model_lightest, gray.astype(np.float32))
-            
-            # Smooth adaptive background update for lighting changes
-            if params.get("ENABLE_ADAPTIVE_BACKGROUND", True) and self.adaptive_background is not None:
-                learning_rate = params.get("BACKGROUND_LEARNING_RATE", 0.001)
-                if ROI_mask_current is not None:
-                    # Update only ROI regions for adaptive background
-                    roi_mask_bool = ROI_mask_current > 0
-                    self.adaptive_background[roi_mask_bool] = (
-                        (1 - learning_rate) * self.adaptive_background[roi_mask_bool] + 
-                        learning_rate * gray.astype(np.float32)[roi_mask_bool]
-                    )
-                else:
-                    # Update entire adaptive background if no ROI
-                    self.adaptive_background = (1 - learning_rate) * self.adaptive_background + learning_rate * gray.astype(np.float32)
-                
-                # Use adaptive background for subtraction if tracking is stabilized
-                if self.tracking_stabilized:
-                    bg_u8 = cv2.convertScaleAbs(self.adaptive_background)
-                else:
-                    bg_u8 = cv2.convertScaleAbs(self.background_model_lightest)
-            else:
-                bg_u8 = cv2.convertScaleAbs(self.background_model_lightest)
 
-            # === FOREGROUND DETECTION ===
-            # Generate difference image between current frame and background
-            # Use directional subtraction based on animal/background contrast
-            dark_on_light = params.get("DARK_ON_LIGHT_BACKGROUND", True)
+            # === FOREGROUND DETECTION AND MORPHOLOGICAL PROCESSING ===
+            # Generate foreground mask using background subtraction
+            fg_mask = self.background_model.generate_foreground_mask(gray, bg_u8)
             
-            if dark_on_light:
-                # Dark animals on light background: background - current_frame
-                # This highlights areas where the current frame is darker than background
-                diff = cv2.subtract(bg_u8, gray)
-            else:
-                # Light animals on dark background: current_frame - background  
-                # This highlights areas where the current frame is lighter than background
-                diff = cv2.subtract(gray, bg_u8)
-            
-            # Apply binary thresholding to detect foreground objects
-            _, fg_mask = cv2.threshold(diff, params["THRESHOLD_VALUE"], 255, cv2.THRESH_BINARY)
-
-            # === MORPHOLOGICAL PROCESSING ===
-            # Apply morphological operations to clean up foreground mask
-            ksz = params["MORPH_KERNEL_SIZE"]
-            ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
-            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, ker)   # Remove noise
-            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, ker)  # Fill holes
-            
-            # === ADDITIONAL DILATION FOR THIN ANIMALS ===
-            # Apply additional dilation to connect split parts of thin animals
-            if params.get("ENABLE_ADDITIONAL_DILATION", False):
-                dil_ksz = params.get("DILATION_KERNEL_SIZE", 3)
-                dil_iter = params.get("DILATION_ITERATIONS", 2)
-                dil_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil_ksz, dil_ksz))
-                fg_mask = cv2.dilate(fg_mask, dil_kernel, iterations=dil_iter)
+            # Apply morphological operations to clean up the mask
+            fg_mask = self.background_model.apply_morphological_operations(fg_mask)
 
             # === CONSERVATIVE OBJECT SPLITTING ===
-            # Attempt to split merged objects after detection system is initialized
-            if self.detection_initialized and params.get("ENABLE_CONSERVATIVE_SPLIT", True):
-                cnts, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                # Identify suspicious contours (too large or wrong count)
-                suspicious = [
-                    cv2.boundingRect(c) for c in cnts 
-                    if cv2.contourArea(c) > params["MERGE_AREA_THRESHOLD"]
-                    or sum(1 for cc in cnts if cv2.contourArea(cc) > 0) < N
-                ]
-                # Apply conservative splitting to suspicious regions
-                for bx, by, bw, bh in suspicious:
-                    sub = fg_mask[by:by+bh, bx:bx+bw]
-                    fg_mask[by:by+bh, bx:bx+bw] = self._local_conservative_split(sub, params)
+            # Apply conservative splitting to separate merged objects
+            fg_mask = self.object_detector.apply_conservative_split(fg_mask, self.detection_initialized)
 
             # === OBJECT DETECTION AND MEASUREMENT ===
-            # Find contours in cleaned foreground mask
-            cnts, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            # === FRAME QUALITY CHECK ===
-            # If there are way too many contours, the frame is likely too noisy/corrupted
-            # Better to skip entirely than try to process hundreds of noise blobs
-            N = params["MAX_TARGETS"]
-            max_contour_multiplier = params.get("MAX_CONTOUR_MULTIPLIER", 20)  # Default: 20x target count
-            max_allowed_contours = N * max_contour_multiplier
-            
-            if len(cnts) > max_allowed_contours:
-                logger.debug(f"Frame {self.frame_count}: Too many contours ({len(cnts)} > {max_allowed_contours}), treating as no detections")
-                meas, sizes, shapes = [], [], []  # Treat as no detections
-            else:
-                meas, sizes, shapes = [], [], []
-                
-                for c in cnts:
-                    area = cv2.contourArea(c)
-                    # Filter out small noise and invalid contours
-                    if area < params["MIN_CONTOUR_AREA"] or len(c) < 5: 
-                        continue
-                        
-                    # Fit ellipse to contour for position and orientation
-                    (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
-                    
-                    # Ensure major axis is ax1, adjust angle accordingly
-                    if ax1 < ax2:
-                        ax1, ax2 = ax2, ax1
-                        ang = (ang + 90) % 180
-                        
-                    # Convert angle to radians
-                    rad = np.deg2rad(ang)
-                    
-                    # Store measurement: [x, y, orientation]
-                    meas.append(np.array([cx, cy, rad], np.float32))
-                    sizes.append(area)
-                    # Store shape info: (ellipse_area, aspect_ratio)
-                    shapes.append((np.pi * (ax1/2) * (ax2/2), ax1/ax2))            # === SIZE-BASED FILTERING ===
-            # Filter detections by size range before sorting
-            if meas and params.get("ENABLE_SIZE_FILTERING", False):
-                min_size = params.get("MIN_OBJECT_SIZE", 0)
-                max_size = params.get("MAX_OBJECT_SIZE", float('inf'))
-                original_count = len(meas)
-                
-                # Filter out detections outside the acceptable size range
-                filtered_meas, filtered_sizes, filtered_shapes = [], [], []
-                for i, size in enumerate(sizes):
-                    if min_size <= size <= max_size:
-                        filtered_meas.append(meas[i])
-                        filtered_sizes.append(sizes[i])
-                        filtered_shapes.append(shapes[i])
-                
-                # Update lists with filtered results
-                meas, sizes, shapes = filtered_meas, filtered_sizes, filtered_shapes
-                
-                # Debug message about filtering results
-                if len(meas) != original_count:
-                    logger.debug(f"Size filtering: {original_count} detections -> {len(meas)} detections (range: {min_size}-{max_size})")
-
-            # === DETECTION FILTERING ===
-            # Keep only the N largest detections to match expected target count
-            if len(meas) > N:
-                idxs = np.argsort(sizes)[::-1][:N]  # Sort by size, take largest N
-                meas = [meas[i] for i in idxs]
-                shapes = [shapes[i] for i in idxs]
+            # Detect objects in the foreground mask and extract measurements
+            meas, sizes, shapes = self.object_detector.detect_objects(fg_mask, self.frame_count)
 
             # === DETECTION INITIALIZATION LOGIC ===
             # Track consecutive frames with reasonable detection count for stability
@@ -883,218 +594,62 @@ class TrackingWorker(QThread):
                 # Initialize Kalman filter states - now more flexible for partial detections
                 if self.frame_count == 1:
                     h, w = gray.shape
+                    N = params["MAX_TARGETS"]
                     
                     # Initialize filters for detected objects with their actual positions
                     for i, measurement in enumerate(meas[:N]):  # Only initialize up to available measurements
-                        if i < len(self.kalman_filters):
-                            kf = self.kalman_filters[i]
-                            # Initialize with actual detection position
-                            init = np.array([measurement[0], measurement[1], measurement[2], 0, 0], np.float32)
-                            kf.statePre = init.copy()
-                            kf.statePost = init.copy()
-                            # Clear history for new tracking session
-                            self.position_deques[i].clear()
-                            self.orientation_last[i] = None
-                            self.last_shape_info[i] = None
-                            self.tracking_continuity[i] = 0
-                            # Set track as active since we have a detection
-                            self.track_states[i] = 'active'
-                            self.missed_frames[i] = 0
+                        # Initialize with actual detection position
+                        init_state = np.array([measurement[0], measurement[1], measurement[2], 0, 0], np.float32)
+                        self.kalman_manager.initialize_filter(i, init_state)
+                        # Clear history for new tracking session
+                        self.position_deques[i].clear()
+                        self.orientation_last[i] = None
+                        self.last_shape_info[i] = None
+                        self.tracking_continuity[i] = 0
+                        # Set track as active since we have a detection
+                        self.track_states[i] = 'active'
+                        self.missed_frames[i] = 0
                     
                     # Initialize remaining filters with random positions (for future detections)
                     for i in range(len(meas), N):
-                        if i < len(self.kalman_filters):
-                            kf = self.kalman_filters[i]
-                            # Random initial state for tracks without detections
-                            init = np.array([random.randint(0, w), random.randint(0, h), 0, 0, 0], np.float32)
-                            kf.statePre = init.copy()
-                            kf.statePost = init.copy()
-                            # Clear history for new tracking session
-                            self.position_deques[i].clear()
-                            self.orientation_last[i] = None
-                            self.last_shape_info[i] = None
-                            self.tracking_continuity[i] = 0
-                            # Set track as lost since no detection available
-                            self.track_states[i] = 'lost'
-                            self.missed_frames[i] = 0
+                        # Random initial state for tracks without detections
+                        init_state = np.array([random.randint(0, w), random.randint(0, h), 0, 0, 0], np.float32)
+                        self.kalman_manager.initialize_filter(i, init_state)
+                        # Clear history for new tracking session
+                        self.position_deques[i].clear()
+                        self.orientation_last[i] = None
+                        self.last_shape_info[i] = None
+                        self.tracking_continuity[i] = 0
+                        # Set track as lost since no detection available
+                        self.track_states[i] = 'lost'
+                        self.missed_frames[i] = 0
                     
                     logger.info(f"Initialized tracking: {len(meas)} active tracks, {N - len(meas)} lost tracks")
 
                 # === PREDICTION STEP ===
                 # Use Kalman filters to predict next positions/orientations
-                preds = [kf.predict()[:3].flatten() for kf in self.kalman_filters]
-                PREDS = np.array(preds, np.float32)  # Shape: (N, 3) [x, y, theta]
+                PREDS = self.kalman_manager.get_predictions()
 
                 # === COST MATRIX COMPUTATION ===
                 # Build cost matrix for bipartite matching between tracks and detections
-                M = len(meas)  # Number of current detections
-                cost = np.zeros((N, M), np.float32)
-                
-                for i in range(N):  # For each track
-                    for j in range(M):  # For each detection
-                        # === POSITION COST ===
-                        if use_maha:
-                            # Use Mahalanobis distance considering prediction uncertainty
-                            Pcov = self.kalman_filters[i].errorCovPre[:2, :2]  # Position covariance
-                            diff = meas[j][:2] - PREDS[i][:2]
-                            try: 
-                                invP = np.linalg.inv(Pcov)
-                                posc = np.sqrt(diff.T @ invP @ diff)
-                            except: 
-                                posc = np.linalg.norm(diff)  # Fallback to Euclidean
-                        else:
-                            # Simple Euclidean distance
-                            posc = np.linalg.norm(meas[j][:2] - PREDS[i][:2])
-                        
-                        # === ORIENTATION COST ===
-                        # Handle angular wraparound for orientation difference
-                        odiff = abs(PREDS[i][2] - meas[j][2])
-                        odiff = min(odiff, 2*np.pi - odiff)  # Minimum angular distance
-                        
-                        # === SHAPE CONSISTENCY COST ===
-                        # Use previous shape info or current detection if no history
-                        prev_a, prev_as = self.last_shape_info[i] if self.last_shape_info[i] else shapes[j]
-                        area_diff = abs(shapes[j][0] - prev_a)      # Area difference
-                        asp_diff = abs(shapes[j][1] - prev_as)      # Aspect ratio difference
-                    
-                        
-                        # === COMBINED COST ===
-                        # Weighted combination of all cost components
-                        cost[i, j] = Wp * posc + Wo * odiff + Wa * area_diff + Wasp * asp_diff
+                cost = self.track_assigner.compute_cost_matrix(
+                    N, meas, PREDS, shapes, self.kalman_filters, self.last_shape_info, 
+                    use_maha, Wp, Wo, Wa, Wasp
+                )
 
                 # === HYBRID ASSIGNMENT SYSTEM ===
-                # Define continuity threshold for established vs new tracks
-                CONTINUITY_THRESHOLD = params.get("CONTINUITY_THRESHOLD", 10)  # Frames of continuous tracking
+                # Use the track assigner to handle complex assignment logic
+                M = len(meas)  # Number of current detections
                 
-                # Separate tracks into established (high continuity) and new/unstable (low continuity)
-                established_tracks = [i for i in range(N) if self.tracking_continuity[i] >= CONTINUITY_THRESHOLD and self.track_states[i] != 'lost']
-                unstable_tracks = [i for i in range(N) if self.tracking_continuity[i] < CONTINUITY_THRESHOLD and self.track_states[i] != 'lost']
-                lost_tracks = [i for i in range(N) if self.track_states[i] == 'lost']
-                
-                logger.debug(f"Frame {self.frame_count}: Established={len(established_tracks)}, Unstable={len(unstable_tracks)}, Lost={len(lost_tracks)}")
-                
-                assigned_detections = set()
-                assigned_tracks = set()
-                all_assignments = []
-                
-                # === PHASE 1: HUNGARIAN FOR ESTABLISHED TRACKS ===
-                if established_tracks and M > 0:
-                    # Create sub-cost matrix for established tracks only
-                    est_cost = np.zeros((len(established_tracks), M), np.float32)
-                    for i, track_idx in enumerate(established_tracks):
-                        for j in range(M):
-                            est_cost[i, j] = cost[track_idx, j]
-                    
-                    # Apply Hungarian algorithm to established tracks
-                    est_rows, est_cols = linear_sum_assignment(est_cost)
-                    
-                    # Process assignments for established tracks
-                    for i, j in zip(est_rows, est_cols):
-                        track_idx = established_tracks[i]
-                        det_idx = j  # j is already the detection index from est_cols
-                        
-                        # Only accept assignment if cost is reasonable
-                        if cost[track_idx, det_idx] < params["MAX_DISTANCE_THRESHOLD"]:
-                            all_assignments.append((track_idx, det_idx))
-                            assigned_detections.add(det_idx)
-                            assigned_tracks.add(track_idx)
-                            logger.debug(f"Hungarian assignment: Track {track_idx} (continuity={self.tracking_continuity[track_idx]}) -> Detection {det_idx} (cost={cost[track_idx, det_idx]:.2f})")
-                        else:
-                            logger.debug(f"Rejected Hungarian assignment: Track {track_idx} -> Detection {det_idx} (cost too high: {cost[track_idx, det_idx]:.2f})")
-                
-                # === PHASE 2: PRIORITY-BASED FOR UNSTABLE TRACKS ===
-                # Sort unstable tracks by continuity (longest first, even if below threshold)
-                unstable_tracks_sorted = sorted(unstable_tracks, key=lambda i: self.tracking_continuity[i], reverse=True)
-                
-                for track_idx in unstable_tracks_sorted:
-                    best_detection = None
-                    best_cost = float('inf')
-                    
-                    # Find best available detection for this track
-                    for det_idx in range(M):
-                        if det_idx in assigned_detections:
-                            continue  # Detection already taken by established track
-                        
-                        track_cost = cost[track_idx, det_idx]
-                        if track_cost < params["MAX_DISTANCE_THRESHOLD"] and track_cost < best_cost:
-                            best_cost = track_cost
-                            best_detection = det_idx
-                    
-                    # Assign best detection to this track if found
-                    if best_detection is not None:
-                        all_assignments.append((track_idx, best_detection))
-                        assigned_detections.add(best_detection)
-                        assigned_tracks.add(track_idx)
-                        logger.debug(f"Priority assignment: Track {track_idx} (continuity={self.tracking_continuity[track_idx]}) -> Detection {best_detection} (cost={best_cost:.2f})")
-                
-                # === PHASE 3: RESPAWN LOST TRACKS WITH REMAINING DETECTIONS ===
-                unassigned_detections = [i for i in range(M) if i not in assigned_detections]
-                MIN_RESPAWN_DISTANCE = params.get("MIN_RESPAWN_DISTANCE", params["MAX_DISTANCE_THRESHOLD"] * 0.8)
-                
-                for det_idx in unassigned_detections:
-                    if not lost_tracks:
-                        break  # No more lost tracks available
-                    
-                    # Check if this detection is far enough from all assigned detections
-                    detection_pos = meas[det_idx][:2]  # [x, y] position
-                    is_good_detection = True
-                    
-                    # Calculate minimum distance to any assigned detection
-                    min_distance_to_assigned = float('inf')
-                    for assigned_det_idx in assigned_detections:
-                        assigned_pos = meas[assigned_det_idx][:2]
-                        distance = np.linalg.norm(detection_pos - assigned_pos)
-                        min_distance_to_assigned = min(min_distance_to_assigned, distance)
-                    
-                    # Only respawn if detection is sufficiently far from assigned detections
-                    if min_distance_to_assigned < MIN_RESPAWN_DISTANCE:
-                        is_good_detection = False
-                        logger.debug(f"Rejected respawn: Detection {det_idx} too close to assigned detection (distance={min_distance_to_assigned:.2f} < {MIN_RESPAWN_DISTANCE:.2f})")
-                    
-                    # Also check if detection is within reasonable bounds for any lost track
-                    if is_good_detection:
-                        best_lost_track = None
-                        best_respawn_cost = float('inf')
-                        
-                        # Find the best lost track for this detection (if any)
-                        for track_idx in lost_tracks:
-                            # Use last known position if available, otherwise skip cost check
-                            if self.kalman_filters[track_idx].statePost is not None:
-                                last_known_pos = self.kalman_filters[track_idx].statePost[:2].flatten()
-                                respawn_distance = np.linalg.norm(detection_pos - last_known_pos)
-                                
-                                # Only consider if within reasonable respawn distance
-                                if respawn_distance < params["MAX_DISTANCE_THRESHOLD"] * 2.0:  # More lenient for respawning
-                                    if respawn_distance < best_respawn_cost:
-                                        best_respawn_cost = respawn_distance
-                                        best_lost_track = track_idx
-                            else:
-                                # If no last known position, any lost track is eligible
-                                best_lost_track = track_idx
-                                break
-                        
-                        # Respawn the best lost track if found
-                        if best_lost_track is not None:
-                            all_assignments.append((best_lost_track, det_idx))
-                            assigned_tracks.add(best_lost_track)
-                            lost_tracks.remove(best_lost_track)
-                            # Assign new trajectory ID for respawned track
-                            self.trajectory_ids[best_lost_track] = self.next_trajectory_id
-                            self.next_trajectory_id += 1
-                            logger.debug(f"Respawn assignment: Track {best_lost_track} -> Detection {det_idx} (distance from assigned={min_distance_to_assigned:.2f}, respawn_cost={best_respawn_cost:.2f}) - New trajectory ID: {self.trajectory_ids[best_lost_track]}")
-                        else:
-                            logger.debug(f"No suitable lost track for detection {det_idx}")
-                    
-                    # If detection wasn't good enough for respawning, it remains unassigned
-                    if not is_good_detection or best_lost_track is None:
-                        logger.debug(f"Detection {det_idx} left unassigned")
-                
-                # Convert assignments back to the format expected by rest of code
-                if all_assignments:
-                    rows, cols = zip(*all_assignments)
-                    rows, cols = list(rows), list(cols)
-                else:
-                    rows, cols = [], []
+                # Create a mutable reference for next_trajectory_id
+                trajectory_info = {'next_id': self.next_trajectory_id}
+                rows, cols = self.track_assigner.assign_tracks(
+                    N, M, cost, meas, self.tracking_continuity, self.track_states,
+                    self.kalman_filters, self.trajectory_ids, trajectory_info,
+                    params
+                )
+                # Update the next_trajectory_id from the assignment result
+                self.next_trajectory_id = trajectory_info['next_id']
 
                 # === TRACK STATE MANAGEMENT ===
                 # Categorize tracks based on assignment results
@@ -1383,11 +938,11 @@ class TrackingWorker(QThread):
                 overlay[0:small_bg.shape[0], -small_bg.shape[1]:] = small_bg
 
             # Show lighting information if stabilization is enabled
-            if params.get("ENABLE_LIGHTING_STABILIZATION", True) and hasattr(self, 'reference_intensity'):
-                if self.reference_intensity is not None and len(self.intensity_history) > 0:
+            if params.get("ENABLE_LIGHTING_STABILIZATION", True) and hasattr(self.background_model, 'reference_intensity'):
+                if self.background_model.reference_intensity is not None and len(self.intensity_history) > 0:
                     current_intensity = self.intensity_history[-1]
                     # Display lighting info on the frame
-                    info_text = f"Ref: {self.reference_intensity:.1f}, Curr: {current_intensity:.1f}"
+                    info_text = f"Ref: {self.background_model.reference_intensity:.1f}, Curr: {current_intensity:.1f}"
                     cv2.putText(overlay, info_text, (10, overlay.shape[0] - 20), 
                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
@@ -1403,7 +958,7 @@ class TrackingWorker(QThread):
             
             # === MEMORY MANAGEMENT ===
             # Clean up large objects to prevent memory leaks
-            del overlay, fg_mask, bg_u8, diff
+            del overlay, fg_mask, bg_u8
             gc.collect()
 
         # === CLEANUP AND COMPLETION ===
