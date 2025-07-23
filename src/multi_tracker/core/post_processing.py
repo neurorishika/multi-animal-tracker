@@ -100,3 +100,9 @@ def process_trajectories(trajectories_full, params):
     
     logger.info(f"Post-processing stats: {stats}")
     return final_trajectories, stats
+
+def resolve_trajectories(forward_trajs, backward_trajs):
+    """
+    Merges forward and backward trajectories by creating a consensus set of trajectories.
+    """
+    pass # Placeholder for future implementation

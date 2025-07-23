@@ -14,7 +14,6 @@ from .kalman_filters import KalmanFilterManager
 from .background_models import BackgroundModel
 from .detection import ObjectDetector
 from .assignment import TrackAssigner
-from .post_processing import process_trajectories
 
 logger = logging.getLogger(__name__)
 
@@ -76,25 +75,6 @@ class TrackingWorker(QThread):
     def emit_frame(self, bgr):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.frame_signal.emit(rgb)
-
-    def _is_velocity_feasible(self, track_idx, detection_pos, params):
-        if not self.trajectories_full[track_idx]:
-            return True, 0.0, 0, 0.0
-        
-        last_x, last_y, _, last_frame = self.trajectories_full[track_idx][-1]
-        distance = np.linalg.norm(detection_pos - np.array([last_x, last_y]))
-        frames_occluded = self.frame_count - last_frame
-        
-        if frames_occluded <= 0: return True, 0.0, frames_occluded, distance
-        
-        max_dist = params.get("MAX_DISTANCE_OCCLUSION", 200.0)
-        max_vel = params.get("MAX_VELOCITY_OCCLUSION", 50.0)
-        required_vel = distance / frames_occluded
-        
-        return (distance <= max_dist and required_vel <= max_vel), required_vel, frames_occluded, distance
-
-    def _post_process_trajectories(self, trajectories_full, params):
-        return process_trajectories(trajectories_full, params)
 
     def run(self):
         # === 1. INITIALIZATION (Identical to Original) ===

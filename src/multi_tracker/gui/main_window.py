@@ -23,6 +23,7 @@ from PySide2.QtWidgets import (
 import matplotlib.pyplot as plt
 
 from ..core.tracking_worker import TrackingWorker
+from ..core.post_processing import process_trajectories, resolve_trajectories
 from ..utils.csv_writer import CSVWriterThread
 from ..utils.geometry import fit_circle_to_points
 from ..utils.video_io import VideoReversalWorker
@@ -1768,6 +1769,45 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to save processed trajectories to {output_path}: {e}")
             return False
+    
+    def merge_and_save_trajectories(self):
+        """
+        Use this method to merge forward and backward trajectories to find consensus trajectories.
+        """
+        forward_trajs = getattr(self, 'forward_processed_trajs', None)
+        backward_trajs = getattr(self, 'backward_processed_trajs', None)
+        if not forward_trajs or not backward_trajs:
+            QMessageBox.warning(self, "No Trajectories", "No forward or backward trajectories available to merge.")
+            return
+
+        # get the number of frames in the video using the video file path
+        video_fp = self.file_line.text()
+        if not video_fp:
+            QMessageBox.warning(self, "No Video", "Please select a video file first.")
+            return
+        cap = cv2.VideoCapture(video_fp)
+        if not cap.isOpened():
+            QMessageBox.warning(self, "Error", "Cannot open video file.")
+            return
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+
+        # for each trajectory in the backward trajectories, subtract the FrameID from the total frames to get the correct frame number
+        if backward_trajs:
+            for traj in backward_trajs:
+                for point in traj:
+                    point[3] = total_frames - point[3]
+
+        # Merge forward and backward trajectories
+        resolved_trajectories = resolve_trajectories(forward_trajs, backward_trajs)
+        
+        raw_csv_path = self.csv_line.text()
+        if raw_csv_path:
+            base, ext = os.path.splitext(raw_csv_path)
+            merged_csv_path = f"{base}_merged.csv"
+            if self.save_trajectories_to_csv(resolved_trajectories, merged_csv_path):
+                QMessageBox.information(self, "Merged Data Saved",
+                                        f"Merged trajectory data has been saved to:\n{merged_csv_path}")
 
     @Slot(bool, list, list)
     def on_tracking_finished(self, finished_normally, fps_list, full_traj):
@@ -1795,57 +1835,60 @@ class MainWindow(QMainWindow):
         if self.btn_preview.isChecked():
             self.btn_preview.setChecked(False)
             self.btn_preview.setText("Preview")
-            
-        # Show completion dialog and FPS plot for successful full tracking
-        if finished_normally and not self.btn_preview.isChecked():
-            self.final_full_trajs = full_traj
-            
-            # Check if this was forward tracking and backward tracking is enabled
-            is_backward_mode = hasattr(self.tracking_worker, 'backward_mode') and self.tracking_worker.backward_mode
-            is_backward_enabled = self.chk_enable_backward.isChecked()
 
-            # 1. Perform post-processing if enabled
-            processed_trajectories = None
-            if self.enable_postprocessing.isChecked():
-                logger.info("Running final post-processing on trajectories...")
-                # It's good practice to import here or at the top of the file
-                from ..core.post_processing import process_trajectories
-                
-                params = self.get_parameters_dict()
-                processed_trajectories, stats = process_trajectories(self.final_full_trajs, params)
-                logger.info(f"Post-processing complete. Stats: {stats}")
+            if finished_normally and not self.btn_preview.isChecked():
+                # Get tracking context
+                is_backward_mode = hasattr(self.tracking_worker, 'backward_mode') and self.tracking_worker.backward_mode
+                is_backward_enabled = self.chk_enable_backward.isChecked()
 
-                # 2. Save the PROCESSED data to a new file
-                raw_csv_path = self.csv_line.text()
-                if raw_csv_path:
-                    # Determine the correct output path (handle backward mode suffix)
-                    output_csv_path = raw_csv_path
-                    if is_backward_mode:
-                        base, ext = os.path.splitext(output_csv_path)
-                        output_csv_path = f"{base}_backward{ext}"
+                # Always run post-processing if enabled
+                processed_trajectories = full_traj  # Default to raw data
+                if self.enable_postprocessing.isChecked():
+                    logger.info("Running final post-processing on trajectories...")
+                    params = self.get_parameters_dict()
+                    processed_trajectories, stats = process_trajectories(full_traj, params)
+                    logger.info(f"Post-processing complete. Stats: {stats}")
 
-                    base, ext = os.path.splitext(output_csv_path)
-                    processed_csv_path = f"{base}_processed{ext}"
+                # Now, decide what to do with the processed data
+                if not is_backward_mode:
+                    # This was the FORWARD pass.
+                    # Save its processed data to a file.
+                    raw_csv_path = self.csv_line.text()
+                    if raw_csv_path:
+                        base, ext = os.path.splitext(raw_csv_path)
+                        processed_csv_path = f"{base}_forward_processed{ext}"
+                        self.save_trajectories_to_csv(processed_trajectories, processed_csv_path)
+
+                    # If backward tracking is next, store the data and start the next pass.
+                    if is_backward_enabled:
+                        self.forward_processed_trajs = processed_trajectories
+                        logger.info("Forward tracking complete, starting backward tracking...")
+                        self.start_backward_tracking()
+                    else:
+                        # Not doing backward tracking, so we are done.
+                        QMessageBox.information(self, "Done", "Tracking complete.")
+                        self.plot_fps(fps_list)
+                else:
+                    # This was the BACKWARD pass.
+                    # We now have both self.forward_processed_trajs and the new processed_trajectories.
                     
-                    if self.save_trajectories_to_csv(processed_trajectories, processed_csv_path):
-                         # Let the user know the new file was created!
-                        QMessageBox.information(self, "Processed Data Saved", 
-                                                f"Cleaned trajectory data has been saved to:\n{processed_csv_path}")
-            
-            if not is_backward_mode and is_backward_enabled:
+                    # Save the processed backward data for inspection.
+                    raw_csv_path = self.csv_line.text()
+                    if raw_csv_path:
+                        base, ext = os.path.splitext(raw_csv_path)
+                        processed_csv_path = f"{base}_backward_processed{ext}"
+                        self.save_trajectories_to_csv(processed_trajectories, processed_csv_path)
+                    self.backward_processed_trajs = processed_trajectories
 
-                # This was forward tracking and backward is enabled - start backward tracking automatically
-                logger.info("Forward tracking complete, starting backward tracking...")
-                QMessageBox.information(self, "Forward Complete", "Forward tracking complete. Starting backward tracking...")
-                self.start_backward_tracking()
-            else:
-                # Either this was backward tracking or backward is disabled - show completion
-                mode_str = "Backward tracking" if is_backward_mode else "Forward tracking"
-                QMessageBox.information(self, "Done", f"{mode_str} complete.")
-                self.plot_fps(fps_list)
-            
-        # Memory cleanup
-        gc.collect()
+                    # Now, MERGE the results.
+                    if self.forward_processed_trajs and self.backward_processed_trajs:
+                        logger.info("Merging forward and backward trajectories...")
+                        self.merge_and_save_trajectories()
+                    
+                    QMessageBox.information(self, "Done", "Backward tracking and merging complete.")
+                    self.plot_fps(fps_list)
+
+            gc.collect()
 
     @Slot(dict)
     def on_histogram_data(self, histogram_data):
