@@ -11,8 +11,9 @@ import numpy as np
 import cv2
 from collections import deque
 import gc
+import csv
 
-from PySide2.QtCore import Qt, Slot
+from PySide2.QtCore import Qt, Slot, Signal, QThread, QMutex
 from PySide2.QtGui import QImage, QPixmap, QPainter, QPen
 from PySide2.QtWidgets import (
     QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout, 
@@ -24,8 +25,9 @@ import matplotlib.pyplot as plt
 from ..core.tracking_worker import TrackingWorker
 from ..utils.csv_writer import CSVWriterThread
 from ..utils.geometry import fit_circle_to_points
-from ..utils.video_io import create_reversed_video
+from ..utils.video_io import VideoReversalWorker
 from .histogram_widgets import HistogramPanel
+
 
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"
@@ -65,6 +67,8 @@ class MainWindow(QMainWindow):
     - Left panel: Video display with ROI interaction
     - Right panel: Parameter controls and action buttons
     """
+
+    parameters_changed = Signal(dict)
     
     def __init__(self):
         """Initialize the main application window and UI components."""
@@ -970,8 +974,12 @@ class MainWindow(QMainWindow):
         self.csv_writer_thread = None    # Background CSV writer thread
         self.final_full_trajs = []       # Complete trajectory data after tracking
 
+        # Add reversal worker for backward tracking
+        self.reversal_worker = None 
+
         # Load saved configuration if available
         self.load_config()
+        self._connect_parameter_signals()
 
     def select_file(self):
         """
@@ -1500,6 +1508,7 @@ class MainWindow(QMainWindow):
             "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
             
             "MAX_DISTANCE_THRESHOLD": self.spin_max_dist.value(),
+            "ENABLE_POSTPROCESSING": self.enable_postprocessing.isChecked(),
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
             "MAX_VELOCITY_BREAK": self.spin_max_velocity_break.value(),
             "MAX_DISTANCE_BREAK": self.spin_max_distance_break.value(),
@@ -1569,8 +1578,8 @@ class MainWindow(QMainWindow):
             "zoom_factor": self.spin_zoom.value(),
             
             # Real-time histogram parameters
-            "enable_histograms": self.enable_histograms.isChecked(),
-            "histogram_history_frames": self.spin_histogram_history.value(),
+            "ENABLE_HISTOGRAMS": self.enable_histograms.isChecked(),
+            "HISTOGRAM_HISTORY_FRAMES": self.spin_histogram_history.value(),
             
             # ROI mask (if defined)
             "ROI_MASK": self.roi_mask
@@ -1727,6 +1736,38 @@ class MainWindow(QMainWindow):
             Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
         self.video_label.setPixmap(QPixmap.fromImage(scaled))
+    
+    def save_trajectories_to_csv(self, trajectories, output_path):
+        """
+        Saves a list of cleaned trajectories to a CSV file.
+
+        Args:
+            trajectories (list): A list of trajectory segments. Each segment is a list of points.
+            output_path (str): The path to the output CSV file.
+        """
+        if not trajectories:
+            logger.warning("No post-processed trajectories to save.")
+            return
+
+        # Define the header for the clean output file
+        header = ["TrajectoryID", "X", "Y", "Theta", "FrameID"]
+        
+        try:
+            with open(output_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(header)
+                
+                # Assign a new, unique ID to each cleaned trajectory segment
+                # as post-processing can split one raw track into multiple clean ones.
+                for trajectory_id, segment in enumerate(trajectories):
+                    for x, y, theta, frame_id in segment:
+                        writer.writerow([trajectory_id, int(x), int(y), theta, int(frame_id)])
+            
+            logger.info(f"Successfully saved {len(trajectories)} post-processed trajectories to {output_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save processed trajectories to {output_path}: {e}")
+            return False
 
     @Slot(bool, list, list)
     def on_tracking_finished(self, finished_normally, fps_list, full_traj):
@@ -1762,8 +1803,37 @@ class MainWindow(QMainWindow):
             # Check if this was forward tracking and backward tracking is enabled
             is_backward_mode = hasattr(self.tracking_worker, 'backward_mode') and self.tracking_worker.backward_mode
             is_backward_enabled = self.chk_enable_backward.isChecked()
+
+            # 1. Perform post-processing if enabled
+            processed_trajectories = None
+            if self.enable_postprocessing.isChecked():
+                logger.info("Running final post-processing on trajectories...")
+                # It's good practice to import here or at the top of the file
+                from ..core.post_processing import process_trajectories
+                
+                params = self.get_parameters_dict()
+                processed_trajectories, stats = process_trajectories(self.final_full_trajs, params)
+                logger.info(f"Post-processing complete. Stats: {stats}")
+
+                # 2. Save the PROCESSED data to a new file
+                raw_csv_path = self.csv_line.text()
+                if raw_csv_path:
+                    # Determine the correct output path (handle backward mode suffix)
+                    output_csv_path = raw_csv_path
+                    if is_backward_mode:
+                        base, ext = os.path.splitext(output_csv_path)
+                        output_csv_path = f"{base}_backward{ext}"
+
+                    base, ext = os.path.splitext(output_csv_path)
+                    processed_csv_path = f"{base}_processed{ext}"
+                    
+                    if self.save_trajectories_to_csv(processed_trajectories, processed_csv_path):
+                         # Let the user know the new file was created!
+                        QMessageBox.information(self, "Processed Data Saved", 
+                                                f"Cleaned trajectory data has been saved to:\n{processed_csv_path}")
             
             if not is_backward_mode and is_backward_enabled:
+
                 # This was forward tracking and backward is enabled - start backward tracking automatically
                 logger.info("Forward tracking complete, starting backward tracking...")
                 QMessageBox.information(self, "Forward Complete", "Forward tracking complete. Starting backward tracking...")
@@ -1837,27 +1907,61 @@ class MainWindow(QMainWindow):
         # Show progress for video reversal
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.progress_label.setText("Creating reversed video with FFmpeg...")
+        self.progress_bar.setRange(0, 0) # Set to indeterminate mode
+        self.progress_label.setText("Creating reversed video with FFmpeg (this may take a while)...")
         
         # Process events to update UI
         QApplication.processEvents()
         
         # Create reversed video using FFmpeg
-        success = create_reversed_video(video_fp, reversed_video_path)
+        # Use the non-blocking worker
+        self.reversal_worker = VideoReversalWorker(video_fp, reversed_video_path)
+        self.reversal_worker.finished.connect(self.on_reversal_finished)
+        self.reversal_worker.start()
+    
+    @Slot(bool, str, str)
+    def on_reversal_finished(self, success, output_path, error_message):
+        """Handle completion of the video reversal worker."""
+        self.progress_bar.setRange(0, 100) # Reset progress bar
         
         if not success:
             self.progress_bar.setVisible(False)
             self.progress_label.setVisible(False)
-            QMessageBox.critical(self, "Error", 
-                               "Failed to create reversed video. Please ensure FFmpeg is installed and accessible.")
+            QMessageBox.critical(self, "Error Creating Reversed Video", error_message)
             return
-            
+
         self.progress_label.setText("Reversed video created. Starting backward tracking...")
         QApplication.processEvents()
         
         # Now run normal tracking on the reversed video
-        self.start_tracking_on_video(reversed_video_path, backward_mode=True)
+        self.start_tracking_on_video(output_path, backward_mode=True)
+
+    def _connect_parameter_signals(self):
+        """Connect all parameter widgets to the update handler."""
+        # PySide2's findChildren doesn't accept a tuple of types, so we call it
+        # for each type individually and combine the resulting lists.
+        widgets_to_connect = (
+            self.findChildren(QSpinBox) +
+            self.findChildren(QDoubleSpinBox) +
+            self.findChildren(QCheckBox)
+        )
+        
+        for widget in widgets_to_connect:
+            # For SpinBoxes, the signal is 'valueChanged'
+            if hasattr(widget, 'valueChanged'):
+                widget.valueChanged.connect(self._on_parameter_changed)
+            # For CheckBoxes, the signal is 'stateChanged'
+            elif hasattr(widget, 'stateChanged'):
+                widget.stateChanged.connect(self._on_parameter_changed)
+    
+    @Slot()
+    def _on_parameter_changed(self):
+        """
+        Slot to handle any parameter change. Emits a signal with all current params.
+        Also updates the worker if it's running.
+        """
+        params = self.get_parameters_dict()
+        self.parameters_changed.emit(params)
 
     def start_tracking_on_video(self, video_path, backward_mode=False):
         """
@@ -1900,6 +2004,9 @@ class MainWindow(QMainWindow):
             backward_mode=backward_mode
         )
         self.tracking_worker.set_parameters(self.get_parameters_dict())
+
+        # Connect the new signal/slot for live updates
+        self.parameters_changed.connect(self.tracking_worker.update_parameters)
         
         # Connect signals for real-time updates
         self.tracking_worker.frame_signal.connect(self.on_new_frame)

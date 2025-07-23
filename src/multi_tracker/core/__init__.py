@@ -10,6 +10,8 @@ from .kalman_filters import KalmanFilterManager
 from .background_models import BackgroundModel
 from .detection import ObjectDetector
 from .assignment import TrackAssigner
+from .post_processing import process_trajectories
+
 
 __all__ = [
     "TrackingWorker",
@@ -17,4 +19,5 @@ __all__ = [
     "BackgroundModel",
     "ObjectDetector",
     "TrackAssigner",
+    "process_trajectories"
 ]

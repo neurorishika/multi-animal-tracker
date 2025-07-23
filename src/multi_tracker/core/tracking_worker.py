@@ -6,7 +6,7 @@ import sys, time, gc, math, logging, os, random
 import numpy as np
 import cv2
 from collections import deque
-from PySide2.QtCore import QThread, Signal, QMutex
+from PySide2.QtCore import QThread, Signal, QMutex, Slot
 
 from ..utils.image_processing import apply_image_adjustments, stabilize_lighting
 from ..utils.geometry import wrap_angle_degs
@@ -14,6 +14,7 @@ from .kalman_filters import KalmanFilterManager
 from .background_models import BackgroundModel
 from .detection import ObjectDetector
 from .assignment import TrackAssigner
+from .post_processing import process_trajectories
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,14 @@ class TrackingWorker(QThread):
         self.params_mutex.lock()
         self.parameters = p
         self.params_mutex.unlock()
+
+    @Slot(dict)
+    def update_parameters(self, new_params: dict):
+        """Slot to safely update parameters from the GUI thread."""
+        self.params_mutex.lock()
+        self.parameters = new_params
+        self.params_mutex.unlock()
+        logger.info("Tracking worker parameters updated.")
 
     def get_current_params(self):
         self.params_mutex.lock()
@@ -85,56 +94,7 @@ class TrackingWorker(QThread):
         return (distance <= max_dist and required_vel <= max_vel), required_vel, frames_occluded, distance
 
     def _post_process_trajectories(self, trajectories_full, params):
-        try:
-            import pandas as pd
-        except ImportError:
-            logger.warning("pandas not available, skipping trajectory post-processing")
-            return trajectories_full, {}
-        
-        min_len = params.get("MIN_TRAJECTORY_LENGTH", 10)
-        max_vel_break = params.get("MAX_VELOCITY_BREAK", 10.0)
-        max_dist_break = params.get("MAX_DISTANCE_BREAK", 30.0)
-        
-        all_data = []
-        for track_id, traj in enumerate(trajectories_full):
-            for idx, point in enumerate(traj):
-                x, y, theta, frame = point
-                all_data.append({'TrackID': track_id, 'TrajectoryID': track_id, 'Index': idx, 'X': int(x), 'Y': int(y), 'Theta': theta, 'FrameID': int(frame), 'State': 'active'})
-        
-        if not all_data: return trajectories_full, {}
-        df = pd.DataFrame(all_data)
-        
-        stats = {'original_count': len([t for t in trajectories_full if t]), 'removed_short': 0, 'broken_velocity': 0, 'broken_distance': 0, 'final_count': 0}
-        
-        cleaned_list = []
-        for traj_id in df['TrajectoryID'].unique():
-            traj_df = df[df['TrajectoryID'] == traj_id]
-            if len(traj_df) < min_len:
-                stats['removed_short'] += 1; continue
-            
-            breaks = np.where(np.diff(traj_df['FrameID']) > 1)[0]
-            start_end_frames = []
-            last_valid = traj_df.iloc[0]['FrameID']
-            
-            for break_idx in breaks:
-                start_row, end_row = traj_df.iloc[break_idx], traj_df.iloc[break_idx + 1]
-                dist = np.linalg.norm(end_row[['X', 'Y']].values - start_row[['X', 'Y']].values)
-                vel = dist / (end_row['FrameID'] - start_row['FrameID'])
-                if vel > max_vel_break or dist > max_dist_break:
-                    start_end_frames.append((last_valid, start_row['FrameID']))
-                    last_valid = end_row['FrameID']
-                    if vel > max_vel_break: stats['broken_velocity'] += 1
-                    else: stats['broken_distance'] += 1
-            
-            start_end_frames.append((last_valid, traj_df.iloc[-1]['FrameID']))
-            
-            for start, end in start_end_frames:
-                segment = traj_df[(traj_df['FrameID'] >= start) & (traj_df['FrameID'] <= end)]
-                if len(segment) >= min_len: cleaned_list.append(segment)
-        
-        stats['final_count'] = len(cleaned_list)
-        final_trajectories = [[tuple(row) for row in seg_df[['X', 'Y', 'Theta', 'FrameID']].to_numpy()] for seg_df in cleaned_list]
-        return final_trajectories, stats
+        return process_trajectories(trajectories_full, params)
 
     def run(self):
         # === 1. INITIALIZATION (Identical to Original) ===
@@ -206,6 +166,11 @@ class TrackingWorker(QThread):
             
             overlay = frame.copy()
 
+            hist_velocities = []
+            hist_sizes = []
+            hist_orientations = []
+            hist_costs = []
+
             if detection_initialized and meas:
                 # --- Assignment ---
                 preds = kf_manager.get_predictions()
@@ -238,7 +203,15 @@ class TrackingWorker(QThread):
                     if self.csv_writer_thread:
                         self.csv_writer_thread.enqueue([r, trajectory_ids[r], local_counts[r], pt[0], pt[1], pt[2], pt[3], track_states[r]])
                         local_counts[r] += 1
-                    avg_cost += cost[r,c] / N
+                    current_cost = cost[r, c]
+                    avg_cost += current_cost / N
+
+                    # Populate histogram lists (this part is correct)
+                    hist_velocities.append(speed)
+                    hist_sizes.append(sizes[c])
+                    hist_orientations.append(orientation_last[r])
+                    hist_costs.append(current_cost)
+
 
                 # --- CSV for Unmatched & Final Respawn (Identical to Original) ---
                 if self.csv_writer_thread:
@@ -260,6 +233,25 @@ class TrackingWorker(QThread):
                 if tracking_counts >= params["MIN_TRACKING_COUNTS"] and not tracking_stabilized:
                     tracking_stabilized = True; logger.info(f"Tracking stabilized (avg cost={avg_cost:.2f})")
             
+            # Only emit histogram data if the feature is enabled in the GUI
+            if params.get("ENABLE_HISTOGRAMS", False):
+                histogram_payload = {
+                    'velocities': hist_velocities,
+                    'sizes': hist_sizes,
+                    'orientations': hist_orientations,
+                    'assignment_costs': hist_costs
+                }
+                self.histogram_data_signal.emit(histogram_payload)
+            
+            # Emit progress signal periodically to avoid overwhelming the GUI thread
+            # We also check that total_frames is valid
+            if total_frames and total_frames > 0:
+                 # Emit every 100 frames or so to keep GUI responsive
+                if self.frame_count % 100 == 0:
+                    percentage = int((self.frame_count * 100) / total_frames)
+                    status_text = f"Processing Frame {self.frame_count} / {total_frames}"
+                    self.progress_signal.emit(percentage, status_text)
+            
             # --- Visualization, Output & Loop Maintenance ---
             trajectories_pruned = [[pt for pt in tr if self.frame_count - pt[3] <= params["TRAJECTORY_HISTORY_SECONDS"]] for tr in trajectories_pruned]
             self._draw_overlays(overlay, params, trajectories_pruned, track_states, trajectory_ids, tracking_continuity, fg_mask, bg_u8)
@@ -273,11 +265,8 @@ class TrackingWorker(QThread):
         cap.release()
         if self.video_writer: self.video_writer.release()
         
-        final_trajectories = self.trajectories_full
-        if p.get("enable_postprocessing", True):
-            final_trajectories, _ = self._post_process_trajectories(self.trajectories_full, p)
-        
-        self.finished_signal.emit(not self._stop_requested, fps_list, final_trajectories)
+        logger.info("Tracking worker finished. Emitting raw trajectory data.")
+        self.finished_signal.emit(not self._stop_requested, fps_list, self.trajectories_full)
 
     def _smooth_orientation(self, r, theta, speed, p, orientation_last, position_deques):
         final_theta, old = theta, orientation_last[r]

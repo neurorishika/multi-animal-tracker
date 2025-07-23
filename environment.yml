@@ -10,7 +10,7 @@ dependencies:
   - numpy
   - scipy
   - matplotlib
-  - scikit-image
+  - pandas
   
   # Computer vision
   - opencv

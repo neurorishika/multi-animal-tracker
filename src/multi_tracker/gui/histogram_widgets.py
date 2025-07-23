@@ -97,7 +97,7 @@ class HistogramPanel(QWidget):
         Args:
             history_frames (int): Number of recent frames to include in histograms
         """
-        super().__init__()  # This is the crucial line that was missing!
+        super().__init__()
         
         self.history_frames = history_frames
         
