@@ -1610,10 +1610,10 @@ class MainWindow(QMainWindow):
             checked (bool): True to enable debug logging, False for info level
         """
         if checked:
-            setup_logging(log_level=logging.DEBUG)
+            # setup_logging(log_level=logging.DEBUG)
             logger.info("Debug logging enabled")
         else:
-            setup_logging(log_level=logging.INFO)
+            # setup_logging(log_level=logging.INFO)
             logger.info("Debug logging disabled")
 
     def start_full(self):
@@ -1693,6 +1693,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_label.setText("Preview Mode: Initializing...")
         
+        # Disable UI controls during tracking
+        self._set_ui_controls_enabled(False)
+        
         # Start background tracking
         self.tracking_worker.start()
 
@@ -1703,6 +1706,132 @@ class MainWindow(QMainWindow):
             # Hide progress bar when manually stopped
             self.progress_bar.setVisible(False)
             self.progress_label.setVisible(False)
+        
+        # Re-enable UI controls
+        self._set_ui_controls_enabled(True)
+
+    def _set_ui_controls_enabled(self, enabled: bool):
+        """
+        Enable or disable all UI controls to prevent changes during tracking.
+        
+        Args:
+            enabled (bool): True to enable controls, False to disable
+        """
+        # File selection controls
+        self.btn_file.setEnabled(enabled)
+        self.btn_csv.setEnabled(enabled)
+        self.btn_video_out.setEnabled(enabled)
+        
+        # ROI controls
+        self.btn_start_roi.setEnabled(enabled)
+        self.btn_finish_roi.setEnabled(enabled and self.roi_selection_active)
+        self.btn_clear_roi.setEnabled(enabled)
+        
+        # Action buttons (except stop)
+        self.btn_preview.setEnabled(enabled)
+        self.btn_start.setEnabled(enabled)
+        # Stop button should always be enabled when tracking is running
+        self.btn_stop.setEnabled(not enabled)
+        
+        # Parameter controls - disable all tracking parameters
+        self.spin_max_targets.setEnabled(enabled)
+        self.spin_threshold.setEnabled(enabled)
+        self.spin_max_dist.setEnabled(enabled)
+        self.spin_continuity_thresh.setEnabled(enabled)
+        
+        # Morphological processing
+        self.spin_morph_size.setEnabled(enabled)
+        self.spin_min_contour.setEnabled(enabled)
+        self.chk_size_filtering.setEnabled(enabled)
+        self.spin_min_object_size.setEnabled(enabled)
+        self.spin_max_object_size.setEnabled(enabled)
+        self.spin_max_contour_multiplier.setEnabled(enabled)
+        self.chk_conservative_split.setEnabled(enabled)
+        self.spin_conservative_kernel.setEnabled(enabled)
+        self.spin_conservative_erode.setEnabled(enabled)
+        self.spin_merge_threshold.setEnabled(enabled)
+        self.chk_additional_dilation.setEnabled(enabled)
+        self.spin_dilation_iterations.setEnabled(enabled)
+        self.spin_dilation_kernel_size.setEnabled(enabled)
+        
+        # System stability
+        self.spin_min_detect.setEnabled(enabled)
+        self.spin_min_detections_to_start.setEnabled(enabled)
+        self.spin_min_track.setEnabled(enabled)
+        self.spin_traj_hist.setEnabled(enabled)
+        
+        # Background model
+        self.spin_bg_prime.setEnabled(enabled)
+        self.chk_adaptive_bg.setEnabled(enabled)
+        self.spin_bg_learning.setEnabled(enabled)
+        
+        # Lighting stabilization
+        self.chk_lighting_stab.setEnabled(enabled)
+        self.spin_lighting_smooth.setEnabled(enabled)
+        self.spin_lighting_median.setEnabled(enabled)
+        
+        # Kalman filter
+        self.spin_kalman_noise.setEnabled(enabled)
+        self.spin_kalman_meas.setEnabled(enabled)
+        
+        # Performance
+        self.spin_resize.setEnabled(enabled)
+        
+        # Image enhancement
+        self.spin_brightness.setEnabled(enabled)
+        self.spin_contrast.setEnabled(enabled)
+        self.spin_gamma.setEnabled(enabled)
+        self.chk_dark_on_light.setEnabled(enabled)
+        
+        # Orientation tracking
+        self.spin_velocity.setEnabled(enabled)
+        self.chk_instant_flip.setEnabled(enabled)
+        self.spin_max_orient.setEnabled(enabled)
+        
+        # Track lifecycle
+        self.spin_lost_thresh.setEnabled(enabled)
+        self.spin_min_respawn_distance.setEnabled(enabled)
+        
+        # Cost function weights
+        self.spin_Wp.setEnabled(enabled)
+        self.spin_Wo.setEnabled(enabled)
+        self.spin_Wa.setEnabled(enabled)
+        self.spin_Wasp.setEnabled(enabled)
+        
+        # Algorithm options
+        self.chk_use_mahal.setEnabled(enabled)
+        
+        # Visualization options - disable all during tracking
+        self.chk_show_fg.setEnabled(enabled)
+        self.chk_show_bg.setEnabled(enabled)
+        self.chk_show_circles.setEnabled(enabled)
+        self.chk_show_orientation.setEnabled(enabled)
+        self.chk_show_trajectories.setEnabled(enabled)
+        self.chk_show_labels.setEnabled(enabled)
+        self.chk_show_state.setEnabled(enabled)
+        self.chk_debug_logging.setEnabled(enabled)
+        self.chk_enable_backward.setEnabled(enabled)
+        
+        # Display controls (zoom can always be changed during tracking)
+        self.spin_zoom.setEnabled(True)  # Always allow zoom changes
+        
+        # Post-processing parameters
+        if hasattr(self, 'enable_postprocessing'):
+            self.enable_postprocessing.setEnabled(enabled)
+        if hasattr(self, 'spin_min_trajectory_length'):
+            self.spin_min_trajectory_length.setEnabled(enabled)
+        if hasattr(self, 'spin_max_velocity_break'):
+            self.spin_max_velocity_break.setEnabled(enabled)
+        if hasattr(self, 'spin_max_distance_break'):
+            self.spin_max_distance_break.setEnabled(enabled)
+        
+        # Histogram controls
+        if hasattr(self, 'enable_histograms'):
+            self.enable_histograms.setEnabled(enabled)
+        if hasattr(self, 'spin_histogram_history'):
+            self.spin_histogram_history.setEnabled(enabled)
+        if hasattr(self, 'btn_show_histograms'):
+            self.btn_show_histograms.setEnabled(enabled)
 
     @Slot(int, str)
     def on_progress_update(self, percentage, status_text):
@@ -1792,14 +1921,11 @@ class MainWindow(QMainWindow):
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         cap.release()
 
-        # for each trajectory in the backward trajectories, subtract the FrameID from the total frames to get the correct frame number
-        if backward_trajs:
-            for traj in backward_trajs:
-                for point in traj:
-                    point[3] = total_frames - point[3]
-
-        # Merge forward and backward trajectories
-        resolved_trajectories = resolve_trajectories(forward_trajs, backward_trajs)
+        # Merge forward and backward trajectories with current parameters
+        current_params = self.get_parameters_dict()
+        resolved_trajectories = resolve_trajectories(forward_trajs, backward_trajs, 
+                                                   video_length=total_frames, 
+                                                   params=current_params)
         
         raw_csv_path = self.csv_line.text()
         if raw_csv_path:
@@ -1836,18 +1962,19 @@ class MainWindow(QMainWindow):
             self.btn_preview.setChecked(False)
             self.btn_preview.setText("Preview")
 
-            if finished_normally and not self.btn_preview.isChecked():
-                # Get tracking context
-                is_backward_mode = hasattr(self.tracking_worker, 'backward_mode') and self.tracking_worker.backward_mode
-                is_backward_enabled = self.chk_enable_backward.isChecked()
+        if finished_normally and not self.btn_preview.isChecked():
+            logger.info("Tracking completed successfully.")
+            # Get tracking context
+            is_backward_mode = hasattr(self.tracking_worker, 'backward_mode') and self.tracking_worker.backward_mode
+            is_backward_enabled = self.chk_enable_backward.isChecked()
 
-                # Always run post-processing if enabled
-                processed_trajectories = full_traj  # Default to raw data
-                if self.enable_postprocessing.isChecked():
-                    logger.info("Running final post-processing on trajectories...")
-                    params = self.get_parameters_dict()
-                    processed_trajectories, stats = process_trajectories(full_traj, params)
-                    logger.info(f"Post-processing complete. Stats: {stats}")
+            # Always run post-processing if enabled
+            processed_trajectories = full_traj  # Default to raw data
+            if self.enable_postprocessing.isChecked():
+                logger.info("Running final post-processing on trajectories...")
+                params = self.get_parameters_dict()
+                processed_trajectories, stats = process_trajectories(full_traj, params)
+                logger.info(f"Post-processing complete. Stats: {stats}")
 
                 # Now, decide what to do with the processed data
                 if not is_backward_mode:
@@ -1866,6 +1993,7 @@ class MainWindow(QMainWindow):
                         self.start_backward_tracking()
                     else:
                         # Not doing backward tracking, so we are done.
+                        self._set_ui_controls_enabled(True)  # Re-enable UI controls
                         QMessageBox.information(self, "Done", "Tracking complete.")
                         self.plot_fps(fps_list)
                 else:
@@ -1885,10 +2013,17 @@ class MainWindow(QMainWindow):
                         logger.info("Merging forward and backward trajectories...")
                         self.merge_and_save_trajectories()
                     
+                    self._set_ui_controls_enabled(True)  # Re-enable UI controls
                     QMessageBox.information(self, "Done", "Backward tracking and merging complete.")
                     self.plot_fps(fps_list)
+        else:
+            logger.warning("Tracking did not finish normally.")
+            # Tracking didn't finish normally (error, interruption, etc.)
+            self._set_ui_controls_enabled(True)  # Re-enable UI controls
+            if not finished_normally:
+                QMessageBox.warning(self, "Tracking Interrupted", "Tracking was stopped or encountered an error.")
 
-            gc.collect()
+        gc.collect()
 
     @Slot(dict)
     def on_histogram_data(self, histogram_data):
@@ -2063,6 +2198,9 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         mode_text = "Backward Tracking" if backward_mode else "Forward Tracking"
         self.progress_label.setText(f"{mode_text}: Initializing...")
+        
+        # Disable UI controls during tracking
+        self._set_ui_controls_enabled(False)
         
         # Start background tracking
         self.tracking_worker.start()
