@@ -38,6 +38,7 @@ from PySide2.QtWidgets import (
     QStackedWidget,
     QSizePolicy,
     QFrame,
+    QSlider,
 )
 import matplotlib.pyplot as plt
 
@@ -151,6 +152,10 @@ class MainWindow(QMainWindow):
         self.reversal_worker = None
         self.final_full_trajs = []
 
+        # Preview frame for live image adjustments
+        self.preview_frame_original = None  # Original frame without adjustments
+        self.current_video_path = None
+
         # === UI CONSTRUCTION ===
         self.init_ui()
 
@@ -247,8 +252,47 @@ class MainWindow(QMainWindow):
         roi_main_layout.addWidget(self.roi_instructions)
 
         left_layout.addWidget(self.scroll, stretch=1)
-        left_layout.addWidget(self.roi_instructions)
         left_layout.addWidget(roi_frame)
+
+        # Zoom control under video
+        zoom_frame = QFrame()
+        zoom_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
+        zoom_layout = QHBoxLayout(zoom_frame)
+        zoom_layout.setContentsMargins(10, 5, 10, 5)
+
+        zoom_label = QLabel("Zoom:")
+        zoom_label.setStyleSheet("font-weight: bold; color: #bbb;")
+
+        self.slider_zoom = QSlider(Qt.Horizontal)
+        self.slider_zoom.setRange(10, 500)  # 0.1x to 5.0x, scaled by 100
+        self.slider_zoom.setValue(100)  # 1.0x
+        self.slider_zoom.setTickPosition(QSlider.TicksBelow)
+        self.slider_zoom.setTickInterval(50)
+        self.slider_zoom.valueChanged.connect(self._on_zoom_changed)
+
+        self.label_zoom_val = QLabel("1.00x")
+        self.label_zoom_val.setStyleSheet(
+            "color: #4a9eff; font-weight: bold; min-width: 50px;"
+        )
+
+        zoom_layout.addWidget(zoom_label)
+        zoom_layout.addWidget(self.slider_zoom, stretch=1)
+        zoom_layout.addWidget(self.label_zoom_val)
+
+        left_layout.addWidget(zoom_frame)
+
+        # Preview refresh button
+        preview_frame = QFrame()
+        preview_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
+        preview_layout = QHBoxLayout(preview_frame)
+        preview_layout.setContentsMargins(10, 5, 10, 5)
+
+        self.btn_refresh_preview = QPushButton("Load Random Frame for Preview")
+        self.btn_refresh_preview.clicked.connect(self._load_preview_frame)
+        self.btn_refresh_preview.setEnabled(False)
+        preview_layout.addWidget(self.btn_refresh_preview)
+
+        left_layout.addWidget(preview_frame)
 
         # --- RIGHT PANEL: Configuration Tabs & Actions ---
         right_panel = QWidget()
@@ -413,28 +457,74 @@ class MainWindow(QMainWindow):
         l_method.addStretch()
         vbox.addWidget(g_method)
 
-        # 2. Image Pre-processing (Common)
-        g_img = QGroupBox("Image Enhancement (Pre-processing)")
-        fl_img = QFormLayout(g_img)
-        self.spin_brightness = QDoubleSpinBox()
-        self.spin_brightness.setRange(-255, 255)
-        self.spin_brightness.setValue(0)
-        fl_img.addRow("Brightness:", self.spin_brightness)
+        # 2. Image Pre-processing (Common) with Live Preview
+        # Only shown for Background Subtraction, not YOLO
+        self.g_img = QGroupBox("Image Enhancement (Pre-processing)")
+        vl_img = QVBoxLayout(self.g_img)
 
-        self.spin_contrast = QDoubleSpinBox()
-        self.spin_contrast.setRange(0.0, 3.0)
-        self.spin_contrast.setValue(1.0)
-        fl_img.addRow("Contrast:", self.spin_contrast)
+        # Brightness slider
+        bright_layout = QVBoxLayout()
+        bright_label_row = QHBoxLayout()
+        bright_label_row.addWidget(QLabel("Brightness:"))
+        self.label_brightness_val = QLabel("0")
+        self.label_brightness_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
+        bright_label_row.addWidget(self.label_brightness_val)
+        bright_label_row.addStretch()
+        bright_layout.addLayout(bright_label_row)
 
-        self.spin_gamma = QDoubleSpinBox()
-        self.spin_gamma.setRange(0.1, 3.0)
-        self.spin_gamma.setValue(1.0)
-        fl_img.addRow("Gamma:", self.spin_gamma)
+        self.slider_brightness = QSlider(Qt.Horizontal)
+        self.slider_brightness.setRange(-255, 255)
+        self.slider_brightness.setValue(0)
+        self.slider_brightness.setTickPosition(QSlider.TicksBelow)
+        self.slider_brightness.setTickInterval(50)
+        self.slider_brightness.valueChanged.connect(self._on_brightness_changed)
+        bright_layout.addWidget(self.slider_brightness)
+        vl_img.addLayout(bright_layout)
 
+        # Contrast slider
+        contrast_layout = QVBoxLayout()
+        contrast_label_row = QHBoxLayout()
+        contrast_label_row.addWidget(QLabel("Contrast:"))
+        self.label_contrast_val = QLabel("1.0")
+        self.label_contrast_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
+        contrast_label_row.addWidget(self.label_contrast_val)
+        contrast_label_row.addStretch()
+        contrast_layout.addLayout(contrast_label_row)
+
+        self.slider_contrast = QSlider(Qt.Horizontal)
+        self.slider_contrast.setRange(0, 300)  # 0.0 to 3.0, scaled by 100
+        self.slider_contrast.setValue(100)  # 1.0
+        self.slider_contrast.setTickPosition(QSlider.TicksBelow)
+        self.slider_contrast.setTickInterval(50)
+        self.slider_contrast.valueChanged.connect(self._on_contrast_changed)
+        contrast_layout.addWidget(self.slider_contrast)
+        vl_img.addLayout(contrast_layout)
+
+        # Gamma slider
+        gamma_layout = QVBoxLayout()
+        gamma_label_row = QHBoxLayout()
+        gamma_label_row.addWidget(QLabel("Gamma:"))
+        self.label_gamma_val = QLabel("1.0")
+        self.label_gamma_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
+        gamma_label_row.addWidget(self.label_gamma_val)
+        gamma_label_row.addStretch()
+        gamma_layout.addLayout(gamma_label_row)
+
+        self.slider_gamma = QSlider(Qt.Horizontal)
+        self.slider_gamma.setRange(10, 300)  # 0.1 to 3.0, scaled by 100
+        self.slider_gamma.setValue(100)  # 1.0
+        self.slider_gamma.setTickPosition(QSlider.TicksBelow)
+        self.slider_gamma.setTickInterval(50)
+        self.slider_gamma.valueChanged.connect(self._on_gamma_changed)
+        gamma_layout.addWidget(self.slider_gamma)
+        vl_img.addLayout(gamma_layout)
+
+        # Dark on light checkbox
         self.chk_dark_on_light = QCheckBox("Dark Animals on Light Background")
         self.chk_dark_on_light.setChecked(True)
-        fl_img.addRow(self.chk_dark_on_light)
-        vbox.addWidget(g_img)
+        vl_img.addWidget(self.chk_dark_on_light)
+
+        vbox.addWidget(self.g_img)
 
         # 3. Stacked Widget for Method Specific Params
         self.stack_detection = QStackedWidget()
@@ -841,11 +931,6 @@ class MainWindow(QMainWindow):
 
         g_settings = QGroupBox("Display Settings")
         f_disp = QFormLayout(g_settings)
-        self.spin_zoom = QDoubleSpinBox()
-        self.spin_zoom.setRange(0.1, 5.0)
-        self.spin_zoom.setValue(1.0)
-        f_disp.addRow("Zoom Factor:", self.spin_zoom)
-
         self.spin_traj_hist = QSpinBox()
         self.spin_traj_hist.setValue(5)
         f_disp.addRow("Trail History (sec):", self.spin_traj_hist)
@@ -871,6 +956,11 @@ class MainWindow(QMainWindow):
     def _on_detection_method_changed_ui(self, index):
         """Update stack widget when detection method changes."""
         self.stack_detection.setCurrentIndex(index)
+        # Show image adjustments only for Background Subtraction (index 0)
+        is_background_subtraction = index == 0
+        self.g_img.setVisible(is_background_subtraction)
+        # Refresh preview to show correct mode
+        self._update_preview_display()
         self.on_detection_method_changed(index)
 
     def select_file(self):
@@ -879,11 +969,14 @@ class MainWindow(QMainWindow):
         )
         if fp:
             self.file_line.setText(fp)
+            self.current_video_path = fp
             if self.roi_selection_active:
                 self.clear_roi()
-            self.video_label.setText(
-                "Video loaded. Use ROI controls below to define area."
-            )
+
+            # Enable preview refresh button and load a random frame
+            self.btn_refresh_preview.setEnabled(True)
+            self._load_preview_frame()
+
             logger.info(f"Video selected: {fp}")
 
     def select_csv(self):
@@ -898,8 +991,107 @@ class MainWindow(QMainWindow):
         if fp:
             self.video_out_line.setText(fp)
 
+    def _load_preview_frame(self):
+        """Load a random frame from the video for live preview."""
+        if not self.current_video_path:
+            return
+
+        cap = cv2.VideoCapture(self.current_video_path)
+        if not cap.isOpened():
+            logger.warning("Cannot open video for preview")
+            return
+
+        # Get total frames and pick a random one
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames > 0:
+            random_frame_idx = np.random.randint(0, total_frames)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, random_frame_idx)
+
+        ret, frame = cap.read()
+        cap.release()
+
+        if ret:
+            # Store original frame for adjustments
+            self.preview_frame_original = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            self._update_preview_display()
+            logger.info(f"Loaded preview frame {random_frame_idx}/{total_frames}")
+        else:
+            logger.warning("Failed to read preview frame")
+
+    def _on_brightness_changed(self, value):
+        """Handle brightness slider change."""
+        self.label_brightness_val.setText(str(value))
+        self._update_preview_display()
+
+    def _on_contrast_changed(self, value):
+        """Handle contrast slider change."""
+        contrast_val = value / 100.0
+        self.label_contrast_val.setText(f"{contrast_val:.2f}")
+        self._update_preview_display()
+
+    def _on_gamma_changed(self, value):
+        """Handle gamma slider change."""
+        gamma_val = value / 100.0
+        self.label_gamma_val.setText(f"{gamma_val:.2f}")
+        self._update_preview_display()
+
+    def _on_zoom_changed(self, value):
+        """Handle zoom slider change."""
+        zoom_val = value / 100.0
+        self.label_zoom_val.setText(f"{zoom_val:.2f}x")
+        self._update_preview_display()
+
+    def _update_preview_display(self):
+        """Update the video display with current brightness/contrast/gamma settings."""
+        if self.preview_frame_original is None:
+            return
+
+        # Get current adjustment values
+        brightness = self.slider_brightness.value()
+        contrast = self.slider_contrast.value() / 100.0
+        gamma = self.slider_gamma.value() / 100.0
+
+        # Get detection method
+        detection_method = self.combo_detection_method.currentText()
+        is_background_subtraction = detection_method == "Background Subtraction"
+
+        # Apply adjustments
+        from ..utils.image_processing import apply_image_adjustments
+
+        if is_background_subtraction:
+            # Background subtraction uses grayscale with adjustments
+            gray = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2GRAY)
+            adjusted = apply_image_adjustments(gray, brightness, contrast, gamma)
+            # Convert back to RGB for display
+            adjusted_rgb = cv2.cvtColor(adjusted, cv2.COLOR_GRAY2RGB)
+        else:
+            # YOLO uses color frames directly without brightness/contrast/gamma adjustments
+            # Just show the original color frame
+            adjusted_rgb = self.preview_frame_original.copy()
+
+        # Display the adjusted frame
+        h, w, ch = adjusted_rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(adjusted_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+
+        # Apply ROI mask if exists
+        if self.roi_mask is not None:
+            qimg = self._apply_roi_mask_to_image(qimg)
+
+        # Apply zoom
+        zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
+        if zoom_val != 1.0:
+            scaled_w = int(w * zoom_val)
+            scaled_h = int(h * zoom_val)
+            qimg = qimg.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+
+        pixmap = QPixmap.fromImage(qimg)
+        self.video_label.setPixmap(pixmap)
+
     def _on_roi_mode_changed(self, index):
-        """Update ROI mode when combo box changes."""
+        """Handle ROI mode selection change."""
         self.roi_current_mode = "circle" if index == 0 else "polygon"
         if self.roi_selection_active:
             # If actively selecting, update instructions
@@ -1280,7 +1472,7 @@ class MainWindow(QMainWindow):
         self.btn_stop.setEnabled(not enabled)
 
         # Zoom is always enabled
-        self.spin_zoom.setEnabled(True)
+        self.slider_zoom.setEnabled(True)
 
     def _draw_roi_overlay(self, qimage):
         """Draw ROI shapes overlay on a QImage."""
@@ -1319,7 +1511,7 @@ class MainWindow(QMainWindow):
 
     @Slot(np.ndarray)
     def on_new_frame(self, rgb):
-        z = max(self.spin_zoom.value(), 0.1)
+        z = max(self.slider_zoom.value() / 100.0, 0.1)
         h, w, _ = rgb.shape
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
 
@@ -1666,9 +1858,9 @@ class MainWindow(QMainWindow):
             "ENABLE_ADDITIONAL_DILATION": self.chk_additional_dilation.isChecked(),
             "DILATION_ITERATIONS": self.spin_dilation_iterations.value(),
             "DILATION_KERNEL_SIZE": self.spin_dilation_kernel_size.value(),
-            "BRIGHTNESS": self.spin_brightness.value(),
-            "CONTRAST": self.spin_contrast.value(),
-            "GAMMA": self.spin_gamma.value(),
+            "BRIGHTNESS": self.slider_brightness.value(),
+            "CONTRAST": self.slider_contrast.value() / 100.0,
+            "GAMMA": self.slider_gamma.value() / 100.0,
             "DARK_ON_LIGHT_BACKGROUND": self.chk_dark_on_light.isChecked(),
             "VELOCITY_THRESHOLD": self.spin_velocity.value(),
             "INSTANT_FLIP_ORIENTATION": self.chk_instant_flip.isChecked(),
@@ -1687,7 +1879,7 @@ class MainWindow(QMainWindow):
             "SHOW_TRAJECTORIES": self.chk_show_trajectories.isChecked(),
             "SHOW_LABELS": self.chk_show_labels.isChecked(),
             "SHOW_STATE": self.chk_show_state.isChecked(),
-            "zoom_factor": self.spin_zoom.value(),
+            "zoom_factor": self.slider_zoom.value() / 100.0,
             "ENABLE_HISTOGRAMS": self.enable_histograms.isChecked(),
             "HISTOGRAM_HISTORY_FRAMES": self.spin_histogram_history.value(),
             "ROI_MASK": self.roi_mask,
@@ -1784,9 +1976,9 @@ class MainWindow(QMainWindow):
             )
             self.spin_dilation_iterations.setValue(cfg.get("dilation_iterations", 2))
             self.spin_dilation_kernel_size.setValue(cfg.get("dilation_kernel_size", 3))
-            self.spin_brightness.setValue(cfg.get("brightness", 0.0))
-            self.spin_contrast.setValue(cfg.get("contrast", 1.0))
-            self.spin_gamma.setValue(cfg.get("gamma", 1.0))
+            self.slider_brightness.setValue(int(cfg.get("brightness", 0.0)))
+            self.slider_contrast.setValue(int(cfg.get("contrast", 1.0) * 100))
+            self.slider_gamma.setValue(int(cfg.get("gamma", 1.0) * 100))
             self.chk_dark_on_light.setChecked(cfg.get("dark_on_light_background", True))
             self.spin_velocity.setValue(cfg.get("velocity_threshold", 2.0))
             self.chk_instant_flip.setChecked(cfg.get("instant_flip", True))
@@ -1809,7 +2001,7 @@ class MainWindow(QMainWindow):
             self.chk_enable_backward.setChecked(
                 cfg.get("enable_backward_tracking", True)
             )
-            self.spin_zoom.setValue(cfg.get("zoom_factor", 1.0))
+            self.slider_zoom.setValue(int(cfg.get("zoom_factor", 1.0) * 100))
 
             # Load ROI shapes
             self.roi_shapes = cfg.get("roi_shapes", [])
@@ -1901,9 +2093,9 @@ class MainWindow(QMainWindow):
             "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
             "dilation_iterations": self.spin_dilation_iterations.value(),
             "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
-            "brightness": self.spin_brightness.value(),
-            "contrast": self.spin_contrast.value(),
-            "gamma": self.spin_gamma.value(),
+            "brightness": self.slider_brightness.value(),
+            "contrast": self.slider_contrast.value() / 100.0,
+            "gamma": self.slider_gamma.value() / 100.0,
             "dark_on_light_background": self.chk_dark_on_light.isChecked(),
             "velocity_threshold": self.spin_velocity.value(),
             "instant_flip": self.chk_instant_flip.isChecked(),
@@ -1924,7 +2116,7 @@ class MainWindow(QMainWindow):
             "show_state": self.chk_show_state.isChecked(),
             "debug_logging": self.chk_debug_logging.isChecked(),
             "enable_backward_tracking": self.chk_enable_backward.isChecked(),
-            "zoom_factor": self.spin_zoom.value(),
+            "zoom_factor": self.slider_zoom.value() / 100.0,
             "enable_histograms": self.enable_histograms.isChecked(),
             "histogram_history_frames": self.spin_histogram_history.value(),
             "roi_shapes": self.roi_shapes,  # Save ROI shapes
