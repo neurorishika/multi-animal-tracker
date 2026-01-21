@@ -14,6 +14,11 @@ dependencies:
   
   # Computer vision
   - opencv
+  - scikit-image
+  
+  # Deep learning (optional for YOLO detection)
+  - pytorch
+  - torchvision
   
   # GUI framework (Qt5 only, no Qt6)
   - pyside2=5.15.*
@@ -31,4 +36,5 @@ dependencies:
   
   # Install your package via pip (after conda deps are resolved)
   - pip:
+    - ultralytics  # YOLO models for object detection
     - -e .

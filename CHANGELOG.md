@@ -1,3 +1,56 @@
+# Changelog
+
+All notable changes to the Multi-Animal Tracker project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Added
+- **YOLO GUI Integration**: Full graphical user interface support for YOLO detection
+  - Detection method dropdown in main window (Background Subtraction / YOLO OBB)
+  - YOLO model selection dropdown with YOLOv8 and YOLOv11 models
+  - Custom model file browser
+  - Confidence threshold slider
+  - IOU threshold slider  
+  - Target classes text input for filtering specific COCO classes
+  - Dark mode styling for all new controls
+  - Automatic show/hide of YOLO parameters based on detection method
+- **YOLO OBB Detection Support**: Added support for YOLO Oriented Bounding Box detection as an alternative to background subtraction
+  - New `YOLOOBBDetector` class in `detection.py`
+  - Factory function `create_detector()` to select detection method
+  - Configuration options: `detection_method`, `yolo_model_path`, `yolo_confidence_threshold`, `yolo_iou_threshold`, `yolo_target_classes`
+  - Support for both pretrained and custom YOLO models
+  - Automatic model downloading for pretrained models
+  - Support for YOLOv11 models (latest version)
+- **Documentation**: 
+  - Added comprehensive YOLO detection guide (`docs/yolo_detection_guide.md`)
+  - Added GUI-specific guide (`docs/yolo_gui_guide.md`)
+  - Quick reference card (`YOLO_QUICK_REFERENCE.md`)
+- **Examples**: Added example script for YOLO configuration (`examples/yolo_detection_example.py`)
+- **Dependencies**: Added ultralytics to pip dependencies in `environment.yml`
+
+### Changed
+- Updated `main_window.py` with YOLO detection controls and UI integration
+- Enhanced `QComboBox` styling for dark mode theme
+- Updated `tracking_worker.py` to support both detection methods
+- Modified frame processing loop to handle YOLO and background subtraction separately
+- Background model initialization now conditional based on detection method
+- Updated `load_config` and `save_config` to handle YOLO parameters
+- Updated README.md with YOLO GUI usage instructions
+- Enhanced `get_parameters_dict` to include YOLO configuration
+
+### Technical Details
+- YOLO detections provide oriented bounding boxes (OBB) compatible with existing tracking pipeline
+- Detection interface remains consistent between methods for seamless integration
+- YOLO detection bypasses background subtraction pipeline when selected
+- Maintains backward compatibility with existing background subtraction workflows
+
+---
+
+## Development Guidelines
+
 ### 1. Define the Purpose
 - **What does the tool do?** Clearly outline the functionality and objectives of your tool.
 - **Who is the target audience?** Identify who will be using the tool and tailor the organization accordingly.
