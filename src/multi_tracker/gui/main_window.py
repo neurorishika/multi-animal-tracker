@@ -495,6 +495,21 @@ class MainWindow(QMainWindow):
         )
         yolo_form.addRow("Target Classes:", self.line_yolo_classes)
 
+        # YOLO device selection
+        self.combo_yolo_device = QComboBox()
+        self.combo_yolo_device.addItems([
+            "auto (Auto-detect best device)",
+            "cpu (CPU only)",
+            "cuda:0 (NVIDIA GPU)",
+            "mps (Apple Silicon GPU)"
+        ])
+        self.combo_yolo_device.setCurrentIndex(0)
+        self.combo_yolo_device.setToolTip(
+            "Select device for YOLO inference. Auto-detect uses GPU if available (CUDA or MPS), otherwise CPU. "
+            "CPU is slower but works everywhere. GPU provides 10-50x speedup."
+        )
+        yolo_form.addRow("Device:", self.combo_yolo_device)
+
         # Initially hide YOLO parameters
         self.yolo_group.setVisible(False)
         params_layout.addWidget(self.yolo_group)
@@ -1677,6 +1692,16 @@ class MainWindow(QMainWindow):
             else:
                 self.line_yolo_classes.setText("")
 
+            # Restore YOLO device setting
+            yolo_device = cfg.get("yolo_device", "auto")
+            device_map = {
+                "auto": 0,
+                "cpu": 1,
+                "cuda:0": 2,
+                "mps": 3
+            }
+            self.combo_yolo_device.setCurrentIndex(device_map.get(yolo_device, 0))
+
             # Core tracking parameters
             self.spin_max_targets.setValue(cfg.get("max_targets", 4))
             self.spin_threshold.setValue(cfg.get("threshold_value", 50))
@@ -1816,6 +1841,7 @@ class MainWindow(QMainWindow):
                 if self.line_yolo_classes.text().strip()
                 else None
             ),
+            "yolo_device": self.combo_yolo_device.currentText().split(" ")[0],
             # Core tracking parameters
             "max_targets": self.spin_max_targets.value(),
             "threshold_value": self.spin_threshold.value(),
@@ -1952,6 +1978,7 @@ class MainWindow(QMainWindow):
             "YOLO_CONFIDENCE_THRESHOLD": float(self.spin_yolo_confidence.value()),
             "YOLO_IOU_THRESHOLD": float(self.spin_yolo_iou.value()),
             "YOLO_TARGET_CLASSES": yolo_target_classes,
+            "YOLO_DEVICE": self.combo_yolo_device.currentText().split(" ")[0],
             # Core tracking parameters
             "MAX_TARGETS": N,
             "THRESHOLD_VALUE": self.spin_threshold.value(),

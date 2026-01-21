@@ -114,7 +114,32 @@ class YOLOOBBDetector:
     def __init__(self, params):
         self.params = params
         self.model = None
+        self.device = self._detect_device()
         self._load_model()
+
+    def _detect_device(self):
+        """Detect and configure the optimal device for inference."""
+        import torch
+        
+        # Check user preference
+        device_preference = self.params.get("YOLO_DEVICE", "auto")
+        
+        if device_preference != "auto":
+            logger.info(f"Using user-specified device: {device_preference}")
+            return device_preference
+        
+        # Auto-detect best available device
+        if torch.cuda.is_available():
+            device = "cuda:0"
+            logger.info(f"CUDA GPU detected, using {device}")
+        elif torch.backends.mps.is_available():
+            device = "mps"  # Apple Silicon GPU
+            logger.info("Apple Metal Performance Shaders (MPS) detected, using mps")
+        else:
+            device = "cpu"
+            logger.info("No GPU detected, using CPU")
+        
+        return device
 
     def _load_model(self):
         """Load the YOLO OBB model."""
@@ -135,7 +160,9 @@ class YOLOOBBDetector:
         if model_path_str.startswith(("yolov8", "yolov11", "yolo26")):
             try:
                 self.model = YOLO(model_path_str)
-                logger.info(f"YOLO OBB model loaded successfully: {model_path_str}")
+                # Move model to the appropriate device
+                self.model.to(self.device)
+                logger.info(f"YOLO OBB model loaded successfully: {model_path_str} on device: {self.device}")
                 return
             except Exception as e:
                 logger.error(f"Failed to load YOLO model '{model_path_str}': {e}")
@@ -159,7 +186,9 @@ class YOLOOBBDetector:
         try:
             # Use the resolved absolute path as a string
             self.model = YOLO(str(model_path))
-            logger.info(f"YOLO OBB model loaded successfully from {model_path}")
+            # Move model to the appropriate device
+            self.model.to(self.device)
+            logger.info(f"YOLO OBB model loaded successfully from {model_path} on device: {self.device}")
         except Exception as e:
             logger.error(f"Failed to load YOLO model from '{model_path}': {e}")
             raise
@@ -187,7 +216,7 @@ class YOLOOBBDetector:
         target_classes = p.get("YOLO_TARGET_CLASSES", None)  # None means all classes
         max_det = p.get("MAX_TARGETS", 8) * p.get("MAX_CONTOUR_MULTIPLIER", 20)
 
-        # Run inference
+        # Run inference on the configured device
         try:
             results = self.model.predict(
                 frame,
@@ -195,6 +224,7 @@ class YOLOOBBDetector:
                 iou=iou_threshold,
                 classes=target_classes,
                 max_det=max_det,
+                device=self.device,
                 verbose=False,
             )
         except Exception as e:
