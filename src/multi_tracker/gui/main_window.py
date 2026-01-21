@@ -164,6 +164,7 @@ class MainWindow(QMainWindow):
 
         # Preview frame for live image adjustments
         self.preview_frame_original = None  # Original frame without adjustments
+        self.detection_test_result = None  # Store detection test result
         self.current_video_path = None
 
         # === UI CONSTRUCTION ===
@@ -304,6 +305,14 @@ class MainWindow(QMainWindow):
         self.btn_refresh_preview.clicked.connect(self._load_preview_frame)
         self.btn_refresh_preview.setEnabled(False)
         preview_layout.addWidget(self.btn_refresh_preview)
+
+        self.btn_test_detection = QPushButton("Test Detection on Preview")
+        self.btn_test_detection.clicked.connect(self._test_detection_on_preview)
+        self.btn_test_detection.setEnabled(False)
+        self.btn_test_detection.setStyleSheet(
+            "background-color: #4a9eff; color: white; font-weight: bold;"
+        )
+        preview_layout.addWidget(self.btn_test_detection)
 
         left_layout.addWidget(preview_frame)
 
@@ -1075,6 +1084,7 @@ class MainWindow(QMainWindow):
 
             # Enable preview refresh button and load a random frame
             self.btn_refresh_preview.setEnabled(True)
+            self.btn_test_detection.setEnabled(True)
             self._load_preview_frame()
 
             # Auto-load config if it exists for this video
@@ -1135,6 +1145,8 @@ class MainWindow(QMainWindow):
         if ret:
             # Store original frame for adjustments
             self.preview_frame_original = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Clear any previous detection test result
+            self.detection_test_result = None
             self._update_preview_display()
             logger.info(f"Loaded preview frame {random_frame_idx}/{total_frames}")
         else:
@@ -1143,18 +1155,21 @@ class MainWindow(QMainWindow):
     def _on_brightness_changed(self, value):
         """Handle brightness slider change."""
         self.label_brightness_val.setText(str(value))
+        self.detection_test_result = None  # Clear test result
         self._update_preview_display()
 
     def _on_contrast_changed(self, value):
         """Handle contrast slider change."""
         contrast_val = value / 100.0
         self.label_contrast_val.setText(f"{contrast_val:.2f}")
+        self.detection_test_result = None  # Clear test result
         self._update_preview_display()
 
     def _on_gamma_changed(self, value):
         """Handle gamma slider change."""
         gamma_val = value / 100.0
         self.label_gamma_val.setText(f"{gamma_val:.2f}")
+        self.detection_test_result = None  # Clear test result
         self._update_preview_display()
 
     def _on_zoom_changed(self, value):
@@ -1171,6 +1186,11 @@ class MainWindow(QMainWindow):
     def _update_preview_display(self):
         """Update the video display with current brightness/contrast/gamma settings."""
         if self.preview_frame_original is None:
+            return
+
+        # If we have a detection test result, redisplay it with the new zoom
+        if self.detection_test_result is not None:
+            self._redisplay_detection_test()
             return
 
         # Get current adjustment values
@@ -1216,6 +1236,353 @@ class MainWindow(QMainWindow):
 
         pixmap = QPixmap.fromImage(qimg)
         self.video_label.setPixmap(pixmap)
+
+    def _redisplay_detection_test(self):
+        """Redisplay the stored detection test result with current zoom."""
+        if self.detection_test_result is None:
+            return
+
+        test_frame_rgb, resize_f = self.detection_test_result
+        h, w, ch = test_frame_rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
+
+        # Apply zoom
+        zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
+        effective_scale = zoom_val * resize_f
+
+        if effective_scale != 1.0:
+            orig_h, orig_w = self.preview_frame_original.shape[:2]
+            scaled_w = int(orig_w * effective_scale)
+            scaled_h = int(orig_h * effective_scale)
+            qimg = qimg.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+
+        pixmap = QPixmap.fromImage(qimg)
+        self.video_label.setPixmap(pixmap)
+
+    def _test_detection_on_preview(self):
+        """Test detection algorithm on the current preview frame."""
+        if self.preview_frame_original is None:
+            logger.warning("No preview frame loaded")
+            return
+
+        from ..utils.image_processing import apply_image_adjustments
+        from ..core.background_models import BackgroundModel
+
+        # Convert RGB preview to BGR for OpenCV
+        frame_bgr = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2BGR)
+
+        # Get current parameters
+        detection_method = self.combo_detection_method.currentIndex()
+        is_background_subtraction = detection_method == 0
+
+        # Create a copy for visualization
+        test_frame = frame_bgr.copy()
+
+        try:
+            if is_background_subtraction:
+                # Build actual background model using priming frames
+                logger.info("Building background model for test detection...")
+
+                # Open video to sample priming frames
+                video_path = self.file_line.text()
+                cap = cv2.VideoCapture(video_path)
+                if not cap.isOpened():
+                    logger.error("Cannot open video for background priming")
+                    return
+
+                # Build parameters dict for BackgroundModel
+                bg_params = {
+                    "BACKGROUND_PRIME_FRAMES": self.spin_bg_prime.value(),
+                    "BRIGHTNESS": self.slider_brightness.value(),
+                    "CONTRAST": self.slider_contrast.value() / 100.0,
+                    "GAMMA": self.slider_gamma.value() / 100.0,
+                    "ROI_MASK": self.roi_mask,
+                    "RESIZE_FACTOR": self.spin_resize.value(),
+                    "DARK_ON_LIGHT_BACKGROUND": self.chk_dark_on_light.isChecked(),
+                    "THRESHOLD_VALUE": self.spin_threshold.value(),
+                    "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
+                    "ENABLE_ADDITIONAL_DILATION": self.chk_additional_dilation.isChecked(),
+                    "DILATION_KERNEL_SIZE": self.spin_dilation_kernel_size.value(),
+                    "DILATION_ITERATIONS": self.spin_dilation_iterations.value(),
+                }
+
+                # Create and prime background model
+                bg_model = BackgroundModel(bg_params)
+                bg_model.prime_background(cap)
+
+                if bg_model.lightest_background is None:
+                    logger.error("Failed to build background model")
+                    cap.release()
+                    return
+
+                # Now process the preview frame with the primed background
+                # Need to resize frame to match background dimensions if resize factor is set
+                resize_f = bg_params["RESIZE_FACTOR"]
+                frame_to_process = frame_bgr.copy()
+                if resize_f < 1.0:
+                    frame_to_process = cv2.resize(
+                        frame_to_process,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
+                    )
+                    # Also resize the test_frame for visualization
+                    test_frame = cv2.resize(
+                        test_frame,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
+                    )
+
+                gray = cv2.cvtColor(frame_to_process, cv2.COLOR_BGR2GRAY)
+                gray = apply_image_adjustments(
+                    gray,
+                    bg_params["BRIGHTNESS"],
+                    bg_params["CONTRAST"],
+                    bg_params["GAMMA"],
+                )
+
+                # Apply ROI mask if exists (resize it too if needed)
+                roi_for_test = self.roi_mask
+                if self.roi_mask is not None:
+                    if resize_f < 1.0:
+                        roi_for_test = cv2.resize(
+                            self.roi_mask,
+                            (gray.shape[1], gray.shape[0]),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                    gray = cv2.bitwise_and(gray, gray, mask=roi_for_test)
+
+                # Get background (use lightest_background as starting point)
+                bg_u8 = bg_model.lightest_background.astype(np.uint8)
+
+                # Generate foreground mask (includes morphology operations)
+                fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
+
+                # Find contours
+                cnts, _ = cv2.findContours(
+                    fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+
+                min_contour = self.spin_min_contour.value()
+                detections = []
+
+                for c in cnts:
+                    area = cv2.contourArea(c)
+                    if area < min_contour or len(c) < 5:
+                        continue
+
+                    # Apply size filtering if enabled
+                    if self.chk_size_filtering.isChecked():
+                        min_size = self.spin_min_object_size.value()
+                        max_size = self.spin_max_object_size.value()
+                        if not (min_size <= area <= max_size):
+                            continue
+
+                    # Fit ellipse
+                    (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
+                    detections.append(((cx, cy), (ax1, ax2), ang, area))
+
+                    # Draw ellipse
+                    cv2.ellipse(
+                        test_frame,
+                        ((int(cx), int(cy)), (int(ax1), int(ax2)), ang),
+                        (0, 255, 0),
+                        2,
+                    )
+                    cv2.circle(test_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
+
+                # Show foreground mask in corner
+                small_fg = cv2.resize(fg_mask, (0, 0), fx=0.3, fy=0.3)
+                test_frame[0 : small_fg.shape[0], 0 : small_fg.shape[1]] = cv2.cvtColor(
+                    small_fg, cv2.COLOR_GRAY2BGR
+                )
+
+                # Show estimated background in opposite corner
+                small_bg = cv2.resize(bg_u8, (0, 0), fx=0.3, fy=0.3)
+                bg_bgr = cv2.cvtColor(small_bg, cv2.COLOR_GRAY2BGR)
+                test_frame[0 : bg_bgr.shape[0], -bg_bgr.shape[1] :] = bg_bgr
+
+                # Add detection count and note
+                cv2.putText(
+                    test_frame,
+                    f"Detections: {len(detections)} (BG from {self.spin_bg_prime.value()} frames)",
+                    (10, test_frame.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2,
+                )
+
+                cap.release()
+                logger.info(
+                    f"Background subtraction test complete: {len(detections)} detections"
+                )
+
+            else:
+                # YOLO detection test
+                from ..core.detection import YOLOOBBDetector
+
+                # Apply resize factor (same as tracking does)
+                resize_f = self.spin_resize.value()
+                frame_to_process = frame_bgr.copy()
+                if resize_f < 1.0:
+                    frame_to_process = cv2.resize(
+                        frame_to_process,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
+                    )
+                    # Also resize the test_frame for visualization
+                    test_frame = cv2.resize(
+                        test_frame,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
+                    )
+
+                # Build parameters for YOLO
+                yolo_params = {
+                    "YOLO_MODEL_PATH": (
+                        self.yolo_custom_model_line.text()
+                        if self.combo_yolo_model.currentText() == "Custom Model..."
+                        else self.combo_yolo_model.currentText().split(" ")[0]
+                    ),
+                    "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
+                    "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
+                    "YOLO_TARGET_CLASSES": (
+                        [
+                            int(x.strip())
+                            for x in self.line_yolo_classes.text().split(",")
+                        ]
+                        if self.line_yolo_classes.text().strip()
+                        else None
+                    ),
+                    "YOLO_DEVICE": self.combo_yolo_device.currentText().split(" ")[0],
+                    "MAX_TARGETS": self.spin_max_targets.value(),
+                    "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
+                    "ENABLE_SIZE_FILTERING": self.chk_size_filtering.isChecked(),
+                    "MIN_OBJECT_SIZE": self.spin_min_object_size.value(),
+                    "MAX_OBJECT_SIZE": self.spin_max_object_size.value(),
+                }
+
+                # Apply ROI mask if exists (resize it too if needed)
+                yolo_frame = frame_to_process.copy()
+                if self.roi_mask is not None:
+                    roi_for_yolo = self.roi_mask
+                    if resize_f < 1.0:
+                        roi_for_yolo = cv2.resize(
+                            self.roi_mask,
+                            (yolo_frame.shape[1], yolo_frame.shape[0]),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                    ROI_mask_3ch = cv2.cvtColor(roi_for_yolo, cv2.COLOR_GRAY2BGR)
+                    yolo_frame = cv2.bitwise_and(yolo_frame, ROI_mask_3ch)
+
+                # Create detector and run detection
+                detector = YOLOOBBDetector(yolo_params)
+                meas, sizes, shapes, yolo_results = detector.detect_objects(
+                    yolo_frame, 0
+                )
+
+                # Draw OBB boxes
+                if (
+                    yolo_results is not None
+                    and hasattr(yolo_results, "obb")
+                    and yolo_results.obb is not None
+                ):
+                    obb_data = yolo_results.obb
+                    for i in range(len(obb_data)):
+                        corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
+                        cv2.polylines(
+                            test_frame,
+                            [corners],
+                            isClosed=True,
+                            color=(0, 255, 255),
+                            thickness=2,
+                        )
+
+                        if hasattr(obb_data, "conf"):
+                            conf = obb_data.conf[i].cpu().item()
+                            cx = int(corners[:, 0].mean())
+                            cy = int(corners[:, 1].mean())
+                            cv2.putText(
+                                test_frame,
+                                f"{conf:.2f}",
+                                (cx - 15, cy - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                (0, 255, 255),
+                                2,
+                            )
+
+                # Draw detection centers and orientations
+                for i, m in enumerate(meas):
+                    cx, cy, angle_rad = m
+                    cv2.circle(test_frame, (int(cx), int(cy)), 5, (0, 255, 0), -1)
+                    # Draw orientation
+                    import math
+
+                    ex = int(cx + 30 * math.cos(angle_rad))
+                    ey = int(cy + 30 * math.sin(angle_rad))
+                    cv2.line(test_frame, (int(cx), int(cy)), (ex, ey), (0, 255, 0), 2)
+
+                # Add detection count
+                cv2.putText(
+                    test_frame,
+                    f"Detections: {len(meas)}",
+                    (10, test_frame.shape[0] - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 255),
+                    2,
+                )
+
+            # Display result
+            test_frame_rgb = cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB)
+
+            # Store the detection test result for zoom updates
+            # Get actual resize factor used (same for both methods)
+            resize_f = self.spin_resize.value()
+            self.detection_test_result = (test_frame_rgb.copy(), resize_f)
+
+            h, w, ch = test_frame_rgb.shape
+            bytes_per_line = ch * w
+            qimg = QImage(
+                test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888
+            )
+
+            # Apply zoom (zoom is applied after any resize_factor processing)
+            # The zoom should be relative to the original frame size, not the resized one
+            zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
+            effective_scale = zoom_val * resize_f
+
+            if effective_scale != 1.0:
+                # Get original dimensions
+                orig_h, orig_w = self.preview_frame_original.shape[:2]
+                scaled_w = int(orig_w * effective_scale)
+                scaled_h = int(orig_h * effective_scale)
+                qimg = qimg.scaled(
+                    scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+
+            pixmap = QPixmap.fromImage(qimg)
+            self.video_label.setPixmap(pixmap)
+
+            logger.info("Detection test completed on preview frame")
+
+        except Exception as e:
+            logger.error(f"Detection test failed: {e}")
+            import traceback
+
+            traceback.print_exc()
 
     def _on_roi_mode_changed(self, index):
         """Handle ROI mode selection change."""
