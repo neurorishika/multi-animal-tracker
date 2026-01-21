@@ -120,14 +120,14 @@ class YOLOOBBDetector:
     def _detect_device(self):
         """Detect and configure the optimal device for inference."""
         import torch
-        
+
         # Check user preference
         device_preference = self.params.get("YOLO_DEVICE", "auto")
-        
+
         if device_preference != "auto":
             logger.info(f"Using user-specified device: {device_preference}")
             return device_preference
-        
+
         # Auto-detect best available device
         if torch.cuda.is_available():
             device = "cuda:0"
@@ -138,7 +138,7 @@ class YOLOOBBDetector:
         else:
             device = "cpu"
             logger.info("No GPU detected, using CPU")
-        
+
         return device
 
     def _load_model(self):
@@ -162,7 +162,9 @@ class YOLOOBBDetector:
                 self.model = YOLO(model_path_str)
                 # Move model to the appropriate device
                 self.model.to(self.device)
-                logger.info(f"YOLO OBB model loaded successfully: {model_path_str} on device: {self.device}")
+                logger.info(
+                    f"YOLO OBB model loaded successfully: {model_path_str} on device: {self.device}"
+                )
                 return
             except Exception as e:
                 logger.error(f"Failed to load YOLO model '{model_path_str}': {e}")
@@ -188,7 +190,9 @@ class YOLOOBBDetector:
             self.model = YOLO(str(model_path))
             # Move model to the appropriate device
             self.model.to(self.device)
-            logger.info(f"YOLO OBB model loaded successfully from {model_path} on device: {self.device}")
+            logger.info(
+                f"YOLO OBB model loaded successfully from {model_path} on device: {self.device}"
+            )
         except Exception as e:
             logger.error(f"Failed to load YOLO model from '{model_path}': {e}")
             raise

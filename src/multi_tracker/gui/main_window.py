@@ -497,12 +497,14 @@ class MainWindow(QMainWindow):
 
         # YOLO device selection
         self.combo_yolo_device = QComboBox()
-        self.combo_yolo_device.addItems([
-            "auto (Auto-detect best device)",
-            "cpu (CPU only)",
-            "cuda:0 (NVIDIA GPU)",
-            "mps (Apple Silicon GPU)"
-        ])
+        self.combo_yolo_device.addItems(
+            [
+                "auto (Auto-detect best device)",
+                "cpu (CPU only)",
+                "cuda:0 (NVIDIA GPU)",
+                "mps (Apple Silicon GPU)",
+            ]
+        )
         self.combo_yolo_device.setCurrentIndex(0)
         self.combo_yolo_device.setToolTip(
             "Select device for YOLO inference. Auto-detect uses GPU if available (CUDA or MPS), otherwise CPU. "
@@ -1694,12 +1696,7 @@ class MainWindow(QMainWindow):
 
             # Restore YOLO device setting
             yolo_device = cfg.get("yolo_device", "auto")
-            device_map = {
-                "auto": 0,
-                "cpu": 1,
-                "cuda:0": 2,
-                "mps": 3
-            }
+            device_map = {"auto": 0, "cpu": 1, "cuda:0": 2, "mps": 3}
             self.combo_yolo_device.setCurrentIndex(device_map.get(yolo_device, 0))
 
             # Core tracking parameters
