@@ -125,6 +125,37 @@ class MainWindow(QMainWindow):
             }
             QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QComboBox:focus { border: 1px solid #4a9eff; }
             
+            /* SpinBox arrows */
+            QSpinBox::up-button, QDoubleSpinBox::up-button {
+                subcontrol-origin: border;
+                subcontrol-position: top right;
+                width: 18px;
+                border-left: 1px solid #555;
+                background-color: #555;
+                border-top-right-radius: 3px;
+            }
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {
+                background-color: #666;
+            }
+            QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {
+                background-color: #4a9eff;
+            }
+            
+            QSpinBox::down-button, QDoubleSpinBox::down-button {
+                subcontrol-origin: border;
+                subcontrol-position: bottom right;
+                width: 18px;
+                border-left: 1px solid #555;
+                background-color: #555;
+                border-bottom-right-radius: 3px;
+            }
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+                background-color: #666;
+            }
+            QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
+                background-color: #4a9eff;
+            }
+            
             /* Scrollbars */
             QScrollBar:vertical { background: #2b2b2b; width: 12px; }
             QScrollBar::handle:vertical { background: #555; border-radius: 6px; min-height: 20px; }
@@ -171,6 +202,9 @@ class MainWindow(QMainWindow):
         self.init_ui()
 
         # === POST-INIT ===
+        # Disable wheel events on all spinboxes to prevent accidental value changes
+        self._disable_spinbox_wheel_events()
+
         # Config is now loaded automatically when a video is selected
         # instead of at startup
         self._connect_parameter_signals()
@@ -803,7 +837,7 @@ class MainWindow(QMainWindow):
         f_core = QFormLayout(g_core)
         f_core.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_max_targets = QSpinBox()
-        self.spin_max_targets.setRange(1, 20)
+        self.spin_max_targets.setRange(1, 200)
         self.spin_max_targets.setValue(4)
         f_core.addRow("Max Targets (Animals):", self.spin_max_targets)
 
@@ -815,6 +849,10 @@ class MainWindow(QMainWindow):
         self.spin_continuity_thresh = QSpinBox()
         self.spin_continuity_thresh.setValue(10)
         f_core.addRow("Continuity Threshold:", self.spin_continuity_thresh)
+
+        self.chk_enable_backward = QCheckBox("Run Backward Tracking after Forward")
+        self.chk_enable_backward.setChecked(True)
+        f_core.addRow("", self.chk_enable_backward)
         vbox.addWidget(g_core)
 
         # Kalman
@@ -882,15 +920,20 @@ class MainWindow(QMainWindow):
         self.spin_max_orient.setRange(1, 180)
         self.spin_max_orient.setValue(30)
         f_misc.addRow("Max Orient Δ (Stopped):", self.spin_max_orient)
+        vbox.addWidget(g_misc)
+
+        # Track Lifecycle
+        g_lifecycle = QGroupBox("Track Lifecycle")
+        f_lifecycle = QFormLayout(g_lifecycle)
 
         self.spin_lost_thresh = QSpinBox()
         self.spin_lost_thresh.setValue(10)
-        f_misc.addRow("Lost Frames Threshold:", self.spin_lost_thresh)
+        f_lifecycle.addRow("Lost Frames Threshold:", self.spin_lost_thresh)
 
         self.spin_min_respawn_distance = QSpinBox()
         self.spin_min_respawn_distance.setValue(50)
-        f_misc.addRow("Min Respawn Dist:", self.spin_min_respawn_distance)
-        vbox.addWidget(g_misc)
+        f_lifecycle.addRow("Min Respawn Distance:", self.spin_min_respawn_distance)
+        vbox.addWidget(g_lifecycle)
 
         # Stability
         g_stab = QGroupBox("Initialization Stability")
@@ -1031,10 +1074,6 @@ class MainWindow(QMainWindow):
 
         g_debug = QGroupBox("Advanced / Debug")
         v_dbg = QVBoxLayout(g_debug)
-        self.chk_enable_backward = QCheckBox("Run Backward Tracking after Forward")
-        self.chk_enable_backward.setChecked(True)
-        v_dbg.addWidget(self.chk_enable_backward)
-
         self.chk_debug_logging = QCheckBox("Enable Verbose Debug Logging")
         self.chk_debug_logging.stateChanged.connect(self.toggle_debug_logging)
         v_dbg.addWidget(self.chk_debug_logging)
@@ -2664,6 +2703,20 @@ class MainWindow(QMainWindow):
                 )
             except Exception as e:
                 logger.warning(f"Failed to save configuration: {e}")
+
+    def _disable_spinbox_wheel_events(self):
+        """Disable wheel events on all spinboxes to prevent accidental value changes."""
+        # Find all QSpinBox and QDoubleSpinBox widgets
+        spinboxes = self.findChildren(QSpinBox) + self.findChildren(QDoubleSpinBox)
+        for spinbox in spinboxes:
+            spinbox.wheelEvent = lambda event: None
+
+    def _disable_spinbox_wheel_events(self):
+        """Disable wheel events on all spinboxes to prevent accidental value changes."""
+        # Find all QSpinBox and QDoubleSpinBox widgets
+        spinboxes = self.findChildren(QSpinBox) + self.findChildren(QDoubleSpinBox)
+        for spinbox in spinboxes:
+            spinbox.wheelEvent = lambda event: None
 
     def _connect_parameter_signals(self):
         widgets_to_connect = (

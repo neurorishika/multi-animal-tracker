@@ -522,7 +522,7 @@ class MainWindow(QMainWindow):
 
         # Maximum number of simultaneous tracks
         self.spin_max_targets = QSpinBox()
-        self.spin_max_targets.setRange(1, 20)
+        self.spin_max_targets.setRange(1, 500)
         self.spin_max_targets.setValue(4)
         self.spin_max_targets.setToolTip(
             "Maximum number of animals to track simultaneously. Should match the actual number of animals in your video."
