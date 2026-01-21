@@ -195,9 +195,11 @@ class MainWindow(QMainWindow):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("background-color: #000; border: none;")
+        self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_label = QLabel("Load a video to begin...")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+        self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll.setWidget(self.video_label)
         self.video_label.mousePressEvent = self.record_roi_click
 
@@ -312,6 +314,7 @@ class MainWindow(QMainWindow):
 
         # Tab Widget
         self.tabs = QTabWidget()
+        self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Tab 1: Setup (Files & Performance)
         self.tab_setup = QWidget()
@@ -387,9 +390,13 @@ class MainWindow(QMainWindow):
         self.splitter.addWidget(left_panel)
         self.splitter.addWidget(right_panel)
 
-        # Set initial splitter ratio (65% Video, 35% Controls)
-        self.splitter.setStretchFactor(0, 2)
-        self.splitter.setStretchFactor(1, 1)
+        # Set initial splitter ratio (60% Video, 40% Controls) and minimum sizes
+        total_width = 1360  # Default window width
+        self.splitter.setSizes([int(total_width * 0.6), int(total_width * 0.4)])
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setCollapsible(0, False)
+        self.splitter.setCollapsible(1, False)
 
         main_layout.addWidget(self.splitter)
 
@@ -400,9 +407,11 @@ class MainWindow(QMainWindow):
     def setup_tab_ui(self):
         """Tab 1: Setup - Files & Basic Config."""
         layout = QVBoxLayout(self.tab_setup)
+        layout.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         form = QVBoxLayout(content)
 
@@ -472,9 +481,11 @@ class MainWindow(QMainWindow):
     def setup_detection_ui(self):
         """Tab 2: Detection - Method, Image Proc, Algo specific."""
         layout = QVBoxLayout(self.tab_detection)
+        layout.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         vbox = QVBoxLayout(content)
 
@@ -754,9 +765,11 @@ class MainWindow(QMainWindow):
     def setup_tracking_ui(self):
         """Tab 3: Tracking Logic."""
         layout = QVBoxLayout(self.tab_tracking)
+        layout.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         vbox = QVBoxLayout(content)
 
@@ -876,9 +889,11 @@ class MainWindow(QMainWindow):
     def setup_data_ui(self):
         """Tab 4: Data & Post-Processing."""
         layout = QVBoxLayout(self.tab_data)
+        layout.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         vbox = QVBoxLayout(content)
 
@@ -929,6 +944,7 @@ class MainWindow(QMainWindow):
     def setup_viz_ui(self):
         """Tab 5: Visualization & Debug."""
         layout = QVBoxLayout(self.tab_viz)
+        layout.setContentsMargins(10, 10, 10, 10)
 
         g_overlays = QGroupBox("Video Overlays")
         v_ov = QVBoxLayout(g_overlays)
@@ -1006,6 +1022,18 @@ class MainWindow(QMainWindow):
             self.current_video_path = fp
             if self.roi_selection_active:
                 self.clear_roi()
+
+            # Auto-generate output paths based on video name
+            video_dir = os.path.dirname(fp)
+            video_name = os.path.splitext(os.path.basename(fp))[0]
+
+            # Auto-populate CSV output
+            csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
+            self.csv_line.setText(csv_path)
+
+            # Auto-populate video output
+            video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
+            self.video_out_line.setText(video_out_path)
 
             # Enable preview refresh button and load a random frame
             self.btn_refresh_preview.setEnabled(True)
