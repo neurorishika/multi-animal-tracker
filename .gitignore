@@ -380,3 +380,6 @@ docs/build/
 # Performance benchmarks
 benchmarks/
 profiling/
+
+# ignore pytorch models
+*.pt

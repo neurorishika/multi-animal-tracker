@@ -207,10 +207,30 @@ class TrackingWorker(QThread):
 
             else:  # YOLO OBB detection
                 # YOLO uses the original BGR frame directly
+                # Apply ROI mask to frame before YOLO detection (mask out areas outside ROI)
+                ROI_mask = params.get("ROI_MASK", None)
+                yolo_frame = frame.copy()
+                if ROI_mask is not None:
+                    ROI_mask_current = (
+                        cv2.resize(
+                            ROI_mask,
+                            (frame.shape[1], frame.shape[0]),
+                            cv2.INTER_NEAREST,
+                        )
+                        if resize_f != 1.0
+                        else ROI_mask
+                    )
+                    # Create a 3-channel mask for BGR frame
+                    ROI_mask_3ch = cv2.cvtColor(ROI_mask_current, cv2.COLOR_GRAY2BGR)
+                    # Apply mask: areas outside ROI become black
+                    yolo_frame = cv2.bitwise_and(yolo_frame, ROI_mask_3ch)
+
                 # No foreground mask or background for YOLO
                 fg_mask = None
                 bg_u8 = None
-                meas, sizes, shapes = detector.detect_objects(frame, self.frame_count)
+                meas, sizes, shapes = detector.detect_objects(
+                    yolo_frame, self.frame_count
+                )
 
             if len(meas) >= params.get("MIN_DETECTIONS_TO_START", 1):
                 detection_counts += 1
