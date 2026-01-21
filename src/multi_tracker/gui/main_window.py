@@ -50,7 +50,17 @@ from ..utils.video_io import VideoReversalWorker
 from .histogram_widgets import HistogramPanel
 
 # Configuration file for saving/loading tracking parameters
-CONFIG_FILENAME = "tracking_config.json"
+CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
+
+
+def get_video_config_path(video_path):
+    """Get the config file path for a given video file."""
+    if not video_path:
+        return None
+    video_dir = os.path.dirname(video_path)
+    video_name = os.path.splitext(os.path.basename(video_path))[0]
+    return os.path.join(video_dir, f"{video_name}_config.json")
+
 
 logger = logging.getLogger(__name__)
 
@@ -160,7 +170,8 @@ class MainWindow(QMainWindow):
         self.init_ui()
 
         # === POST-INIT ===
-        self.load_config()
+        # Config is now loaded automatically when a video is selected
+        # instead of at startup
         self._connect_parameter_signals()
 
     def init_ui(self):
@@ -416,6 +427,29 @@ class MainWindow(QMainWindow):
         self.video_out_line = QLineEdit()
         self.video_out_line.setPlaceholderText("Optional visualization export")
         fl.addRow(self.btn_video_out, self.video_out_line)
+
+        # Config Management
+        config_layout = QHBoxLayout()
+        self.btn_load_config = QPushButton("Load Config...")
+        self.btn_load_config.clicked.connect(self.load_config)
+        self.btn_load_config.setToolTip("Manually load configuration from a JSON file")
+        config_layout.addWidget(self.btn_load_config)
+
+        self.btn_save_config = QPushButton("Save Config...")
+        self.btn_save_config.clicked.connect(self.save_config)
+        self.btn_save_config.setToolTip("Save current settings to a JSON file")
+        config_layout.addWidget(self.btn_save_config)
+
+        config_layout.addStretch()
+        fl.addRow("Configuration:", config_layout)
+
+        # Config status label
+        self.config_status_label = QLabel("No config loaded (using defaults)")
+        self.config_status_label.setStyleSheet(
+            "color: #888; font-style: italic; font-size: 10px;"
+        )
+        fl.addRow("", self.config_status_label)
+
         form.addWidget(g_files)
 
         # System Performance
@@ -977,7 +1011,29 @@ class MainWindow(QMainWindow):
             self.btn_refresh_preview.setEnabled(True)
             self._load_preview_frame()
 
-            logger.info(f"Video selected: {fp}")
+            # Auto-load config if it exists for this video
+            config_path = get_video_config_path(fp)
+            if config_path and os.path.isfile(config_path):
+                self._load_config_from_file(config_path)
+                self.config_status_label.setText(
+                    f"✓ Loaded: {os.path.basename(config_path)}"
+                )
+                self.config_status_label.setStyleSheet(
+                    "color: #4a9eff; font-style: italic; font-size: 10px;"
+                )
+                logger.info(
+                    f"Video selected: {fp} (auto-loaded config from {config_path})"
+                )
+            else:
+                self.config_status_label.setText(
+                    "No config found (using current settings)"
+                )
+                self.config_status_label.setStyleSheet(
+                    "color: #f39c12; font-style: italic; font-size: 10px;"
+                )
+                logger.info(
+                    f"Video selected: {fp} (no config found, using current settings)"
+                )
 
     def select_csv(self):
         fp, _ = QFileDialog.getSaveFileName(self, "Select CSV", "", "CSV Files (*.csv)")
@@ -1886,10 +1942,26 @@ class MainWindow(QMainWindow):
         }
 
     def load_config(self):
-        if not os.path.isfile(CONFIG_FILENAME):
+        """Manually load config from file dialog."""
+        config_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Configuration", "", "JSON Files (*.json)"
+        )
+        if config_path:
+            self._load_config_from_file(config_path)
+            self.config_status_label.setText(
+                f"✓ Loaded: {os.path.basename(config_path)}"
+            )
+            self.config_status_label.setStyleSheet(
+                "color: #4a9eff; font-style: italic; font-size: 10px;"
+            )
+            logger.info(f"Configuration loaded from {config_path}")
+
+    def _load_config_from_file(self, config_path):
+        """Internal method to load config from a specific file path."""
+        if not os.path.isfile(config_path):
             return
         try:
-            with open(CONFIG_FILENAME, "r") as f:
+            with open(config_path, "r") as f:
                 cfg = json.load(f)
             self.file_line.setText(cfg.get("file_path", ""))
             self.csv_line.setText(cfg.get("csv_path", ""))
@@ -2121,12 +2193,27 @@ class MainWindow(QMainWindow):
             "histogram_history_frames": self.spin_histogram_history.value(),
             "roi_shapes": self.roi_shapes,  # Save ROI shapes
         }
-        try:
-            with open(CONFIG_FILENAME, "w") as f:
-                json.dump(cfg, f, indent=2)
-            logger.info("Configuration saved (including ROI shapes)")
-        except Exception as e:
-            logger.warning(f"Failed to save configuration: {e}")
+
+        # Determine save path: video-based if video selected, otherwise ask user
+        video_path = self.file_line.text()
+        if video_path:
+            default_path = get_video_config_path(video_path)
+        else:
+            default_path = CONFIG_FILENAME
+
+        config_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Configuration", default_path, "JSON Files (*.json)"
+        )
+
+        if config_path:
+            try:
+                with open(config_path, "w") as f:
+                    json.dump(cfg, f, indent=2)
+                logger.info(
+                    f"Configuration saved to {config_path} (including ROI shapes)"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save configuration: {e}")
 
     def _connect_parameter_signals(self):
         widgets_to_connect = (
