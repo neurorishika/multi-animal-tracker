@@ -1095,8 +1095,10 @@ class MainWindow(QMainWindow):
             f"Active ROI: {num_shapes} shape(s) ({shape_summary})"
         )
 
-        # Show the combined result
-        self.update_roi_preview()
+        # Show the masked result - what detector will see
+        if self.roi_base_frame:
+            qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
+            self.video_label.setPixmap(QPixmap.fromImage(qimg_masked))
 
     def _generate_combined_roi_mask(self, height, width):
         """Generate a combined mask from all ROI shapes."""
@@ -1280,6 +1282,36 @@ class MainWindow(QMainWindow):
         # Zoom is always enabled
         self.spin_zoom.setEnabled(True)
 
+    def _draw_roi_overlay(self, qimage):
+        """Draw ROI shapes overlay on a QImage."""
+        if not self.roi_shapes:
+            return qimage
+
+        # Create a copy to draw on
+        pix = QPixmap.fromImage(qimage).copy()
+        painter = QPainter(pix)
+
+        # Draw all ROI shapes
+        for shape in self.roi_shapes:
+            if shape["type"] == "circle":
+                cx, cy, radius = shape["params"]
+                painter.setPen(QPen(Qt.cyan, 2, Qt.DashLine))
+                painter.drawEllipse(
+                    int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
+                )
+                # Draw center point
+                painter.setPen(QPen(Qt.cyan, 6))
+                painter.drawPoint(int(cx), int(cy))
+            elif shape["type"] == "polygon":
+                from PySide2.QtCore import QPoint
+
+                points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
+                painter.setPen(QPen(Qt.cyan, 2, Qt.DashLine))
+                painter.drawPolygon(points)
+
+        painter.end()
+        return pix.toImage()
+
     @Slot(int, str)
     def on_progress_update(self, percentage, status_text):
         self.progress_bar.setValue(percentage)
@@ -1290,6 +1322,8 @@ class MainWindow(QMainWindow):
         z = max(self.spin_zoom.value(), 0.1)
         h, w, _ = rgb.shape
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
+
+        # ROI masking is now done in tracking worker - no need to duplicate here
         scaled = qimg.scaled(
             int(w * z), int(h * z), Qt.KeepAspectRatio, Qt.SmoothTransformation
         )

@@ -430,6 +430,26 @@ class TrackingWorker(QThread):
             )
             if self.video_writer:
                 self.video_writer.write(overlay)
+
+            # Apply ROI mask to overlay before emitting for display
+            # This shows users exactly what region is being processed
+            ROI_mask = params.get("ROI_MASK", None)
+            if ROI_mask is not None:
+                resize_f = params["RESIZE_FACTOR"]
+                ROI_mask_current = (
+                    cv2.resize(
+                        ROI_mask,
+                        (overlay.shape[1], overlay.shape[0]),
+                        cv2.INTER_NEAREST,
+                    )
+                    if resize_f != 1.0
+                    else ROI_mask
+                )
+                # Create 3-channel mask for BGR overlay
+                ROI_mask_3ch = cv2.cvtColor(ROI_mask_current, cv2.COLOR_GRAY2BGR)
+                # Apply mask to overlay for display
+                overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
+
             self.emit_frame(overlay)
 
             elapsed = time.time() - start_time
