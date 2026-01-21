@@ -418,23 +418,34 @@ class MainWindow(QMainWindow):
         # File Inputs
         g_files = QGroupBox("File Management")
         fl = QFormLayout(g_files)
+        fl.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.btn_file = QPushButton("Select Input Video...")
         self.btn_file.clicked.connect(self.select_file)
         self.file_line = QLineEdit()
         self.file_line.setPlaceholderText("path/to/video.mp4")
+        self.file_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         fl.addRow(self.btn_file, self.file_line)
 
         self.btn_csv = QPushButton("Select CSV Output...")
         self.btn_csv.clicked.connect(self.select_csv)
         self.csv_line = QLineEdit()
         self.csv_line.setPlaceholderText("path/to/output.csv")
+        self.csv_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         fl.addRow(self.btn_csv, self.csv_line)
+
+        self.check_video_output = QCheckBox("Enable Video Output")
+        self.check_video_output.setChecked(False)
+        self.check_video_output.toggled.connect(self._on_video_output_toggled)
+        fl.addRow("", self.check_video_output)
 
         self.btn_video_out = QPushButton("Select Video Output...")
         self.btn_video_out.clicked.connect(self.select_video_output)
+        self.btn_video_out.setEnabled(False)
         self.video_out_line = QLineEdit()
         self.video_out_line.setPlaceholderText("Optional visualization export")
+        self.video_out_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.video_out_line.setEnabled(False)
         fl.addRow(self.btn_video_out, self.video_out_line)
 
         # Config Management
@@ -464,11 +475,13 @@ class MainWindow(QMainWindow):
         # System Performance
         g_sys = QGroupBox("System Performance")
         fl_sys = QFormLayout(g_sys)
+        fl_sys.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.spin_resize = QDoubleSpinBox()
         self.spin_resize.setRange(0.1, 1.0)
         self.spin_resize.setSingleStep(0.1)
         self.spin_resize.setValue(1.0)
+        self.spin_resize.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         fl_sys.addRow("Processing Resize Factor:", self.spin_resize)
 
         # Threads/Device hints could go here in future
@@ -502,7 +515,27 @@ class MainWindow(QMainWindow):
         l_method.addStretch()
         vbox.addWidget(g_method)
 
-        # 2. Image Pre-processing (Common) with Live Preview
+        # 2. Common Size Filtering (Applies to both methods)
+        g_size = QGroupBox("Size Filtering")
+        f_size = QFormLayout(g_size)
+        self.chk_size_filtering = QCheckBox("Enable Size Constraints")
+        f_size.addRow(self.chk_size_filtering)
+
+        h_sf = QHBoxLayout()
+        self.spin_min_object_size = QSpinBox()
+        self.spin_min_object_size.setRange(0, 100000)
+        self.spin_min_object_size.setValue(100)
+        self.spin_max_object_size = QSpinBox()
+        self.spin_max_object_size.setRange(0, 1000000)
+        self.spin_max_object_size.setValue(5000)
+        h_sf.addWidget(QLabel("Min:"))
+        h_sf.addWidget(self.spin_min_object_size)
+        h_sf.addWidget(QLabel("Max:"))
+        h_sf.addWidget(self.spin_max_object_size)
+        f_size.addRow(h_sf)
+        vbox.addWidget(g_size)
+
+        # 3. Image Pre-processing (Common) with Live Preview
         # Only shown for Background Subtraction, not YOLO
         self.g_img = QGroupBox("Image Enhancement (Pre-processing)")
         vl_img = QVBoxLayout(self.g_img)
@@ -582,6 +615,7 @@ class MainWindow(QMainWindow):
         # Background Model
         g_bg_model = QGroupBox("Background Model")
         f_bg = QFormLayout(g_bg_model)
+        f_bg.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_bg_prime = QSpinBox()
         self.spin_bg_prime.setRange(0, 5000)
         self.spin_bg_prime.setValue(10)
@@ -606,6 +640,7 @@ class MainWindow(QMainWindow):
         # Lighting Stab
         g_light = QGroupBox("Lighting Stabilization")
         f_light = QFormLayout(g_light)
+        f_light.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.chk_lighting_stab = QCheckBox("Enable Stabilization")
         self.chk_lighting_stab.setChecked(True)
         f_light.addRow(self.chk_lighting_stab)
@@ -624,6 +659,7 @@ class MainWindow(QMainWindow):
         # Morphology (Standard)
         g_morph = QGroupBox("Morphology & Noise")
         f_morph = QFormLayout(g_morph)
+        f_morph.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_morph_size = QSpinBox()
         self.spin_morph_size.setRange(1, 50)
         self.spin_morph_size.setValue(5)
@@ -738,26 +774,6 @@ class MainWindow(QMainWindow):
 
         vbox.addWidget(self.stack_detection)
 
-        # Common Size Filtering (Applies to both)
-        g_size = QGroupBox("Size Filtering")
-        f_size = QFormLayout(g_size)
-        self.chk_size_filtering = QCheckBox("Enable Size Constraints")
-        f_size.addRow(self.chk_size_filtering)
-
-        h_sf = QHBoxLayout()
-        self.spin_min_object_size = QSpinBox()
-        self.spin_min_object_size.setRange(0, 100000)
-        self.spin_min_object_size.setValue(100)
-        self.spin_max_object_size = QSpinBox()
-        self.spin_max_object_size.setRange(0, 1000000)
-        self.spin_max_object_size.setValue(5000)
-        h_sf.addWidget(QLabel("Min:"))
-        h_sf.addWidget(self.spin_min_object_size)
-        h_sf.addWidget(QLabel("Max:"))
-        h_sf.addWidget(self.spin_max_object_size)
-        f_size.addRow(h_sf)
-        vbox.addWidget(g_size)
-
         vbox.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -776,6 +792,7 @@ class MainWindow(QMainWindow):
         # Core Params
         g_core = QGroupBox("Core Tracking Parameters")
         f_core = QFormLayout(g_core)
+        f_core.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_max_targets = QSpinBox()
         self.spin_max_targets.setRange(1, 20)
         self.spin_max_targets.setValue(4)
@@ -900,6 +917,7 @@ class MainWindow(QMainWindow):
         # Post-Processing
         g_pp = QGroupBox("Trajectory Post-Processing")
         f_pp = QFormLayout(g_pp)
+        f_pp.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.enable_postprocessing = QCheckBox("Enable Automatic Cleaning")
         self.enable_postprocessing.setChecked(True)
         f_pp.addRow(self.enable_postprocessing)
@@ -1031,9 +1049,10 @@ class MainWindow(QMainWindow):
             csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
             self.csv_line.setText(csv_path)
 
-            # Auto-populate video output
+            # Auto-populate video output and enable it
             video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
             self.video_out_line.setText(video_out_path)
+            self.check_video_output.setChecked(True)
 
             # Enable preview refresh button and load a random frame
             self.btn_refresh_preview.setEnabled(True)
@@ -1124,6 +1143,11 @@ class MainWindow(QMainWindow):
         zoom_val = value / 100.0
         self.label_zoom_val.setText(f"{zoom_val:.2f}x")
         self._update_preview_display()
+
+    def _on_video_output_toggled(self, checked):
+        """Enable/disable video output controls."""
+        self.btn_video_out.setEnabled(checked)
+        self.video_out_line.setEnabled(checked)
 
     def _update_preview_display(self):
         """Update the video display with current brightness/contrast/gamma settings."""
@@ -1849,7 +1873,9 @@ class MainWindow(QMainWindow):
             self.csv_writer_thread.start()
 
         video_output_path = (
-            self.video_out_line.text() if self.video_out_line.text() else None
+            self.video_out_line.text()
+            if (self.check_video_output.isChecked() and self.video_out_line.text())
+            else None
         )
 
         self.tracking_worker = TrackingWorker(
@@ -1993,6 +2019,11 @@ class MainWindow(QMainWindow):
                 cfg = json.load(f)
             self.file_line.setText(cfg.get("file_path", ""))
             self.csv_line.setText(cfg.get("csv_path", ""))
+            self.check_video_output.setChecked(cfg.get("video_output_enabled", False))
+            # Only override video output path if one is saved in config
+            saved_video_path = cfg.get("video_output_path", "")
+            if saved_video_path:
+                self.video_out_line.setText(saved_video_path)
 
             det_method = cfg.get("detection_method", "background_subtraction")
             self.combo_detection_method.setCurrentIndex(
@@ -2149,6 +2180,8 @@ class MainWindow(QMainWindow):
         cfg = {
             "file_path": self.file_line.text(),
             "csv_path": self.csv_line.text(),
+            "video_output_enabled": self.check_video_output.isChecked(),
+            "video_output_path": self.video_out_line.text(),
             "detection_method": (
                 "background_subtraction"
                 if self.combo_detection_method.currentIndex() == 0
