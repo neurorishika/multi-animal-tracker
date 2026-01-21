@@ -203,7 +203,9 @@ class TrackingWorker(QThread):
                     "ENABLE_CONSERVATIVE_SPLIT", True
                 ):
                     fg_mask = detector.apply_conservative_split(fg_mask)
-                meas, sizes, shapes = detector.detect_objects(fg_mask, self.frame_count)
+                meas, sizes, shapes, yolo_results = detector.detect_objects(
+                    fg_mask, self.frame_count
+                )
 
             else:  # YOLO OBB detection
                 # YOLO uses the original BGR frame directly
@@ -228,7 +230,7 @@ class TrackingWorker(QThread):
                 # No foreground mask or background for YOLO
                 fg_mask = None
                 bg_u8 = None
-                meas, sizes, shapes = detector.detect_objects(
+                meas, sizes, shapes, yolo_results = detector.detect_objects(
                     yolo_frame, self.frame_count
                 )
 
@@ -427,6 +429,7 @@ class TrackingWorker(QThread):
                 tracking_continuity,
                 fg_mask,
                 bg_u8,
+                yolo_results,
             )
             if self.video_writer:
                 self.video_writer.write(overlay)
@@ -487,8 +490,52 @@ class TrackingWorker(QThread):
         return final_theta
 
     def _draw_overlays(
-        self, overlay, p, trajectories, track_states, ids, continuity, fg, bg
+        self,
+        overlay,
+        p,
+        trajectories,
+        track_states,
+        ids,
+        continuity,
+        fg,
+        bg,
+        yolo_results=None,
     ):
+        # Draw YOLO OBB boxes if enabled and available
+        if p.get("SHOW_YOLO_OBB", False) and yolo_results is not None:
+            if (
+                hasattr(yolo_results, "obb")
+                and yolo_results.obb is not None
+                and len(yolo_results.obb) > 0
+            ):
+                obb_data = yolo_results.obb
+                for i in range(len(obb_data)):
+                    # Get the 4 corner points of the OBB
+                    corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
+                    # Draw the OBB as a polygon
+                    cv2.polylines(
+                        overlay,
+                        [corners],
+                        isClosed=True,
+                        color=(0, 255, 255),
+                        thickness=2,
+                    )
+
+                    # Optionally draw confidence score
+                    if hasattr(obb_data, "conf"):
+                        conf = obb_data.conf[i].cpu().item()
+                        cx = int(corners[:, 0].mean())
+                        cy = int(corners[:, 1].mean())
+                        cv2.putText(
+                            overlay,
+                            f"{conf:.2f}",
+                            (cx - 15, cy - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.4,
+                            (0, 255, 255),
+                            1,
+                        )
+
         if any(
             p.get(k)
             for k in [

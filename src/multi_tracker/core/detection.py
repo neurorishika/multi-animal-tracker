@@ -57,7 +57,7 @@ class ObjectDetector:
             logger.debug(
                 f"Frame {frame_count}: Too many contours ({len(cnts)}), skipping."
             )
-            return [], [], []
+            return [], [], [], None
 
         meas, sizes, shapes = [], [], []
         for c in cnts:
@@ -102,7 +102,7 @@ class ObjectDetector:
             meas = [meas[i] for i in idxs]
             shapes = [shapes[i] for i in idxs]
 
-        return meas, sizes, shapes
+        return meas, sizes, shapes, None
 
 
 class YOLOOBBDetector:
@@ -209,10 +209,11 @@ class YOLOOBBDetector:
             meas: List of measurements [cx, cy, angle] in radians
             sizes: List of detection areas
             shapes: List of (area, aspect_ratio) tuples
+            yolo_results: Raw YOLO results object for visualization (optional)
         """
         if self.model is None:
             logger.error("YOLO model not initialized")
-            return [], [], []
+            return [], [], [], None
 
         p = self.params
         conf_threshold = p.get("YOLO_CONFIDENCE_THRESHOLD", 0.25)
@@ -233,10 +234,10 @@ class YOLOOBBDetector:
             )
         except Exception as e:
             logger.error(f"YOLO inference failed on frame {frame_count}: {e}")
-            return [], [], []
+            return [], [], [], None
 
         if len(results) == 0 or results[0].obb is None or len(results[0].obb) == 0:
-            return [], [], []
+            return [], [], [], results[0] if len(results) > 0 else None
 
         # Extract OBB detections
         obb_data = results[0].obb
@@ -287,7 +288,7 @@ class YOLOOBBDetector:
         if meas:
             logger.debug(f"Frame {frame_count}: YOLO detected {len(meas)} objects")
 
-        return meas, sizes, shapes
+        return meas, sizes, shapes, results[0]
 
     def apply_conservative_split(self, fg_mask):
         """

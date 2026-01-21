@@ -964,16 +964,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(self.tab_viz)
         layout.setContentsMargins(10, 10, 10, 10)
 
-        g_overlays = QGroupBox("Video Overlays")
+        g_overlays = QGroupBox("Video Overlays - Common")
         v_ov = QVBoxLayout(g_overlays)
-
-        self.chk_show_fg = QCheckBox("Show Foreground Mask")
-        self.chk_show_fg.setChecked(True)
-        v_ov.addWidget(self.chk_show_fg)
-
-        self.chk_show_bg = QCheckBox("Show Background Model")
-        self.chk_show_bg.setChecked(True)
-        v_ov.addWidget(self.chk_show_bg)
 
         self.chk_show_circles = QCheckBox("Show Track Markers (Circles)")
         self.chk_show_circles.setChecked(True)
@@ -996,6 +988,30 @@ class MainWindow(QMainWindow):
         v_ov.addWidget(self.chk_show_state)
 
         layout.addWidget(g_overlays)
+
+        # Background Subtraction specific overlays
+        self.g_overlays_bg = QGroupBox("Video Overlays - Background Subtraction")
+        v_ov_bg = QVBoxLayout(self.g_overlays_bg)
+
+        self.chk_show_fg = QCheckBox("Show Foreground Mask")
+        self.chk_show_fg.setChecked(True)
+        v_ov_bg.addWidget(self.chk_show_fg)
+
+        self.chk_show_bg = QCheckBox("Show Background Model")
+        self.chk_show_bg.setChecked(True)
+        v_ov_bg.addWidget(self.chk_show_bg)
+
+        layout.addWidget(self.g_overlays_bg)
+
+        # YOLO specific overlays
+        self.g_overlays_yolo = QGroupBox("Video Overlays - YOLO")
+        v_ov_yolo = QVBoxLayout(self.g_overlays_yolo)
+
+        self.chk_show_yolo_obb = QCheckBox("Show YOLO OBB Detection Boxes")
+        self.chk_show_yolo_obb.setChecked(False)
+        v_ov_yolo.addWidget(self.chk_show_yolo_obb)
+
+        layout.addWidget(self.g_overlays_yolo)
 
         g_settings = QGroupBox("Display Settings")
         f_disp = QFormLayout(g_settings)
@@ -1027,6 +1043,9 @@ class MainWindow(QMainWindow):
         # Show image adjustments only for Background Subtraction (index 0)
         is_background_subtraction = index == 0
         self.g_img.setVisible(is_background_subtraction)
+        # Show/hide method-specific overlay groups
+        self.g_overlays_bg.setVisible(is_background_subtraction)
+        self.g_overlays_yolo.setVisible(not is_background_subtraction)
         # Refresh preview to show correct mode
         self._update_preview_display()
         self.on_detection_method_changed(index)
@@ -1986,6 +2005,7 @@ class MainWindow(QMainWindow):
             "SHOW_BG": self.chk_show_bg.isChecked(),
             "SHOW_CIRCLES": self.chk_show_circles.isChecked(),
             "SHOW_ORIENTATION": self.chk_show_orientation.isChecked(),
+            "SHOW_YOLO_OBB": self.chk_show_yolo_obb.isChecked(),
             "SHOW_TRAJECTORIES": self.chk_show_trajectories.isChecked(),
             "SHOW_LABELS": self.chk_show_labels.isChecked(),
             "SHOW_STATE": self.chk_show_state.isChecked(),
@@ -2125,6 +2145,7 @@ class MainWindow(QMainWindow):
             self.chk_show_bg.setChecked(cfg.get("show_bg", True))
             self.chk_show_circles.setChecked(cfg.get("show_circles", True))
             self.chk_show_orientation.setChecked(cfg.get("show_orientation", True))
+            self.chk_show_yolo_obb.setChecked(cfg.get("show_yolo_obb", False))
             self.chk_show_trajectories.setChecked(cfg.get("show_trajectories", True))
             self.chk_show_labels.setChecked(cfg.get("show_labels", True))
             self.chk_show_state.setChecked(cfg.get("show_state", True))
@@ -2244,6 +2265,7 @@ class MainWindow(QMainWindow):
             "show_bg": self.chk_show_bg.isChecked(),
             "show_circles": self.chk_show_circles.isChecked(),
             "show_orientation": self.chk_show_orientation.isChecked(),
+            "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
             "show_trajectories": self.chk_show_trajectories.isChecked(),
             "show_labels": self.chk_show_labels.isChecked(),
             "show_state": self.chk_show_state.isChecked(),
