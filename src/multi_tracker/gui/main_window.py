@@ -566,10 +566,10 @@ class MainWindow(QMainWindow):
 
         h_sf = QHBoxLayout()
         self.spin_min_object_size = QSpinBox()
-        self.spin_min_object_size.setRange(0, 100000)
+        self.spin_min_object_size.setRange(0, 10000)
         self.spin_min_object_size.setValue(100)
         self.spin_max_object_size = QSpinBox()
-        self.spin_max_object_size.setRange(0, 1000000)
+        self.spin_max_object_size.setRange(100, 100000)
         self.spin_max_object_size.setValue(5000)
         h_sf.addWidget(QLabel("Min:"))
         h_sf.addWidget(self.spin_min_object_size)
@@ -695,6 +695,7 @@ class MainWindow(QMainWindow):
 
         self.spin_lighting_median = QSpinBox()
         self.spin_lighting_median.setRange(3, 15)
+        self.spin_lighting_median.setSingleStep(2)
         self.spin_lighting_median.setValue(5)
         f_light.addRow("Median Window:", self.spin_lighting_median)
         l_bg.addWidget(g_light)
@@ -704,7 +705,8 @@ class MainWindow(QMainWindow):
         f_morph = QFormLayout(g_morph)
         f_morph.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_morph_size = QSpinBox()
-        self.spin_morph_size.setRange(1, 50)
+        self.spin_morph_size.setRange(1, 25)
+        self.spin_morph_size.setSingleStep(2)
         self.spin_morph_size.setValue(5)
         f_morph.addRow("Main Kernel Size:", self.spin_morph_size)
 
@@ -728,8 +730,11 @@ class MainWindow(QMainWindow):
 
         h_split = QHBoxLayout()
         self.spin_conservative_kernel = QSpinBox()
+        self.spin_conservative_kernel.setRange(1, 15)
+        self.spin_conservative_kernel.setSingleStep(2)
         self.spin_conservative_kernel.setValue(3)
         self.spin_conservative_erode = QSpinBox()
+        self.spin_conservative_erode.setRange(1, 10)
         self.spin_conservative_erode.setValue(1)
         h_split.addWidget(QLabel("K-Size:"))
         h_split.addWidget(self.spin_conservative_kernel)
@@ -747,8 +752,11 @@ class MainWindow(QMainWindow):
 
         h_dil = QHBoxLayout()
         self.spin_dilation_kernel_size = QSpinBox()
+        self.spin_dilation_kernel_size.setRange(1, 15)
+        self.spin_dilation_kernel_size.setSingleStep(2)
         self.spin_dilation_kernel_size.setValue(3)
         self.spin_dilation_iterations = QSpinBox()
+        self.spin_dilation_iterations.setRange(1, 10)
         self.spin_dilation_iterations.setValue(2)
         h_dil.addWidget(QLabel("K-Size:"))
         h_dil.addWidget(self.spin_dilation_kernel_size)
@@ -847,6 +855,7 @@ class MainWindow(QMainWindow):
         f_core.addRow("Max Assignment Distance:", self.spin_max_dist)
 
         self.spin_continuity_thresh = QSpinBox()
+        self.spin_continuity_thresh.setRange(1, 100)
         self.spin_continuity_thresh.setValue(10)
         f_core.addRow("Continuity Threshold:", self.spin_continuity_thresh)
 
@@ -875,11 +884,13 @@ class MainWindow(QMainWindow):
 
         row1 = QHBoxLayout()
         self.spin_Wp = QDoubleSpinBox()
+        self.spin_Wp.setRange(0.0, 10.0)
         self.spin_Wp.setValue(1.0)
         row1.addWidget(QLabel("Position:"))
         row1.addWidget(self.spin_Wp)
 
         self.spin_Wo = QDoubleSpinBox()
+        self.spin_Wo.setRange(0.0, 10.0)
         self.spin_Wo.setValue(1.0)
         row1.addWidget(QLabel("Orientation:"))
         row1.addWidget(self.spin_Wo)
@@ -887,6 +898,7 @@ class MainWindow(QMainWindow):
 
         row2 = QHBoxLayout()
         self.spin_Wa = QDoubleSpinBox()
+        self.spin_Wa.setRange(0.0, 1.0)
         self.spin_Wa.setSingleStep(0.001)
         self.spin_Wa.setDecimals(4)
         self.spin_Wa.setValue(0.001)
@@ -894,6 +906,7 @@ class MainWindow(QMainWindow):
         row2.addWidget(self.spin_Wa)
 
         self.spin_Wasp = QDoubleSpinBox()
+        self.spin_Wasp.setRange(0.0, 10.0)
         self.spin_Wasp.setValue(0.1)
         row2.addWidget(QLabel("Aspect Ratio:"))
         row2.addWidget(self.spin_Wasp)
@@ -936,6 +949,7 @@ class MainWindow(QMainWindow):
         f_misc = QFormLayout(g_misc)
 
         self.spin_velocity = QDoubleSpinBox()
+        self.spin_velocity.setRange(0.1, 50.0)
         self.spin_velocity.setValue(2.0)
         f_misc.addRow("Motion Velocity Threshold:", self.spin_velocity)
 
@@ -954,10 +968,12 @@ class MainWindow(QMainWindow):
         f_lifecycle = QFormLayout(g_lifecycle)
 
         self.spin_lost_thresh = QSpinBox()
+        self.spin_lost_thresh.setRange(1, 100)
         self.spin_lost_thresh.setValue(10)
         f_lifecycle.addRow("Lost Frames Threshold:", self.spin_lost_thresh)
 
         self.spin_min_respawn_distance = QSpinBox()
+        self.spin_min_respawn_distance.setRange(0, 1000)
         self.spin_min_respawn_distance.setValue(50)
         f_lifecycle.addRow("Min Respawn Distance:", self.spin_min_respawn_distance)
         vbox.addWidget(g_lifecycle)
@@ -966,14 +982,17 @@ class MainWindow(QMainWindow):
         g_stab = QGroupBox("Initialization Stability")
         f_stab = QFormLayout(g_stab)
         self.spin_min_detections_to_start = QSpinBox()
+        self.spin_min_detections_to_start.setRange(1, 50)
         self.spin_min_detections_to_start.setValue(1)
         f_stab.addRow("Min Detections to Start:", self.spin_min_detections_to_start)
 
         self.spin_min_detect = QSpinBox()
+        self.spin_min_detect.setRange(1, 500)
         self.spin_min_detect.setValue(10)
         f_stab.addRow("Min Detect Frames:", self.spin_min_detect)
 
         self.spin_min_track = QSpinBox()
+        self.spin_min_track.setRange(1, 500)
         self.spin_min_track.setValue(10)
         f_stab.addRow("Min Tracking Frames:", self.spin_min_track)
         vbox.addWidget(g_stab)
@@ -1095,6 +1114,7 @@ class MainWindow(QMainWindow):
         g_settings = QGroupBox("Display Settings")
         f_disp = QFormLayout(g_settings)
         self.spin_traj_hist = QSpinBox()
+        self.spin_traj_hist.setRange(1, 60)
         self.spin_traj_hist.setValue(5)
         f_disp.addRow("Trail History (sec):", self.spin_traj_hist)
         layout.addWidget(g_settings)
