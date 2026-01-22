@@ -16,6 +16,9 @@ dependencies:
   - opencv
   - scikit-image
   
+  # Efficiency
+  - numba
+  
   # GUI framework (Qt5 only, no Qt6)
   - pyside2=5.15.*
   - qt=5.15.*
