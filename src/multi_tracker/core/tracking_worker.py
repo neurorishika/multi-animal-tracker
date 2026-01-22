@@ -4,6 +4,8 @@ This is the main orchestrator, functionally identical to the original.
 """
 
 import sys, time, gc, math, logging, os, random
+from datetime import datetime
+from pathlib import Path
 import numpy as np
 import cv2
 from collections import deque
@@ -87,14 +89,45 @@ class TrackingWorker(QThread):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.frame_signal.emit(rgb)
 
+    def setup_file_logging(self, video_path):
+        """Set up timestamped file logging in the same directory as the video."""
+        video_path = Path(video_path)
+        log_dir = video_path.parent
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"{video_path.stem}_tracking_{timestamp}.log"
+        log_path = log_dir / log_filename
+
+        # Create file handler with timestamp
+        file_handler = logging.FileHandler(log_path, mode="w")
+        file_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        file_handler.setFormatter(formatter)
+
+        # Add handler to root logger so all modules write to this file
+        root_logger = logging.getLogger()
+        root_logger.addHandler(file_handler)
+
+        logger.info(f"Log file created: {log_path}")
+        return file_handler
+
     def run(self):
         # === 1. INITIALIZATION (Identical to Original) ===
         gc.collect()
         self._stop_requested = False
         p = self.get_current_params()
 
+        # Set up timestamped file logging
+        file_handler = self.setup_file_logging(self.video_path)
+
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
+            logger.error(f"Failed to open video: {self.video_path}")
+            # Clean up file logging handler
+            root_logger = logging.getLogger()
+            root_logger.removeHandler(file_handler)
+            file_handler.close()
             self.finished_signal.emit(True, [], [])
             return
 
@@ -536,6 +569,12 @@ class TrackingWorker(QThread):
             self.video_writer.release()
 
         logger.info("Tracking worker finished. Emitting raw trajectory data.")
+
+        # Clean up file logging handler
+        root_logger = logging.getLogger()
+        root_logger.removeHandler(file_handler)
+        file_handler.close()
+
         self.finished_signal.emit(
             not self._stop_requested, fps_list, self.trajectories_full
         )
