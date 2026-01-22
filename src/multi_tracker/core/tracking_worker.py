@@ -142,6 +142,7 @@ class TrackingWorker(QThread):
 
         start_time, self.frame_count, fps_list = time.time(), 0, []
         local_counts, intensity_history, lighting_state = [0] * N, deque(maxlen=50), {}
+        roi_fill_color = None  # Average color outside ROI for YOLO masking
 
         # === 2. FRAME PROCESSING LOOP (Identical Flow to Original) ===
         for frame, _ in self._forward_frame_iterator(cap):
@@ -161,23 +162,41 @@ class TrackingWorker(QThread):
 
             detection_method = params.get("DETECTION_METHOD", "background_subtraction")
 
+            # Prepare ROI masks once for both detection and visualization
+            ROI_mask = params.get("ROI_MASK", None)
+            ROI_mask_current = None
+            ROI_mask_3ch = None
+            mask_inv_3ch = None
+
+            if ROI_mask is not None:
+                ROI_mask_current = (
+                    cv2.resize(
+                        ROI_mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST
+                    )
+                    if resize_f != 1.0
+                    else ROI_mask
+                )
+                # Calculate fill color on first frame if not yet done
+                if roi_fill_color is None:
+                    mask_inv = ROI_mask_current == 0
+                    outside_pixels = frame[mask_inv]
+                    if len(outside_pixels) > 0:
+                        roi_fill_color = np.mean(outside_pixels, axis=0).astype(
+                            np.uint8
+                        )
+                    else:
+                        roi_fill_color = np.array([0, 0, 0], dtype=np.uint8)
+
+                # Pre-compute 3-channel masks for reuse
+                ROI_mask_3ch = cv2.cvtColor(ROI_mask_current, cv2.COLOR_GRAY2BGR)
+                mask_inv_3ch = cv2.bitwise_not(ROI_mask_3ch)
+
             if detection_method == "background_subtraction":
                 # Background subtraction detection pipeline
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 gray = apply_image_adjustments(
                     gray, params["BRIGHTNESS"], params["CONTRAST"], params["GAMMA"]
                 )
-
-                ROI_mask = params.get("ROI_MASK", None)
-                ROI_mask_current = None
-                if ROI_mask is not None:
-                    ROI_mask_current = (
-                        cv2.resize(
-                            ROI_mask, (gray.shape[1], gray.shape[0]), cv2.INTER_NEAREST
-                        )
-                        if resize_f != 1.0
-                        else ROI_mask
-                    )
 
                 if params.get("ENABLE_LIGHTING_STABILIZATION", True):
                     gray, intensity_history, _ = stabilize_lighting(
@@ -199,7 +218,7 @@ class TrackingWorker(QThread):
 
                 fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
 
-                # Apply ROI mask to foreground mask (not to gray frame)
+                # Apply ROI mask to foreground mask
                 if ROI_mask_current is not None:
                     fg_mask = cv2.bitwise_and(fg_mask, fg_mask, mask=ROI_mask_current)
                 if detection_initialized and params.get(
@@ -212,23 +231,13 @@ class TrackingWorker(QThread):
 
             else:  # YOLO OBB detection
                 # YOLO uses the original BGR frame directly
-                # Apply ROI mask to frame before YOLO detection (mask out areas outside ROI)
-                ROI_mask = params.get("ROI_MASK", None)
                 yolo_frame = frame.copy()
-                if ROI_mask is not None:
-                    ROI_mask_current = (
-                        cv2.resize(
-                            ROI_mask,
-                            (frame.shape[1], frame.shape[0]),
-                            cv2.INTER_NEAREST,
-                        )
-                        if resize_f != 1.0
-                        else ROI_mask
-                    )
-                    # Create a 3-channel mask for BGR frame
-                    ROI_mask_3ch = cv2.cvtColor(ROI_mask_current, cv2.COLOR_GRAY2BGR)
-                    # Apply mask: areas outside ROI become black
+                if ROI_mask_current is not None:
+                    # Reuse pre-computed masks
                     yolo_frame = cv2.bitwise_and(yolo_frame, ROI_mask_3ch)
+                    background = np.full_like(frame, roi_fill_color)
+                    background = cv2.bitwise_and(background, mask_inv_3ch)
+                    yolo_frame = cv2.add(yolo_frame, background)
 
                 # No foreground mask or background for YOLO
                 fg_mask = None
@@ -250,22 +259,14 @@ class TrackingWorker(QThread):
 
             overlay = frame.copy()
 
-            # Apply ROI mask to base overlay (black out non-ROI areas)
-            # This happens before drawing overlays so visualizations remain fully visible
-            ROI_mask = params.get("ROI_MASK", None)
-            if ROI_mask is not None:
-                resize_f = params["RESIZE_FACTOR"]
-                ROI_mask_current = (
-                    cv2.resize(
-                        ROI_mask,
-                        (overlay.shape[1], overlay.shape[0]),
-                        cv2.INTER_NEAREST,
-                    )
-                    if resize_f != 1.0
-                    else ROI_mask
-                )
-                # Create 3-channel mask and apply to BGR overlay
-                ROI_mask_3ch = cv2.cvtColor(ROI_mask_current, cv2.COLOR_GRAY2BGR)
+            # Apply ROI mask to base overlay - reuse pre-computed masks
+            if ROI_mask_current is not None and roi_fill_color is not None:
+                overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
+                background = np.full_like(overlay, roi_fill_color)
+                background = cv2.bitwise_and(background, mask_inv_3ch)
+                overlay = cv2.add(overlay, background)
+            elif ROI_mask_current is not None:
+                # Fallback to black if color not yet calculated
                 overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
 
             hist_velocities = []
