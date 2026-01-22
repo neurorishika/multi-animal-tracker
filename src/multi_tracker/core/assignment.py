@@ -7,7 +7,88 @@ import numpy as np
 import logging
 from scipy.optimize import linear_sum_assignment
 
+try:
+    from numba import njit
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+    # Fallback decorator that does nothing
+    def njit(*args, **kwargs):
+        def decorator(func):
+            return func
+        return decorator
+
 logger = logging.getLogger(__name__)
+
+
+@njit(cache=True, fastmath=True)
+def _compute_cost_matrix_numba(
+    N, M, meas_pos, meas_ori, pred_pos, pred_ori, 
+    shapes_area, shapes_asp, prev_areas, prev_asps,
+    covariances_arr, use_maha, Wp, Wo, Wa, Wasp, cull_threshold
+):
+    """Numba-compiled cost matrix computation for maximum speed."""
+    cost = np.zeros((N, M), dtype=np.float32)
+    
+    for i in range(N):
+        # Position cost
+        if use_maha:
+            Pcov = covariances_arr[i]
+            try:
+                invP = np.linalg.inv(Pcov)
+                # Mahalanobis distance for all measurements
+                for j in range(M):
+                    diff = meas_pos[j] - pred_pos[i]
+                    pos_cost_j = np.sqrt(diff @ invP @ diff)
+                    
+                    # Early exit for distant measurements
+                    if pos_cost_j > cull_threshold:
+                        cost[i, j] = Wp * pos_cost_j
+                        continue
+                    
+                    # Orientation cost
+                    odiff = abs(pred_ori[i] - meas_ori[j])
+                    odiff = min(odiff, 2 * np.pi - odiff)
+                    
+                    # Shape costs
+                    area_diff = abs(shapes_area[j] - prev_areas[i])
+                    asp_diff = abs(shapes_asp[j] - prev_asps[i])
+                    
+                    cost[i, j] = Wp * pos_cost_j + Wo * odiff + Wa * area_diff + Wasp * asp_diff
+            except:
+                # Fallback to Euclidean if inversion fails
+                for j in range(M):
+                    diff = meas_pos[j] - pred_pos[i]
+                    pos_cost_j = np.sqrt(diff[0]**2 + diff[1]**2)
+                    
+                    if pos_cost_j > cull_threshold:
+                        cost[i, j] = Wp * pos_cost_j
+                        continue
+                    
+                    odiff = abs(pred_ori[i] - meas_ori[j])
+                    odiff = min(odiff, 2 * np.pi - odiff)
+                    area_diff = abs(shapes_area[j] - prev_areas[i])
+                    asp_diff = abs(shapes_asp[j] - prev_asps[i])
+                    
+                    cost[i, j] = Wp * pos_cost_j + Wo * odiff + Wa * area_diff + Wasp * asp_diff
+        else:
+            # Euclidean distance
+            for j in range(M):
+                diff = meas_pos[j] - pred_pos[i]
+                pos_cost_j = np.sqrt(diff[0]**2 + diff[1]**2)
+                
+                if pos_cost_j > cull_threshold:
+                    cost[i, j] = Wp * pos_cost_j
+                    continue
+                
+                odiff = abs(pred_ori[i] - meas_ori[j])
+                odiff = min(odiff, 2 * np.pi - odiff)
+                area_diff = abs(shapes_area[j] - prev_areas[i])
+                asp_diff = abs(shapes_asp[j] - prev_asps[i])
+                
+                cost[i, j] = Wp * pos_cost_j + Wo * odiff + Wa * area_diff + Wasp * asp_diff
+    
+    return cost
 
 
 class TrackAssigner:
@@ -29,7 +110,7 @@ class TrackAssigner:
         if M == 0:
             return np.zeros((N, 0), np.float32)
 
-        cost = np.zeros((N, M), np.float32)
+        # Extract parameters
         Wp, Wo, Wa, Wasp = (
             p["W_POSITION"],
             p["W_ORIENTATION"],
@@ -37,23 +118,59 @@ class TrackAssigner:
             p["W_ASPECT"],
         )
         use_maha = p["USE_MAHALANOBIS"]
+        MAX_DIST = p.get("MAX_DISTANCE_THRESHOLD", 1000.0)
+        cull_threshold = MAX_DIST / Wp if Wp > 0 else float("inf")
 
-        # Pre-extract arrays to avoid repeated indexing
+        # Pre-extract arrays for Numba
         meas_pos = np.array([m[:2] for m in measurements], dtype=np.float32)  # (M, 2)
         meas_ori = np.array([m[2] for m in measurements], dtype=np.float32)  # (M,)
         pred_pos = np.array([p[:2] for p in predictions], dtype=np.float32)  # (N, 2)
         pred_ori = np.array([p[2] for p in predictions], dtype=np.float32)  # (N,)
         shapes_area = np.array([s[0] for s in shapes], dtype=np.float32)  # (M,)
         shapes_asp = np.array([s[1] for s in shapes], dtype=np.float32)  # (M,)
+        
+        # Extract previous shapes as arrays
+        prev_areas = np.array([
+            last_shape_info[i][0] if last_shape_info[i] is not None else shapes[0][0]
+            for i in range(N)
+        ], dtype=np.float32)
+        prev_asps = np.array([
+            last_shape_info[i][1] if last_shape_info[i] is not None else shapes[0][1]
+            for i in range(N)
+        ], dtype=np.float32)
+        
+        # Convert covariances list to 3D array for Numba
+        covariances_arr = np.array(covariances, dtype=np.float32)  # (N, 2, 2)
+        
+        # Call Numba-compiled function
+        if NUMBA_AVAILABLE:
+            cost = _compute_cost_matrix_numba(
+                N, M, meas_pos, meas_ori, pred_pos, pred_ori,
+                shapes_area, shapes_asp, prev_areas, prev_asps,
+                covariances_arr, use_maha, Wp, Wo, Wa, Wasp, cull_threshold
+            )
+        else:
+            # Fallback to non-Numba version
+            logger.warning("Numba not available, using slower Python implementation")
+            cost = self._compute_cost_matrix_python(
+                N, M, meas_pos, meas_ori, pred_pos, pred_ori,
+                shapes_area, shapes_asp, prev_areas, prev_asps,
+                covariances_arr, use_maha, Wp, Wo, Wa, Wasp, cull_threshold
+            )
 
-        # Distance culling threshold - skip expensive computations for distant tracks
-        MAX_DIST = p.get("MAX_DISTANCE_THRESHOLD", 1000.0)
-        cull_threshold = MAX_DIST / Wp if Wp > 0 else float("inf")
-
+        return cost
+    
+    def _compute_cost_matrix_python(
+        self, N, M, meas_pos, meas_ori, pred_pos, pred_ori,
+        shapes_area, shapes_asp, prev_areas, prev_asps,
+        covariances_arr, use_maha, Wp, Wo, Wa, Wasp, cull_threshold
+    ):
+        """Python fallback for cost matrix computation (same logic as Numba version)."""
+        cost = np.zeros((N, M), np.float32)
+        
         for i in range(N):
-            # Position cost - vectorized per track
             if use_maha:
-                Pcov = covariances[i]
+                Pcov = covariances_arr[i]
                 diff = meas_pos - pred_pos[i]  # (M, 2)
                 try:
                     invP = np.linalg.inv(Pcov)
@@ -64,26 +181,18 @@ class TrackAssigner:
                 diff = meas_pos - pred_pos[i]  # (M, 2)
                 pos_cost = np.linalg.norm(diff, axis=1)  # (M,)
 
-            # Distance culling: skip orientation/shape costs for obviously too-far measurements
             far_mask = pos_cost > cull_threshold
-
-            # Orientation cost - vectorized (only for potentially valid matches)
-            odiff = np.abs(pred_ori[i] - meas_ori)  # (M,)
+            odiff = np.abs(pred_ori[i] - meas_ori)
             odiff = np.minimum(odiff, 2 * np.pi - odiff)
-            odiff[far_mask] = 0  # Don't waste computation on far measurements
-
-            # Shape costs - vectorized (only for potentially valid matches)
-            prev_shape = (
-                last_shape_info[i] if last_shape_info[i] is not None else shapes[0]
-            )
-            area_diff = np.abs(shapes_area - prev_shape[0])  # (M,)
+            odiff[far_mask] = 0
+            
+            area_diff = np.abs(shapes_area - prev_areas[i])
             area_diff[far_mask] = 0
-            asp_diff = np.abs(shapes_asp - prev_shape[1])  # (M,)
+            asp_diff = np.abs(shapes_asp - prev_asps[i])
             asp_diff[far_mask] = 0
 
-            # Combine costs for this track
             cost[i, :] = Wp * pos_cost + Wo * odiff + Wa * area_diff + Wasp * asp_diff
-
+        
         return cost
 
     def assign_tracks(
