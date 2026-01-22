@@ -41,7 +41,7 @@ class BackgroundModel:
         idxs = random.sample(range(total), count)
         bg_temp = None
         intensity_samples = []
-        
+
         # Pre-resize ROI mask once if needed
         roi_resized = None
         if ROI_mask is not None:
@@ -51,8 +51,11 @@ class BackgroundModel:
             if ret:
                 if resize_f < 1.0:
                     sample_frame = cv2.resize(
-                        sample_frame, (0, 0), fx=resize_f, fy=resize_f, 
-                        interpolation=cv2.INTER_AREA
+                        sample_frame,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
                     )
                 gray_sample = cv2.cvtColor(sample_frame, cv2.COLOR_BGR2GRAY)
                 roi_resized = (
