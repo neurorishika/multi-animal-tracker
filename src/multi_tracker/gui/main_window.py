@@ -1868,8 +1868,15 @@ class MainWindow(QMainWindow):
             self.roi_status_label.setText(
                 f"Active ROI: {num_shapes} shape(s) ({shape_summary})"
             )
+            # Show the updated masked result
+            if self.roi_base_frame:
+                qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
+                self.video_label.setPixmap(QPixmap.fromImage(qimg_masked))
         else:
             self.roi_status_label.setText("No ROI")
+            # Show original frame without masking
+            if self.roi_base_frame:
+                self.video_label.setPixmap(QPixmap.fromImage(self.roi_base_frame))
 
         self.update_roi_preview()
 
@@ -2036,6 +2043,49 @@ class MainWindow(QMainWindow):
 
         painter.end()
         return pix.toImage()
+
+    def _apply_roi_mask_to_image(self, qimage):
+        """Apply ROI mask to darken areas outside the ROI."""
+        if self.roi_mask is None or not self.roi_shapes:
+            return qimage
+
+        # Convert QImage to numpy array
+        width = qimage.width()
+        height = qimage.height()
+
+        # Ensure image is in RGB888 format
+        if qimage.format() != QImage.Format_RGB888:
+            qimage = qimage.convertToFormat(QImage.Format_RGB888)
+
+        # Convert to numpy array using buffer protocol
+        ptr = qimage.bits()
+        if hasattr(ptr, "setsize"):
+            # Older PySide2 versions (sip.voidptr)
+            ptr.setsize(height * width * 3)
+            arr = np.array(ptr).reshape(height, width, 3)
+        else:
+            # Newer PySide2 versions (memoryview)
+            arr = np.frombuffer(ptr, dtype=np.uint8).reshape(height, width, 3)
+
+        # Create a copy to modify
+        arr_copy = arr.copy()
+
+        # Resize ROI mask to match image dimensions if needed
+        if self.roi_mask.shape != (height, width):
+            roi_resized = cv2.resize(
+                self.roi_mask, (width, height), interpolation=cv2.INTER_NEAREST
+            )
+        else:
+            roi_resized = self.roi_mask
+
+        # Darken areas outside ROI (multiply by 0.3 for 70% darkening)
+        mask_inv = roi_resized == 0
+        arr_copy[mask_inv] = (arr_copy[mask_inv] * 0.3).astype(np.uint8)
+
+        # Create new QImage from modified array
+        result = QImage(arr_copy.data, width, height, width * 3, QImage.Format_RGB888)
+        # Make a copy to ensure data persistence
+        return result.copy()
 
     @Slot(int, str)
     def on_progress_update(self, percentage, status_text):

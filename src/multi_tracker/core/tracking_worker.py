@@ -178,7 +178,6 @@ class TrackingWorker(QThread):
                         if resize_f != 1.0
                         else ROI_mask
                     )
-                    gray = cv2.bitwise_and(gray, gray, mask=ROI_mask_current)
 
                 if params.get("ENABLE_LIGHTING_STABILIZATION", True):
                     gray, intensity_history, _ = stabilize_lighting(
@@ -199,6 +198,10 @@ class TrackingWorker(QThread):
                     continue
 
                 fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
+
+                # Apply ROI mask to foreground mask (not to gray frame)
+                if ROI_mask_current is not None:
+                    fg_mask = cv2.bitwise_and(fg_mask, fg_mask, mask=ROI_mask_current)
                 if detection_initialized and params.get(
                     "ENABLE_CONSERVATIVE_SPLIT", True
                 ):
@@ -246,6 +249,24 @@ class TrackingWorker(QThread):
                 logger.info(f"Tracking initialized with {len(meas)} detections.")
 
             overlay = frame.copy()
+
+            # Apply ROI mask to base overlay (black out non-ROI areas)
+            # This happens before drawing overlays so visualizations remain fully visible
+            ROI_mask = params.get("ROI_MASK", None)
+            if ROI_mask is not None:
+                resize_f = params["RESIZE_FACTOR"]
+                ROI_mask_current = (
+                    cv2.resize(
+                        ROI_mask,
+                        (overlay.shape[1], overlay.shape[0]),
+                        cv2.INTER_NEAREST,
+                    )
+                    if resize_f != 1.0
+                    else ROI_mask
+                )
+                # Create 3-channel mask and apply to BGR overlay
+                ROI_mask_3ch = cv2.cvtColor(ROI_mask_current, cv2.COLOR_GRAY2BGR)
+                overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
 
             hist_velocities = []
             hist_sizes = []
@@ -420,6 +441,7 @@ class TrackingWorker(QThread):
                 ]
                 for tr in trajectories_pruned
             ]
+
             self._draw_overlays(
                 overlay,
                 params,
@@ -433,25 +455,6 @@ class TrackingWorker(QThread):
             )
             if self.video_writer:
                 self.video_writer.write(overlay)
-
-            # Apply ROI mask to overlay before emitting for display
-            # This shows users exactly what region is being processed
-            ROI_mask = params.get("ROI_MASK", None)
-            if ROI_mask is not None:
-                resize_f = params["RESIZE_FACTOR"]
-                ROI_mask_current = (
-                    cv2.resize(
-                        ROI_mask,
-                        (overlay.shape[1], overlay.shape[0]),
-                        cv2.INTER_NEAREST,
-                    )
-                    if resize_f != 1.0
-                    else ROI_mask
-                )
-                # Create 3-channel mask for BGR overlay
-                ROI_mask_3ch = cv2.cvtColor(ROI_mask_current, cv2.COLOR_GRAY2BGR)
-                # Apply mask to overlay for display
-                overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
 
             self.emit_frame(overlay)
 
