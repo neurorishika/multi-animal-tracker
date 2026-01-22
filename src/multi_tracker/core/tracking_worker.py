@@ -277,8 +277,10 @@ class TrackingWorker(QThread):
             if detection_initialized and meas:
                 # --- Assignment ---
                 preds = kf_manager.get_predictions()
+                # Pre-extract covariances to reduce attribute access overhead
+                covariances = [kf.errorCovPre[:2, :2] for kf in kf_manager.filters]
                 cost = assigner.compute_cost_matrix(
-                    N, meas, preds, shapes, kf_manager.filters, last_shape_info
+                    N, meas, preds, shapes, covariances, last_shape_info
                 )
                 rows, cols, free_dets, next_id, high_cost_tracks = (
                     assigner.assign_tracks(

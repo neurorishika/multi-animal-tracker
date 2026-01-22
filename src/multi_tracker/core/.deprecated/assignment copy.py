@@ -17,19 +17,20 @@ class TrackAssigner:
         self.params = params
 
     def compute_cost_matrix(
-        self, N, measurements, predictions, shapes, covariances, last_shape_info
+        self, N, measurements, predictions, shapes, kalman_filters, last_shape_info
     ):
-        """Computes cost matrix for track-detection assignment.
-
-        Args:
-            covariances: List of (2, 2) covariance matrices, one per track
-        """
+        """Computes cost matrix for track-detection assignment using vectorized operations."""
         p = self.params
         M = len(measurements)
         if M == 0:
             return np.zeros((N, 0), np.float32)
 
-        cost = np.zeros((N, M), np.float32)
+        # Convert to arrays for vectorization
+        meas_arr = np.array(measurements, dtype=np.float32)  # (M, 3)
+        pred_arr = np.array(predictions, dtype=np.float32)  # (N, 3)
+        shapes_arr = np.array(shapes, dtype=np.float32)  # (M, 2)
+
+        # Weights
         Wp, Wo, Wa, Wasp = (
             p["W_POSITION"],
             p["W_ORIENTATION"],
@@ -38,53 +39,51 @@ class TrackAssigner:
         )
         use_maha = p["USE_MAHALANOBIS"]
 
-        # Pre-extract arrays to avoid repeated indexing
-        meas_pos = np.array([m[:2] for m in measurements], dtype=np.float32)  # (M, 2)
-        meas_ori = np.array([m[2] for m in measurements], dtype=np.float32)  # (M,)
-        pred_pos = np.array([p[:2] for p in predictions], dtype=np.float32)  # (N, 2)
-        pred_ori = np.array([p[2] for p in predictions], dtype=np.float32)  # (N,)
-        shapes_area = np.array([s[0] for s in shapes], dtype=np.float32)  # (M,)
-        shapes_asp = np.array([s[1] for s in shapes], dtype=np.float32)  # (M,)
-
-        # Distance culling threshold - skip expensive computations for distant tracks
-        MAX_DIST = p.get("MAX_DISTANCE_THRESHOLD", 1000.0)
-        cull_threshold = MAX_DIST / Wp if Wp > 0 else float("inf")
-
-        for i in range(N):
-            # Position cost - vectorized per track
-            if use_maha:
-                Pcov = covariances[i]
-                diff = meas_pos - pred_pos[i]  # (M, 2)
+        # 1. Position cost - vectorized
+        if use_maha:
+            # Mahalanobis distance - compute for each track
+            pos_cost = np.zeros((N, M), dtype=np.float32)
+            for i in range(N):
+                Pcov = kalman_filters[i].errorCovPre[:2, :2]
+                diff = meas_arr[:, :2] - pred_arr[i, :2]  # (M, 2)
                 try:
                     invP = np.linalg.inv(Pcov)
-                    pos_cost = np.sqrt(np.sum(diff @ invP * diff, axis=1))  # (M,)
+                    # Vectorized Mahalanobis: sqrt(diff @ inv @ diff.T) for each measurement
+                    pos_cost[i, :] = np.sqrt(np.sum(diff @ invP * diff, axis=1))
                 except:
-                    pos_cost = np.linalg.norm(diff, axis=1)  # (M,)
-            else:
-                diff = meas_pos - pred_pos[i]  # (M, 2)
-                pos_cost = np.linalg.norm(diff, axis=1)  # (M,)
+                    # Fallback to Euclidean
+                    pos_cost[i, :] = np.linalg.norm(diff, axis=1)
+        else:
+            # Euclidean distance - fully vectorized
+            # diff shape: (N, M, 2) via broadcasting
+            diff = meas_arr[np.newaxis, :, :2] - pred_arr[:, np.newaxis, :2]
+            pos_cost = np.linalg.norm(diff, axis=2)  # (N, M)
 
-            # Distance culling: skip orientation/shape costs for obviously too-far measurements
-            far_mask = pos_cost > cull_threshold
+        # 2. Orientation cost - vectorized with circular distance
+        # diff shape: (N, M)
+        odiff = np.abs(pred_arr[:, np.newaxis, 2] - meas_arr[np.newaxis, :, 2])
+        odiff = np.minimum(odiff, 2 * np.pi - odiff)
 
-            # Orientation cost - vectorized (only for potentially valid matches)
-            odiff = np.abs(pred_ori[i] - meas_ori)  # (M,)
-            odiff = np.minimum(odiff, 2 * np.pi - odiff)
-            odiff[far_mask] = 0  # Don't waste computation on far measurements
-
-            # Shape costs - vectorized (only for potentially valid matches)
-            prev_shape = (
+        # 3. Shape costs - vectorized
+        # Get previous shapes, using current measurement shapes as fallback
+        prev_shapes = np.array(
+            [
                 last_shape_info[i] if last_shape_info[i] is not None else shapes[0]
-            )
-            area_diff = np.abs(shapes_area - prev_shape[0])  # (M,)
-            area_diff[far_mask] = 0
-            asp_diff = np.abs(shapes_asp - prev_shape[1])  # (M,)
-            asp_diff[far_mask] = 0
+                for i in range(N)
+            ],
+            dtype=np.float32,
+        )  # (N, 2)
 
-            # Combine costs for this track
-            cost[i, :] = Wp * pos_cost + Wo * odiff + Wa * area_diff + Wasp * asp_diff
+        # Area difference: (N, M)
+        area_diff = np.abs(prev_shapes[:, np.newaxis, 0] - shapes_arr[np.newaxis, :, 0])
 
-        return cost
+        # Aspect ratio difference: (N, M)
+        asp_diff = np.abs(prev_shapes[:, np.newaxis, 1] - shapes_arr[np.newaxis, :, 1])
+
+        # 4. Combine all costs
+        cost = Wp * pos_cost + Wo * odiff + Wa * area_diff + Wasp * asp_diff
+
+        return cost.astype(np.float32)
 
     def assign_tracks(
         self,
