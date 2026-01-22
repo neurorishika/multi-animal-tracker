@@ -388,20 +388,23 @@ class TrackAssigner:
         if M == 0:
             return [], [], [], next_trajectory_id
 
-        CONTINUITY_THRESHOLD = p.get("CONTINUITY_THRESHOLD", 10)
+        # Recovery search distance for lost track backward matching
+        RECOVERY_SEARCH_DISTANCE = p.get("CONTINUITY_THRESHOLD", 10)
         MAX_DIST = p["MAX_DISTANCE_THRESHOLD"]
         ENABLE_GREEDY = p.get("ENABLE_GREEDY_ASSIGNMENT", True)
         USE_GREEDY = p.get("ENABLE_GREEDY_ASSIGNMENT", False)
+
+        # Classify tracks: established (stable) vs unstable (new/recovering)
         established = [
             i
             for i in range(N)
-            if tracking_continuity[i] >= CONTINUITY_THRESHOLD
+            if tracking_continuity[i] >= RECOVERY_SEARCH_DISTANCE
             and track_states[i] != "lost"
         ]
         unstable = [
             i
             for i in range(N)
-            if tracking_continuity[i] < CONTINUITY_THRESHOLD
+            if tracking_continuity[i] < RECOVERY_SEARCH_DISTANCE
             and track_states[i] != "lost"
         ]
         lost = [i for i in range(N) if track_states[i] == "lost"]

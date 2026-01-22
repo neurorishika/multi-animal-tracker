@@ -525,7 +525,34 @@ class MainWindow(QMainWindow):
         self.spin_resize.setSingleStep(0.1)
         self.spin_resize.setValue(1.0)
         self.spin_resize.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.spin_resize.setToolTip(
+            "Downscale video frames for faster processing.\n"
+            "1.0 = full resolution, 0.5 = half resolution (4× faster).\n"
+            "All body-size-based parameters auto-scale with this value."
+        )
         fl_sys.addRow("Processing Resize Factor:", self.spin_resize)
+
+        self.spin_reference_body_size = QDoubleSpinBox()
+        self.spin_reference_body_size.setRange(1.0, 500.0)
+        self.spin_reference_body_size.setSingleStep(1.0)
+        self.spin_reference_body_size.setValue(20.0)
+        self.spin_reference_body_size.setDecimals(1)
+        self.spin_reference_body_size.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.spin_reference_body_size.setToolTip(
+            "Reference animal body diameter in pixels (at resize=1.0).\n"
+            "All distance/size parameters are scaled relative to this value."
+        )
+        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
+        fl_sys.addRow("Reference Body Size (px):", self.spin_reference_body_size)
+
+        # Info label showing calculated area
+        self.label_body_size_info = QLabel()
+        self.label_body_size_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic;"
+        )
+        fl_sys.addRow("", self.label_body_size_info)
 
         # Threads/Device hints could go here in future
         form.addWidget(g_sys)
@@ -547,7 +574,14 @@ class MainWindow(QMainWindow):
 
         # 1. Detection Method Selector
         g_method = QGroupBox("Detection Strategy")
-        l_method = QHBoxLayout(g_method)
+        l_method_outer = QVBoxLayout(g_method)
+        l_method_outer.addWidget(
+            self._create_help_label(
+                "Choose how to detect animals in each frame. Background Subtraction works by modeling "
+                "the static background and finding moving objects. YOLO uses deep learning to detect animals directly."
+            )
+        )
+        l_method = QHBoxLayout()
         self.combo_detection_method = QComboBox()
         self.combo_detection_method.addItems(["Background Subtraction", "YOLO OBB"])
         self.combo_detection_method.currentIndexChanged.connect(
@@ -556,32 +590,65 @@ class MainWindow(QMainWindow):
         l_method.addWidget(QLabel("Method:"))
         l_method.addWidget(self.combo_detection_method)
         l_method.addStretch()
+        l_method_outer.addLayout(l_method)
         vbox.addWidget(g_method)
 
         # 2. Common Size Filtering (Applies to both methods)
         g_size = QGroupBox("Size Filtering")
-        f_size = QFormLayout(g_size)
+        vl_size = QVBoxLayout(g_size)
+        vl_size.addWidget(
+            self._create_help_label(
+                "Filter detections by size relative to your reference body size. This removes noise (too small) "
+                "and erroneous clusters (too large). Most effective when animals are similar size."
+            )
+        )
+        f_size = QFormLayout()
         self.chk_size_filtering = QCheckBox("Enable Size Constraints")
+        self.chk_size_filtering.setToolTip(
+            "Filter detected objects by area to remove noise and artifacts.\n"
+            "Recommended: Enable for cleaner tracking."
+        )
         f_size.addRow(self.chk_size_filtering)
 
         h_sf = QHBoxLayout()
-        self.spin_min_object_size = QSpinBox()
-        self.spin_min_object_size.setRange(0, 10000)
-        self.spin_min_object_size.setValue(100)
-        self.spin_max_object_size = QSpinBox()
-        self.spin_max_object_size.setRange(100, 100000)
-        self.spin_max_object_size.setValue(5000)
-        h_sf.addWidget(QLabel("Min:"))
+        self.spin_min_object_size = QDoubleSpinBox()
+        self.spin_min_object_size.setRange(0.1, 5.0)
+        self.spin_min_object_size.setSingleStep(0.1)
+        self.spin_min_object_size.setDecimals(1)
+        self.spin_min_object_size.setValue(0.3)
+        self.spin_min_object_size.setToolTip(
+            "Minimum object area as multiple of reference body area.\n"
+            "Filters out small noise/artifacts.\n"
+            "Recommended: 0.2-0.5× (allows partial occlusion)"
+        )
+        self.spin_max_object_size = QDoubleSpinBox()
+        self.spin_max_object_size.setRange(0.5, 10.0)
+        self.spin_max_object_size.setSingleStep(0.1)
+        self.spin_max_object_size.setDecimals(1)
+        self.spin_max_object_size.setValue(3.0)
+        self.spin_max_object_size.setToolTip(
+            "Maximum object area as multiple of reference body area.\n"
+            "Filters out large clusters or artifacts.\n"
+            "Recommended: 2-4× (handles overlapping animals)"
+        )
+        h_sf.addWidget(QLabel("Min (×body):"))
         h_sf.addWidget(self.spin_min_object_size)
-        h_sf.addWidget(QLabel("Max:"))
+        h_sf.addWidget(QLabel("Max (×body):"))
         h_sf.addWidget(self.spin_max_object_size)
         f_size.addRow(h_sf)
+        vl_size.addLayout(f_size)
         vbox.addWidget(g_size)
 
         # 3. Image Pre-processing (Common) with Live Preview
         # Only shown for Background Subtraction, not YOLO
         self.g_img = QGroupBox("Image Enhancement (Pre-processing)")
         vl_img = QVBoxLayout(self.g_img)
+        vl_img.addWidget(
+            self._create_help_label(
+                "Adjust image properties before detection to improve contrast between animals and background. "
+                "Start with default values and adjust only if animals are hard to distinguish."
+            )
+        )
 
         # Brightness slider
         bright_layout = QVBoxLayout()
@@ -599,6 +666,11 @@ class MainWindow(QMainWindow):
         self.slider_brightness.setTickPosition(QSlider.TicksBelow)
         self.slider_brightness.setTickInterval(50)
         self.slider_brightness.valueChanged.connect(self._on_brightness_changed)
+        self.slider_brightness.setToolTip(
+            "Adjust overall image brightness.\n"
+            "Positive = lighter, Negative = darker.\n"
+            "Use to improve contrast between animals and background."
+        )
         bright_layout.addWidget(self.slider_brightness)
         vl_img.addLayout(bright_layout)
 
@@ -618,6 +690,11 @@ class MainWindow(QMainWindow):
         self.slider_contrast.setTickPosition(QSlider.TicksBelow)
         self.slider_contrast.setTickInterval(50)
         self.slider_contrast.valueChanged.connect(self._on_contrast_changed)
+        self.slider_contrast.setToolTip(
+            "Adjust image contrast (difference between light and dark).\n"
+            "1.0 = original, >1.0 = more contrast, <1.0 = less contrast.\n"
+            "Increase to make animals stand out from background."
+        )
         contrast_layout.addWidget(self.slider_contrast)
         vl_img.addLayout(contrast_layout)
 
@@ -637,12 +714,22 @@ class MainWindow(QMainWindow):
         self.slider_gamma.setTickPosition(QSlider.TicksBelow)
         self.slider_gamma.setTickInterval(50)
         self.slider_gamma.valueChanged.connect(self._on_gamma_changed)
+        self.slider_gamma.setToolTip(
+            "Adjust gamma correction (mid-tone brightness).\n"
+            "1.0 = original, >1.0 = brighter mid-tones, <1.0 = darker mid-tones.\n"
+            "Use to enhance detail in shadowed or bright areas."
+        )
         gamma_layout.addWidget(self.slider_gamma)
         vl_img.addLayout(gamma_layout)
 
         # Dark on light checkbox
         self.chk_dark_on_light = QCheckBox("Dark Animals on Light Background")
         self.chk_dark_on_light.setChecked(True)
+        self.chk_dark_on_light.setToolTip(
+            "Check if animals are darker than background (most common).\n"
+            "Uncheck if animals are lighter than background.\n"
+            "This inverts the foreground detection."
+        )
         vl_img.addWidget(self.chk_dark_on_light)
 
         vbox.addWidget(self.g_img)
@@ -654,6 +741,12 @@ class MainWindow(QMainWindow):
         page_bg = QWidget()
         l_bg = QVBoxLayout(page_bg)
         l_bg.setContentsMargins(0, 0, 0, 0)
+        l_bg.addWidget(
+            self._create_help_label(
+                "Background subtraction identifies moving animals by comparing each frame to a learned background model. "
+                "Start with defaults and increase threshold if you see too much noise, decrease if animals are missed."
+            )
+        )
 
         # Background Model
         g_bg_model = QGroupBox("Background Model")
@@ -662,21 +755,42 @@ class MainWindow(QMainWindow):
         self.spin_bg_prime = QSpinBox()
         self.spin_bg_prime.setRange(0, 5000)
         self.spin_bg_prime.setValue(10)
+        self.spin_bg_prime.setToolTip(
+            "Number of initial frames to build background model.\n"
+            "Recommended: 10-100 frames.\n"
+            "Use more if background varies or animals are present initially."
+        )
         f_bg.addRow("Priming Frames:", self.spin_bg_prime)
 
         self.chk_adaptive_bg = QCheckBox("Adaptive Background (Update over time)")
         self.chk_adaptive_bg.setChecked(True)
+        self.chk_adaptive_bg.setToolTip(
+            "Continuously update background model during tracking.\n"
+            "Recommended: Enable for videos with changing lighting.\n"
+            "Disable for static background to improve performance."
+        )
         f_bg.addRow(self.chk_adaptive_bg)
 
         self.spin_bg_learning = QDoubleSpinBox()
         self.spin_bg_learning.setRange(0.0001, 0.1)
         self.spin_bg_learning.setDecimals(4)
         self.spin_bg_learning.setValue(0.001)
+        self.spin_bg_learning.setToolTip(
+            "How quickly background adapts to changes (0.0001-0.1).\n"
+            "Lower = slower adaptation (stable, good for mostly static background).\n"
+            "Higher = faster adaptation (use for variable lighting/shadows)."
+        )
         f_bg.addRow("Learning Rate:", self.spin_bg_learning)
 
         self.spin_threshold = QSpinBox()
         self.spin_threshold.setRange(0, 255)
         self.spin_threshold.setValue(50)
+        self.spin_threshold.setToolTip(
+            "Pixel intensity difference to detect foreground (0-255).\n"
+            "Lower = more sensitive (detects subtle animals, more noise).\n"
+            "Higher = less sensitive (cleaner, may miss animals).\n"
+            "Recommended: 30-70 depending on contrast."
+        )
         f_bg.addRow("Subtraction Threshold:", self.spin_threshold)
         l_bg.addWidget(g_bg_model)
 
@@ -686,46 +800,101 @@ class MainWindow(QMainWindow):
         f_light.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.chk_lighting_stab = QCheckBox("Enable Stabilization")
         self.chk_lighting_stab.setChecked(True)
+        self.chk_lighting_stab.setToolTip(
+            "Compensate for gradual lighting changes over time.\n"
+            "Recommended: Enable for videos with variable lighting.\n"
+            "Disable for consistent illumination to improve speed."
+        )
         f_light.addRow(self.chk_lighting_stab)
 
         self.spin_lighting_smooth = QDoubleSpinBox()
         self.spin_lighting_smooth.setRange(0.8, 0.999)
         self.spin_lighting_smooth.setValue(0.95)
+        self.spin_lighting_smooth.setToolTip(
+            "Temporal smoothing factor for lighting correction (0.8-0.999).\n"
+            "Higher = smoother, slower adaptation to lighting changes.\n"
+            "Lower = faster response to sudden lighting shifts.\n"
+            "Recommended: 0.9-0.98"
+        )
         f_light.addRow("Smooth Factor:", self.spin_lighting_smooth)
 
         self.spin_lighting_median = QSpinBox()
         self.spin_lighting_median.setRange(3, 15)
         self.spin_lighting_median.setSingleStep(2)
         self.spin_lighting_median.setValue(5)
+        self.spin_lighting_median.setToolTip(
+            "Median filter window size (odd number, 3-15).\n"
+            "Larger window = smoother lighting estimate, slower response.\n"
+            "Smaller window = faster response, less smoothing.\n"
+            "Recommended: 5-9"
+        )
         f_light.addRow("Median Window:", self.spin_lighting_median)
         l_bg.addWidget(g_light)
 
         # Morphology (Standard)
         g_morph = QGroupBox("Morphology & Noise")
-        f_morph = QFormLayout(g_morph)
+        vl_morph = QVBoxLayout(g_morph)
+        vl_morph.addWidget(
+            self._create_help_label(
+                "Clean up detected blobs using morphological operations. Closing fills small holes, opening removes "
+                "small noise. Larger kernels = stronger effect but may distort shape. Use odd numbers only."
+            )
+        )
+        f_morph = QFormLayout()
         f_morph.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_morph_size = QSpinBox()
         self.spin_morph_size.setRange(1, 25)
         self.spin_morph_size.setSingleStep(2)
         self.spin_morph_size.setValue(5)
+        self.spin_morph_size.setToolTip(
+            "Morphological operation kernel size (odd number, 1-25).\n"
+            "Larger = more aggressive noise removal, may merge nearby animals.\n"
+            "Smaller = preserves detail, may leave noise.\n"
+            "Recommended: 3-7 for typical tracking scenarios."
+        )
         f_morph.addRow("Main Kernel Size:", self.spin_morph_size)
 
         self.spin_min_contour = QSpinBox()
         self.spin_min_contour.setRange(0, 100000)
         self.spin_min_contour.setValue(50)
+        self.spin_min_contour.setToolTip(
+            "Minimum contour area in pixels² to keep.\n"
+            "Filters out small noise blobs after morphology.\n"
+            "Recommended: 20-100 depending on animal size and zoom.\n"
+            "Note: Similar to min object size but in absolute pixels."
+        )
         f_morph.addRow("Min Contour Area:", self.spin_min_contour)
 
         self.spin_max_contour_multiplier = QSpinBox()
         self.spin_max_contour_multiplier.setRange(5, 100)
         self.spin_max_contour_multiplier.setValue(20)
+        self.spin_max_contour_multiplier.setToolTip(
+            "Maximum contour area as multiplier of minimum (5-100).\n"
+            "Max area = min_contour × this multiplier.\n"
+            "Filters out very large blobs (clusters, shadows, artifacts).\n"
+            "Recommended: 10-30"
+        )
         f_morph.addRow("Max Contour Multiplier:", self.spin_max_contour_multiplier)
+        vl_morph.addLayout(f_morph)
         l_bg.addWidget(g_morph)
 
         # Morphology (Advanced/Splitting)
         g_split = QGroupBox("Advanced Separation")
-        f_split = QFormLayout(g_split)
+        vl_split = QVBoxLayout(g_split)
+        vl_split.addWidget(
+            self._create_help_label(
+                "Split touching animals using erosion/dilation. Conservative split uses watershed, aggressive uses "
+                "multi-stage erosion/dilation. Enable only if animals frequently touch."
+            )
+        )
+        f_split = QFormLayout()
         self.chk_conservative_split = QCheckBox("Conservative Splitting (Erosion)")
         self.chk_conservative_split.setChecked(True)
+        self.chk_conservative_split.setToolTip(
+            "Use erosion to separate touching animals more conservatively.\n"
+            "Recommended: Enable to avoid over-splitting single animals.\n"
+            "Disable for aggressive separation of tightly clustered animals."
+        )
         f_split.addRow(self.chk_conservative_split)
 
         h_split = QHBoxLayout()
@@ -733,9 +902,19 @@ class MainWindow(QMainWindow):
         self.spin_conservative_kernel.setRange(1, 15)
         self.spin_conservative_kernel.setSingleStep(2)
         self.spin_conservative_kernel.setValue(3)
+        self.spin_conservative_kernel.setToolTip(
+            "Erosion kernel size (odd number, 1-15).\n"
+            "Larger = more aggressive separation.\n"
+            "Recommended: 3-5"
+        )
         self.spin_conservative_erode = QSpinBox()
         self.spin_conservative_erode.setRange(1, 10)
         self.spin_conservative_erode.setValue(1)
+        self.spin_conservative_erode.setToolTip(
+            "Number of erosion iterations (1-10).\n"
+            "More iterations = stronger separation effect.\n"
+            "Recommended: 1-2"
+        )
         h_split.addWidget(QLabel("K-Size:"))
         h_split.addWidget(self.spin_conservative_kernel)
         h_split.addWidget(QLabel("Iters:"))
@@ -745,9 +924,20 @@ class MainWindow(QMainWindow):
         self.spin_merge_threshold = QSpinBox()
         self.spin_merge_threshold.setRange(100, 10000)
         self.spin_merge_threshold.setValue(1000)
+        self.spin_merge_threshold.setToolTip(
+            "Maximum area (px²) of small blobs to merge with nearby animals.\n"
+            "Helps reconnect fragmented detections.\n"
+            "Lower = merge more aggressively, Higher = keep fragments separate.\n"
+            "Recommended: 500-2000"
+        )
         f_split.addRow("Merge Area Threshold:", self.spin_merge_threshold)
 
         self.chk_additional_dilation = QCheckBox("Reconnect Thin Parts (Dilation)")
+        self.chk_additional_dilation.setToolTip(
+            "Use dilation to reconnect thin parts (e.g., legs, antennae).\n"
+            "Recommended: Enable if animals have thin appendages.\n"
+            "Disable to maintain accurate body shape."
+        )
         f_split.addRow(self.chk_additional_dilation)
 
         h_dil = QHBoxLayout()
@@ -755,14 +945,25 @@ class MainWindow(QMainWindow):
         self.spin_dilation_kernel_size.setRange(1, 15)
         self.spin_dilation_kernel_size.setSingleStep(2)
         self.spin_dilation_kernel_size.setValue(3)
+        self.spin_dilation_kernel_size.setToolTip(
+            "Dilation kernel size (odd number, 1-15).\n"
+            "Larger = thicker reconnection.\n"
+            "Recommended: 3-5"
+        )
         self.spin_dilation_iterations = QSpinBox()
         self.spin_dilation_iterations.setRange(1, 10)
         self.spin_dilation_iterations.setValue(2)
+        self.spin_dilation_iterations.setToolTip(
+            "Number of dilation iterations (1-10).\n"
+            "More iterations = thicker result.\n"
+            "Recommended: 1-3"
+        )
         h_dil.addWidget(QLabel("K-Size:"))
         h_dil.addWidget(self.spin_dilation_kernel_size)
         h_dil.addWidget(QLabel("Iters:"))
         h_dil.addWidget(self.spin_dilation_iterations)
         f_split.addRow(h_dil)
+        vl_split.addLayout(f_split)
 
         l_bg.addWidget(g_split)
 
@@ -770,6 +971,12 @@ class MainWindow(QMainWindow):
         page_yolo = QWidget()
         l_yolo = QVBoxLayout(page_yolo)
         l_yolo.setContentsMargins(0, 0, 0, 0)
+        l_yolo.addWidget(
+            self._create_help_label(
+                "YOLO uses a trained neural network to detect animals. Choose your model file and adjust confidence "
+                "threshold to balance detection sensitivity vs false positives. Higher confidence = fewer false detections."
+            )
+        )
 
         self.yolo_group = QGroupBox("YOLO Configuration")
         f_yolo = QFormLayout(self.yolo_group)
@@ -784,6 +991,11 @@ class MainWindow(QMainWindow):
             ]
         )
         self.combo_yolo_model.currentIndexChanged.connect(self.on_yolo_model_changed)
+        self.combo_yolo_model.setToolTip(
+            "YOLO model for oriented bounding box detection.\n"
+            "yolo26s = balanced speed/accuracy, yolo26n = fastest.\n"
+            "Select 'Custom Model...' to use your own trained model."
+        )
         f_yolo.addRow("Model:", self.combo_yolo_model)
 
         # Custom model container (hidden by default)
@@ -801,19 +1013,42 @@ class MainWindow(QMainWindow):
         self.spin_yolo_confidence = QDoubleSpinBox()
         self.spin_yolo_confidence.setRange(0.01, 1.0)
         self.spin_yolo_confidence.setValue(0.25)
+        self.spin_yolo_confidence.setToolTip(
+            "Minimum confidence score for YOLO detections (0.01-1.0).\n"
+            "Lower = more detections (more false positives).\n"
+            "Higher = fewer detections (may miss animals).\n"
+            "Recommended: 0.2-0.4"
+        )
         f_yolo.addRow("Confidence:", self.spin_yolo_confidence)
 
         self.spin_yolo_iou = QDoubleSpinBox()
         self.spin_yolo_iou.setRange(0.01, 1.0)
         self.spin_yolo_iou.setValue(0.7)
+        self.spin_yolo_iou.setToolTip(
+            "Intersection-over-Union threshold for non-max suppression (0.01-1.0).\n"
+            "Lower = more aggressive duplicate removal.\n"
+            "Higher = keep more overlapping detections.\n"
+            "Recommended: 0.5-0.8"
+        )
         f_yolo.addRow("IOU Threshold:", self.spin_yolo_iou)
 
         self.line_yolo_classes = QLineEdit()
         self.line_yolo_classes.setPlaceholderText("e.g. 15, 16 (Empty for all)")
+        self.line_yolo_classes.setToolTip(
+            "Comma-separated class IDs to detect (leave empty for all classes).\n"
+            "Example: '0,1,2' to detect only classes 0, 1, and 2.\n"
+            "Refer to your model's class definitions."
+        )
         f_yolo.addRow("Target Classes:", self.line_yolo_classes)
 
         self.combo_yolo_device = QComboBox()
         self.combo_yolo_device.addItems(["auto", "cpu", "cuda:0", "mps"])
+        self.combo_yolo_device.setToolTip(
+            "Hardware device for YOLO inference.\n"
+            "auto = automatic selection, cpu = CPU only.\n"
+            "cuda:0 = NVIDIA GPU, mps = Apple Silicon GPU.\n"
+            "GPU dramatically improves YOLO speed."
+        )
         f_yolo.addRow("Device:", self.combo_yolo_device)
 
         l_yolo.addWidget(self.yolo_group)
@@ -842,56 +1077,126 @@ class MainWindow(QMainWindow):
 
         # Core Params
         g_core = QGroupBox("Core Tracking Parameters")
-        f_core = QFormLayout(g_core)
+        vl_core = QVBoxLayout(g_core)
+        vl_core.addWidget(
+            self._create_help_label(
+                "These control basic track-to-detection matching. Max assignment distance sets how far an animal can "
+                "move between frames. Recovery search distance helps reconnect lost tracks."
+            )
+        )
+        f_core = QFormLayout()
         f_core.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_max_targets = QSpinBox()
         self.spin_max_targets.setRange(1, 200)
         self.spin_max_targets.setValue(4)
+        self.spin_max_targets.setToolTip(
+            "Maximum number of animals to track simultaneously (1-200).\n"
+            "Set this to the expected number of animals in your video.\n"
+            "Higher values use more memory and may slow down processing."
+        )
         f_core.addRow("Max Targets (Animals):", self.spin_max_targets)
 
-        self.spin_max_dist = QSpinBox()
-        self.spin_max_dist.setRange(0, 2000)
-        self.spin_max_dist.setValue(25)
-        f_core.addRow("Max Assignment Distance:", self.spin_max_dist)
+        self.spin_max_dist = QDoubleSpinBox()
+        self.spin_max_dist.setRange(0.1, 20.0)
+        self.spin_max_dist.setSingleStep(0.1)
+        self.spin_max_dist.setDecimals(1)
+        self.spin_max_dist.setValue(1.5)
+        self.spin_max_dist.setToolTip(
+            "Maximum distance for track-to-detection assignment (×body size).\n"
+            "Animals can move at most this distance between frames.\n"
+            "Too low = tracks break frequently, Too high = identity swaps.\n"
+            "Recommended: 1-2× for normal motion, 3-5× for fast motion."
+        )
+        f_core.addRow("Max Assignment Dist (×body):", self.spin_max_dist)
 
-        self.spin_continuity_thresh = QSpinBox()
-        self.spin_continuity_thresh.setRange(1, 100)
-        self.spin_continuity_thresh.setValue(10)
-        f_core.addRow("Continuity Threshold:", self.spin_continuity_thresh)
+        self.spin_continuity_thresh = QDoubleSpinBox()
+        self.spin_continuity_thresh.setRange(0.1, 10.0)
+        self.spin_continuity_thresh.setSingleStep(0.1)
+        self.spin_continuity_thresh.setDecimals(1)
+        self.spin_continuity_thresh.setValue(0.5)
+        self.spin_continuity_thresh.setToolTip(
+            "Search radius for recovering lost tracks (×body size).\n"
+            "When a track is lost, looks backward within this distance.\n"
+            "Smaller = more conservative recovery (fewer false merges).\n"
+            "Recommended: 0.3-1.0×"
+        )
+        f_core.addRow("Recovery Search Distance (×body):", self.spin_continuity_thresh)
 
         self.chk_enable_backward = QCheckBox("Run Backward Tracking after Forward")
         self.chk_enable_backward.setChecked(True)
+        self.chk_enable_backward.setToolTip(
+            "Run tracking in reverse after forward pass to improve accuracy.\n"
+            "Recommended: Enable for best results (takes 2× time).\n"
+            "Disable for faster processing if accuracy is sufficient."
+        )
         f_core.addRow("", self.chk_enable_backward)
+        vl_core.addLayout(f_core)
         vbox.addWidget(g_core)
 
         # Kalman
         g_kf = QGroupBox("Kalman Filter (Motion Model)")
-        f_kf = QFormLayout(g_kf)
+        vl_kf = QVBoxLayout(g_kf)
+        vl_kf.addWidget(
+            self._create_help_label(
+                "Kalman filter predicts animal positions using motion history. Process noise controls smoothing, "
+                "measurement noise controls responsiveness. Start with defaults."
+            )
+        )
+        f_kf = QFormLayout()
         self.spin_kalman_noise = QDoubleSpinBox()
         self.spin_kalman_noise.setRange(0.0, 1.0)
         self.spin_kalman_noise.setValue(0.03)
+        self.spin_kalman_noise.setToolTip(
+            "Process noise covariance (0.0-1.0) for motion prediction.\n"
+            "Lower = trust motion model more (smooth, may lag).\n"
+            "Higher = trust measurements more (responsive, less smooth).\n"
+            "Recommended: 0.01-0.05 for predictable motion."
+        )
         f_kf.addRow("Process Noise:", self.spin_kalman_noise)
 
         self.spin_kalman_meas = QDoubleSpinBox()
         self.spin_kalman_meas.setRange(0.0, 1.0)
         self.spin_kalman_meas.setValue(0.1)
+        self.spin_kalman_meas.setToolTip(
+            "Measurement noise covariance (0.0-1.0).\n"
+            "Lower = trust detections more (accurate, may be jittery).\n"
+            "Higher = trust predictions more (smooth, may drift).\n"
+            "Recommended: 0.05-0.15"
+        )
         f_kf.addRow("Measurement Noise:", self.spin_kalman_meas)
+        vl_kf.addLayout(f_kf)
         vbox.addWidget(g_kf)
 
         # Weights
         g_weights = QGroupBox("Cost Function Weights")
         l_weights = QVBoxLayout(g_weights)
+        l_weights.addWidget(
+            self._create_help_label(
+                "Control how different factors influence track-to-detection matching. Position is primary; orientation, "
+                "area, and aspect help resolve ambiguities. Increase Mahalanobis to trust Kalman predictions more."
+            )
+        )
 
         row1 = QHBoxLayout()
         self.spin_Wp = QDoubleSpinBox()
         self.spin_Wp.setRange(0.0, 10.0)
         self.spin_Wp.setValue(1.0)
+        self.spin_Wp.setToolTip(
+            "Weight for position distance in assignment cost.\n"
+            "Higher = prioritize spatial proximity.\n"
+            "Recommended: 1.0 (primary factor)"
+        )
         row1.addWidget(QLabel("Position:"))
         row1.addWidget(self.spin_Wp)
 
         self.spin_Wo = QDoubleSpinBox()
         self.spin_Wo.setRange(0.0, 10.0)
         self.spin_Wo.setValue(1.0)
+        self.spin_Wo.setToolTip(
+            "Weight for orientation difference in assignment cost.\n"
+            "Higher = penalize large orientation changes.\n"
+            "Recommended: 0.5-2.0 (helps maintain correct identity)"
+        )
         row1.addWidget(QLabel("Orientation:"))
         row1.addWidget(self.spin_Wo)
         l_weights.addLayout(row1)
@@ -902,18 +1207,33 @@ class MainWindow(QMainWindow):
         self.spin_Wa.setSingleStep(0.001)
         self.spin_Wa.setDecimals(4)
         self.spin_Wa.setValue(0.001)
+        self.spin_Wa.setToolTip(
+            "Weight for area difference in assignment cost.\n"
+            "Higher = penalize size changes.\n"
+            "Recommended: 0.001-0.01 (prevents size-based swaps)"
+        )
         row2.addWidget(QLabel("Area:"))
         row2.addWidget(self.spin_Wa)
 
         self.spin_Wasp = QDoubleSpinBox()
         self.spin_Wasp.setRange(0.0, 10.0)
         self.spin_Wasp.setValue(0.1)
+        self.spin_Wasp.setToolTip(
+            "Weight for aspect ratio difference in assignment cost.\n"
+            "Higher = penalize shape changes.\n"
+            "Recommended: 0.05-0.2 (helps with occlusions)"
+        )
         row2.addWidget(QLabel("Aspect Ratio:"))
         row2.addWidget(self.spin_Wasp)
         l_weights.addLayout(row2)
 
         self.chk_use_mahal = QCheckBox("Use Mahalanobis Distance")
         self.chk_use_mahal.setChecked(True)
+        self.chk_use_mahal.setToolTip(
+            "Use Mahalanobis distance instead of Euclidean for position.\n"
+            "Accounts for velocity and uncertainty in motion prediction.\n"
+            "Recommended: Enable for better handling of motion variability."
+        )
         l_weights.addWidget(self.chk_use_mahal)
         vbox.addWidget(g_weights)
 
@@ -951,50 +1271,111 @@ class MainWindow(QMainWindow):
         self.spin_velocity = QDoubleSpinBox()
         self.spin_velocity.setRange(0.1, 50.0)
         self.spin_velocity.setValue(2.0)
+        self.spin_velocity.setToolTip(
+            "Velocity threshold (px/frame) to classify as 'moving'.\n"
+            "Below this = stationary (allows larger orientation changes).\n"
+            "Above this = moving (instant orientation flip possible).\n"
+            "Recommended: 1-5 depending on framerate and animal speed."
+        )
         f_misc.addRow("Motion Velocity Threshold:", self.spin_velocity)
 
         self.chk_instant_flip = QCheckBox("Instant Flip (Fast Motion)")
         self.chk_instant_flip.setChecked(True)
+        self.chk_instant_flip.setToolTip(
+            "Allow instant 180° orientation flip when moving quickly.\n"
+            "Recommended: Enable for animals that can turn rapidly.\n"
+            "Disable for slowly rotating animals."
+        )
         f_misc.addRow(self.chk_instant_flip)
 
         self.spin_max_orient = QDoubleSpinBox()
         self.spin_max_orient.setRange(1, 180)
         self.spin_max_orient.setValue(30)
+        self.spin_max_orient.setToolTip(
+            "Maximum orientation change (degrees) when stationary (1-180).\n"
+            "Larger = allow more rotation while stopped.\n"
+            "Recommended: 20-45° (prevents orientation jitter)."
+        )
         f_misc.addRow("Max Orient Δ (Stopped):", self.spin_max_orient)
         vbox.addWidget(g_misc)
 
         # Track Lifecycle
         g_lifecycle = QGroupBox("Track Lifecycle")
-        f_lifecycle = QFormLayout(g_lifecycle)
+        vl_lifecycle = QVBoxLayout(g_lifecycle)
+        vl_lifecycle.addWidget(
+            self._create_help_label(
+                "Control when tracks start and end. Lost frames determines how long to wait before terminating a track. "
+                "Min respawn distance prevents creating duplicate IDs near existing animals."
+            )
+        )
+        f_lifecycle = QFormLayout()
 
         self.spin_lost_thresh = QSpinBox()
         self.spin_lost_thresh.setRange(1, 100)
         self.spin_lost_thresh.setValue(10)
+        self.spin_lost_thresh.setToolTip(
+            "Number of frames without detection before track is terminated (1-100).\n"
+            "Higher = tracks persist longer during occlusions.\n"
+            "Lower = tracks end quickly, creating fragments.\n"
+            "Recommended: 5-20 frames."
+        )
         f_lifecycle.addRow("Lost Frames Threshold:", self.spin_lost_thresh)
 
-        self.spin_min_respawn_distance = QSpinBox()
-        self.spin_min_respawn_distance.setRange(0, 1000)
-        self.spin_min_respawn_distance.setValue(50)
-        f_lifecycle.addRow("Min Respawn Distance:", self.spin_min_respawn_distance)
+        self.spin_min_respawn_distance = QDoubleSpinBox()
+        self.spin_min_respawn_distance.setRange(0.0, 20.0)
+        self.spin_min_respawn_distance.setSingleStep(0.5)
+        self.spin_min_respawn_distance.setDecimals(1)
+        self.spin_min_respawn_distance.setValue(2.5)
+        self.spin_min_respawn_distance.setToolTip(
+            "Minimum distance from existing tracks to spawn new track (×body size).\n"
+            "Prevents creating duplicate tracks near existing animals.\n"
+            "Recommended: 2-4× body size."
+        )
+        f_lifecycle.addRow("Min Respawn Dist (×body):", self.spin_min_respawn_distance)
+        vl_lifecycle.addLayout(f_lifecycle)
         vbox.addWidget(g_lifecycle)
 
         # Stability
         g_stab = QGroupBox("Initialization Stability")
-        f_stab = QFormLayout(g_stab)
+        vl_stab = QVBoxLayout(g_stab)
+        vl_stab.addWidget(
+            self._create_help_label(
+                "Filter out unreliable tracks. Min detections to start prevents creating tracks from noise. "
+                "Min detect/tracking frames removes short-lived false tracks in post-processing."
+            )
+        )
+        f_stab = QFormLayout()
         self.spin_min_detections_to_start = QSpinBox()
         self.spin_min_detections_to_start.setRange(1, 50)
         self.spin_min_detections_to_start.setValue(1)
+        self.spin_min_detections_to_start.setToolTip(
+            "Minimum consecutive detections before starting a new track (1-50).\n"
+            "Higher = fewer false tracks from noise, slower to start tracking.\n"
+            "Lower = faster tracking startup, more noise-based tracks.\n"
+            "Recommended: 1-3"
+        )
         f_stab.addRow("Min Detections to Start:", self.spin_min_detections_to_start)
 
         self.spin_min_detect = QSpinBox()
         self.spin_min_detect.setRange(1, 500)
         self.spin_min_detect.setValue(10)
+        self.spin_min_detect.setToolTip(
+            "Minimum total detection frames to keep a track (1-500).\n"
+            "Filters out short-lived false tracks in post-processing.\n"
+            "Recommended: 5-20 frames."
+        )
         f_stab.addRow("Min Detect Frames:", self.spin_min_detect)
 
         self.spin_min_track = QSpinBox()
         self.spin_min_track.setRange(1, 500)
         self.spin_min_track.setValue(10)
+        self.spin_min_track.setToolTip(
+            "Minimum tracking frames (including predicted) to keep (1-500).\n"
+            "Filters out tracks with too many gaps/predictions.\n"
+            "Recommended: Similar to min detect frames."
+        )
         f_stab.addRow("Min Tracking Frames:", self.spin_min_track)
+        vl_stab.addLayout(f_stab)
         vbox.addWidget(g_stab)
 
         vbox.addStretch()
@@ -1014,43 +1395,91 @@ class MainWindow(QMainWindow):
 
         # Post-Processing
         g_pp = QGroupBox("Trajectory Post-Processing")
-        f_pp = QFormLayout(g_pp)
+        vl_pp = QVBoxLayout(g_pp)
+        vl_pp.addWidget(
+            self._create_help_label(
+                "Clean trajectories after tracking by removing outliers and splitting at identity swaps. "
+                "Velocity/distance breaks detect unrealistic jumps that indicate ID switching."
+            )
+        )
+        f_pp = QFormLayout()
         f_pp.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.enable_postprocessing = QCheckBox("Enable Automatic Cleaning")
         self.enable_postprocessing.setChecked(True)
+        self.enable_postprocessing.setToolTip(
+            "Automatically clean trajectories by removing outliers and fragments.\n"
+            "Uses velocity and distance thresholds to detect anomalies.\n"
+            "Recommended: Enable for cleaner data output."
+        )
         f_pp.addRow(self.enable_postprocessing)
 
         self.spin_min_trajectory_length = QSpinBox()
         self.spin_min_trajectory_length.setRange(1, 1000)
         self.spin_min_trajectory_length.setValue(10)
+        self.spin_min_trajectory_length.setToolTip(
+            "Remove trajectories shorter than this (1-1000 frames).\n"
+            "Filters out brief false detections and transient tracks.\n"
+            "Recommended: 5-30 frames depending on video length."
+        )
         f_pp.addRow("Min Length (frames):", self.spin_min_trajectory_length)
 
         self.spin_max_velocity_break = QDoubleSpinBox()
         self.spin_max_velocity_break.setRange(1, 1000)
         self.spin_max_velocity_break.setValue(100.0)
+        self.spin_max_velocity_break.setToolTip(
+            "Maximum velocity (pixels/frame) before breaking trajectory (1-1000).\n"
+            "Splits tracks at unrealistic speed jumps (likely identity swaps).\n"
+            "Recommended: 50-200 for typical animal motion."
+        )
         f_pp.addRow("Max Velocity Break:", self.spin_max_velocity_break)
 
         self.spin_max_distance_break = QDoubleSpinBox()
-        self.spin_max_distance_break.setRange(1, 2000)
-        self.spin_max_distance_break.setValue(300.0)
-        f_pp.addRow("Max Distance Break:", self.spin_max_distance_break)
+        self.spin_max_distance_break.setRange(1.0, 50.0)
+        self.spin_max_distance_break.setSingleStep(0.5)
+        self.spin_max_distance_break.setDecimals(1)
+        self.spin_max_distance_break.setValue(15.0)
+        self.spin_max_distance_break.setToolTip(
+            "Maximum distance jump before breaking trajectory (×body size, 1-50).\n"
+            "Splits tracks at unrealistic position jumps (likely identity swaps).\n"
+            "Recommended: 10-20× body size."
+        )
+        f_pp.addRow("Max Distance Break (×body):", self.spin_max_distance_break)
+        vl_pp.addLayout(f_pp)
         vbox.addWidget(g_pp)
 
         # Histograms
         g_hist = QGroupBox("Real-Time Analytics")
-        f_hist = QFormLayout(g_hist)
+        vl_hist = QVBoxLayout(g_hist)
+        vl_hist.addWidget(
+            self._create_help_label(
+                "Collect and visualize statistics during tracking. Useful for monitoring behavior patterns in real-time. "
+                "History window controls how many recent frames to include in the analysis."
+            )
+        )
+        f_hist = QFormLayout()
         self.enable_histograms = QCheckBox("Collect Histogram Data")
+        self.enable_histograms.setToolTip(
+            "Collect real-time statistics during tracking.\n"
+            "Tracks speed, direction, and spatial distributions.\n"
+            "Slight performance overhead but useful for monitoring."
+        )
         f_hist.addRow(self.enable_histograms)
 
         self.spin_histogram_history = QSpinBox()
         self.spin_histogram_history.setRange(50, 5000)
         self.spin_histogram_history.setValue(300)
+        self.spin_histogram_history.setToolTip(
+            "Number of frames to include in rolling statistics (50-5000).\n"
+            "Larger window = smoother trends but slower response.\n"
+            "Recommended: 100-500 frames for most videos."
+        )
         f_hist.addRow("History Window:", self.spin_histogram_history)
 
         self.btn_show_histograms = QPushButton("Open Plot Window")
         self.btn_show_histograms.setCheckable(True)
         self.btn_show_histograms.clicked.connect(self.toggle_histogram_window)
         f_hist.addRow(self.btn_show_histograms)
+        vl_hist.addLayout(f_hist)
         vbox.addWidget(g_hist)
 
         vbox.addStretch()
@@ -1064,25 +1493,40 @@ class MainWindow(QMainWindow):
 
         g_overlays = QGroupBox("Video Overlays - Common")
         v_ov = QVBoxLayout(g_overlays)
+        v_ov.addWidget(
+            self._create_help_label(
+                "Choose which tracking information to display on the video. Toggle these on/off to reduce clutter "
+                "or focus on specific aspects like trajectories or orientation."
+            )
+        )
 
         self.chk_show_circles = QCheckBox("Show Track Markers (Circles)")
         self.chk_show_circles.setChecked(True)
+        self.chk_show_circles.setToolTip("Draw circles around tracked animals.")
         v_ov.addWidget(self.chk_show_circles)
 
         self.chk_show_orientation = QCheckBox("Show Orientation Lines")
         self.chk_show_orientation.setChecked(True)
+        self.chk_show_orientation.setToolTip("Draw lines showing heading direction.")
         v_ov.addWidget(self.chk_show_orientation)
 
         self.chk_show_trajectories = QCheckBox("Show Trajectory Trails")
         self.chk_show_trajectories.setChecked(True)
+        self.chk_show_trajectories.setToolTip(
+            "Draw recent path history for each track."
+        )
         v_ov.addWidget(self.chk_show_trajectories)
 
         self.chk_show_labels = QCheckBox("Show ID Labels")
         self.chk_show_labels.setChecked(True)
+        self.chk_show_labels.setToolTip("Display unique track IDs on each animal.")
         v_ov.addWidget(self.chk_show_labels)
 
         self.chk_show_state = QCheckBox("Show State Text")
         self.chk_show_state.setChecked(True)
+        self.chk_show_state.setToolTip(
+            "Display tracking state (ACTIVE, PREDICTED, etc.)."
+        )
         v_ov.addWidget(self.chk_show_state)
 
         layout.addWidget(g_overlays)
@@ -1116,6 +1560,11 @@ class MainWindow(QMainWindow):
         self.spin_traj_hist = QSpinBox()
         self.spin_traj_hist.setRange(1, 60)
         self.spin_traj_hist.setValue(5)
+        self.spin_traj_hist.setToolTip(
+            "Length of trajectory trails to display (1-60 seconds).\n"
+            "Longer = more visible path history but more cluttered.\n"
+            "Recommended: 3-10 seconds."
+        )
         f_disp.addRow("Trail History (sec):", self.spin_traj_hist)
         layout.addWidget(g_settings)
 
@@ -1263,6 +1712,16 @@ class MainWindow(QMainWindow):
         zoom_val = value / 100.0
         self.label_zoom_val.setText(f"{zoom_val:.2f}x")
         self._update_preview_display()
+
+    def _update_body_size_info(self):
+        """Update the info label showing calculated body area."""
+        import math
+
+        body_size = self.spin_reference_body_size.value()
+        body_area = math.pi * (body_size / 2.0) ** 2
+        self.label_body_size_info.setText(
+            f"≈ {body_area:.1f} px² area (all size/distance params scale with this)"
+        )
 
     def _on_video_output_toggled(self, checked):
         """Enable/disable video output controls."""
@@ -2448,6 +2907,35 @@ class MainWindow(QMainWindow):
             except:
                 pass
 
+        # Calculate actual pixel values from body-size multipliers
+        reference_body_size = self.spin_reference_body_size.value()
+        resize_factor = self.spin_resize.value()
+        scaled_body_size = reference_body_size * resize_factor
+
+        # Area is π * (diameter/2)^2
+        import math
+
+        reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+        scaled_body_area = reference_body_area * (resize_factor**2)
+
+        # Convert multipliers to actual pixels
+        min_object_size_pixels = int(
+            self.spin_min_object_size.value() * scaled_body_area
+        )
+        max_object_size_pixels = int(
+            self.spin_max_object_size.value() * scaled_body_area
+        )
+        max_distance_pixels = self.spin_max_dist.value() * scaled_body_size
+        recovery_search_distance_pixels = (
+            self.spin_continuity_thresh.value() * scaled_body_size
+        )
+        min_respawn_distance_pixels = (
+            self.spin_min_respawn_distance.value() * scaled_body_size
+        )
+        max_distance_break_pixels = (
+            self.spin_max_distance_break.value() * scaled_body_size
+        )
+
         return {
             "DETECTION_METHOD": det_method,
             "YOLO_MODEL_PATH": yolo_path,
@@ -2460,16 +2948,16 @@ class MainWindow(QMainWindow):
             "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
             "MIN_CONTOUR_AREA": self.spin_min_contour.value(),
             "ENABLE_SIZE_FILTERING": self.chk_size_filtering.isChecked(),
-            "MIN_OBJECT_SIZE": self.spin_min_object_size.value(),
-            "MAX_OBJECT_SIZE": self.spin_max_object_size.value(),
+            "MIN_OBJECT_SIZE": min_object_size_pixels,
+            "MAX_OBJECT_SIZE": max_object_size_pixels,
             "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
-            "MAX_DISTANCE_THRESHOLD": self.spin_max_dist.value(),
+            "MAX_DISTANCE_THRESHOLD": max_distance_pixels,
             "ENABLE_POSTPROCESSING": self.enable_postprocessing.isChecked(),
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
             "MAX_VELOCITY_BREAK": self.spin_max_velocity_break.value(),
-            "MAX_DISTANCE_BREAK": self.spin_max_distance_break.value(),
-            "CONTINUITY_THRESHOLD": self.spin_continuity_thresh.value(),
-            "MIN_RESPAWN_DISTANCE": self.spin_min_respawn_distance.value(),
+            "MAX_DISTANCE_BREAK": max_distance_break_pixels,
+            "CONTINUITY_THRESHOLD": recovery_search_distance_pixels,
+            "MIN_RESPAWN_DISTANCE": min_respawn_distance_pixels,
             "MIN_DETECTION_COUNTS": self.spin_min_detect.value(),
             "MIN_DETECTIONS_TO_START": self.spin_min_detections_to_start.value(),
             "MIN_TRACKING_COUNTS": self.spin_min_track.value(),
@@ -2586,12 +3074,73 @@ class MainWindow(QMainWindow):
             self.spin_morph_size.setValue(cfg.get("morph_kernel_size", 5))
             self.spin_min_contour.setValue(cfg.get("min_contour_area", 50))
             self.chk_size_filtering.setChecked(cfg.get("enable_size_filtering", False))
-            self.spin_min_object_size.setValue(cfg.get("min_object_size", 100))
-            self.spin_max_object_size.setValue(cfg.get("max_object_size", 5000))
+
+            # Handle backward compatibility for body-size-based parameters
+            # Check if config has reference body size (new format) or raw pixels (old format)
+            reference_body_size = cfg.get("reference_body_size", None)
+
+            if reference_body_size is not None:
+                # New format: body-size multipliers
+                self.spin_reference_body_size.setValue(reference_body_size)
+                self.spin_min_object_size.setValue(
+                    cfg.get("min_object_size_multiplier", 0.3)
+                )
+                self.spin_max_object_size.setValue(
+                    cfg.get("max_object_size_multiplier", 3.0)
+                )
+                self.spin_max_dist.setValue(cfg.get("max_dist_multiplier", 1.5))
+                self.spin_continuity_thresh.setValue(
+                    cfg.get(
+                        "recovery_search_distance_multiplier",
+                        cfg.get("continuity_threshold_multiplier", 0.5),
+                    )
+                )
+                self.spin_min_respawn_distance.setValue(
+                    cfg.get("min_respawn_distance_multiplier", 2.5)
+                )
+                self.spin_max_distance_break.setValue(
+                    cfg.get("max_distance_break_multiplier", 15.0)
+                )
+            else:
+                # Old format: convert pixels to multipliers using default body size
+                import math
+
+                default_body_size = 20.0
+                self.spin_reference_body_size.setValue(default_body_size)
+                default_body_area = math.pi * (default_body_size / 2.0) ** 2
+
+                # Convert old pixel values to multipliers
+                min_obj_pixels = cfg.get("min_object_size", 100)
+                max_obj_pixels = cfg.get("max_object_size", 5000)
+                max_dist_pixels = cfg.get("max_dist_thresh", 25)
+                continuity_pixels = cfg.get(
+                    "recovery_search_distance", cfg.get("continuity_thresh", 10)
+                )
+                min_respawn_pixels = cfg.get("min_respawn_distance", 50)
+                max_break_pixels = cfg.get("max_distance_break", 300.0)
+
+                self.spin_min_object_size.setValue(
+                    max(0.1, min_obj_pixels / default_body_area)
+                )
+                self.spin_max_object_size.setValue(
+                    max(0.5, max_obj_pixels / default_body_area)
+                )
+                self.spin_max_dist.setValue(
+                    max(0.1, max_dist_pixels / default_body_size)
+                )
+                self.spin_continuity_thresh.setValue(
+                    max(0.1, continuity_pixels / default_body_size)
+                )
+                self.spin_min_respawn_distance.setValue(
+                    max(0.0, min_respawn_pixels / default_body_size)
+                )
+                self.spin_max_distance_break.setValue(
+                    max(1.0, max_break_pixels / default_body_size)
+                )
+
             self.spin_max_contour_multiplier.setValue(
                 cfg.get("max_contour_multiplier", 20)
             )
-            self.spin_max_dist.setValue(cfg.get("max_dist_thresh", 25))
             self.enable_postprocessing.setChecked(
                 cfg.get("enable_postprocessing", True)
             )
@@ -2599,8 +3148,10 @@ class MainWindow(QMainWindow):
                 cfg.get("min_trajectory_length", 10)
             )
             self.spin_max_velocity_break.setValue(cfg.get("max_velocity_break", 100.0))
-            self.spin_max_distance_break.setValue(cfg.get("max_distance_break", 300.0))
-            self.spin_continuity_thresh.setValue(cfg.get("continuity_thresh", 10))
+            # max_distance_break already loaded in backward compatibility section above
+            # Don't reload to avoid overwriting the converted value
+            # self.spin_max_distance_break is already set
+            # Don't reload recovery_search_distance and min_respawn_distance - already handled above
             self.spin_min_detect.setValue(cfg.get("min_detect_counts", 10))
             self.spin_min_detections_to_start.setValue(
                 cfg.get("min_detections_to_start", 1)
@@ -2641,7 +3192,7 @@ class MainWindow(QMainWindow):
             self.chk_instant_flip.setChecked(cfg.get("instant_flip", True))
             self.spin_max_orient.setValue(cfg.get("max_orient_delta_stopped", 30.0))
             self.spin_lost_thresh.setValue(cfg.get("lost_threshold_frames", 10))
-            self.spin_min_respawn_distance.setValue(cfg.get("min_respawn_distance", 50))
+            # min_respawn_distance already loaded in backward compatibility section above
             self.spin_Wp.setValue(cfg.get("W_POSITION", 1.0))
             self.spin_Wo.setValue(cfg.get("W_ORIENTATION", 1.0))
             self.spin_Wa.setValue(cfg.get("W_AREA", 0.001))
@@ -2733,15 +3284,17 @@ class MainWindow(QMainWindow):
             "morph_kernel_size": self.spin_morph_size.value(),
             "min_contour_area": self.spin_min_contour.value(),
             "enable_size_filtering": self.chk_size_filtering.isChecked(),
-            "min_object_size": self.spin_min_object_size.value(),
-            "max_object_size": self.spin_max_object_size.value(),
+            # Save body-size reference and multipliers (new format)
+            "reference_body_size": self.spin_reference_body_size.value(),
+            "min_object_size_multiplier": self.spin_min_object_size.value(),
+            "max_object_size_multiplier": self.spin_max_object_size.value(),
             "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
-            "max_dist_thresh": self.spin_max_dist.value(),
+            "max_dist_multiplier": self.spin_max_dist.value(),
             "enable_postprocessing": self.enable_postprocessing.isChecked(),
             "min_trajectory_length": self.spin_min_trajectory_length.value(),
             "max_velocity_break": self.spin_max_velocity_break.value(),
-            "max_distance_break": self.spin_max_distance_break.value(),
-            "continuity_thresh": self.spin_continuity_thresh.value(),
+            "max_distance_break_multiplier": self.spin_max_distance_break.value(),
+            "recovery_search_distance_multiplier": self.spin_continuity_thresh.value(),
             "min_detect_counts": self.spin_min_detect.value(),
             "min_detections_to_start": self.spin_min_detections_to_start.value(),
             "min_track_counts": self.spin_min_track.value(),
@@ -2770,7 +3323,7 @@ class MainWindow(QMainWindow):
             "instant_flip": self.chk_instant_flip.isChecked(),
             "max_orient_delta_stopped": self.spin_max_orient.value(),
             "lost_threshold_frames": self.spin_lost_thresh.value(),
-            "min_respawn_distance": self.spin_min_respawn_distance.value(),
+            "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
             "W_POSITION": self.spin_Wp.value(),
             "W_ORIENTATION": self.spin_Wo.value(),
             "W_AREA": self.spin_Wa.value(),
@@ -2846,6 +3399,17 @@ class MainWindow(QMainWindow):
     def _on_parameter_changed(self):
         params = self.get_parameters_dict()
         self.parameters_changed.emit(params)
+
+    def _create_help_label(self, text):
+        """Create a styled help label for section guidance."""
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setStyleSheet(
+            "color: #aaa; font-size: 11px; font-weight: normal; "
+            "background-color: #2a2a2a; padding: 8px; border-radius: 4px; "
+            "border-left: 3px solid #4a9eff;"
+        )
+        return label
 
     def plot_fps(self, fps_list):
         if len(fps_list) < 2:
