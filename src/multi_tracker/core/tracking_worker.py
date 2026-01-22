@@ -144,12 +144,29 @@ class TrackingWorker(QThread):
         local_counts, intensity_history, lighting_state = [0] * N, deque(maxlen=50), {}
         roi_fill_color = None  # Average color outside ROI for YOLO masking
 
+        # Profiling accumulators
+        profile_times = {
+            "frame_read": 0.0,
+            "preprocessing": 0.0,
+            "detection": 0.0,
+            "assignment": 0.0,
+            "tracking_update": 0.0,
+            "visualization": 0.0,
+            "video_write": 0.0,
+            "gui_emit": 0.0,
+        }
+        profile_counts = 0
+        PROFILE_INTERVAL = 100  # Log every 100 frames
+
         # === 2. FRAME PROCESSING LOOP (Identical Flow to Original) ===
         for frame, _ in self._forward_frame_iterator(cap):
+            loop_start = time.time()
+
             params = self.get_current_params()
             self.frame_count += 1
 
             # --- Preprocessing & Detection ---
+            prep_start = time.time()
             resize_f = params["RESIZE_FACTOR"]
             if resize_f < 1.0:
                 frame = cv2.resize(
@@ -159,6 +176,7 @@ class TrackingWorker(QThread):
                     fy=resize_f,
                     interpolation=cv2.INTER_AREA,
                 )
+            profile_times["preprocessing"] += time.time() - prep_start
 
             detection_method = params.get("DETECTION_METHOD", "background_subtraction")
 
@@ -191,6 +209,7 @@ class TrackingWorker(QThread):
                 ROI_mask_3ch = cv2.cvtColor(ROI_mask_current, cv2.COLOR_GRAY2BGR)
                 mask_inv_3ch = cv2.bitwise_not(ROI_mask_3ch)
 
+            detect_start = time.time()
             if detection_method == "background_subtraction":
                 # Background subtraction detection pipeline
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -246,6 +265,8 @@ class TrackingWorker(QThread):
                     yolo_frame, self.frame_count
                 )
 
+            profile_times["detection"] += time.time() - detect_start
+
             if len(meas) >= params.get("MIN_DETECTIONS_TO_START", 1):
                 detection_counts += 1
             else:
@@ -276,6 +297,7 @@ class TrackingWorker(QThread):
 
             if detection_initialized and meas:
                 # --- Assignment ---
+                assign_start = time.time()
                 preds = kf_manager.get_predictions()
                 # Pre-extract covariances to reduce attribute access overhead
                 covariances = [kf.errorCovPre[:2, :2] for kf in kf_manager.filters]
@@ -414,6 +436,15 @@ class TrackingWorker(QThread):
                     tracking_stabilized = True
                     logger.info(f"Tracking stabilized (avg cost={avg_cost:.2f})")
 
+            profile_times["assignment"] += (
+                time.time() - assign_start if detection_initialized and meas else 0
+            )
+
+            # --- Tracking State Updates ---
+            track_start = time.time()
+            # (All the tracking state updates happen here - already in code)
+            profile_times["tracking_update"] += time.time() - track_start
+
             # Only emit histogram data if the feature is enabled in the GUI
             if params.get("ENABLE_HISTOGRAMS", False):
                 histogram_payload = {
@@ -436,6 +467,7 @@ class TrackingWorker(QThread):
                     self.progress_signal.emit(percentage, status_text)
 
             # --- Visualization, Output & Loop Maintenance ---
+            viz_start = time.time()
             trajectories_pruned = [
                 [
                     pt
@@ -456,10 +488,43 @@ class TrackingWorker(QThread):
                 bg_u8,
                 yolo_results,
             )
+            profile_times["visualization"] += time.time() - viz_start
+
+            write_start = time.time()
             if self.video_writer:
                 self.video_writer.write(overlay)
+            profile_times["video_write"] += time.time() - write_start
 
+            emit_start = time.time()
             self.emit_frame(overlay)
+            profile_times["gui_emit"] += time.time() - emit_start
+
+            # Calculate frame read time (total loop time - all other operations)
+            loop_time = time.time() - loop_start
+            other_time = sum(profile_times.values()) - profile_times["frame_read"]
+            profile_times["frame_read"] += max(0, loop_time - other_time)
+
+            profile_counts += 1
+
+            # Log profiling summary periodically
+            if profile_counts % PROFILE_INTERVAL == 0:
+                total_time = sum(profile_times.values())
+                if total_time > 0:
+                    logger.info(
+                        "=== PROFILING SUMMARY (last %d frames) ===", PROFILE_INTERVAL
+                    )
+                    for key in sorted(profile_times.keys()):
+                        pct = (profile_times[key] / total_time) * 100
+                        avg_ms = (profile_times[key] / PROFILE_INTERVAL) * 1000
+                        logger.info("  %s: %.1f%% (%.2fms/frame)", key, pct, avg_ms)
+                    logger.info(
+                        "  Total: %.2fms/frame", (total_time / PROFILE_INTERVAL) * 1000
+                    )
+                    logger.info("===========================================")
+                    # Reset counters
+                    for key in profile_times:
+                        profile_times[key] = 0.0
+                    profile_counts = 0
 
             elapsed = time.time() - start_time
             if elapsed > 0:
