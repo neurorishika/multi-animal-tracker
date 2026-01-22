@@ -1,11 +1,13 @@
 """
 Track assignment utilities for multi-object tracking.
 Functionally identical to the original implementation's assignment logic.
+Optimized for large N (100-200+ tracks) with spatial partitioning.
 """
 
 import numpy as np
 import logging
 from scipy.optimize import linear_sum_assignment
+from scipy.spatial import cKDTree
 
 try:
     from numba import njit
@@ -116,15 +118,47 @@ def _compute_cost_matrix_numba(
 
 
 class TrackAssigner:
-    """Handles assignment of detections to tracks."""
+    """Handles assignment of detections to tracks.
+
+    Supports two assignment methods (user-selectable):
+    - Hungarian: Optimal global assignment (default)
+    - Greedy: Fast approximation for very large N (200+)
+
+    Optional spatial optimization using KD-trees to reduce comparisons.
+    """
 
     def __init__(self, params):
         self.params = params
+        self._logged_config = False  # Track if we've logged the configuration
+
+    def _get_spatial_candidates(self, N, M, pred_pos, meas_pos, max_dist):
+        """Use KD-tree to find candidate matches within max_dist.
+
+        Returns a dict mapping track_idx -> list of detection indices.
+        Much faster than N×M comparisons for large N.
+        """
+        if M == 0 or N == 0:
+            return {}
+
+        # Build KD-tree for detections
+        tree = cKDTree(meas_pos)
+
+        # For each prediction, find nearby detections
+        candidates = {}
+        for i in range(N):
+            indices = tree.query_ball_point(pred_pos[i], max_dist)
+            if indices:
+                candidates[i] = indices
+
+        return candidates
 
     def compute_cost_matrix(
         self, N, measurements, predictions, shapes, covariances, last_shape_info
     ):
         """Computes cost matrix for track-detection assignment.
+
+        If ENABLE_SPATIAL_OPTIMIZATION is True, uses KD-tree to find nearby
+        candidates and only computes costs for those pairs.
 
         Args:
             covariances: List of (2, 2) covariance matrices, one per track
@@ -132,7 +166,7 @@ class TrackAssigner:
         p = self.params
         M = len(measurements)
         if M == 0:
-            return np.zeros((N, 0), np.float32)
+            return np.zeros((N, 0), np.float32), {}
 
         # Extract parameters
         Wp, Wo, Wa, Wasp = (
@@ -180,7 +214,58 @@ class TrackAssigner:
         # Convert covariances list to 3D array for Numba
         covariances_arr = np.array(covariances, dtype=np.float32)  # (N, 2, 2)
 
-        # Call Numba-compiled function
+        # Use spatial partitioning if enabled by user
+        USE_SPATIAL_PARTITION = p.get("ENABLE_SPATIAL_OPTIMIZATION", False)
+        spatial_candidates = {}
+
+        if USE_SPATIAL_PARTITION:
+            # Find candidate detections for each track using KD-tree
+            spatial_candidates = self._get_spatial_candidates(
+                N, M, pred_pos, meas_pos, cull_threshold
+            )
+
+            # Initialize cost matrix with infinite costs
+            cost = np.full((N, M), MAX_DIST * 10, dtype=np.float32)
+
+            # Only compute costs for spatially nearby pairs
+            for track_idx, det_indices in spatial_candidates.items():
+                if not det_indices:
+                    continue
+
+                # Compute costs only for this track's candidates
+                for det_idx in det_indices:
+                    # Position cost
+                    diff = meas_pos[det_idx] - pred_pos[track_idx]
+
+                    if use_maha:
+                        try:
+                            Pcov = covariances_arr[track_idx]
+                            invP = np.linalg.inv(Pcov)
+                            pos_cost = np.sqrt(diff @ invP @ diff)
+                        except:
+                            pos_cost = np.linalg.norm(diff)
+                    else:
+                        pos_cost = np.linalg.norm(diff)
+
+                    # Orientation cost
+                    odiff = abs(pred_ori[track_idx] - meas_ori[det_idx])
+                    odiff = min(odiff, 2 * np.pi - odiff)
+
+                    # Shape costs
+                    area_diff = abs(shapes_area[det_idx] - prev_areas[track_idx])
+                    asp_diff = abs(shapes_asp[det_idx] - prev_asps[track_idx])
+
+                    cost[track_idx, det_idx] = (
+                        Wp * pos_cost + Wo * odiff + Wa * area_diff + Wasp * asp_diff
+                    )
+
+            logger.info(
+                f"Spatial partitioning reduced comparisons: "
+                f"{len(spatial_candidates)}/{N} tracks have candidates within distance threshold"
+            )
+            return cost, spatial_candidates
+
+        # Use dense Numba computation when spatial optimization is disabled
         if NUMBA_AVAILABLE:
             cost = _compute_cost_matrix_numba(
                 N,
@@ -224,7 +309,8 @@ class TrackAssigner:
                 cull_threshold,
             )
 
-        return cost
+        # Return empty dict for spatial_candidates when not used (no overhead)
+        return cost, spatial_candidates
 
     def _compute_cost_matrix_python(
         self,
@@ -287,15 +373,25 @@ class TrackAssigner:
         kalman_filters,
         trajectory_ids,
         next_trajectory_id,
+        spatial_candidates=None,
     ):
-        """Assigns detections to tracks using the hybrid strategy from the original code."""
+        """Assigns detections to tracks using user-selected method.
+
+        Method determined by ENABLE_GREEDY_ASSIGNMENT parameter:
+        - False (default): Hungarian algorithm (optimal, slower for large N)
+        - True: Greedy cost-sorted assignment (fast approximation)
+
+        Args:
+            spatial_candidates: Optional dict from track_idx -> list of candidate detection indices
+        """
         p = self.params
         if M == 0:
             return [], [], [], next_trajectory_id
 
         CONTINUITY_THRESHOLD = p.get("CONTINUITY_THRESHOLD", 10)
         MAX_DIST = p["MAX_DISTANCE_THRESHOLD"]
-
+        ENABLE_GREEDY = p.get("ENABLE_GREEDY_ASSIGNMENT", True)
+        USE_GREEDY = p.get("ENABLE_GREEDY_ASSIGNMENT", False)
         established = [
             i
             for i in range(N)
@@ -313,15 +409,45 @@ class TrackAssigner:
         all_assignments = []
         assigned_dets = set()
 
-        # Phase 1: Hungarian for established tracks
+        # Phase 1: Assignment for established tracks
         if established and M > 0:
-            est_cost = cost[established, :]
-            rows_idx, cols_idx = linear_sum_assignment(est_cost)
-            for r, c in zip(rows_idx, cols_idx):
-                track_idx = established[r]
-                if cost[track_idx, c] < MAX_DIST:
-                    all_assignments.append((track_idx, c))
-                    assigned_dets.add(c)
+            if USE_GREEDY:
+                # Greedy assignment: Sort by cost and assign
+                track_det_costs = []
+                for track_idx in established:
+                    # If spatial candidates provided, only check those
+                    if spatial_candidates and track_idx in spatial_candidates:
+                        candidates = spatial_candidates[track_idx]
+                    else:
+                        candidates = range(M)
+
+                    for det_idx in candidates:
+                        if cost[track_idx, det_idx] < MAX_DIST:
+                            track_det_costs.append(
+                                (cost[track_idx, det_idx], track_idx, det_idx)
+                            )
+
+                # Sort by cost and greedily assign
+                track_det_costs.sort(key=lambda x: x[0])
+                assigned_tracks = set()
+
+                for _, track_idx, det_idx in track_det_costs:
+                    if (
+                        track_idx not in assigned_tracks
+                        and det_idx not in assigned_dets
+                    ):
+                        all_assignments.append((track_idx, det_idx))
+                        assigned_dets.add(det_idx)
+                        assigned_tracks.add(track_idx)
+            else:
+                # Hungarian algorithm for small N
+                est_cost = cost[established, :]
+                rows_idx, cols_idx = linear_sum_assignment(est_cost)
+                for r, c in zip(rows_idx, cols_idx):
+                    track_idx = established[r]
+                    if cost[track_idx, c] < MAX_DIST:
+                        all_assignments.append((track_idx, c))
+                        assigned_dets.add(c)
 
         # Phase 2: Priority for unstable tracks
         unstable_sorted = sorted(

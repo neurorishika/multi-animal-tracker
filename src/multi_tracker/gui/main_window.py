@@ -904,6 +904,33 @@ class MainWindow(QMainWindow):
         l_weights.addWidget(self.chk_use_mahal)
         vbox.addWidget(g_weights)
 
+        # Assignment Algorithm (for large N optimization)
+        g_assign = QGroupBox("Assignment Algorithm (for Large N)")
+        f_assign = QFormLayout(g_assign)
+
+        self.combo_assignment_method = QComboBox()
+        self.combo_assignment_method.addItems(
+            ["Hungarian (Optimal)", "Greedy (Fast for N>100)"]
+        )
+        self.combo_assignment_method.setCurrentIndex(0)
+        self.combo_assignment_method.setToolTip(
+            "Hungarian: Optimal global assignment (slow for N>100)\n"
+            "Greedy: Fast approximation for large N (200+)"
+        )
+        f_assign.addRow("Method:", self.combo_assignment_method)
+
+        self.chk_spatial_optimization = QCheckBox(
+            "Enable Spatial Optimization (KD-Tree)"
+        )
+        self.chk_spatial_optimization.setChecked(False)
+        self.chk_spatial_optimization.setToolTip(
+            "Uses KD-tree to reduce comparisons for large N (50+).\n"
+            "Disable for small N (8-50) to reduce overhead."
+        )
+        f_assign.addRow(self.chk_spatial_optimization)
+
+        vbox.addWidget(g_assign)
+
         # Orientation & Lifecycle
         g_misc = QGroupBox("Orientation & Lifecycle")
         f_misc = QFormLayout(g_misc)
@@ -2456,6 +2483,9 @@ class MainWindow(QMainWindow):
             "W_AREA": self.spin_Wa.value(),
             "W_ASPECT": self.spin_Wasp.value(),
             "USE_MAHALANOBIS": self.chk_use_mahal.isChecked(),
+            "ENABLE_GREEDY_ASSIGNMENT": self.combo_assignment_method.currentIndex()
+            == 1,
+            "ENABLE_SPATIAL_OPTIMIZATION": self.chk_spatial_optimization.isChecked(),
             "TRAJECTORY_COLORS": colors,
             "SHOW_FG": self.chk_show_fg.isChecked(),
             "SHOW_BG": self.chk_show_bg.isChecked(),
@@ -2597,6 +2627,15 @@ class MainWindow(QMainWindow):
             self.spin_Wa.setValue(cfg.get("W_AREA", 0.001))
             self.spin_Wasp.setValue(cfg.get("W_ASPECT", 0.1))
             self.chk_use_mahal.setChecked(cfg.get("USE_MAHALANOBIS", True))
+
+            # Assignment algorithm settings
+            self.combo_assignment_method.setCurrentIndex(
+                1 if cfg.get("enable_greedy_assignment", False) else 0
+            )
+            self.chk_spatial_optimization.setChecked(
+                cfg.get("enable_spatial_optimization", False)
+            )
+
             self.chk_show_fg.setChecked(cfg.get("show_fg", True))
             self.chk_show_bg.setChecked(cfg.get("show_bg", True))
             self.chk_show_circles.setChecked(cfg.get("show_circles", True))
@@ -2717,6 +2756,9 @@ class MainWindow(QMainWindow):
             "W_AREA": self.spin_Wa.value(),
             "W_ASPECT": self.spin_Wasp.value(),
             "USE_MAHALANOBIS": self.chk_use_mahal.isChecked(),
+            "enable_greedy_assignment": self.combo_assignment_method.currentIndex()
+            == 1,
+            "enable_spatial_optimization": self.chk_spatial_optimization.isChecked(),
             "show_fg": self.chk_show_fg.isChecked(),
             "show_bg": self.chk_show_bg.isChecked(),
             "show_circles": self.chk_show_circles.isChecked(),

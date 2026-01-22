@@ -334,7 +334,7 @@ class TrackingWorker(QThread):
                 preds = kf_manager.get_predictions()
                 # Pre-extract covariances to reduce attribute access overhead
                 covariances = [kf.errorCovPre[:2, :2] for kf in kf_manager.filters]
-                cost = assigner.compute_cost_matrix(
+                cost, spatial_candidates = assigner.compute_cost_matrix(
                     N, meas, preds, shapes, covariances, last_shape_info
                 )
                 rows, cols, free_dets, next_id, high_cost_tracks = (
@@ -348,6 +348,7 @@ class TrackingWorker(QThread):
                         kf_manager.filters,
                         trajectory_ids,
                         next_trajectory_id,
+                        spatial_candidates,
                     )
                 )
                 next_trajectory_id = next_id
