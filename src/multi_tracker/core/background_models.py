@@ -41,6 +41,29 @@ class BackgroundModel:
         idxs = random.sample(range(total), count)
         bg_temp = None
         intensity_samples = []
+        
+        # Pre-resize ROI mask once if needed
+        roi_resized = None
+        if ROI_mask is not None:
+            # Get frame dimensions to determine ROI size
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            ret, sample_frame = cap.read()
+            if ret:
+                if resize_f < 1.0:
+                    sample_frame = cv2.resize(
+                        sample_frame, (0, 0), fx=resize_f, fy=resize_f, 
+                        interpolation=cv2.INTER_AREA
+                    )
+                gray_sample = cv2.cvtColor(sample_frame, cv2.COLOR_BGR2GRAY)
+                roi_resized = (
+                    cv2.resize(
+                        ROI_mask,
+                        (gray_sample.shape[1], gray_sample.shape[0]),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                    if resize_f != 1.0
+                    else ROI_mask
+                )
 
         for idx in idxs:
             cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
@@ -60,19 +83,7 @@ class BackgroundModel:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             gray = apply_image_adjustments(gray, br, ct, gm)
 
-            roi_resized = None
-            if ROI_mask is not None:
-                roi_resized = (
-                    cv2.resize(
-                        ROI_mask,
-                        (gray.shape[1], gray.shape[0]),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                    if resize_f != 1.0
-                    else ROI_mask
-                )
-
-            if ROI_mask is not None and roi_resized is not None:
+            if roi_resized is not None:
                 roi_pixels = gray[roi_resized > 0]
                 if len(roi_pixels) > 100:
                     p25, p75 = np.percentile(roi_pixels, [25, 75])
@@ -101,17 +112,8 @@ class BackgroundModel:
                 logger.info(
                     f"Reference intensity established: {self.reference_intensity:.1f}"
                 )
-            else:  # Fallback
-                if ROI_mask is not None:
-                    roi_resized = (
-                        cv2.resize(
-                            ROI_mask,
-                            (bg_temp.shape[1], bg_temp.shape[0]),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                        if resize_f != 1.0
-                        else ROI_mask
-                    )
+            else:  # Fallback - reuse roi_resized
+                if roi_resized is not None:
                     roi_bg_pixels = bg_temp[roi_resized > 0]
                     self.reference_intensity = (
                         np.mean(roi_bg_pixels)
