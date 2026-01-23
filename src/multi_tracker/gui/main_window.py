@@ -460,7 +460,14 @@ class MainWindow(QMainWindow):
 
         # File Inputs
         g_files = QGroupBox("File Management")
-        fl = QFormLayout(g_files)
+        vl_files = QVBoxLayout(g_files)
+        vl_files.addWidget(
+            self._create_help_label(
+                "Select your input video and output locations. Configuration is auto-saved per video - "
+                "next time you load the same video, your settings will be restored automatically."
+            )
+        )
+        fl = QFormLayout()
         fl.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.btn_file = QPushButton("Select Input Video...")
@@ -512,12 +519,20 @@ class MainWindow(QMainWindow):
             "color: #888; font-style: italic; font-size: 10px;"
         )
         fl.addRow("", self.config_status_label)
+        vl_files.addLayout(fl)
 
         form.addWidget(g_files)
 
         # System Performance
         g_sys = QGroupBox("System Performance")
-        fl_sys = QFormLayout(g_sys)
+        vl_sys = QVBoxLayout(g_sys)
+        vl_sys.addWidget(
+            self._create_help_label(
+                "Resize factor reduces computational cost by downscaling frames. Reference body size makes all "
+                "distance/size parameters portable across videos - set once based on typical animal size."
+            )
+        )
+        fl_sys = QFormLayout()
         fl_sys.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.spin_resize = QDoubleSpinBox()
@@ -553,6 +568,7 @@ class MainWindow(QMainWindow):
             "color: #888; font-size: 10px; font-style: italic;"
         )
         fl_sys.addRow("", self.label_body_size_info)
+        vl_sys.addLayout(fl_sys)
 
         # Threads/Device hints could go here in future
         form.addWidget(g_sys)
@@ -750,7 +766,14 @@ class MainWindow(QMainWindow):
 
         # Background Model
         g_bg_model = QGroupBox("Background Model")
-        f_bg = QFormLayout(g_bg_model)
+        vl_bg_model = QVBoxLayout(g_bg_model)
+        vl_bg_model.addWidget(
+            self._create_help_label(
+                "Build a model of the static background. Priming frames establish initial model, learning rate "
+                "controls adaptation speed, threshold sets sensitivity. Lower threshold = more sensitive detection."
+            )
+        )
+        f_bg = QFormLayout()
         f_bg.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_bg_prime = QSpinBox()
         self.spin_bg_prime.setRange(0, 5000)
@@ -792,10 +815,19 @@ class MainWindow(QMainWindow):
             "Recommended: 30-70 depending on contrast."
         )
         f_bg.addRow("Subtraction Threshold:", self.spin_threshold)
+        vl_bg_model.addLayout(f_bg)
         l_bg.addWidget(g_bg_model)
 
         # Lighting Stab
         g_light = QGroupBox("Lighting Stabilization")
+        vl_light = QVBoxLayout(g_light)
+        vl_light.addWidget(
+            self._create_help_label(
+                "Compensate for gradual lighting changes (clouds, time of day). Smoothing factor controls "
+                "adaptation speed - higher = slower/more stable. Enable for outdoor or variable-light videos."
+            )
+        )
+        f_light = QFormLayout()
         f_light = QFormLayout(g_light)
         f_light.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.chk_lighting_stab = QCheckBox("Enable Stabilization")
@@ -829,6 +861,7 @@ class MainWindow(QMainWindow):
             "Recommended: 5-9"
         )
         f_light.addRow("Median Window:", self.spin_lighting_median)
+        vl_light.addLayout(f_light)
         l_bg.addWidget(g_light)
 
         # Morphology (Standard)
@@ -1239,7 +1272,14 @@ class MainWindow(QMainWindow):
 
         # Assignment Algorithm (for large N optimization)
         g_assign = QGroupBox("Assignment Algorithm (for Large N)")
-        f_assign = QFormLayout(g_assign)
+        vl_assign = QVBoxLayout(g_assign)
+        vl_assign.addWidget(
+            self._create_help_label(
+                "Choose matching algorithm. Hungarian is optimal but slow for many animals (N>100). "
+                "Greedy approximation is faster but may produce suboptimal assignments."
+            )
+        )
+        f_assign = QFormLayout()
 
         self.combo_assignment_method = QComboBox()
         self.combo_assignment_method.addItems(
@@ -1266,7 +1306,14 @@ class MainWindow(QMainWindow):
 
         # Orientation & Lifecycle
         g_misc = QGroupBox("Orientation & Lifecycle")
-        f_misc = QFormLayout(g_misc)
+        vl_misc = QVBoxLayout(g_misc)
+        vl_misc.addWidget(
+            self._create_help_label(
+                "Control how orientation is calculated based on movement. Moving animals can flip orientation instantly, "
+                "stationary animals change orientation gradually within max angle limit."
+            )
+        )
+        f_misc = QFormLayout()
 
         self.spin_velocity = QDoubleSpinBox()
         self.spin_velocity.setRange(0.1, 50.0)
@@ -1297,6 +1344,7 @@ class MainWindow(QMainWindow):
             "Recommended: 20-45° (prevents orientation jitter)."
         )
         f_misc.addRow("Max Orient Δ (Stopped):", self.spin_max_orient)
+        vl_misc.addLayout(f_misc)
         vbox.addWidget(g_misc)
 
         # Track Lifecycle
@@ -1534,6 +1582,12 @@ class MainWindow(QMainWindow):
         # Background Subtraction specific overlays
         self.g_overlays_bg = QGroupBox("Video Overlays - Background Subtraction")
         v_ov_bg = QVBoxLayout(self.g_overlays_bg)
+        v_ov_bg.addWidget(
+            self._create_help_label(
+                "Debug background subtraction by viewing the foreground mask (detected movement) "
+                "and background model (learned static image)."
+            )
+        )
 
         self.chk_show_fg = QCheckBox("Show Foreground Mask")
         self.chk_show_fg.setChecked(True)
@@ -1548,6 +1602,12 @@ class MainWindow(QMainWindow):
         # YOLO specific overlays
         self.g_overlays_yolo = QGroupBox("Video Overlays - YOLO")
         v_ov_yolo = QVBoxLayout(self.g_overlays_yolo)
+        v_ov_yolo.addWidget(
+            self._create_help_label(
+                "Show oriented bounding boxes from YOLO detection. Useful for debugging detection quality "
+                "and verifying model performance."
+            )
+        )
 
         self.chk_show_yolo_obb = QCheckBox("Show YOLO OBB Detection Boxes")
         self.chk_show_yolo_obb.setChecked(False)
@@ -1556,7 +1616,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.g_overlays_yolo)
 
         g_settings = QGroupBox("Display Settings")
-        f_disp = QFormLayout(g_settings)
+        vl_settings = QVBoxLayout(g_settings)
+        vl_settings.addWidget(
+            self._create_help_label(
+                "Control how much trajectory history to display. Longer trails show more path context "
+                "but can clutter the view when many animals are tracked."
+            )
+        )
+        f_disp = QFormLayout()
         self.spin_traj_hist = QSpinBox()
         self.spin_traj_hist.setRange(1, 60)
         self.spin_traj_hist.setValue(5)
@@ -1566,10 +1633,17 @@ class MainWindow(QMainWindow):
             "Recommended: 3-10 seconds."
         )
         f_disp.addRow("Trail History (sec):", self.spin_traj_hist)
+        vl_settings.addLayout(f_disp)
         layout.addWidget(g_settings)
 
         g_debug = QGroupBox("Advanced / Debug")
         v_dbg = QVBoxLayout(g_debug)
+        v_dbg.addWidget(
+            self._create_help_label(
+                "Enable verbose logging to see detailed tracking decisions. Useful for troubleshooting "
+                "but generates large log files. Disable for production runs."
+            )
+        )
         self.chk_debug_logging = QCheckBox("Enable Verbose Debug Logging")
         self.chk_debug_logging.stateChanged.connect(self.toggle_debug_logging)
         v_dbg.addWidget(self.chk_debug_logging)
