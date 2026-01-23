@@ -197,6 +197,7 @@ class MainWindow(QMainWindow):
         self.preview_frame_original = None  # Original frame without adjustments
         self.detection_test_result = None  # Store detection test result
         self.current_video_path = None
+        self.detected_sizes = None  # Store detected object sizes for statistics
 
         # === UI CONSTRUCTION ===
         self.init_ui()
@@ -338,6 +339,13 @@ class MainWindow(QMainWindow):
         self.btn_refresh_preview = QPushButton("Load Random Frame for Preview")
         self.btn_refresh_preview.clicked.connect(self._load_preview_frame)
         self.btn_refresh_preview.setEnabled(False)
+        self.btn_refresh_preview.setToolTip(
+            "Load a random frame from your video.\n\n"
+            "For size estimation: Choose a frame with:\n"
+            "• Many animals visible\n"
+            "• Animals well-separated (not overlapping)\n"
+            "• Representative of typical body sizes"
+        )
         preview_layout.addWidget(self.btn_refresh_preview)
 
         self.btn_test_detection = QPushButton("Test Detection on Preview")
@@ -551,7 +559,7 @@ class MainWindow(QMainWindow):
         self.spin_reference_body_size.setRange(1.0, 500.0)
         self.spin_reference_body_size.setSingleStep(1.0)
         self.spin_reference_body_size.setValue(20.0)
-        self.spin_reference_body_size.setDecimals(1)
+        self.spin_reference_body_size.setDecimals(2)
         self.spin_reference_body_size.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
@@ -569,9 +577,48 @@ class MainWindow(QMainWindow):
         )
         fl_sys.addRow("", self.label_body_size_info)
         vl_sys.addLayout(fl_sys)
-
-        # Threads/Device hints could go here in future
         form.addWidget(g_sys)
+
+        # Detection size statistics panel
+        g_detect_stats = QGroupBox("Detection Size Statistics")
+        vl_stats = QVBoxLayout(g_detect_stats)
+        vl_stats.addWidget(
+            self._create_help_label(
+                "Workflow for accurate size estimation:\n"
+                "1. Go to 'Detection' tab and configure your detection method\n"
+                "2. IMPORTANT: Disable 'Enable Size Filtering' (it biases estimates)\n"
+                "3. Return here and click 'Load Random Frame for Preview'\n"
+                "4. Choose a frame with many animals well-separated\n"
+                "5. Click 'Test Detection' to analyze sizes\n"
+                "6. Use 'Auto-Set' to apply the recommended body size"
+            )
+        )
+
+        self.label_detection_stats = QLabel(
+            "No detection data yet.\nRun 'Test Detection' to estimate sizes."
+        )
+        self.label_detection_stats.setStyleSheet(
+            "color: #aaa; font-size: 11px; padding: 8px; "
+            "background-color: #2a2a2a; border-radius: 4px;"
+        )
+        self.label_detection_stats.setWordWrap(True)
+        vl_stats.addWidget(self.label_detection_stats)
+
+        # Auto-set button
+        btn_layout = QHBoxLayout()
+        self.btn_auto_set_body_size = QPushButton("Auto-Set from Median")
+        self.btn_auto_set_body_size.clicked.connect(
+            self._auto_set_body_size_from_detection
+        )
+        self.btn_auto_set_body_size.setEnabled(False)
+        self.btn_auto_set_body_size.setToolTip(
+            "Automatically set reference body size to the median detected diameter"
+        )
+        btn_layout.addWidget(self.btn_auto_set_body_size)
+        btn_layout.addStretch()
+        vl_stats.addLayout(btn_layout)
+
+        form.addWidget(g_detect_stats)
 
         form.addStretch()
         scroll.setWidget(content)
@@ -630,7 +677,7 @@ class MainWindow(QMainWindow):
         self.spin_min_object_size = QDoubleSpinBox()
         self.spin_min_object_size.setRange(0.1, 5.0)
         self.spin_min_object_size.setSingleStep(0.1)
-        self.spin_min_object_size.setDecimals(1)
+        self.spin_min_object_size.setDecimals(2)
         self.spin_min_object_size.setValue(0.3)
         self.spin_min_object_size.setToolTip(
             "Minimum object area as multiple of reference body area.\n"
@@ -640,7 +687,7 @@ class MainWindow(QMainWindow):
         self.spin_max_object_size = QDoubleSpinBox()
         self.spin_max_object_size.setRange(0.5, 10.0)
         self.spin_max_object_size.setSingleStep(0.1)
-        self.spin_max_object_size.setDecimals(1)
+        self.spin_max_object_size.setDecimals(2)
         self.spin_max_object_size.setValue(3.0)
         self.spin_max_object_size.setToolTip(
             "Maximum object area as multiple of reference body area.\n"
@@ -1132,7 +1179,7 @@ class MainWindow(QMainWindow):
         self.spin_max_dist = QDoubleSpinBox()
         self.spin_max_dist.setRange(0.1, 20.0)
         self.spin_max_dist.setSingleStep(0.1)
-        self.spin_max_dist.setDecimals(1)
+        self.spin_max_dist.setDecimals(2)
         self.spin_max_dist.setValue(1.5)
         self.spin_max_dist.setToolTip(
             "Maximum distance for track-to-detection assignment (×body size).\n"
@@ -1145,7 +1192,7 @@ class MainWindow(QMainWindow):
         self.spin_continuity_thresh = QDoubleSpinBox()
         self.spin_continuity_thresh.setRange(0.1, 10.0)
         self.spin_continuity_thresh.setSingleStep(0.1)
-        self.spin_continuity_thresh.setDecimals(1)
+        self.spin_continuity_thresh.setDecimals(2)
         self.spin_continuity_thresh.setValue(0.5)
         self.spin_continuity_thresh.setToolTip(
             "Search radius for recovering lost tracks (×body size).\n"
@@ -1372,7 +1419,7 @@ class MainWindow(QMainWindow):
         self.spin_min_respawn_distance = QDoubleSpinBox()
         self.spin_min_respawn_distance.setRange(0.0, 20.0)
         self.spin_min_respawn_distance.setSingleStep(0.5)
-        self.spin_min_respawn_distance.setDecimals(1)
+        self.spin_min_respawn_distance.setDecimals(2)
         self.spin_min_respawn_distance.setValue(2.5)
         self.spin_min_respawn_distance.setToolTip(
             "Minimum distance from existing tracks to spawn new track (×body size).\n"
@@ -1484,7 +1531,7 @@ class MainWindow(QMainWindow):
         self.spin_max_distance_break = QDoubleSpinBox()
         self.spin_max_distance_break.setRange(1.0, 50.0)
         self.spin_max_distance_break.setSingleStep(0.5)
-        self.spin_max_distance_break.setDecimals(1)
+        self.spin_max_distance_break.setDecimals(2)
         self.spin_max_distance_break.setValue(15.0)
         self.spin_max_distance_break.setToolTip(
             "Maximum distance jump before breaking trajectory (×body size, 1-50).\n"
@@ -1785,7 +1832,11 @@ class MainWindow(QMainWindow):
         """Handle zoom slider change."""
         zoom_val = value / 100.0
         self.label_zoom_val.setText(f"{zoom_val:.2f}x")
-        self._update_preview_display()
+        # If detection test result exists, redisplay it; otherwise show preview
+        if self.detection_test_result is not None:
+            self._redisplay_detection_test()
+        else:
+            self._update_preview_display()
 
     def _update_body_size_info(self):
         """Update the info label showing calculated body area."""
@@ -1795,6 +1846,119 @@ class MainWindow(QMainWindow):
         body_area = math.pi * (body_size / 2.0) ** 2
         self.label_body_size_info.setText(
             f"≈ {body_area:.1f} px² area (all size/distance params scale with this)"
+        )
+
+    def _update_detection_stats(self, detected_dimensions, resize_factor=1.0):
+        """Update detection statistics display.
+
+        Args:
+            detected_dimensions: List of (major_axis, minor_axis) tuples in pixels
+            resize_factor: Factor by which frame was resized (to scale back to original)
+        """
+        if not detected_dimensions or len(detected_dimensions) == 0:
+            self.label_detection_stats.setText(
+                "No detections found.\nAdjust parameters and try again."
+            )
+            self.btn_auto_set_body_size.setEnabled(False)
+            self.detected_sizes = None
+            return
+
+        # Scale dimensions back to original resolution (resize_factor < 1 means frame was downscaled)
+        # Linear dimensions scale with resize_factor
+        scale_factor = 1.0 / resize_factor
+        major_axes = [dims[0] * scale_factor for dims in detected_dimensions]
+        minor_axes = [dims[1] * scale_factor for dims in detected_dimensions]
+
+        # Calculate aspect ratios
+        aspect_ratios = [
+            major / minor if minor > 0 else 1.0
+            for major, minor in zip(major_axes, minor_axes)
+        ]
+
+        # Calculate geometric mean as representative body size (better than assuming circular)
+        geometric_means = [
+            math.sqrt(major * minor) for major, minor in zip(major_axes, minor_axes)
+        ]
+
+        # Calculate statistics for each dimension
+        stats = {
+            "major": {
+                "mean": np.mean(major_axes),
+                "median": np.median(major_axes),
+                "std": np.std(major_axes),
+                "min": np.min(major_axes),
+                "max": np.max(major_axes),
+            },
+            "minor": {
+                "mean": np.mean(minor_axes),
+                "median": np.median(minor_axes),
+                "std": np.std(minor_axes),
+                "min": np.min(minor_axes),
+                "max": np.max(minor_axes),
+            },
+            "aspect_ratio": {
+                "mean": np.mean(aspect_ratios),
+                "median": np.median(aspect_ratios),
+                "std": np.std(aspect_ratios),
+            },
+            "geometric_mean": {
+                "mean": np.mean(geometric_means),
+                "median": np.median(geometric_means),
+                "std": np.std(geometric_means),
+            },
+        }
+
+        # Store for auto-set
+        self.detected_sizes = {
+            "major_axes": major_axes,
+            "minor_axes": minor_axes,
+            "aspect_ratios": aspect_ratios,
+            "geometric_means": geometric_means,
+            "stats": stats,
+            "count": len(detected_dimensions),
+            "resize_factor": resize_factor,
+            "recommended_body_size": stats["geometric_mean"][
+                "median"
+            ],  # Use geometric mean median
+        }
+
+        # Update label with comprehensive statistics
+        stats_text = (
+            f"Analyzed {len(detected_dimensions)} detections:\n\n"
+            f"Major Axis (length):\n"
+            f"  • Median: {stats['major']['median']:.1f} px  (range: {stats['major']['min']:.1f} - {stats['major']['max']:.1f})\n"
+            f"  • Mean: {stats['major']['mean']:.1f} ± {stats['major']['std']:.1f} px\n\n"
+            f"Minor Axis (width):\n"
+            f"  • Median: {stats['minor']['median']:.1f} px  (range: {stats['minor']['min']:.1f} - {stats['minor']['max']:.1f})\n"
+            f"  • Mean: {stats['minor']['mean']:.1f} ± {stats['minor']['std']:.1f} px\n\n"
+            f"Aspect Ratio (length/width):\n"
+            f"  • Median: {stats['aspect_ratio']['median']:.2f}  Mean: {stats['aspect_ratio']['mean']:.2f} ± {stats['aspect_ratio']['std']:.2f}\n\n"
+            f"Recommended Body Size: {stats['geometric_mean']['median']:.1f} px\n"
+            f"  (geometric mean of dimensions)"
+        )
+        self.label_detection_stats.setText(stats_text)
+        self.btn_auto_set_body_size.setEnabled(True)
+
+    def _auto_set_body_size_from_detection(self):
+        """Auto-set reference body size from detected geometric mean."""
+        if self.detected_sizes is None:
+            return
+
+        recommended_size = self.detected_sizes["recommended_body_size"]
+        stats = self.detected_sizes["stats"]
+        self.spin_reference_body_size.setValue(recommended_size)
+
+        # Show confirmation with aspect ratio info
+        QMessageBox.information(
+            self,
+            "Body Size Updated",
+            f"Reference body size set to {recommended_size:.1f} px\n"
+            f"(geometric mean of {self.detected_sizes['count']} detections)\n\n"
+            f"Detected dimensions:\n"
+            f"  • Major axis: {stats['major']['median']:.1f} px\n"
+            f"  • Minor axis: {stats['minor']['median']:.1f} px\n"
+            f"  • Aspect ratio: {stats['aspect_ratio']['median']:.2f}\n\n"
+            f"All distance/size parameters will now scale relative to this value.",
         )
 
     def _on_video_output_toggled(self, checked):
@@ -1887,8 +2051,26 @@ class MainWindow(QMainWindow):
             logger.warning("No preview frame loaded")
             return
 
+        # Warn if size filtering is enabled (biases size estimation)
+        if self.chk_size_filtering.isChecked():
+            reply = QMessageBox.warning(
+                self,
+                "Size Filtering Enabled",
+                "⚠️ Size filtering is currently enabled!\n\n"
+                "This will exclude detections outside your size range and bias the \n"
+                "size statistics, making them unreliable for estimating body size.\n\n"
+                "Recommendation: Disable 'Enable Size Filtering' in the Detection tab \n"
+                "before running size estimation.\n\n"
+                "Do you want to continue anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.No:
+                return
+
         from ..utils.image_processing import apply_image_adjustments
         from ..core.background_models import BackgroundModel
+        from ..core.detection import YOLOOBBDetector
 
         # Convert RGB preview to BGR for OpenCV
         frame_bgr = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2BGR)
@@ -1990,6 +2172,9 @@ class MainWindow(QMainWindow):
 
                 min_contour = self.spin_min_contour.value()
                 detections = []
+                detected_dimensions = (
+                    []
+                )  # Collect (major, minor) axis pairs for statistics
 
                 for c in cnts:
                     area = cv2.contourArea(c)
@@ -2006,6 +2191,10 @@ class MainWindow(QMainWindow):
                     # Fit ellipse
                     (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
                     detections.append(((cx, cy), (ax1, ax2), ang, area))
+                    # Store major and minor axes (fitEllipse returns full axes, not semi-axes)
+                    major_axis = max(ax1, ax2)
+                    minor_axis = min(ax1, ax2)
+                    detected_dimensions.append((major_axis, minor_axis))
 
                     # Draw ellipse
                     cv2.ellipse(
@@ -2043,10 +2232,10 @@ class MainWindow(QMainWindow):
                     f"Background subtraction test complete: {len(detections)} detections"
                 )
 
+                # Update detection statistics (scale dimensions back to original resolution)
+                self._update_detection_stats(detected_dimensions, resize_f)
             else:
-                # YOLO detection test
-                from ..core.detection import YOLOOBBDetector
-
+                # YOLO Detection
                 # Apply resize factor (same as tracking does)
                 resize_f = self.spin_resize.value()
                 frame_to_process = frame_bgr.copy()
@@ -2111,12 +2300,25 @@ class MainWindow(QMainWindow):
                     yolo_frame, 0
                 )
 
-                # Draw OBB boxes
+                # Collect detected dimensions for statistics
+                # Extract actual width/height from YOLO OBB results
+                detected_dimensions = []
                 if (
-                    yolo_results is not None
+                    yolo_results
                     and hasattr(yolo_results, "obb")
-                    and yolo_results.obb is not None
+                    and len(yolo_results.obb) > 0
                 ):
+                    obb_data = yolo_results.obb
+                    for i in range(len(obb_data)):
+                        # xywhr gives [center_x, center_y, width, height, rotation]
+                        xywhr = obb_data.xywhr[i].cpu().numpy()
+                        _, _, w, h, _ = xywhr
+                        major_axis = max(w, h)
+                        minor_axis = min(w, h)
+                        detected_dimensions.append((major_axis, minor_axis))
+
+                # Visualize YOLO detections
+                if yolo_results and hasattr(yolo_results, "obb"):
                     obb_data = yolo_results.obb
                     for i in range(len(obb_data)):
                         corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
@@ -2164,16 +2366,18 @@ class MainWindow(QMainWindow):
                     2,
                 )
 
-            # Display result
+                # Update detection statistics (scale dimensions back to original resolution)
+                self._update_detection_stats(detected_dimensions, resize_f)
+
+            # Convert BGR to RGB for Qt display
             test_frame_rgb = cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB)
 
-            # Store the detection test result for zoom updates
-            # Get actual resize factor used (same for both methods)
-            resize_f = self.spin_resize.value()
+            # Store the detection test result for redisplay when zoom changes
             self.detection_test_result = (test_frame_rgb.copy(), resize_f)
 
             h, w, ch = test_frame_rgb.shape
             bytes_per_line = ch * w
+
             qimg = QImage(
                 test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888
             )
