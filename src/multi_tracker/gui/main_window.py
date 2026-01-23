@@ -531,13 +531,83 @@ class MainWindow(QMainWindow):
 
         form.addWidget(g_files)
 
+        # Reference Parameters
+        g_ref = QGroupBox("Reference Parameters")
+        vl_ref = QVBoxLayout(g_ref)
+        vl_ref.addWidget(
+            self._create_help_label(
+                "These parameters define the time and spatial scale for tracking. "
+                "Frame rate controls time-dependent parameters (velocities, durations). "
+                "Body size makes all distance/size parameters portable across videos."
+            )
+        )
+        fl_ref = QFormLayout()
+        fl_ref.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # FPS with detect button
+        fps_layout = QHBoxLayout()
+        self.spin_fps = QDoubleSpinBox()
+        self.spin_fps.setRange(1.0, 240.0)
+        self.spin_fps.setSingleStep(1.0)
+        self.spin_fps.setValue(30.0)
+        self.spin_fps.setDecimals(2)
+        self.spin_fps.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.spin_fps.setToolTip(
+            "Video frame rate (frames per second).\n"
+            "Use 'Detect from Video' to read from file metadata.\n"
+            "Time-dependent parameters (velocity, durations) scale with this.\n"
+            "Affects: motion prediction, track lifecycle, velocity thresholds."
+        )
+        self.spin_fps.valueChanged.connect(self._update_fps_info)
+        fps_layout.addWidget(self.spin_fps)
+
+        self.btn_detect_fps = QPushButton("Detect from Video")
+        self.btn_detect_fps.clicked.connect(self._detect_fps_from_current_video)
+        self.btn_detect_fps.setEnabled(False)
+        self.btn_detect_fps.setToolTip(
+            "Auto-detect frame rate from the currently loaded video's metadata"
+        )
+        fps_layout.addWidget(self.btn_detect_fps)
+        fl_ref.addRow("Video Frame Rate (FPS):", fps_layout)
+
+        # FPS info label
+        self.label_fps_info = QLabel()
+        self.label_fps_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic;"
+        )
+        fl_ref.addRow("", self.label_fps_info)
+
+        self.spin_reference_body_size = QDoubleSpinBox()
+        self.spin_reference_body_size.setRange(1.0, 500.0)
+        self.spin_reference_body_size.setSingleStep(1.0)
+        self.spin_reference_body_size.setValue(20.0)
+        self.spin_reference_body_size.setDecimals(2)
+        self.spin_reference_body_size.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.spin_reference_body_size.setToolTip(
+            "Reference animal body diameter in pixels (at resize=1.0).\n"
+            "All distance/size parameters are scaled relative to this value."
+        )
+        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
+        fl_ref.addRow("Reference Body Size (px):", self.spin_reference_body_size)
+
+        # Info label showing calculated area
+        self.label_body_size_info = QLabel()
+        self.label_body_size_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic;"
+        )
+        fl_ref.addRow("", self.label_body_size_info)
+        vl_ref.addLayout(fl_ref)
+        form.addWidget(g_ref)
+
         # System Performance
         g_sys = QGroupBox("System Performance")
         vl_sys = QVBoxLayout(g_sys)
         vl_sys.addWidget(
             self._create_help_label(
-                "Resize factor reduces computational cost by downscaling frames. Reference body size makes all "
-                "distance/size parameters portable across videos - set once based on typical animal size."
+                "Resize factor reduces computational cost by downscaling frames. "
+                "Lower values speed up processing but reduce spatial accuracy."
             )
         )
         fl_sys = QFormLayout()
@@ -554,28 +624,6 @@ class MainWindow(QMainWindow):
             "All body-size-based parameters auto-scale with this value."
         )
         fl_sys.addRow("Processing Resize Factor:", self.spin_resize)
-
-        self.spin_reference_body_size = QDoubleSpinBox()
-        self.spin_reference_body_size.setRange(1.0, 500.0)
-        self.spin_reference_body_size.setSingleStep(1.0)
-        self.spin_reference_body_size.setValue(20.0)
-        self.spin_reference_body_size.setDecimals(2)
-        self.spin_reference_body_size.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Fixed
-        )
-        self.spin_reference_body_size.setToolTip(
-            "Reference animal body diameter in pixels (at resize=1.0).\n"
-            "All distance/size parameters are scaled relative to this value."
-        )
-        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
-        fl_sys.addRow("Reference Body Size (px):", self.spin_reference_body_size)
-
-        # Info label showing calculated area
-        self.label_body_size_info = QLabel()
-        self.label_body_size_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
-        )
-        fl_sys.addRow("", self.label_body_size_info)
         vl_sys.addLayout(fl_sys)
         form.addWidget(g_sys)
 
@@ -875,7 +923,6 @@ class MainWindow(QMainWindow):
             )
         )
         f_light = QFormLayout()
-        f_light = QFormLayout(g_light)
         f_light.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.chk_lighting_stab = QCheckBox("Enable Stabilization")
         self.chk_lighting_stab.setChecked(True)
@@ -1230,6 +1277,7 @@ class MainWindow(QMainWindow):
             "Process noise covariance (0.0-1.0) for motion prediction.\n"
             "Lower = trust motion model more (smooth, may lag).\n"
             "Higher = trust measurements more (responsive, less smooth).\n"
+            "Note: Optimal value depends on frame rate (time step).\n"
             "Recommended: 0.01-0.05 for predictable motion."
         )
         f_kf.addRow("Process Noise:", self.spin_kalman_noise)
@@ -1349,6 +1397,7 @@ class MainWindow(QMainWindow):
         )
         f_assign.addRow(self.chk_spatial_optimization)
 
+        vl_assign.addLayout(f_assign)
         vbox.addWidget(g_assign)
 
         # Orientation & Lifecycle
@@ -1363,15 +1412,18 @@ class MainWindow(QMainWindow):
         f_misc = QFormLayout()
 
         self.spin_velocity = QDoubleSpinBox()
-        self.spin_velocity.setRange(0.1, 50.0)
-        self.spin_velocity.setValue(2.0)
+        self.spin_velocity.setRange(0.1, 100.0)
+        self.spin_velocity.setSingleStep(0.5)
+        self.spin_velocity.setDecimals(2)
+        self.spin_velocity.setValue(5.0)
         self.spin_velocity.setToolTip(
-            "Velocity threshold (px/frame) to classify as 'moving'.\n"
+            "Velocity threshold (body-sizes/second) to classify as 'moving'.\n"
             "Below this = stationary (allows larger orientation changes).\n"
             "Above this = moving (instant orientation flip possible).\n"
-            "Recommended: 1-5 depending on framerate and animal speed."
+            "Independent of frame rate - automatically scaled by FPS.\n"
+            "Recommended: 2-10 body-sizes/s depending on animal speed."
         )
-        f_misc.addRow("Motion Velocity Threshold:", self.spin_velocity)
+        f_misc.addRow("Motion Velocity Threshold (body/s):", self.spin_velocity)
 
         self.chk_instant_flip = QCheckBox("Instant Flip (Fast Motion)")
         self.chk_instant_flip.setChecked(True)
@@ -1519,14 +1571,17 @@ class MainWindow(QMainWindow):
         f_pp.addRow("Min Length (frames):", self.spin_min_trajectory_length)
 
         self.spin_max_velocity_break = QDoubleSpinBox()
-        self.spin_max_velocity_break.setRange(1, 1000)
-        self.spin_max_velocity_break.setValue(100.0)
+        self.spin_max_velocity_break.setRange(1.0, 500.0)
+        self.spin_max_velocity_break.setSingleStep(5.0)
+        self.spin_max_velocity_break.setDecimals(1)
+        self.spin_max_velocity_break.setValue(50.0)
         self.spin_max_velocity_break.setToolTip(
-            "Maximum velocity (pixels/frame) before breaking trajectory (1-1000).\n"
+            "Maximum velocity (body-sizes/second) before breaking trajectory.\n"
             "Splits tracks at unrealistic speed jumps (likely identity swaps).\n"
-            "Recommended: 50-200 for typical animal motion."
+            "Independent of frame rate - automatically scaled by FPS.\n"
+            "Recommended: 30-100 body-sizes/s for typical animal motion."
         )
-        f_pp.addRow("Max Velocity Break:", self.spin_max_velocity_break)
+        f_pp.addRow("Max Velocity Break (body/s):", self.spin_max_velocity_break)
 
         self.spin_max_distance_break = QDoubleSpinBox()
         self.spin_max_distance_break.setRange(1.0, 50.0)
@@ -1741,6 +1796,8 @@ class MainWindow(QMainWindow):
             # Enable preview refresh button and load a random frame
             self.btn_refresh_preview.setEnabled(True)
             self.btn_test_detection.setEnabled(True)
+            self.btn_detect_fps.setEnabled(True)
+
             self._load_preview_frame()
 
             # Auto-load config if it exists for this video
@@ -1847,6 +1904,49 @@ class MainWindow(QMainWindow):
         self.label_body_size_info.setText(
             f"≈ {body_area:.1f} px² area (all size/distance params scale with this)"
         )
+
+    def _update_fps_info(self):
+        """Update the FPS info label with time per frame."""
+        fps = self.spin_fps.value()
+        time_per_frame = 1000.0 / fps  # milliseconds
+        self.label_fps_info.setText(f"= {time_per_frame:.2f} ms per frame")
+
+    def _detect_fps_from_current_video(self):
+        """Detect and set FPS from the currently loaded video."""
+        if not self.current_video_path:
+            QMessageBox.warning(
+                self, "No Video Loaded", "Please load a video file first."
+            )
+            return
+
+        detected_fps = self._auto_detect_fps(self.current_video_path)
+        if detected_fps is not None:
+            self.spin_fps.setValue(detected_fps)
+            QMessageBox.information(
+                self,
+                "FPS Detected",
+                f"Frame rate detected: {detected_fps:.2f} FPS\n\n"
+                f"Time per frame: {1000.0/detected_fps:.2f} ms",
+            )
+
+    def _auto_detect_fps(self, video_path):
+        """Auto-detect FPS from video metadata and return the value."""
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS)
+                cap.release()
+                if fps > 0:
+                    logger.info(f"Detected FPS from video: {fps:.2f}")
+                    return fps
+                else:
+                    logger.warning("Could not detect FPS from video metadata")
+                    return None
+            else:
+                logger.warning("Could not open video for FPS detection")
+                return None
+        except Exception as e:
+            logger.error(f"Error detecting FPS: {e}")
 
     def _update_detection_stats(self, detected_dimensions, resize_factor=1.0):
         """Update detection statistics display.
@@ -3214,8 +3314,18 @@ class MainWindow(QMainWindow):
             self.spin_max_distance_break.value() * scaled_body_size
         )
 
+        # Convert time-based velocities to frame-based for tracking
+        fps = self.spin_fps.value()
+        velocity_threshold_pixels_per_frame = (
+            self.spin_velocity.value() * scaled_body_size / fps
+        )
+        max_velocity_break_pixels_per_frame = (
+            self.spin_max_velocity_break.value() * scaled_body_size / fps
+        )
+
         return {
             "DETECTION_METHOD": det_method,
+            "FPS": fps,  # Video frame rate
             "YOLO_MODEL_PATH": yolo_path,
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
@@ -3232,7 +3342,7 @@ class MainWindow(QMainWindow):
             "MAX_DISTANCE_THRESHOLD": max_distance_pixels,
             "ENABLE_POSTPROCESSING": self.enable_postprocessing.isChecked(),
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
-            "MAX_VELOCITY_BREAK": self.spin_max_velocity_break.value(),
+            "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
             "MAX_DISTANCE_BREAK": max_distance_break_pixels,
             "CONTINUITY_THRESHOLD": recovery_search_distance_pixels,
             "MIN_RESPAWN_DISTANCE": min_respawn_distance_pixels,
@@ -3260,7 +3370,7 @@ class MainWindow(QMainWindow):
             "CONTRAST": self.slider_contrast.value() / 100.0,
             "GAMMA": self.slider_gamma.value() / 100.0,
             "DARK_ON_LIGHT_BACKGROUND": self.chk_dark_on_light.isChecked(),
-            "VELOCITY_THRESHOLD": self.spin_velocity.value(),
+            "VELOCITY_THRESHOLD": velocity_threshold_pixels_per_frame,
             "INSTANT_FLIP_ORIENTATION": self.chk_instant_flip.isChecked(),
             "MAX_ORIENT_DELTA_STOPPED": self.spin_max_orient.value(),
             "LOST_THRESHOLD_FRAMES": self.spin_lost_thresh.value(),
@@ -3347,74 +3457,34 @@ class MainWindow(QMainWindow):
             if idx >= 0:
                 self.combo_yolo_device.setCurrentIndex(idx)
 
+            self.spin_fps.setValue(cfg.get("fps", 30.0))  # Video frame rate
             self.spin_max_targets.setValue(cfg.get("max_targets", 4))
             self.spin_threshold.setValue(cfg.get("threshold_value", 50))
             self.spin_morph_size.setValue(cfg.get("morph_kernel_size", 5))
             self.spin_min_contour.setValue(cfg.get("min_contour_area", 50))
             self.chk_size_filtering.setChecked(cfg.get("enable_size_filtering", False))
 
-            # Handle backward compatibility for body-size-based parameters
-            # Check if config has reference body size (new format) or raw pixels (old format)
-            reference_body_size = cfg.get("reference_body_size", None)
-
-            if reference_body_size is not None:
-                # New format: body-size multipliers
-                self.spin_reference_body_size.setValue(reference_body_size)
-                self.spin_min_object_size.setValue(
-                    cfg.get("min_object_size_multiplier", 0.3)
+            # Load body-size-based parameters
+            self.spin_reference_body_size.setValue(cfg.get("reference_body_size", 20.0))
+            self.spin_min_object_size.setValue(
+                cfg.get("min_object_size_multiplier", 0.3)
+            )
+            self.spin_max_object_size.setValue(
+                cfg.get("max_object_size_multiplier", 3.0)
+            )
+            self.spin_max_dist.setValue(cfg.get("max_dist_multiplier", 1.5))
+            self.spin_continuity_thresh.setValue(
+                cfg.get(
+                    "recovery_search_distance_multiplier",
+                    cfg.get("continuity_threshold_multiplier", 0.5),
                 )
-                self.spin_max_object_size.setValue(
-                    cfg.get("max_object_size_multiplier", 3.0)
-                )
-                self.spin_max_dist.setValue(cfg.get("max_dist_multiplier", 1.5))
-                self.spin_continuity_thresh.setValue(
-                    cfg.get(
-                        "recovery_search_distance_multiplier",
-                        cfg.get("continuity_threshold_multiplier", 0.5),
-                    )
-                )
-                self.spin_min_respawn_distance.setValue(
-                    cfg.get("min_respawn_distance_multiplier", 2.5)
-                )
-                self.spin_max_distance_break.setValue(
-                    cfg.get("max_distance_break_multiplier", 15.0)
-                )
-            else:
-                # Old format: convert pixels to multipliers using default body size
-                import math
-
-                default_body_size = 20.0
-                self.spin_reference_body_size.setValue(default_body_size)
-                default_body_area = math.pi * (default_body_size / 2.0) ** 2
-
-                # Convert old pixel values to multipliers
-                min_obj_pixels = cfg.get("min_object_size", 100)
-                max_obj_pixels = cfg.get("max_object_size", 5000)
-                max_dist_pixels = cfg.get("max_dist_thresh", 25)
-                continuity_pixels = cfg.get(
-                    "recovery_search_distance", cfg.get("continuity_thresh", 10)
-                )
-                min_respawn_pixels = cfg.get("min_respawn_distance", 50)
-                max_break_pixels = cfg.get("max_distance_break", 300.0)
-
-                self.spin_min_object_size.setValue(
-                    max(0.1, min_obj_pixels / default_body_area)
-                )
-                self.spin_max_object_size.setValue(
-                    max(0.5, max_obj_pixels / default_body_area)
-                )
-                self.spin_max_dist.setValue(
-                    max(0.1, max_dist_pixels / default_body_size)
-                )
-                self.spin_continuity_thresh.setValue(
-                    max(0.1, continuity_pixels / default_body_size)
-                )
-                self.spin_min_respawn_distance.setValue(
-                    max(0.0, min_respawn_pixels / default_body_size)
-                )
-                self.spin_max_distance_break.setValue(
-                    max(1.0, max_break_pixels / default_body_size)
-                )
+            )
+            self.spin_min_respawn_distance.setValue(
+                cfg.get("min_respawn_distance_multiplier", 2.5)
+            )
+            self.spin_max_distance_break.setValue(
+                cfg.get("max_distance_break_multiplier", 15.0)
+            )
 
             self.spin_max_contour_multiplier.setValue(
                 cfg.get("max_contour_multiplier", 20)
@@ -3425,11 +3495,7 @@ class MainWindow(QMainWindow):
             self.spin_min_trajectory_length.setValue(
                 cfg.get("min_trajectory_length", 10)
             )
-            self.spin_max_velocity_break.setValue(cfg.get("max_velocity_break", 100.0))
-            # max_distance_break already loaded in backward compatibility section above
-            # Don't reload to avoid overwriting the converted value
-            # self.spin_max_distance_break is already set
-            # Don't reload recovery_search_distance and min_respawn_distance - already handled above
+            self.spin_max_velocity_break.setValue(cfg.get("max_velocity_break", 50.0))
             self.spin_min_detect.setValue(cfg.get("min_detect_counts", 10))
             self.spin_min_detections_to_start.setValue(
                 cfg.get("min_detections_to_start", 1)
@@ -3466,7 +3532,7 @@ class MainWindow(QMainWindow):
             self.slider_contrast.setValue(int(cfg.get("contrast", 1.0) * 100))
             self.slider_gamma.setValue(int(cfg.get("gamma", 1.0) * 100))
             self.chk_dark_on_light.setChecked(cfg.get("dark_on_light_background", True))
-            self.spin_velocity.setValue(cfg.get("velocity_threshold", 2.0))
+            self.spin_velocity.setValue(cfg.get("velocity_threshold", 5.0))
             self.chk_instant_flip.setChecked(cfg.get("instant_flip", True))
             self.spin_max_orient.setValue(cfg.get("max_orient_delta_stopped", 30.0))
             self.spin_lost_thresh.setValue(cfg.get("lost_threshold_frames", 10))
@@ -3557,6 +3623,7 @@ class MainWindow(QMainWindow):
             "yolo_iou_threshold": self.spin_yolo_iou.value(),
             "yolo_target_classes": yolo_cls,
             "yolo_device": self.combo_yolo_device.currentText().split(" ")[0],
+            "fps": self.spin_fps.value(),  # Video frame rate
             "max_targets": self.spin_max_targets.value(),
             "threshold_value": self.spin_threshold.value(),
             "morph_kernel_size": self.spin_morph_size.value(),
