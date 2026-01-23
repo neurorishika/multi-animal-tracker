@@ -162,6 +162,10 @@ class TrackAssigner:
 
         Args:
             covariances: List of (2, 2) covariance matrices, one per track
+
+        Returns:
+            cost: NxM cost matrix
+            spatial_candidates: Dict of spatial optimization candidates (or empty dict)
         """
         p = self.params
         M = len(measurements)
@@ -361,6 +365,32 @@ class TrackAssigner:
             cost[i, :] = Wp * pos_cost + Wo * odiff + Wa * area_diff + Wasp * asp_diff
 
         return cost
+
+    def compute_assignment_confidence(self, cost, matched_pairs):
+        """Compute normalized confidence scores for assignments.
+
+        Args:
+            cost: NxM cost matrix
+            matched_pairs: List of (track_idx, detection_idx) tuples
+
+        Returns:
+            Dict mapping track_idx -> confidence score (0-1)
+        """
+        if len(matched_pairs) == 0:
+            return {}
+
+        # Vectorized computation for speed
+        max_dist = self.params.get("MAX_DISTANCE_THRESHOLD", 100.0)
+        scale = max_dist * 0.5
+
+        confidences = {}
+        for track_idx, det_idx in matched_pairs:
+            cost_val = cost[track_idx, det_idx]
+            # Transform cost to confidence: high cost -> low confidence
+            conf = 1.0 / (1.0 + cost_val / scale)
+            confidences[track_idx] = min(conf, 1.0)
+
+        return confidences
 
     def assign_tracks(
         self,

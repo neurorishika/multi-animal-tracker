@@ -46,7 +46,15 @@ class ObjectDetector:
         return fg_mask
 
     def detect_objects(self, fg_mask, frame_count):
-        """Detects and measures objects from the final foreground mask."""
+        """Detects and measures objects from the final foreground mask.
+
+        Returns:
+            meas: List of measurements [cx, cy, angle]
+            sizes: List of detection areas
+            shapes: List of (area, aspect_ratio) tuples
+            yolo_results: None (for compatibility with YOLO detector)
+            confidences: List of detection confidence scores (0-1)
+        """
         p = self.params
         cnts, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -57,9 +65,9 @@ class ObjectDetector:
             logger.debug(
                 f"Frame {frame_count}: Too many contours ({len(cnts)}), skipping."
             )
-            return [], [], [], None
+            return [], [], [], None, []
 
-        meas, sizes, shapes = [], [], []
+        meas, sizes, shapes, confidences = [], [], [], []
         for c in cnts:
             area = cv2.contourArea(c)
             if area < p["MIN_CONTOUR_AREA"] or len(c) < 5:
@@ -71,9 +79,14 @@ class ObjectDetector:
                 ax1, ax2 = ax2, ax1
                 ang = (ang + 90) % 180
 
+            # Detection confidence not feasible for background subtraction
+            # Quality is too context-specific (lighting, camera, species, etc.)
+            confidence = np.nan
+
             meas.append(np.array([cx, cy, np.deg2rad(ang)], np.float32))
             sizes.append(area)
             shapes.append((np.pi * (ax1 / 2) * (ax2 / 2), ax1 / ax2 if ax2 > 0 else 0))
+            confidences.append(confidence)
 
         if meas and p.get("ENABLE_SIZE_FILTERING", False):
             min_size = p.get("MIN_OBJECT_SIZE", 0)
@@ -81,16 +94,21 @@ class ObjectDetector:
 
             original_count = len(meas)
             filtered = [
-                (m, s, sh)
-                for m, s, sh in zip(meas, sizes, shapes)
+                (m, s, sh, conf)
+                for m, s, sh, conf in zip(meas, sizes, shapes, confidences)
                 if min_size <= s <= max_size
             ]
 
             if filtered:
-                meas, sizes, shapes = zip(*filtered)
-                meas, sizes, shapes = list(meas), list(sizes), list(shapes)
+                meas, sizes, shapes, confidences = zip(*filtered)
+                meas, sizes, shapes, confidences = (
+                    list(meas),
+                    list(sizes),
+                    list(shapes),
+                    list(confidences),
+                )
             else:
-                meas, sizes, shapes = [], [], []
+                meas, sizes, shapes, confidences = [], [], [], []
 
             if len(meas) != original_count:
                 logger.debug(
@@ -101,8 +119,9 @@ class ObjectDetector:
             idxs = np.argsort(sizes)[::-1][:N]
             meas = [meas[i] for i in idxs]
             shapes = [shapes[i] for i in idxs]
+            confidences = [confidences[i] for i in idxs]
 
-        return meas, sizes, shapes, None
+        return meas, sizes, shapes, None, confidences
 
 
 class YOLOOBBDetector:
@@ -210,10 +229,11 @@ class YOLOOBBDetector:
             sizes: List of detection areas
             shapes: List of (area, aspect_ratio) tuples
             yolo_results: Raw YOLO results object for visualization (optional)
+            confidences: List of YOLO confidence scores (0-1)
         """
         if self.model is None:
             logger.error("YOLO model not initialized")
-            return [], [], [], None
+            return [], [], [], None, []
 
         p = self.params
         conf_threshold = p.get("YOLO_CONFIDENCE_THRESHOLD", 0.25)
@@ -234,15 +254,16 @@ class YOLOOBBDetector:
             )
         except Exception as e:
             logger.error(f"YOLO inference failed on frame {frame_count}: {e}")
-            return [], [], [], None
+            return [], [], [], None, []
 
         if len(results) == 0 or results[0].obb is None or len(results[0].obb) == 0:
-            return [], [], [], results[0] if len(results) > 0 else None
+            return [], [], [], results[0] if len(results) > 0 else None, []
 
         # Extract OBB detections
         obb_data = results[0].obb
+        conf_scores = obb_data.conf.cpu().numpy()  # YOLO confidence scores
 
-        meas, sizes, shapes = [], [], []
+        meas, sizes, shapes, confidences = [], [], [], []
 
         for i in range(len(obb_data)):
             # Get OBB parameters
@@ -276,6 +297,7 @@ class YOLOOBBDetector:
             shapes.append(
                 (np.pi * (w / 2) * (h / 2), aspect_ratio)
             )  # Ellipse area approximation
+            confidences.append(float(conf_scores[i]))  # Store YOLO confidence
 
         # Keep only top N detections by size
         N = p["MAX_TARGETS"]
@@ -284,11 +306,12 @@ class YOLOOBBDetector:
             meas = [meas[i] for i in idxs]
             sizes = [sizes[i] for i in idxs]
             shapes = [shapes[i] for i in idxs]
+            confidences = [confidences[i] for i in idxs]
 
         if meas:
             logger.debug(f"Frame {frame_count}: YOLO detected {len(meas)} objects")
 
-        return meas, sizes, shapes, results[0]
+        return meas, sizes, shapes, results[0], confidences
 
     def apply_conservative_split(self, fg_mask):
         """

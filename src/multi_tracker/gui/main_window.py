@@ -7,6 +7,7 @@ Refactored for improved UX with Tabbed interface and logical grouping.
 
 import sys, os, json, math, logging
 import numpy as np
+import pandas as pd
 import cv2
 from collections import deque
 import gc
@@ -624,6 +625,16 @@ class MainWindow(QMainWindow):
             "All body-size-based parameters auto-scale with this value."
         )
         fl_sys.addRow("Processing Resize Factor:", self.spin_resize)
+
+        self.check_save_confidence = QCheckBox("Save Confidence Metrics (slower)")
+        self.check_save_confidence.setChecked(True)
+        self.check_save_confidence.setToolTip(
+            "Save detection, assignment, and position uncertainty metrics to CSV.\n"
+            "Useful for post-hoc quality control but adds ~10-20% processing time.\n"
+            "Disable for maximum tracking speed."
+        )
+        fl_sys.addRow("", self.check_save_confidence)
+
         vl_sys.addLayout(fl_sys)
         form.addWidget(g_sys)
 
@@ -2989,6 +3000,44 @@ class MainWindow(QMainWindow):
         self.video_label.setPixmap(QPixmap.fromImage(scaled))
 
     def save_trajectories_to_csv(self, trajectories, output_path):
+        """Save processed trajectories to CSV.
+
+        Args:
+            trajectories: Either list of tuples (old format) or pandas DataFrame (new format with confidence)
+            output_path: Path to save CSV file
+        """
+        if trajectories is None:
+            logger.warning("No post-processed trajectories to save (None).")
+            return False
+
+        # Check if input is a DataFrame (new format with confidence)
+        if isinstance(trajectories, pd.DataFrame):
+            if trajectories.empty:
+                logger.warning(
+                    "No post-processed trajectories to save (empty DataFrame)."
+                )
+                return False
+            try:
+                # DataFrame already has all columns including confidence metrics
+                # Reorder columns to put basic trajectory info first
+                base_cols = ["TrajectoryID", "X", "Y", "Theta", "FrameID"]
+                other_cols = [
+                    col for col in trajectories.columns if col not in base_cols
+                ]
+                ordered_cols = base_cols + other_cols
+                trajectories[ordered_cols].to_csv(output_path, index=False)
+                logger.info(
+                    f"Successfully saved {trajectories['TrajectoryID'].nunique()} post-processed trajectories "
+                    f"({len(trajectories)} rows) with {len(ordered_cols)} columns to {output_path}"
+                )
+                return True
+            except Exception as e:
+                logger.error(
+                    f"Failed to save processed trajectories to {output_path}: {e}"
+                )
+                return False
+
+        # Old format (list of tuples) - for backward compatibility
         if not trajectories:
             logger.warning("No post-processed trajectories to save.")
             return False
@@ -3073,8 +3122,29 @@ class MainWindow(QMainWindow):
             processed_trajectories = full_traj
             if self.enable_postprocessing.isChecked():
                 params = self.get_parameters_dict()
-                processed_trajectories, stats = process_trajectories(full_traj, params)
-                logger.info(f"Post-processing stats: {stats}")
+                raw_csv_path = self.csv_line.text()
+
+                if is_backward_mode and raw_csv_path:
+                    # Use backward CSV for processing
+                    base, ext = os.path.splitext(raw_csv_path)
+                    csv_to_process = f"{base}_backward{ext}"
+                else:
+                    csv_to_process = raw_csv_path
+
+                if csv_to_process and os.path.exists(csv_to_process):
+                    # Use CSV-based processing to preserve confidence columns
+                    from ..core.post_processing import process_trajectories_from_csv
+
+                    processed_trajectories, stats = process_trajectories_from_csv(
+                        csv_to_process, params
+                    )
+                    logger.info(f"Post-processing stats: {stats}")
+                else:
+                    # Fallback to old method if CSV not available
+                    processed_trajectories, stats = process_trajectories(
+                        full_traj, params
+                    )
+                    logger.info(f"Post-processing stats (fallback): {stats}")
 
             if not is_backward_mode:
                 raw_csv_path = self.csv_line.text()
@@ -3214,16 +3284,33 @@ class MainWindow(QMainWindow):
 
         self.csv_writer_thread = None
         if self.csv_line.text():
-            hdr = [
-                "TrackID",
-                "TrajectoryID",
-                "Index",
-                "X",
-                "Y",
-                "Theta",
-                "FrameID",
-                "State",
-            ]
+            # Determine header based on confidence tracking setting
+            save_confidence = self.check_save_confidence.isChecked()
+            if save_confidence:
+                hdr = [
+                    "TrackID",
+                    "TrajectoryID",
+                    "Index",
+                    "X",
+                    "Y",
+                    "Theta",
+                    "FrameID",
+                    "State",
+                    "DetectionConfidence",
+                    "AssignmentConfidence",
+                    "PositionUncertainty",
+                ]
+            else:
+                hdr = [
+                    "TrackID",
+                    "TrajectoryID",
+                    "Index",
+                    "X",
+                    "Y",
+                    "Theta",
+                    "FrameID",
+                    "State",
+                ]
             csv_path = self.csv_line.text()
             if backward_mode:
                 base, ext = os.path.splitext(csv_path)
@@ -3511,6 +3598,9 @@ class MainWindow(QMainWindow):
             self.spin_kalman_noise.setValue(cfg.get("kalman_noise", 0.03))
             self.spin_kalman_meas.setValue(cfg.get("kalman_meas_noise", 0.1))
             self.spin_resize.setValue(cfg.get("resize_factor", 1.0))
+            self.check_save_confidence.setChecked(
+                cfg.get("save_confidence_metrics", True)
+            )
             self.chk_conservative_split.setChecked(
                 cfg.get("enable_conservative_split", True)
             )
@@ -3653,6 +3743,7 @@ class MainWindow(QMainWindow):
             "kalman_noise": self.spin_kalman_noise.value(),
             "kalman_meas_noise": self.spin_kalman_meas.value(),
             "resize_factor": self.spin_resize.value(),
+            "save_confidence_metrics": self.check_save_confidence.isChecked(),
             "enable_conservative_split": self.chk_conservative_split.isChecked(),
             "merge_area_threshold": self.spin_merge_threshold.value(),
             "conservative_kernel_size": self.spin_conservative_kernel.value(),

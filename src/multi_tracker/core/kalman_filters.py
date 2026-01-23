@@ -55,3 +55,19 @@ class KalmanFilterManager:
         """Get predictions from all Kalman filters."""
         preds = [kf.predict()[:3].flatten() for kf in self.filters]
         return np.array(preds, np.float32)
+
+    def get_position_uncertainties(self):
+        """Get position uncertainty (covariance trace) for all filters.
+
+        Returns:
+            List of uncertainty values (one per track)
+            Higher values = more uncertain position estimate
+        """
+        uncertainties = []
+        for kf in self.filters:
+            # Extract position covariance (x, y) from error covariance matrix
+            pos_cov = kf.errorCovPost[:2, :2]
+            # Use trace (sum of variances) as uncertainty measure
+            uncertainty = np.trace(pos_cov)
+            uncertainties.append(float(uncertainty))
+        return uncertainties

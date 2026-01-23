@@ -277,8 +277,8 @@ class TrackingWorker(QThread):
                     "ENABLE_CONSERVATIVE_SPLIT", True
                 ):
                     fg_mask = detector.apply_conservative_split(fg_mask)
-                meas, sizes, shapes, yolo_results = detector.detect_objects(
-                    fg_mask, self.frame_count
+                meas, sizes, shapes, yolo_results, detection_confidences = (
+                    detector.detect_objects(fg_mask, self.frame_count)
                 )
 
             else:  # YOLO OBB detection
@@ -294,8 +294,8 @@ class TrackingWorker(QThread):
                 # No foreground mask or background for YOLO
                 fg_mask = None
                 bg_u8 = None
-                meas, sizes, shapes, yolo_results = detector.detect_objects(
-                    yolo_frame, self.frame_count
+                meas, sizes, shapes, yolo_results, detection_confidences = (
+                    detector.detect_objects(yolo_frame, self.frame_count)
                 )
 
             profile_times["detection"] += time.time() - detect_start
@@ -353,6 +353,21 @@ class TrackingWorker(QThread):
                 )
                 next_trajectory_id = next_id
 
+                # Conditionally compute confidence metrics (for performance)
+                save_confidence = params.get("SAVE_CONFIDENCE_METRICS", True)
+                if save_confidence:
+                    # Compute assignment confidence for matched pairs
+                    matched_pairs = list(zip(rows, cols))
+                    assignment_confidences = assigner.compute_assignment_confidence(
+                        cost, matched_pairs
+                    )
+
+                    # Get Kalman filter position uncertainties
+                    position_uncertainties = kf_manager.get_position_uncertainties()
+                else:
+                    assignment_confidences = {}
+                    position_uncertainties = []
+
                 # --- State Management (Identical to Original) ---
                 matched = set(rows)
                 unmatched = list((set(range(N)) - matched) | set(high_cost_tracks))
@@ -390,18 +405,34 @@ class TrackingWorker(QThread):
                     trajectories_pruned[r].append(pt)
 
                     if self.csv_writer_thread:
-                        self.csv_writer_thread.enqueue(
-                            [
-                                r,
-                                trajectory_ids[r],
-                                local_counts[r],
-                                pt[0],
-                                pt[1],
-                                pt[2],
-                                pt[3],
-                                track_states[r],
-                            ]
-                        )
+                        # Build base data row
+                        row_data = [
+                            r,
+                            trajectory_ids[r],
+                            local_counts[r],
+                            pt[0],
+                            pt[1],
+                            pt[2],
+                            pt[3],
+                            track_states[r],
+                        ]
+
+                        # Add confidence values if enabled
+                        if save_confidence:
+                            det_conf = (
+                                detection_confidences[c]
+                                if c < len(detection_confidences)
+                                else 0.0
+                            )
+                            assign_conf = assignment_confidences.get(r, 0.0)
+                            pos_uncertainty = (
+                                position_uncertainties[r]
+                                if r < len(position_uncertainties)
+                                else 0.0
+                            )
+                            row_data.extend([det_conf, assign_conf, pos_uncertainty])
+
+                        self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1
                     current_cost = cost[r, c]
                     avg_cost += current_cost / N
@@ -420,18 +451,30 @@ class TrackingWorker(QThread):
                             if self.trajectories_full[r]
                             else (float("nan"),) * 4
                         )
-                        self.csv_writer_thread.enqueue(
-                            [
-                                r,
-                                trajectory_ids[r],
-                                local_counts[r],
-                                last_pos[0],
-                                last_pos[1],
-                                last_pos[2],
-                                self.frame_count,
-                                track_states[r],
-                            ]
-                        )
+                        # Build base data row
+                        row_data = [
+                            r,
+                            trajectory_ids[r],
+                            local_counts[r],
+                            last_pos[0],
+                            last_pos[1],
+                            last_pos[2],
+                            self.frame_count,
+                            track_states[r],
+                        ]
+
+                        # Add confidence values if enabled (unmatched = 0)
+                        if save_confidence:
+                            det_conf = 0.0
+                            assign_conf = 0.0
+                            pos_uncertainty = (
+                                position_uncertainties[r]
+                                if r < len(position_uncertainties)
+                                else 0.0
+                            )
+                            row_data.extend([det_conf, assign_conf, pos_uncertainty])
+
+                        self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1
 
                 for d_idx in free_dets:
