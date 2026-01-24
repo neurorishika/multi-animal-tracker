@@ -307,11 +307,12 @@ class TrackingWorker(QThread):
                 # --- Assignment ---
                 assign_start = time.time()
                 preds = kf_manager.get_predictions()
-                # Pre-extract covariances to reduce attribute access overhead
-                covariances = [kf.errorCovPre[:2, :2] for kf in kf_manager.filters]
+
+                # The Assigner now takes the kf_manager directly to access X and S_inv
                 cost, spatial_candidates = assigner.compute_cost_matrix(
-                    N, meas, preds, shapes, covariances, last_shape_info
+                    N, meas, preds, shapes, kf_manager, last_shape_info
                 )
+
                 rows, cols, free_dets, next_id, high_cost_tracks = (
                     assigner.assign_tracks(
                         cost,
@@ -320,7 +321,7 @@ class TrackingWorker(QThread):
                         meas,
                         track_states,
                         tracking_continuity,
-                        kf_manager.filters,
+                        kf_manager,  # <--- Pass the manager, not .filters
                         trajectory_ids,
                         next_trajectory_id,
                         spatial_candidates,
@@ -358,7 +359,9 @@ class TrackingWorker(QThread):
                 # --- KF Update & State Update ---
                 avg_cost = 0.0
                 for r, c in zip(rows, cols):
-                    kf_manager.filters[r].correct(meas[c].reshape(3, 1))
+                    # Vectorized manager handles the reshaping and indexing internally
+                    kf_manager.correct(r, meas[c])
+
                     x, y, theta = meas[c]
                     tracking_continuity[r] += 1
                     position_deques[r].append((x, y))

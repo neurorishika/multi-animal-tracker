@@ -1,73 +1,150 @@
-"""
-Kalman filter utilities for multi-object tracking.
-Functionally identical to the original implementation's KF logic.
-"""
-
 import numpy as np
-import cv2
+
+# --- Numba Kernels ---
+try:
+    from numba import njit
+
+    NUMBA_AVAILABLE = True
+except ImportError:
+    NUMBA_AVAILABLE = False
+
+    def njit(*args, **kwargs):
+        def decorator(func):
+            return func
+
+        return decorator
+
+
+@njit(cache=True, fastmath=True)
+def _predict_kernel(X, P, F, Q):
+    for i in range(len(X)):
+        # Predict State: X = F @ X
+        X[i] = F @ X[i]
+        # Predict Covariance: P = FPF^T + Q
+        P[i] = F @ P[i] @ F.T + Q
+    return X, P
+
+
+@njit(cache=True, fastmath=True)
+def _correct_kernel(X, P, H, R, I, track_idx, measurement):
+    x = X[track_idx].reshape(5, 1)
+    p = P[track_idx]
+    z = measurement.reshape(3, 1)
+
+    # 1. Innovation (Error)
+    y = z - (H @ x)
+
+    # --- CRITICAL FIX: Circular Angle Wrap ---
+    # This is the ONLY SOTA fix needed for theta stability.
+    # It prevents 'spinning' when crossing 0 <-> 2pi
+    if y[2, 0] > np.pi:
+        y[2, 0] -= 2 * np.pi
+    elif y[2, 0] < -np.pi:
+        y[2, 0] += 2 * np.pi
+
+    # 2. Innovation Covariance
+    S = (H @ p @ H.T) + R
+
+    # 3. Kalman Gain
+    K = p @ H.T @ np.linalg.inv(S)
+
+    # 4. Update State
+    X[track_idx] = (x + (K @ y)).flatten()
+
+    # 5. Joseph Form Covariance Update (The most stable version)
+    IKH = I - (K @ H)
+    P[track_idx] = (IKH @ p @ IKH.T) + (K @ R @ K.T)
+
+    return X, P
 
 
 class KalmanFilterManager:
-    """Manages Kalman filters for multi-object tracking."""
-
     def __init__(self, num_targets, params):
         self.num_targets = num_targets
         self.params = params
-        self.filters = self._init_kalman_filters()
+        self.dim_s = 5
+        self.dim_m = 3
 
-    def _init_kalman_filters(self):
-        """Creates and configures Kalman filters for all targets."""
-        p = self.params
-        kfs = []
-        for _ in range(self.num_targets):
-            kf = cv2.KalmanFilter(5, 3)
-            kf.measurementMatrix = np.array(
-                [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0], [0, 0, 1, 0, 0]], np.float32
-            )
-            kf.transitionMatrix = np.array(
-                [
-                    [1, 0, 0, 1, 0],
-                    [0, 1, 0, 0, 1],
-                    [0, 0, 1, 0, 0],
-                    [0, 0, 0, 1, 0],
-                    [0, 0, 0, 0, 1],
-                ],
-                np.float32,
-            )
-            kf.processNoiseCov = (
-                np.eye(5, dtype=np.float32) * p["KALMAN_NOISE_COVARIANCE"]
-            )
-            kf.measurementNoiseCov = (
-                np.eye(3, dtype=np.float32) * p["KALMAN_MEASUREMENT_NOISE_COVARIANCE"]
-            )
-            kf.errorCovPre = np.eye(5, dtype=np.float32)
-            kfs.append(kf)
-        return kfs
+        self.X = np.zeros((num_targets, self.dim_s), dtype=np.float32)
+
+        # --- MATCHING OPENCV DEFAULTS ---
+        # OpenCV's errorCovPost defaults to Identity.
+        # Don't use 1000.0; it destroys the Mahalanobis gating.
+        self.P = np.stack(
+            [np.eye(self.dim_s, dtype=np.float32) for _ in range(num_targets)]
+        )
+
+        # Noise parameters from your UI
+        q_val = params.get("KALMAN_NOISE_COVARIANCE", 0.03)
+        r_val = params.get("KALMAN_MEASUREMENT_NOISE_COVARIANCE", 0.1)
+
+        self.Q = np.eye(self.dim_s, dtype=np.float32) * q_val
+        self.R = np.eye(self.dim_m, dtype=np.float32) * r_val
+
+        self.F = np.array(
+            [
+                [1, 0, 0, 1, 0],
+                [0, 1, 0, 0, 1],
+                [0, 0, 1, 0, 0],
+                [0, 0, 0, 1, 0],
+                [0, 0, 0, 0, 1],
+            ],
+            dtype=np.float32,
+        )
+
+        self.H = np.array(
+            [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0], [0, 0, 1, 0, 0]], dtype=np.float32
+        )
+
+        self.I = np.eye(self.dim_s, dtype=np.float32)
 
     def initialize_filter(self, track_idx, initial_state):
-        """Initializes a specific Kalman filter."""
-        if 0 <= track_idx < len(self.filters):
-            kf = self.filters[track_idx]
-            kf.statePre = initial_state.copy()
-            kf.statePost = initial_state.copy()
+        """Warm start: reset state and uncertainty."""
+        self.X[track_idx] = initial_state.flatten()
+        # Reset P to Identity (OpenCV default) to restore discriminative power
+        self.P[track_idx] = np.eye(self.dim_s, dtype=np.float32)
+
+    def predict(self):
+        if NUMBA_AVAILABLE:
+            self.X, self.P = _predict_kernel(self.X, self.P, self.F, self.Q)
+        else:
+            # Batch NumPy fallback
+            self.X = (self.F @ self.X.T).T
+            # Batched P update: P = FPF^T + Q
+            self.P = self.F @ self.P @ self.F.T + self.Q
+        return self.X[:, :3].copy()
 
     def get_predictions(self):
-        """Get predictions from all Kalman filters."""
-        preds = [kf.predict()[:3].flatten() for kf in self.filters]
-        return np.array(preds, np.float32)
+        return self.predict()
+
+    def correct(self, track_idx, measurement):
+        if NUMBA_AVAILABLE:
+            self.X, self.P = _correct_kernel(
+                self.X, self.P, self.H, self.R, self.I, track_idx, measurement
+            )
+        else:
+            # Standard NumPy fallback with Theta-Wrap
+            z = measurement.reshape(3, 1)
+            x = self.X[track_idx].reshape(5, 1)
+            p = self.P[track_idx]
+            y = z - (self.H @ x)
+            # Wrap theta
+            if y[2, 0] > np.pi:
+                y[2, 0] -= 2 * np.pi
+            elif y[2, 0] < -np.pi:
+                y[2, 0] += 2 * np.pi
+
+            S = self.H @ p @ self.H.T + self.R
+            K = p @ self.H.T @ np.linalg.inv(S)
+            self.X[track_idx] = (x + (K @ y)).flatten()
+            IKH = self.I - (K @ self.H)
+            self.P[track_idx] = IKH @ p @ IKH.T + (K @ self.R @ K.T)
+
+    def get_mahalanobis_matrices(self):
+        """Pre-calculates S_inv for the Assigner."""
+        # S = HPH^T + R
+        S = self.H @ self.P @ self.H.T + self.R
+        return np.linalg.inv(S)
 
     def get_position_uncertainties(self):
-        """Get position uncertainty (covariance trace) for all filters.
-
-        Returns:
-            List of uncertainty values (one per track)
-            Higher values = more uncertain position estimate
-        """
-        uncertainties = []
-        for kf in self.filters:
-            # Extract position covariance (x, y) from error covariance matrix
-            pos_cov = kf.errorCovPost[:2, :2]
-            # Use trace (sum of variances) as uncertainty measure
-            uncertainty = np.trace(pos_cov)
-            uncertainties.append(float(uncertainty))
-        return uncertainties
+        return np.trace(self.P[:, :2, :2], axis1=1, axis2=2).tolist()
