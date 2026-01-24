@@ -133,7 +133,7 @@ class TrackingWorker(QThread):
             bg_model = BackgroundModel(p)
             bg_model.prime_background(cap)
 
-        kf_manager = KalmanFilterManager(p["MAX_TARGETS"], p)
+        self.kf_manager = KalmanFilterManager(p["MAX_TARGETS"], p)
         assigner = TrackAssigner(p)
 
         N = p["MAX_TARGETS"]
@@ -306,11 +306,11 @@ class TrackingWorker(QThread):
             if detection_initialized and meas:
                 # --- Assignment ---
                 assign_start = time.time()
-                preds = kf_manager.get_predictions()
+                preds = self.kf_manager.get_predictions()
 
                 # The Assigner now takes the kf_manager directly to access X and S_inv
                 cost, spatial_candidates = assigner.compute_cost_matrix(
-                    N, meas, preds, shapes, kf_manager, last_shape_info
+                    N, meas, preds, shapes, self.kf_manager, last_shape_info
                 )
 
                 rows, cols, free_dets, next_id, high_cost_tracks = (
@@ -321,7 +321,7 @@ class TrackingWorker(QThread):
                         meas,
                         track_states,
                         tracking_continuity,
-                        kf_manager,  # <--- Pass the manager, not .filters
+                        self.kf_manager,  # <--- Pass the manager, not .filters
                         trajectory_ids,
                         next_trajectory_id,
                         spatial_candidates,
@@ -339,7 +339,9 @@ class TrackingWorker(QThread):
                     )
 
                     # Get Kalman filter position uncertainties
-                    position_uncertainties = kf_manager.get_position_uncertainties()
+                    position_uncertainties = (
+                        self.kf_manager.get_position_uncertainties()
+                    )
                 else:
                     assignment_confidences = {}
                     position_uncertainties = []
@@ -360,7 +362,7 @@ class TrackingWorker(QThread):
                 avg_cost = 0.0
                 for r, c in zip(rows, cols):
                     # Vectorized manager handles the reshaping and indexing internally
-                    kf_manager.correct(r, meas[c])
+                    self.kf_manager.correct(r, meas[c])
 
                     x, y, theta = meas[c]
                     tracking_continuity[r] += 1
@@ -458,7 +460,7 @@ class TrackingWorker(QThread):
                 for d_idx in free_dets:
                     for track_idx in range(N):
                         if track_states[track_idx] == "lost":
-                            kf_manager.initialize_filter(
+                            self.kf_manager.initialize_filter(
                                 track_idx,
                                 np.array(
                                     [
@@ -654,6 +656,54 @@ class TrackingWorker(QThread):
                 final_theta = (theta + math.pi) % (2 * math.pi)
         return final_theta
 
+    def _draw_uncertainty_ellipses(self, overlay, params, track_states):
+        """Draw Kalman filter uncertainty ellipses for debugging."""
+        if not hasattr(self, "kf_manager"):
+            return
+
+        # Get covariance matrices for all tracks
+        P = self.kf_manager.P  # Shape: (N, 5, 5)
+        X = self.kf_manager.X  # Shape: (N, 5)
+        colors = params.get("TRAJECTORY_COLORS", [(255, 0, 0)] * len(X))
+
+        for i in range(len(X)):
+            # Skip lost tracks - they are not being actively predicted
+            if track_states[i] == "lost":
+                continue
+
+            # Extract position (x, y)
+            x, y = X[i, 0], X[i, 1]
+
+            # Extract 2x2 position covariance
+            P_pos = P[i, :2, :2]
+
+            # Compute eigenvalues and eigenvectors
+            eigenvalues, eigenvectors = np.linalg.eig(P_pos)
+
+            # Sort by eigenvalue magnitude
+            order = eigenvalues.argsort()[::-1]
+            eigenvalues = eigenvalues[order]
+            eigenvectors = eigenvectors[:, order]
+
+            # Convert to ellipse parameters (95% confidence ~= 2.45 sigma)
+            # Using chi-square distribution for 2D: 95% confidence is sqrt(5.991)
+            scale = np.sqrt(5.991)
+            width = 2 * scale * np.sqrt(max(0, eigenvalues[0]))
+            height = 2 * scale * np.sqrt(max(0, eigenvalues[1]))
+
+            # Calculate rotation angle
+            angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
+
+            # Draw ellipse
+            center = (int(x), int(y))
+            axes = (int(width), int(height))
+
+            # Use track color (BGR format)
+            color = tuple(int(c) for c in colors[i])
+
+            # Draw with thicker line and more opacity for visibility
+            cv2.ellipse(overlay, center, axes, angle, 0, 360, color, 2)
+
     def _draw_overlays(
         self,
         overlay,
@@ -700,6 +750,10 @@ class TrackingWorker(QThread):
                             (0, 255, 255),
                             1,
                         )
+
+        # Draw Kalman uncertainty ellipses if enabled (for debugging)
+        if p.get("SHOW_KALMAN_UNCERTAINTY", False):
+            self._draw_uncertainty_ellipses(overlay, p, track_states)
 
         if any(
             p.get(k)

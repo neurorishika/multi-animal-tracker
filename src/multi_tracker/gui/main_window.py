@@ -1374,10 +1374,12 @@ class MainWindow(QMainWindow):
         vl_kf.addWidget(
             self._create_help_label(
                 "Kalman filter predicts animal positions using motion history. Process noise controls smoothing, "
-                "measurement noise controls responsiveness. Start with defaults."
+                "measurement noise controls responsiveness. Age-dependent damping helps stabilize newly initialized tracks."
             )
         )
         f_kf = QFormLayout()
+        f_kf.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
         self.spin_kalman_noise = QDoubleSpinBox()
         self.spin_kalman_noise.setRange(0.0, 1.0)
         self.spin_kalman_noise.setValue(0.03)
@@ -1400,6 +1402,102 @@ class MainWindow(QMainWindow):
             "Recommended: 0.05-0.15"
         )
         f_kf.addRow("Measurement Noise:", self.spin_kalman_meas)
+
+        self.spin_kalman_damping = QDoubleSpinBox()
+        self.spin_kalman_damping.setRange(0.5, 0.99)
+        self.spin_kalman_damping.setSingleStep(0.01)
+        self.spin_kalman_damping.setDecimals(2)
+        self.spin_kalman_damping.setValue(0.95)
+        self.spin_kalman_damping.setToolTip(
+            "Velocity damping coefficient (0.5-0.99).\n"
+            "Controls how quickly velocity decays each frame.\n"
+            "Lower = faster decay (better for stop-and-go behavior).\n"
+            "Higher = slower decay (better for continuous motion).\n"
+            "Recommended: 0.90-0.95"
+        )
+        f_kf.addRow("Velocity Damping:", self.spin_kalman_damping)
+
+        # Age-dependent velocity damping
+        age_label = QLabel("Age-Dependent Damping (New Tracks):")
+        age_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        f_kf.addRow(age_label)
+
+        self.spin_kalman_maturity_age = QSpinBox()
+        self.spin_kalman_maturity_age.setRange(1, 30)
+        self.spin_kalman_maturity_age.setValue(5)
+        self.spin_kalman_maturity_age.setToolTip(
+            "Number of frames for a track to reach maturity (1-30).\n"
+            "Young tracks use conservative velocity estimates.\n"
+            "After this many successful updates, tracks use full dynamics.\n"
+            "Lower = faster adaptation, Higher = more conservative.\n"
+            "Recommended: 3-10 frames"
+        )
+        f_kf.addRow("  Maturity Age (frames):", self.spin_kalman_maturity_age)
+
+        self.spin_kalman_initial_velocity_retention = QDoubleSpinBox()
+        self.spin_kalman_initial_velocity_retention.setRange(0.0, 1.0)
+        self.spin_kalman_initial_velocity_retention.setSingleStep(0.05)
+        self.spin_kalman_initial_velocity_retention.setDecimals(2)
+        self.spin_kalman_initial_velocity_retention.setValue(0.2)
+        self.spin_kalman_initial_velocity_retention.setToolTip(
+            "Initial velocity retention for brand new tracks (0.0-1.0).\n"
+            "0.0 = assume stationary (no velocity)\n"
+            "1.0 = use full velocity estimate\n"
+            "Gradually increases to 1.0 as track ages to maturity.\n"
+            "Lower = more conservative (prevents wild predictions).\n"
+            "Recommended: 0.1-0.3"
+        )
+        f_kf.addRow(
+            "  Initial Velocity Retention:", self.spin_kalman_initial_velocity_retention
+        )
+
+        self.spin_kalman_max_velocity = QDoubleSpinBox()
+        self.spin_kalman_max_velocity.setRange(0.5, 10.0)
+        self.spin_kalman_max_velocity.setSingleStep(0.1)
+        self.spin_kalman_max_velocity.setDecimals(1)
+        self.spin_kalman_max_velocity.setValue(2.0)
+        self.spin_kalman_max_velocity.setToolTip(
+            "Maximum velocity constraint (body size multiplier).\n"
+            "Prevents unrealistic predictions during occlusions.\n"
+            "velocity_max = this_value × reference_body_size (pixels/frame)\n"
+            "Lower = more conservative, Higher = allows faster movement.\n"
+            "Recommended: 1.5-3.0 depending on animal speed"
+        )
+        f_kf.addRow("  Max Velocity (×body):", self.spin_kalman_max_velocity)
+
+        # Anisotropic process noise
+        aniso_label = QLabel("Anisotropic Process Noise:")
+        aniso_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        f_kf.addRow(aniso_label)
+
+        self.spin_kalman_longitudinal_noise = QDoubleSpinBox()
+        self.spin_kalman_longitudinal_noise.setRange(0.1, 20.0)
+        self.spin_kalman_longitudinal_noise.setSingleStep(0.5)
+        self.spin_kalman_longitudinal_noise.setDecimals(1)
+        self.spin_kalman_longitudinal_noise.setValue(5.0)
+        self.spin_kalman_longitudinal_noise.setToolTip(
+            "Forward/longitudinal noise multiplier (0.1-20.0).\n"
+            "Controls uncertainty in direction of movement.\n"
+            "Higher = more uncertainty forward (smoother forward motion).\n"
+            "Multiplies base process noise for forward direction.\n"
+            "Recommended: 3.0-7.0"
+        )
+        f_kf.addRow("  Longitudinal Multiplier:", self.spin_kalman_longitudinal_noise)
+
+        self.spin_kalman_lateral_noise = QDoubleSpinBox()
+        self.spin_kalman_lateral_noise.setRange(0.01, 5.0)
+        self.spin_kalman_lateral_noise.setSingleStep(0.05)
+        self.spin_kalman_lateral_noise.setDecimals(2)
+        self.spin_kalman_lateral_noise.setValue(0.1)
+        self.spin_kalman_lateral_noise.setToolTip(
+            "Sideways/lateral noise multiplier (0.01-5.0).\n"
+            "Controls uncertainty perpendicular to movement.\n"
+            "Lower = less uncertainty sideways (constrains lateral drift).\n"
+            "Multiplies base process noise for sideways direction.\n"
+            "Recommended: 0.05-0.2"
+        )
+        f_kf.addRow("  Lateral Multiplier:", self.spin_kalman_lateral_noise)
+
         vl_kf.addLayout(f_kf)
         vbox.addWidget(g_kf)
 
@@ -1834,6 +1932,15 @@ class MainWindow(QMainWindow):
             "Display tracking state (ACTIVE, PREDICTED, etc.)."
         )
         v_ov.addWidget(self.chk_show_state)
+
+        self.chk_show_kalman_uncertainty = QCheckBox("Show Kalman Uncertainty (Debug)")
+        self.chk_show_kalman_uncertainty.setChecked(False)
+        self.chk_show_kalman_uncertainty.setToolTip(
+            "Draw ellipses showing Kalman filter position uncertainty.\n"
+            "Larger ellipse = more uncertainty in predicted position.\n"
+            "Useful for debugging tracking quality and filter convergence."
+        )
+        v_ov.addWidget(self.chk_show_kalman_uncertainty)
 
         layout.addWidget(g_overlays)
 
@@ -3931,6 +4038,12 @@ class MainWindow(QMainWindow):
             "LIGHTING_MEDIAN_WINDOW": self.spin_lighting_median.value(),
             "KALMAN_NOISE_COVARIANCE": self.spin_kalman_noise.value(),
             "KALMAN_MEASUREMENT_NOISE_COVARIANCE": self.spin_kalman_meas.value(),
+            "KALMAN_DAMPING": self.spin_kalman_damping.value(),
+            "KALMAN_MATURITY_AGE": self.spin_kalman_maturity_age.value(),
+            "KALMAN_INITIAL_VELOCITY_RETENTION": self.spin_kalman_initial_velocity_retention.value(),
+            "KALMAN_MAX_VELOCITY_MULTIPLIER": self.spin_kalman_max_velocity.value(),
+            "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER": self.spin_kalman_longitudinal_noise.value(),
+            "KALMAN_LATERAL_NOISE_MULTIPLIER": self.spin_kalman_lateral_noise.value(),
             "RESIZE_FACTOR": self.spin_resize.value(),
             "ENABLE_CONSERVATIVE_SPLIT": self.chk_conservative_split.isChecked(),
             "MERGE_AREA_THRESHOLD": self.spin_merge_threshold.value(),
@@ -3964,6 +4077,7 @@ class MainWindow(QMainWindow):
             "SHOW_TRAJECTORIES": self.chk_show_trajectories.isChecked(),
             "SHOW_LABELS": self.chk_show_labels.isChecked(),
             "SHOW_STATE": self.chk_show_state.isChecked(),
+            "SHOW_KALMAN_UNCERTAINTY": self.chk_show_kalman_uncertainty.isChecked(),
             "VISUALIZATION_FREE_MODE": self.chk_visualization_free.isChecked(),
             "zoom_factor": self.slider_zoom.value() / 100.0,
             "ENABLE_HISTOGRAMS": self.enable_histograms.isChecked(),
@@ -4097,6 +4211,20 @@ class MainWindow(QMainWindow):
             self.spin_lighting_median.setValue(cfg.get("lighting_median_window", 5))
             self.spin_kalman_noise.setValue(cfg.get("kalman_noise", 0.03))
             self.spin_kalman_meas.setValue(cfg.get("kalman_meas_noise", 0.1))
+            self.spin_kalman_damping.setValue(cfg.get("kalman_damping", 0.95))
+            self.spin_kalman_maturity_age.setValue(cfg.get("kalman_maturity_age", 5))
+            self.spin_kalman_initial_velocity_retention.setValue(
+                cfg.get("kalman_initial_velocity_retention", 0.2)
+            )
+            self.spin_kalman_max_velocity.setValue(
+                cfg.get("kalman_max_velocity_multiplier", 2.0)
+            )
+            self.spin_kalman_longitudinal_noise.setValue(
+                cfg.get("kalman_longitudinal_noise_multiplier", 5.0)
+            )
+            self.spin_kalman_lateral_noise.setValue(
+                cfg.get("kalman_lateral_noise_multiplier", 0.1)
+            )
             self.spin_resize.setValue(cfg.get("resize_factor", 1.0))
             self.check_save_confidence.setChecked(
                 cfg.get("save_confidence_metrics", True)
@@ -4149,6 +4277,9 @@ class MainWindow(QMainWindow):
             self.chk_show_trajectories.setChecked(cfg.get("show_trajectories", True))
             self.chk_show_labels.setChecked(cfg.get("show_labels", True))
             self.chk_show_state.setChecked(cfg.get("show_state", True))
+            self.chk_show_kalman_uncertainty.setChecked(
+                cfg.get("show_kalman_uncertainty", False)
+            )
             self.chk_debug_logging.setChecked(cfg.get("debug_logging", False))
             self.chk_visualization_free.setChecked(
                 cfg.get("visualization_free_mode", False)
@@ -4249,6 +4380,12 @@ class MainWindow(QMainWindow):
             "lighting_median_window": self.spin_lighting_median.value(),
             "kalman_noise": self.spin_kalman_noise.value(),
             "kalman_meas_noise": self.spin_kalman_meas.value(),
+            "kalman_damping": self.spin_kalman_damping.value(),
+            "kalman_maturity_age": self.spin_kalman_maturity_age.value(),
+            "kalman_initial_velocity_retention": self.spin_kalman_initial_velocity_retention.value(),
+            "kalman_max_velocity_multiplier": self.spin_kalman_max_velocity.value(),
+            "kalman_longitudinal_noise_multiplier": self.spin_kalman_longitudinal_noise.value(),
+            "kalman_lateral_noise_multiplier": self.spin_kalman_lateral_noise.value(),
             "resize_factor": self.spin_resize.value(),
             "save_confidence_metrics": self.check_save_confidence.isChecked(),
             "enable_conservative_split": self.chk_conservative_split.isChecked(),
@@ -4283,6 +4420,7 @@ class MainWindow(QMainWindow):
             "show_trajectories": self.chk_show_trajectories.isChecked(),
             "show_labels": self.chk_show_labels.isChecked(),
             "show_state": self.chk_show_state.isChecked(),
+            "show_kalman_uncertainty": self.chk_show_kalman_uncertainty.isChecked(),
             "visualization_free_mode": self.chk_visualization_free.isChecked(),
             "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
             "debug_logging": self.chk_debug_logging.isChecked(),

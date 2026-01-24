@@ -156,7 +156,7 @@ def process_trajectories_from_csv(csv_path, params):
             split_indices = []
             for run_id, run_group in runs:
                 if (
-                    is_occluded.iloc[run_group.index[0]]
+                    is_occluded.loc[run_group.index[0]]
                     and len(run_group) > max_occlusion_gap
                 ):
                     # Split at the start of this long occlusion run
