@@ -36,6 +36,7 @@ def process_trajectories_from_csv(csv_path, params):
     min_len = params.get("MIN_TRAJECTORY_LENGTH", 10)
     max_vel_break = params.get("MAX_VELOCITY_BREAK", 100.0)
     max_dist_break = params.get("MAX_DISTANCE_BREAK", 300.0)
+    max_occlusion_gap = params.get("MAX_OCCLUSION_GAP", 30)
 
     try:
         # Read the CSV file
@@ -43,6 +44,17 @@ def process_trajectories_from_csv(csv_path, params):
         logger.info(
             f"Loaded {len(df)} rows from {csv_path} with columns: {list(df.columns)}"
         )
+
+        # Drop unnecessary columns from raw tracking data
+        columns_to_drop = ["TrackID", "Index"]
+        df = df.drop(
+            columns=[col for col in columns_to_drop if col in df.columns],
+            errors="ignore",
+        )
+        if columns_to_drop:
+            logger.info(
+                f"Dropped columns: {[col for col in columns_to_drop if col in df.columns]}"
+            )
     except Exception as e:
         logger.error(f"Failed to read CSV {csv_path}: {e}")
         return None, {}
@@ -50,11 +62,21 @@ def process_trajectories_from_csv(csv_path, params):
     # Check if confidence columns exist
     has_confidence = "DetectionConfidence" in df.columns
 
+    # Set X, Y, Theta to NaN for occluded/lost states to enable proper interpolation
+    if "State" in df.columns:
+        occluded_mask = df["State"].isin(["occluded", "lost"])
+        if occluded_mask.any():
+            logger.info(
+                f"Setting X, Y, Theta to NaN for {occluded_mask.sum()} occluded/lost detections"
+            )
+            df.loc[occluded_mask, ["X", "Y", "Theta"]] = np.nan
+
     stats = {
         "original_count": df["TrajectoryID"].nunique(),
         "removed_short": 0,
         "broken_velocity": 0,
         "broken_distance": 0,
+        "broken_occlusion": 0,
         "final_count": 0,
     }
 
@@ -116,6 +138,55 @@ def process_trajectories_from_csv(csv_path, params):
                 columns=["FrameDiff", "DistDiff", "Velocity"], errors="ignore"
             )
             cleaned_segments.append(last_segment)
+
+    # Further split segments based on long occlusion gaps
+    if "State" in df.columns and max_occlusion_gap > 0:
+        final_segments = []
+        for segment in cleaned_segments:
+            # Find runs of consecutive occluded/lost frames
+            is_occluded = segment["State"].isin(["occluded", "lost"])
+
+            # Find where occlusion state changes
+            state_changes = is_occluded.ne(is_occluded.shift()).cumsum()
+
+            # Group by state change to get runs
+            runs = segment.groupby(state_changes)
+
+            # Find occlusion runs that are too long
+            split_indices = []
+            for run_id, run_group in runs:
+                if (
+                    is_occluded.iloc[run_group.index[0]]
+                    and len(run_group) > max_occlusion_gap
+                ):
+                    # Split at the start of this long occlusion run
+                    split_indices.append(run_group.index[0])
+                    stats["broken_occlusion"] += 1
+
+            if not split_indices:
+                # No long occlusion gaps, keep segment as is
+                final_segments.append(segment)
+            else:
+                # Split segment at occlusion gaps
+                split_indices = sorted(split_indices)
+                subseg_start_idx = segment.index[0]
+
+                for split_idx in split_indices:
+                    subseg = segment.loc[subseg_start_idx : split_idx - 1].copy()
+                    if len(subseg) >= min_len:
+                        subseg["TrajectoryID"] = new_traj_id
+                        new_traj_id += 1
+                        final_segments.append(subseg)
+                    subseg_start_idx = split_idx
+
+                # Add the last subsegment
+                last_subseg = segment.loc[subseg_start_idx:].copy()
+                if len(last_subseg) >= min_len:
+                    last_subseg["TrajectoryID"] = new_traj_id
+                    new_traj_id += 1
+                    final_segments.append(last_subseg)
+
+        cleaned_segments = final_segments
 
     stats["final_count"] = len(cleaned_segments)
 
@@ -443,16 +514,8 @@ def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, param
         f"Final result: {len(all_trajs)} trajectories after {iteration} iterations"
     )
 
-    # Convert back to the expected format (list of tuples)
-    final_trajectories = []
-    for traj_df in all_trajs:
-        traj_list = [
-            (row["X"], row["Y"], row["Theta"], row["FrameID"])
-            for _, row in traj_df.iterrows()
-        ]
-        final_trajectories.append(traj_list)
-
-    return final_trajectories
+    # Return DataFrames directly to preserve all columns including confidence metrics
+    return all_trajs
 
 
 def _convert_trajectory_to_dataframe(traj, traj_id):
@@ -582,8 +645,9 @@ def _circular_mean(values):
 def _clean_trajectory(traj_df):
     """
     Clean a trajectory DataFrame by:
-    1. Removing trailing 'lost' and 'occluded' states
-    2. Returning None if no valid detections remain
+    1. Removing leading 'lost' and 'occluded' states
+    2. Removing trailing 'lost' and 'occluded' states
+    3. Returning None if no valid detections remain
 
     Args:
         traj_df: DataFrame with trajectory data
@@ -603,11 +667,13 @@ def _clean_trajectory(traj_df):
     if not valid_states.any():
         return None
 
-    # Find last valid detection
-    last_valid_idx = traj_df[valid_states].index[-1]
+    # Find first and last valid detections
+    valid_indices = traj_df[valid_states].index
+    first_valid_idx = valid_indices[0]
+    last_valid_idx = valid_indices[-1]
 
-    # Trim trajectory to last valid detection
-    cleaned_df = traj_df.loc[:last_valid_idx].copy()
+    # Trim trajectory to valid detection range
+    cleaned_df = traj_df.loc[first_valid_idx:last_valid_idx].copy()
 
     return cleaned_df
 
@@ -635,30 +701,18 @@ def _merge_trajectories(traj1, traj2, distance_threshold=None):
     """
     Combine two trajectories into one, with improved handling of ID swaps.
     Returns list of DataFrames instead of dictionaries.
+    Preserves all columns including confidence metrics.
     """
-    # Convert to dictionaries for O(1) lookup
-    traj1_dict = dict(
-        zip(
-            traj1["FrameID"],
-            zip(
-                traj1["X"],
-                traj1["Y"],
-                traj1["Theta"],
-                traj1.get("State", ["active"] * len(traj1)),
-            ),
-        )
-    )
-    traj2_dict = dict(
-        zip(
-            traj2["FrameID"],
-            zip(
-                traj2["X"],
-                traj2["Y"],
-                traj2["Theta"],
-                traj2.get("State", ["active"] * len(traj2)),
-            ),
-        )
-    )
+    # Identify confidence columns
+    confidence_cols = [
+        col
+        for col in traj1.columns
+        if col.lower().endswith("confidence") or col == "PositionUncertainty"
+    ]
+
+    # Create row dictionaries indexed by FrameID for full data access
+    traj1_rows = {row["FrameID"]: row for _, row in traj1.iterrows()}
+    traj2_rows = {row["FrameID"]: row for _, row in traj2.iterrows()}
 
     # Find frame relationships
     frames1 = set(traj1["FrameID"])
@@ -678,9 +732,9 @@ def _merge_trajectories(traj1, traj2, distance_threshold=None):
 
     if distance_threshold is not None:
         for frame in common_frames:
-            x1, y1, theta1, state1 = traj1_dict[frame]
-            x2, y2, theta2, state2 = traj2_dict[frame]
-            distance = np.linalg.norm([x1 - x2, y1 - y2])
+            row1 = traj1_rows[frame]
+            row2 = traj2_rows[frame]
+            distance = np.linalg.norm([row1["X"] - row2["X"], row1["Y"] - row2["Y"]])
 
             if distance <= distance_threshold:
                 good_frames.add(frame)
@@ -692,69 +746,153 @@ def _merge_trajectories(traj1, traj2, distance_threshold=None):
     # Process mergeable frames (good frames + unique frames)
     mergeable_frames = good_frames.union(unique_1).union(unique_2)
 
-    # Create merged trajectory from mergeable frames
-    frame_list = []
-    x_list = []
-    y_list = []
-    theta_list = []
+    # Create merged trajectory from mergeable frames, preserving all columns
+    merged_rows = []
 
     for frame in sorted(mergeable_frames):
         if frame in good_frames:
             # Both trajectories have this frame and distance is acceptable
-            x1, y1, theta1, state1 = traj1_dict[frame]
-            x2, y2, theta2, state2 = traj2_dict[frame]
+            row1 = traj1_rows[frame]
+            row2 = traj2_rows[frame]
+            state1 = row1.get("State", "occluded")  # Default to occluded if missing
+            state2 = row2.get("State", "occluded")
 
             # Merge based on states
-            if state1 == "active" and state2 == "active":
-                x_val = (x1 + x2) / 2
-                y_val = (y1 + y2) / 2
-                theta_val = _circular_mean([theta1, theta2])
-            elif state1 == "active":
-                x_val, y_val, theta_val = x1, y1, theta1
-            elif state2 == "active":
-                x_val, y_val, theta_val = x2, y2, theta2
+            merged_row = {"FrameID": frame}
+
+            # If either trajectory is active, the merged state is active
+            if state1 == "active" or state2 == "active":
+                # Use the active detection, or average if both active
+                if state1 == "active" and state2 == "active":
+                    merged_row["X"] = (row1["X"] + row2["X"]) / 2
+                    merged_row["Y"] = (row1["Y"] + row2["Y"]) / 2
+                    merged_row["Theta"] = _circular_mean([row1["Theta"], row2["Theta"]])
+                    merged_row["State"] = "active"
+                    # Average confidence metrics
+                    for col in confidence_cols:
+                        if col in row1 and col in row2:
+                            val1, val2 = row1[col], row2[col]
+                            if pd.notna(val1) and pd.notna(val2):
+                                merged_row[col] = (val1 + val2) / 2
+                            elif pd.notna(val1):
+                                merged_row[col] = val1
+                            elif pd.notna(val2):
+                                merged_row[col] = val2
+                            else:
+                                merged_row[col] = np.nan
+                elif state1 == "active":
+                    merged_row.update(row1.to_dict())
+                else:  # state2 == "active"
+                    merged_row.update(row2.to_dict())
             else:
-                x_val = (x1 + x2) / 2
-                y_val = (y1 + y2) / 2
-                theta_val = _circular_mean([theta1, theta2])
+                # Both occluded/lost - merged state is occluded, positions set to NaN
+                merged_row["X"] = np.nan
+                merged_row["Y"] = np.nan
+                merged_row["Theta"] = np.nan
+                merged_row["State"] = "occluded"
+                # Average confidence metrics if available
+                for col in confidence_cols:
+                    if col in row1 and col in row2:
+                        val1, val2 = row1[col], row2[col]
+                        if pd.notna(val1) and pd.notna(val2):
+                            merged_row[col] = (val1 + val2) / 2
+                        elif pd.notna(val1):
+                            merged_row[col] = val1
+                        elif pd.notna(val2):
+                            merged_row[col] = val2
+                        else:
+                            merged_row[col] = np.nan
 
         elif frame in unique_1:
-            x_val, y_val, theta_val, _ = traj1_dict[frame]
+            merged_row = traj1_rows[frame].to_dict()
+            # Set positions to NaN if occluded/lost
+            if merged_row.get("State", "occluded") in ["occluded", "lost"]:
+                merged_row["X"] = np.nan
+                merged_row["Y"] = np.nan
+                merged_row["Theta"] = np.nan
         else:  # frame in unique_2
-            x_val, y_val, theta_val, _ = traj2_dict[frame]
+            merged_row = traj2_rows[frame].to_dict()
+            # Set positions to NaN if occluded/lost
+            if merged_row.get("State", "occluded") in ["occluded", "lost"]:
+                merged_row["X"] = np.nan
+                merged_row["Y"] = np.nan
+                merged_row["Theta"] = np.nan
 
-        frame_list.append(frame)
-        x_list.append(x_val)
-        y_list.append(y_val)
-        theta_list.append(theta_val)
+        # Ensure confidence columns are present (State should already be set above)
+        for col in confidence_cols:
+            if col not in merged_row:
+                merged_row[col] = np.nan
+
+        merged_rows.append(merged_row)
 
     # Create main merged trajectory as DataFrame
     all_trajectories = []
 
-    if frame_list:
-        # Split merged frames into continuous segments
-        segments = _split_into_continuous_segments(
-            frame_list, x_list, y_list, theta_list
+    if merged_rows:
+        # Convert to DataFrame
+        merged_df = (
+            pd.DataFrame(merged_rows).sort_values("FrameID").reset_index(drop=True)
         )
-        # Convert segments to DataFrames
-        for segment in segments:
-            df_segment = pd.DataFrame(segment)
-            all_trajectories.append(df_segment)
+
+        # Split into continuous segments
+        segments = _split_dataframe_into_segments(merged_df, max_gap=5)
+        all_trajectories.extend(segments)
 
     # Handle bad frames (create separate trajectories for each animal)
     if bad_frames:
-        bad_segments_1 = _create_segments_from_frames(sorted(bad_frames), traj1_dict)
-        bad_segments_2 = _create_segments_from_frames(sorted(bad_frames), traj2_dict)
+        # Get rows from traj1 for bad frames
+        bad_rows_1 = [
+            traj1_rows[f].to_dict() for f in sorted(bad_frames) if f in traj1_rows
+        ]
+        if bad_rows_1:
+            bad_df_1 = (
+                pd.DataFrame(bad_rows_1).sort_values("FrameID").reset_index(drop=True)
+            )
+            segments_1 = _split_dataframe_into_segments(bad_df_1, max_gap=5)
+            all_trajectories.extend(segments_1)
 
-        # Convert bad segments to DataFrames
-        for segment in bad_segments_1:
-            df_segment = pd.DataFrame(segment)
-            all_trajectories.append(df_segment)
-        for segment in bad_segments_2:
-            df_segment = pd.DataFrame(segment)
-            all_trajectories.append(df_segment)
+        # Get rows from traj2 for bad frames
+        bad_rows_2 = [
+            traj2_rows[f].to_dict() for f in sorted(bad_frames) if f in traj2_rows
+        ]
+        if bad_rows_2:
+            bad_df_2 = (
+                pd.DataFrame(bad_rows_2).sort_values("FrameID").reset_index(drop=True)
+            )
+            segments_2 = _split_dataframe_into_segments(bad_df_2, max_gap=5)
+            all_trajectories.extend(segments_2)
 
     return all_trajectories
+
+
+def _split_dataframe_into_segments(df, max_gap=5):
+    """
+    Split a DataFrame into continuous segments based on FrameID gaps.
+    Preserves all columns.
+    """
+    if df.empty:
+        return []
+
+    segments = []
+    current_segment = []
+
+    for idx, row in df.iterrows():
+        if (
+            not current_segment
+            or row["FrameID"] <= current_segment[-1]["FrameID"] + max_gap
+        ):
+            current_segment.append(row.to_dict())
+        else:
+            # Save current segment and start new one
+            if current_segment:
+                segments.append(pd.DataFrame(current_segment))
+            current_segment = [row.to_dict()]
+
+    # Add the last segment
+    if current_segment:
+        segments.append(pd.DataFrame(current_segment))
+
+    return segments
 
 
 def _split_into_continuous_segments(frame_list, x_list, y_list, theta_list, max_gap=5):
@@ -862,8 +1000,18 @@ def interpolate_trajectories(trajectories_df, method="linear", max_gap=10):
         mask = result_df["TrajectoryID"] == traj_id
         traj_data = result_df[mask].copy()
 
-        # Sort by FrameID
+        # Sort by FrameID and remove duplicates (keep first occurrence)
         traj_data = traj_data.sort_values("FrameID").reset_index(drop=True)
+
+        # Check for and remove duplicate FrameIDs
+        if traj_data["FrameID"].duplicated().any():
+            n_duplicates = traj_data["FrameID"].duplicated().sum()
+            logger.warning(
+                f"Trajectory {traj_id} has {n_duplicates} duplicate FrameID(s). "
+                f"Keeping first occurrence of each frame."
+            )
+            traj_data = traj_data.drop_duplicates(subset="FrameID", keep="first")
+            traj_data = traj_data.reset_index(drop=True)
 
         # Get frame range
         min_frame = traj_data["FrameID"].min()
@@ -875,6 +1023,23 @@ def interpolate_trajectories(trajectories_df, method="linear", max_gap=10):
         # Reindex to include all frames
         traj_data = traj_data.set_index("FrameID").reindex(all_frames).reset_index()
         traj_data["TrajectoryID"] = traj_id
+
+        # Fill State column for interpolated frames
+        # Frames added by reindex will have NaN for State - set them to "occluded"
+        if "State" in traj_data.columns:
+            traj_data["State"] = traj_data["State"].fillna("occluded")
+        else:
+            traj_data["State"] = "occluded"
+
+        # Ensure confidence columns exist (will be NaN for interpolated frames)
+        confidence_cols = [
+            col
+            for col in result_df.columns
+            if col.lower().endswith("confidence") or col == "PositionUncertainty"
+        ]
+        for col in confidence_cols:
+            if col not in traj_data.columns:
+                traj_data[col] = np.nan
 
         # Interpolate X and Y positions
         for col in ["X", "Y"]:
@@ -893,8 +1058,20 @@ def interpolate_trajectories(trajectories_df, method="linear", max_gap=10):
             max_gap=max_gap,
         )
 
-        # Update the result dataframe
-        result_df.loc[mask] = traj_data.values
+        # Update the result dataframe - use proper indexing to avoid dtype warnings
+        # Get the indices where this trajectory exists
+        traj_indices = result_df[result_df["TrajectoryID"] == traj_id].index
+
+        # Remove old rows for this trajectory
+        result_df = result_df[result_df["TrajectoryID"] != traj_id]
+
+        # Append the interpolated data
+        result_df = pd.concat([result_df, traj_data], ignore_index=True)
+
+    # Sort the final result by TrajectoryID and FrameID
+    result_df = result_df.sort_values(["TrajectoryID", "FrameID"]).reset_index(
+        drop=True
+    )
 
     logger.info(f"Interpolation complete")
     return result_df

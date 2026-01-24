@@ -83,7 +83,7 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             /* Main window and widgets */
-            QMainWindow, QWidget { background-color: #2b2b2b; color: #ffffff; font-family: 'Segoe UI', sans-serif; }
+            QMainWindow, QWidget { background-color: #2b2b2b; color: #ffffff; font-family: -apple-system, system-ui, sans-serif; }
             
             /* Tabs */
             QTabWidget::pane { border: 1px solid #444; top: -1px; }
@@ -145,7 +145,6 @@ class MainWindow(QMainWindow):
                 height: 6px;
                 border-top: none;
                 border-right: none;
-                transform: rotate(-45deg);
             }
             QComboBox QAbstractItemView {
                 background-color: #2b2b2b;
@@ -238,6 +237,8 @@ class MainWindow(QMainWindow):
         self.csv_writer_thread = None
         self.reversal_worker = None
         self.final_full_trajs = []
+        self.temporary_files = []  # Track temporary files for cleanup
+        self.session_log_handler = None  # Track current session log file handler
 
         # Preview frame for live image adjustments
         self.preview_frame_original = None  # Original frame without adjustments
@@ -441,7 +442,7 @@ class MainWindow(QMainWindow):
         # Tab 4: Data (Post-proc, Histograms)
         self.tab_data = QWidget()
         self.setup_data_ui()
-        self.tabs.addTab(self.tab_data, "Data & Stats")
+        self.tabs.addTab(self.tab_data, "Processing")
 
         # Tab 5: Visuals (Overlays, Debug)
         self.tab_viz = QWidget()
@@ -466,6 +467,29 @@ class MainWindow(QMainWindow):
         prog_layout.addWidget(self.progress_label)
         prog_layout.addWidget(self.progress_bar)
 
+        # Real-time stats display
+        stats_layout = QHBoxLayout()
+        stats_layout.setContentsMargins(5, 5, 5, 5)
+
+        self.label_current_fps = QLabel("FPS: --")
+        self.label_current_fps.setStyleSheet(
+            "color: #4a9eff; font-weight: bold; font-size: 11px;"
+        )
+        self.label_current_fps.setVisible(False)
+        stats_layout.addWidget(self.label_current_fps)
+
+        self.label_elapsed_time = QLabel("Elapsed: --")
+        self.label_elapsed_time.setStyleSheet("color: #888; font-size: 11px;")
+        self.label_elapsed_time.setVisible(False)
+        stats_layout.addWidget(self.label_elapsed_time)
+
+        self.label_eta = QLabel("ETA: --")
+        self.label_eta.setStyleSheet("color: #888; font-size: 11px;")
+        self.label_eta.setVisible(False)
+        stats_layout.addWidget(self.label_eta)
+
+        stats_layout.addStretch()
+
         # Buttons
         btn_layout = QHBoxLayout()
 
@@ -483,12 +507,14 @@ class MainWindow(QMainWindow):
         self.btn_stop.setObjectName("StopBtn")
         self.btn_stop.clicked.connect(self.stop_tracking)
         self.btn_stop.setMinimumHeight(40)
+        self.btn_stop.setEnabled(False)  # Start disabled
 
         btn_layout.addWidget(self.btn_preview)
         btn_layout.addWidget(self.btn_start)
         btn_layout.addWidget(self.btn_stop)
 
         action_layout.addLayout(prog_layout)
+        action_layout.addLayout(stats_layout)
         action_layout.addLayout(btn_layout)
 
         right_layout.addWidget(action_frame)
@@ -689,6 +715,22 @@ class MainWindow(QMainWindow):
             "Disable for maximum tracking speed."
         )
         fl_sys.addRow("", self.check_save_confidence)
+
+        # Visualization-Free Mode
+        self.chk_visualization_free = QCheckBox(
+            "Enable Visualization-Free Mode (Maximum Speed)"
+        )
+        self.chk_visualization_free.setChecked(False)
+        self.chk_visualization_free.setToolTip(
+            "Skip all frame visualization and rendering.\n"
+            "Significantly faster processing (2-4× speedup).\n"
+            "Real-time FPS/ETA stats still shown in UI.\n"
+            "Recommended for large batch processing."
+        )
+        self.chk_visualization_free.stateChanged.connect(
+            self._on_visualization_mode_changed
+        )
+        fl_sys.addRow("", self.chk_visualization_free)
 
         vl_sys.addLayout(fl_sys)
         form.addWidget(g_sys)
@@ -1596,7 +1638,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(scroll)
 
     def setup_data_ui(self):
-        """Tab 4: Data & Post-Processing."""
+        """Tab 4: Post-Processing."""
         layout = QVBoxLayout(self.tab_data)
         layout.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
@@ -1661,6 +1703,17 @@ class MainWindow(QMainWindow):
         )
         f_pp.addRow("Max Distance Break (×body):", self.spin_max_distance_break)
 
+        self.spin_max_occlusion_gap = QSpinBox()
+        self.spin_max_occlusion_gap.setRange(0, 200)
+        self.spin_max_occlusion_gap.setValue(30)
+        self.spin_max_occlusion_gap.setToolTip(
+            "Maximum consecutive occluded/lost frames before splitting trajectory (0-200).\n"
+            "Prevents unreliable interpolation across long gaps.\n"
+            "Set to 0 to disable occlusion-based splitting.\n"
+            "Recommended: 20-50 frames for typical tracking scenarios."
+        )
+        f_pp.addRow("Max Occlusion Gap (frames):", self.spin_max_occlusion_gap)
+
         # Interpolation settings
         self.combo_interpolation_method = QComboBox()
         self.combo_interpolation_method.addItems(["None", "Linear", "Cubic", "Spline"])
@@ -1685,6 +1738,17 @@ class MainWindow(QMainWindow):
             "Recommended: 5-15 frames."
         )
         f_pp.addRow("Max Interpolation Gap:", self.spin_interpolation_max_gap)
+
+        # Cleanup option
+        self.chk_cleanup_temp_files = QCheckBox("Auto-cleanup temporary files")
+        self.chk_cleanup_temp_files.setChecked(True)
+        self.chk_cleanup_temp_files.setToolTip(
+            "Automatically delete temporary files after successful tracking:\n"
+            "• Reversed video files (*_reversed.mp4)\n"
+            "• Intermediate CSV files (*_forward.csv, *_backward.csv)\n"
+            "Keeps only final merged/processed output files."
+        )
+        f_pp.addRow("", self.chk_cleanup_temp_files)
 
         vl_pp.addLayout(f_pp)
         vbox.addWidget(g_pp)
@@ -2488,8 +2552,8 @@ class MainWindow(QMainWindow):
 
                 # Create detector and run detection
                 detector = YOLOOBBDetector(yolo_params)
-                meas, sizes, shapes, yolo_results = detector.detect_objects(
-                    yolo_frame, 0
+                meas, sizes, shapes, yolo_results, detection_confidences = (
+                    detector.detect_objects(yolo_frame, 0)
                 )
 
                 # Collect detected dimensions for statistics
@@ -3011,11 +3075,53 @@ class MainWindow(QMainWindow):
             logger.setLevel(logging.INFO)
             logger.info("Debug logging disabled")
 
+    def _on_visualization_mode_changed(self, state):
+        """Handle visualization-free mode toggle."""
+        is_viz_free = self.chk_visualization_free.isChecked()
+
+        # Disable all visualization options when in viz-free mode
+        self.chk_show_circles.setEnabled(not is_viz_free)
+        self.chk_show_orientation.setEnabled(not is_viz_free)
+        self.chk_show_trajectories.setEnabled(not is_viz_free)
+        self.chk_show_labels.setEnabled(not is_viz_free)
+        self.chk_show_state.setEnabled(not is_viz_free)
+        self.chk_show_fg.setEnabled(not is_viz_free)
+        self.chk_show_bg.setEnabled(not is_viz_free)
+        self.chk_show_yolo_obb.setEnabled(not is_viz_free)
+
+        # Show/hide video preview
+        if is_viz_free:
+            # Store current preview if any, then show placeholder
+            self._stored_preview_text = (
+                self.video_label.text() if not self.video_label.pixmap() else None
+            )
+            self.video_label.clear()
+            self.video_label.setText(
+                "Visualization Disabled\n\n"
+                "Maximum speed processing mode active.\n"
+                "Real-time stats displayed below."
+            )
+            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+            logger.info("Visualization-Free Mode enabled - Maximum speed processing")
+        else:
+            # Restore previous state or default message
+            if hasattr(self, "_stored_preview_text") and self._stored_preview_text:
+                self.video_label.setText(self._stored_preview_text)
+            elif not self.video_label.pixmap():
+                self.video_label.setText("Load a video to begin...")
+            self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+
     def start_full(self):
         if self.btn_preview.isChecked():
             self.btn_preview.setChecked(False)
             self.btn_preview.setText("Preview Mode")
             self.stop_tracking()
+
+        # Set up comprehensive session logging once for entire tracking session
+        video_path = self.file_line.text()
+        if video_path:
+            self._setup_session_logging(video_path, backward_mode=False)
+
         self.start_tracking(preview_mode=False)
 
     def stop_tracking(self):
@@ -3027,6 +3133,11 @@ class MainWindow(QMainWindow):
         self.btn_preview.setChecked(False)
         self.btn_preview.setText("Preview Mode")
         self.btn_start.setEnabled(True)
+
+        # Hide stats labels when tracking stops
+        self.label_current_fps.setVisible(False)
+        self.label_elapsed_time.setVisible(False)
+        self.label_eta.setVisible(False)
 
     def _set_ui_controls_enabled(self, enabled: bool):
         # Disable Main setup
@@ -3131,6 +3242,43 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(percentage)
         self.progress_label.setText(status_text)
 
+    @Slot(dict)
+    def on_stats_update(self, stats):
+        """Update real-time tracking statistics."""
+        # Update FPS
+        if "fps" in stats:
+            self.label_current_fps.setText(f"FPS: {stats['fps']:.1f}")
+            self.label_current_fps.setVisible(True)
+
+        # Update elapsed time
+        if "elapsed" in stats:
+            elapsed_sec = stats["elapsed"]
+            hours = int(elapsed_sec // 3600)
+            minutes = int((elapsed_sec % 3600) // 60)
+            seconds = int(elapsed_sec % 60)
+            if hours > 0:
+                elapsed_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+            else:
+                elapsed_str = f"{minutes:02d}:{seconds:02d}"
+            self.label_elapsed_time.setText(f"Elapsed: {elapsed_str}")
+            self.label_elapsed_time.setVisible(True)
+
+        # Update ETA
+        if "eta" in stats:
+            eta_sec = stats["eta"]
+            if eta_sec > 0:
+                hours = int(eta_sec // 3600)
+                minutes = int((eta_sec % 3600) // 60)
+                seconds = int(eta_sec % 60)
+                if hours > 0:
+                    eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+                else:
+                    eta_str = f"{minutes:02d}:{seconds:02d}"
+                self.label_eta.setText(f"ETA: {eta_str}")
+            else:
+                self.label_eta.setText("ETA: calculating...")
+            self.label_eta.setVisible(True)
+
     @Slot(np.ndarray)
     def on_new_frame(self, rgb):
         z = max(self.slider_zoom.value() / 100.0, 0.1)
@@ -3174,6 +3322,13 @@ class MainWindow(QMainWindow):
                         # Use Int64 dtype which supports NaN values
                         df_to_save[col] = df_to_save[col].round().astype("Int64")
 
+                # Drop unwanted columns from raw tracking data
+                unwanted_cols = ["TrackID", "Index"]
+                df_to_save = df_to_save.drop(
+                    columns=[col for col in unwanted_cols if col in df_to_save.columns],
+                    errors="ignore",
+                )
+
                 # Reorder columns to put basic trajectory info first
                 base_cols = ["TrajectoryID", "X", "Y", "Theta", "FrameID"]
                 other_cols = [col for col in df_to_save.columns if col not in base_cols]
@@ -3215,6 +3370,10 @@ class MainWindow(QMainWindow):
             return False
 
     def merge_and_save_trajectories(self):
+        logger.info(f"=" * 80)
+        logger.info("Starting trajectory merging process...")
+        logger.info(f"=" * 80)
+
         forward_trajs = getattr(self, "forward_processed_trajs", None)
         backward_trajs = getattr(self, "backward_processed_trajs", None)
 
@@ -3270,29 +3429,40 @@ class MainWindow(QMainWindow):
         )
 
         # Convert resolved trajectories to DataFrame for interpolation
-        # resolve_trajectories returns list of tuples, need to convert to DataFrame
+        # resolve_trajectories now returns list of DataFrames, concatenate them
         from ..core.post_processing import interpolate_trajectories
 
-        # Convert list of tuples to DataFrame
-        if resolved_trajectories and not isinstance(
-            resolved_trajectories[0], pd.DataFrame
-        ):
-            all_data = []
-            for traj_id, traj in enumerate(resolved_trajectories):
-                for x, y, theta, frame in traj:
-                    all_data.append(
-                        {
-                            "TrajectoryID": traj_id,
-                            "X": x,
-                            "Y": y,
-                            "Theta": theta,
-                            "FrameID": frame,
-                        }
-                    )
-            if all_data:
-                resolved_trajectories = pd.DataFrame(all_data)
+        # Convert list of DataFrames to single DataFrame
+        if resolved_trajectories and isinstance(resolved_trajectories, list):
+            if isinstance(resolved_trajectories[0], pd.DataFrame):
+                # Concatenate all trajectory DataFrames
+                # Reassign TrajectoryID to ensure unique IDs
+                for new_id, traj_df in enumerate(resolved_trajectories):
+                    traj_df["TrajectoryID"] = new_id
+                resolved_trajectories = pd.concat(
+                    resolved_trajectories, ignore_index=True
+                )
             else:
-                resolved_trajectories = []
+                # Fallback for old tuple format (shouldn't happen)
+                logger.warning(
+                    "Received tuple format from resolve_trajectories, converting..."
+                )
+                all_data = []
+                for traj_id, traj in enumerate(resolved_trajectories):
+                    for x, y, theta, frame in traj:
+                        all_data.append(
+                            {
+                                "TrajectoryID": traj_id,
+                                "X": x,
+                                "Y": y,
+                                "Theta": theta,
+                                "FrameID": frame,
+                            }
+                        )
+                if all_data:
+                    resolved_trajectories = pd.DataFrame(all_data)
+                else:
+                    resolved_trajectories = []
 
         # Apply interpolation if enabled
         if isinstance(resolved_trajectories, pd.DataFrame):
@@ -3308,6 +3478,9 @@ class MainWindow(QMainWindow):
             base, ext = os.path.splitext(raw_csv_path)
             merged_csv_path = f"{base}_merged.csv"
             if self.save_trajectories_to_csv(resolved_trajectories, merged_csv_path):
+                # Track initial tracking CSV as temporary (will be replaced by merged version)
+                if raw_csv_path not in self.temporary_files:
+                    self.temporary_files.append(raw_csv_path)
                 QMessageBox.information(
                     self,
                     "Merged Data Saved",
@@ -3318,6 +3491,9 @@ class MainWindow(QMainWindow):
     def on_tracking_finished(self, finished_normally, fps_list, full_traj):
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
+
+        # Clean up session logging
+        self._cleanup_session_logging()
 
         if self.csv_writer_thread:
             self.csv_writer_thread.stop()
@@ -3381,7 +3557,15 @@ class MainWindow(QMainWindow):
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
                     base, ext = os.path.splitext(raw_csv_path)
+                    # Track intermediate forward CSV as temporary
+                    forward_csv = f"{base}_forward{ext}"
+                    if forward_csv not in self.temporary_files:
+                        self.temporary_files.append(forward_csv)
+
                     processed_csv_path = f"{base}_forward_processed{ext}"
+                    # Track processed CSV as temporary
+                    if processed_csv_path not in self.temporary_files:
+                        self.temporary_files.append(processed_csv_path)
                     self.save_trajectories_to_csv(
                         processed_trajectories, processed_csv_path
                     )
@@ -3390,14 +3574,26 @@ class MainWindow(QMainWindow):
                     self.forward_processed_trajs = processed_trajectories
                     self.start_backward_tracking()
                 else:
+                    self._cleanup_temporary_files()
+                    # Hide stats labels
+                    self.label_current_fps.setVisible(False)
+                    self.label_elapsed_time.setVisible(False)
+                    self.label_eta.setVisible(False)
                     self._set_ui_controls_enabled(True)
                     QMessageBox.information(self, "Done", "Tracking complete.")
-                    self.plot_fps(fps_list)
             else:
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
                     base, ext = os.path.splitext(raw_csv_path)
+                    # Track intermediate backward CSV as temporary
+                    backward_csv = f"{base}_backward{ext}"
+                    if backward_csv not in self.temporary_files:
+                        self.temporary_files.append(backward_csv)
+
                     processed_csv_path = f"{base}_backward_processed{ext}"
+                    # Track processed CSV as temporary
+                    if processed_csv_path not in self.temporary_files:
+                        self.temporary_files.append(processed_csv_path)
                     self.save_trajectories_to_csv(
                         processed_trajectories, processed_csv_path
                     )
@@ -3420,12 +3616,20 @@ class MainWindow(QMainWindow):
                 if has_forward and has_backward:
                     self.merge_and_save_trajectories()
 
+                self._cleanup_temporary_files()
+                # Hide stats labels
+                self.label_current_fps.setVisible(False)
+                self.label_elapsed_time.setVisible(False)
+                self.label_eta.setVisible(False)
                 self._set_ui_controls_enabled(True)
                 QMessageBox.information(
                     self, "Done", "Backward tracking and merging complete."
                 )
-                self.plot_fps(fps_list)
         else:
+            # Hide stats labels
+            self.label_current_fps.setVisible(False)
+            self.label_elapsed_time.setVisible(False)
+            self.label_eta.setVisible(False)
             self._set_ui_controls_enabled(True)
             if not finished_normally:
                 QMessageBox.warning(
@@ -3461,11 +3665,19 @@ class MainWindow(QMainWindow):
                 )
 
     def start_backward_tracking(self):
+        logger.info(f"=" * 80)
+        logger.info("Starting backward tracking pass...")
+        logger.info(f"=" * 80)
+
         video_fp = self.file_line.text()
         if not video_fp:
             return
         base_name, ext = os.path.splitext(video_fp)
         reversed_video_path = f"{base_name}_reversed{ext}"
+
+        # Track reversed video as temporary file
+        if reversed_video_path not in self.temporary_files:
+            self.temporary_files.append(reversed_video_path)
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
@@ -3515,17 +3727,32 @@ class MainWindow(QMainWindow):
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
         self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
+        self.tracking_worker.stats_signal.connect(self.on_stats_update)
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Preview Mode Active")
+
+        # Update video preview for viz-free mode
+        if self.get_parameters_dict().get("VISUALIZATION_FREE_MODE", False):
+            self.video_label.clear()
+            self.video_label.setText(
+                "Visualization Disabled\n\n"
+                "Maximum speed processing mode active.\n"
+                "Real-time stats displayed below."
+            )
+            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+
         self._set_ui_controls_enabled(False)
         self.tracking_worker.start()
 
     def start_tracking_on_video(self, video_path, backward_mode=False):
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+
+        # Session logging is already set up in start_full() - don't duplicate here
+        # For backward mode, we reuse the same session log
 
         self.csv_writer_thread = None
         if self.csv_line.text():
@@ -3581,6 +3808,7 @@ class MainWindow(QMainWindow):
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
         self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
+        self.tracking_worker.stats_signal.connect(self.on_stats_update)
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
@@ -3588,6 +3816,17 @@ class MainWindow(QMainWindow):
         self.progress_label.setText(
             "Backward Tracking..." if backward_mode else "Forward Tracking..."
         )
+
+        # Update video preview for viz-free mode
+        if self.get_parameters_dict().get("VISUALIZATION_FREE_MODE", False):
+            self.video_label.clear()
+            self.video_label.setText(
+                "Visualization Disabled\n\n"
+                "Maximum speed processing mode active.\n"
+                "Real-time stats displayed below."
+            )
+            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+
         self._set_ui_controls_enabled(False)
         self.tracking_worker.start()
 
@@ -3676,6 +3915,7 @@ class MainWindow(QMainWindow):
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
             "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
             "MAX_DISTANCE_BREAK": max_distance_break_pixels,
+            "MAX_OCCLUSION_GAP": self.spin_max_occlusion_gap.value(),
             "CONTINUITY_THRESHOLD": recovery_search_distance_pixels,
             "MIN_RESPAWN_DISTANCE": min_respawn_distance_pixels,
             "MIN_DETECTION_COUNTS": self.spin_min_detect.value(),
@@ -3723,6 +3963,7 @@ class MainWindow(QMainWindow):
             "SHOW_TRAJECTORIES": self.chk_show_trajectories.isChecked(),
             "SHOW_LABELS": self.chk_show_labels.isChecked(),
             "SHOW_STATE": self.chk_show_state.isChecked(),
+            "VISUALIZATION_FREE_MODE": self.chk_visualization_free.isChecked(),
             "zoom_factor": self.slider_zoom.value() / 100.0,
             "ENABLE_HISTOGRAMS": self.enable_histograms.isChecked(),
             "HISTOGRAM_HISTORY_FRAMES": self.spin_histogram_history.value(),
@@ -3828,6 +4069,7 @@ class MainWindow(QMainWindow):
                 cfg.get("min_trajectory_length", 10)
             )
             self.spin_max_velocity_break.setValue(cfg.get("max_velocity_break", 50.0))
+            self.spin_max_occlusion_gap.setValue(cfg.get("max_occlusion_gap", 30))
 
             # Load interpolation settings
             interp_method = cfg.get("interpolation_method", "None")
@@ -3907,6 +4149,10 @@ class MainWindow(QMainWindow):
             self.chk_show_labels.setChecked(cfg.get("show_labels", True))
             self.chk_show_state.setChecked(cfg.get("show_state", True))
             self.chk_debug_logging.setChecked(cfg.get("debug_logging", False))
+            self.chk_visualization_free.setChecked(
+                cfg.get("visualization_free_mode", False)
+            )
+            self.chk_cleanup_temp_files.setChecked(cfg.get("cleanup_temp_files", True))
             self.chk_enable_backward.setChecked(
                 cfg.get("enable_backward_tracking", True)
             )
@@ -3985,6 +4231,7 @@ class MainWindow(QMainWindow):
             "enable_postprocessing": self.enable_postprocessing.isChecked(),
             "min_trajectory_length": self.spin_min_trajectory_length.value(),
             "max_velocity_break": self.spin_max_velocity_break.value(),
+            "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
             "interpolation_method": self.combo_interpolation_method.currentText(),
             "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
             "max_distance_break_multiplier": self.spin_max_distance_break.value(),
@@ -4035,6 +4282,8 @@ class MainWindow(QMainWindow):
             "show_trajectories": self.chk_show_trajectories.isChecked(),
             "show_labels": self.chk_show_labels.isChecked(),
             "show_state": self.chk_show_state.isChecked(),
+            "visualization_free_mode": self.chk_visualization_free.isChecked(),
+            "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
             "debug_logging": self.chk_debug_logging.isChecked(),
             "enable_backward_tracking": self.chk_enable_backward.isChecked(),
             "zoom_factor": self.slider_zoom.value() / 100.0,
@@ -4063,6 +4312,92 @@ class MainWindow(QMainWindow):
                 )
             except Exception as e:
                 logger.warning(f"Failed to save configuration: {e}")
+
+    def _setup_session_logging(self, video_path, backward_mode=False):
+        """Set up comprehensive logging for the entire tracking session."""
+        from datetime import datetime
+        from pathlib import Path
+
+        # Close existing session log if any
+        self._cleanup_session_logging()
+
+        # Only set up logging if not already set up
+        if self.session_log_handler is not None:
+            logger.info(f"=" * 80)
+            logger.info(f"Session log already active, continuing...")
+            logger.info(f"=" * 80)
+            return
+
+        # Create log file next to the video
+        video_path = Path(video_path)
+        log_dir = video_path.parent
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"{video_path.stem}_tracking_{timestamp}.log"
+        log_path = log_dir / log_filename
+
+        # Create file handler for session
+        self.session_log_handler = logging.FileHandler(log_path, mode="w")
+        self.session_log_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        self.session_log_handler.setFormatter(formatter)
+
+        # Add to root logger to capture everything
+        root_logger = logging.getLogger()
+        root_logger.addHandler(self.session_log_handler)
+
+        logger.info(f"=" * 80)
+        logger.info(f"TRACKING SESSION STARTED")
+        logger.info(f"Session log: {log_path}")
+        logger.info(f"Video: {video_path}")
+        logger.info(f"=" * 80)
+
+    def _cleanup_session_logging(self):
+        """Remove session log handler from root logger."""
+        if self.session_log_handler:
+            logger.info("=" * 80)
+            logger.info("Tracking session completed")
+            logger.info("=" * 80)
+
+            root_logger = logging.getLogger()
+            root_logger.removeHandler(self.session_log_handler)
+            self.session_log_handler.close()
+            self.session_log_handler = None
+
+    def _cleanup_temporary_files(self):
+        """Remove temporary files if cleanup is enabled."""
+        if not self.chk_cleanup_temp_files.isChecked():
+            logger.info("Temporary file cleanup disabled, keeping intermediate files.")
+            return
+
+        if not self.temporary_files:
+            logger.info("No temporary files to clean up.")
+            return
+
+        cleaned = []
+        failed = []
+        for temp_file in self.temporary_files:
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                    cleaned.append(os.path.basename(temp_file))
+                    logger.info(f"Removed temporary file: {temp_file}")
+                except Exception as e:
+                    failed.append(os.path.basename(temp_file))
+                    logger.warning(f"Failed to remove temporary file {temp_file}: {e}")
+
+        # Clear the list after cleanup attempt
+        self.temporary_files.clear()
+
+        if cleaned:
+            logger.info(
+                f"Cleaned up {len(cleaned)} temporary file(s): {', '.join(cleaned)}"
+            )
+        if failed:
+            logger.warning(
+                f"Failed to clean {len(failed)} file(s): {', '.join(failed)}"
+            )
 
     def _disable_spinbox_wheel_events(self):
         """Disable wheel events on all spinboxes to prevent accidental value changes."""

@@ -31,6 +31,7 @@ class TrackingWorker(QThread):
     finished_signal = Signal(bool, list, list)
     progress_signal = Signal(int, str)
     histogram_data_signal = Signal(dict)
+    stats_signal = Signal(dict)  # Real-time FPS/ETA stats
 
     def __init__(
         self,
@@ -48,6 +49,10 @@ class TrackingWorker(QThread):
         self.video_writer = None
         self.params_mutex = QMutex()
         self.parameters = {}
+
+        # Stats tracking for FPS/ETA
+        self.start_time = None
+        self.frame_times = deque(maxlen=30)  # Keep last 30 frames for FPS calculation
         self._stop_requested = False
 
         # Internal state variables that helper methods depend on
@@ -89,45 +94,15 @@ class TrackingWorker(QThread):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.frame_signal.emit(rgb)
 
-    def setup_file_logging(self, video_path):
-        """Set up timestamped file logging in the same directory as the video."""
-        video_path = Path(video_path)
-        log_dir = video_path.parent
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"{video_path.stem}_tracking_{timestamp}.log"
-        log_path = log_dir / log_filename
-
-        # Create file handler with timestamp
-        file_handler = logging.FileHandler(log_path, mode="w")
-        file_handler.setLevel(logging.INFO)
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        file_handler.setFormatter(formatter)
-
-        # Add handler to root logger so all modules write to this file
-        root_logger = logging.getLogger()
-        root_logger.addHandler(file_handler)
-
-        logger.info(f"Log file created: {log_path}")
-        return file_handler
-
     def run(self):
         # === 1. INITIALIZATION (Identical to Original) ===
         gc.collect()
         self._stop_requested = False
         p = self.get_current_params()
 
-        # Set up timestamped file logging
-        file_handler = self.setup_file_logging(self.video_path)
-
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
             logger.error(f"Failed to open video: {self.video_path}")
-            # Clean up file logging handler
-            root_logger = logging.getLogger()
-            root_logger.removeHandler(file_handler)
-            file_handler.close()
             self.finished_signal.emit(True, [], [])
             return
 
@@ -544,37 +519,75 @@ class TrackingWorker(QThread):
                     self.progress_signal.emit(percentage, status_text)
 
             # --- Visualization, Output & Loop Maintenance ---
-            viz_start = time.time()
-            trajectories_pruned = [
-                [
-                    pt
-                    for pt in tr
-                    if self.frame_count - pt[3] <= params["TRAJECTORY_HISTORY_SECONDS"]
+            viz_free_mode = params.get("VISUALIZATION_FREE_MODE", False)
+
+            if not viz_free_mode:
+                viz_start = time.time()
+                trajectories_pruned = [
+                    [
+                        pt
+                        for pt in tr
+                        if self.frame_count - pt[3]
+                        <= params["TRAJECTORY_HISTORY_SECONDS"]
+                    ]
+                    for tr in self.trajectories_full
                 ]
-                for tr in trajectories_pruned
-            ]
 
-            self._draw_overlays(
-                overlay,
-                params,
-                trajectories_pruned,
-                track_states,
-                trajectory_ids,
-                tracking_continuity,
-                fg_mask,
-                bg_u8,
-                yolo_results,
-            )
-            profile_times["visualization"] += time.time() - viz_start
+                self._draw_overlays(
+                    overlay,
+                    params,
+                    trajectories_pruned,
+                    track_states,
+                    trajectory_ids,
+                    tracking_continuity,
+                    fg_mask,
+                    bg_u8,
+                    yolo_results,
+                )
+                profile_times["visualization"] += time.time() - viz_start
 
-            write_start = time.time()
-            if self.video_writer:
-                self.video_writer.write(overlay)
-            profile_times["video_write"] += time.time() - write_start
+                write_start = time.time()
+                if self.video_writer:
+                    self.video_writer.write(overlay)
+                profile_times["video_write"] += time.time() - write_start
 
-            emit_start = time.time()
-            self.emit_frame(overlay)
-            profile_times["gui_emit"] += time.time() - emit_start
+                emit_start = time.time()
+                self.emit_frame(overlay)
+                profile_times["gui_emit"] += time.time() - emit_start
+
+            # === Real-time Stats (Always emit, even in viz-free mode) ===
+            current_time = time.time()
+            self.frame_times.append(current_time)
+
+            # Calculate FPS from recent frames
+            if len(self.frame_times) >= 2:
+                time_span = self.frame_times[-1] - self.frame_times[0]
+                current_fps = (
+                    (len(self.frame_times) - 1) / time_span if time_span > 0 else 0
+                )
+            else:
+                current_fps = 0
+
+            # Calculate elapsed and ETA
+            if self.start_time is None:
+                self.start_time = start_time
+            elapsed = current_time - self.start_time
+
+            if total_frames and self.frame_count > 0:
+                frames_remaining = total_frames - self.frame_count
+                eta = (
+                    (frames_remaining / self.frame_count) * elapsed
+                    if self.frame_count > 0
+                    else 0
+                )
+            else:
+                eta = 0
+
+            # Emit stats every 10 frames to avoid overwhelming the UI
+            if self.frame_count % 10 == 0:
+                self.stats_signal.emit(
+                    {"fps": current_fps, "elapsed": elapsed, "eta": eta}
+                )
 
             # Calculate frame read time (total loop time - all other operations)
             loop_time = time.time() - loop_start
@@ -613,11 +626,6 @@ class TrackingWorker(QThread):
             self.video_writer.release()
 
         logger.info("Tracking worker finished. Emitting raw trajectory data.")
-
-        # Clean up file logging handler
-        root_logger = logging.getLogger()
-        root_logger.removeHandler(file_handler)
-        file_handler.close()
 
         self.finished_signal.emit(
             not self._stop_requested, fps_list, self.trajectories_full

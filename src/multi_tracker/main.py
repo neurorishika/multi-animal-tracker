@@ -28,21 +28,15 @@ except ImportError as e:
 
 
 # Set up logging
-def setup_logging(log_level=logging.INFO, enable_file_logging=True, log_dir=None):
-    """Set up logging configuration for the multi-tracker application."""
+def setup_logging(log_level=logging.INFO, enable_file_logging=False, log_dir=None):
+    """Set up logging configuration for the multi-tracker application.
 
-    # Create log directory if specified
-    if log_dir:
-        log_dir = Path(log_dir)
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_file = log_dir / "multi_tracker.log"
-    else:
-        log_file = "multi_tracker.log"
+    Note: File logging is now handled per-session in main_window.py.
+    This only sets up console logging.
+    """
 
-    # Set up handlers
+    # Only set up console logging - session logs are created in main_window.py
     handlers = [logging.StreamHandler(sys.stdout)]
-    if enable_file_logging:
-        handlers.append(logging.FileHandler(log_file))
 
     # Configure logging
     logging.basicConfig(
