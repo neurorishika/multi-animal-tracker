@@ -3492,9 +3492,6 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
 
-        # Clean up session logging
-        self._cleanup_session_logging()
-
         if self.csv_writer_thread:
             self.csv_writer_thread.stop()
             self.csv_writer_thread.join()
@@ -3574,6 +3571,8 @@ class MainWindow(QMainWindow):
                     self.forward_processed_trajs = processed_trajectories
                     self.start_backward_tracking()
                 else:
+                    # Clean up session logging - forward-only tracking complete
+                    self._cleanup_session_logging()
                     self._cleanup_temporary_files()
                     # Hide stats labels
                     self.label_current_fps.setVisible(False)
@@ -3616,6 +3615,8 @@ class MainWindow(QMainWindow):
                 if has_forward and has_backward:
                     self.merge_and_save_trajectories()
 
+                # Clean up session logging - backward tracking and merging complete
+                self._cleanup_session_logging()
                 self._cleanup_temporary_files()
                 # Hide stats labels
                 self.label_current_fps.setVisible(False)
