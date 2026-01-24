@@ -32,6 +32,7 @@ from PySide2.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QProgressBar,
+    QProgressDialog,
     QApplication,
     QComboBox,
     QTabWidget,
@@ -448,6 +449,11 @@ class MainWindow(QMainWindow):
         self.tab_viz = QWidget()
         self.setup_viz_ui()
         self.tabs.addTab(self.tab_viz, "Visuals")
+
+        # Tab 6: Dataset Generation (Active Learning)
+        self.tab_dataset = QWidget()
+        self.setup_dataset_ui()
+        self.tabs.addTab(self.tab_dataset, "Dataset Generation")
 
         right_layout.addWidget(self.tabs, stretch=1)
 
@@ -1933,7 +1939,7 @@ class MainWindow(QMainWindow):
         )
         v_ov.addWidget(self.chk_show_state)
 
-        self.chk_show_kalman_uncertainty = QCheckBox("Show Kalman Uncertainty (Debug)")
+        self.chk_show_kalman_uncertainty = QCheckBox("Show Kalman Uncertainty")
         self.chk_show_kalman_uncertainty.setChecked(False)
         self.chk_show_kalman_uncertainty.setToolTip(
             "Draw ellipses showing Kalman filter position uncertainty.\n"
@@ -2015,6 +2021,215 @@ class MainWindow(QMainWindow):
         layout.addWidget(g_debug)
 
         layout.addStretch()
+
+    def setup_dataset_ui(self):
+        """Tab 6: Dataset Generation for Active Learning."""
+        layout = QVBoxLayout(self.tab_dataset)
+        layout.setContentsMargins(10, 10, 10, 10)
+
+        # Info box
+        info_box = QGroupBox("Active Learning - Training Dataset Generation")
+        info_layout = QVBoxLayout(info_box)
+        info_layout.addWidget(
+            self._create_help_label(
+                "Automatically identify challenging frames during tracking and export them "
+                "for annotation. This helps improve YOLO model performance through active learning.\n\n"
+                "The system will:\n"
+                "• Identify frames with low detection confidence, assignment issues, or tracking failures\n"
+                "• Select the worst N frames while ensuring visual diversity\n"
+                "• Export frames with YOLO-format annotations for initial labeling\n"
+                "• Package everything in a zip file ready for x-AnyLabeling\n\n"
+                "Recommended workflow:\n"
+                "1. Run tracking with dataset generation enabled\n"
+                "2. Use x-AnyLabeling to correct/refine the exported annotations\n"
+                "3. Train an improved YOLO model with the new labeled data"
+            )
+        )
+        layout.addWidget(info_box)
+
+        # Enable dataset generation
+        self.chk_enable_dataset_gen = QCheckBox("Enable Dataset Generation")
+        self.chk_enable_dataset_gen.setChecked(False)
+        self.chk_enable_dataset_gen.setToolTip(
+            "Enable automatic generation of training dataset from difficult frames."
+        )
+        self.chk_enable_dataset_gen.stateChanged.connect(
+            self._on_dataset_generation_toggled
+        )
+        layout.addWidget(self.chk_enable_dataset_gen)
+
+        # Dataset configuration
+        self.g_dataset_config = QGroupBox("Dataset Configuration")
+        f_config = QFormLayout(self.g_dataset_config)
+        f_config.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # Dataset name
+        self.line_dataset_name = QLineEdit()
+        self.line_dataset_name.setPlaceholderText("e.g., my_dataset_v1")
+        self.line_dataset_name.setToolTip(
+            "Name for the dataset (used for folder and zip file naming)."
+        )
+        f_config.addRow("Dataset Name:", self.line_dataset_name)
+
+        # Class name
+        self.line_dataset_class_name = QLineEdit()
+        self.line_dataset_class_name.setPlaceholderText("e.g., ant")
+        self.line_dataset_class_name.setText("object")
+        self.line_dataset_class_name.setToolTip(
+            "Name of the object class being tracked.\n"
+            "This will be used in the classes.txt file for YOLO training.\n"
+            "Examples: ant, bee, mouse, fish, etc."
+        )
+        f_config.addRow("Class Name:", self.line_dataset_class_name)
+
+        # Output directory
+        h_output = QHBoxLayout()
+        self.line_dataset_output = QLineEdit()
+        self.line_dataset_output.setPlaceholderText("Select output directory...")
+        self.line_dataset_output.setToolTip(
+            "Directory where the dataset will be saved."
+        )
+        btn_browse_output = QPushButton("Browse...")
+        btn_browse_output.clicked.connect(self._select_dataset_output_dir)
+        h_output.addWidget(self.line_dataset_output)
+        h_output.addWidget(btn_browse_output)
+        f_config.addRow("Output Directory:", h_output)
+
+        layout.addWidget(self.g_dataset_config)
+
+        # Frame selection parameters
+        self.g_frame_selection = QGroupBox("Frame Selection Criteria")
+        f_selection = QFormLayout(self.g_frame_selection)
+        f_selection.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # Number of frames to export
+        self.spin_dataset_max_frames = QSpinBox()
+        self.spin_dataset_max_frames.setRange(10, 1000)
+        self.spin_dataset_max_frames.setValue(100)
+        self.spin_dataset_max_frames.setToolTip(
+            "Maximum number of frames to export (10-1000).\n"
+            "Higher values provide more training data but increase annotation time.\n"
+            "Recommended: 50-200 frames for initial improvement."
+        )
+        f_selection.addRow("Max Frames to Export:", self.spin_dataset_max_frames)
+
+        # Confidence threshold
+        self.spin_dataset_conf_threshold = QDoubleSpinBox()
+        self.spin_dataset_conf_threshold.setRange(0.0, 1.0)
+        self.spin_dataset_conf_threshold.setSingleStep(0.05)
+        self.spin_dataset_conf_threshold.setDecimals(2)
+        self.spin_dataset_conf_threshold.setValue(0.5)
+        self.spin_dataset_conf_threshold.setToolTip(
+            "Flag frames where YOLO detection confidence is below this threshold (0.0-1.0).\n"
+            "Lower = only export very uncertain detections.\n"
+            "Higher = include moderately uncertain detections.\n"
+            "Recommended: 0.4-0.6"
+        )
+        f_selection.addRow("Confidence Threshold:", self.spin_dataset_conf_threshold)
+
+        # Visual diversity window
+        self.spin_dataset_diversity_window = QSpinBox()
+        self.spin_dataset_diversity_window.setRange(10, 500)
+        self.spin_dataset_diversity_window.setValue(30)
+        self.spin_dataset_diversity_window.setToolTip(
+            "Minimum frame separation for visual diversity (10-500 frames).\n"
+            "Prevents selecting too many consecutive similar frames.\n"
+            "Higher = more spread out frames, more visual variety.\n"
+            "Recommended: 20-50 frames (depends on video frame rate)."
+        )
+        f_selection.addRow(
+            "Diversity Window (frames):", self.spin_dataset_diversity_window
+        )
+
+        # Include context frames
+        self.chk_dataset_include_context = QCheckBox("Include Context Frames (±1)")
+        self.chk_dataset_include_context.setChecked(True)
+        self.chk_dataset_include_context.setToolTip(
+            "Export the frame before and after each selected frame.\n"
+            "Provides temporal context which can improve annotation quality.\n"
+            "Increases dataset size by 3x."
+        )
+        f_selection.addRow("Context Frames:", self.chk_dataset_include_context)
+
+        self.chk_dataset_probabilistic = QCheckBox("Probabilistic Sampling")
+        self.chk_dataset_probabilistic.setChecked(True)
+        self.chk_dataset_probabilistic.setToolTip(
+            "Use rank-based probabilistic sampling instead of greedy selection.\n"
+            "Probabilistic: Higher quality scores = higher probability (more variety).\n"
+            "Greedy: Always select absolute worst frames first (may be too extreme).\n"
+            "Recommended: Enabled for better training data diversity."
+        )
+        f_selection.addRow("Sampling Strategy:", self.chk_dataset_probabilistic)
+
+        layout.addWidget(self.g_frame_selection)
+
+        # Quality metrics
+        self.g_quality_metrics = QGroupBox("Quality Metrics (Frame Scoring)")
+        v_metrics = QVBoxLayout(self.g_quality_metrics)
+        v_metrics.addWidget(
+            self._create_help_label(
+                "Select which quality metrics to use for identifying problematic frames:"
+            )
+        )
+
+        self.chk_metric_low_confidence = QCheckBox("Low Detection Confidence")
+        self.chk_metric_low_confidence.setChecked(True)
+        self.chk_metric_low_confidence.setToolTip(
+            "Flag frames where YOLO confidence is below threshold."
+        )
+        v_metrics.addWidget(self.chk_metric_low_confidence)
+
+        self.chk_metric_count_mismatch = QCheckBox("Detection Count Mismatch")
+        self.chk_metric_count_mismatch.setChecked(True)
+        self.chk_metric_count_mismatch.setToolTip(
+            "Flag frames where detected count doesn't match expected number of animals."
+        )
+        v_metrics.addWidget(self.chk_metric_count_mismatch)
+
+        self.chk_metric_high_assignment_cost = QCheckBox("High Assignment Cost")
+        self.chk_metric_high_assignment_cost.setChecked(True)
+        self.chk_metric_high_assignment_cost.setToolTip(
+            "Flag frames where tracker struggles to match detections to tracks."
+        )
+        v_metrics.addWidget(self.chk_metric_high_assignment_cost)
+
+        self.chk_metric_track_loss = QCheckBox("Frequent Track Losses")
+        self.chk_metric_track_loss.setChecked(True)
+        self.chk_metric_track_loss.setToolTip(
+            "Flag frames where tracks are frequently lost."
+        )
+        v_metrics.addWidget(self.chk_metric_track_loss)
+
+        self.chk_metric_high_uncertainty = QCheckBox("High Position Uncertainty")
+        self.chk_metric_high_uncertainty.setChecked(False)
+        self.chk_metric_high_uncertainty.setToolTip(
+            "Flag frames where Kalman filter is very uncertain about positions."
+        )
+        v_metrics.addWidget(self.chk_metric_high_uncertainty)
+
+        layout.addWidget(self.g_quality_metrics)
+
+        # Initially disable all config widgets
+        self.g_dataset_config.setEnabled(False)
+        self.g_frame_selection.setEnabled(False)
+        self.g_quality_metrics.setEnabled(False)
+
+        layout.addStretch()
+
+    def _on_dataset_generation_toggled(self, state):
+        """Enable/disable dataset generation controls."""
+        enabled = state == Qt.Checked
+        self.g_dataset_config.setEnabled(enabled)
+        self.g_frame_selection.setEnabled(enabled)
+        self.g_quality_metrics.setEnabled(enabled)
+
+    def _select_dataset_output_dir(self):
+        """Browse for dataset output directory."""
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Dataset Output Directory"
+        )
+        if directory:
+            self.line_dataset_output.setText(directory)
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -3192,6 +3407,7 @@ class MainWindow(QMainWindow):
         self.chk_show_trajectories.setEnabled(not is_viz_free)
         self.chk_show_labels.setEnabled(not is_viz_free)
         self.chk_show_state.setEnabled(not is_viz_free)
+        self.chk_show_kalman_uncertainty.setEnabled(not is_viz_free)
         self.chk_show_fg.setEnabled(not is_viz_free)
         self.chk_show_bg.setEnabled(not is_viz_free)
         self.chk_show_yolo_obb.setEnabled(not is_viz_free)
@@ -3678,9 +3894,14 @@ class MainWindow(QMainWindow):
                     self.forward_processed_trajs = processed_trajectories
                     self.start_backward_tracking()
                 else:
+                    # Generate dataset if enabled (BEFORE cleanup so files are still available)
+                    if self.chk_enable_dataset_gen.isChecked():
+                        self._generate_training_dataset()
+
                     # Clean up session logging - forward-only tracking complete
                     self._cleanup_session_logging()
                     self._cleanup_temporary_files()
+
                     # Hide stats labels
                     self.label_current_fps.setVisible(False)
                     self.label_elapsed_time.setVisible(False)
@@ -3722,9 +3943,14 @@ class MainWindow(QMainWindow):
                 if has_forward and has_backward:
                     self.merge_and_save_trajectories()
 
+                # Generate dataset if enabled (BEFORE cleanup so files are still available)
+                if self.chk_enable_dataset_gen.isChecked():
+                    self._generate_training_dataset()
+
                 # Clean up session logging - backward tracking and merging complete
                 self._cleanup_session_logging()
                 self._cleanup_temporary_files()
+
                 # Hide stats labels
                 self.label_current_fps.setVisible(False)
                 self.label_elapsed_time.setVisible(False)
@@ -4083,6 +4309,21 @@ class MainWindow(QMainWindow):
             "ENABLE_HISTOGRAMS": self.enable_histograms.isChecked(),
             "HISTOGRAM_HISTORY_FRAMES": self.spin_histogram_history.value(),
             "ROI_MASK": self.roi_mask,
+            # Dataset generation parameters
+            "ENABLE_DATASET_GENERATION": self.chk_enable_dataset_gen.isChecked(),
+            "DATASET_NAME": self.line_dataset_name.text(),
+            "DATASET_CLASS_NAME": self.line_dataset_class_name.text(),
+            "DATASET_OUTPUT_DIR": self.line_dataset_output.text(),
+            "DATASET_MAX_FRAMES": self.spin_dataset_max_frames.value(),
+            "DATASET_CONF_THRESHOLD": self.spin_dataset_conf_threshold.value(),
+            "DATASET_DIVERSITY_WINDOW": self.spin_dataset_diversity_window.value(),
+            "DATASET_INCLUDE_CONTEXT": self.chk_dataset_include_context.isChecked(),
+            "DATASET_PROBABILISTIC_SAMPLING": self.chk_dataset_probabilistic.isChecked(),
+            "METRIC_LOW_CONFIDENCE": self.chk_metric_low_confidence.isChecked(),
+            "METRIC_COUNT_MISMATCH": self.chk_metric_count_mismatch.isChecked(),
+            "METRIC_HIGH_ASSIGNMENT_COST": self.chk_metric_high_assignment_cost.isChecked(),
+            "METRIC_TRACK_LOSS": self.chk_metric_track_loss.isChecked(),
+            "METRIC_HIGH_UNCERTAINTY": self.chk_metric_high_uncertainty.isChecked(),
         }
 
     def load_config(self):
@@ -4290,6 +4531,42 @@ class MainWindow(QMainWindow):
             )
             self.slider_zoom.setValue(int(cfg.get("zoom_factor", 1.0) * 100))
 
+            # Dataset generation parameters
+            self.chk_enable_dataset_gen.setChecked(
+                cfg.get("enable_dataset_generation", False)
+            )
+            self.line_dataset_name.setText(cfg.get("dataset_name", ""))
+            self.line_dataset_class_name.setText(
+                cfg.get("dataset_class_name", "object")
+            )
+            self.line_dataset_output.setText(cfg.get("dataset_output_dir", ""))
+            self.spin_dataset_max_frames.setValue(cfg.get("dataset_max_frames", 100))
+            self.spin_dataset_conf_threshold.setValue(
+                cfg.get("dataset_conf_threshold", 0.5)
+            )
+            self.spin_dataset_diversity_window.setValue(
+                cfg.get("dataset_diversity_window", 30)
+            )
+            self.chk_dataset_include_context.setChecked(
+                cfg.get("dataset_include_context", True)
+            )
+            self.chk_dataset_probabilistic.setChecked(
+                cfg.get("dataset_probabilistic_sampling", True)
+            )
+            self.chk_metric_low_confidence.setChecked(
+                cfg.get("metric_low_confidence", True)
+            )
+            self.chk_metric_count_mismatch.setChecked(
+                cfg.get("metric_count_mismatch", True)
+            )
+            self.chk_metric_high_assignment_cost.setChecked(
+                cfg.get("metric_high_assignment_cost", True)
+            )
+            self.chk_metric_track_loss.setChecked(cfg.get("metric_track_loss", True))
+            self.chk_metric_high_uncertainty.setChecked(
+                cfg.get("metric_high_uncertainty", False)
+            )
+
             # Load ROI shapes
             self.roi_shapes = cfg.get("roi_shapes", [])
             if self.roi_shapes:
@@ -4429,6 +4706,21 @@ class MainWindow(QMainWindow):
             "enable_histograms": self.enable_histograms.isChecked(),
             "histogram_history_frames": self.spin_histogram_history.value(),
             "roi_shapes": self.roi_shapes,  # Save ROI shapes
+            # Dataset generation parameters
+            "enable_dataset_generation": self.chk_enable_dataset_gen.isChecked(),
+            "dataset_name": self.line_dataset_name.text(),
+            "dataset_class_name": self.line_dataset_class_name.text(),
+            "dataset_output_dir": self.line_dataset_output.text(),
+            "dataset_max_frames": self.spin_dataset_max_frames.value(),
+            "dataset_conf_threshold": self.spin_dataset_conf_threshold.value(),
+            "dataset_diversity_window": self.spin_dataset_diversity_window.value(),
+            "dataset_include_context": self.chk_dataset_include_context.isChecked(),
+            "dataset_probabilistic_sampling": self.chk_dataset_probabilistic.isChecked(),
+            "metric_low_confidence": self.chk_metric_low_confidence.isChecked(),
+            "metric_count_mismatch": self.chk_metric_count_mismatch.isChecked(),
+            "metric_high_assignment_cost": self.chk_metric_high_assignment_cost.isChecked(),
+            "metric_track_loss": self.chk_metric_track_loss.isChecked(),
+            "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
         }
 
         # Determine save path: video-based if video selected, otherwise ask user
@@ -4503,6 +4795,136 @@ class MainWindow(QMainWindow):
             root_logger.removeHandler(self.session_log_handler)
             self.session_log_handler.close()
             self.session_log_handler = None
+
+    def _generate_training_dataset(self):
+        """Generate training dataset from tracking results for active learning."""
+        try:
+            from ..utils.dataset_generation import export_dataset, FrameQualityScorer
+
+            logger.info("Starting training dataset generation...")
+
+            # Validate parameters
+            dataset_name = self.line_dataset_name.text().strip()
+            output_dir = self.line_dataset_output.text().strip()
+
+            if not dataset_name:
+                QMessageBox.warning(
+                    self, "Dataset Generation Error", "Please enter a dataset name."
+                )
+                return
+
+            if not output_dir:
+                QMessageBox.warning(
+                    self,
+                    "Dataset Generation Error",
+                    "Please select an output directory.",
+                )
+                return
+
+            if not os.path.exists(output_dir):
+                QMessageBox.warning(
+                    self,
+                    "Dataset Generation Error",
+                    f"Output directory does not exist: {output_dir}",
+                )
+                return
+
+            video_path = self.file_line.text()
+            csv_path = self.csv_line.text()
+
+            if not video_path or not os.path.exists(video_path):
+                QMessageBox.warning(
+                    self, "Dataset Generation Error", "Source video file not found."
+                )
+                return
+
+            if not csv_path or not os.path.exists(csv_path):
+                QMessageBox.warning(
+                    self, "Dataset Generation Error", "Tracking CSV file not found."
+                )
+                return
+
+            # Get parameters
+            params = self.get_parameters_dict()
+            max_frames = self.spin_dataset_max_frames.value()
+            diversity_window = self.spin_dataset_diversity_window.value()
+            include_context = self.chk_dataset_include_context.isChecked()
+
+            # Load tracking CSV to compute quality scores
+            import pandas as pd
+
+            df = pd.read_csv(csv_path)
+
+            # Initialize quality scorer
+            scorer = FrameQualityScorer(params)
+
+            # Score each frame
+            for frame_id in df["FrameID"].unique():
+                frame_data = df[df["FrameID"] == frame_id]
+
+                # Detection data
+                detection_data = {
+                    "confidences": (
+                        frame_data["DetectionConfidence"].tolist()
+                        if "DetectionConfidence" in frame_data.columns
+                        else []
+                    ),
+                    "count": len(frame_data),
+                }
+
+                # Tracking data (simplified - could be enhanced with actual assignment costs)
+                tracking_data = {
+                    "lost_tracks": int((frame_data["State"] == "lost").sum()),
+                    "uncertainties": (
+                        frame_data["PositionUncertainty"].tolist()
+                        if "PositionUncertainty" in frame_data.columns
+                        else []
+                    ),
+                }
+
+                scorer.score_frame(frame_id, detection_data, tracking_data)
+
+            # Select worst frames with diversity
+            probabilistic = self.chk_dataset_probabilistic.isChecked()
+            selected_frames = scorer.get_worst_frames(
+                max_frames, diversity_window, probabilistic=probabilistic
+            )
+
+            if not selected_frames:
+                logger.info("No frames met the quality criteria for export.")
+                return
+
+            # Get class name
+            class_name = self.line_dataset_class_name.text().strip()
+            if not class_name:
+                class_name = "object"
+
+            # Export dataset (non-blocking - runs in background)
+            logger.info(f"Exporting {len(selected_frames)} frames to dataset...")
+            zip_path = export_dataset(
+                video_path=video_path,
+                csv_path=csv_path,
+                frame_ids=selected_frames,
+                output_dir=output_dir,
+                dataset_name=dataset_name,
+                class_name=class_name,
+                params=params,
+                include_context=include_context,
+            )
+
+            logger.info(f"Dataset generation complete: {zip_path}")
+            logger.info(f"Frames exported: {len(selected_frames)}")
+            logger.info(
+                "Next steps: Extract zip, use x-AnyLabeling to review/correct annotations, train improved YOLO model"
+            )
+
+        except Exception as e:
+            logger.error(f"Dataset generation failed: {e}", exc_info=True)
+            QMessageBox.critical(
+                self,
+                "Dataset Generation Error",
+                f"Failed to generate dataset:\n{str(e)}",
+            )
 
     def _cleanup_temporary_files(self):
         """Remove temporary files if cleanup is enabled."""
