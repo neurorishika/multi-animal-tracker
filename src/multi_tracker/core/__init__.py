@@ -15,6 +15,7 @@ from .post_processing import (
     process_trajectories,
     process_trajectories_from_csv,
     resolve_trajectories,
+    interpolate_trajectories,
 )
 
 
@@ -25,5 +26,7 @@ __all__ = [
     "ObjectDetector",
     "TrackAssigner",
     "process_trajectories",
+    "process_trajectories_from_csv",
     "resolve_trajectories",
+    "interpolate_trajectories",
 ]

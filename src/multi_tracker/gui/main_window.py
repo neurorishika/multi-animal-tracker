@@ -14,7 +14,7 @@ import gc
 import csv
 
 from PySide2.QtCore import Qt, Slot, Signal, QThread, QMutex
-from PySide2.QtGui import QImage, QPixmap, QPainter, QPen, QIcon
+from PySide2.QtGui import QImage, QPixmap, QPainter, QPen, QIcon, QColor
 from PySide2.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -123,8 +123,52 @@ class MainWindow(QMainWindow):
             QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {
                 background-color: #222; border: 1px solid #555; border-radius: 3px;
                 padding: 4px; color: #fff; selection-background-color: #4a9eff;
+                min-width: 120px;
             }
             QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QComboBox:focus { border: 1px solid #4a9eff; }
+            
+            /* ComboBox dropdown */
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left: 1px solid #555;
+                background-color: #555;
+                border-top-right-radius: 3px;
+                border-bottom-right-radius: 3px;
+            }
+            QComboBox::drop-down:hover { background-color: #666; }
+            QComboBox::down-arrow {
+                image: none;
+                border: 2px solid #fff;
+                width: 6px;
+                height: 6px;
+                border-top: none;
+                border-right: none;
+                transform: rotate(-45deg);
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2b2b2b;
+                border: 1px solid #555;
+                selection-background-color: #4a9eff;
+                selection-color: #fff;
+                color: #fff;
+                padding: 4px;
+                min-width: 200px;
+            }
+            QComboBox QAbstractItemView::item {
+                padding: 6px 8px;
+                min-height: 24px;
+                border: none;
+            }
+            QComboBox QAbstractItemView::item:hover {
+                background-color: #3d8bdb;
+                color: #fff;
+            }
+            QComboBox QAbstractItemView::item:selected {
+                background-color: #4a9eff;
+                color: #fff;
+            }
             
             /* SpinBox arrows */
             QSpinBox::up-button, QDoubleSpinBox::up-button {
@@ -179,11 +223,12 @@ class MainWindow(QMainWindow):
         self.roi_mask = None
         self.roi_selection_active = False
         self.roi_fitted_circle = None
-        # Enhanced ROI support: multiple shapes
+        # Enhanced ROI support: multiple shapes with inclusion/exclusion
         self.roi_shapes = (
             []
-        )  # List of dicts: {'type': 'circle'/'polygon', 'params': ...}
+        )  # List of dicts: {'type': 'circle'/'polygon', 'params': ..., 'mode': 'include'/'exclude'}
         self.roi_current_mode = "circle"  # 'circle' or 'polygon'
+        self.roi_current_zone_type = "include"  # 'include' or 'exclude'
 
         self.histogram_panel = None
         self.histogram_window = None
@@ -257,6 +302,15 @@ class MainWindow(QMainWindow):
         self.combo_roi_mode.setToolTip("Select shape type for ROI")
         self.combo_roi_mode.currentIndexChanged.connect(self._on_roi_mode_changed)
 
+        # Zone type selector (Include/Exclude)
+        self.combo_roi_zone = QComboBox()
+        self.combo_roi_zone.addItems(["Include Zone", "Exclude Zone"])
+        self.combo_roi_zone.setToolTip(
+            "Include: Area where tracking is active\n"
+            "Exclude: Area to remove from tracking (applied after inclusions)"
+        )
+        self.combo_roi_zone.currentIndexChanged.connect(self._on_roi_zone_changed)
+
         self.btn_start_roi = QPushButton("Add Shape")
         self.btn_start_roi.clicked.connect(self.start_roi_selection)
         self.btn_start_roi.setShortcut("Ctrl+R")
@@ -283,6 +337,7 @@ class MainWindow(QMainWindow):
 
         roi_layout.addWidget(roi_label)
         roi_layout.addWidget(self.combo_roi_mode)
+        roi_layout.addWidget(self.combo_roi_zone)
         roi_layout.addWidget(self.btn_start_roi)
         roi_layout.addWidget(self.btn_finish_roi)
         roi_layout.addWidget(self.btn_undo_roi)
@@ -1605,6 +1660,32 @@ class MainWindow(QMainWindow):
             "Recommended: 10-20× body size."
         )
         f_pp.addRow("Max Distance Break (×body):", self.spin_max_distance_break)
+
+        # Interpolation settings
+        self.combo_interpolation_method = QComboBox()
+        self.combo_interpolation_method.addItems(["None", "Linear", "Cubic", "Spline"])
+        self.combo_interpolation_method.setCurrentText("None")
+        self.combo_interpolation_method.setToolTip(
+            "Interpolation method for filling gaps in trajectories:\n"
+            "• None: No interpolation (keep NaN values)\n"
+            "• Linear: Simple linear interpolation\n"
+            "• Cubic: Smooth cubic spline interpolation\n"
+            "• Spline: Smoothing spline with automatic smoothing\n"
+            "Applied to X, Y positions and heading (circular interpolation)."
+        )
+        f_pp.addRow("Interpolation Method:", self.combo_interpolation_method)
+
+        self.spin_interpolation_max_gap = QSpinBox()
+        self.spin_interpolation_max_gap.setRange(1, 100)
+        self.spin_interpolation_max_gap.setValue(10)
+        self.spin_interpolation_max_gap.setToolTip(
+            "Maximum gap size to interpolate (1-100 frames).\n"
+            "Gaps larger than this will remain as NaN.\n"
+            "Prevents interpolation across large occlusions.\n"
+            "Recommended: 5-15 frames."
+        )
+        f_pp.addRow("Max Interpolation Gap:", self.spin_interpolation_max_gap)
+
         vl_pp.addLayout(f_pp)
         vbox.addWidget(g_pp)
 
@@ -2532,6 +2613,10 @@ class MainWindow(QMainWindow):
                     "Polygon: Click vertices. Double-click or press Confirm to close. ESC to cancel."
                 )
 
+    def _on_roi_zone_changed(self, index):
+        """Handle ROI zone type selection change."""
+        self.roi_current_zone_type = "include" if index == 0 else "exclude"
+
     def record_roi_click(self, evt):
         if not self.roi_selection_active or self.roi_base_frame is None:
             return
@@ -2566,11 +2651,15 @@ class MainWindow(QMainWindow):
         pix = QPixmap.fromImage(self.roi_base_frame).toImage().copy()
         painter = QPainter(pix)
 
-        # Draw existing shapes first
+        # Draw existing shapes first (color-coded by mode)
         for shape in self.roi_shapes:
+            # Choose color based on inclusion/exclusion
+            is_include = shape.get("mode", "include") == "include"
+            color = Qt.cyan if is_include else Qt.red
+
             if shape["type"] == "circle":
                 cx, cy, radius = shape["params"]
-                painter.setPen(QPen(Qt.cyan, 2))
+                painter.setPen(QPen(color, 2))
                 painter.drawEllipse(
                     int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
                 )
@@ -2578,7 +2667,7 @@ class MainWindow(QMainWindow):
                 from PySide2.QtCore import QPoint
 
                 points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
-                painter.setPen(QPen(Qt.cyan, 2))
+                painter.setPen(QPen(color, 2))
                 painter.drawPolygon(points)
 
         # Draw current selection
@@ -2592,18 +2681,28 @@ class MainWindow(QMainWindow):
             painter.setPen(QPen(Qt.red, 6))
 
         can_finish = False
+        # Color for current shape preview (lighter version of final color)
+        preview_color = (
+            Qt.green if self.roi_current_zone_type == "include" else QColor(255, 165, 0)
+        )  # Orange for exclude
+
         if self.roi_current_mode == "circle" and len(self.roi_points) >= 3:
             circle_fit = fit_circle_to_points(self.roi_points)
             if circle_fit:
                 cx, cy, radius = circle_fit
                 self.roi_fitted_circle = circle_fit
-                painter.setPen(QPen(Qt.green, 3))
+                painter.setPen(QPen(preview_color, 3))
                 painter.drawEllipse(
                     int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
                 )
                 painter.setPen(QPen(Qt.blue, 8))
                 painter.drawPoint(int(cx), int(cy))
-                self.roi_status_label.setText(f"Preview Circle: R={radius:.1f}px")
+                zone_type = (
+                    "Include" if self.roi_current_zone_type == "include" else "Exclude"
+                )
+                self.roi_status_label.setText(
+                    f"Preview {zone_type} Circle: R={radius:.1f}px"
+                )
                 can_finish = True
             else:
                 self.roi_status_label.setText("Invalid circle fit")
@@ -2612,10 +2711,13 @@ class MainWindow(QMainWindow):
             from PySide2.QtCore import QPoint
 
             points = [QPoint(int(x), int(y)) for x, y in self.roi_points]
-            painter.setPen(QPen(Qt.green, 3))
+            painter.setPen(QPen(preview_color, 3))
             painter.drawPolygon(points)
+            zone_type = (
+                "Include" if self.roi_current_zone_type == "include" else "Exclude"
+            )
             self.roi_status_label.setText(
-                f"Preview Polygon: {len(self.roi_points)} vertices"
+                f"Preview {zone_type} Polygon: {len(self.roi_points)} vertices"
             )
             can_finish = True
         else:
@@ -2656,16 +2758,22 @@ class MainWindow(QMainWindow):
         self.btn_start_roi.setEnabled(False)
         self.btn_finish_roi.setEnabled(False)
         self.combo_roi_mode.setEnabled(False)
+        self.combo_roi_zone.setEnabled(False)
 
+        zone_type = (
+            "INCLUSION" if self.roi_current_zone_type == "include" else "EXCLUSION"
+        )
         if self.roi_current_mode == "circle":
-            self.roi_status_label.setText("Click points on circle boundary")
+            self.roi_status_label.setText(
+                f"Click points on {zone_type.lower()} circle boundary"
+            )
             self.roi_instructions.setText(
-                "Circle: Click 3+ points on boundary. Press ESC to cancel."
+                f"{zone_type} Circle: Click 3+ points on boundary. Press ESC to cancel."
             )
         else:
-            self.roi_status_label.setText("Click polygon vertices")
+            self.roi_status_label.setText(f"Click {zone_type.lower()} polygon vertices")
             self.roi_instructions.setText(
-                "Polygon: Click vertices. Double-click or press Confirm to close. ESC to cancel."
+                f"{zone_type} Polygon: Click vertices. Double-click or press Confirm to close. ESC to cancel."
             )
 
         self.update_roi_preview()
@@ -2681,9 +2789,18 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "No ROI", "No valid circle fit available.")
                 return
             cx, cy, radius = self.roi_fitted_circle
-            self.roi_shapes.append({"type": "circle", "params": (cx, cy, radius)})
+            self.roi_shapes.append(
+                {
+                    "type": "circle",
+                    "params": (cx, cy, radius),
+                    "mode": self.roi_current_zone_type,
+                }
+            )
+            zone_type = (
+                "inclusion" if self.roi_current_zone_type == "include" else "exclusion"
+            )
             logger.info(
-                f"Added circle ROI: center=({cx:.1f}, {cy:.1f}), radius={radius:.1f}"
+                f"Added circle {zone_type} zone: center=({cx:.1f}, {cy:.1f}), radius={radius:.1f}"
             )
 
         elif self.roi_current_mode == "polygon":
@@ -2692,8 +2809,19 @@ class MainWindow(QMainWindow):
                     self, "No ROI", "Need at least 3 points for polygon."
                 )
                 return
-            self.roi_shapes.append({"type": "polygon", "params": list(self.roi_points)})
-            logger.info(f"Added polygon ROI with {len(self.roi_points)} vertices")
+            self.roi_shapes.append(
+                {
+                    "type": "polygon",
+                    "params": list(self.roi_points),
+                    "mode": self.roi_current_zone_type,
+                }
+            )
+            zone_type = (
+                "inclusion" if self.roi_current_zone_type == "include" else "exclusion"
+            )
+            logger.info(
+                f"Added polygon {zone_type} zone with {len(self.roi_points)} vertices"
+            )
 
         # Generate combined mask from all shapes
         self._generate_combined_roi_mask(fh, fw)
@@ -2706,13 +2834,18 @@ class MainWindow(QMainWindow):
         self.btn_finish_roi.setEnabled(False)
         self.btn_undo_roi.setEnabled(len(self.roi_shapes) > 0)
         self.combo_roi_mode.setEnabled(True)
+        self.combo_roi_zone.setEnabled(True)
         self.roi_instructions.setText("")
 
-        # Update status
-        num_shapes = len(self.roi_shapes)
-        shape_summary = ", ".join([s["type"] for s in self.roi_shapes])
+        # Update status to show inclusion/exclusion counts
+        include_count = sum(
+            1 for s in self.roi_shapes if s.get("mode", "include") == "include"
+        )
+        exclude_count = sum(
+            1 for s in self.roi_shapes if s.get("mode", "include") == "exclude"
+        )
         self.roi_status_label.setText(
-            f"Active ROI: {num_shapes} shape(s) ({shape_summary})"
+            f"Active ROI: {include_count} inclusion, {exclude_count} exclusion zone(s)"
         )
 
         # Show the masked result - what detector will see
@@ -2721,7 +2854,7 @@ class MainWindow(QMainWindow):
             self.video_label.setPixmap(QPixmap.fromImage(qimg_masked))
 
     def _generate_combined_roi_mask(self, height, width):
-        """Generate a combined mask from all ROI shapes."""
+        """Generate a combined mask from all ROI shapes with inclusion/exclusion support."""
         if not self.roi_shapes:
             self.roi_mask = None
             return
@@ -2729,14 +2862,25 @@ class MainWindow(QMainWindow):
         # Create blank mask
         combined_mask = np.zeros((height, width), np.uint8)
 
-        # Add each shape to the mask (OR operation)
+        # First pass: apply all inclusion zones (OR operation)
         for shape in self.roi_shapes:
-            if shape["type"] == "circle":
-                cx, cy, radius = shape["params"]
-                cv2.circle(combined_mask, (int(cx), int(cy)), int(radius), 255, -1)
-            elif shape["type"] == "polygon":
-                points = np.array(shape["params"], dtype=np.int32)
-                cv2.fillPoly(combined_mask, [points], 255)
+            if shape.get("mode", "include") == "include":
+                if shape["type"] == "circle":
+                    cx, cy, radius = shape["params"]
+                    cv2.circle(combined_mask, (int(cx), int(cy)), int(radius), 255, -1)
+                elif shape["type"] == "polygon":
+                    pts = np.array(shape["params"], dtype=np.int32)
+                    cv2.fillPoly(combined_mask, [pts], 255)
+
+        # Second pass: subtract all exclusion zones (AND NOT operation)
+        for shape in self.roi_shapes:
+            if shape.get("mode", "include") == "exclude":
+                if shape["type"] == "circle":
+                    cx, cy, radius = shape["params"]
+                    cv2.circle(combined_mask, (int(cx), int(cy)), int(radius), 0, -1)
+                elif shape["type"] == "polygon":
+                    pts = np.array(shape["params"], dtype=np.int32)
+                    cv2.fillPoly(combined_mask, [pts], 0)
 
         self.roi_mask = combined_mask
         logger.info(f"Generated combined ROI mask from {len(self.roi_shapes)} shape(s)")
@@ -3019,16 +3163,25 @@ class MainWindow(QMainWindow):
                 return False
             try:
                 # DataFrame already has all columns including confidence metrics
+                # Convert X and Y to integers where possible (non-NaN values)
+                df_to_save = trajectories.copy()
+                for col in ["X", "Y", "FrameID"]:
+                    if col in df_to_save.columns:
+                        # Convert to float first to handle any issues, then to Int64 (nullable integer)
+                        df_to_save[col] = pd.to_numeric(
+                            df_to_save[col], errors="coerce"
+                        )
+                        # Use Int64 dtype which supports NaN values
+                        df_to_save[col] = df_to_save[col].round().astype("Int64")
+
                 # Reorder columns to put basic trajectory info first
                 base_cols = ["TrajectoryID", "X", "Y", "Theta", "FrameID"]
-                other_cols = [
-                    col for col in trajectories.columns if col not in base_cols
-                ]
+                other_cols = [col for col in df_to_save.columns if col not in base_cols]
                 ordered_cols = base_cols + other_cols
-                trajectories[ordered_cols].to_csv(output_path, index=False)
+                df_to_save[ordered_cols].to_csv(output_path, index=False)
                 logger.info(
-                    f"Successfully saved {trajectories['TrajectoryID'].nunique()} post-processed trajectories "
-                    f"({len(trajectories)} rows) with {len(ordered_cols)} columns to {output_path}"
+                    f"Successfully saved {df_to_save['TrajectoryID'].nunique()} post-processed trajectories "
+                    f"({len(df_to_save)} rows) with {len(ordered_cols)} columns to {output_path}"
                 )
                 return True
             except Exception as e:
@@ -3048,9 +3201,11 @@ class MainWindow(QMainWindow):
                 writer.writerow(header)
                 for trajectory_id, segment in enumerate(trajectories):
                     for x, y, theta, frame_id in segment:
-                        writer.writerow(
-                            [trajectory_id, int(x), int(y), theta, int(frame_id)]
-                        )
+                        # Handle NaN values - write as empty string or keep as float
+                        x_val = int(x) if not np.isnan(x) else ""
+                        y_val = int(y) if not np.isnan(y) else ""
+                        frame_val = int(frame_id) if not np.isnan(frame_id) else ""
+                        writer.writerow([trajectory_id, x_val, y_val, theta, frame_val])
             logger.info(
                 f"Successfully saved {len(trajectories)} post-processed trajectories to {output_path}"
             )
@@ -3062,7 +3217,20 @@ class MainWindow(QMainWindow):
     def merge_and_save_trajectories(self):
         forward_trajs = getattr(self, "forward_processed_trajs", None)
         backward_trajs = getattr(self, "backward_processed_trajs", None)
-        if not forward_trajs or not backward_trajs:
+
+        # Check if trajectories exist and are not empty (handle both DataFrame and list)
+        forward_empty = (
+            forward_trajs is None
+            or (isinstance(forward_trajs, pd.DataFrame) and forward_trajs.empty)
+            or (isinstance(forward_trajs, list) and len(forward_trajs) == 0)
+        )
+        backward_empty = (
+            backward_trajs is None
+            or (isinstance(backward_trajs, pd.DataFrame) and backward_trajs.empty)
+            or (isinstance(backward_trajs, list) and len(backward_trajs) == 0)
+        )
+
+        if forward_empty or backward_empty:
             QMessageBox.warning(
                 self,
                 "No Trajectories",
@@ -3080,12 +3248,60 @@ class MainWindow(QMainWindow):
         cap.release()
 
         current_params = self.get_parameters_dict()
+
+        # Convert DataFrames to list of DataFrames (one per trajectory) for resolve_trajectories
+        def prepare_trajs_for_merge(trajs):
+            """Convert trajectories to format expected by resolve_trajectories."""
+            if isinstance(trajs, pd.DataFrame):
+                # Split DataFrame by TrajectoryID into list of DataFrames
+                return [group for _, group in trajs.groupby("TrajectoryID")]
+            else:
+                # Already in list format
+                return trajs
+
+        forward_prepared = prepare_trajs_for_merge(forward_trajs)
+        backward_prepared = prepare_trajs_for_merge(backward_trajs)
+
         resolved_trajectories = resolve_trajectories(
-            forward_trajs,
-            backward_trajs,
+            forward_prepared,
+            backward_prepared,
             video_length=total_frames,
             params=current_params,
         )
+
+        # Convert resolved trajectories to DataFrame for interpolation
+        # resolve_trajectories returns list of tuples, need to convert to DataFrame
+        from ..core.post_processing import interpolate_trajectories
+
+        # Convert list of tuples to DataFrame
+        if resolved_trajectories and not isinstance(
+            resolved_trajectories[0], pd.DataFrame
+        ):
+            all_data = []
+            for traj_id, traj in enumerate(resolved_trajectories):
+                for x, y, theta, frame in traj:
+                    all_data.append(
+                        {
+                            "TrajectoryID": traj_id,
+                            "X": x,
+                            "Y": y,
+                            "Theta": theta,
+                            "FrameID": frame,
+                        }
+                    )
+            if all_data:
+                resolved_trajectories = pd.DataFrame(all_data)
+            else:
+                resolved_trajectories = []
+
+        # Apply interpolation if enabled
+        if isinstance(resolved_trajectories, pd.DataFrame):
+            interp_method = self.combo_interpolation_method.currentText().lower()
+            if interp_method != "none":
+                max_gap = self.spin_interpolation_max_gap.value()
+                resolved_trajectories = interpolate_trajectories(
+                    resolved_trajectories, method=interp_method, max_gap=max_gap
+                )
 
         raw_csv_path = self.csv_line.text()
         if raw_csv_path:
@@ -3133,12 +3349,27 @@ class MainWindow(QMainWindow):
 
                 if csv_to_process and os.path.exists(csv_to_process):
                     # Use CSV-based processing to preserve confidence columns
-                    from ..core.post_processing import process_trajectories_from_csv
+                    from ..core.post_processing import (
+                        process_trajectories_from_csv,
+                        interpolate_trajectories,
+                    )
 
                     processed_trajectories, stats = process_trajectories_from_csv(
                         csv_to_process, params
                     )
                     logger.info(f"Post-processing stats: {stats}")
+
+                    # Apply interpolation if enabled
+                    interp_method = (
+                        self.combo_interpolation_method.currentText().lower()
+                    )
+                    if interp_method != "none":
+                        max_gap = self.spin_interpolation_max_gap.value()
+                        processed_trajectories = interpolate_trajectories(
+                            processed_trajectories,
+                            method=interp_method,
+                            max_gap=max_gap,
+                        )
                 else:
                     # Fallback to old method if CSV not available
                     processed_trajectories, stats = process_trajectories(
@@ -3172,7 +3403,21 @@ class MainWindow(QMainWindow):
                     )
                 self.backward_processed_trajs = processed_trajectories
 
-                if self.forward_processed_trajs and self.backward_processed_trajs:
+                # Check if both forward and backward trajectories exist for merging
+                has_forward = self.forward_processed_trajs is not None and (
+                    isinstance(self.forward_processed_trajs, pd.DataFrame)
+                    and not self.forward_processed_trajs.empty
+                    or isinstance(self.forward_processed_trajs, list)
+                    and len(self.forward_processed_trajs) > 0
+                )
+                has_backward = self.backward_processed_trajs is not None and (
+                    isinstance(self.backward_processed_trajs, pd.DataFrame)
+                    and not self.backward_processed_trajs.empty
+                    or isinstance(self.backward_processed_trajs, list)
+                    and len(self.backward_processed_trajs) > 0
+                )
+
+                if has_forward and has_backward:
                     self.merge_and_save_trajectories()
 
                 self._set_ui_controls_enabled(True)
@@ -3583,6 +3828,18 @@ class MainWindow(QMainWindow):
                 cfg.get("min_trajectory_length", 10)
             )
             self.spin_max_velocity_break.setValue(cfg.get("max_velocity_break", 50.0))
+
+            # Load interpolation settings
+            interp_method = cfg.get("interpolation_method", "None")
+            idx = self.combo_interpolation_method.findText(
+                interp_method, Qt.MatchFixedString
+            )
+            if idx >= 0:
+                self.combo_interpolation_method.setCurrentIndex(idx)
+            self.spin_interpolation_max_gap.setValue(
+                cfg.get("interpolation_max_gap", 10)
+            )
+
             self.spin_min_detect.setValue(cfg.get("min_detect_counts", 10))
             self.spin_min_detections_to_start.setValue(
                 cfg.get("min_detections_to_start", 1)
@@ -3728,6 +3985,8 @@ class MainWindow(QMainWindow):
             "enable_postprocessing": self.enable_postprocessing.isChecked(),
             "min_trajectory_length": self.spin_min_trajectory_length.value(),
             "max_velocity_break": self.spin_max_velocity_break.value(),
+            "interpolation_method": self.combo_interpolation_method.currentText(),
+            "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
             "max_distance_break_multiplier": self.spin_max_distance_break.value(),
             "recovery_search_distance_multiplier": self.spin_continuity_thresh.value(),
             "min_detect_counts": self.spin_min_detect.value(),

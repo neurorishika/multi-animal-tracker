@@ -7,6 +7,7 @@ import logging
 import pandas as pd
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
+from scipy.interpolate import interp1d, CubicSpline, UnivariateSpline
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,26 @@ def process_trajectories_from_csv(csv_path, params):
     # Concatenate all segments into one dataframe
     if cleaned_segments:
         result_df = pd.concat(cleaned_segments, ignore_index=True)
+
+        # Clean trajectories: remove those with no valid detections and trim trailing lost/occluded states
+        if "State" in result_df.columns:
+            cleaned_traj_list = []
+            for traj_id in result_df["TrajectoryID"].unique():
+                traj_df = result_df[result_df["TrajectoryID"] == traj_id]
+                cleaned_traj = _clean_trajectory(traj_df)
+                if cleaned_traj is not None and len(cleaned_traj) >= min_len:
+                    cleaned_traj_list.append(cleaned_traj)
+
+            if cleaned_traj_list:
+                result_df = pd.concat(cleaned_traj_list, ignore_index=True)
+                # Reassign trajectory IDs sequentially
+                old_ids = result_df["TrajectoryID"].unique()
+                id_mapping = {old_id: new_id for new_id, old_id in enumerate(old_ids)}
+                result_df["TrajectoryID"] = result_df["TrajectoryID"].map(id_mapping)
+                stats["final_count"] = len(old_ids)
+            else:
+                result_df = pd.DataFrame()
+                stats["final_count"] = 0
     else:
         result_df = pd.DataFrame()
 
@@ -303,6 +324,9 @@ def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, param
             df["Theta"] = (df["Theta"] + np.pi) % (2 * np.pi)
             all_trajs.append(df)
 
+    # Clean trajectories before merging (remove trailing lost/occluded states)
+    all_trajs = _clean_trajectories(all_trajs, MIN_LENGTH)
+
     if not all_trajs:
         logger.warning("No valid trajectories found for merging")
         return []
@@ -318,20 +342,30 @@ def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, param
         new_trajectories = []
         current_id = 0
 
-        # Calculate distance matrices with different summary functions
+        # Calculate distance matrices with different summary functions (NaN-aware)
         dist_matrix_conservative = _calculate_trajectory_distance_matrix(
-            all_trajs, all_trajs, summary_func=lambda x: np.percentile(x, 95)
+            all_trajs, all_trajs, summary_func=lambda x: np.nanpercentile(x, 95)
         )
         dist_matrix_liberal = _calculate_trajectory_distance_matrix(
-            all_trajs, all_trajs, summary_func=lambda x: np.percentile(x, 5)
+            all_trajs, all_trajs, summary_func=lambda x: np.nanpercentile(x, 5)
         )
 
         # Prepare assignment matrix
         dist_matrix_assignment = dist_matrix_conservative.copy()
-        max_value = (
-            np.nanmax(dist_matrix_assignment[dist_matrix_assignment != np.inf]) * 10
-        )
+
+        # Get max value, handling case where all values might be inf or NaN
+        valid_values = dist_matrix_assignment[
+            (dist_matrix_assignment != np.inf) & ~np.isnan(dist_matrix_assignment)
+        ]
+        if len(valid_values) > 0:
+            max_value = np.max(valid_values) * 10
+        else:
+            max_value = 1e6  # Fallback if no valid values
+
         dist_matrix_assignment[dist_matrix_assignment == np.inf] = max_value
+        dist_matrix_assignment[np.isnan(dist_matrix_assignment)] = (
+            max_value  # Replace NaN with max_value
+        )
         np.fill_diagonal(dist_matrix_assignment, max_value)  # Avoid self-matching
 
         # Find optimal assignment
@@ -392,12 +426,18 @@ def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, param
         # Filter out trajectories that are too short
         all_trajs = [traj for traj in new_trajectories if len(traj) >= MIN_LENGTH]
 
+        # Clean trajectories (remove trailing lost/occluded states)
+        all_trajs = _clean_trajectories(all_trajs, MIN_LENGTH)
+
         logger.info(f"Merges made: {merges_made}, Total trajectories: {len(all_trajs)}")
 
         # Stop if no merges were made
         if merges_made == 0:
             logger.info("No more merges possible. Stopping iteration.")
             break
+
+    # Final cleanup before returning
+    all_trajs = _clean_trajectories(all_trajs, MIN_LENGTH)
 
     logger.info(
         f"Final result: {len(all_trajs)} trajectories after {iteration} iterations"
@@ -476,13 +516,22 @@ def _calculate_trajectory_distance_matrix(
 
     # Calculate distances efficiently
     for i, traj_1 in enumerate(traj_list_1):
-        frameids_1 = set(traj_1[frame_id_col])
+        # Filter out rows with NaN in X or Y positions
+        traj_1_valid = traj_1.dropna(subset=[x_col, y_col])
+        frameids_1 = set(traj_1_valid[frame_id_col])
 
         # Pre-compute trajectory 1 positions indexed by FrameID
-        pos_dict_1 = dict(zip(traj_1[frame_id_col], zip(traj_1[x_col], traj_1[y_col])))
+        pos_dict_1 = dict(
+            zip(
+                traj_1_valid[frame_id_col],
+                zip(traj_1_valid[x_col], traj_1_valid[y_col]),
+            )
+        )
 
         for j, traj_2 in enumerate(traj_list_2):
-            frameids_2 = set(traj_2[frame_id_col])
+            # Filter out rows with NaN in X or Y positions
+            traj_2_valid = traj_2.dropna(subset=[x_col, y_col])
+            frameids_2 = set(traj_2_valid[frame_id_col])
 
             # Check temporal overlap
             common_frameids = frameids_1.intersection(frameids_2)
@@ -495,7 +544,9 @@ def _calculate_trajectory_distance_matrix(
             positions_2 = []
 
             # Pre-compute trajectory 2 positions for common frames
-            traj_2_common = traj_2[traj_2[frame_id_col].isin(common_frameids)]
+            traj_2_common = traj_2_valid[
+                traj_2_valid[frame_id_col].isin(common_frameids)
+            ]
             pos_dict_2 = dict(
                 zip(
                     traj_2_common[frame_id_col],
@@ -526,6 +577,58 @@ def _circular_mean(values):
     sin_sum = np.sum(np.sin(values))
     cos_sum = np.sum(np.cos(values))
     return np.arctan2(sin_sum, cos_sum) % (2 * np.pi)
+
+
+def _clean_trajectory(traj_df):
+    """
+    Clean a trajectory DataFrame by:
+    1. Removing trailing 'lost' and 'occluded' states
+    2. Returning None if no valid detections remain
+
+    Args:
+        traj_df: DataFrame with trajectory data
+
+    Returns:
+        Cleaned DataFrame or None if trajectory has no valid detections
+    """
+    if traj_df.empty:
+        return None
+
+    # Check if State column exists
+    if "State" not in traj_df.columns:
+        return traj_df
+
+    # Check if all states are occluded/lost (no valid detections)
+    valid_states = ~traj_df["State"].isin(["occluded", "lost"])
+    if not valid_states.any():
+        return None
+
+    # Find last valid detection
+    last_valid_idx = traj_df[valid_states].index[-1]
+
+    # Trim trajectory to last valid detection
+    cleaned_df = traj_df.loc[:last_valid_idx].copy()
+
+    return cleaned_df
+
+
+def _clean_trajectories(traj_list, min_length=5):
+    """
+    Clean a list of trajectory DataFrames by removing useless ones.
+
+    Args:
+        traj_list: List of trajectory DataFrames
+        min_length: Minimum length for valid trajectories
+
+    Returns:
+        List of cleaned trajectories
+    """
+    cleaned = []
+    for traj in traj_list:
+        cleaned_traj = _clean_trajectory(traj)
+        if cleaned_traj is not None and len(cleaned_traj) >= min_length:
+            cleaned.append(cleaned_traj)
+    return cleaned
 
 
 def _merge_trajectories(traj1, traj2, distance_threshold=None):
@@ -730,3 +833,172 @@ def _create_segments_from_frames(frame_list, traj_dict, max_gap=5):
         segments.append(current_segment)
 
     return segments
+
+
+def interpolate_trajectories(trajectories_df, method="linear", max_gap=10):
+    """
+    Interpolate missing values in trajectories using various methods.
+
+    Args:
+        trajectories_df: DataFrame with trajectory data (must have X, Y, Theta, FrameID columns)
+        method: Interpolation method - 'linear', 'cubic', 'spline', or 'none'
+        max_gap: Maximum gap size to interpolate (frames). Larger gaps are left as NaN.
+
+    Returns:
+        DataFrame with interpolated values
+    """
+    if trajectories_df is None or trajectories_df.empty:
+        return trajectories_df
+
+    if method == "none" or method is None:
+        return trajectories_df
+
+    logger.info(f"Interpolating trajectories using {method} method (max_gap={max_gap})")
+
+    result_df = trajectories_df.copy()
+
+    # Process each trajectory separately
+    for traj_id in result_df["TrajectoryID"].unique():
+        mask = result_df["TrajectoryID"] == traj_id
+        traj_data = result_df[mask].copy()
+
+        # Sort by FrameID
+        traj_data = traj_data.sort_values("FrameID").reset_index(drop=True)
+
+        # Get frame range
+        min_frame = traj_data["FrameID"].min()
+        max_frame = traj_data["FrameID"].max()
+
+        # Create complete frame range
+        all_frames = np.arange(min_frame, max_frame + 1)
+
+        # Reindex to include all frames
+        traj_data = traj_data.set_index("FrameID").reindex(all_frames).reset_index()
+        traj_data["TrajectoryID"] = traj_id
+
+        # Interpolate X and Y positions
+        for col in ["X", "Y"]:
+            traj_data[col] = _interpolate_column(
+                traj_data["FrameID"].values,
+                traj_data[col].values,
+                method=method,
+                max_gap=max_gap,
+            )
+
+        # Interpolate Theta using circular interpolation
+        traj_data["Theta"] = _interpolate_angle(
+            traj_data["FrameID"].values,
+            traj_data["Theta"].values,
+            method=method,
+            max_gap=max_gap,
+        )
+
+        # Update the result dataframe
+        result_df.loc[mask] = traj_data.values
+
+    logger.info(f"Interpolation complete")
+    return result_df
+
+
+def _interpolate_column(frames, values, method="linear", max_gap=10):
+    """Interpolate a single column with gap limit."""
+    # Find valid (non-NaN) indices
+    valid_mask = ~np.isnan(values)
+    valid_indices = np.where(valid_mask)[0]
+
+    if len(valid_indices) < 2:
+        return values  # Need at least 2 points to interpolate
+
+    valid_frames = frames[valid_indices]
+    valid_values = values[valid_indices]
+
+    # Create interpolation function
+    try:
+        if method == "linear":
+            interp_func = interp1d(
+                valid_frames,
+                valid_values,
+                kind="linear",
+                bounds_error=False,
+                fill_value=np.nan,
+            )
+        elif method == "cubic":
+            if len(valid_indices) < 4:
+                # Fall back to linear if not enough points
+                interp_func = interp1d(
+                    valid_frames,
+                    valid_values,
+                    kind="linear",
+                    bounds_error=False,
+                    fill_value=np.nan,
+                )
+            else:
+                interp_func = CubicSpline(
+                    valid_frames, valid_values, bc_type="natural", extrapolate=False
+                )
+        elif method == "spline":
+            if len(valid_indices) < 4:
+                # Fall back to linear if not enough points
+                interp_func = interp1d(
+                    valid_frames,
+                    valid_values,
+                    kind="linear",
+                    bounds_error=False,
+                    fill_value=np.nan,
+                )
+            else:
+                # Smoothing spline with automatic smoothing factor
+                interp_func = UnivariateSpline(valid_frames, valid_values, s=None, k=3)
+        else:
+            return values
+    except Exception as e:
+        logger.warning(f"Interpolation failed: {e}, keeping original values")
+        return values
+
+    # Interpolate all frames
+    result = values.copy()
+
+    # Only interpolate within gaps smaller than max_gap
+    for i in range(len(valid_indices) - 1):
+        start_idx = valid_indices[i]
+        end_idx = valid_indices[i + 1]
+        gap_size = end_idx - start_idx - 1
+
+        if gap_size > 0 and gap_size <= max_gap:
+            # Interpolate this gap
+            gap_frames = frames[start_idx + 1 : end_idx]
+            try:
+                result[start_idx + 1 : end_idx] = interp_func(gap_frames)
+            except:
+                pass  # Keep NaN if interpolation fails
+
+    return result
+
+
+def _interpolate_angle(frames, angles, method="linear", max_gap=10):
+    """
+    Interpolate angles using circular interpolation to handle wraparound.
+    """
+    # Find valid (non-NaN) indices
+    valid_mask = ~np.isnan(angles)
+    valid_indices = np.where(valid_mask)[0]
+
+    if len(valid_indices) < 2:
+        return angles
+
+    # Convert to Cartesian coordinates for interpolation
+    sin_values = np.sin(angles)
+    cos_values = np.cos(angles)
+
+    # Interpolate sin and cos separately
+    sin_interp = _interpolate_column(frames, sin_values, method=method, max_gap=max_gap)
+    cos_interp = _interpolate_column(frames, cos_values, method=method, max_gap=max_gap)
+
+    # Convert back to angles
+    result = np.arctan2(sin_interp, cos_interp) % (2 * np.pi)
+
+    # Preserve original NaN values where both sin and cos are NaN
+    nan_mask = np.isnan(sin_interp) & np.isnan(cos_interp)
+    result[nan_mask] = np.nan
+
+    return result
