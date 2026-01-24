@@ -17,6 +17,7 @@ from .post_processing import (
     resolve_trajectories,
     interpolate_trajectories,
 )
+from .individual_analysis import IdentityProcessor, PoseTrackingExporter
 
 
 __all__ = [
@@ -29,4 +30,6 @@ __all__ = [
     "process_trajectories_from_csv",
     "resolve_trajectories",
     "interpolate_trajectories",
+    "IdentityProcessor",
+    "PoseTrackingExporter",
 ]

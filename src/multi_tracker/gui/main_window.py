@@ -427,7 +427,7 @@ class MainWindow(QMainWindow):
 
         # Tab 1: Setup (Files & Performance)
         self.tab_setup = QWidget()
-        self.setup_tab_ui()
+        self.setup_setup_ui()
         self.tabs.addTab(self.tab_setup, "Setup")
 
         # Tab 2: Detection (Image, Method, Params)
@@ -454,6 +454,11 @@ class MainWindow(QMainWindow):
         self.tab_dataset = QWidget()
         self.setup_dataset_ui()
         self.tabs.addTab(self.tab_dataset, "Dataset Generation")
+
+        # Tab 7: Individual Analysis (Identity & Pose)
+        self.tab_individual = QWidget()
+        self.setup_individual_analysis_ui()
+        self.tabs.addTab(self.tab_individual, "Individual Analysis")
 
         right_layout.addWidget(self.tabs, stretch=1)
 
@@ -543,7 +548,7 @@ class MainWindow(QMainWindow):
     # TAB UI BUILDERS
     # =========================================================================
 
-    def setup_tab_ui(self):
+    def setup_setup_ui(self):
         """Tab 1: Setup - Files & Basic Config."""
         layout = QVBoxLayout(self.tab_setup)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2025,7 +2030,16 @@ class MainWindow(QMainWindow):
     def setup_dataset_ui(self):
         """Tab 6: Dataset Generation for Active Learning."""
         layout = QVBoxLayout(self.tab_dataset)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Add scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content = QWidget()
+        form = QVBoxLayout(content)
+        form.setContentsMargins(10, 10, 10, 10)
 
         # Info box
         info_box = QGroupBox("Active Learning - Training Dataset Generation")
@@ -2045,10 +2059,12 @@ class MainWindow(QMainWindow):
                 "3. Train an improved YOLO model with the new labeled data"
             )
         )
-        layout.addWidget(info_box)
+        form.addWidget(info_box)
 
         # Enable dataset generation
-        self.chk_enable_dataset_gen = QCheckBox("Enable Dataset Generation")
+        self.chk_enable_dataset_gen = QCheckBox(
+            "Enable Active Learning Dataset Generation"
+        )
         self.chk_enable_dataset_gen.setChecked(False)
         self.chk_enable_dataset_gen.setToolTip(
             "Enable automatic generation of training dataset from difficult frames."
@@ -2056,7 +2072,7 @@ class MainWindow(QMainWindow):
         self.chk_enable_dataset_gen.stateChanged.connect(
             self._on_dataset_generation_toggled
         )
-        layout.addWidget(self.chk_enable_dataset_gen)
+        form.addWidget(self.chk_enable_dataset_gen)
 
         # Dataset configuration
         self.g_dataset_config = QGroupBox("Dataset Configuration")
@@ -2095,7 +2111,7 @@ class MainWindow(QMainWindow):
         h_output.addWidget(btn_browse_output)
         f_config.addRow("Output Directory:", h_output)
 
-        layout.addWidget(self.g_dataset_config)
+        form.addWidget(self.g_dataset_config)
 
         # Frame selection parameters
         self.g_frame_selection = QGroupBox("Frame Selection Criteria")
@@ -2161,7 +2177,7 @@ class MainWindow(QMainWindow):
         )
         f_selection.addRow("Sampling Strategy:", self.chk_dataset_probabilistic)
 
-        layout.addWidget(self.g_frame_selection)
+        form.addWidget(self.g_frame_selection)
 
         # Quality metrics
         self.g_quality_metrics = QGroupBox("Quality Metrics (Frame Scoring)")
@@ -2207,14 +2223,340 @@ class MainWindow(QMainWindow):
         )
         v_metrics.addWidget(self.chk_metric_high_uncertainty)
 
-        layout.addWidget(self.g_quality_metrics)
+        form.addWidget(self.g_quality_metrics)
 
-        # Initially disable all config widgets
+        # Add visual separator between sections
+        separator_frame = QFrame()
+        separator_frame.setFrameShape(QFrame.HLine)
+        separator_frame.setFrameShadow(QFrame.Sunken)
+        separator_frame.setStyleSheet("background-color: #555; margin: 20px 0px;")
+        separator_frame.setMinimumHeight(2)
+        form.addWidget(separator_frame)
+
+        # Section header for pose tracking
+        pose_section_label = QLabel("Pose Tracking Dataset Export (Independent)")
+        pose_section_label.setStyleSheet(
+            "font-size: 14px; font-weight: bold; color: #4a9eff; margin-top: 10px;"
+        )
+        form.addWidget(pose_section_label)
+
+        # Pose Tracking Dataset Export
+        self.g_pose_export = QGroupBox("Configuration")
+        vl_pose = QVBoxLayout(self.g_pose_export)
+        vl_pose.addWidget(
+            self._create_help_label(
+                "Export individual trajectory videos for pose estimation training. "
+                "After tracking is complete, generates cropped videos centered on each animal, "
+                "ready for annotation with DeepLabCut, SLEAP, or other pose tracking tools.\n\n"
+                "This is independent from active learning dataset generation above."
+            )
+        )
+
+        # Enable checkbox
+        self.chk_enable_pose_export = QCheckBox("Enable Pose Tracking Export")
+        self.chk_enable_pose_export.setChecked(False)
+        self.chk_enable_pose_export.toggled.connect(self._on_pose_export_toggled)
+        vl_pose.addWidget(self.chk_enable_pose_export)
+
+        # Configuration group
+        pose_config_group = QGroupBox("Export Configuration")
+        fl_pose = QFormLayout(pose_config_group)
+        fl_pose.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fl_pose.setSpacing(8)
+
+        # Output Directory
+        self.line_pose_output_dir = QLineEdit()
+        self.line_pose_output_dir.setPlaceholderText("directory/for/pose/datasets")
+        self.line_pose_output_dir.setEnabled(False)
+        btn_select_pose_dir = QPushButton("Browse...")
+        btn_select_pose_dir.clicked.connect(self._select_pose_output_dir)
+        btn_select_pose_dir.setEnabled(False)
+        self.btn_select_pose_dir = btn_select_pose_dir
+        pose_dir_layout = QHBoxLayout()
+        pose_dir_layout.addWidget(self.line_pose_output_dir, 1)
+        pose_dir_layout.addWidget(btn_select_pose_dir)
+        fl_pose.addRow("Output Directory:", pose_dir_layout)
+
+        # Dataset Name
+        self.line_pose_dataset_name = QLineEdit()
+        self.line_pose_dataset_name.setPlaceholderText("my_pose_dataset")
+        self.line_pose_dataset_name.setText("pose_dataset")
+        self.line_pose_dataset_name.setEnabled(False)
+        self.line_pose_dataset_name.setToolTip(
+            "Base name for pose tracking dataset (timestamp will be appended)"
+        )
+        fl_pose.addRow("Dataset Name:", self.line_pose_dataset_name)
+
+        vl_pose.addWidget(pose_config_group)
+
+        # Parameters group
+        pose_params_group = QGroupBox("Export Parameters")
+        fl_params = QFormLayout(pose_params_group)
+        fl_params.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fl_params.setSpacing(8)
+
+        # Crop Multiplier
+        self.spin_pose_crop_multiplier = QDoubleSpinBox()
+        self.spin_pose_crop_multiplier.setRange(1.0, 10.0)
+        self.spin_pose_crop_multiplier.setValue(4.0)
+        self.spin_pose_crop_multiplier.setSingleStep(0.5)
+        self.spin_pose_crop_multiplier.setDecimals(1)
+        self.spin_pose_crop_multiplier.setEnabled(False)
+        self.spin_pose_crop_multiplier.setToolTip(
+            "Crop size for pose videos = body_size × multiplier\n"
+            "Should include full body + margin for pose estimation"
+        )
+        fl_params.addRow("Crop Multiplier:", self.spin_pose_crop_multiplier)
+
+        # Min Trajectory Length
+        self.spin_pose_min_length = QSpinBox()
+        self.spin_pose_min_length.setRange(5, 1000)
+        self.spin_pose_min_length.setValue(30)
+        self.spin_pose_min_length.setSingleStep(5)
+        self.spin_pose_min_length.setEnabled(False)
+        self.spin_pose_min_length.setToolTip(
+            "Minimum trajectory length (frames) to export.\n"
+            "Shorter trajectories are skipped."
+        )
+        fl_params.addRow("Min Length (frames):", self.spin_pose_min_length)
+
+        # Export FPS
+        self.spin_pose_export_fps = QSpinBox()
+        self.spin_pose_export_fps.setRange(1, 120)
+        self.spin_pose_export_fps.setValue(30)
+        self.spin_pose_export_fps.setSingleStep(1)
+        self.spin_pose_export_fps.setEnabled(False)
+        self.spin_pose_export_fps.setToolTip("Frame rate for exported pose videos")
+        fl_params.addRow("Export FPS:", self.spin_pose_export_fps)
+
+        vl_pose.addWidget(pose_params_group)
+
+        # Export Button
+        export_btn_layout = QHBoxLayout()
+        self.btn_export_pose_dataset = QPushButton("Export Pose Dataset")
+        self.btn_export_pose_dataset.setObjectName("ActionBtn")
+        self.btn_export_pose_dataset.clicked.connect(self._export_pose_dataset)
+        self.btn_export_pose_dataset.setEnabled(False)
+        self.btn_export_pose_dataset.setToolTip(
+            "Export cropped trajectory videos after tracking is complete"
+        )
+        self.btn_export_pose_dataset.setMinimumHeight(35)
+        export_btn_layout.addWidget(self.btn_export_pose_dataset)
+        export_btn_layout.addStretch()
+        vl_pose.addLayout(export_btn_layout)
+
+        form.addWidget(self.g_pose_export)
+
+        # Initially disable dataset generation config widgets
+        # Pose export is independent and stays enabled
         self.g_dataset_config.setEnabled(False)
         self.g_frame_selection.setEnabled(False)
         self.g_quality_metrics.setEnabled(False)
 
-        layout.addStretch()
+        form.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+
+    def setup_individual_analysis_ui(self):
+        """Tab 7: Individual Analysis - Real-time Identity & Post-hoc Pose Analysis."""
+        layout = QVBoxLayout(self.tab_individual)
+        layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content = QWidget()
+        form = QVBoxLayout(content)
+
+        # Info box
+        info_box = QGroupBox("Individual-Level Processing")
+        info_layout = QVBoxLayout(info_box)
+        info_layout.addWidget(
+            self._create_help_label(
+                "Process individual animals for identity classification and pose estimation.\n\n"
+                "• Real-time Identity: Classify individual animals during tracking (color tags, AprilTags)\n"
+                "• Post-hoc Pose Tracking: Run pose estimation on exported trajectory videos (coming soon)\n\n"
+                "Note: Pose dataset export is available in the 'Dataset Generation' tab."
+            )
+        )
+        form.addWidget(info_box)
+
+        # Main Enable Checkbox
+        self.chk_enable_individual_analysis = QCheckBox(
+            "Enable Real-time Identity Classification"
+        )
+        self.chk_enable_individual_analysis.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+        )
+        self.chk_enable_individual_analysis.toggled.connect(
+            self._on_individual_analysis_toggled
+        )
+        form.addWidget(self.chk_enable_individual_analysis)
+
+        # Identity Classification Section
+        self.g_identity = QGroupBox("Identity Classification (Real-time)")
+        vl_identity = QVBoxLayout(self.g_identity)
+        vl_identity.addWidget(
+            self._create_help_label(
+                "Classify individual identity during tracking. Extracts crops around each detection "
+                "and processes them with the selected method."
+            )
+        )
+
+        fl_identity = QFormLayout()
+        fl_identity.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # Identity Method
+        self.combo_identity_method = QComboBox()
+        self.combo_identity_method.addItems(
+            ["None (Disabled)", "Color Tags (YOLO)", "AprilTags", "Custom"]
+        )
+        self.combo_identity_method.setToolTip(
+            "Select method for identifying individual animals:\n"
+            "• Color Tags: Detect color markers using YOLO model\n"
+            "• AprilTags: Detect fiducial markers\n"
+            "• Custom: Implement your own classifier"
+        )
+        self.combo_identity_method.currentIndexChanged.connect(
+            self._on_identity_method_changed
+        )
+        fl_identity.addRow("Identity Method:", self.combo_identity_method)
+
+        # Model/Config for identity (stacked widget for different methods)
+        self.identity_config_stack = QStackedWidget()
+
+        # Page 0: None
+        none_widget = QWidget()
+        none_layout = QVBoxLayout(none_widget)
+        none_layout.addWidget(
+            self._create_help_label("Identity classification is disabled.")
+        )
+        self.identity_config_stack.addWidget(none_widget)
+
+        # Page 1: Color Tags (YOLO)
+        color_widget = QWidget()
+        color_layout = QFormLayout(color_widget)
+        self.line_color_tag_model = QLineEdit()
+        self.line_color_tag_model.setPlaceholderText("path/to/color_tag_model.pt")
+        btn_select_color_model = QPushButton("Browse...")
+        btn_select_color_model.clicked.connect(self._select_color_tag_model)
+        color_model_layout = QHBoxLayout()
+        color_model_layout.addWidget(self.line_color_tag_model)
+        color_model_layout.addWidget(btn_select_color_model)
+        color_layout.addRow("Model File:", color_model_layout)
+        self.spin_color_tag_conf = QDoubleSpinBox()
+        self.spin_color_tag_conf.setRange(0.01, 1.0)
+        self.spin_color_tag_conf.setValue(0.5)
+        self.spin_color_tag_conf.setSingleStep(0.05)
+        self.spin_color_tag_conf.setToolTip(
+            "Minimum confidence for color tag detection"
+        )
+        color_layout.addRow("Confidence:", self.spin_color_tag_conf)
+        self.identity_config_stack.addWidget(color_widget)
+
+        # Page 2: AprilTags
+        apriltag_widget = QWidget()
+        apriltag_layout = QFormLayout(apriltag_widget)
+        self.combo_apriltag_family = QComboBox()
+        self.combo_apriltag_family.addItems(
+            ["tag36h11", "tag25h9", "tag16h5", "tagCircle21h7", "tagStandard41h12"]
+        )
+        self.combo_apriltag_family.setToolTip("AprilTag family to detect")
+        apriltag_layout.addRow("Tag Family:", self.combo_apriltag_family)
+        self.spin_apriltag_decimate = QDoubleSpinBox()
+        self.spin_apriltag_decimate.setRange(1.0, 4.0)
+        self.spin_apriltag_decimate.setValue(1.0)
+        self.spin_apriltag_decimate.setSingleStep(0.5)
+        self.spin_apriltag_decimate.setToolTip(
+            "Decimation factor for faster detection (higher = faster but less accurate)"
+        )
+        apriltag_layout.addRow("Decimate:", self.spin_apriltag_decimate)
+        self.identity_config_stack.addWidget(apriltag_widget)
+
+        # Page 3: Custom
+        custom_widget = QWidget()
+        custom_layout = QVBoxLayout(custom_widget)
+        custom_layout.addWidget(
+            self._create_help_label(
+                "Implement custom identity classifier in:\n"
+                "src/multi_tracker/core/individual_analysis.py"
+            )
+        )
+        self.identity_config_stack.addWidget(custom_widget)
+
+        vl_identity.addLayout(fl_identity)
+        vl_identity.addWidget(self.identity_config_stack)
+
+        # Crop Parameters
+        crop_group = QGroupBox("Crop Parameters")
+        crop_layout = QFormLayout(crop_group)
+
+        self.spin_identity_crop_multiplier = QDoubleSpinBox()
+        self.spin_identity_crop_multiplier.setRange(1.0, 10.0)
+        self.spin_identity_crop_multiplier.setValue(3.0)
+        self.spin_identity_crop_multiplier.setSingleStep(0.5)
+        self.spin_identity_crop_multiplier.setDecimals(1)
+        self.spin_identity_crop_multiplier.setToolTip(
+            "Crop size = body_size × multiplier\n"
+            "Larger values include more context, smaller values focus on the animal"
+        )
+        crop_layout.addRow("Size Multiplier:", self.spin_identity_crop_multiplier)
+
+        self.spin_identity_crop_min = QSpinBox()
+        self.spin_identity_crop_min.setRange(32, 512)
+        self.spin_identity_crop_min.setValue(64)
+        self.spin_identity_crop_min.setSingleStep(16)
+        self.spin_identity_crop_min.setToolTip("Minimum crop size in pixels")
+        crop_layout.addRow("Min Size (px):", self.spin_identity_crop_min)
+
+        self.spin_identity_crop_max = QSpinBox()
+        self.spin_identity_crop_max.setRange(64, 1024)
+        self.spin_identity_crop_max.setValue(256)
+        self.spin_identity_crop_max.setSingleStep(16)
+        self.spin_identity_crop_max.setToolTip("Maximum crop size in pixels")
+        crop_layout.addRow("Max Size (px):", self.spin_identity_crop_max)
+
+        vl_identity.addWidget(crop_group)
+
+        form.addWidget(self.g_identity)
+
+        # Post-hoc Pose Analysis Section (Placeholder)
+        self.g_pose_analysis = QGroupBox("Post-hoc Pose Tracking Analysis")
+        vl_pose_analysis = QVBoxLayout(self.g_pose_analysis)
+        vl_pose_analysis.addWidget(
+            self._create_help_label(
+                "Run pose estimation on exported trajectory videos.\n\n"
+                "Workflow:\n"
+                "1. Export pose dataset from 'Dataset Generation' tab\n"
+                "2. Annotate keypoints in DeepLabCut/SLEAP\n"
+                "3. Train pose estimation model\n"
+                "4. Use this section to apply trained model to all trajectories (coming soon)"
+            )
+        )
+
+        self.chk_enable_pose_analysis = QCheckBox("Enable Post-hoc Pose Analysis")
+        self.chk_enable_pose_analysis.setChecked(False)
+        self.chk_enable_pose_analysis.setEnabled(False)
+        self.chk_enable_pose_analysis.setToolTip(
+            "Feature coming soon: Apply trained pose models to trajectory videos"
+        )
+        vl_pose_analysis.addWidget(self.chk_enable_pose_analysis)
+
+        placeholder_label = QLabel("⚠️ This feature is under development")
+        placeholder_label.setStyleSheet(
+            "color: #888; font-style: italic; padding: 10px;"
+        )
+        vl_pose_analysis.addWidget(placeholder_label)
+
+        form.addWidget(self.g_pose_analysis)
+
+        form.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+
+        # Initially disable all controls
+        self.g_identity.setEnabled(False)
+        self.g_pose_analysis.setEnabled(False)
 
     def _on_dataset_generation_toggled(self, state):
         """Enable/disable dataset generation controls."""
@@ -2222,6 +2564,7 @@ class MainWindow(QMainWindow):
         self.g_dataset_config.setEnabled(enabled)
         self.g_frame_selection.setEnabled(enabled)
         self.g_quality_metrics.setEnabled(enabled)
+        # Pose export is independent, doesn't need to be enabled with dataset gen
 
     def _select_dataset_output_dir(self):
         """Browse for dataset output directory."""
@@ -2230,6 +2573,96 @@ class MainWindow(QMainWindow):
         )
         if directory:
             self.line_dataset_output.setText(directory)
+
+    def _on_individual_analysis_toggled(self, state):
+        """Enable/disable individual analysis controls."""
+        enabled = state == Qt.Checked
+        self.g_identity.setEnabled(enabled)
+        # g_pose_analysis stays disabled for now (placeholder)
+
+    def _on_identity_method_changed(self, index):
+        """Update identity configuration stack when method changes."""
+        self.identity_config_stack.setCurrentIndex(index)
+
+    def _select_color_tag_model(self):
+        """Browse for color tag YOLO model."""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select Color Tag YOLO Model", "", "YOLO Models (*.pt *.onnx)"
+        )
+        if filepath:
+            self.line_color_tag_model.setText(filepath)
+
+    def _on_pose_export_toggled(self, state):
+        """Enable/disable pose export controls."""
+        enabled = state == Qt.Checked
+        self.line_pose_output_dir.setEnabled(enabled)
+        self.btn_select_pose_dir.setEnabled(enabled)
+        self.line_pose_dataset_name.setEnabled(enabled)
+        self.spin_pose_crop_multiplier.setEnabled(enabled)
+        self.spin_pose_min_length.setEnabled(enabled)
+        self.spin_pose_export_fps.setEnabled(enabled)
+        # Enable export button only if tracking is done
+        if enabled and self.csv_line.text() and os.path.exists(self.csv_line.text()):
+            self.btn_export_pose_dataset.setEnabled(True)
+        else:
+            self.btn_export_pose_dataset.setEnabled(False)
+
+    def _select_pose_output_dir(self):
+        """Browse for pose dataset output directory."""
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Pose Dataset Output Directory"
+        )
+        if directory:
+            self.line_pose_output_dir.setText(directory)
+
+    def _export_pose_dataset(self):
+        """Export pose tracking dataset from trajectories."""
+        from ..core.individual_analysis import PoseTrackingExporter
+
+        # Get parameters
+        video_path = self.file_line.text()
+        csv_path = self.csv_line.text()
+        output_dir = self.line_pose_output_dir.text()
+        dataset_name = self.line_pose_dataset_name.text() or "pose_dataset"
+
+        # Validate inputs
+        if not video_path or not os.path.exists(video_path):
+            logger.error("No valid video file selected")
+            return
+
+        if not csv_path or not os.path.exists(csv_path):
+            logger.error("No tracking CSV found. Complete tracking first.")
+            return
+
+        if not output_dir:
+            logger.error("No output directory selected")
+            return
+
+        # Create parameters dict
+        params = {
+            "ENABLE_POSE_EXPORT": True,
+            "POSE_CROP_SIZE_MULTIPLIER": self.spin_pose_crop_multiplier.value(),
+            "POSE_MIN_TRAJECTORY_LENGTH": self.spin_pose_min_length.value(),
+            "POSE_EXPORT_FPS": self.spin_pose_export_fps.value(),
+            "REFERENCE_BODY_SIZE": self.spin_body_size.value(),
+        }
+
+        # Create exporter
+        exporter = PoseTrackingExporter(params)
+
+        logger.info("Starting pose tracking dataset export...")
+
+        try:
+            export_path = exporter.export_trajectories(
+                video_path, csv_path, output_dir, dataset_name
+            )
+            if export_path:
+                logger.info(f"✓ Pose dataset exported successfully to: {export_path}")
+        except Exception as e:
+            logger.error(f"Failed to export pose dataset: {e}")
+            import traceback
+
+            traceback.print_exc()
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -3947,6 +4380,13 @@ class MainWindow(QMainWindow):
                 if self.chk_enable_dataset_gen.isChecked():
                     self._generate_training_dataset()
 
+                # Enable pose export button if configured
+                if (
+                    self.chk_enable_pose_export.isChecked()
+                    and self.line_pose_output_dir.text()
+                ):
+                    self.btn_export_pose_dataset.setEnabled(True)
+
                 # Clean up session logging - backward tracking and merging complete
                 self._cleanup_session_logging()
                 self._cleanup_temporary_files()
@@ -4324,6 +4764,26 @@ class MainWindow(QMainWindow):
             "METRIC_HIGH_ASSIGNMENT_COST": self.chk_metric_high_assignment_cost.isChecked(),
             "METRIC_TRACK_LOSS": self.chk_metric_track_loss.isChecked(),
             "METRIC_HIGH_UNCERTAINTY": self.chk_metric_high_uncertainty.isChecked(),
+            # Individual analysis parameters
+            "ENABLE_IDENTITY_ANALYSIS": self.chk_enable_individual_analysis.isChecked(),
+            "IDENTITY_METHOD": self.combo_identity_method.currentText()
+            .lower()
+            .replace(" ", "_")
+            .replace("(", "")
+            .replace(")", ""),
+            "IDENTITY_CROP_SIZE_MULTIPLIER": self.spin_identity_crop_multiplier.value(),
+            "IDENTITY_CROP_MIN_SIZE": self.spin_identity_crop_min.value(),
+            "IDENTITY_CROP_MAX_SIZE": self.spin_identity_crop_max.value(),
+            "COLOR_TAG_MODEL_PATH": self.line_color_tag_model.text(),
+            "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
+            "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
+            "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
+            "ENABLE_POSE_EXPORT": self.chk_enable_pose_export.isChecked(),
+            "POSE_OUTPUT_DIR": self.line_pose_output_dir.text(),
+            "POSE_DATASET_NAME": self.line_pose_dataset_name.text(),
+            "POSE_CROP_SIZE_MULTIPLIER": self.spin_pose_crop_multiplier.value(),
+            "POSE_MIN_TRAJECTORY_LENGTH": self.spin_pose_min_length.value(),
+            "POSE_EXPORT_FPS": self.spin_pose_export_fps.value(),
         }
 
     def load_config(self):
@@ -4567,6 +5027,55 @@ class MainWindow(QMainWindow):
                 cfg.get("metric_high_uncertainty", False)
             )
 
+            # Individual analysis parameters
+            self.chk_enable_individual_analysis.setChecked(
+                cfg.get("enable_identity_analysis", False)
+            )
+            # Map method string to combo index
+            method_map = {
+                "none_disabled": 0,
+                "color_tags_yolo": 1,
+                "apriltags": 2,
+                "custom": 3,
+            }
+            identity_method = cfg.get("identity_method", "none_disabled")
+            self.combo_identity_method.setCurrentIndex(
+                method_map.get(identity_method, 0)
+            )
+            self.spin_identity_crop_multiplier.setValue(
+                cfg.get("identity_crop_size_multiplier", 3.0)
+            )
+            self.spin_identity_crop_min.setValue(cfg.get("identity_crop_min_size", 64))
+            self.spin_identity_crop_max.setValue(cfg.get("identity_crop_max_size", 256))
+            self.line_color_tag_model.setText(cfg.get("color_tag_model_path", ""))
+            self.spin_color_tag_conf.setValue(cfg.get("color_tag_confidence", 0.5))
+            # Map apriltag family to combo index
+            apriltag_family = cfg.get("apriltag_family", "tag36h11")
+            families = [
+                "tag36h11",
+                "tag25h9",
+                "tag16h5",
+                "tagCircle21h7",
+                "tagStandard41h12",
+            ]
+            if apriltag_family in families:
+                self.combo_apriltag_family.setCurrentIndex(
+                    families.index(apriltag_family)
+                )
+            self.spin_apriltag_decimate.setValue(cfg.get("apriltag_decimate", 1.0))
+            self.chk_enable_pose_export.setChecked(cfg.get("enable_pose_export", False))
+            self.line_pose_output_dir.setText(cfg.get("pose_output_dir", ""))
+            self.line_pose_dataset_name.setText(
+                cfg.get("pose_dataset_name", "pose_dataset")
+            )
+            self.spin_pose_crop_multiplier.setValue(
+                cfg.get("pose_crop_size_multiplier", 4.0)
+            )
+            self.spin_pose_min_length.setValue(
+                cfg.get("pose_min_trajectory_length", 30)
+            )
+            self.spin_pose_export_fps.setValue(cfg.get("pose_export_fps", 30))
+
             # Load ROI shapes
             self.roi_shapes = cfg.get("roi_shapes", [])
             if self.roi_shapes:
@@ -4721,6 +5230,26 @@ class MainWindow(QMainWindow):
             "metric_high_assignment_cost": self.chk_metric_high_assignment_cost.isChecked(),
             "metric_track_loss": self.chk_metric_track_loss.isChecked(),
             "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
+            # Individual analysis parameters
+            "enable_identity_analysis": self.chk_enable_individual_analysis.isChecked(),
+            "identity_method": self.combo_identity_method.currentText()
+            .lower()
+            .replace(" ", "_")
+            .replace("(", "")
+            .replace(")", ""),
+            "identity_crop_size_multiplier": self.spin_identity_crop_multiplier.value(),
+            "identity_crop_min_size": self.spin_identity_crop_min.value(),
+            "identity_crop_max_size": self.spin_identity_crop_max.value(),
+            "color_tag_model_path": self.line_color_tag_model.text(),
+            "color_tag_confidence": self.spin_color_tag_conf.value(),
+            "apriltag_family": self.combo_apriltag_family.currentText(),
+            "apriltag_decimate": self.spin_apriltag_decimate.value(),
+            "enable_pose_export": self.chk_enable_pose_export.isChecked(),
+            "pose_output_dir": self.line_pose_output_dir.text(),
+            "pose_dataset_name": self.line_pose_dataset_name.text(),
+            "pose_crop_size_multiplier": self.spin_pose_crop_multiplier.value(),
+            "pose_min_trajectory_length": self.spin_pose_min_length.value(),
+            "pose_export_fps": self.spin_pose_export_fps.value(),
         }
 
         # Determine save path: video-based if video selected, otherwise ask user
