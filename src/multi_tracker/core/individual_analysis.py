@@ -182,18 +182,20 @@ class PoseTrackingExporter:
     Creates videos and metadata for each trajectory.
     """
 
-    def __init__(self, params):
+    def __init__(self, params, progress_callback=None):
         self.params = params
         self.enabled = params.get("ENABLE_POSE_EXPORT", False)
         self.crop_size_multiplier = params.get("POSE_CROP_SIZE_MULTIPLIER", 4.0)
         self.min_trajectory_length = params.get("POSE_MIN_TRAJECTORY_LENGTH", 30)
         self.export_fps = params.get("POSE_EXPORT_FPS", 30)
+        self.progress_callback = progress_callback
 
         logger.info(f"Pose tracking exporter initialized: enabled={self.enabled}")
 
     def export_trajectories(self, video_path, csv_path, output_dir, dataset_name):
         """
         Export trajectory videos and metadata for pose tracking.
+        Optimized to read video only once and cache needed frames.
 
         Args:
             video_path: Path to source video
@@ -206,12 +208,13 @@ class PoseTrackingExporter:
         """
         import pandas as pd
         from datetime import datetime
+        from collections import defaultdict
 
         if not self.enabled:
             logger.info("Pose tracking export is disabled")
             return None
 
-        logger.info(f"Starting pose tracking dataset export from {csv_path}")
+        logger.info(f"Starting optimized pose tracking dataset export from {csv_path}")
 
         # Read tracking data
         df = pd.read_csv(csv_path)
@@ -222,7 +225,7 @@ class PoseTrackingExporter:
         export_dir = Path(output_dir) / dataset_name_with_timestamp
         export_dir.mkdir(parents=True, exist_ok=True)
 
-        # Open video
+        # Get video properties
         cap = cv2.VideoCapture(str(video_path))
         if not cap.isOpened():
             raise ValueError(f"Cannot open video: {video_path}")
@@ -230,9 +233,104 @@ class PoseTrackingExporter:
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # Process each trajectory
+        # Filter trajectories by length
         trajectory_ids = df["TrajectoryID"].unique()
+        valid_trajectory_ids = [
+            traj_id
+            for traj_id in trajectory_ids
+            if len(df[df["TrajectoryID"] == traj_id]) >= self.min_trajectory_length
+        ]
+        total_trajectories = len(valid_trajectory_ids)
+
+        if total_trajectories == 0:
+            logger.warning("No valid trajectories to export")
+            cap.release()
+            return None
+
+        logger.info(f"Exporting {total_trajectories} trajectories")
+
+        # Step 1: Build frame-to-trajectories mapping (which trajectories need which frames)
+        if self.progress_callback:
+            self.progress_callback(0, "Building frame index...")
+
+        frame_to_trajs = defaultdict(list)  # frame_id -> [(traj_id, traj_idx), ...]
+        traj_data_dict = {}  # traj_id -> DataFrame
+
+        for traj_id in valid_trajectory_ids:
+            traj_data = df[df["TrajectoryID"] == traj_id].sort_values("FrameID")
+            traj_data_dict[traj_id] = traj_data
+
+            for idx, row in traj_data.iterrows():
+                frame_id = int(row["FrameID"])
+                traj_idx = traj_data.index.get_loc(idx)
+                frame_to_trajs[frame_id].append((traj_id, traj_idx))
+
+        unique_frames = sorted(frame_to_trajs.keys())
+        logger.info(f"Need to read {len(unique_frames)} unique frames from video")
+
+        # Step 2: Read video ONCE and extract all needed frames
+        if self.progress_callback:
+            self.progress_callback(
+                5, f"Reading {len(unique_frames)} frames from video..."
+            )
+
+        frame_cache = {}  # frame_id -> frame (BGR image)
+        current_frame_idx = 0
+        frames_read = 0
+
+        for frame_id in unique_frames:
+            # Skip frames we don't need using grab (fast, no decode)
+            while current_frame_idx < frame_id:
+                ret = cap.grab()
+                if not ret:
+                    # Video ended prematurely, can't read any more frames
+                    logger.warning(
+                        f"Video ended at frame {current_frame_idx}, cannot read frame {frame_id}"
+                    )
+                    break
+                current_frame_idx += 1
+
+            # Read the frame we need using read() (grab + retrieve)
+            if current_frame_idx == frame_id:
+                ret, frame = cap.read()
+                if ret and frame is not None and frame.size > 0:
+                    frame_cache[frame_id] = frame.copy()
+                    frames_read += 1
+                else:
+                    # Frame read failed - log it (shouldn't happen often)
+                    if logger.isEnabledFor(logging.DEBUG):
+                        if not ret:
+                            logger.debug(f"Failed to read frame {frame_id}")
+                        elif frame is None or frame.size == 0:
+                            logger.debug(f"Frame {frame_id} is empty/invalid")
+                current_frame_idx += 1
+            else:
+                # We couldn't reach this frame (video ended early)
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug(
+                        f"Could not reach frame {frame_id} (current position: {current_frame_idx})"
+                    )
+
+            # Progress update every 100 frames
+            if frames_read % 100 == 0 and self.progress_callback:
+                read_pct = int((frames_read / len(unique_frames)) * 30)  # 5-35%
+                self.progress_callback(
+                    5 + read_pct, f"Read {frames_read}/{len(unique_frames)} frames..."
+                )
+
+        cap.release()
+        logger.info(f"Successfully read {frames_read} frames into cache")
+        if frames_read < len(unique_frames):
+            logger.warning(
+                f"Only read {frames_read}/{len(unique_frames)} frames - some frames may be missing"
+            )
+
+        # Step 3: Generate trajectory videos from cached frames
+        if self.progress_callback:
+            self.progress_callback(35, "Generating trajectory videos...")
+
         exported_count = 0
         metadata = {
             "dataset_name": dataset_name_with_timestamp,
@@ -242,25 +340,33 @@ class PoseTrackingExporter:
             "trajectories": [],
         }
 
-        for traj_id in trajectory_ids:
-            traj_data = df[df["TrajectoryID"] == traj_id].sort_values("FrameID")
+        for idx, traj_id in enumerate(valid_trajectory_ids):
+            traj_data = traj_data_dict[traj_id]
 
-            # Skip short trajectories
-            if len(traj_data) < self.min_trajectory_length:
-                continue
-
-            # Export this trajectory
-            traj_info = self._export_single_trajectory(
-                cap, traj_data, traj_id, export_dir, frame_width, frame_height
+            # Export this trajectory using cached frames
+            traj_info = self._export_single_trajectory_from_cache(
+                frame_cache, traj_data, traj_id, export_dir, frame_width, frame_height
             )
 
             if traj_info:
                 metadata["trajectories"].append(traj_info)
                 exported_count += 1
 
-        cap.release()
+            # Report progress (35-95%)
+            if self.progress_callback:
+                progress_pct = 35 + int(((idx + 1) / total_trajectories) * 60)
+                self.progress_callback(
+                    progress_pct,
+                    f"Exported trajectory {idx + 1}/{total_trajectories} (ID: {traj_id})",
+                )
+
+        # Clear frame cache to free memory
+        frame_cache.clear()
 
         # Save metadata
+        if self.progress_callback:
+            self.progress_callback(95, "Saving metadata...")
+
         metadata_path = export_dir / "metadata.json"
         with open(metadata_path, "w") as f:
             json.dump(metadata, f, indent=2)
@@ -284,13 +390,175 @@ class PoseTrackingExporter:
                 "3. Apply trained models back to full videos for complete analysis\n"
             )
 
+        if self.progress_callback:
+            self.progress_callback(100, "Export complete!")
+
         logger.info(f"Exported {exported_count} trajectories to {export_dir}")
         return str(export_dir)
+
+    def _export_single_trajectory_from_cache(
+        self, frame_cache, traj_data, traj_id, output_dir, frame_width, frame_height
+    ):
+        """Export a single trajectory as a video file using pre-loaded frames from cache."""
+        # Get trajectory bounds
+        frames = traj_data["FrameID"].values
+        xs = traj_data["X"].values
+        ys = traj_data["Y"].values
+
+        # Skip if all NaN
+        valid_mask = ~(np.isnan(xs) | np.isnan(ys))
+        if not valid_mask.any():
+            logger.warning(f"Trajectory {traj_id}: All coordinates are NaN, skipping")
+            return None
+
+        # Check coordinate ranges (debug mode only)
+        if logger.isEnabledFor(logging.DEBUG):
+            valid_xs = xs[valid_mask]
+            valid_ys = ys[valid_mask]
+            logger.debug(
+                f"Trajectory {traj_id}: X range=[{valid_xs.min():.1f}, {valid_xs.max():.1f}], "
+                f"Y range=[{valid_ys.min():.1f}, {valid_ys.max():.1f}], "
+                f"Frame size=({frame_width}, {frame_height})"
+            )
+
+            # Warn if coordinates are outside frame bounds
+            if (
+                valid_xs.min() < 0
+                or valid_xs.max() >= frame_width
+                or valid_ys.min() < 0
+                or valid_ys.max() >= frame_height
+            ):
+                logger.warning(
+                    f"Trajectory {traj_id}: Some coordinates are outside frame bounds! "
+                    f"This suggests a coordinate scaling mismatch."
+                )
+
+        # Calculate crop size
+        body_size = self.params.get("REFERENCE_BODY_SIZE", 20.0)
+        crop_size = int(body_size * self.crop_size_multiplier)
+        crop_size = max(64, min(crop_size, 256))
+        if crop_size % 2 != 0:
+            crop_size += 1
+
+        # Create video writer with better codec
+        video_filename = f"trajectory_{traj_id:04d}.mp4"
+        video_path = output_dir / video_filename
+
+        # Use x264 codec if available, otherwise fall back to mp4v
+        fourcc = cv2.VideoWriter_fourcc(*"avc1")  # H.264 codec
+        out = cv2.VideoWriter(
+            str(video_path), fourcc, self.export_fps, (crop_size, crop_size)
+        )
+
+        # Fallback to mp4v if avc1 fails
+        if not out.isOpened():
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            out = cv2.VideoWriter(
+                str(video_path), fourcc, self.export_fps, (crop_size, crop_size)
+            )
+
+        frame_info = []
+        half_size = crop_size // 2
+
+        for i, frame_id in enumerate(frames):
+            frame_id = int(frame_id)
+            cx, cy = xs[i], ys[i]
+
+            # Handle NaN (occluded frames)
+            if np.isnan(cx) or np.isnan(cy):
+                # Write blank frame
+                blank = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
+                out.write(blank)
+                frame_info.append(
+                    {"frame_id": frame_id, "x": None, "y": None, "occluded": True}
+                )
+            else:
+                # Get frame from cache
+                frame = frame_cache.get(frame_id)
+                if frame is None:
+                    # Frame not in cache (shouldn't happen), write blank
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            f"Trajectory {traj_id}, frame {frame_id} not in cache"
+                        )
+                    blank = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
+                    out.write(blank)
+                    frame_info.append(
+                        {"frame_id": frame_id, "x": None, "y": None, "occluded": True}
+                    )
+                    continue
+
+                # Extract crop
+                x1 = max(0, int(cx - half_size))
+                y1 = max(0, int(cy - half_size))
+                x2 = min(frame_width, int(cx + half_size))
+                y2 = min(frame_height, int(cy + half_size))
+
+                crop = frame[y1:y2, x1:x2].copy()
+
+                # Check if crop is valid
+                if crop.size == 0 or crop.shape[0] == 0 or crop.shape[1] == 0:
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            f"Trajectory {traj_id}, frame {frame_id}: Empty crop at ({cx:.1f}, {cy:.1f}), "
+                            f"bounds=[{x1}:{x2}, {y1}:{y2}], frame_size=({frame_width}, {frame_height})"
+                        )
+                    blank = np.zeros((crop_size, crop_size, 3), dtype=np.uint8)
+                    out.write(blank)
+                    frame_info.append(
+                        {
+                            "frame_id": frame_id,
+                            "x": float(cx),
+                            "y": float(cy),
+                            "occluded": True,
+                        }
+                    )
+                    continue
+
+                # Pad if needed
+                actual_h, actual_w = crop.shape[:2]
+                if actual_h < crop_size or actual_w < crop_size:
+                    pad_top = (crop_size - actual_h) // 2
+                    pad_bottom = crop_size - actual_h - pad_top
+                    pad_left = (crop_size - actual_w) // 2
+                    pad_right = crop_size - actual_w - pad_left
+                    crop = cv2.copyMakeBorder(
+                        crop,
+                        pad_top,
+                        pad_bottom,
+                        pad_left,
+                        pad_right,
+                        cv2.BORDER_CONSTANT,
+                        value=(0, 0, 0),
+                    )
+
+                out.write(crop)
+                frame_info.append(
+                    {
+                        "frame_id": frame_id,
+                        "x": float(cx),
+                        "y": float(cy),
+                        "occluded": False,
+                    }
+                )
+
+        out.release()
+
+        return {
+            "trajectory_id": int(traj_id),
+            "video_file": video_filename,
+            "num_frames": len(frames),
+            "frames": frame_info,
+        }
 
     def _export_single_trajectory(
         self, cap, traj_data, traj_id, output_dir, frame_width, frame_height
     ):
-        """Export a single trajectory as a video file."""
+        """
+        DEPRECATED: Legacy method using slow frame seeking.
+        Kept for compatibility but should not be used.
+        Use _export_single_trajectory_from_cache instead.
+        """
         # Get trajectory bounds
         frames = traj_data["FrameID"].values
         xs = traj_data["X"].values

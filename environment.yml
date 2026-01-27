@@ -11,7 +11,10 @@ dependencies:
   - scipy
   - matplotlib
   - pandas
+  - jupyter
   - ipykernel
+  - ipywidgets
+  - einops
   
   # Computer vision
   - opencv

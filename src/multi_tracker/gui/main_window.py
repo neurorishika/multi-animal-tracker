@@ -424,6 +424,10 @@ class MainWindow(QMainWindow):
         # Tab Widget
         self.tabs = QTabWidget()
         self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.tabs.setUsesScrollButtons(
+            True
+        )  # Enable scroll buttons when tabs don't fit
+        self.tabs.setElideMode(Qt.ElideNone)  # Don't truncate tab text
 
         # Tab 1: Setup (Files & Performance)
         self.tab_setup = QWidget()
@@ -2234,7 +2238,7 @@ class MainWindow(QMainWindow):
         form.addWidget(separator_frame)
 
         # Section header for pose tracking
-        pose_section_label = QLabel("Pose Tracking Dataset Export (Independent)")
+        pose_section_label = QLabel("Pose Tracking Dataset Export")
         pose_section_label.setStyleSheet(
             "font-size: 14px; font-weight: bold; color: #4a9eff; margin-top: 10px;"
         )
@@ -2331,19 +2335,12 @@ class MainWindow(QMainWindow):
 
         vl_pose.addWidget(pose_params_group)
 
-        # Export Button
-        export_btn_layout = QHBoxLayout()
-        self.btn_export_pose_dataset = QPushButton("Export Pose Dataset")
-        self.btn_export_pose_dataset.setObjectName("ActionBtn")
-        self.btn_export_pose_dataset.clicked.connect(self._export_pose_dataset)
-        self.btn_export_pose_dataset.setEnabled(False)
-        self.btn_export_pose_dataset.setToolTip(
-            "Export cropped trajectory videos after tracking is complete"
+        # Add note about automatic export
+        note_label = QLabel(
+            "Note: Pose dataset will be automatically exported after tracking completes."
         )
-        self.btn_export_pose_dataset.setMinimumHeight(35)
-        export_btn_layout.addWidget(self.btn_export_pose_dataset)
-        export_btn_layout.addStretch()
-        vl_pose.addLayout(export_btn_layout)
+        note_label.setStyleSheet("color: #888; font-style: italic; margin-top: 5px;")
+        vl_pose.addWidget(note_label)
 
         form.addWidget(self.g_pose_export)
 
@@ -2594,18 +2591,13 @@ class MainWindow(QMainWindow):
 
     def _on_pose_export_toggled(self, state):
         """Enable/disable pose export controls."""
-        enabled = state == Qt.Checked
+        enabled = state  # toggled signal passes boolean, not Qt.CheckState
         self.line_pose_output_dir.setEnabled(enabled)
         self.btn_select_pose_dir.setEnabled(enabled)
         self.line_pose_dataset_name.setEnabled(enabled)
         self.spin_pose_crop_multiplier.setEnabled(enabled)
         self.spin_pose_min_length.setEnabled(enabled)
         self.spin_pose_export_fps.setEnabled(enabled)
-        # Enable export button only if tracking is done
-        if enabled and self.csv_line.text() and os.path.exists(self.csv_line.text()):
-            self.btn_export_pose_dataset.setEnabled(True)
-        else:
-            self.btn_export_pose_dataset.setEnabled(False)
 
     def _select_pose_output_dir(self):
         """Browse for pose dataset output directory."""
@@ -2621,9 +2613,32 @@ class MainWindow(QMainWindow):
 
         # Get parameters
         video_path = self.file_line.text()
-        csv_path = self.csv_line.text()
+        raw_csv_path = self.csv_line.text()
         output_dir = self.line_pose_output_dir.text()
         dataset_name = self.line_pose_dataset_name.text() or "pose_dataset"
+
+        # Determine which CSV to use based on tracking mode
+        if raw_csv_path:
+            base, ext = os.path.splitext(raw_csv_path)
+            # Check for merged file first (backward tracking completed)
+            merged_csv = f"{base}_merged.csv"
+            if os.path.exists(merged_csv):
+                csv_path = merged_csv
+                logger.info("Using merged trajectories for pose export")
+            else:
+                # Use forward processed file (forward-only tracking)
+                processed_csv = f"{base}_forward_processed{ext}"
+                if os.path.exists(processed_csv):
+                    csv_path = processed_csv
+                    logger.info("Using forward processed trajectories for pose export")
+                else:
+                    # Fallback to raw CSV
+                    csv_path = raw_csv_path
+                    logger.warning(
+                        "Using raw CSV for pose export (no processed file found)"
+                    )
+        else:
+            csv_path = raw_csv_path
 
         # Validate inputs
         if not video_path or not os.path.exists(video_path):
@@ -2644,11 +2659,23 @@ class MainWindow(QMainWindow):
             "POSE_CROP_SIZE_MULTIPLIER": self.spin_pose_crop_multiplier.value(),
             "POSE_MIN_TRAJECTORY_LENGTH": self.spin_pose_min_length.value(),
             "POSE_EXPORT_FPS": self.spin_pose_export_fps.value(),
-            "REFERENCE_BODY_SIZE": self.spin_body_size.value(),
+            "REFERENCE_BODY_SIZE": self.spin_reference_body_size.value(),
         }
 
-        # Create exporter
-        exporter = PoseTrackingExporter(params)
+        # Create exporter with progress callback
+        def update_progress(percentage, status):
+            self.progress_bar.setValue(percentage)
+            self.progress_label.setText(status)
+            QApplication.processEvents()
+
+        exporter = PoseTrackingExporter(params, progress_callback=update_progress)
+
+        # Show progress UI
+        self.progress_bar.setVisible(True)
+        self.progress_label.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Starting pose dataset export...")
+        QApplication.processEvents()
 
         logger.info("Starting pose tracking dataset export...")
 
@@ -2663,6 +2690,10 @@ class MainWindow(QMainWindow):
             import traceback
 
             traceback.print_exc()
+        finally:
+            # Hide progress UI
+            self.progress_bar.setVisible(False)
+            self.progress_label.setVisible(False)
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -4047,6 +4078,35 @@ class MainWindow(QMainWindow):
         )
         self.video_label.setPixmap(QPixmap.fromImage(scaled))
 
+    def _scale_trajectories_to_original_space(self, trajectories_df, resize_factor):
+        """Scale trajectory coordinates from resized space back to original video space."""
+        if trajectories_df is None or trajectories_df.empty:
+            return trajectories_df
+
+        if resize_factor == 1.0:
+            return trajectories_df  # No scaling needed
+
+        # Scale factor to go from resized -> original is 1/resize_factor
+        scale_factor = 1.0 / resize_factor
+
+        logger.info(
+            f"Scaling trajectories to original video space (resize_factor={resize_factor:.3f}, scale_factor={scale_factor:.3f})"
+        )
+
+        result_df = trajectories_df.copy()
+
+        # Scale X, Y coordinates
+        result_df["X"] = result_df["X"] * scale_factor
+        result_df["Y"] = result_df["Y"] * scale_factor
+
+        # Theta doesn't need scaling (it's an angle)
+        # FrameID doesn't need scaling
+
+        logger.info(
+            f"Scaled {len(result_df)} trajectory points to original video coordinates"
+        )
+        return result_df
+
     def save_trajectories_to_csv(self, trajectories, output_path):
         """Save processed trajectories to CSV.
 
@@ -4229,6 +4289,13 @@ class MainWindow(QMainWindow):
                     resolved_trajectories, method=interp_method, max_gap=max_gap
                 )
 
+        # Scale coordinates back to original video space
+        resize_factor = self.spin_resize.value()
+        if isinstance(resolved_trajectories, pd.DataFrame):
+            resolved_trajectories = self._scale_trajectories_to_original_space(
+                resolved_trajectories, resize_factor
+            )
+
         raw_csv_path = self.csv_line.text()
         if raw_csv_path:
             base, ext = os.path.splitext(raw_csv_path)
@@ -4237,11 +4304,7 @@ class MainWindow(QMainWindow):
                 # Track initial tracking CSV as temporary (will be replaced by merged version)
                 if raw_csv_path not in self.temporary_files:
                     self.temporary_files.append(raw_csv_path)
-                QMessageBox.information(
-                    self,
-                    "Merged Data Saved",
-                    f"Merged trajectory data has been saved to:\n{merged_csv_path}",
-                )
+                logger.info(f"✓ Merged trajectory data saved to: {merged_csv_path}")
 
     @Slot(bool, list, list)
     def on_tracking_finished(self, finished_normally, fps_list, full_traj):
@@ -4299,6 +4362,9 @@ class MainWindow(QMainWindow):
                             method=interp_method,
                             max_gap=max_gap,
                         )
+
+                    # NOTE: Do NOT scale to original space yet if backward tracking will happen
+                    # Scaling will be done after merging or in forward-only mode
                 else:
                     # Fallback to old method if CSV not available
                     processed_trajectories, stats = process_trajectories(
@@ -4310,15 +4376,20 @@ class MainWindow(QMainWindow):
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
                     base, ext = os.path.splitext(raw_csv_path)
-                    # Track intermediate forward CSV as temporary
+                    # Track intermediate forward CSV as temporary (always removed)
                     forward_csv = f"{base}_forward{ext}"
                     if forward_csv not in self.temporary_files:
                         self.temporary_files.append(forward_csv)
 
                     processed_csv_path = f"{base}_forward_processed{ext}"
-                    # Track processed CSV as temporary
-                    if processed_csv_path not in self.temporary_files:
+                    # Only track processed CSV as temporary if backward tracking will run
+                    # (it will be merged into final file). Otherwise, this IS the final file.
+                    if (
+                        is_backward_enabled
+                        and processed_csv_path not in self.temporary_files
+                    ):
                         self.temporary_files.append(processed_csv_path)
+
                     self.save_trajectories_to_csv(
                         processed_trajectories, processed_csv_path
                     )
@@ -4327,9 +4398,30 @@ class MainWindow(QMainWindow):
                     self.forward_processed_trajs = processed_trajectories
                     self.start_backward_tracking()
                 else:
+                    # Scale coordinates to original video space (forward-only mode)
+                    resize_factor = self.spin_resize.value()
+                    processed_trajectories = self._scale_trajectories_to_original_space(
+                        processed_trajectories, resize_factor
+                    )
+
+                    # Re-save the scaled trajectories
+                    if raw_csv_path:
+                        base, ext = os.path.splitext(raw_csv_path)
+                        processed_csv_path = f"{base}_forward_processed{ext}"
+                        self.save_trajectories_to_csv(
+                            processed_trajectories, processed_csv_path
+                        )
+
                     # Generate dataset if enabled (BEFORE cleanup so files are still available)
                     if self.chk_enable_dataset_gen.isChecked():
                         self._generate_training_dataset()
+
+                    # Automatically export pose dataset if enabled
+                    if (
+                        self.chk_enable_pose_export.isChecked()
+                        and self.line_pose_output_dir.text()
+                    ):
+                        self._export_pose_dataset()
 
                     # Clean up session logging - forward-only tracking complete
                     self._cleanup_session_logging()
@@ -4340,7 +4432,7 @@ class MainWindow(QMainWindow):
                     self.label_elapsed_time.setVisible(False)
                     self.label_eta.setVisible(False)
                     self._set_ui_controls_enabled(True)
-                    QMessageBox.information(self, "Done", "Tracking complete.")
+                    logger.info("✓ Tracking complete.")
             else:
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
@@ -4380,12 +4472,12 @@ class MainWindow(QMainWindow):
                 if self.chk_enable_dataset_gen.isChecked():
                     self._generate_training_dataset()
 
-                # Enable pose export button if configured
+                # Automatically export pose dataset if enabled
                 if (
                     self.chk_enable_pose_export.isChecked()
                     and self.line_pose_output_dir.text()
                 ):
-                    self.btn_export_pose_dataset.setEnabled(True)
+                    self._export_pose_dataset()
 
                 # Clean up session logging - backward tracking and merging complete
                 self._cleanup_session_logging()
@@ -4396,9 +4488,7 @@ class MainWindow(QMainWindow):
                 self.label_elapsed_time.setVisible(False)
                 self.label_eta.setVisible(False)
                 self._set_ui_controls_enabled(True)
-                QMessageBox.information(
-                    self, "Done", "Backward tracking and merging complete."
-                )
+                logger.info("✓ Backward tracking and merging complete.")
         else:
             # Hide stats labels
             self.label_current_fps.setVisible(False)
