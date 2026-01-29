@@ -650,8 +650,9 @@ class MainWindow(QMainWindow):
         self.spin_fps.setDecimals(2)
         self.spin_fps.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.spin_fps.setToolTip(
-            "Video frame rate (frames per second).\n"
-            "Use 'Detect from Video' to read from file metadata.\n"
+            "Acquisition frame rate (frames per second) at which the video was recorded.\n"
+            "NOTE: This may differ from the video file's playback framerate.\n"
+            "Use 'Detect from Video' to read from file metadata as a starting point.\n"
             "Time-dependent parameters (velocity, durations) scale with this.\n"
             "Affects: motion prediction, track lifecycle, velocity thresholds."
         )
@@ -662,10 +663,10 @@ class MainWindow(QMainWindow):
         self.btn_detect_fps.clicked.connect(self._detect_fps_from_current_video)
         self.btn_detect_fps.setEnabled(False)
         self.btn_detect_fps.setToolTip(
-            "Auto-detect frame rate from the currently loaded video's metadata"
+            "Auto-detect frame rate from video metadata (may differ from actual acquisition rate)"
         )
         fps_layout.addWidget(self.btn_detect_fps)
-        fl_ref.addRow("Video Frame Rate (FPS):", fps_layout)
+        fl_ref.addRow("Acquisition Frame Rate (FPS):", fps_layout)
 
         # FPS info label
         self.label_fps_info = QLabel()
@@ -673,28 +674,6 @@ class MainWindow(QMainWindow):
             "color: #888; font-size: 10px; font-style: italic;"
         )
         fl_ref.addRow("", self.label_fps_info)
-
-        self.spin_reference_body_size = QDoubleSpinBox()
-        self.spin_reference_body_size.setRange(1.0, 500.0)
-        self.spin_reference_body_size.setSingleStep(1.0)
-        self.spin_reference_body_size.setValue(20.0)
-        self.spin_reference_body_size.setDecimals(2)
-        self.spin_reference_body_size.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Fixed
-        )
-        self.spin_reference_body_size.setToolTip(
-            "Reference animal body diameter in pixels (at resize=1.0).\n"
-            "All distance/size parameters are scaled relative to this value."
-        )
-        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
-        fl_ref.addRow("Reference Body Size (px):", self.spin_reference_body_size)
-
-        # Info label showing calculated area
-        self.label_body_size_info = QLabel()
-        self.label_body_size_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
-        )
-        fl_ref.addRow("", self.label_body_size_info)
         vl_ref.addLayout(fl_ref)
         form.addWidget(g_ref)
 
@@ -749,47 +728,6 @@ class MainWindow(QMainWindow):
 
         vl_sys.addLayout(fl_sys)
         form.addWidget(g_sys)
-
-        # Detection size statistics panel
-        g_detect_stats = QGroupBox("Detection Size Statistics")
-        vl_stats = QVBoxLayout(g_detect_stats)
-        vl_stats.addWidget(
-            self._create_help_label(
-                "Workflow for accurate size estimation:\n"
-                "1. Go to 'Detection' tab and configure your detection method\n"
-                "2. IMPORTANT: Disable 'Enable Size Filtering' (it biases estimates)\n"
-                "3. Return here and click 'Load Random Frame for Preview'\n"
-                "4. Choose a frame with many animals well-separated\n"
-                "5. Click 'Test Detection' to analyze sizes\n"
-                "6. Use 'Auto-Set' to apply the recommended body size"
-            )
-        )
-
-        self.label_detection_stats = QLabel(
-            "No detection data yet.\nRun 'Test Detection' to estimate sizes."
-        )
-        self.label_detection_stats.setStyleSheet(
-            "color: #aaa; font-size: 11px; padding: 8px; "
-            "background-color: #2a2a2a; border-radius: 4px;"
-        )
-        self.label_detection_stats.setWordWrap(True)
-        vl_stats.addWidget(self.label_detection_stats)
-
-        # Auto-set button
-        btn_layout = QHBoxLayout()
-        self.btn_auto_set_body_size = QPushButton("Auto-Set from Median")
-        self.btn_auto_set_body_size.clicked.connect(
-            self._auto_set_body_size_from_detection
-        )
-        self.btn_auto_set_body_size.setEnabled(False)
-        self.btn_auto_set_body_size.setToolTip(
-            "Automatically set reference body size to the median detected diameter"
-        )
-        btn_layout.addWidget(self.btn_auto_set_body_size)
-        btn_layout.addStretch()
-        vl_stats.addLayout(btn_layout)
-
-        form.addWidget(g_detect_stats)
 
         form.addStretch()
         scroll.setWidget(content)
@@ -872,6 +810,83 @@ class MainWindow(QMainWindow):
         f_size.addRow(h_sf)
         vl_size.addLayout(f_size)
         vbox.addWidget(g_size)
+
+        # Reference Body Size (Spatial Scale)
+        g_body_size = QGroupBox("Reference Body Size (Spatial Scale)")
+        vl_body_size = QVBoxLayout(g_body_size)
+        vl_body_size.addWidget(
+            self._create_help_label(
+                "Define the spatial scale for tracking. This reference size makes all distance/size "
+                "parameters portable across videos. Set this BEFORE configuring tracking parameters."
+            )
+        )
+        fl_body = QFormLayout()
+        fl_body.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.spin_reference_body_size = QDoubleSpinBox()
+        self.spin_reference_body_size.setRange(1.0, 500.0)
+        self.spin_reference_body_size.setSingleStep(1.0)
+        self.spin_reference_body_size.setValue(20.0)
+        self.spin_reference_body_size.setDecimals(2)
+        self.spin_reference_body_size.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.spin_reference_body_size.setToolTip(
+            "Reference animal body diameter in pixels (at resize=1.0).\n"
+            "All distance/size parameters are scaled relative to this value."
+        )
+        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
+        fl_body.addRow("Reference Body Size (px):", self.spin_reference_body_size)
+
+        # Info label showing calculated area
+        self.label_body_size_info = QLabel()
+        self.label_body_size_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic;"
+        )
+        fl_body.addRow("", self.label_body_size_info)
+        vl_body_size.addLayout(fl_body)
+        vbox.addWidget(g_body_size)
+
+        # Detection size statistics panel
+        g_detect_stats = QGroupBox("Detection Size Statistics & Auto-Configuration")
+        vl_stats = QVBoxLayout(g_detect_stats)
+        vl_stats.addWidget(
+            self._create_help_label(
+                "Workflow for accurate size estimation:\n"
+                "1. Configure your detection method below\n"
+                "2. IMPORTANT: Disable 'Enable Size Filtering' above (it biases estimates)\n"
+                "3. Click 'Load Random Frame for Preview' (bottom of page)\n"
+                "4. Choose a frame with many animals well-separated\n"
+                "5. Click 'Test Detection' to analyze sizes\n"
+                "6. Use 'Auto-Set' to apply the recommended body size"
+            )
+        )
+
+        self.label_detection_stats = QLabel(
+            "No detection data yet.\nRun 'Test Detection' to estimate sizes."
+        )
+        self.label_detection_stats.setStyleSheet(
+            "color: #aaa; font-size: 11px; padding: 8px; "
+            "background-color: #2a2a2a; border-radius: 4px;"
+        )
+        self.label_detection_stats.setWordWrap(True)
+        vl_stats.addWidget(self.label_detection_stats)
+
+        # Auto-set button
+        btn_layout = QHBoxLayout()
+        self.btn_auto_set_body_size = QPushButton("Auto-Set Body Size from Median")
+        self.btn_auto_set_body_size.clicked.connect(
+            self._auto_set_body_size_from_detection
+        )
+        self.btn_auto_set_body_size.setEnabled(False)
+        self.btn_auto_set_body_size.setToolTip(
+            "Automatically set reference body size to the median detected diameter"
+        )
+        btn_layout.addWidget(self.btn_auto_set_body_size)
+        btn_layout.addStretch()
+        vl_stats.addLayout(btn_layout)
+
+        vbox.addWidget(g_detect_stats)
 
         # 3. Image Pre-processing (Common) with Live Preview
         # Only shown for Background Subtraction, not YOLO
@@ -3093,22 +3108,40 @@ class MainWindow(QMainWindow):
             logger.warning("No preview frame loaded")
             return
 
-        # Warn if size filtering is enabled (biases size estimation)
+        # If size filtering is enabled, ask user whether to use it for the test
+        use_size_filtering = False
         if self.chk_size_filtering.isChecked():
-            reply = QMessageBox.warning(
-                self,
-                "Size Filtering Enabled",
-                "⚠️ Size filtering is currently enabled!\n\n"
-                "This will exclude detections outside your size range and bias the \n"
-                "size statistics, making them unreliable for estimating body size.\n\n"
-                "Recommendation: Disable 'Enable Size Filtering' in the Detection tab \n"
-                "before running size estimation.\n\n"
-                "Do you want to continue anyway?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Question)
+            msg.setWindowTitle("Size Filtering Options")
+            msg.setText("⚠️ Size filtering is currently enabled!")
+            msg.setInformativeText(
+                "For accurate size estimation, it's recommended to run detection\n"
+                "WITHOUT size constraints. However, you can test with constraints\n"
+                "if you want to see how filtering affects the results.\n\n"
+                "How would you like to proceed?"
             )
-            if reply == QMessageBox.No:
+
+            btn_without = msg.addButton(
+                "Run WITHOUT Size Filtering (Recommended)", QMessageBox.AcceptRole
+            )
+            btn_with = msg.addButton("Run WITH Size Filtering", QMessageBox.ActionRole)
+            btn_cancel = msg.addButton("Cancel", QMessageBox.RejectRole)
+            msg.setDefaultButton(btn_without)
+
+            msg.exec_()
+            clicked = msg.clickedButton()
+
+            if clicked == btn_cancel:
                 return
+            elif clicked == btn_with:
+                use_size_filtering = True
+                logger.info("Running detection test WITH size filtering enabled")
+            else:  # btn_without
+                use_size_filtering = False
+                logger.info(
+                    "Running detection test WITHOUT size filtering (recommended for size estimation)"
+                )
 
         from ..utils.image_processing import apply_image_adjustments
         from ..core.background_models import BackgroundModel
@@ -3223,8 +3256,8 @@ class MainWindow(QMainWindow):
                     if area < min_contour or len(c) < 5:
                         continue
 
-                    # Apply size filtering if enabled
-                    if self.chk_size_filtering.isChecked():
+                    # Apply size filtering based on user choice
+                    if use_size_filtering:
                         min_size = self.spin_min_object_size.value()
                         max_size = self.spin_max_object_size.value()
                         if not (min_size <= area <= max_size):
@@ -3318,7 +3351,7 @@ class MainWindow(QMainWindow):
                     "YOLO_DEVICE": self.combo_yolo_device.currentText().split(" ")[0],
                     "MAX_TARGETS": self.spin_max_targets.value(),
                     "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
-                    "ENABLE_SIZE_FILTERING": self.chk_size_filtering.isChecked(),
+                    "ENABLE_SIZE_FILTERING": use_size_filtering,  # Use the user's choice
                     "MIN_OBJECT_SIZE": self.spin_min_object_size.value(),
                     "MAX_OBJECT_SIZE": self.spin_max_object_size.value(),
                 }
@@ -3845,9 +3878,29 @@ class MainWindow(QMainWindow):
 
     def toggle_preview(self, checked):
         if checked:
-            self.start_tracking(preview_mode=True)
-            self.btn_preview.setText("Stop Preview")
-            self.btn_start.setEnabled(False)
+            # Warn user that preview doesn't save config
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Preview Mode")
+            msg.setText(
+                "Preview mode will run forward tracking only without saving configuration."
+            )
+            msg.setInformativeText(
+                "Preview features:\n"
+                "• Forward pass only (no backward tracking)\n"
+                "• Configuration is NOT saved\n"
+                "• No CSV output\n\n"
+                "Use 'Run Full Tracking' to save results and config."
+            )
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            msg.setDefaultButton(QMessageBox.Ok)
+
+            if msg.exec_() == QMessageBox.Ok:
+                self.start_tracking(preview_mode=True)
+                self.btn_preview.setText("Stop Preview")
+                self.btn_start.setEnabled(False)
+            else:
+                self.btn_preview.setChecked(False)
         else:
             self.stop_tracking()
             self.btn_preview.setText("Preview Mode")
@@ -4315,11 +4368,29 @@ class MainWindow(QMainWindow):
             self.csv_writer_thread.stop()
             self.csv_writer_thread.join()
 
-        if self.btn_preview.isChecked():
+        # Check if this was preview mode
+        was_preview_mode = self.btn_preview.isChecked()
+
+        if was_preview_mode:
             self.btn_preview.setChecked(False)
             self.btn_preview.setText("Preview Mode")
+            # Hide stats labels and re-enable UI for preview mode
+            self.label_current_fps.setVisible(False)
+            self.label_elapsed_time.setVisible(False)
+            self.label_eta.setVisible(False)
+            self._set_ui_controls_enabled(True)
+            if finished_normally:
+                logger.info("Preview completed.")
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Preview Interrupted",
+                    "Preview was stopped or encountered an error.",
+                )
+            gc.collect()
+            return  # Exit early - no post-processing, no backward tracking for preview
 
-        if finished_normally and not self.btn_preview.isChecked():
+        if finished_normally:
             logger.info("Tracking completed successfully.")
             is_backward_mode = (
                 hasattr(self.tracking_worker, "backward_mode")
@@ -4566,7 +4637,11 @@ class MainWindow(QMainWindow):
         self.start_tracking_on_video(output_path, backward_mode=True)
 
     def start_tracking(self, preview_mode: bool, backward_mode: bool = False):
-        self.save_config()
+        # Only save config when NOT in preview mode
+        if not preview_mode:
+            if not self.save_config():
+                # User cancelled config save, abort tracking
+                return
         video_fp = self.file_line.text()
         if not video_fp:
             QMessageBox.warning(self, "No video", "Please select a video file first.")
@@ -4760,7 +4835,7 @@ class MainWindow(QMainWindow):
 
         return {
             "DETECTION_METHOD": det_method,
-            "FPS": fps,  # Video frame rate
+            "FPS": fps,  # Acquisition frame rate
             "YOLO_MODEL_PATH": yolo_path,
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
@@ -4892,26 +4967,147 @@ class MainWindow(QMainWindow):
             logger.info(f"Configuration loaded from {config_path}")
 
     def _load_config_from_file(self, config_path):
-        """Internal method to load config from a specific file path."""
+        """Internal method to load config from a specific file path.
+
+        This method supports both new standardized key names and legacy key names
+        for backward compatibility with older config files.
+        """
         if not os.path.isfile(config_path):
             return
+
+        def get_cfg(new_key, *legacy_keys, default=None):
+            """Helper to get config value with fallback to legacy keys."""
+            if new_key in cfg:
+                return cfg[new_key]
+            for key in legacy_keys:
+                if key in cfg:
+                    return cfg[key]
+            return default
+
         try:
             with open(config_path, "r") as f:
                 cfg = json.load(f)
-            self.file_line.setText(cfg.get("file_path", ""))
-            self.csv_line.setText(cfg.get("csv_path", ""))
-            self.check_video_output.setChecked(cfg.get("video_output_enabled", False))
-            # Only override video output path if one is saved in config
-            saved_video_path = cfg.get("video_output_path", "")
-            if saved_video_path:
+
+            # === FILE MANAGEMENT ===
+            # Only set paths if they're currently empty (preserve existing paths)
+            if not self.file_line.text().strip():
+                self.file_line.setText(get_cfg("file_path", default=""))
+            if not self.csv_line.text().strip():
+                self.csv_line.setText(get_cfg("csv_path", default=""))
+            self.check_video_output.setChecked(
+                get_cfg("video_output_enabled", default=False)
+            )
+            saved_video_path = get_cfg("video_output_path", default="")
+            if saved_video_path and not self.video_out_line.text().strip():
                 self.video_out_line.setText(saved_video_path)
 
-            det_method = cfg.get("detection_method", "background_subtraction")
+            # === REFERENCE PARAMETERS ===
+            self.spin_fps.setValue(get_cfg("fps", default=30.0))
+            self.spin_reference_body_size.setValue(
+                get_cfg("reference_body_size", default=20.0)
+            )
+
+            # === SYSTEM PERFORMANCE ===
+            self.spin_resize.setValue(get_cfg("resize_factor", default=1.0))
+            self.check_save_confidence.setChecked(
+                get_cfg("save_confidence_metrics", default=True)
+            )
+            self.chk_visualization_free.setChecked(
+                get_cfg("visualization_free_mode", default=False)
+            )
+
+            # === DETECTION STRATEGY ===
+            det_method = get_cfg("detection_method", default="background_subtraction")
             self.combo_detection_method.setCurrentIndex(
                 0 if det_method == "background_subtraction" else 1
             )
 
-            yolo_model = cfg.get("yolo_model_path", "yolo26s-obb.pt")
+            # === SIZE FILTERING ===
+            self.chk_size_filtering.setChecked(
+                get_cfg("enable_size_filtering", default=False)
+            )
+            self.spin_min_object_size.setValue(
+                get_cfg("min_object_size_multiplier", default=0.3)
+            )
+            self.spin_max_object_size.setValue(
+                get_cfg("max_object_size_multiplier", default=3.0)
+            )
+
+            # === IMAGE ENHANCEMENT ===
+            self.slider_brightness.setValue(int(get_cfg("brightness", default=0.0)))
+            self.slider_contrast.setValue(int(get_cfg("contrast", default=1.0) * 100))
+            self.slider_gamma.setValue(int(get_cfg("gamma", default=1.0) * 100))
+            self.chk_dark_on_light.setChecked(
+                get_cfg("dark_on_light_background", default=True)
+            )
+
+            # === BACKGROUND SUBTRACTION ===
+            self.spin_bg_prime.setValue(
+                get_cfg("background_prime_frames", "bg_prime_frames", default=10)
+            )
+            self.chk_adaptive_bg.setChecked(
+                get_cfg(
+                    "enable_adaptive_background", "adaptive_background", default=True
+                )
+            )
+            self.spin_bg_learning.setValue(
+                get_cfg("background_learning_rate", default=0.001)
+            )
+            self.spin_threshold.setValue(
+                get_cfg("subtraction_threshold", "threshold_value", default=50)
+            )
+
+            # === LIGHTING STABILIZATION ===
+            self.chk_lighting_stab.setChecked(
+                get_cfg(
+                    "enable_lighting_stabilization",
+                    "lighting_stabilization",
+                    default=True,
+                )
+            )
+            self.spin_lighting_smooth.setValue(
+                get_cfg("lighting_smooth_factor", default=0.95)
+            )
+            self.spin_lighting_median.setValue(
+                get_cfg("lighting_median_window", default=5)
+            )
+
+            # === MORPHOLOGY & NOISE ===
+            self.spin_morph_size.setValue(get_cfg("morph_kernel_size", default=5))
+            self.spin_min_contour.setValue(get_cfg("min_contour_area", default=50))
+            self.spin_max_contour_multiplier.setValue(
+                get_cfg("max_contour_multiplier", default=20)
+            )
+
+            # === ADVANCED SEPARATION ===
+            self.chk_conservative_split.setChecked(
+                get_cfg("enable_conservative_split", default=True)
+            )
+            self.spin_conservative_kernel.setValue(
+                get_cfg("conservative_kernel_size", default=3)
+            )
+            self.spin_conservative_erode.setValue(
+                get_cfg(
+                    "conservative_erode_iterations",
+                    "conservative_erode_iter",
+                    default=1,
+                )
+            )
+            self.spin_merge_threshold.setValue(
+                get_cfg("merge_area_threshold", default=1000)
+            )
+            self.chk_additional_dilation.setChecked(
+                get_cfg("enable_additional_dilation", default=False)
+            )
+            self.spin_dilation_kernel_size.setValue(
+                get_cfg("dilation_kernel_size", default=3)
+            )
+            self.spin_dilation_iterations.setValue(
+                get_cfg("dilation_iterations", default=2)
+            )
+
+            # === YOLO CONFIGURATION ===
+            yolo_model = get_cfg("yolo_model_path", default="yolo26s-obb.pt")
             found = False
             for i in range(self.combo_yolo_model.count() - 1):
                 if self.combo_yolo_model.itemText(i).startswith(yolo_model):
@@ -4920,227 +5116,265 @@ class MainWindow(QMainWindow):
                     break
             if not found:
                 self.combo_yolo_model.setCurrentIndex(self.combo_yolo_model.count() - 1)
-                self.yolo_custom_model_line.setText(yolo_model)
+                if not self.yolo_custom_model_line.text().strip():
+                    self.yolo_custom_model_line.setText(yolo_model)
 
             self.spin_yolo_confidence.setValue(
-                cfg.get("yolo_confidence_threshold", 0.25)
+                get_cfg("yolo_confidence_threshold", default=0.25)
             )
-            self.spin_yolo_iou.setValue(cfg.get("yolo_iou_threshold", 0.7))
-
-            yolo_cls = cfg.get("yolo_target_classes", None)
+            self.spin_yolo_iou.setValue(get_cfg("yolo_iou_threshold", default=0.7))
+            yolo_cls = get_cfg("yolo_target_classes", default=None)
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
-
-            yolo_dev = cfg.get("yolo_device", "auto")
+            yolo_dev = get_cfg("yolo_device", default="auto")
             idx = self.combo_yolo_device.findText(yolo_dev, Qt.MatchStartsWith)
             if idx >= 0:
                 self.combo_yolo_device.setCurrentIndex(idx)
 
-            self.spin_fps.setValue(cfg.get("fps", 30.0))  # Video frame rate
-            self.spin_max_targets.setValue(cfg.get("max_targets", 4))
-            self.spin_threshold.setValue(cfg.get("threshold_value", 50))
-            self.spin_morph_size.setValue(cfg.get("morph_kernel_size", 5))
-            self.spin_min_contour.setValue(cfg.get("min_contour_area", 50))
-            self.chk_size_filtering.setChecked(cfg.get("enable_size_filtering", False))
-
-            # Load body-size-based parameters
-            self.spin_reference_body_size.setValue(cfg.get("reference_body_size", 20.0))
-            self.spin_min_object_size.setValue(
-                cfg.get("min_object_size_multiplier", 0.3)
-            )
-            self.spin_max_object_size.setValue(
-                cfg.get("max_object_size_multiplier", 3.0)
-            )
-            self.spin_max_dist.setValue(cfg.get("max_dist_multiplier", 1.5))
-            self.spin_continuity_thresh.setValue(
-                cfg.get(
-                    "recovery_search_distance_multiplier",
-                    cfg.get("continuity_threshold_multiplier", 0.5),
+            # === CORE TRACKING ===
+            self.spin_max_targets.setValue(get_cfg("max_targets", default=4))
+            self.spin_max_dist.setValue(
+                get_cfg(
+                    "max_assignment_distance_multiplier",
+                    "max_dist_multiplier",
+                    default=1.5,
                 )
             )
-            self.spin_min_respawn_distance.setValue(
-                cfg.get("min_respawn_distance_multiplier", 2.5)
+            self.spin_continuity_thresh.setValue(
+                get_cfg(
+                    "recovery_search_distance_multiplier",
+                    "continuity_threshold_multiplier",
+                    default=0.5,
+                )
             )
-            self.spin_max_distance_break.setValue(
-                cfg.get("max_distance_break_multiplier", 15.0)
+            self.chk_enable_backward.setChecked(
+                get_cfg("enable_backward_tracking", default=True)
             )
 
-            self.spin_max_contour_multiplier.setValue(
-                cfg.get("max_contour_multiplier", 20)
+            # === KALMAN FILTER ===
+            self.spin_kalman_noise.setValue(
+                get_cfg("kalman_process_noise", "kalman_noise", default=0.03)
             )
+            self.spin_kalman_meas.setValue(
+                get_cfg("kalman_measurement_noise", "kalman_meas_noise", default=0.1)
+            )
+            self.spin_kalman_damping.setValue(
+                get_cfg("kalman_velocity_damping", "kalman_damping", default=0.95)
+            )
+            self.spin_kalman_maturity_age.setValue(
+                get_cfg("kalman_maturity_age", default=5)
+            )
+            self.spin_kalman_initial_velocity_retention.setValue(
+                get_cfg("kalman_initial_velocity_retention", default=0.2)
+            )
+            self.spin_kalman_max_velocity.setValue(
+                get_cfg("kalman_max_velocity_multiplier", default=2.0)
+            )
+            self.spin_kalman_longitudinal_noise.setValue(
+                get_cfg("kalman_longitudinal_noise_multiplier", default=5.0)
+            )
+            self.spin_kalman_lateral_noise.setValue(
+                get_cfg("kalman_lateral_noise_multiplier", default=0.1)
+            )
+
+            # === COST FUNCTION WEIGHTS ===
+            self.spin_Wp.setValue(get_cfg("weight_position", "W_POSITION", default=1.0))
+            self.spin_Wo.setValue(
+                get_cfg("weight_orientation", "W_ORIENTATION", default=1.0)
+            )
+            self.spin_Wa.setValue(get_cfg("weight_area", "W_AREA", default=0.001))
+            self.spin_Wasp.setValue(
+                get_cfg("weight_aspect_ratio", "W_ASPECT", default=0.1)
+            )
+            self.chk_use_mahal.setChecked(
+                get_cfg("use_mahalanobis_distance", "USE_MAHALANOBIS", default=True)
+            )
+
+            # === ASSIGNMENT ALGORITHM ===
+            self.combo_assignment_method.setCurrentIndex(
+                1 if get_cfg("enable_greedy_assignment", default=False) else 0
+            )
+            self.chk_spatial_optimization.setChecked(
+                get_cfg("enable_spatial_optimization", default=False)
+            )
+
+            # === ORIENTATION & MOTION ===
+            self.spin_velocity.setValue(get_cfg("velocity_threshold", default=5.0))
+            self.chk_instant_flip.setChecked(
+                get_cfg("enable_instant_flip", "instant_flip", default=True)
+            )
+            self.spin_max_orient.setValue(
+                get_cfg(
+                    "max_orientation_delta_stopped",
+                    "max_orient_delta_stopped",
+                    default=30.0,
+                )
+            )
+
+            # === TRACK LIFECYCLE ===
+            self.spin_lost_thresh.setValue(
+                get_cfg("lost_frames_threshold", "lost_threshold_frames", default=10)
+            )
+            self.spin_min_respawn_distance.setValue(
+                get_cfg("min_respawn_distance_multiplier", default=2.5)
+            )
+            self.spin_min_detections_to_start.setValue(
+                get_cfg("min_detections_to_start", default=1)
+            )
+            self.spin_min_detect.setValue(
+                get_cfg("min_detect_frames", "min_detect_counts", default=10)
+            )
+            self.spin_min_track.setValue(
+                get_cfg("min_track_frames", "min_track_counts", default=10)
+            )
+
+            # === POST-PROCESSING ===
             self.enable_postprocessing.setChecked(
-                cfg.get("enable_postprocessing", True)
+                get_cfg("enable_postprocessing", default=True)
             )
             self.spin_min_trajectory_length.setValue(
-                cfg.get("min_trajectory_length", 10)
+                get_cfg("min_trajectory_length", default=10)
             )
-            self.spin_max_velocity_break.setValue(cfg.get("max_velocity_break", 50.0))
-            self.spin_max_occlusion_gap.setValue(cfg.get("max_occlusion_gap", 30))
-
-            # Load interpolation settings
-            interp_method = cfg.get("interpolation_method", "None")
+            self.spin_max_velocity_break.setValue(
+                get_cfg("max_velocity_break", default=50.0)
+            )
+            self.spin_max_distance_break.setValue(
+                get_cfg("max_distance_break_multiplier", default=15.0)
+            )
+            self.spin_max_occlusion_gap.setValue(
+                get_cfg("max_occlusion_gap", default=30)
+            )
+            interp_method = get_cfg("interpolation_method", default="None")
             idx = self.combo_interpolation_method.findText(
                 interp_method, Qt.MatchFixedString
             )
             if idx >= 0:
                 self.combo_interpolation_method.setCurrentIndex(idx)
             self.spin_interpolation_max_gap.setValue(
-                cfg.get("interpolation_max_gap", 10)
+                get_cfg("interpolation_max_gap", default=10)
+            )
+            self.chk_cleanup_temp_files.setChecked(
+                get_cfg("cleanup_temp_files", default=True)
             )
 
-            self.spin_min_detect.setValue(cfg.get("min_detect_counts", 10))
-            self.spin_min_detections_to_start.setValue(
-                cfg.get("min_detections_to_start", 1)
+            # === REAL-TIME ANALYTICS ===
+            self.enable_histograms.setChecked(
+                get_cfg("enable_histograms", default=False)
             )
-            self.spin_min_track.setValue(cfg.get("min_track_counts", 10))
-            self.spin_traj_hist.setValue(cfg.get("traj_history", 5))
-            self.spin_bg_prime.setValue(cfg.get("bg_prime_frames", 10))
-            self.chk_lighting_stab.setChecked(cfg.get("lighting_stabilization", True))
-            self.chk_adaptive_bg.setChecked(cfg.get("adaptive_background", True))
-            self.spin_bg_learning.setValue(cfg.get("background_learning_rate", 0.001))
-            self.spin_lighting_smooth.setValue(cfg.get("lighting_smooth_factor", 0.95))
-            self.spin_lighting_median.setValue(cfg.get("lighting_median_window", 5))
-            self.spin_kalman_noise.setValue(cfg.get("kalman_noise", 0.03))
-            self.spin_kalman_meas.setValue(cfg.get("kalman_meas_noise", 0.1))
-            self.spin_kalman_damping.setValue(cfg.get("kalman_damping", 0.95))
-            self.spin_kalman_maturity_age.setValue(cfg.get("kalman_maturity_age", 5))
-            self.spin_kalman_initial_velocity_retention.setValue(
-                cfg.get("kalman_initial_velocity_retention", 0.2)
-            )
-            self.spin_kalman_max_velocity.setValue(
-                cfg.get("kalman_max_velocity_multiplier", 2.0)
-            )
-            self.spin_kalman_longitudinal_noise.setValue(
-                cfg.get("kalman_longitudinal_noise_multiplier", 5.0)
-            )
-            self.spin_kalman_lateral_noise.setValue(
-                cfg.get("kalman_lateral_noise_multiplier", 0.1)
-            )
-            self.spin_resize.setValue(cfg.get("resize_factor", 1.0))
-            self.check_save_confidence.setChecked(
-                cfg.get("save_confidence_metrics", True)
-            )
-            self.chk_conservative_split.setChecked(
-                cfg.get("enable_conservative_split", True)
-            )
-            self.spin_merge_threshold.setValue(cfg.get("merge_area_threshold", 1000))
-            self.spin_conservative_kernel.setValue(
-                cfg.get("conservative_kernel_size", 3)
-            )
-            self.spin_conservative_erode.setValue(cfg.get("conservative_erode_iter", 1))
-            self.enable_histograms.setChecked(cfg.get("enable_histograms", False))
             self.spin_histogram_history.setValue(
-                cfg.get("histogram_history_frames", 300)
-            )
-            self.chk_additional_dilation.setChecked(
-                cfg.get("enable_additional_dilation", False)
-            )
-            self.spin_dilation_iterations.setValue(cfg.get("dilation_iterations", 2))
-            self.spin_dilation_kernel_size.setValue(cfg.get("dilation_kernel_size", 3))
-            self.slider_brightness.setValue(int(cfg.get("brightness", 0.0)))
-            self.slider_contrast.setValue(int(cfg.get("contrast", 1.0) * 100))
-            self.slider_gamma.setValue(int(cfg.get("gamma", 1.0) * 100))
-            self.chk_dark_on_light.setChecked(cfg.get("dark_on_light_background", True))
-            self.spin_velocity.setValue(cfg.get("velocity_threshold", 5.0))
-            self.chk_instant_flip.setChecked(cfg.get("instant_flip", True))
-            self.spin_max_orient.setValue(cfg.get("max_orient_delta_stopped", 30.0))
-            self.spin_lost_thresh.setValue(cfg.get("lost_threshold_frames", 10))
-            # min_respawn_distance already loaded in backward compatibility section above
-            self.spin_Wp.setValue(cfg.get("W_POSITION", 1.0))
-            self.spin_Wo.setValue(cfg.get("W_ORIENTATION", 1.0))
-            self.spin_Wa.setValue(cfg.get("W_AREA", 0.001))
-            self.spin_Wasp.setValue(cfg.get("W_ASPECT", 0.1))
-            self.chk_use_mahal.setChecked(cfg.get("USE_MAHALANOBIS", True))
-
-            # Assignment algorithm settings
-            self.combo_assignment_method.setCurrentIndex(
-                1 if cfg.get("enable_greedy_assignment", False) else 0
-            )
-            self.chk_spatial_optimization.setChecked(
-                cfg.get("enable_spatial_optimization", False)
+                get_cfg("histogram_history_frames", default=300)
             )
 
-            self.chk_show_fg.setChecked(cfg.get("show_fg", True))
-            self.chk_show_bg.setChecked(cfg.get("show_bg", True))
-            self.chk_show_circles.setChecked(cfg.get("show_circles", True))
-            self.chk_show_orientation.setChecked(cfg.get("show_orientation", True))
-            self.chk_show_yolo_obb.setChecked(cfg.get("show_yolo_obb", False))
-            self.chk_show_trajectories.setChecked(cfg.get("show_trajectories", True))
-            self.chk_show_labels.setChecked(cfg.get("show_labels", True))
-            self.chk_show_state.setChecked(cfg.get("show_state", True))
+            # === VISUALIZATION OVERLAYS ===
+            self.chk_show_circles.setChecked(
+                get_cfg("show_track_markers", "show_circles", default=True)
+            )
+            self.chk_show_orientation.setChecked(
+                get_cfg("show_orientation_lines", "show_orientation", default=True)
+            )
+            self.chk_show_trajectories.setChecked(
+                get_cfg("show_trajectory_trails", "show_trajectories", default=True)
+            )
+            self.chk_show_labels.setChecked(
+                get_cfg("show_id_labels", "show_labels", default=True)
+            )
+            self.chk_show_state.setChecked(
+                get_cfg("show_state_text", "show_state", default=True)
+            )
             self.chk_show_kalman_uncertainty.setChecked(
-                cfg.get("show_kalman_uncertainty", False)
+                get_cfg("show_kalman_uncertainty", default=False)
             )
-            self.chk_debug_logging.setChecked(cfg.get("debug_logging", False))
-            self.chk_visualization_free.setChecked(
-                cfg.get("visualization_free_mode", False)
+            self.chk_show_fg.setChecked(
+                get_cfg("show_foreground_mask", "show_fg", default=True)
             )
-            self.chk_cleanup_temp_files.setChecked(cfg.get("cleanup_temp_files", True))
-            self.chk_enable_backward.setChecked(
-                cfg.get("enable_backward_tracking", True)
+            self.chk_show_bg.setChecked(
+                get_cfg("show_background_model", "show_bg", default=True)
             )
-            self.slider_zoom.setValue(int(cfg.get("zoom_factor", 1.0) * 100))
+            self.chk_show_yolo_obb.setChecked(get_cfg("show_yolo_obb", default=False))
+            self.spin_traj_hist.setValue(
+                get_cfg("trajectory_history_seconds", "traj_history", default=5)
+            )
+            self.chk_debug_logging.setChecked(get_cfg("debug_logging", default=False))
+            self.slider_zoom.setValue(int(get_cfg("zoom_factor", default=1.0) * 100))
 
-            # Dataset generation parameters
+            # === DATASET GENERATION ===
             self.chk_enable_dataset_gen.setChecked(
-                cfg.get("enable_dataset_generation", False)
+                get_cfg("enable_dataset_generation", default=False)
             )
-            self.line_dataset_name.setText(cfg.get("dataset_name", ""))
+            self.line_dataset_name.setText(get_cfg("dataset_name", default=""))
             self.line_dataset_class_name.setText(
-                cfg.get("dataset_class_name", "object")
+                get_cfg("dataset_class_name", default="object")
             )
-            self.line_dataset_output.setText(cfg.get("dataset_output_dir", ""))
-            self.spin_dataset_max_frames.setValue(cfg.get("dataset_max_frames", 100))
+            if not self.line_dataset_output.text().strip():
+                self.line_dataset_output.setText(
+                    get_cfg("dataset_output_dir", default="")
+                )
+            self.spin_dataset_max_frames.setValue(
+                get_cfg("dataset_max_frames", default=100)
+            )
             self.spin_dataset_conf_threshold.setValue(
-                cfg.get("dataset_conf_threshold", 0.5)
+                get_cfg(
+                    "dataset_confidence_threshold",
+                    "dataset_conf_threshold",
+                    default=0.5,
+                )
             )
             self.spin_dataset_diversity_window.setValue(
-                cfg.get("dataset_diversity_window", 30)
+                get_cfg("dataset_diversity_window", default=30)
             )
             self.chk_dataset_include_context.setChecked(
-                cfg.get("dataset_include_context", True)
+                get_cfg("dataset_include_context", default=True)
             )
             self.chk_dataset_probabilistic.setChecked(
-                cfg.get("dataset_probabilistic_sampling", True)
+                get_cfg("dataset_probabilistic_sampling", default=True)
             )
             self.chk_metric_low_confidence.setChecked(
-                cfg.get("metric_low_confidence", True)
+                get_cfg("metric_low_confidence", default=True)
             )
             self.chk_metric_count_mismatch.setChecked(
-                cfg.get("metric_count_mismatch", True)
+                get_cfg("metric_count_mismatch", default=True)
             )
             self.chk_metric_high_assignment_cost.setChecked(
-                cfg.get("metric_high_assignment_cost", True)
+                get_cfg("metric_high_assignment_cost", default=True)
             )
-            self.chk_metric_track_loss.setChecked(cfg.get("metric_track_loss", True))
+            self.chk_metric_track_loss.setChecked(
+                get_cfg("metric_track_loss", default=True)
+            )
             self.chk_metric_high_uncertainty.setChecked(
-                cfg.get("metric_high_uncertainty", False)
+                get_cfg("metric_high_uncertainty", default=False)
             )
 
-            # Individual analysis parameters
+            # === INDIVIDUAL ANALYSIS ===
             self.chk_enable_individual_analysis.setChecked(
-                cfg.get("enable_identity_analysis", False)
+                get_cfg("enable_identity_analysis", default=False)
             )
-            # Map method string to combo index
             method_map = {
                 "none_disabled": 0,
                 "color_tags_yolo": 1,
                 "apriltags": 2,
                 "custom": 3,
             }
-            identity_method = cfg.get("identity_method", "none_disabled")
+            identity_method = get_cfg("identity_method", default="none_disabled")
             self.combo_identity_method.setCurrentIndex(
                 method_map.get(identity_method, 0)
             )
             self.spin_identity_crop_multiplier.setValue(
-                cfg.get("identity_crop_size_multiplier", 3.0)
+                get_cfg("identity_crop_size_multiplier", default=3.0)
             )
-            self.spin_identity_crop_min.setValue(cfg.get("identity_crop_min_size", 64))
-            self.spin_identity_crop_max.setValue(cfg.get("identity_crop_max_size", 256))
-            self.line_color_tag_model.setText(cfg.get("color_tag_model_path", ""))
-            self.spin_color_tag_conf.setValue(cfg.get("color_tag_confidence", 0.5))
-            # Map apriltag family to combo index
-            apriltag_family = cfg.get("apriltag_family", "tag36h11")
+            self.spin_identity_crop_min.setValue(
+                get_cfg("identity_crop_min_size", default=64)
+            )
+            self.spin_identity_crop_max.setValue(
+                get_cfg("identity_crop_max_size", default=256)
+            )
+            if not self.line_color_tag_model.text().strip():
+                self.line_color_tag_model.setText(
+                    get_cfg("color_tag_model_path", default="")
+                )
+            self.spin_color_tag_conf.setValue(
+                get_cfg("color_tag_confidence", default=0.5)
+            )
+            apriltag_family = get_cfg("apriltag_family", default="tag36h11")
             families = [
                 "tag36h11",
                 "tag25h9",
@@ -5152,23 +5386,30 @@ class MainWindow(QMainWindow):
                 self.combo_apriltag_family.setCurrentIndex(
                     families.index(apriltag_family)
                 )
-            self.spin_apriltag_decimate.setValue(cfg.get("apriltag_decimate", 1.0))
-            self.chk_enable_pose_export.setChecked(cfg.get("enable_pose_export", False))
-            self.line_pose_output_dir.setText(cfg.get("pose_output_dir", ""))
+            self.spin_apriltag_decimate.setValue(
+                get_cfg("apriltag_decimate", default=1.0)
+            )
+
+            # === POSE EXPORT ===
+            self.chk_enable_pose_export.setChecked(
+                get_cfg("enable_pose_export", default=False)
+            )
+            if not self.line_pose_output_dir.text().strip():
+                self.line_pose_output_dir.setText(
+                    get_cfg("pose_output_dir", default="")
+                )
             self.line_pose_dataset_name.setText(
-                cfg.get("pose_dataset_name", "pose_dataset")
+                get_cfg("pose_dataset_name", default="pose_dataset")
             )
             self.spin_pose_crop_multiplier.setValue(
-                cfg.get("pose_crop_size_multiplier", 4.0)
+                get_cfg("pose_crop_size_multiplier", default=4.0)
             )
             self.spin_pose_min_length.setValue(
-                cfg.get("pose_min_trajectory_length", 30)
+                get_cfg("pose_min_trajectory_length", default=30)
             )
-            self.spin_pose_export_fps.setValue(cfg.get("pose_export_fps", 30))
-            # Preview and display settings
-            self.chk_preview.setChecked(cfg.get("enable_preview", False))
+            self.spin_pose_export_fps.setValue(get_cfg("pose_export_fps", default=30))
 
-            # Load ROI shapes
+            # === ROI ===
             self.roi_shapes = cfg.get("roi_shapes", [])
             if self.roi_shapes:
                 # Regenerate the combined mask from loaded shapes
@@ -5200,6 +5441,11 @@ class MainWindow(QMainWindow):
             logger.warning(f"Failed to load configuration: {e}")
 
     def save_config(self):
+        """Save current configuration to JSON file.
+
+        Returns:
+            bool: True if config was saved successfully, False if cancelled or failed
+        """
         yolo_path = (
             self.yolo_custom_model_line.text()
             if self.combo_yolo_model.currentText() == "Custom Model..."
@@ -5212,108 +5458,128 @@ class MainWindow(QMainWindow):
         )
 
         cfg = {
+            # === FILE MANAGEMENT ===
             "file_path": self.file_line.text(),
             "csv_path": self.csv_line.text(),
             "video_output_enabled": self.check_video_output.isChecked(),
             "video_output_path": self.video_out_line.text(),
+            # === REFERENCE PARAMETERS ===
+            "fps": self.spin_fps.value(),
+            "reference_body_size": self.spin_reference_body_size.value(),
+            # === SYSTEM PERFORMANCE ===
+            "resize_factor": self.spin_resize.value(),
+            "save_confidence_metrics": self.check_save_confidence.isChecked(),
+            "visualization_free_mode": self.chk_visualization_free.isChecked(),
+            # === DETECTION STRATEGY ===
             "detection_method": (
                 "background_subtraction"
                 if self.combo_detection_method.currentIndex() == 0
                 else "yolo_obb"
             ),
+            # === SIZE FILTERING ===
+            "enable_size_filtering": self.chk_size_filtering.isChecked(),
+            "min_object_size_multiplier": self.spin_min_object_size.value(),
+            "max_object_size_multiplier": self.spin_max_object_size.value(),
+            # === IMAGE ENHANCEMENT ===
+            "brightness": self.slider_brightness.value(),
+            "contrast": self.slider_contrast.value() / 100.0,
+            "gamma": self.slider_gamma.value() / 100.0,
+            "dark_on_light_background": self.chk_dark_on_light.isChecked(),
+            # === BACKGROUND SUBTRACTION ===
+            "background_prime_frames": self.spin_bg_prime.value(),
+            "enable_adaptive_background": self.chk_adaptive_bg.isChecked(),
+            "background_learning_rate": self.spin_bg_learning.value(),
+            "subtraction_threshold": self.spin_threshold.value(),
+            # === LIGHTING STABILIZATION ===
+            "enable_lighting_stabilization": self.chk_lighting_stab.isChecked(),
+            "lighting_smooth_factor": self.spin_lighting_smooth.value(),
+            "lighting_median_window": self.spin_lighting_median.value(),
+            # === MORPHOLOGY & NOISE ===
+            "morph_kernel_size": self.spin_morph_size.value(),
+            "min_contour_area": self.spin_min_contour.value(),
+            "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
+            # === ADVANCED SEPARATION ===
+            "enable_conservative_split": self.chk_conservative_split.isChecked(),
+            "conservative_kernel_size": self.spin_conservative_kernel.value(),
+            "conservative_erode_iterations": self.spin_conservative_erode.value(),
+            "merge_area_threshold": self.spin_merge_threshold.value(),
+            "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
+            "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
+            "dilation_iterations": self.spin_dilation_iterations.value(),
+            # === YOLO CONFIGURATION ===
             "yolo_model_path": yolo_path,
             "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
             "yolo_iou_threshold": self.spin_yolo_iou.value(),
             "yolo_target_classes": yolo_cls,
             "yolo_device": self.combo_yolo_device.currentText().split(" ")[0],
-            "fps": self.spin_fps.value(),  # Video frame rate
+            # === CORE TRACKING ===
             "max_targets": self.spin_max_targets.value(),
-            "threshold_value": self.spin_threshold.value(),
-            "morph_kernel_size": self.spin_morph_size.value(),
-            "min_contour_area": self.spin_min_contour.value(),
-            "enable_size_filtering": self.chk_size_filtering.isChecked(),
-            # Save body-size reference and multipliers (new format)
-            "reference_body_size": self.spin_reference_body_size.value(),
-            "min_object_size_multiplier": self.spin_min_object_size.value(),
-            "max_object_size_multiplier": self.spin_max_object_size.value(),
-            "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
-            "max_dist_multiplier": self.spin_max_dist.value(),
-            "enable_postprocessing": self.enable_postprocessing.isChecked(),
-            "min_trajectory_length": self.spin_min_trajectory_length.value(),
-            "max_velocity_break": self.spin_max_velocity_break.value(),
-            "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
-            "interpolation_method": self.combo_interpolation_method.currentText(),
-            "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
-            "max_distance_break_multiplier": self.spin_max_distance_break.value(),
+            "max_assignment_distance_multiplier": self.spin_max_dist.value(),
             "recovery_search_distance_multiplier": self.spin_continuity_thresh.value(),
-            "min_detect_counts": self.spin_min_detect.value(),
-            "min_detections_to_start": self.spin_min_detections_to_start.value(),
-            "min_track_counts": self.spin_min_track.value(),
-            "traj_history": self.spin_traj_hist.value(),
-            "bg_prime_frames": self.spin_bg_prime.value(),
-            "lighting_stabilization": self.chk_lighting_stab.isChecked(),
-            "adaptive_background": self.chk_adaptive_bg.isChecked(),
-            "background_learning_rate": self.spin_bg_learning.value(),
-            "lighting_smooth_factor": self.spin_lighting_smooth.value(),
-            "lighting_median_window": self.spin_lighting_median.value(),
-            "kalman_noise": self.spin_kalman_noise.value(),
-            "kalman_meas_noise": self.spin_kalman_meas.value(),
-            "kalman_damping": self.spin_kalman_damping.value(),
+            "enable_backward_tracking": self.chk_enable_backward.isChecked(),
+            # === KALMAN FILTER ===
+            "kalman_process_noise": self.spin_kalman_noise.value(),
+            "kalman_measurement_noise": self.spin_kalman_meas.value(),
+            "kalman_velocity_damping": self.spin_kalman_damping.value(),
             "kalman_maturity_age": self.spin_kalman_maturity_age.value(),
             "kalman_initial_velocity_retention": self.spin_kalman_initial_velocity_retention.value(),
             "kalman_max_velocity_multiplier": self.spin_kalman_max_velocity.value(),
             "kalman_longitudinal_noise_multiplier": self.spin_kalman_longitudinal_noise.value(),
             "kalman_lateral_noise_multiplier": self.spin_kalman_lateral_noise.value(),
-            "resize_factor": self.spin_resize.value(),
-            "save_confidence_metrics": self.check_save_confidence.isChecked(),
-            "enable_conservative_split": self.chk_conservative_split.isChecked(),
-            "merge_area_threshold": self.spin_merge_threshold.value(),
-            "conservative_kernel_size": self.spin_conservative_kernel.value(),
-            "conservative_erode_iter": self.spin_conservative_erode.value(),
-            "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
-            "dilation_iterations": self.spin_dilation_iterations.value(),
-            "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
-            "brightness": self.slider_brightness.value(),
-            "contrast": self.slider_contrast.value() / 100.0,
-            "gamma": self.slider_gamma.value() / 100.0,
-            "dark_on_light_background": self.chk_dark_on_light.isChecked(),
-            "velocity_threshold": self.spin_velocity.value(),
-            "instant_flip": self.chk_instant_flip.isChecked(),
-            "max_orient_delta_stopped": self.spin_max_orient.value(),
-            "lost_threshold_frames": self.spin_lost_thresh.value(),
-            "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
-            "W_POSITION": self.spin_Wp.value(),
-            "W_ORIENTATION": self.spin_Wo.value(),
-            "W_AREA": self.spin_Wa.value(),
-            "W_ASPECT": self.spin_Wasp.value(),
-            "USE_MAHALANOBIS": self.chk_use_mahal.isChecked(),
+            # === COST FUNCTION WEIGHTS ===
+            "weight_position": self.spin_Wp.value(),
+            "weight_orientation": self.spin_Wo.value(),
+            "weight_area": self.spin_Wa.value(),
+            "weight_aspect_ratio": self.spin_Wasp.value(),
+            "use_mahalanobis_distance": self.chk_use_mahal.isChecked(),
+            # === ASSIGNMENT ALGORITHM ===
             "enable_greedy_assignment": self.combo_assignment_method.currentIndex()
             == 1,
             "enable_spatial_optimization": self.chk_spatial_optimization.isChecked(),
-            "show_fg": self.chk_show_fg.isChecked(),
-            "show_bg": self.chk_show_bg.isChecked(),
-            "show_circles": self.chk_show_circles.isChecked(),
-            "show_orientation": self.chk_show_orientation.isChecked(),
-            "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
-            "show_trajectories": self.chk_show_trajectories.isChecked(),
-            "show_labels": self.chk_show_labels.isChecked(),
-            "show_state": self.chk_show_state.isChecked(),
-            "show_kalman_uncertainty": self.chk_show_kalman_uncertainty.isChecked(),
-            "visualization_free_mode": self.chk_visualization_free.isChecked(),
+            # === ORIENTATION & MOTION ===
+            "velocity_threshold": self.spin_velocity.value(),
+            "enable_instant_flip": self.chk_instant_flip.isChecked(),
+            "max_orientation_delta_stopped": self.spin_max_orient.value(),
+            # === TRACK LIFECYCLE ===
+            "lost_frames_threshold": self.spin_lost_thresh.value(),
+            "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
+            "min_detections_to_start": self.spin_min_detections_to_start.value(),
+            "min_detect_frames": self.spin_min_detect.value(),
+            "min_track_frames": self.spin_min_track.value(),
+            # === POST-PROCESSING ===
+            "enable_postprocessing": self.enable_postprocessing.isChecked(),
+            "min_trajectory_length": self.spin_min_trajectory_length.value(),
+            "max_velocity_break": self.spin_max_velocity_break.value(),
+            "max_distance_break_multiplier": self.spin_max_distance_break.value(),
+            "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
+            "interpolation_method": self.combo_interpolation_method.currentText(),
+            "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
             "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
-            "debug_logging": self.chk_debug_logging.isChecked(),
-            "enable_backward_tracking": self.chk_enable_backward.isChecked(),
-            "zoom_factor": self.slider_zoom.value() / 100.0,
+            # === REAL-TIME ANALYTICS ===
             "enable_histograms": self.enable_histograms.isChecked(),
             "histogram_history_frames": self.spin_histogram_history.value(),
-            "roi_shapes": self.roi_shapes,  # Save ROI shapes
-            # Dataset generation parameters
+            # === VISUALIZATION OVERLAYS ===
+            "show_track_markers": self.chk_show_circles.isChecked(),
+            "show_orientation_lines": self.chk_show_orientation.isChecked(),
+            "show_trajectory_trails": self.chk_show_trajectories.isChecked(),
+            "show_id_labels": self.chk_show_labels.isChecked(),
+            "show_state_text": self.chk_show_state.isChecked(),
+            "show_kalman_uncertainty": self.chk_show_kalman_uncertainty.isChecked(),
+            "show_foreground_mask": self.chk_show_fg.isChecked(),
+            "show_background_model": self.chk_show_bg.isChecked(),
+            "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
+            "trajectory_history_seconds": self.spin_traj_hist.value(),
+            "debug_logging": self.chk_debug_logging.isChecked(),
+            "zoom_factor": self.slider_zoom.value() / 100.0,
+            # === ROI ===
+            "roi_shapes": self.roi_shapes,
+            # === DATASET GENERATION ===
             "enable_dataset_generation": self.chk_enable_dataset_gen.isChecked(),
             "dataset_name": self.line_dataset_name.text(),
             "dataset_class_name": self.line_dataset_class_name.text(),
             "dataset_output_dir": self.line_dataset_output.text(),
             "dataset_max_frames": self.spin_dataset_max_frames.value(),
-            "dataset_conf_threshold": self.spin_dataset_conf_threshold.value(),
+            "dataset_confidence_threshold": self.spin_dataset_conf_threshold.value(),
             "dataset_diversity_window": self.spin_dataset_diversity_window.value(),
             "dataset_include_context": self.chk_dataset_include_context.isChecked(),
             "dataset_probabilistic_sampling": self.chk_dataset_probabilistic.isChecked(),
@@ -5322,7 +5588,7 @@ class MainWindow(QMainWindow):
             "metric_high_assignment_cost": self.chk_metric_high_assignment_cost.isChecked(),
             "metric_track_loss": self.chk_metric_track_loss.isChecked(),
             "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
-            # Individual analysis parameters
+            # === INDIVIDUAL ANALYSIS ===
             "enable_identity_analysis": self.chk_enable_individual_analysis.isChecked(),
             "identity_method": self.combo_identity_method.currentText()
             .lower()
@@ -5336,14 +5602,13 @@ class MainWindow(QMainWindow):
             "color_tag_confidence": self.spin_color_tag_conf.value(),
             "apriltag_family": self.combo_apriltag_family.currentText(),
             "apriltag_decimate": self.spin_apriltag_decimate.value(),
+            # === POSE EXPORT ===
             "enable_pose_export": self.chk_enable_pose_export.isChecked(),
             "pose_output_dir": self.line_pose_output_dir.text(),
             "pose_dataset_name": self.line_pose_dataset_name.text(),
             "pose_crop_size_multiplier": self.spin_pose_crop_multiplier.value(),
             "pose_min_trajectory_length": self.spin_pose_min_length.value(),
             "pose_export_fps": self.spin_pose_export_fps.value(),
-            # Preview and display settings
-            "enable_preview": self.chk_preview.isChecked(),
         }
 
         # Determine save path: video-based if video selected, otherwise ask user
@@ -5353,9 +5618,46 @@ class MainWindow(QMainWindow):
         else:
             default_path = CONFIG_FILENAME
 
-        config_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Configuration", default_path, "JSON Files (*.json)"
-        )
+        config_path = None
+
+        # If default path exists, ask user whether to replace or save elsewhere
+        if default_path and os.path.exists(default_path):
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Question)
+            msg.setWindowTitle("Configuration File Exists")
+            msg.setText(
+                f"A configuration file already exists:\n{os.path.basename(default_path)}"
+            )
+            msg.setInformativeText(
+                "Do you want to replace it or save to a different location?"
+            )
+
+            replace_btn = msg.addButton("Replace Existing", QMessageBox.AcceptRole)
+            save_as_btn = msg.addButton("Save As...", QMessageBox.ActionRole)
+            cancel_btn = msg.addButton(QMessageBox.Cancel)
+            msg.setDefaultButton(replace_btn)
+
+            result = msg.exec_()
+            clicked = msg.clickedButton()
+
+            if clicked == replace_btn:
+                config_path = default_path
+            elif clicked == save_as_btn:
+                config_path, _ = QFileDialog.getSaveFileName(
+                    self, "Save Configuration As", default_path, "JSON Files (*.json)"
+                )
+            else:
+                # User clicked Cancel or closed dialog - return False to cancel operation
+                return False
+        else:
+            # No existing file, save directly to default path if available
+            if default_path:
+                config_path = default_path
+            else:
+                # No video selected, ask user where to save
+                config_path, _ = QFileDialog.getSaveFileName(
+                    self, "Save Configuration", CONFIG_FILENAME, "JSON Files (*.json)"
+                )
 
         if config_path:
             try:
@@ -5364,8 +5666,13 @@ class MainWindow(QMainWindow):
                 logger.info(
                     f"Configuration saved to {config_path} (including ROI shapes)"
                 )
+                return True
             except Exception as e:
                 logger.warning(f"Failed to save configuration: {e}")
+                return False
+        else:
+            # User cancelled file dialog
+            return False
 
     def _setup_session_logging(self, video_path, backward_mode=False):
         """Set up comprehensive logging for the entire tracking session."""
