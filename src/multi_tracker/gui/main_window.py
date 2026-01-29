@@ -5165,6 +5165,8 @@ class MainWindow(QMainWindow):
                 cfg.get("pose_min_trajectory_length", 30)
             )
             self.spin_pose_export_fps.setValue(cfg.get("pose_export_fps", 30))
+            # Preview and display settings
+            self.chk_preview.setChecked(cfg.get("enable_preview", False))
 
             # Load ROI shapes
             self.roi_shapes = cfg.get("roi_shapes", [])
@@ -5340,6 +5342,8 @@ class MainWindow(QMainWindow):
             "pose_crop_size_multiplier": self.spin_pose_crop_multiplier.value(),
             "pose_min_trajectory_length": self.spin_pose_min_length.value(),
             "pose_export_fps": self.spin_pose_export_fps.value(),
+            # Preview and display settings
+            "enable_preview": self.chk_preview.isChecked(),
         }
 
         # Determine save path: video-based if video selected, otherwise ask user
