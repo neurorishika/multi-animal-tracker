@@ -13,7 +13,15 @@ from collections import deque
 import gc
 import csv
 
-from PySide2.QtCore import Qt, Slot, Signal, QThread, QMutex
+from PySide2.QtCore import (
+    Qt,
+    Slot,
+    Signal,
+    QThread,
+    QMutex,
+    QPropertyAnimation,
+    QEasingCurve,
+)
 from PySide2.QtGui import QImage, QPixmap, QPainter, QPen, QIcon, QColor
 from PySide2.QtWidgets import (
     QMainWindow,
@@ -41,6 +49,7 @@ from PySide2.QtWidgets import (
     QSizePolicy,
     QFrame,
     QSlider,
+    QToolButton,
 )
 import matplotlib.pyplot as plt
 
@@ -65,6 +74,151 @@ def get_video_config_path(video_path):
 
 
 logger = logging.getLogger(__name__)
+
+
+class CollapsibleGroupBox(QWidget):
+    """
+    A collapsible group box widget that can expand/collapse its content.
+    Used for advanced settings that don't need to be visible all the time.
+    """
+
+    toggled = Signal(bool)  # Emitted when expanded/collapsed
+
+    def __init__(self, title: str, parent=None, initially_expanded: bool = False):
+        super().__init__(parent)
+        self._is_expanded = initially_expanded
+        self._title = title
+        self._content_widget = None
+        self._accordion_group = None  # Reference to accordion container
+
+        # Main layout
+        self._main_layout = QVBoxLayout(self)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(0)
+
+        # Header button (acts as toggle)
+        self._header_button = QToolButton()
+        self._header_button.setStyleSheet(
+            """
+            QToolButton {
+                background-color: #3a3a3a;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-weight: bold;
+                font-size: 12px;
+                color: #4a9eff;
+                text-align: left;
+            }
+            QToolButton:hover {
+                background-color: #454545;
+                border-color: #666;
+            }
+            QToolButton:checked {
+                background-color: #404040;
+                border-color: #4a9eff;
+            }
+        """
+        )
+        self._header_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._header_button.setArrowType(
+            Qt.RightArrow if not initially_expanded else Qt.DownArrow
+        )
+        self._header_button.setText(title)
+        self._header_button.setCheckable(True)
+        self._header_button.setChecked(initially_expanded)
+        self._header_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._header_button.clicked.connect(self._on_header_clicked)
+
+        self._main_layout.addWidget(self._header_button)
+
+        # Content container
+        self._content_container = QWidget()
+        self._content_layout = QVBoxLayout(self._content_container)
+        self._content_layout.setContentsMargins(0, 5, 0, 5)
+        self._content_container.setVisible(initially_expanded)
+
+        self._main_layout.addWidget(self._content_container)
+
+    def setContentLayout(self, layout):
+        """Set the content layout for the collapsible section."""
+        # Clear existing layout
+        while self._content_layout.count():
+            item = self._content_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+
+        # Add new content as a widget
+        content_widget = QWidget()
+        content_widget.setLayout(layout)
+        self._content_layout.addWidget(content_widget)
+        self._content_widget = content_widget
+
+    def addWidget(self, widget):
+        """Add a widget to the content area."""
+        self._content_layout.addWidget(widget)
+
+    def addLayout(self, layout):
+        """Add a layout to the content area."""
+        self._content_layout.addLayout(layout)
+
+    def setAccordionGroup(self, accordion):
+        """Set the accordion group this collapsible belongs to."""
+        self._accordion_group = accordion
+
+    def _on_header_clicked(self, checked):
+        """Handle header button click."""
+        if checked:
+            # Notify accordion to collapse others
+            if self._accordion_group:
+                self._accordion_group.collapseAllExcept(self)
+        self.setExpanded(checked)
+
+    def setExpanded(self, expanded: bool):
+        """Set the expanded state of the collapsible."""
+        self._is_expanded = expanded
+        self._header_button.setChecked(expanded)
+        self._header_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self._content_container.setVisible(expanded)
+        self.toggled.emit(expanded)
+
+    def isExpanded(self) -> bool:
+        """Check if the collapsible is expanded."""
+        return self._is_expanded
+
+    def title(self) -> str:
+        """Get the title of the collapsible."""
+        return self._title
+
+
+class AccordionContainer:
+    """
+    Manages a group of CollapsibleGroupBox widgets to ensure only one is expanded at a time.
+    """
+
+    def __init__(self):
+        self._collapsibles = []
+
+    def addCollapsible(self, collapsible: CollapsibleGroupBox):
+        """Add a collapsible to this accordion group."""
+        collapsible.setAccordionGroup(self)
+        self._collapsibles.append(collapsible)
+
+    def collapseAllExcept(self, keep_expanded: CollapsibleGroupBox):
+        """Collapse all collapsibles except the specified one."""
+        for collapsible in self._collapsibles:
+            if collapsible is not keep_expanded and collapsible.isExpanded():
+                collapsible.setExpanded(False)
+
+    def collapseAll(self):
+        """Collapse all collapsibles."""
+        for collapsible in self._collapsibles:
+            collapsible.setExpanded(False)
+
+    def expandFirst(self):
+        """Expand the first collapsible (if any)."""
+        if self._collapsibles:
+            self._collapsibles[0].setExpanded(True)
 
 
 class MainWindow(QMainWindow):
@@ -264,7 +418,7 @@ class MainWindow(QMainWindow):
         self._pan_start_pos = None
         self._scroll_start_h = 0
         self._scroll_start_v = 0
-        
+
         # Track first frame for auto-fit during tracking
         self._tracking_first_frame = True
         self._tracking_frame_size = None  # (width, height) of resized tracking frames
@@ -410,8 +564,7 @@ class MainWindow(QMainWindow):
         roi_main_layout.addLayout(roi_status_layout)
 
         # Instructions (Hidden unless active)
-        self.roi_instructions = QLabel(""
-        )
+        self.roi_instructions = QLabel("")
         self.roi_instructions.setWordWrap(True)
         self.roi_instructions.setStyleSheet(
             "color: #4a9eff; font-size: 11px; font-weight: bold; "
@@ -522,17 +675,12 @@ class MainWindow(QMainWindow):
         self.setup_data_ui()
         self.tabs.addTab(self.tab_data, "Processing")
 
-        # Tab 5: Visuals (Overlays, Debug)
-        self.tab_viz = QWidget()
-        self.setup_viz_ui()
-        self.tabs.addTab(self.tab_viz, "Visuals")
-
-        # Tab 6: Dataset Generation (Active Learning)
+        # Tab 5: Dataset Generation (Active Learning)
         self.tab_dataset = QWidget()
         self.setup_dataset_ui()
         self.tabs.addTab(self.tab_dataset, "Dataset Generation")
 
-        # Tab 7: Individual Analysis (Identity & Pose)
+        # Tab 6: Individual Analysis (Identity)
         self.tab_individual = QWidget()
         self.setup_individual_analysis_ui()
         self.tabs.addTab(self.tab_individual, "Individual Analysis")
@@ -626,7 +774,7 @@ class MainWindow(QMainWindow):
     # =========================================================================
 
     def setup_setup_ui(self):
-        """Tab 1: Setup - Files & Basic Config."""
+        """Tab 1: Setup - Files, Video, Display & Debug."""
         layout = QVBoxLayout(self.tab_setup)
         layout.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
@@ -636,8 +784,10 @@ class MainWindow(QMainWindow):
         content = QWidget()
         form = QVBoxLayout(content)
 
-        # File Inputs
-        g_files = QGroupBox("File Management")
+        # ============================================================
+        # Video Setup (File Management + Frame Rate)
+        # ============================================================
+        g_files = QGroupBox("Video Setup")
         vl_files = QVBoxLayout(g_files)
         vl_files.addWidget(
             self._create_help_label(
@@ -654,6 +804,40 @@ class MainWindow(QMainWindow):
         self.file_line.setPlaceholderText("path/to/video.mp4")
         self.file_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         fl.addRow(self.btn_file, self.file_line)
+
+        # FPS with detect button (moved here from Reference Parameters)
+        fps_layout = QHBoxLayout()
+        self.spin_fps = QDoubleSpinBox()
+        self.spin_fps.setRange(1.0, 240.0)
+        self.spin_fps.setSingleStep(1.0)
+        self.spin_fps.setValue(30.0)
+        self.spin_fps.setDecimals(2)
+        self.spin_fps.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.spin_fps.setToolTip(
+            "Acquisition frame rate (frames per second) at which the video was recorded.\n"
+            "NOTE: This may differ from the video file's playback framerate.\n"
+            "Use 'Detect from Video' to read from file metadata as a starting point.\n"
+            "Time-dependent parameters (velocity, durations) scale with this.\n"
+            "Affects: motion prediction, track lifecycle, velocity thresholds."
+        )
+        self.spin_fps.valueChanged.connect(self._update_fps_info)
+        fps_layout.addWidget(self.spin_fps)
+
+        self.btn_detect_fps = QPushButton("Detect from Video")
+        self.btn_detect_fps.clicked.connect(self._detect_fps_from_current_video)
+        self.btn_detect_fps.setEnabled(False)
+        self.btn_detect_fps.setToolTip(
+            "Auto-detect frame rate from video metadata (may differ from actual acquisition rate)"
+        )
+        fps_layout.addWidget(self.btn_detect_fps)
+        fl.addRow("Acquisition Frame Rate (FPS):", fps_layout)
+
+        # FPS info label
+        self.label_fps_info = QLabel()
+        self.label_fps_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic;"
+        )
+        fl.addRow("", self.label_fps_info)
 
         self.btn_csv = QPushButton("Select CSV Output...")
         self.btn_csv.clicked.connect(self.select_csv)
@@ -701,56 +885,9 @@ class MainWindow(QMainWindow):
 
         form.addWidget(g_files)
 
-        # Reference Parameters
-        g_ref = QGroupBox("Reference Parameters")
-        vl_ref = QVBoxLayout(g_ref)
-        vl_ref.addWidget(
-            self._create_help_label(
-                "These parameters define the time and spatial scale for tracking. "
-                "Frame rate controls time-dependent parameters (velocities, durations). "
-                "Body size makes all distance/size parameters portable across videos."
-            )
-        )
-        fl_ref = QFormLayout()
-        fl_ref.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        # FPS with detect button
-        fps_layout = QHBoxLayout()
-        self.spin_fps = QDoubleSpinBox()
-        self.spin_fps.setRange(1.0, 240.0)
-        self.spin_fps.setSingleStep(1.0)
-        self.spin_fps.setValue(30.0)
-        self.spin_fps.setDecimals(2)
-        self.spin_fps.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.spin_fps.setToolTip(
-            "Acquisition frame rate (frames per second) at which the video was recorded.\n"
-            "NOTE: This may differ from the video file's playback framerate.\n"
-            "Use 'Detect from Video' to read from file metadata as a starting point.\n"
-            "Time-dependent parameters (velocity, durations) scale with this.\n"
-            "Affects: motion prediction, track lifecycle, velocity thresholds."
-        )
-        self.spin_fps.valueChanged.connect(self._update_fps_info)
-        fps_layout.addWidget(self.spin_fps)
-
-        self.btn_detect_fps = QPushButton("Detect from Video")
-        self.btn_detect_fps.clicked.connect(self._detect_fps_from_current_video)
-        self.btn_detect_fps.setEnabled(False)
-        self.btn_detect_fps.setToolTip(
-            "Auto-detect frame rate from video metadata (may differ from actual acquisition rate)"
-        )
-        fps_layout.addWidget(self.btn_detect_fps)
-        fl_ref.addRow("Acquisition Frame Rate (FPS):", fps_layout)
-
-        # FPS info label
-        self.label_fps_info = QLabel()
-        self.label_fps_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
-        )
-        fl_ref.addRow("", self.label_fps_info)
-        vl_ref.addLayout(fl_ref)
-        form.addWidget(g_ref)
-
+        # ============================================================
         # System Performance
+        # ============================================================
         g_sys = QGroupBox("System Performance")
         vl_sys = QVBoxLayout(g_sys)
         vl_sys.addWidget(
@@ -802,6 +939,88 @@ class MainWindow(QMainWindow):
         vl_sys.addLayout(fl_sys)
         form.addWidget(g_sys)
 
+        # ============================================================
+        # Display Settings (moved from Visuals tab)
+        # ============================================================
+        g_display = QGroupBox("Display Settings")
+        vl_display = QVBoxLayout(g_display)
+        vl_display.addWidget(
+            self._create_help_label(
+                "Configure visual overlays shown during tracking. These settings affect "
+                "both the live preview and exported video output."
+            )
+        )
+
+        # Common overlays
+        self.chk_show_circles = QCheckBox("Show Track Markers (Circles)")
+        self.chk_show_circles.setChecked(True)
+        self.chk_show_circles.setToolTip("Draw circles around tracked animals.")
+        vl_display.addWidget(self.chk_show_circles)
+
+        self.chk_show_orientation = QCheckBox("Show Orientation Lines")
+        self.chk_show_orientation.setChecked(True)
+        self.chk_show_orientation.setToolTip("Draw lines showing heading direction.")
+        vl_display.addWidget(self.chk_show_orientation)
+
+        self.chk_show_trajectories = QCheckBox("Show Trajectory Trails")
+        self.chk_show_trajectories.setChecked(True)
+        self.chk_show_trajectories.setToolTip(
+            "Draw recent path history for each track."
+        )
+        vl_display.addWidget(self.chk_show_trajectories)
+
+        self.chk_show_labels = QCheckBox("Show ID Labels")
+        self.chk_show_labels.setChecked(True)
+        self.chk_show_labels.setToolTip("Display unique track IDs on each animal.")
+        vl_display.addWidget(self.chk_show_labels)
+
+        self.chk_show_state = QCheckBox("Show State Text")
+        self.chk_show_state.setChecked(True)
+        self.chk_show_state.setToolTip(
+            "Display tracking state (ACTIVE, PREDICTED, etc.)."
+        )
+        vl_display.addWidget(self.chk_show_state)
+
+        self.chk_show_kalman_uncertainty = QCheckBox("Show Kalman Uncertainty")
+        self.chk_show_kalman_uncertainty.setChecked(False)
+        self.chk_show_kalman_uncertainty.setToolTip(
+            "Draw ellipses showing Kalman filter position uncertainty.\n"
+            "Larger ellipse = more uncertainty in predicted position.\n"
+            "Useful for debugging tracking quality and filter convergence."
+        )
+        vl_display.addWidget(self.chk_show_kalman_uncertainty)
+
+        # Trail length
+        f_trail = QFormLayout()
+        self.spin_traj_hist = QSpinBox()
+        self.spin_traj_hist.setRange(1, 60)
+        self.spin_traj_hist.setValue(5)
+        self.spin_traj_hist.setToolTip(
+            "Length of trajectory trails to display (1-60 seconds).\n"
+            "Longer = more visible path history but more cluttered.\n"
+            "Recommended: 3-10 seconds."
+        )
+        f_trail.addRow("Trail History (sec):", self.spin_traj_hist)
+        vl_display.addLayout(f_trail)
+
+        form.addWidget(g_display)
+
+        # ============================================================
+        # Advanced / Debug (moved from Visuals tab)
+        # ============================================================
+        g_debug = QGroupBox("Advanced / Debug")
+        v_dbg = QVBoxLayout(g_debug)
+        v_dbg.addWidget(
+            self._create_help_label(
+                "Enable verbose logging to see detailed tracking decisions. Useful for troubleshooting "
+                "but generates large log files. Disable for production runs."
+            )
+        )
+        self.chk_debug_logging = QCheckBox("Enable Verbose Debug Logging")
+        self.chk_debug_logging.stateChanged.connect(self.toggle_debug_logging)
+        v_dbg.addWidget(self.chk_debug_logging)
+        form.addWidget(g_debug)
+
         form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -817,7 +1036,9 @@ class MainWindow(QMainWindow):
         content = QWidget()
         vbox = QVBoxLayout(content)
 
+        # ============================================================
         # 1. Detection Method Selector
+        # ============================================================
         g_method = QGroupBox("Detection Strategy")
         l_method_outer = QVBoxLayout(g_method)
         l_method_outer.addWidget(
@@ -838,133 +1059,27 @@ class MainWindow(QMainWindow):
         l_method_outer.addLayout(l_method)
         vbox.addWidget(g_method)
 
-        # 2. Common Size Filtering (Applies to both methods)
-        g_size = QGroupBox("Size Filtering")
-        vl_size = QVBoxLayout(g_size)
-        vl_size.addWidget(
+        # Stacked Widget for Method Specific Params
+        self.stack_detection = QStackedWidget()
+
+        # --- Page 0: Background Subtraction Params ---
+        page_bg = QWidget()
+        l_bg = QVBoxLayout(page_bg)
+        l_bg.setContentsMargins(0, 0, 0, 0)
+        l_bg.addWidget(
             self._create_help_label(
-                "Filter detections by size relative to your reference body size. This removes noise (too small) "
-                "and erroneous clusters (too large). Most effective when animals are similar size."
-            )
-        )
-        f_size = QFormLayout()
-        self.chk_size_filtering = QCheckBox("Enable Size Constraints")
-        self.chk_size_filtering.setToolTip(
-            "Filter detected objects by area to remove noise and artifacts.\n"
-            "Recommended: Enable for cleaner tracking."
-        )
-        f_size.addRow(self.chk_size_filtering)
-
-        h_sf = QHBoxLayout()
-        self.spin_min_object_size = QDoubleSpinBox()
-        self.spin_min_object_size.setRange(0.1, 5.0)
-        self.spin_min_object_size.setSingleStep(0.1)
-        self.spin_min_object_size.setDecimals(2)
-        self.spin_min_object_size.setValue(0.3)
-        self.spin_min_object_size.setToolTip(
-            "Minimum object area as multiple of reference body area.\n"
-            "Filters out small noise/artifacts.\n"
-            "Recommended: 0.2-0.5× (allows partial occlusion)"
-        )
-        self.spin_max_object_size = QDoubleSpinBox()
-        self.spin_max_object_size.setRange(0.5, 10.0)
-        self.spin_max_object_size.setSingleStep(0.1)
-        self.spin_max_object_size.setDecimals(2)
-        self.spin_max_object_size.setValue(3.0)
-        self.spin_max_object_size.setToolTip(
-            "Maximum object area as multiple of reference body area.\n"
-            "Filters out large clusters or artifacts.\n"
-            "Recommended: 2-4× (handles overlapping animals)"
-        )
-        h_sf.addWidget(QLabel("Min (×body):"))
-        h_sf.addWidget(self.spin_min_object_size)
-        h_sf.addWidget(QLabel("Max (×body):"))
-        h_sf.addWidget(self.spin_max_object_size)
-        f_size.addRow(h_sf)
-        vl_size.addLayout(f_size)
-        vbox.addWidget(g_size)
-
-        # Reference Body Size (Spatial Scale)
-        g_body_size = QGroupBox("Reference Body Size (Spatial Scale)")
-        vl_body_size = QVBoxLayout(g_body_size)
-        vl_body_size.addWidget(
-            self._create_help_label(
-                "Define the spatial scale for tracking. This reference size makes all distance/size "
-                "parameters portable across videos. Set this BEFORE configuring tracking parameters."
-            )
-        )
-        fl_body = QFormLayout()
-        fl_body.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        self.spin_reference_body_size = QDoubleSpinBox()
-        self.spin_reference_body_size.setRange(1.0, 500.0)
-        self.spin_reference_body_size.setSingleStep(1.0)
-        self.spin_reference_body_size.setValue(20.0)
-        self.spin_reference_body_size.setDecimals(2)
-        self.spin_reference_body_size.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Fixed
-        )
-        self.spin_reference_body_size.setToolTip(
-            "Reference animal body diameter in pixels (at resize=1.0).\n"
-            "All distance/size parameters are scaled relative to this value."
-        )
-        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
-        fl_body.addRow("Reference Body Size (px):", self.spin_reference_body_size)
-
-        # Info label showing calculated area
-        self.label_body_size_info = QLabel()
-        self.label_body_size_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
-        )
-        fl_body.addRow("", self.label_body_size_info)
-        vl_body_size.addLayout(fl_body)
-        vbox.addWidget(g_body_size)
-
-        # Detection size statistics panel
-        g_detect_stats = QGroupBox("Detection Size Statistics & Auto-Configuration")
-        vl_stats = QVBoxLayout(g_detect_stats)
-        vl_stats.addWidget(
-            self._create_help_label(
-                "Workflow for accurate size estimation:\n"
-                "1. Configure your detection method below\n"
-                "2. IMPORTANT: Disable 'Enable Size Filtering' above (it biases estimates)\n"
-                "3. Click 'Load Random Frame for Preview' (bottom of page)\n"
-                "4. Choose a frame with many animals well-separated\n"
-                "5. Click 'Test Detection' to analyze sizes\n"
-                "6. Use 'Auto-Set' to apply the recommended body size"
+                "Background subtraction identifies moving animals by comparing each frame to a learned background model. "
+                "Start with defaults and increase threshold if you see too much noise, decrease if animals are missed."
             )
         )
 
-        self.label_detection_stats = QLabel(
-            "No detection data yet.\nRun 'Test Detection' to estimate sizes."
-        )
-        self.label_detection_stats.setStyleSheet(
-            "color: #aaa; font-size: 11px; padding: 8px; "
-            "background-color: #2a2a2a; border-radius: 4px;"
-        )
-        self.label_detection_stats.setWordWrap(True)
-        vl_stats.addWidget(self.label_detection_stats)
+        # Create accordion for BG subtraction settings
+        self.bg_accordion = AccordionContainer()
 
-        # Auto-set button
-        btn_layout = QHBoxLayout()
-        self.btn_auto_set_body_size = QPushButton("Auto-Set Body Size from Median")
-        self.btn_auto_set_body_size.clicked.connect(
-            self._auto_set_body_size_from_detection
-        )
-        self.btn_auto_set_body_size.setEnabled(False)
-        self.btn_auto_set_body_size.setToolTip(
-            "Automatically set reference body size to the median detected diameter"
-        )
-        btn_layout.addWidget(self.btn_auto_set_body_size)
-        btn_layout.addStretch()
-        vl_stats.addLayout(btn_layout)
-
-        vbox.addWidget(g_detect_stats)
-
-        # 3. Image Pre-processing (Common) with Live Preview
-        # Only shown for Background Subtraction, not YOLO
-        self.g_img = QGroupBox("Image Enhancement (Pre-processing)")
-        vl_img = QVBoxLayout(self.g_img)
+        # Image Enhancement (Pre-processing)
+        self.g_img = CollapsibleGroupBox("Brightness / Contrast / Gamma")
+        self.bg_accordion.addCollapsible(self.g_img)
+        vl_img = QVBoxLayout()
         vl_img.addWidget(
             self._create_help_label(
                 "Adjust image properties before detection to improve contrast between animals and background. "
@@ -1053,26 +1168,13 @@ class MainWindow(QMainWindow):
             "This inverts the foreground detection."
         )
         vl_img.addWidget(self.chk_dark_on_light)
-
-        vbox.addWidget(self.g_img)
-
-        # 3. Stacked Widget for Method Specific Params
-        self.stack_detection = QStackedWidget()
-
-        # --- Page 0: Background Subtraction Params ---
-        page_bg = QWidget()
-        l_bg = QVBoxLayout(page_bg)
-        l_bg.setContentsMargins(0, 0, 0, 0)
-        l_bg.addWidget(
-            self._create_help_label(
-                "Background subtraction identifies moving animals by comparing each frame to a learned background model. "
-                "Start with defaults and increase threshold if you see too much noise, decrease if animals are missed."
-            )
-        )
+        self.g_img.setContentLayout(vl_img)
+        l_bg.addWidget(self.g_img)
 
         # Background Model
-        g_bg_model = QGroupBox("Background Model")
-        vl_bg_model = QVBoxLayout(g_bg_model)
+        g_bg_model = CollapsibleGroupBox("Background Estimation")
+        self.bg_accordion.addCollapsible(g_bg_model)
+        vl_bg_model = QVBoxLayout()
         vl_bg_model.addWidget(
             self._create_help_label(
                 "Build a model of the static background. Priming frames establish initial model, learning rate "
@@ -1122,11 +1224,13 @@ class MainWindow(QMainWindow):
         )
         f_bg.addRow("Subtraction Threshold:", self.spin_threshold)
         vl_bg_model.addLayout(f_bg)
+        g_bg_model.setContentLayout(vl_bg_model)
         l_bg.addWidget(g_bg_model)
 
         # Lighting Stab
-        g_light = QGroupBox("Lighting Stabilization")
-        vl_light = QVBoxLayout(g_light)
+        g_light = CollapsibleGroupBox("Scene Lighting Stabilization")
+        self.bg_accordion.addCollapsible(g_light)
+        vl_light = QVBoxLayout()
         vl_light.addWidget(
             self._create_help_label(
                 "Compensate for gradual lighting changes (clouds, time of day). Smoothing factor controls "
@@ -1167,11 +1271,13 @@ class MainWindow(QMainWindow):
         )
         f_light.addRow("Median Window:", self.spin_lighting_median)
         vl_light.addLayout(f_light)
+        g_light.setContentLayout(vl_light)
         l_bg.addWidget(g_light)
 
         # Morphology (Standard)
-        g_morph = QGroupBox("Morphology & Noise")
-        vl_morph = QVBoxLayout(g_morph)
+        g_morph = CollapsibleGroupBox("Noise Removal and Morphology")
+        self.bg_accordion.addCollapsible(g_morph)
+        vl_morph = QVBoxLayout()
         vl_morph.addWidget(
             self._create_help_label(
                 "Clean up detected blobs using morphological operations. Closing fills small holes, opening removes "
@@ -1214,11 +1320,13 @@ class MainWindow(QMainWindow):
         )
         f_morph.addRow("Max Contour Multiplier:", self.spin_max_contour_multiplier)
         vl_morph.addLayout(f_morph)
+        g_morph.setContentLayout(vl_morph)
         l_bg.addWidget(g_morph)
 
         # Morphology (Advanced/Splitting)
-        g_split = QGroupBox("Advanced Separation")
-        vl_split = QVBoxLayout(g_split)
+        g_split = CollapsibleGroupBox("Split Touching Animals")
+        self.bg_accordion.addCollapsible(g_split)
+        vl_split = QVBoxLayout()
         vl_split.addWidget(
             self._create_help_label(
                 "Split touching animals using erosion/dilation. Conservative split uses watershed, aggressive uses "
@@ -1302,6 +1410,7 @@ class MainWindow(QMainWindow):
         h_dil.addWidget(self.spin_dilation_iterations)
         f_split.addRow(h_dil)
         vl_split.addLayout(f_split)
+        g_split.setContentLayout(vl_split)
 
         l_bg.addWidget(g_split)
 
@@ -1317,6 +1426,7 @@ class MainWindow(QMainWindow):
         )
 
         self.yolo_group = QGroupBox("YOLO Configuration")
+        self.yolo_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         f_yolo = QFormLayout(self.yolo_group)
 
         self.combo_yolo_model = QComboBox()
@@ -1390,13 +1500,184 @@ class MainWindow(QMainWindow):
         f_yolo.addRow("Device:", self.combo_yolo_device)
 
         l_yolo.addWidget(self.yolo_group)
-        l_yolo.addStretch()
+        l_yolo.addStretch()  # Push YOLO config to top
 
         # Add pages to stack
         self.stack_detection.addWidget(page_bg)
         self.stack_detection.addWidget(page_yolo)
 
         vbox.addWidget(self.stack_detection)
+
+        # ============================================================
+        # Detection Overlays (moved from Visuals tab)
+        # ============================================================
+        # Background Subtraction specific overlays
+        self.g_overlays_bg = QGroupBox("Background Subtraction Debug Overlays")
+        v_ov_bg = QVBoxLayout(self.g_overlays_bg)
+        v_ov_bg.addWidget(
+            self._create_help_label(
+                "Debug background subtraction by viewing the foreground mask (detected movement) "
+                "and background model (learned static image)."
+            )
+        )
+
+        self.chk_show_fg = QCheckBox("Show Foreground Mask")
+        self.chk_show_fg.setChecked(True)
+        v_ov_bg.addWidget(self.chk_show_fg)
+
+        self.chk_show_bg = QCheckBox("Show Background Model")
+        self.chk_show_bg.setChecked(True)
+        v_ov_bg.addWidget(self.chk_show_bg)
+
+        vbox.addWidget(self.g_overlays_bg)
+
+        # YOLO specific overlays
+        self.g_overlays_yolo = QGroupBox("YOLO Debug Overlays")
+        v_ov_yolo = QVBoxLayout(self.g_overlays_yolo)
+        v_ov_yolo.addWidget(
+            self._create_help_label(
+                "Show oriented bounding boxes from YOLO detection. Useful for debugging detection quality "
+                "and verifying model performance."
+            )
+        )
+
+        self.chk_show_yolo_obb = QCheckBox("Show YOLO OBB Detection Boxes")
+        self.chk_show_yolo_obb.setChecked(False)
+        v_ov_yolo.addWidget(self.chk_show_yolo_obb)
+
+        vbox.addWidget(self.g_overlays_yolo)
+
+        # Initially show/hide based on detection method (will be set properly by combo)
+        self.g_overlays_bg.setVisible(True)
+        self.g_overlays_yolo.setVisible(False)
+
+        # ============================================================
+        # Reference Body Size (Spatial Scale)
+        # ============================================================
+        g_body_size = QGroupBox("Reference Body Size")
+        vl_body_size = QVBoxLayout(g_body_size)
+        vl_body_size.addWidget(
+            self._create_help_label(
+                "Define the spatial scale for tracking. This reference size makes all distance/size "
+                "parameters portable across videos. Set this BEFORE configuring tracking parameters."
+            )
+        )
+        fl_body = QFormLayout()
+        fl_body.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.spin_reference_body_size = QDoubleSpinBox()
+        self.spin_reference_body_size.setRange(1.0, 500.0)
+        self.spin_reference_body_size.setSingleStep(1.0)
+        self.spin_reference_body_size.setValue(20.0)
+        self.spin_reference_body_size.setDecimals(2)
+        self.spin_reference_body_size.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.spin_reference_body_size.setToolTip(
+            "Reference animal body diameter in pixels (at resize=1.0).\n"
+            "All distance/size parameters are scaled relative to this value."
+        )
+        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
+        fl_body.addRow("Reference Body Size (px):", self.spin_reference_body_size)
+
+        # Info label showing calculated area
+        self.label_body_size_info = QLabel()
+        self.label_body_size_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic;"
+        )
+        fl_body.addRow("", self.label_body_size_info)
+        vl_body_size.addLayout(fl_body)
+        vbox.addWidget(g_body_size)
+
+        # ============================================================
+        # Detection size statistics panel
+        # ============================================================
+        g_detect_stats = QGroupBox("Auto-Configure Body Size from Detection")
+        vl_stats = QVBoxLayout(g_detect_stats)
+        vl_stats.addWidget(
+            self._create_help_label(
+                "Workflow for accurate size estimation:\n"
+                "1. Configure your detection method above\n"
+                "2. Click 'Load Random Frame for Preview' (bottom of page)\n"
+                "3. Choose a frame with many animals well-separated\n"
+                "4. Click 'Test Detection' to analyze sizes\n"
+                "5. Use 'Auto-Set' to apply the recommended body size"
+            )
+        )
+
+        self.label_detection_stats = QLabel(
+            "No detection data yet.\nRun 'Test Detection' to estimate sizes."
+        )
+        self.label_detection_stats.setStyleSheet(
+            "color: #aaa; font-size: 11px; padding: 8px; "
+            "background-color: #2a2a2a; border-radius: 4px;"
+        )
+        self.label_detection_stats.setWordWrap(True)
+        vl_stats.addWidget(self.label_detection_stats)
+
+        # Auto-set button
+        btn_layout = QHBoxLayout()
+        self.btn_auto_set_body_size = QPushButton("Auto-Set Body Size from Median")
+        self.btn_auto_set_body_size.clicked.connect(
+            self._auto_set_body_size_from_detection
+        )
+        self.btn_auto_set_body_size.setEnabled(False)
+        self.btn_auto_set_body_size.setToolTip(
+            "Automatically set reference body size to the median detected diameter"
+        )
+        btn_layout.addWidget(self.btn_auto_set_body_size)
+        btn_layout.addStretch()
+        vl_stats.addLayout(btn_layout)
+
+        vbox.addWidget(g_detect_stats)
+
+        # ============================================================
+        # Size Filtering
+        # ============================================================
+        g_size = QGroupBox("Size Filtering")
+        vl_size = QVBoxLayout(g_size)
+        vl_size.addWidget(
+            self._create_help_label(
+                "Filter detections by size relative to your reference body size. This removes noise (too small) "
+                "and erroneous clusters (too large). Most effective when animals are similar size."
+            )
+        )
+        f_size = QFormLayout()
+        self.chk_size_filtering = QCheckBox("Enable Size Constraints")
+        self.chk_size_filtering.setToolTip(
+            "Filter detected objects by area to remove noise and artifacts.\n"
+            "Recommended: Enable for cleaner tracking."
+        )
+        f_size.addRow(self.chk_size_filtering)
+
+        h_sf = QHBoxLayout()
+        self.spin_min_object_size = QDoubleSpinBox()
+        self.spin_min_object_size.setRange(0.1, 5.0)
+        self.spin_min_object_size.setSingleStep(0.1)
+        self.spin_min_object_size.setDecimals(2)
+        self.spin_min_object_size.setValue(0.3)
+        self.spin_min_object_size.setToolTip(
+            "Minimum object area as multiple of reference body area.\n"
+            "Filters out small noise/artifacts.\n"
+            "Recommended: 0.2-0.5× (allows partial occlusion)"
+        )
+        self.spin_max_object_size = QDoubleSpinBox()
+        self.spin_max_object_size.setRange(0.5, 10.0)
+        self.spin_max_object_size.setSingleStep(0.1)
+        self.spin_max_object_size.setDecimals(2)
+        self.spin_max_object_size.setValue(3.0)
+        self.spin_max_object_size.setToolTip(
+            "Maximum object area as multiple of reference body area.\n"
+            "Filters out large clusters or artifacts.\n"
+            "Recommended: 2-4× (handles overlapping animals)"
+        )
+        h_sf.addWidget(QLabel("Min (×body):"))
+        h_sf.addWidget(self.spin_min_object_size)
+        h_sf.addWidget(QLabel("Max (×body):"))
+        h_sf.addWidget(self.spin_max_object_size)
+        f_size.addRow(h_sf)
+        vl_size.addLayout(f_size)
+        vbox.addWidget(g_size)
 
         vbox.addStretch()
         scroll.setWidget(content)
@@ -1471,9 +1752,13 @@ class MainWindow(QMainWindow):
         vl_core.addLayout(f_core)
         vbox.addWidget(g_core)
 
+        # Create accordion for advanced tracking settings
+        self.tracking_accordion = AccordionContainer()
+
         # Kalman
-        g_kf = QGroupBox("Kalman Filter (Motion Model)")
-        vl_kf = QVBoxLayout(g_kf)
+        g_kf = CollapsibleGroupBox("Kalman Filter (Motion Model)")
+        self.tracking_accordion.addCollapsible(g_kf)
+        vl_kf = QVBoxLayout()
         vl_kf.addWidget(
             self._create_help_label(
                 "Kalman filter predicts animal positions using motion history. Process noise controls smoothing, "
@@ -1602,11 +1887,13 @@ class MainWindow(QMainWindow):
         f_kf.addRow("  Lateral Multiplier:", self.spin_kalman_lateral_noise)
 
         vl_kf.addLayout(f_kf)
+        g_kf.setContentLayout(vl_kf)
         vbox.addWidget(g_kf)
 
         # Weights
-        g_weights = QGroupBox("Cost Function Weights")
-        l_weights = QVBoxLayout(g_weights)
+        g_weights = CollapsibleGroupBox("Cost Function Weights")
+        self.tracking_accordion.addCollapsible(g_weights)
+        l_weights = QVBoxLayout()
         l_weights.addWidget(
             self._create_help_label(
                 "Control how different factors influence track-to-detection matching. Position is primary; orientation, "
@@ -1672,11 +1959,13 @@ class MainWindow(QMainWindow):
             "Recommended: Enable for better handling of motion variability."
         )
         l_weights.addWidget(self.chk_use_mahal)
+        g_weights.setContentLayout(l_weights)
         vbox.addWidget(g_weights)
 
         # Assignment Algorithm (for large N optimization)
-        g_assign = QGroupBox("Assignment Algorithm (for Large N)")
-        vl_assign = QVBoxLayout(g_assign)
+        g_assign = CollapsibleGroupBox("Assignment Algorithm (for Large N)")
+        self.tracking_accordion.addCollapsible(g_assign)
+        vl_assign = QVBoxLayout()
         vl_assign.addWidget(
             self._create_help_label(
                 "Choose matching algorithm. Hungarian is optimal but slow for many animals (N>100). "
@@ -1707,11 +1996,13 @@ class MainWindow(QMainWindow):
         f_assign.addRow(self.chk_spatial_optimization)
 
         vl_assign.addLayout(f_assign)
+        g_assign.setContentLayout(vl_assign)
         vbox.addWidget(g_assign)
 
         # Orientation & Lifecycle
-        g_misc = QGroupBox("Orientation & Lifecycle")
-        vl_misc = QVBoxLayout(g_misc)
+        g_misc = CollapsibleGroupBox("Orientation & Lifecycle")
+        self.tracking_accordion.addCollapsible(g_misc)
+        vl_misc = QVBoxLayout()
         vl_misc.addWidget(
             self._create_help_label(
                 "Control how orientation is calculated based on movement. Moving animals can flip orientation instantly, "
@@ -1753,11 +2044,13 @@ class MainWindow(QMainWindow):
         )
         f_misc.addRow("Max Orient Δ (Stopped):", self.spin_max_orient)
         vl_misc.addLayout(f_misc)
+        g_misc.setContentLayout(vl_misc)
         vbox.addWidget(g_misc)
 
         # Track Lifecycle
-        g_lifecycle = QGroupBox("Track Lifecycle")
-        vl_lifecycle = QVBoxLayout(g_lifecycle)
+        g_lifecycle = CollapsibleGroupBox("Track Lifecycle")
+        self.tracking_accordion.addCollapsible(g_lifecycle)
+        vl_lifecycle = QVBoxLayout()
         vl_lifecycle.addWidget(
             self._create_help_label(
                 "Control when tracks start and end. Lost frames determines how long to wait before terminating a track. "
@@ -1789,11 +2082,13 @@ class MainWindow(QMainWindow):
         )
         f_lifecycle.addRow("Min Respawn Dist (×body):", self.spin_min_respawn_distance)
         vl_lifecycle.addLayout(f_lifecycle)
+        g_lifecycle.setContentLayout(vl_lifecycle)
         vbox.addWidget(g_lifecycle)
 
         # Stability
-        g_stab = QGroupBox("Initialization Stability")
-        vl_stab = QVBoxLayout(g_stab)
+        g_stab = CollapsibleGroupBox("Initialization Stability")
+        self.tracking_accordion.addCollapsible(g_stab)
+        vl_stab = QVBoxLayout()
         vl_stab.addWidget(
             self._create_help_label(
                 "Filter out unreliable tracks. Min detections to start prevents creating tracks from noise. "
@@ -1832,6 +2127,7 @@ class MainWindow(QMainWindow):
         )
         f_stab.addRow("Min Tracking Frames:", self.spin_min_track)
         vl_stab.addLayout(f_stab)
+        g_stab.setContentLayout(vl_stab)
         vbox.addWidget(g_stab)
 
         vbox.addStretch()
@@ -1992,132 +2288,6 @@ class MainWindow(QMainWindow):
         vbox.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
-
-    def setup_viz_ui(self):
-        """Tab 5: Visualization & Debug."""
-        layout = QVBoxLayout(self.tab_viz)
-        layout.setContentsMargins(10, 10, 10, 10)
-
-        g_overlays = QGroupBox("Video Overlays - Common")
-        v_ov = QVBoxLayout(g_overlays)
-        v_ov.addWidget(
-            self._create_help_label(
-                "Choose which tracking information to display on the video. Toggle these on/off to reduce clutter "
-                "or focus on specific aspects like trajectories or orientation."
-            )
-        )
-
-        self.chk_show_circles = QCheckBox("Show Track Markers (Circles)")
-        self.chk_show_circles.setChecked(True)
-        self.chk_show_circles.setToolTip("Draw circles around tracked animals.")
-        v_ov.addWidget(self.chk_show_circles)
-
-        self.chk_show_orientation = QCheckBox("Show Orientation Lines")
-        self.chk_show_orientation.setChecked(True)
-        self.chk_show_orientation.setToolTip("Draw lines showing heading direction.")
-        v_ov.addWidget(self.chk_show_orientation)
-
-        self.chk_show_trajectories = QCheckBox("Show Trajectory Trails")
-        self.chk_show_trajectories.setChecked(True)
-        self.chk_show_trajectories.setToolTip(
-            "Draw recent path history for each track."
-        )
-        v_ov.addWidget(self.chk_show_trajectories)
-
-        self.chk_show_labels = QCheckBox("Show ID Labels")
-        self.chk_show_labels.setChecked(True)
-        self.chk_show_labels.setToolTip("Display unique track IDs on each animal.")
-        v_ov.addWidget(self.chk_show_labels)
-
-        self.chk_show_state = QCheckBox("Show State Text")
-        self.chk_show_state.setChecked(True)
-        self.chk_show_state.setToolTip(
-            "Display tracking state (ACTIVE, PREDICTED, etc.)."
-        )
-        v_ov.addWidget(self.chk_show_state)
-
-        self.chk_show_kalman_uncertainty = QCheckBox("Show Kalman Uncertainty")
-        self.chk_show_kalman_uncertainty.setChecked(False)
-        self.chk_show_kalman_uncertainty.setToolTip(
-            "Draw ellipses showing Kalman filter position uncertainty.\n"
-            "Larger ellipse = more uncertainty in predicted position.\n"
-            "Useful for debugging tracking quality and filter convergence."
-        )
-        v_ov.addWidget(self.chk_show_kalman_uncertainty)
-
-        layout.addWidget(g_overlays)
-
-        # Background Subtraction specific overlays
-        self.g_overlays_bg = QGroupBox("Video Overlays - Background Subtraction")
-        v_ov_bg = QVBoxLayout(self.g_overlays_bg)
-        v_ov_bg.addWidget(
-            self._create_help_label(
-                "Debug background subtraction by viewing the foreground mask (detected movement) "
-                "and background model (learned static image)."
-            )
-        )
-
-        self.chk_show_fg = QCheckBox("Show Foreground Mask")
-        self.chk_show_fg.setChecked(True)
-        v_ov_bg.addWidget(self.chk_show_fg)
-
-        self.chk_show_bg = QCheckBox("Show Background Model")
-        self.chk_show_bg.setChecked(True)
-        v_ov_bg.addWidget(self.chk_show_bg)
-
-        layout.addWidget(self.g_overlays_bg)
-
-        # YOLO specific overlays
-        self.g_overlays_yolo = QGroupBox("Video Overlays - YOLO")
-        v_ov_yolo = QVBoxLayout(self.g_overlays_yolo)
-        v_ov_yolo.addWidget(
-            self._create_help_label(
-                "Show oriented bounding boxes from YOLO detection. Useful for debugging detection quality "
-                "and verifying model performance."
-            )
-        )
-
-        self.chk_show_yolo_obb = QCheckBox("Show YOLO OBB Detection Boxes")
-        self.chk_show_yolo_obb.setChecked(False)
-        v_ov_yolo.addWidget(self.chk_show_yolo_obb)
-
-        layout.addWidget(self.g_overlays_yolo)
-
-        g_settings = QGroupBox("Display Settings")
-        vl_settings = QVBoxLayout(g_settings)
-        vl_settings.addWidget(
-            self._create_help_label(
-                "Control how much trajectory history to display. Longer trails show more path context "
-                "but can clutter the view when many animals are tracked."
-            )
-        )
-        f_disp = QFormLayout()
-        self.spin_traj_hist = QSpinBox()
-        self.spin_traj_hist.setRange(1, 60)
-        self.spin_traj_hist.setValue(5)
-        self.spin_traj_hist.setToolTip(
-            "Length of trajectory trails to display (1-60 seconds).\n"
-            "Longer = more visible path history but more cluttered.\n"
-            "Recommended: 3-10 seconds."
-        )
-        f_disp.addRow("Trail History (sec):", self.spin_traj_hist)
-        vl_settings.addLayout(f_disp)
-        layout.addWidget(g_settings)
-
-        g_debug = QGroupBox("Advanced / Debug")
-        v_dbg = QVBoxLayout(g_debug)
-        v_dbg.addWidget(
-            self._create_help_label(
-                "Enable verbose logging to see detailed tracking decisions. Useful for troubleshooting "
-                "but generates large log files. Disable for production runs."
-            )
-        )
-        self.chk_debug_logging = QCheckBox("Enable Verbose Debug Logging")
-        self.chk_debug_logging.stateChanged.connect(self.toggle_debug_logging)
-        v_dbg.addWidget(self.chk_debug_logging)
-        layout.addWidget(g_debug)
-
-        layout.addStretch()
 
     def setup_dataset_ui(self):
         """Tab 6: Dataset Generation for Active Learning."""
@@ -2322,6 +2492,96 @@ class MainWindow(QMainWindow):
         self.g_frame_selection.setEnabled(False)
         self.g_quality_metrics.setEnabled(False)
 
+        # ============================================================
+        # Individual Dataset Generator Section (Real-time OBB crops)
+        # ============================================================
+        self.g_individual_dataset = QGroupBox("Real-time Individual Dataset (YOLO OBB)")
+        vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
+        vl_ind_dataset.addWidget(
+            self._create_help_label(
+                "Generate a clean dataset of isolated individuals during tracking.\n\n"
+                "• Extracts OBB-masked crops in real-time as tracking runs\n"
+                "• Only the detected animal (within OBB) is visible, rest is masked\n"
+                "• Perfect for training identity classifiers or pose models\n\n"
+                "Note: Only available when using YOLO OBB detection."
+            )
+        )
+
+        self.chk_enable_individual_dataset = QCheckBox(
+            "Enable Real-time Individual Dataset Generation"
+        )
+        self.chk_enable_individual_dataset.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+        )
+        self.chk_enable_individual_dataset.toggled.connect(
+            self._on_individual_dataset_toggled
+        )
+        vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
+
+        # Output Configuration
+        ind_output_group = QGroupBox("Output Configuration")
+        ind_output_layout = QFormLayout(ind_output_group)
+        ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # Output directory
+        h_ind_output = QHBoxLayout()
+        self.line_individual_output = QLineEdit()
+        self.line_individual_output.setPlaceholderText("Select output directory...")
+        self.line_individual_output.setToolTip(
+            "Directory where individual crops will be saved."
+        )
+        self.line_individual_output.setEnabled(False)
+        btn_browse_ind_output = QPushButton("Browse...")
+        btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
+        h_ind_output.addWidget(self.line_individual_output)
+        h_ind_output.addWidget(btn_browse_ind_output)
+        ind_output_layout.addRow("Output Directory:", h_ind_output)
+
+        # Output format
+        self.combo_individual_format = QComboBox()
+        self.combo_individual_format.addItems(["PNG", "JPEG"])
+        self.combo_individual_format.setToolTip(
+            "PNG: Lossless, larger files\nJPEG: Smaller files, slight quality loss"
+        )
+        self.combo_individual_format.setEnabled(False)
+        ind_output_layout.addRow("Image Format:", self.combo_individual_format)
+
+        # Save interval
+        self.spin_individual_interval = QSpinBox()
+        self.spin_individual_interval.setRange(1, 100)
+        self.spin_individual_interval.setValue(1)
+        self.spin_individual_interval.setSingleStep(1)
+        self.spin_individual_interval.setToolTip(
+            "Save crops every N frames.\n"
+            "1 = every frame, 10 = every 10th frame, etc."
+        )
+        self.spin_individual_interval.setEnabled(False)
+        ind_output_layout.addRow("Save Every N Frames:", self.spin_individual_interval)
+
+        # Padding fraction (only crop parameter needed - size is determined by OBB)
+        self.spin_individual_padding = QDoubleSpinBox()
+        self.spin_individual_padding.setRange(0.0, 0.5)
+        self.spin_individual_padding.setValue(0.1)
+        self.spin_individual_padding.setSingleStep(0.05)
+        self.spin_individual_padding.setDecimals(2)
+        self.spin_individual_padding.setToolTip(
+            "Padding around OBB bounding box as fraction of size.\n"
+            "0.1 = 10% padding on each side."
+        )
+        self.spin_individual_padding.setEnabled(False)
+        ind_output_layout.addRow("Padding Fraction:", self.spin_individual_padding)
+
+        vl_ind_dataset.addWidget(ind_output_group)
+
+        # Info label about filtering
+        info_label = self._create_help_label(
+            "Note: Crops use detections already filtered by ROI and size settings.\n"
+            "No additional filtering parameters needed."
+        )
+        vl_ind_dataset.addWidget(info_label)
+
+        form.addWidget(self.g_individual_dataset)
+
         form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -2488,96 +2748,6 @@ class MainWindow(QMainWindow):
 
         form.addWidget(self.g_identity)
 
-        # ============================================================
-        # Individual Dataset Generator Section (Real-time OBB crops)
-        # ============================================================
-        self.g_individual_dataset = QGroupBox("Real-time Individual Dataset (YOLO OBB)")
-        vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
-        vl_ind_dataset.addWidget(
-            self._create_help_label(
-                "Generate a clean dataset of isolated individuals during tracking.\n\n"
-                "• Extracts OBB-masked crops in real-time as tracking runs\n"
-                "• Only the detected animal (within OBB) is visible, rest is masked\n"
-                "• Perfect for training identity classifiers or pose models\n\n"
-                "Note: Only available when using YOLO OBB detection."
-            )
-        )
-
-        self.chk_enable_individual_dataset = QCheckBox(
-            "Enable Real-time Individual Dataset Generation"
-        )
-        self.chk_enable_individual_dataset.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #4a9eff;"
-        )
-        self.chk_enable_individual_dataset.toggled.connect(
-            self._on_individual_dataset_toggled
-        )
-        vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
-
-        # Output Configuration
-        ind_output_group = QGroupBox("Output Configuration")
-        ind_output_layout = QFormLayout(ind_output_group)
-        ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        # Output directory
-        h_ind_output = QHBoxLayout()
-        self.line_individual_output = QLineEdit()
-        self.line_individual_output.setPlaceholderText("Select output directory...")
-        self.line_individual_output.setToolTip(
-            "Directory where individual crops will be saved."
-        )
-        self.line_individual_output.setEnabled(False)
-        btn_browse_ind_output = QPushButton("Browse...")
-        btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
-        h_ind_output.addWidget(self.line_individual_output)
-        h_ind_output.addWidget(btn_browse_ind_output)
-        ind_output_layout.addRow("Output Directory:", h_ind_output)
-
-        # Output format
-        self.combo_individual_format = QComboBox()
-        self.combo_individual_format.addItems(["PNG", "JPEG"])
-        self.combo_individual_format.setToolTip(
-            "PNG: Lossless, larger files\nJPEG: Smaller files, slight quality loss"
-        )
-        self.combo_individual_format.setEnabled(False)
-        ind_output_layout.addRow("Image Format:", self.combo_individual_format)
-
-        # Save interval
-        self.spin_individual_interval = QSpinBox()
-        self.spin_individual_interval.setRange(1, 100)
-        self.spin_individual_interval.setValue(1)
-        self.spin_individual_interval.setSingleStep(1)
-        self.spin_individual_interval.setToolTip(
-            "Save crops every N frames.\n"
-            "1 = every frame, 10 = every 10th frame, etc."
-        )
-        self.spin_individual_interval.setEnabled(False)
-        ind_output_layout.addRow("Save Every N Frames:", self.spin_individual_interval)
-
-        # Padding fraction (only crop parameter needed - size is determined by OBB)
-        self.spin_individual_padding = QDoubleSpinBox()
-        self.spin_individual_padding.setRange(0.0, 0.5)
-        self.spin_individual_padding.setValue(0.1)
-        self.spin_individual_padding.setSingleStep(0.05)
-        self.spin_individual_padding.setDecimals(2)
-        self.spin_individual_padding.setToolTip(
-            "Padding around OBB bounding box as fraction of size.\n"
-            "0.1 = 10% padding on each side."
-        )
-        self.spin_individual_padding.setEnabled(False)
-        ind_output_layout.addRow("Padding Fraction:", self.spin_individual_padding)
-
-        vl_ind_dataset.addWidget(ind_output_group)
-
-        # Info label about filtering
-        info_label = self._create_help_label(
-            "Note: Crops use detections already filtered by ROI and size settings.\n"
-            "No additional filtering parameters needed."
-        )
-        vl_ind_dataset.addWidget(info_label)
-
-        form.addWidget(self.g_individual_dataset)
-
         form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -2742,6 +2912,7 @@ class MainWindow(QMainWindow):
             self._update_preview_display()
             # Auto-fit to screen - use QTimer to ensure display is updated first
             from PySide2.QtCore import QTimer
+
             QTimer.singleShot(10, self._fit_image_to_screen)
             logger.info(f"Loaded preview frame {random_frame_idx}/{total_frames}")
         else:
@@ -3301,33 +3472,37 @@ class MainWindow(QMainWindow):
                 meas, sizes, shapes, yolo_results, detection_confidences = (
                     detector.detect_objects(frame_to_process, 0)
                 )
-                
+
                 # Filter detections by ROI AFTER detection (vectorized)
                 if roi_for_yolo is not None and len(meas) > 0:
                     # Vectorized filtering using NumPy for efficiency with large n
                     meas_arr = np.array(meas)
                     cx_arr = meas_arr[:, 0].astype(np.int32)
                     cy_arr = meas_arr[:, 1].astype(np.int32)
-                    
+
                     # Bounds check
                     h, w = roi_for_yolo.shape[:2]
-                    in_bounds = (cy_arr >= 0) & (cy_arr < h) & (cx_arr >= 0) & (cx_arr < w)
-                    
+                    in_bounds = (
+                        (cy_arr >= 0) & (cy_arr < h) & (cx_arr >= 0) & (cx_arr < w)
+                    )
+
                     # ROI check (clip to bounds for safe indexing, then apply bounds mask)
                     cy_safe = np.clip(cy_arr, 0, h - 1)
                     cx_safe = np.clip(cx_arr, 0, w - 1)
                     in_roi = roi_for_yolo[cy_safe, cx_safe] > 0
-                    
+
                     # Combined mask
                     keep_mask = in_bounds & in_roi
                     filtered_indices = np.where(keep_mask)[0].tolist()
-                    
+
                     # Apply filter using boolean indexing
                     # Keep meas as list of numpy arrays for consistency
                     meas = [meas_arr[i] for i in filtered_indices]
                     sizes = np.array(sizes)[keep_mask].tolist()
                     shapes = np.array(shapes)[keep_mask].tolist()
-                    detection_confidences = np.array(detection_confidences)[keep_mask].tolist()
+                    detection_confidences = np.array(detection_confidences)[
+                        keep_mask
+                    ].tolist()
                 else:
                     filtered_indices = list(range(len(meas)))  # Keep all
 
@@ -3514,7 +3689,7 @@ class MainWindow(QMainWindow):
     def _handle_video_wheel(self, evt):
         """Handle mouse wheel - zoom in/out."""
         from PySide2.QtCore import Qt
-        
+
         # Block zoom during ROI selection
         if self.roi_selection_active:
             evt.ignore()
@@ -3551,7 +3726,7 @@ class MainWindow(QMainWindow):
     def _handle_gesture_event(self, evt):
         """Handle pinch-to-zoom gesture."""
         from PySide2.QtCore import Qt
-        
+
         # Block gestures during ROI selection
         if self.roi_selection_active:
             return False
@@ -3583,10 +3758,10 @@ class MainWindow(QMainWindow):
         """Display the ROI base frame with mask and current zoom applied."""
         if self.roi_base_frame is None or not self.roi_shapes:
             return
-        
+
         # Apply ROI mask to base frame
         qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
-        
+
         # Apply zoom
         zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
         if zoom_val != 1.0:
@@ -3597,7 +3772,7 @@ class MainWindow(QMainWindow):
             qimg_masked = qimg_masked.scaled(
                 scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
-        
+
         pixmap = QPixmap.fromImage(qimg_masked)
         self.video_label.setPixmap(pixmap)
 
@@ -3607,10 +3782,12 @@ class MainWindow(QMainWindow):
         # Resize factor applies differently depending on display mode:
         # - ROI selection / preview display: full resolution, resize factor NOT yet applied
         # - Detection test / tracking preview: resize factor already applied to displayed frame
-        
+
         # Check if tracking worker is running (frames are already resized)
-        tracking_active = self.tracking_worker is not None and self.tracking_worker.isRunning()
-        
+        tracking_active = (
+            self.tracking_worker is not None and self.tracking_worker.isRunning()
+        )
+
         if tracking_active and self._tracking_frame_size is not None:
             # During tracking/preview, use the actual frame size from the worker
             # These frames are already resized, so use dimensions directly
@@ -3658,7 +3835,7 @@ class MainWindow(QMainWindow):
     def record_roi_click(self, evt):
         if not self.roi_selection_active or self.roi_base_frame is None:
             return
-        
+
         # Right-click to undo last point
         if evt.button() == Qt.RightButton:
             if len(self.roi_points) > 0:
@@ -3666,11 +3843,11 @@ class MainWindow(QMainWindow):
                 logger.info(f"Undid last ROI point: ({removed[0]}, {removed[1]})")
                 self.update_roi_preview()
             return
-        
+
         # Left-click to add point
         if evt.button() != Qt.LeftButton:
             return
-            
+
         x, y = evt.pos().x(), evt.pos().y()
 
         # Double-click detection for polygon closing
@@ -3810,10 +3987,10 @@ class MainWindow(QMainWindow):
         self.btn_finish_roi.setEnabled(False)
         self.combo_roi_mode.setEnabled(False)
         self.combo_roi_zone.setEnabled(False)
-        
+
         # Disable zoom slider during ROI selection
         self.slider_zoom.setEnabled(False)
-        
+
         # Set crosshair cursor for precise ROI selection
         self.video_label.setCursor(Qt.CrossCursor)
 
@@ -3893,12 +4070,12 @@ class MainWindow(QMainWindow):
         self.combo_roi_mode.setEnabled(True)
         self.combo_roi_zone.setEnabled(True)
         self.roi_instructions.setText("")
-        
+
         # Re-enable zoom slider
         self.slider_zoom.setEnabled(True)
-        
+
         # Restore open hand cursor (for pan/zoom)
-        if hasattr(Qt, 'OpenHandCursor'):
+        if hasattr(Qt, "OpenHandCursor"):
             self.video_label.setCursor(Qt.OpenHandCursor)
         else:
             self.video_label.unsetCursor()
@@ -3921,6 +4098,7 @@ class MainWindow(QMainWindow):
         # Auto-fit to screen after ROI change - use QTimer to ensure proper sequencing
         if self.roi_base_frame:
             from PySide2.QtCore import QTimer
+
             # First fit the screen (sets zoom slider value)
             QTimer.singleShot(10, self._fit_image_to_screen)
             # Then display with the new zoom applied
@@ -4009,16 +4187,16 @@ class MainWindow(QMainWindow):
         self.roi_status_label.setText("No ROI")
         self.roi_instructions.setText("")
         self.video_label.setText("ROI Cleared.")
-        
+
         # Re-enable zoom slider
         self.slider_zoom.setEnabled(True)
-        
+
         # Restore open hand cursor
-        if hasattr(Qt, 'OpenHandCursor'):
+        if hasattr(Qt, "OpenHandCursor"):
             self.video_label.setCursor(Qt.OpenHandCursor)
         else:
             self.video_label.unsetCursor()
-        
+
         logger.info("All ROI shapes cleared")
 
     def keyPressEvent(self, event):
@@ -4181,7 +4359,7 @@ class MainWindow(QMainWindow):
         self.label_current_fps.setVisible(False)
         self.label_elapsed_time.setVisible(False)
         self.label_eta.setVisible(False)
-        
+
         # Reset tracking frame size
         self._tracking_frame_size = None
 
@@ -4241,28 +4419,17 @@ class MainWindow(QMainWindow):
         return pix.toImage()
 
     def _apply_roi_mask_to_image(self, qimage):
-        """Apply ROI visualization based on detection method.
-        
-        For background subtraction: mask with darkening (image is actually masked)
-        For YOLO: just draw boundary overlay (image is NOT masked, only detections filtered)
+        """Apply ROI visualization - draw boundary overlay for all detection methods.
+
+        Both YOLO and Background Subtraction now show the same cyan boundary overlay
+        for consistent UI experience. The actual masking happens in the tracking pipeline.
         """
         if self.roi_mask is None or not self.roi_shapes:
             return qimage
-        
-        # Check detection method to determine visualization style
-        # Safe check - default to YOLO overlay if no method selected yet
-        try:
-            detection_method = self.combo_detection_method.currentText()
-        except:
-            detection_method = "YOLO OBB"
-        
-        if detection_method == "YOLO OBB":
-            # YOLO processes full image - just show boundary overlay
-            return self._draw_roi_overlay(qimage)
-        else:
-            # Background subtraction masks image - show masked visualization
-            return self._apply_roi_mask_darkening(qimage)
-    
+
+        # Use boundary overlay for all detection methods
+        return self._draw_roi_overlay(qimage)
+
     def _apply_roi_mask_darkening(self, qimage):
         """Apply ROI mask to darken areas outside the ROI (with caching).
         Used for background subtraction where the image is actually masked.
@@ -4371,10 +4538,10 @@ class MainWindow(QMainWindow):
     def on_new_frame(self, rgb):
         z = max(self.slider_zoom.value() / 100.0, 0.1)
         h, w, _ = rgb.shape
-        
+
         # Store tracking frame size for fit-to-screen calculation
         self._tracking_frame_size = (w, h)
-        
+
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
 
         # ROI masking is now done in tracking worker - no need to duplicate here
@@ -4382,12 +4549,13 @@ class MainWindow(QMainWindow):
             int(w * z), int(h * z), Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
         self.video_label.setPixmap(QPixmap.fromImage(scaled))
-        
+
         # Auto-fit to screen on first frame of tracking
         if self._tracking_first_frame:
             self._tracking_first_frame = False
             # Use QTimer to ensure frame is displayed first
             from PySide2.QtCore import QTimer
+
             QTimer.singleShot(50, self._fit_image_to_screen)
 
     def _scale_trajectories_to_original_space(self, trajectories_df, resize_factor):

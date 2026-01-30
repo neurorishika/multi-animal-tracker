@@ -134,11 +134,10 @@ class TrackingWorker(QThread):
             bg_model = BackgroundModel(p)
             bg_model.prime_background(cap)
 
-        # Initialize individual dataset generator (for YOLO OBB only, forward pass only)
+        # Initialize individual dataset generator (supports both YOLO OBB and BG subtraction)
         individual_generator = None
         if (
-            detection_method != "background_subtraction"
-            and p.get("ENABLE_INDIVIDUAL_DATASET", False)
+            p.get("ENABLE_INDIVIDUAL_DATASET", False)
             and not self.backward_mode  # Only generate dataset in forward pass
         ):
             output_dir = p.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
@@ -148,7 +147,7 @@ class TrackingWorker(QThread):
                     p, output_dir, video_name
                 )
                 logger.info(
-                    f"Individual dataset generator enabled, output: {output_dir}"
+                    f"Individual dataset generator enabled for {detection_method}, output: {output_dir}"
                 )
 
         self.kf_manager = KalmanFilterManager(p["MAX_TARGETS"], p)
@@ -346,22 +345,16 @@ class TrackingWorker(QThread):
 
             overlay = frame.copy()
 
-            # Apply ROI visualization based on detection method
-            # For background subtraction: mask with fill color (image is actually masked)
-            # For YOLO: draw boundary only (image is NOT masked, only detections filtered)
+            # Apply ROI visualization - draw cyan boundary for all detection methods
+            # The actual masking for background subtraction happens earlier in the pipeline
             if ROI_mask_current is not None:
-                if detection_method == "background_subtraction":
-                    # Background subtraction actually masks the image - show masked overlay
-                    if roi_fill_color is not None:
-                        overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
-                        background = np.full_like(overlay, roi_fill_color)
-                        background = cv2.bitwise_and(background, mask_inv_3ch)
-                        overlay = cv2.add(overlay, background)
-                    else:
-                        # Fallback to black if color not yet calculated
-                        overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
-                # For YOLO, overlay remains unchanged (full frame visible)
-                # ROI boundary will be drawn later if needed
+                # Draw cyan dashed boundary around ROI using contours from the mask
+                contours, _ = cv2.findContours(
+                    ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                if contours:
+                    # Draw cyan boundary (BGR: 255, 255, 0)
+                    cv2.drawContours(overlay, contours, -1, (255, 255, 0), 2)
 
             hist_velocities = []
             hist_sizes = []
@@ -562,8 +555,8 @@ class TrackingWorker(QThread):
                 time.time() - assign_start if detection_initialized and meas else 0
             )
 
-            # --- Individual Dataset Generation (YOLO OBB only) ---
-            if individual_generator is not None and filtered_obb_corners:
+            # --- Individual Dataset Generation (supports YOLO OBB and BG subtraction) ---
+            if individual_generator is not None and meas:
                 # Get track and trajectory IDs for matched detections
                 # cols contains the detection indices that were matched to tracks (rows)
                 matched_track_ids = []
@@ -590,18 +583,52 @@ class TrackingWorker(QThread):
                             matched_track_ids.append(-1)
                             matched_traj_ids.append(-1)
 
-                # Pass filtered detection data directly (already filtered by size + ROI)
-                individual_generator.process_frame(
-                    frame=frame,
-                    frame_id=self.frame_count,
-                    meas=meas,
-                    obb_corners=filtered_obb_corners,
-                    confidences=(
-                        detection_confidences if detection_confidences else None
-                    ),
-                    track_ids=matched_track_ids if matched_track_ids else None,
-                    trajectory_ids=matched_traj_ids if matched_traj_ids else None,
-                )
+                # Determine which data source to use
+                if filtered_obb_corners:
+                    # YOLO OBB detection - use OBB corners directly
+                    individual_generator.process_frame(
+                        frame=frame,
+                        frame_id=self.frame_count,
+                        meas=meas,
+                        obb_corners=filtered_obb_corners,
+                        ellipse_params=None,
+                        confidences=(
+                            detection_confidences if detection_confidences else None
+                        ),
+                        track_ids=matched_track_ids if matched_track_ids else None,
+                        trajectory_ids=matched_traj_ids if matched_traj_ids else None,
+                    )
+                elif shapes:
+                    # Background subtraction - compute ellipse params from shapes
+                    # shapes contains (area, aspect_ratio) tuples
+                    # From: area = π * ax1 * ax2 / 4, aspect_ratio = ax1 / ax2
+                    # Solve: ax2 = sqrt(4 * area / (π * aspect_ratio))
+                    #        ax1 = aspect_ratio * ax2
+                    ellipse_params = []
+                    for shape in shapes:
+                        area, aspect_ratio = shape[0], shape[1]
+                        if aspect_ratio > 0 and area > 0:
+                            ax2 = np.sqrt(4 * area / (np.pi * aspect_ratio))
+                            ax1 = aspect_ratio * ax2
+                            ellipse_params.append(
+                                [ax1, ax2]
+                            )  # [major_axis, minor_axis]
+                        else:
+                            # Fallback to small circle if invalid
+                            ellipse_params.append([10.0, 10.0])
+
+                    individual_generator.process_frame(
+                        frame=frame,
+                        frame_id=self.frame_count,
+                        meas=meas,
+                        obb_corners=None,
+                        ellipse_params=ellipse_params,
+                        confidences=(
+                            detection_confidences if detection_confidences else None
+                        ),
+                        track_ids=matched_track_ids if matched_track_ids else None,
+                        trajectory_ids=matched_traj_ids if matched_traj_ids else None,
+                    )
 
             # --- Tracking State Updates ---
             track_start = time.time()

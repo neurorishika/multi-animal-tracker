@@ -232,6 +232,49 @@ class IndividualDatasetGenerator:
             f"output_dir={self.output_dir}"
         )
 
+    @staticmethod
+    def ellipse_to_obb_corners(cx, cy, major_axis, minor_axis, theta):
+        """
+        Convert ellipse parameters to OBB corner points.
+
+        The OBB is the oriented bounding box that exactly fits the ellipse,
+        which is a rotated rectangle with dimensions (major_axis × minor_axis).
+
+        Args:
+            cx, cy: Center coordinates of the ellipse
+            major_axis: Full length of the major axis (not semi-axis)
+            minor_axis: Full length of the minor axis (not semi-axis)
+            theta: Rotation angle in radians (orientation of major axis)
+
+        Returns:
+            corners: numpy array of shape (4, 2) with corner coordinates
+        """
+        # Half-lengths of the ellipse axes
+        a = major_axis / 2.0  # Semi-major axis
+        b = minor_axis / 2.0  # Semi-minor axis
+
+        # Corner offsets in local (unrotated) coordinate system
+        # The rectangle has width=major_axis, height=minor_axis
+        local_corners = np.array(
+            [
+                [a, b],  # Top-right
+                [-a, b],  # Top-left
+                [-a, -b],  # Bottom-left
+                [a, -b],  # Bottom-right
+            ]
+        )
+
+        # Rotation matrix
+        cos_t = np.cos(theta)
+        sin_t = np.sin(theta)
+        rotation = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+
+        # Rotate corners and translate to center
+        rotated_corners = local_corners @ rotation.T
+        corners = rotated_corners + np.array([cx, cy])
+
+        return corners.astype(np.float32)
+
     def _setup_output_directory(self):
         """Create output directory structure."""
         from datetime import datetime
@@ -251,13 +294,18 @@ class IndividualDatasetGenerator:
         frame,
         frame_id,
         meas,
-        obb_corners,
+        obb_corners=None,
+        ellipse_params=None,
         confidences=None,
         track_ids=None,
         trajectory_ids=None,
     ):
         """
-        Process a frame and save OBB-masked crops for each detection.
+        Process a frame and save masked crops for each detection.
+
+        Supports both YOLO OBB detections and ellipse detections from
+        background subtraction. For ellipses, OBB corners are computed
+        from the ellipse parameters.
 
         Detections passed here are already filtered by ROI and size filtering
         in the tracking pipeline - no additional filtering needed.
@@ -265,8 +313,10 @@ class IndividualDatasetGenerator:
         Args:
             frame: Input frame (BGR)
             frame_id: Current frame number
-            meas: List of measurements [cx, cy, theta] for each detection
-            obb_corners: List of OBB corner arrays (4 points each) for each detection
+            meas: List of measurements [cx, cy, theta, ...] for each detection
+            obb_corners: List of OBB corner arrays (4 points each) for YOLO detections
+            ellipse_params: List of ellipse params [major_axis, minor_axis] for BG sub detections
+                           (center and theta are taken from meas)
             confidences: Optional list of confidence scores
             track_ids: Optional list of track IDs for each detection
             trajectory_ids: Optional list of trajectory IDs for each detection
@@ -277,7 +327,11 @@ class IndividualDatasetGenerator:
         if not self.enabled or self.crops_dir is None:
             return 0
 
-        if not meas or not obb_corners:
+        if not meas:
+            return 0
+
+        # Must have either obb_corners or ellipse_params
+        if not obb_corners and not ellipse_params:
             return 0
 
         # Check save interval
@@ -287,11 +341,32 @@ class IndividualDatasetGenerator:
         num_saved = 0
         h, w = frame.shape[:2]
 
+        # Determine detection source type
+        use_obb = obb_corners is not None and len(obb_corners) > 0
+        use_ellipse = ellipse_params is not None and len(ellipse_params) > 0
+
         for i in range(len(meas)):
             # Get detection info
             m = meas[i]
             cx, cy = float(m[0]), float(m[1])
-            corners = obb_corners[i]  # Shape: (4, 2)
+            theta = float(m[2]) if len(m) > 2 else 0.0
+
+            # Get OBB corners - either directly or computed from ellipse
+            if use_obb and i < len(obb_corners):
+                corners = np.asarray(obb_corners[i], dtype=np.float32)  # Shape: (4, 2)
+                source_type = "yolo_obb"
+            elif use_ellipse and i < len(ellipse_params):
+                # Get ellipse parameters and convert to OBB corners
+                ep = ellipse_params[i]
+                major_axis = float(ep[0])
+                minor_axis = float(ep[1])
+                corners = self.ellipse_to_obb_corners(
+                    cx, cy, major_axis, minor_axis, theta
+                )
+                source_type = "ellipse"
+            else:
+                # Skip if no geometry data available for this detection
+                continue
 
             # Get confidence
             conf = confidences[i] if confidences and i < len(confidences) else 1.0
@@ -315,8 +390,10 @@ class IndividualDatasetGenerator:
                     "trajectory_id": int(traj_id),
                     "confidence": float(conf),
                     "center": [cx, cy],
+                    "theta": theta,
                     "crop_size": crop_info["crop_size"],
                     "obb_corners": corners.tolist(),
+                    "source_type": source_type,
                 }
 
                 # Save crop

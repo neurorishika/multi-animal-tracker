@@ -15,10 +15,13 @@ dependencies:
   - ipykernel
   - ipywidgets
   - einops
+  - umap-learn
+  - scikit-learn
   
   # Computer vision
   - opencv
   - scikit-image
+  - pillow
   
   # Efficiency
   - numba
@@ -41,6 +44,7 @@ dependencies:
   - pip:
     - torch
     - torchvision
+    - timm
     - pupil-apriltags
     - ultralytics  # YOLO models for object detection
     - -e .
