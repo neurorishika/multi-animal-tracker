@@ -176,6 +176,335 @@ class IdentityProcessor:
         return f"apriltag_{np.random.randint(0, 10)}", 0.5
 
 
+class IndividualDatasetGenerator:
+    """
+    Real-time individual dataset generator that runs during tracking.
+
+    Exports OBB-masked crops for each detection, where only the detected
+    animal's OBB region is visible and the rest is masked. This provides
+    clean, isolated training data for individual-level analysis.
+
+    Key features:
+    - Runs in parallel with tracking (called per-frame)
+    - Uses actual OBB polygon to mask out other animals
+    - Saves crops with track/trajectory ID labels
+    - Uses already-filtered detections (ROI + size filtering done by tracking)
+    """
+
+    def __init__(self, params, output_dir, video_name):
+        """
+        Initialize the individual dataset generator.
+
+        Args:
+            params: Parameter dictionary
+            output_dir: Base directory for saving crops
+            video_name: Name of the source video (for organizing output)
+        """
+        self.params = params
+        self.enabled = params.get("ENABLE_INDIVIDUAL_DATASET", False)
+
+        # Output configuration
+        self.output_dir = Path(output_dir) if output_dir else None
+        self.video_name = video_name
+
+        # Crop parameters - only padding (crop size is determined by OBB)
+        self.padding_fraction = params.get("INDIVIDUAL_CROP_PADDING", 0.1)
+        self.mask_fill_value = params.get("INDIVIDUAL_MASK_FILL", 0)  # Black fill
+
+        # Save interval (use detections as-is, just control frequency)
+        self.save_every_n_frames = params.get("INDIVIDUAL_SAVE_INTERVAL", 1)
+
+        # Output format
+        self.output_format = params.get("INDIVIDUAL_OUTPUT_FORMAT", "png")  # png or jpg
+        self.jpg_quality = params.get("INDIVIDUAL_JPG_QUALITY", 95)
+
+        # Statistics
+        self.total_saved = 0
+        self.crops_dir = None
+        self.metadata = []
+
+        # Initialize output directory
+        if self.enabled and self.output_dir:
+            self._setup_output_directory()
+
+        logger.info(
+            f"Individual dataset generator initialized: enabled={self.enabled}, "
+            f"output_dir={self.output_dir}"
+        )
+
+    def _setup_output_directory(self):
+        """Create output directory structure."""
+        from datetime import datetime
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dataset_name = f"{self.video_name}_individual_{timestamp}"
+        self.crops_dir = self.output_dir / dataset_name / "crops"
+        self.crops_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create metadata file path
+        self.metadata_path = self.crops_dir.parent / "metadata.json"
+
+        logger.info(f"Individual dataset output directory: {self.crops_dir}")
+
+    def process_frame(
+        self,
+        frame,
+        frame_id,
+        meas,
+        obb_corners,
+        confidences=None,
+        track_ids=None,
+        trajectory_ids=None,
+    ):
+        """
+        Process a frame and save OBB-masked crops for each detection.
+
+        Detections passed here are already filtered by ROI and size filtering
+        in the tracking pipeline - no additional filtering needed.
+
+        Args:
+            frame: Input frame (BGR)
+            frame_id: Current frame number
+            meas: List of measurements [cx, cy, theta] for each detection
+            obb_corners: List of OBB corner arrays (4 points each) for each detection
+            confidences: Optional list of confidence scores
+            track_ids: Optional list of track IDs for each detection
+            trajectory_ids: Optional list of trajectory IDs for each detection
+
+        Returns:
+            num_saved: Number of crops saved from this frame
+        """
+        if not self.enabled or self.crops_dir is None:
+            return 0
+
+        if not meas or not obb_corners:
+            return 0
+
+        # Check save interval
+        if frame_id % self.save_every_n_frames != 0:
+            return 0
+
+        num_saved = 0
+        h, w = frame.shape[:2]
+
+        for i in range(len(meas)):
+            # Get detection info
+            m = meas[i]
+            cx, cy = float(m[0]), float(m[1])
+            corners = obb_corners[i]  # Shape: (4, 2)
+
+            # Get confidence
+            conf = confidences[i] if confidences and i < len(confidences) else 1.0
+
+            # Extract and save masked crop
+            crop, crop_info = self._extract_obb_masked_crop(frame, corners, h, w)
+
+            if crop is not None:
+                # Build metadata for this crop
+                track_id = track_ids[i] if track_ids and i < len(track_ids) else -1
+                traj_id = (
+                    trajectory_ids[i]
+                    if trajectory_ids and i < len(trajectory_ids)
+                    else -1
+                )
+
+                crop_metadata = {
+                    "frame_id": int(frame_id),
+                    "detection_idx": i,
+                    "track_id": int(track_id),
+                    "trajectory_id": int(traj_id),
+                    "confidence": float(conf),
+                    "center": [cx, cy],
+                    "crop_size": crop_info["crop_size"],
+                    "obb_corners": corners.tolist(),
+                }
+
+                # Save crop
+                saved = self._save_crop(crop, frame_id, i, track_id, crop_metadata)
+                if saved:
+                    num_saved += 1
+
+        return num_saved
+
+    def _extract_obb_masked_crop(self, frame, corners, frame_h, frame_w):
+        """
+        Extract a crop with only the OBB region visible.
+
+        Expands OBB corners outward from centroid by padding_fraction to
+        capture more of the animal in case detection clips edges.
+
+        Args:
+            frame: Input frame (BGR)
+            corners: OBB corner points (4, 2)
+            frame_h, frame_w: Frame dimensions
+
+        Returns:
+            crop: Masked crop image
+            crop_info: Crop metadata dict
+        """
+        # Expand OBB corners outward from centroid
+        # This preserves the OBB shape while making it larger
+        centroid = corners.mean(axis=0)  # Center of the OBB
+
+        # Expand each corner away from centroid by padding_fraction
+        expanded_corners = corners.copy()
+        for i in range(4):
+            direction = corners[i] - centroid
+            expanded_corners[i] = centroid + direction * (1.0 + self.padding_fraction)
+
+        # Clip expanded corners to frame bounds
+        expanded_corners[:, 0] = np.clip(expanded_corners[:, 0], 0, frame_w - 1)
+        expanded_corners[:, 1] = np.clip(expanded_corners[:, 1], 0, frame_h - 1)
+
+        # Calculate bounding box of the expanded OBB (axis-aligned)
+        x_min = max(0, int(expanded_corners[:, 0].min()))
+        x_max = min(frame_w, int(expanded_corners[:, 0].max()) + 1)
+        y_min = max(0, int(expanded_corners[:, 1].min()))
+        y_max = min(frame_h, int(expanded_corners[:, 1].max()) + 1)
+
+        crop_w = x_max - x_min
+        crop_h = y_max - y_min
+
+        # Skip if crop would be empty
+        if crop_w <= 0 or crop_h <= 0:
+            return None, None
+
+        # Extract crop region
+        crop = frame[y_min:y_max, x_min:x_max].copy()
+
+        # Create mask for expanded OBB region (shift corners to crop coordinates)
+        shifted_corners = expanded_corners.copy()
+        shifted_corners[:, 0] -= x_min
+        shifted_corners[:, 1] -= y_min
+
+        # Create OBB polygon mask
+        mask = np.zeros((crop_h, crop_w), dtype=np.uint8)
+        cv2.fillPoly(mask, [shifted_corners.astype(np.int32)], 255)
+
+        # Apply mask - keep OBB region, fill rest with mask_fill_value
+        mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+        masked_crop = cv2.bitwise_and(crop, mask_3ch)
+
+        # Fill background if not black
+        if self.mask_fill_value != 0:
+            background = np.full_like(crop, self.mask_fill_value)
+            mask_inv = cv2.bitwise_not(mask_3ch)
+            background = cv2.bitwise_and(background, mask_inv)
+            masked_crop = cv2.add(masked_crop, background)
+
+        crop_info = {
+            "crop_size": (crop_w, crop_h),
+            "crop_bbox": (x_min, y_min, x_max, y_max),
+            "obb_corners_local": shifted_corners.tolist(),
+            "expansion_factor": 1.0 + self.padding_fraction,
+        }
+
+        return masked_crop, crop_info
+
+    def _save_crop(self, crop, frame_id, det_idx, track_id, metadata):
+        """
+        Save a crop to disk.
+
+        Args:
+            crop: Image to save
+            frame_id: Frame number
+            det_idx: Detection index within frame
+            track_id: Track ID
+            metadata: Metadata dict for this crop
+
+        Returns:
+            bool: True if saved successfully
+        """
+        try:
+            # Generate filename
+            if track_id >= 0:
+                filename = f"f{frame_id:06d}_t{track_id:04d}_d{det_idx:02d}.{self.output_format}"
+            else:
+                filename = f"f{frame_id:06d}_d{det_idx:02d}.{self.output_format}"
+
+            filepath = self.crops_dir / filename
+
+            # Save image
+            if self.output_format == "jpg":
+                cv2.imwrite(
+                    str(filepath), crop, [cv2.IMWRITE_JPEG_QUALITY, self.jpg_quality]
+                )
+            else:
+                cv2.imwrite(str(filepath), crop)
+
+            # Store metadata
+            metadata["filename"] = filename
+            self.metadata.append(metadata)
+            self.total_saved += 1
+
+            return True
+
+        except Exception as e:
+            logger.warning(f"Failed to save crop: {e}")
+            return False
+
+    def finalize(self):
+        """
+        Finalize the dataset and save metadata.
+        Called when tracking completes.
+
+        Returns:
+            str: Path to the dataset directory, or None if not enabled
+        """
+        if not self.enabled or self.crops_dir is None:
+            return None
+
+        # Save metadata JSON
+        dataset_info = {
+            "video_name": self.video_name,
+            "total_crops": self.total_saved,
+            "parameters": {
+                "padding_fraction": self.padding_fraction,
+                "save_interval": self.save_every_n_frames,
+                "output_format": self.output_format,
+            },
+            "crops": self.metadata,
+        }
+
+        try:
+            with open(self.metadata_path, "w") as f:
+                json.dump(dataset_info, f, indent=2)
+
+            logger.info(
+                f"Individual dataset complete: {self.total_saved} crops saved to "
+                f"{self.crops_dir.parent}"
+            )
+
+            # Create README
+            readme_path = self.crops_dir.parent / "README.md"
+            with open(readme_path, "w") as f:
+                f.write(f"# Individual Detection Dataset\n\n")
+                f.write(f"Generated from: {self.video_name}\n\n")
+                f.write(f"## Contents\n\n")
+                f.write(f"- **{self.total_saved} OBB-masked crops**\n")
+                f.write(f"- Each crop contains only the detected animal (OBB region)\n")
+                f.write(f"- Background outside OBB is masked to black\n")
+                f.write(
+                    f"- Detections are pre-filtered by ROI and size in tracking\n\n"
+                )
+                f.write(f"## File Naming\n\n")
+                f.write(f"- `fXXXXXX_tYYYY_dZZ.{self.output_format}`\n")
+                f.write(f"  - `fXXXXXX`: Frame number\n")
+                f.write(f"  - `tYYYY`: Track ID\n")
+                f.write(f"  - `dZZ`: Detection index within frame\n\n")
+                f.write(f"## Usage\n\n")
+                f.write(f"These crops can be used for:\n")
+                f.write(f"- Training individual identity classifiers\n")
+                f.write(f"- Pose estimation model training\n")
+                f.write(f"- Behavior classification\n")
+
+            return str(self.crops_dir.parent)
+
+        except Exception as e:
+            logger.error(f"Failed to save metadata: {e}")
+            return None
+
+
 class PoseTrackingExporter:
     """
     Export trajectory data for post-hoc pose tracking training.

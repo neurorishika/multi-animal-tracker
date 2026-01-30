@@ -264,6 +264,7 @@ class YOLOOBBDetector:
         conf_scores = obb_data.conf.cpu().numpy()  # YOLO confidence scores
 
         meas, sizes, shapes, confidences = [], [], [], []
+        obb_corners_list = []  # Store OBB corners for filtered detections
 
         for i in range(len(obb_data)):
             # Get OBB parameters
@@ -298,6 +299,8 @@ class YOLOOBBDetector:
                 (np.pi * (w / 2) * (h / 2), aspect_ratio)
             )  # Ellipse area approximation
             confidences.append(float(conf_scores[i]))  # Store YOLO confidence
+            # Store OBB corners for this detection (4 points, shape: (4, 2))
+            obb_corners_list.append(obb_data.xyxyxyxy[i].cpu().numpy())
 
         # Keep only top N detections by size
         N = p["MAX_TARGETS"]
@@ -307,9 +310,14 @@ class YOLOOBBDetector:
             sizes = [sizes[i] for i in idxs]
             shapes = [shapes[i] for i in idxs]
             confidences = [confidences[i] for i in idxs]
+            obb_corners_list = [obb_corners_list[i] for i in idxs]
 
         if meas:
             logger.debug(f"Frame {frame_count}: YOLO detected {len(meas)} objects")
+
+        # Return filtered OBB corners alongside other data
+        # Store in results object for access by individual dataset generator
+        results[0]._filtered_obb_corners = obb_corners_list
 
         return meas, sizes, shapes, results[0], confidences
 

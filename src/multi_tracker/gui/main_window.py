@@ -2605,6 +2605,96 @@ class MainWindow(QMainWindow):
 
         form.addWidget(self.g_identity)
 
+        # ============================================================
+        # Individual Dataset Generator Section (Real-time OBB crops)
+        # ============================================================
+        self.g_individual_dataset = QGroupBox("Real-time Individual Dataset (YOLO OBB)")
+        vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
+        vl_ind_dataset.addWidget(
+            self._create_help_label(
+                "Generate a clean dataset of isolated individuals during tracking.\n\n"
+                "• Extracts OBB-masked crops in real-time as tracking runs\n"
+                "• Only the detected animal (within OBB) is visible, rest is masked\n"
+                "• Perfect for training identity classifiers or pose models\n\n"
+                "Note: Only available when using YOLO OBB detection."
+            )
+        )
+
+        self.chk_enable_individual_dataset = QCheckBox(
+            "Enable Real-time Individual Dataset Generation"
+        )
+        self.chk_enable_individual_dataset.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+        )
+        self.chk_enable_individual_dataset.toggled.connect(
+            self._on_individual_dataset_toggled
+        )
+        vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
+
+        # Output Configuration
+        ind_output_group = QGroupBox("Output Configuration")
+        ind_output_layout = QFormLayout(ind_output_group)
+        ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # Output directory
+        h_ind_output = QHBoxLayout()
+        self.line_individual_output = QLineEdit()
+        self.line_individual_output.setPlaceholderText("Select output directory...")
+        self.line_individual_output.setToolTip(
+            "Directory where individual crops will be saved."
+        )
+        self.line_individual_output.setEnabled(False)
+        btn_browse_ind_output = QPushButton("Browse...")
+        btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
+        h_ind_output.addWidget(self.line_individual_output)
+        h_ind_output.addWidget(btn_browse_ind_output)
+        ind_output_layout.addRow("Output Directory:", h_ind_output)
+
+        # Output format
+        self.combo_individual_format = QComboBox()
+        self.combo_individual_format.addItems(["PNG", "JPEG"])
+        self.combo_individual_format.setToolTip(
+            "PNG: Lossless, larger files\nJPEG: Smaller files, slight quality loss"
+        )
+        self.combo_individual_format.setEnabled(False)
+        ind_output_layout.addRow("Image Format:", self.combo_individual_format)
+
+        # Save interval
+        self.spin_individual_interval = QSpinBox()
+        self.spin_individual_interval.setRange(1, 100)
+        self.spin_individual_interval.setValue(1)
+        self.spin_individual_interval.setSingleStep(1)
+        self.spin_individual_interval.setToolTip(
+            "Save crops every N frames.\n"
+            "1 = every frame, 10 = every 10th frame, etc."
+        )
+        self.spin_individual_interval.setEnabled(False)
+        ind_output_layout.addRow("Save Every N Frames:", self.spin_individual_interval)
+
+        # Padding fraction (only crop parameter needed - size is determined by OBB)
+        self.spin_individual_padding = QDoubleSpinBox()
+        self.spin_individual_padding.setRange(0.0, 0.5)
+        self.spin_individual_padding.setValue(0.1)
+        self.spin_individual_padding.setSingleStep(0.05)
+        self.spin_individual_padding.setDecimals(2)
+        self.spin_individual_padding.setToolTip(
+            "Padding around OBB bounding box as fraction of size.\n"
+            "0.1 = 10% padding on each side."
+        )
+        self.spin_individual_padding.setEnabled(False)
+        ind_output_layout.addRow("Padding Fraction:", self.spin_individual_padding)
+
+        vl_ind_dataset.addWidget(ind_output_group)
+
+        # Info label about filtering
+        info_label = self._create_help_label(
+            "Note: Crops use detections already filtered by ROI and size settings.\n"
+            "No additional filtering parameters needed."
+        )
+        vl_ind_dataset.addWidget(info_label)
+
+        form.addWidget(self.g_individual_dataset)
+
         # Post-hoc Pose Analysis Section (Placeholder)
         self.g_pose_analysis = QGroupBox("Post-hoc Pose Tracking Analysis")
         vl_pose_analysis = QVBoxLayout(self.g_pose_analysis)
@@ -2694,6 +2784,21 @@ class MainWindow(QMainWindow):
         )
         if directory:
             self.line_pose_output_dir.setText(directory)
+
+    def _on_individual_dataset_toggled(self, enabled):
+        """Enable/disable individual dataset generation controls."""
+        self.line_individual_output.setEnabled(enabled)
+        self.combo_individual_format.setEnabled(enabled)
+        self.spin_individual_interval.setEnabled(enabled)
+        self.spin_individual_padding.setEnabled(enabled)
+
+    def _select_individual_output_dir(self):
+        """Browse for individual dataset output directory."""
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Individual Dataset Output Directory"
+        )
+        if directory:
+            self.line_individual_output.setText(directory)
 
     def _export_pose_dataset(self):
         """Export pose tracking dataset from trajectories."""
@@ -5364,6 +5469,12 @@ class MainWindow(QMainWindow):
             "POSE_CROP_SIZE_MULTIPLIER": self.spin_pose_crop_multiplier.value(),
             "POSE_MIN_TRAJECTORY_LENGTH": self.spin_pose_min_length.value(),
             "POSE_EXPORT_FPS": self.spin_pose_export_fps.value(),
+            # Real-time Individual Dataset Generation parameters
+            "ENABLE_INDIVIDUAL_DATASET": self.chk_enable_individual_dataset.isChecked(),
+            "INDIVIDUAL_DATASET_OUTPUT_DIR": self.line_individual_output.text(),
+            "INDIVIDUAL_OUTPUT_FORMAT": self.combo_individual_format.currentText().lower(),
+            "INDIVIDUAL_SAVE_INTERVAL": self.spin_individual_interval.value(),
+            "INDIVIDUAL_CROP_PADDING": self.spin_individual_padding.value(),
         }
 
     def load_config(self):
@@ -5824,6 +5935,25 @@ class MainWindow(QMainWindow):
             )
             self.spin_pose_export_fps.setValue(get_cfg("pose_export_fps", default=30))
 
+            # === REAL-TIME INDIVIDUAL DATASET ===
+            self.chk_enable_individual_dataset.setChecked(
+                get_cfg("enable_individual_dataset", default=False)
+            )
+            if not self.line_individual_output.text().strip():
+                self.line_individual_output.setText(
+                    get_cfg("individual_dataset_output_dir", default="")
+                )
+            format_text = get_cfg("individual_output_format", default="png").upper()
+            format_idx = self.combo_individual_format.findText(format_text)
+            if format_idx >= 0:
+                self.combo_individual_format.setCurrentIndex(format_idx)
+            self.spin_individual_interval.setValue(
+                get_cfg("individual_save_interval", default=1)
+            )
+            self.spin_individual_padding.setValue(
+                get_cfg("individual_crop_padding", default=0.1)
+            )
+
             # === ROI ===
             self.roi_shapes = cfg.get("roi_shapes", [])
             if self.roi_shapes:
@@ -6024,6 +6154,12 @@ class MainWindow(QMainWindow):
             "pose_crop_size_multiplier": self.spin_pose_crop_multiplier.value(),
             "pose_min_trajectory_length": self.spin_pose_min_length.value(),
             "pose_export_fps": self.spin_pose_export_fps.value(),
+            # === REAL-TIME INDIVIDUAL DATASET ===
+            "enable_individual_dataset": self.chk_enable_individual_dataset.isChecked(),
+            "individual_dataset_output_dir": self.line_individual_output.text(),
+            "individual_output_format": self.combo_individual_format.currentText().lower(),
+            "individual_save_interval": self.spin_individual_interval.value(),
+            "individual_crop_padding": self.spin_individual_padding.value(),
         }
 
         # Determine save path: video-based if video selected, otherwise ask user

@@ -17,6 +17,7 @@ from .kalman_filters import KalmanFilterManager
 from .background_models import BackgroundModel
 from .detection import create_detector
 from .assignment import TrackAssigner
+from .individual_analysis import IndividualDatasetGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,23 @@ class TrackingWorker(QThread):
         if detection_method == "background_subtraction":
             bg_model = BackgroundModel(p)
             bg_model.prime_background(cap)
+
+        # Initialize individual dataset generator (for YOLO OBB only, forward pass only)
+        individual_generator = None
+        if (
+            detection_method != "background_subtraction"
+            and p.get("ENABLE_INDIVIDUAL_DATASET", False)
+            and not self.backward_mode  # Only generate dataset in forward pass
+        ):
+            output_dir = p.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
+            video_name = Path(self.video_path).stem
+            if output_dir:
+                individual_generator = IndividualDatasetGenerator(
+                    p, output_dir, video_name
+                )
+                logger.info(
+                    f"Individual dataset generator enabled, output: {output_dir}"
+                )
 
         self.kf_manager = KalmanFilterManager(p["MAX_TARGETS"], p)
         assigner = TrackAssigner(p)
@@ -255,6 +273,8 @@ class TrackingWorker(QThread):
                 meas, sizes, shapes, yolo_results, detection_confidences = (
                     detector.detect_objects(fg_mask, self.frame_count)
                 )
+                # No OBB corners for background subtraction
+                filtered_obb_corners = []
 
             else:  # YOLO OBB detection
                 # YOLO uses the original BGR frame directly without masking
@@ -266,6 +286,13 @@ class TrackingWorker(QThread):
                 bg_u8 = None
                 meas, sizes, shapes, yolo_results, detection_confidences = (
                     detector.detect_objects(yolo_frame, self.frame_count)
+                )
+
+                # Get filtered OBB corners from detector (already filtered by size)
+                filtered_obb_corners = (
+                    getattr(yolo_results, "_filtered_obb_corners", [])
+                    if yolo_results
+                    else []
                 )
 
                 # Filter detections by ROI mask AFTER detection (vectorized)
@@ -289,15 +316,20 @@ class TrackingWorker(QThread):
 
                     # Combined mask
                     keep_mask = in_bounds & in_roi
+                    keep_indices = np.where(keep_mask)[0]
 
                     # Apply filter using boolean indexing
                     # Keep meas as list of numpy arrays (required by Kalman filter)
-                    meas = [meas_arr[i] for i in np.where(keep_mask)[0]]
+                    meas = [meas_arr[i] for i in keep_indices]
                     sizes = np.array(sizes)[keep_mask].tolist()
                     shapes = np.array(shapes)[keep_mask].tolist()
                     detection_confidences = np.array(detection_confidences)[
                         keep_mask
                     ].tolist()
+                    # Also filter OBB corners
+                    filtered_obb_corners = [
+                        filtered_obb_corners[i] for i in keep_indices
+                    ]
 
             profile_times["detection"] += time.time() - detect_start
 
@@ -530,6 +562,47 @@ class TrackingWorker(QThread):
                 time.time() - assign_start if detection_initialized and meas else 0
             )
 
+            # --- Individual Dataset Generation (YOLO OBB only) ---
+            if individual_generator is not None and filtered_obb_corners:
+                # Get track and trajectory IDs for matched detections
+                # cols contains the detection indices that were matched to tracks (rows)
+                matched_track_ids = []
+                matched_traj_ids = []
+
+                if (
+                    detection_initialized
+                    and meas
+                    and "cols" in dir()
+                    and "rows" in dir()
+                ):
+                    # Create mapping from detection index to track info
+                    det_to_track = {}
+                    for r, c in zip(rows, cols):
+                        det_to_track[c] = (r, trajectory_ids[r])
+
+                    # Build lists in detection order
+                    for det_idx in range(len(meas)):
+                        if det_idx in det_to_track:
+                            track_id, traj_id = det_to_track[det_idx]
+                            matched_track_ids.append(track_id)
+                            matched_traj_ids.append(traj_id)
+                        else:
+                            matched_track_ids.append(-1)
+                            matched_traj_ids.append(-1)
+
+                # Pass filtered detection data directly (already filtered by size + ROI)
+                individual_generator.process_frame(
+                    frame=frame,
+                    frame_id=self.frame_count,
+                    meas=meas,
+                    obb_corners=filtered_obb_corners,
+                    confidences=(
+                        detection_confidences if detection_confidences else None
+                    ),
+                    track_ids=matched_track_ids if matched_track_ids else None,
+                    trajectory_ids=matched_traj_ids if matched_traj_ids else None,
+                )
+
             # --- Tracking State Updates ---
             track_start = time.time()
             # (All the tracking state updates happen here - already in code)
@@ -674,6 +747,12 @@ class TrackingWorker(QThread):
         cap.release()
         if self.video_writer:
             self.video_writer.release()
+
+        # Finalize individual dataset if enabled
+        if individual_generator is not None:
+            dataset_path = individual_generator.finalize()
+            if dataset_path:
+                logger.info(f"Individual dataset saved to: {dataset_path}")
 
         logger.info("Tracking worker finished. Emitting raw trajectory data.")
 
