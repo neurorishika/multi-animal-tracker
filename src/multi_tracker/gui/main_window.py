@@ -406,8 +406,13 @@ class MainWindow(QMainWindow):
         roi_main_layout.addLayout(roi_status_layout)
 
         # Instructions (Hidden unless active)
-        self.roi_instructions = QLabel("")
-        self.roi_instructions.setStyleSheet("color: #4a9eff; font-size: 11px;")
+        self.roi_instructions = QLabel(""
+        )
+        self.roi_instructions.setWordWrap(True)
+        self.roi_instructions.setStyleSheet(
+            "color: #4a9eff; font-size: 11px; font-weight: bold; "
+            "padding: 6px; background-color: #1a3a5a; border-radius: 4px;"
+        )
         roi_main_layout.addWidget(self.roi_instructions)
 
         left_layout.addWidget(self.scroll, stretch=1)
@@ -2882,8 +2887,9 @@ class MainWindow(QMainWindow):
             # Clear any previous detection test result
             self.detection_test_result = None
             self._update_preview_display()
-            # Auto-fit to screen
-            self._fit_image_to_screen()
+            # Auto-fit to screen - use QTimer to ensure display is updated first
+            from PySide2.QtCore import QTimer
+            QTimer.singleShot(10, self._fit_image_to_screen)
             logger.info(f"Loaded preview frame {random_frame_idx}/{total_frames}")
         else:
             logger.warning("Failed to read preview frame")
@@ -2915,6 +2921,9 @@ class MainWindow(QMainWindow):
         # If detection test result exists, redisplay it; otherwise show preview
         if self.detection_test_result is not None:
             self._redisplay_detection_test()
+        elif self.roi_base_frame is not None and self.roi_shapes:
+            # If ROI is active but no preview frame, show ROI base frame with mask
+            self._display_roi_with_zoom()
         else:
             self._update_preview_display()
 
@@ -3558,11 +3567,11 @@ class MainWindow(QMainWindow):
             # If actively selecting, update instructions
             if self.roi_current_mode == "circle":
                 self.roi_instructions.setText(
-                    "Circle: Click 3+ points on boundary. ESC to cancel."
+                    "Circle: Left-click 3+ points on boundary  •  Right-click to undo  •  ESC to cancel"
                 )
             else:
                 self.roi_instructions.setText(
-                    "Polygon: Click vertices. Double-click or press Confirm to close. ESC to cancel."
+                    "Polygon: Left-click vertices  •  Right-click to undo  •  Double-click to finish  •  ESC to cancel"
                 )
 
     def _on_roi_zone_changed(self, index):
@@ -3624,6 +3633,11 @@ class MainWindow(QMainWindow):
     def _handle_video_wheel(self, evt):
         """Handle mouse wheel - zoom in/out."""
         from PySide2.QtCore import Qt
+        
+        # Block zoom during ROI selection
+        if self.roi_selection_active:
+            evt.ignore()
+            return
 
         # Ctrl+Wheel for zoom
         if evt.modifiers() == Qt.ControlModifier:
@@ -3656,6 +3670,10 @@ class MainWindow(QMainWindow):
     def _handle_gesture_event(self, evt):
         """Handle pinch-to-zoom gesture."""
         from PySide2.QtCore import Qt
+        
+        # Block gestures during ROI selection
+        if self.roi_selection_active:
+            return False
 
         gesture = evt.gesture(Qt.PinchGesture)
         if gesture:
@@ -3680,17 +3698,44 @@ class MainWindow(QMainWindow):
 
         return False
 
+    def _display_roi_with_zoom(self):
+        """Display the ROI base frame with mask and current zoom applied."""
+        if self.roi_base_frame is None or not self.roi_shapes:
+            return
+        
+        # Apply ROI mask to base frame
+        qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
+        
+        # Apply zoom
+        zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
+        if zoom_val != 1.0:
+            w = qimg_masked.width()
+            h = qimg_masked.height()
+            scaled_w = int(w * zoom_val)
+            scaled_h = int(h * zoom_val)
+            qimg_masked = qimg_masked.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+        
+        pixmap = QPixmap.fromImage(qimg_masked)
+        self.video_label.setPixmap(pixmap)
+
     def _fit_image_to_screen(self):
         """Fit the image to the available screen space."""
-        if self.preview_frame_original is None:
+        # Determine which frame to use for sizing
+        frame_to_fit = None
+        if self.preview_frame_original is not None:
+            h, w = self.preview_frame_original.shape[:2]
+        elif self.roi_base_frame is not None:
+            # Use ROI base frame if no preview frame
+            w = self.roi_base_frame.width()
+            h = self.roi_base_frame.height()
+        else:
             return
 
         # Get the scroll area viewport size
         viewport_width = self.scroll.viewport().width()
         viewport_height = self.scroll.viewport().height()
-
-        # Get the original image size
-        h, w = self.preview_frame_original.shape[:2]
 
         # Account for resize factor if detection test has been run
         # detection_test_result stores (frame, resize_factor)
@@ -3722,6 +3767,19 @@ class MainWindow(QMainWindow):
     def record_roi_click(self, evt):
         if not self.roi_selection_active or self.roi_base_frame is None:
             return
+        
+        # Right-click to undo last point
+        if evt.button() == Qt.RightButton:
+            if len(self.roi_points) > 0:
+                removed = self.roi_points.pop()
+                logger.info(f"Undid last ROI point: ({removed[0]}, {removed[1]})")
+                self.update_roi_preview()
+            return
+        
+        # Left-click to add point
+        if evt.button() != Qt.LeftButton:
+            return
+            
         x, y = evt.pos().x(), evt.pos().y()
 
         # Double-click detection for polygon closing
@@ -3861,6 +3919,12 @@ class MainWindow(QMainWindow):
         self.btn_finish_roi.setEnabled(False)
         self.combo_roi_mode.setEnabled(False)
         self.combo_roi_zone.setEnabled(False)
+        
+        # Disable zoom slider during ROI selection
+        self.slider_zoom.setEnabled(False)
+        
+        # Set crosshair cursor for precise ROI selection
+        self.video_label.setCursor(Qt.CrossCursor)
 
         zone_type = (
             "INCLUSION" if self.roi_current_zone_type == "include" else "EXCLUSION"
@@ -3870,12 +3934,12 @@ class MainWindow(QMainWindow):
                 f"Click points on {zone_type.lower()} circle boundary"
             )
             self.roi_instructions.setText(
-                f"{zone_type} Circle: Click 3+ points on boundary. Press ESC to cancel."
+                f"{zone_type} Circle: Left-click 3+ points on boundary  •  Right-click to undo  •  ESC to cancel"
             )
         else:
             self.roi_status_label.setText(f"Click {zone_type.lower()} polygon vertices")
             self.roi_instructions.setText(
-                f"{zone_type} Polygon: Click vertices. Double-click or press Confirm to close. ESC to cancel."
+                f"{zone_type} Polygon: Left-click vertices  •  Right-click to undo  •  Double-click to finish  •  ESC to cancel"
             )
 
         self.update_roi_preview()
@@ -3938,6 +4002,15 @@ class MainWindow(QMainWindow):
         self.combo_roi_mode.setEnabled(True)
         self.combo_roi_zone.setEnabled(True)
         self.roi_instructions.setText("")
+        
+        # Re-enable zoom slider
+        self.slider_zoom.setEnabled(True)
+        
+        # Restore open hand cursor (for pan/zoom)
+        if hasattr(Qt, 'OpenHandCursor'):
+            self.video_label.setCursor(Qt.OpenHandCursor)
+        else:
+            self.video_label.unsetCursor()
 
         # Update status to show inclusion/exclusion counts
         include_count = sum(
@@ -3958,8 +4031,9 @@ class MainWindow(QMainWindow):
         if self.roi_base_frame:
             qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
             self.video_label.setPixmap(QPixmap.fromImage(qimg_masked))
-            # Auto-fit to screen after ROI change
-            self._fit_image_to_screen()
+            # Auto-fit to screen after ROI change - use QTimer to ensure display is updated
+            from PySide2.QtCore import QTimer
+            QTimer.singleShot(10, self._fit_image_to_screen)
 
     def _generate_combined_roi_mask(self, height, width):
         """Generate a combined mask from all ROI shapes with inclusion/exclusion support."""
@@ -4044,6 +4118,16 @@ class MainWindow(QMainWindow):
         self.roi_status_label.setText("No ROI")
         self.roi_instructions.setText("")
         self.video_label.setText("ROI Cleared.")
+        
+        # Re-enable zoom slider
+        self.slider_zoom.setEnabled(True)
+        
+        # Restore open hand cursor
+        if hasattr(Qt, 'OpenHandCursor'):
+            self.video_label.setCursor(Qt.OpenHandCursor)
+        else:
+            self.video_label.unsetCursor()
+        
         logger.info("All ROI shapes cleared")
 
     def keyPressEvent(self, event):
