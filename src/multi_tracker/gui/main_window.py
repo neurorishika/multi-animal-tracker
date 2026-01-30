@@ -264,6 +264,10 @@ class MainWindow(QMainWindow):
         self._pan_start_pos = None
         self._scroll_start_h = 0
         self._scroll_start_v = 0
+        
+        # Track first frame for auto-fit during tracking
+        self._tracking_first_frame = True
+        self._tracking_frame_size = None  # (width, height) of resized tracking frames
 
         # Advanced configuration (for power users)
         self.advanced_config = self._load_advanced_config()
@@ -3431,26 +3435,54 @@ class MainWindow(QMainWindow):
                     "MAX_OBJECT_SIZE": self.spin_max_object_size.value(),
                 }
 
-                # Apply ROI mask if exists (resize it too if needed)
-                yolo_frame = frame_to_process.copy()
+                # Prepare ROI mask for filtering (resize if needed)
+                roi_for_yolo = None
                 if self.roi_mask is not None:
                     roi_for_yolo = self.roi_mask
                     if resize_f < 1.0:
                         roi_for_yolo = cv2.resize(
                             self.roi_mask,
-                            (yolo_frame.shape[1], yolo_frame.shape[0]),
+                            (frame_to_process.shape[1], frame_to_process.shape[0]),
                             interpolation=cv2.INTER_NEAREST,
                         )
-                    ROI_mask_3ch = cv2.cvtColor(roi_for_yolo, cv2.COLOR_GRAY2BGR)
-                    yolo_frame = cv2.bitwise_and(yolo_frame, ROI_mask_3ch)
 
-                # Create detector and run detection
+                # Create detector and run detection on FULL frame (no masking)
+                # This preserves natural image context for better YOLO confidence
                 detector = YOLOOBBDetector(yolo_params)
                 meas, sizes, shapes, yolo_results, detection_confidences = (
-                    detector.detect_objects(yolo_frame, 0)
+                    detector.detect_objects(frame_to_process, 0)
                 )
+                
+                # Filter detections by ROI AFTER detection (vectorized)
+                if roi_for_yolo is not None and len(meas) > 0:
+                    # Vectorized filtering using NumPy for efficiency with large n
+                    meas_arr = np.array(meas)
+                    cx_arr = meas_arr[:, 0].astype(np.int32)
+                    cy_arr = meas_arr[:, 1].astype(np.int32)
+                    
+                    # Bounds check
+                    h, w = roi_for_yolo.shape[:2]
+                    in_bounds = (cy_arr >= 0) & (cy_arr < h) & (cx_arr >= 0) & (cx_arr < w)
+                    
+                    # ROI check (clip to bounds for safe indexing, then apply bounds mask)
+                    cy_safe = np.clip(cy_arr, 0, h - 1)
+                    cx_safe = np.clip(cx_arr, 0, w - 1)
+                    in_roi = roi_for_yolo[cy_safe, cx_safe] > 0
+                    
+                    # Combined mask
+                    keep_mask = in_bounds & in_roi
+                    filtered_indices = np.where(keep_mask)[0].tolist()
+                    
+                    # Apply filter using boolean indexing
+                    # Keep meas as list of numpy arrays for consistency
+                    meas = [meas_arr[i] for i in filtered_indices]
+                    sizes = np.array(sizes)[keep_mask].tolist()
+                    shapes = np.array(shapes)[keep_mask].tolist()
+                    detection_confidences = np.array(detection_confidences)[keep_mask].tolist()
+                else:
+                    filtered_indices = list(range(len(meas)))  # Keep all
 
-                # Collect detected dimensions for statistics
+                # Collect detected dimensions for statistics (only for filtered detections)
                 # Extract actual width/height from YOLO OBB results
                 detected_dimensions = []
                 if (
@@ -3459,7 +3491,7 @@ class MainWindow(QMainWindow):
                     and len(yolo_results.obb) > 0
                 ):
                     obb_data = yolo_results.obb
-                    for i in range(len(obb_data)):
+                    for i in filtered_indices:
                         # xywhr gives [center_x, center_y, width, height, rotation]
                         xywhr = obb_data.xywhr[i].cpu().numpy()
                         _, _, w, h, _ = xywhr
@@ -3467,10 +3499,10 @@ class MainWindow(QMainWindow):
                         minor_axis = min(w, h)
                         detected_dimensions.append((major_axis, minor_axis))
 
-                # Visualize YOLO detections
+                # Visualize YOLO detections (only filtered ones)
                 if yolo_results and hasattr(yolo_results, "obb"):
                     obb_data = yolo_results.obb
-                    for i in range(len(obb_data)):
+                    for i in filtered_indices:
                         corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
                         cv2.polylines(
                             test_frame,
@@ -3722,14 +3754,36 @@ class MainWindow(QMainWindow):
 
     def _fit_image_to_screen(self):
         """Fit the image to the available screen space."""
-        # Determine which frame to use for sizing
-        frame_to_fit = None
-        if self.preview_frame_original is not None:
+        # Determine which frame to use for sizing and whether resize factor applies
+        # Resize factor applies differently depending on display mode:
+        # - ROI selection / preview display: full resolution, resize factor NOT yet applied
+        # - Detection test / tracking preview: resize factor already applied to displayed frame
+        
+        # Check if tracking worker is running (frames are already resized)
+        tracking_active = self.tracking_worker is not None and self.tracking_worker.isRunning()
+        
+        if tracking_active and self._tracking_frame_size is not None:
+            # During tracking/preview, use the actual frame size from the worker
+            # These frames are already resized, so use dimensions directly
+            effective_width, effective_height = self._tracking_frame_size
+        elif self.detection_test_result is not None:
+            # Detection test shows resized content
+            if self.preview_frame_original is not None:
+                h, w = self.preview_frame_original.shape[:2]
+                resize_factor = self.spin_resize.value()
+                effective_width = int(w * resize_factor)
+                effective_height = int(h * resize_factor)
+            else:
+                return
+        elif self.preview_frame_original is not None:
+            # Preview frame at original resolution (pre-test detection)
             h, w = self.preview_frame_original.shape[:2]
+            effective_width = w
+            effective_height = h
         elif self.roi_base_frame is not None:
-            # Use ROI base frame if no preview frame
-            w = self.roi_base_frame.width()
-            h = self.roi_base_frame.height()
+            # ROI base frame is always full resolution
+            effective_width = self.roi_base_frame.width()
+            effective_height = self.roi_base_frame.height()
         else:
             return
 
@@ -3737,19 +3791,7 @@ class MainWindow(QMainWindow):
         viewport_width = self.scroll.viewport().width()
         viewport_height = self.scroll.viewport().height()
 
-        # Account for resize factor if detection test has been run
-        # detection_test_result stores (frame, resize_factor)
-        effective_width = w
-        effective_height = h
-        if self.detection_test_result is not None and isinstance(
-            self.detection_test_result, tuple
-        ):
-            # Detection test is active, get the resize factor
-            _, resize_factor = self.detection_test_result
-            effective_width = int(w * resize_factor)
-            effective_height = int(h * resize_factor)
-
-        # Calculate zoom to fit the effective (possibly resized) dimensions
+        # Calculate zoom to fit the effective dimensions
         zoom_w = viewport_width / effective_width
         zoom_h = viewport_height / effective_height
         zoom_fit = min(zoom_w, zoom_h) * 0.95  # 95% to leave some margin
@@ -4027,13 +4069,13 @@ class MainWindow(QMainWindow):
         self.btn_crop_video.setEnabled(True)
         self._update_roi_optimization_info()
 
-        # Show the masked result - what detector will see
+        # Auto-fit to screen after ROI change - use QTimer to ensure proper sequencing
         if self.roi_base_frame:
-            qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
-            self.video_label.setPixmap(QPixmap.fromImage(qimg_masked))
-            # Auto-fit to screen after ROI change - use QTimer to ensure display is updated
             from PySide2.QtCore import QTimer
+            # First fit the screen (sets zoom slider value)
             QTimer.singleShot(10, self._fit_image_to_screen)
+            # Then display with the new zoom applied
+            QTimer.singleShot(50, self._display_roi_with_zoom)
 
     def _generate_combined_roi_mask(self, height, width):
         """Generate a combined mask from all ROI shapes with inclusion/exclusion support."""
@@ -4290,6 +4332,9 @@ class MainWindow(QMainWindow):
         self.label_current_fps.setVisible(False)
         self.label_elapsed_time.setVisible(False)
         self.label_eta.setVisible(False)
+        
+        # Reset tracking frame size
+        self._tracking_frame_size = None
 
     def _set_ui_controls_enabled(self, enabled: bool):
         # Disable Main setup
@@ -4347,7 +4392,32 @@ class MainWindow(QMainWindow):
         return pix.toImage()
 
     def _apply_roi_mask_to_image(self, qimage):
-        """Apply ROI mask to darken areas outside the ROI (with caching)."""
+        """Apply ROI visualization based on detection method.
+        
+        For background subtraction: mask with darkening (image is actually masked)
+        For YOLO: just draw boundary overlay (image is NOT masked, only detections filtered)
+        """
+        if self.roi_mask is None or not self.roi_shapes:
+            return qimage
+        
+        # Check detection method to determine visualization style
+        # Safe check - default to YOLO overlay if no method selected yet
+        try:
+            detection_method = self.combo_detection_method.currentText()
+        except:
+            detection_method = "YOLO OBB"
+        
+        if detection_method == "YOLO OBB":
+            # YOLO processes full image - just show boundary overlay
+            return self._draw_roi_overlay(qimage)
+        else:
+            # Background subtraction masks image - show masked visualization
+            return self._apply_roi_mask_darkening(qimage)
+    
+    def _apply_roi_mask_darkening(self, qimage):
+        """Apply ROI mask to darken areas outside the ROI (with caching).
+        Used for background subtraction where the image is actually masked.
+        """
         if self.roi_mask is None or not self.roi_shapes:
             return qimage
 
@@ -4452,6 +4522,10 @@ class MainWindow(QMainWindow):
     def on_new_frame(self, rgb):
         z = max(self.slider_zoom.value() / 100.0, 0.1)
         h, w, _ = rgb.shape
+        
+        # Store tracking frame size for fit-to-screen calculation
+        self._tracking_frame_size = (w, h)
+        
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
 
         # ROI masking is now done in tracking worker - no need to duplicate here
@@ -4459,6 +4533,13 @@ class MainWindow(QMainWindow):
             int(w * z), int(h * z), Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
         self.video_label.setPixmap(QPixmap.fromImage(scaled))
+        
+        # Auto-fit to screen on first frame of tracking
+        if self._tracking_first_frame:
+            self._tracking_first_frame = False
+            # Use QTimer to ensure frame is displayed first
+            from PySide2.QtCore import QTimer
+            QTimer.singleShot(50, self._fit_image_to_screen)
 
     def _scale_trajectories_to_original_space(self, trajectories_df, resize_factor):
         """Scale trajectory coordinates from resized space back to original video space."""
@@ -4983,6 +5064,8 @@ class MainWindow(QMainWindow):
     def start_preview_on_video(self, video_path):
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+        # Reset first frame flag for auto-fit
+        self._tracking_first_frame = True
         self.csv_writer_thread = None
         self.tracking_worker = TrackingWorker(
             video_path,
@@ -5018,6 +5101,9 @@ class MainWindow(QMainWindow):
     def start_tracking_on_video(self, video_path, backward_mode=False):
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+
+        # Reset first frame flag for auto-fit
+        self._tracking_first_frame = True
 
         # Session logging is already set up in start_full() - don't duplicate here
         # For backward mode, we reuse the same session log

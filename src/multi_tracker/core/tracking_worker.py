@@ -150,7 +150,7 @@ class TrackingWorker(QThread):
 
         start_time, self.frame_count, fps_list = time.time(), 0, []
         local_counts, intensity_history, lighting_state = [0] * N, deque(maxlen=50), {}
-        roi_fill_color = None  # Average color outside ROI for YOLO masking
+        roi_fill_color = None  # Average color outside ROI for visualization overlay
 
         # Profiling accumulators
         profile_times = {
@@ -257,14 +257,9 @@ class TrackingWorker(QThread):
                 )
 
             else:  # YOLO OBB detection
-                # YOLO uses the original BGR frame directly
+                # YOLO uses the original BGR frame directly without masking
+                # This preserves natural image context for better confidence estimates
                 yolo_frame = frame.copy()
-                if ROI_mask_current is not None:
-                    # Reuse pre-computed masks
-                    yolo_frame = cv2.bitwise_and(yolo_frame, ROI_mask_3ch)
-                    background = np.full_like(frame, roi_fill_color)
-                    background = cv2.bitwise_and(background, mask_inv_3ch)
-                    yolo_frame = cv2.add(yolo_frame, background)
 
                 # No foreground mask or background for YOLO
                 fg_mask = None
@@ -272,6 +267,37 @@ class TrackingWorker(QThread):
                 meas, sizes, shapes, yolo_results, detection_confidences = (
                     detector.detect_objects(yolo_frame, self.frame_count)
                 )
+
+                # Filter detections by ROI mask AFTER detection (vectorized)
+                # This is better than masking the image which reduces YOLO confidence
+                if ROI_mask_current is not None and len(meas) > 0:
+                    # Vectorized filtering using NumPy for efficiency with large n
+                    meas_arr = np.array(meas)
+                    cx_arr = meas_arr[:, 0].astype(np.int32)
+                    cy_arr = meas_arr[:, 1].astype(np.int32)
+
+                    # Bounds check
+                    h, w = ROI_mask_current.shape[:2]
+                    in_bounds = (
+                        (cy_arr >= 0) & (cy_arr < h) & (cx_arr >= 0) & (cx_arr < w)
+                    )
+
+                    # ROI check (clip to bounds for safe indexing, then apply bounds mask)
+                    cy_safe = np.clip(cy_arr, 0, h - 1)
+                    cx_safe = np.clip(cx_arr, 0, w - 1)
+                    in_roi = ROI_mask_current[cy_safe, cx_safe] > 0
+
+                    # Combined mask
+                    keep_mask = in_bounds & in_roi
+
+                    # Apply filter using boolean indexing
+                    # Keep meas as list of numpy arrays (required by Kalman filter)
+                    meas = [meas_arr[i] for i in np.where(keep_mask)[0]]
+                    sizes = np.array(sizes)[keep_mask].tolist()
+                    shapes = np.array(shapes)[keep_mask].tolist()
+                    detection_confidences = np.array(detection_confidences)[
+                        keep_mask
+                    ].tolist()
 
             profile_times["detection"] += time.time() - detect_start
 
@@ -288,15 +314,22 @@ class TrackingWorker(QThread):
 
             overlay = frame.copy()
 
-            # Apply ROI mask to base overlay - reuse pre-computed masks
-            if ROI_mask_current is not None and roi_fill_color is not None:
-                overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
-                background = np.full_like(overlay, roi_fill_color)
-                background = cv2.bitwise_and(background, mask_inv_3ch)
-                overlay = cv2.add(overlay, background)
-            elif ROI_mask_current is not None:
-                # Fallback to black if color not yet calculated
-                overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
+            # Apply ROI visualization based on detection method
+            # For background subtraction: mask with fill color (image is actually masked)
+            # For YOLO: draw boundary only (image is NOT masked, only detections filtered)
+            if ROI_mask_current is not None:
+                if detection_method == "background_subtraction":
+                    # Background subtraction actually masks the image - show masked overlay
+                    if roi_fill_color is not None:
+                        overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
+                        background = np.full_like(overlay, roi_fill_color)
+                        background = cv2.bitwise_and(background, mask_inv_3ch)
+                        overlay = cv2.add(overlay, background)
+                    else:
+                        # Fallback to black if color not yet calculated
+                        overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
+                # For YOLO, overlay remains unchanged (full frame visible)
+                # ROI boundary will be drawn later if needed
 
             hist_velocities = []
             hist_sizes = []
@@ -557,6 +590,18 @@ class TrackingWorker(QThread):
                 profile_times["video_write"] += time.time() - write_start
 
                 emit_start = time.time()
+                # For YOLO with ROI, draw boundary overlay before emitting
+                if (
+                    detection_method != "background_subtraction"
+                    and ROI_mask_current is not None
+                ):
+                    # Find contours of ROI mask
+                    contours, _ = cv2.findContours(
+                        ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    # Draw cyan boundary
+                    cv2.drawContours(overlay, contours, -1, (0, 255, 255), 2)
+
                 self.emit_frame(overlay)
                 profile_times["gui_emit"] += time.time() - emit_start
 
