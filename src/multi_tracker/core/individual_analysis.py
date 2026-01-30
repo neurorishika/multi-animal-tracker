@@ -191,7 +191,7 @@ class IndividualDatasetGenerator:
     - Uses already-filtered detections (ROI + size filtering done by tracking)
     """
 
-    def __init__(self, params, output_dir, video_name):
+    def __init__(self, params, output_dir, video_name, dataset_name=None):
         """
         Initialize the individual dataset generator.
 
@@ -199,6 +199,7 @@ class IndividualDatasetGenerator:
             params: Parameter dictionary
             output_dir: Base directory for saving crops
             video_name: Name of the source video (for organizing output)
+            dataset_name: Optional custom name for the dataset
         """
         self.params = params
         self.enabled = params.get("ENABLE_INDIVIDUAL_DATASET", False)
@@ -206,6 +207,9 @@ class IndividualDatasetGenerator:
         # Output configuration
         self.output_dir = Path(output_dir) if output_dir else None
         self.video_name = video_name
+        self.dataset_name = dataset_name or params.get(
+            "INDIVIDUAL_DATASET_NAME", "individual_dataset"
+        )
 
         # Crop parameters - only padding (crop size is determined by OBB)
         self.padding_fraction = params.get("INDIVIDUAL_CROP_PADDING", 0.1)
@@ -280,8 +284,8 @@ class IndividualDatasetGenerator:
         from datetime import datetime
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dataset_name = f"{self.video_name}_individual_{timestamp}"
-        self.crops_dir = self.output_dir / dataset_name / "crops"
+        dataset_folder_name = f"{self.dataset_name}_{timestamp}"
+        self.crops_dir = self.output_dir / dataset_folder_name / "crops"
         self.crops_dir.mkdir(parents=True, exist_ok=True)
 
         # Create metadata file path
@@ -299,6 +303,7 @@ class IndividualDatasetGenerator:
         confidences=None,
         track_ids=None,
         trajectory_ids=None,
+        coord_scale_factor=1.0,
     ):
         """
         Process a frame and save masked crops for each detection.
@@ -311,15 +316,16 @@ class IndividualDatasetGenerator:
         in the tracking pipeline - no additional filtering needed.
 
         Args:
-            frame: Input frame (BGR)
+            frame: Input frame (BGR) - should be ORIGINAL resolution
             frame_id: Current frame number
-            meas: List of measurements [cx, cy, theta, ...] for each detection
-            obb_corners: List of OBB corner arrays (4 points each) for YOLO detections
-            ellipse_params: List of ellipse params [major_axis, minor_axis] for BG sub detections
+            meas: List of measurements [cx, cy, theta, ...] for each detection (in detection resolution)
+            obb_corners: List of OBB corner arrays (4 points each) for YOLO detections (in detection resolution)
+            ellipse_params: List of ellipse params [major_axis, minor_axis] for BG sub detections (in detection resolution)
                            (center and theta are taken from meas)
             confidences: Optional list of confidence scores
             track_ids: Optional list of track IDs for each detection
             trajectory_ids: Optional list of trajectory IDs for each detection
+            coord_scale_factor: Scale factor to convert detection coords to original resolution (1/resize_factor)
 
         Returns:
             num_saved: Number of crops saved from this frame
@@ -346,20 +352,25 @@ class IndividualDatasetGenerator:
         use_ellipse = ellipse_params is not None and len(ellipse_params) > 0
 
         for i in range(len(meas)):
-            # Get detection info
+            # Get detection info and scale to original resolution
             m = meas[i]
-            cx, cy = float(m[0]), float(m[1])
+            cx = float(m[0]) * coord_scale_factor
+            cy = float(m[1]) * coord_scale_factor
             theta = float(m[2]) if len(m) > 2 else 0.0
 
             # Get OBB corners - either directly or computed from ellipse
+            # Scale corners/params to match original resolution
             if use_obb and i < len(obb_corners):
-                corners = np.asarray(obb_corners[i], dtype=np.float32)  # Shape: (4, 2)
+                # Scale OBB corners to original resolution
+                corners = (
+                    np.asarray(obb_corners[i], dtype=np.float32) * coord_scale_factor
+                )  # Shape: (4, 2)
                 source_type = "yolo_obb"
             elif use_ellipse and i < len(ellipse_params):
-                # Get ellipse parameters and convert to OBB corners
+                # Get ellipse parameters and scale to original resolution
                 ep = ellipse_params[i]
-                major_axis = float(ep[0])
-                minor_axis = float(ep[1])
+                major_axis = float(ep[0]) * coord_scale_factor
+                minor_axis = float(ep[1]) * coord_scale_factor
                 corners = self.ellipse_to_obb_corners(
                     cx, cy, major_axis, minor_axis, theta
                 )

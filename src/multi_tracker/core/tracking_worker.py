@@ -142,9 +142,10 @@ class TrackingWorker(QThread):
         ):
             output_dir = p.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
             video_name = Path(self.video_path).stem
+            dataset_name = p.get("INDIVIDUAL_DATASET_NAME", "individual_dataset")
             if output_dir:
                 individual_generator = IndividualDatasetGenerator(
-                    p, output_dir, video_name
+                    p, output_dir, video_name, dataset_name
                 )
                 logger.info(
                     f"Individual dataset generator enabled for {detection_method}, output: {output_dir}"
@@ -193,6 +194,10 @@ class TrackingWorker(QThread):
             # --- Preprocessing & Detection ---
             prep_start = time.time()
             resize_f = params["RESIZE_FACTOR"]
+            
+            # Keep original frame for individual dataset generation (high resolution)
+            original_frame = frame.copy() if individual_generator else None
+            
             if resize_f < 1.0:
                 frame = cv2.resize(
                     frame,
@@ -584,10 +589,13 @@ class TrackingWorker(QThread):
                             matched_traj_ids.append(-1)
 
                 # Determine which data source to use
+                # Use original_frame (full resolution) and coord_scale_factor (1/resize_f)
+                coord_scale_factor = 1.0 / resize_f
+                
                 if filtered_obb_corners:
                     # YOLO OBB detection - use OBB corners directly
                     individual_generator.process_frame(
-                        frame=frame,
+                        frame=original_frame,
                         frame_id=self.frame_count,
                         meas=meas,
                         obb_corners=filtered_obb_corners,
@@ -597,6 +605,7 @@ class TrackingWorker(QThread):
                         ),
                         track_ids=matched_track_ids if matched_track_ids else None,
                         trajectory_ids=matched_traj_ids if matched_traj_ids else None,
+                        coord_scale_factor=coord_scale_factor,
                     )
                 elif shapes:
                     # Background subtraction - compute ellipse params from shapes
@@ -618,7 +627,7 @@ class TrackingWorker(QThread):
                             ellipse_params.append([10.0, 10.0])
 
                     individual_generator.process_frame(
-                        frame=frame,
+                        frame=original_frame,
                         frame_id=self.frame_count,
                         meas=meas,
                         obb_corners=None,
@@ -628,6 +637,7 @@ class TrackingWorker(QThread):
                         ),
                         track_ids=matched_track_ids if matched_track_ids else None,
                         trajectory_ids=matched_traj_ids if matched_traj_ids else None,
+                        coord_scale_factor=coord_scale_factor,
                     )
 
             # --- Tracking State Updates ---

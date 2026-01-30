@@ -2523,6 +2523,15 @@ class MainWindow(QMainWindow):
         ind_output_layout = QFormLayout(ind_output_group)
         ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
+        # Dataset name
+        self.line_individual_dataset_name = QLineEdit()
+        self.line_individual_dataset_name.setPlaceholderText("individual_dataset")
+        self.line_individual_dataset_name.setToolTip(
+            "Name for this dataset. Timestamp will be appended automatically."
+        )
+        self.line_individual_dataset_name.setEnabled(False)
+        ind_output_layout.addRow("Dataset Name:", self.line_individual_dataset_name)
+
         # Output directory
         h_ind_output = QHBoxLayout()
         self.line_individual_output = QLineEdit()
@@ -2789,6 +2798,7 @@ class MainWindow(QMainWindow):
 
     def _on_individual_dataset_toggled(self, enabled):
         """Enable/disable individual dataset generation controls."""
+        self.line_individual_dataset_name.setEnabled(enabled)
         self.line_individual_output.setEnabled(enabled)
         self.combo_individual_format.setEnabled(enabled)
         self.spin_individual_interval.setEnabled(enabled)
@@ -5363,6 +5373,8 @@ class MainWindow(QMainWindow):
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
             # Real-time Individual Dataset Generation parameters
             "ENABLE_INDIVIDUAL_DATASET": self.chk_enable_individual_dataset.isChecked(),
+            "INDIVIDUAL_DATASET_NAME": self.line_individual_dataset_name.text().strip()
+            or "individual_dataset",
             "INDIVIDUAL_DATASET_OUTPUT_DIR": self.line_individual_output.text(),
             "INDIVIDUAL_OUTPUT_FORMAT": self.combo_individual_format.currentText().lower(),
             "INDIVIDUAL_SAVE_INTERVAL": self.spin_individual_interval.value(),
@@ -5812,6 +5824,9 @@ class MainWindow(QMainWindow):
             self.chk_enable_individual_dataset.setChecked(
                 get_cfg("enable_individual_dataset", default=False)
             )
+            self.line_individual_dataset_name.setText(
+                get_cfg("individual_dataset_name", default="individual_dataset")
+            )
             if not self.line_individual_output.text().strip():
                 self.line_individual_output.setText(
                     get_cfg("individual_dataset_output_dir", default="")
@@ -6022,6 +6037,8 @@ class MainWindow(QMainWindow):
             "apriltag_decimate": self.spin_apriltag_decimate.value(),
             # === REAL-TIME INDIVIDUAL DATASET ===
             "enable_individual_dataset": self.chk_enable_individual_dataset.isChecked(),
+            "individual_dataset_name": self.line_individual_dataset_name.text().strip()
+            or "individual_dataset",
             "individual_dataset_output_dir": self.line_individual_output.text(),
             "individual_output_format": self.combo_individual_format.currentText().lower(),
             "individual_save_interval": self.spin_individual_interval.value(),
