@@ -247,6 +247,27 @@ class MainWindow(QMainWindow):
         self.current_video_path = None
         self.detected_sizes = None  # Store detected object sizes for statistics
 
+        # ROI optimization tracking
+        self.roi_crop_warning_shown = (
+            False  # Track if we've warned about cropping this session
+        )
+
+        # ROI display caching (for performance)
+        self._roi_masked_cache = {}  # Cache: {(frame_id, roi_hash): masked_image}
+        self._roi_hash = None  # Hash of current ROI configuration
+
+        # Interactive pan/zoom state
+        self._is_panning = False
+        self._pan_start_pos = None
+        self._scroll_start_h = 0
+        self._scroll_start_v = 0
+        self._pan_start_pos = None
+        self._scroll_start_h = 0
+        self._scroll_start_v = 0
+
+        # Advanced configuration (for power users)
+        self.advanced_config = self._load_advanced_config()
+
         # === UI CONSTRUCTION ===
         self.init_ui()
 
@@ -285,7 +306,19 @@ class MainWindow(QMainWindow):
         self.video_label.setStyleSheet("color: #666; font-size: 16px;")
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll.setWidget(self.video_label)
-        self.video_label.mousePressEvent = self.record_roi_click
+
+        # Enable mouse tracking and events for interactive pan/zoom
+        self.video_label.setMouseTracking(True)
+        self.video_label.mousePressEvent = self._handle_video_mouse_press
+        self.video_label.mouseMoveEvent = self._handle_video_mouse_move
+        self.video_label.mouseReleaseEvent = self._handle_video_mouse_release
+        self.video_label.mouseDoubleClickEvent = self._handle_video_double_click
+        self.video_label.wheelEvent = self._handle_video_wheel
+
+        # Enable pinch-to-zoom gesture
+        self.video_label.setAttribute(Qt.WA_AcceptTouchEvents, True)
+        self.video_label.grabGesture(Qt.PinchGesture)
+        self.video_label.event = self._handle_video_event
 
         # ROI Toolbar (Contextual to video)
         roi_frame = QFrame()
@@ -334,6 +367,19 @@ class MainWindow(QMainWindow):
         self.btn_clear_roi.setShortcut("Ctrl+C")
         self.btn_clear_roi.setToolTip("Clear all ROI shapes (Ctrl+C)")
 
+        self.btn_crop_video = QPushButton("Crop Video to ROI")
+        self.btn_crop_video.clicked.connect(self.crop_video_to_roi)
+        self.btn_crop_video.setEnabled(False)
+        self.btn_crop_video.setToolTip(
+            "Generate a cropped video containing only the ROI area\n"
+            "This can significantly improve tracking performance"
+        )
+        self.btn_crop_video.setStyleSheet(
+            "QPushButton { background-color: #2d7a3e; }"
+            "QPushButton:hover { background-color: #3a9150; }"
+            "QPushButton:disabled { background-color: #333; color: #666; }"
+        )
+
         self.roi_status_label = QLabel("No ROI")
         self.roi_status_label.setStyleSheet("color: #888; margin-left: 10px;")
 
@@ -344,13 +390,19 @@ class MainWindow(QMainWindow):
         roi_layout.addWidget(self.btn_finish_roi)
         roi_layout.addWidget(self.btn_undo_roi)
         roi_layout.addWidget(self.btn_clear_roi)
+        roi_layout.addWidget(self.btn_crop_video)
         roi_layout.addStretch()
 
         roi_main_layout.addLayout(roi_layout)
 
-        # Second row: status
+        # Second row: status and optimization info
         roi_status_layout = QHBoxLayout()
         roi_status_layout.addWidget(self.roi_status_label)
+        self.roi_optimization_label = QLabel("")
+        self.roi_optimization_label.setStyleSheet(
+            "color: #f0ad4e; margin-left: 10px; font-weight: bold;"
+        )
+        roi_status_layout.addWidget(self.roi_optimization_label)
         roi_main_layout.addLayout(roi_status_layout)
 
         # Instructions (Hidden unless active)
@@ -359,6 +411,18 @@ class MainWindow(QMainWindow):
         roi_main_layout.addWidget(self.roi_instructions)
 
         left_layout.addWidget(self.scroll, stretch=1)
+
+        # Interactive instructions
+        self.interaction_help = QLabel(
+            "Double-click: Fit to screen  •  Drag: Pan  •  Ctrl+Scroll/Pinch: Zoom"
+        )
+        self.interaction_help.setAlignment(Qt.AlignCenter)
+        self.interaction_help.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic; "
+            "padding: 4px; background-color: #1a1a1a; border-radius: 3px;"
+        )
+        left_layout.addWidget(self.interaction_help)
+
         left_layout.addWidget(roi_frame)
 
         # Zoom control under video
@@ -2818,6 +2882,8 @@ class MainWindow(QMainWindow):
             # Clear any previous detection test result
             self.detection_test_result = None
             self._update_preview_display()
+            # Auto-fit to screen
+            self._fit_image_to_screen()
             logger.info(f"Loaded preview frame {random_frame_idx}/{total_frames}")
         else:
             logger.warning("Failed to read preview frame")
@@ -3114,7 +3180,7 @@ class MainWindow(QMainWindow):
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Question)
             msg.setWindowTitle("Size Filtering Options")
-            msg.setText("⚠️ Size filtering is currently enabled!")
+            msg.setText("Size filtering is currently enabled!")
             msg.setInformativeText(
                 "For accurate size estimation, it's recommended to run detection\n"
                 "WITHOUT size constraints. However, you can test with constraints\n"
@@ -3123,9 +3189,9 @@ class MainWindow(QMainWindow):
             )
 
             btn_without = msg.addButton(
-                "Run WITHOUT Size Filtering (Recommended)", QMessageBox.AcceptRole
+                "NO Size Filtering (Recommended)", QMessageBox.AcceptRole
             )
-            btn_with = msg.addButton("Run WITH Size Filtering", QMessageBox.ActionRole)
+            btn_with = msg.addButton("WITH Size Filtering", QMessageBox.ActionRole)
             btn_cancel = msg.addButton("Cancel", QMessageBox.RejectRole)
             msg.setDefaultButton(btn_without)
 
@@ -3474,6 +3540,9 @@ class MainWindow(QMainWindow):
             pixmap = QPixmap.fromImage(qimg)
             self.video_label.setPixmap(pixmap)
 
+            # Auto-fit to screen after detection
+            self._fit_image_to_screen()
+
             logger.info("Detection test completed on preview frame")
 
         except Exception as e:
@@ -3499,6 +3568,156 @@ class MainWindow(QMainWindow):
     def _on_roi_zone_changed(self, index):
         """Handle ROI zone type selection change."""
         self.roi_current_zone_type = "include" if index == 0 else "exclude"
+
+    def _handle_video_mouse_press(self, evt):
+        """Handle mouse press on video - either ROI selection or pan/zoom."""
+        # ROI selection takes priority
+        if self.roi_selection_active:
+            self.record_roi_click(evt)
+            return
+
+        # Pan mode: Left button or Middle button
+        from PySide2.QtCore import Qt
+
+        if evt.button() == Qt.LeftButton or evt.button() == Qt.MiddleButton:
+            self._is_panning = True
+            self._pan_start_pos = evt.globalPos()
+            self._scroll_start_h = self.scroll.horizontalScrollBar().value()
+            self._scroll_start_v = self.scroll.verticalScrollBar().value()
+            self.video_label.setCursor(Qt.ClosedHandCursor)
+            evt.accept()
+
+    def _handle_video_mouse_move(self, evt):
+        """Handle mouse move - update pan if active."""
+        if self._is_panning and self._pan_start_pos:
+            from PySide2.QtCore import Qt
+
+            delta = evt.globalPos() - self._pan_start_pos
+            self.scroll.horizontalScrollBar().setValue(self._scroll_start_h - delta.x())
+            self.scroll.verticalScrollBar().setValue(self._scroll_start_v - delta.y())
+            evt.accept()
+        elif not self.roi_selection_active:
+            # Show open hand cursor to indicate draggable
+            from PySide2.QtCore import Qt
+
+            self.video_label.setCursor(Qt.OpenHandCursor)
+
+    def _handle_video_mouse_release(self, evt):
+        """Handle mouse release - end pan."""
+        from PySide2.QtCore import Qt
+
+        if self._is_panning:
+            self._is_panning = False
+            self._pan_start_pos = None
+            # Return to open hand (still draggable) if not in ROI mode
+            if not self.roi_selection_active:
+                self.video_label.setCursor(Qt.OpenHandCursor)
+            else:
+                self.video_label.setCursor(Qt.ArrowCursor)
+            evt.accept()
+
+    def _handle_video_double_click(self, evt):
+        """Handle double-click on video to fit to screen."""
+        if evt.button() == Qt.LeftButton:
+            self._fit_image_to_screen()
+
+    def _handle_video_wheel(self, evt):
+        """Handle mouse wheel - zoom in/out."""
+        from PySide2.QtCore import Qt
+
+        # Ctrl+Wheel for zoom
+        if evt.modifiers() == Qt.ControlModifier:
+            delta = evt.angleDelta().y()
+
+            # Get current zoom
+            current_zoom = self.slider_zoom.value()
+
+            # Calculate new zoom (10% per wheel step)
+            zoom_change = 10 if delta > 0 else -10
+            new_zoom = max(10, min(400, current_zoom + zoom_change))
+
+            # Update zoom slider (will trigger zoom change)
+            self.slider_zoom.setValue(new_zoom)
+            evt.accept()
+        else:
+            # Normal scroll - pass to scroll area
+            evt.ignore()
+
+    def _handle_video_event(self, evt):
+        """Handle video events including pinch gestures."""
+        from PySide2.QtCore import QEvent, Qt
+
+        if evt.type() == QEvent.Gesture:
+            return self._handle_gesture_event(evt)
+
+        # Pass other events to default handler
+        return QLabel.event(self.video_label, evt)
+
+    def _handle_gesture_event(self, evt):
+        """Handle pinch-to-zoom gesture."""
+        from PySide2.QtCore import Qt
+
+        gesture = evt.gesture(Qt.PinchGesture)
+        if gesture:
+            from PySide2.QtWidgets import QGesture
+
+            if gesture.state() == Qt.GestureUpdated:
+                # Get scale factor
+                scale_factor = gesture.scaleFactor()
+
+                # Get current zoom
+                current_zoom = self.slider_zoom.value()
+
+                # Calculate new zoom based on pinch scale
+                # Scale factor > 1 = zoom in, < 1 = zoom out
+                zoom_delta = int((scale_factor - 1.0) * 50)  # Sensitivity adjustment
+                new_zoom = max(10, min(400, current_zoom + zoom_delta))
+
+                # Update zoom slider
+                self.slider_zoom.setValue(new_zoom)
+
+            return True
+
+        return False
+
+    def _fit_image_to_screen(self):
+        """Fit the image to the available screen space."""
+        if self.preview_frame_original is None:
+            return
+
+        # Get the scroll area viewport size
+        viewport_width = self.scroll.viewport().width()
+        viewport_height = self.scroll.viewport().height()
+
+        # Get the original image size
+        h, w = self.preview_frame_original.shape[:2]
+
+        # Account for resize factor if detection test has been run
+        # detection_test_result stores (frame, resize_factor)
+        effective_width = w
+        effective_height = h
+        if self.detection_test_result is not None and isinstance(
+            self.detection_test_result, tuple
+        ):
+            # Detection test is active, get the resize factor
+            _, resize_factor = self.detection_test_result
+            effective_width = int(w * resize_factor)
+            effective_height = int(h * resize_factor)
+
+        # Calculate zoom to fit the effective (possibly resized) dimensions
+        zoom_w = viewport_width / effective_width
+        zoom_h = viewport_height / effective_height
+        zoom_fit = min(zoom_w, zoom_h) * 0.95  # 95% to leave some margin
+
+        # Clamp to valid range
+        zoom_fit = max(0.1, min(5.0, zoom_fit))
+
+        # Set the zoom slider
+        self.slider_zoom.setValue(int(zoom_fit * 100))
+
+        # Reset scroll position to center
+        self.scroll.horizontalScrollBar().setValue(0)
+        self.scroll.verticalScrollBar().setValue(0)
 
     def record_roi_click(self, evt):
         if not self.roi_selection_active or self.roi_base_frame is None:
@@ -3731,10 +3950,16 @@ class MainWindow(QMainWindow):
             f"Active ROI: {include_count} inclusion, {exclude_count} exclusion zone(s)"
         )
 
+        # Enable crop button and show optimization info
+        self.btn_crop_video.setEnabled(True)
+        self._update_roi_optimization_info()
+
         # Show the masked result - what detector will see
         if self.roi_base_frame:
             qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
             self.video_label.setPixmap(QPixmap.fromImage(qimg_masked))
+            # Auto-fit to screen after ROI change
+            self._fit_image_to_screen()
 
     def _generate_combined_roi_mask(self, height, width):
         """Generate a combined mask from all ROI shapes with inclusion/exclusion support."""
@@ -3767,6 +3992,9 @@ class MainWindow(QMainWindow):
 
         self.roi_mask = combined_mask
         logger.info(f"Generated combined ROI mask from {len(self.roi_shapes)} shape(s)")
+
+        # Invalidate cache when ROI changes
+        self._invalidate_roi_cache()
 
     def undo_last_roi_shape(self):
         """Remove the last added ROI shape."""
@@ -4035,9 +4263,18 @@ class MainWindow(QMainWindow):
         return pix.toImage()
 
     def _apply_roi_mask_to_image(self, qimage):
-        """Apply ROI mask to darken areas outside the ROI."""
+        """Apply ROI mask to darken areas outside the ROI (with caching)."""
         if self.roi_mask is None or not self.roi_shapes:
             return qimage
+
+        # Generate cache key from image pointer and ROI hash
+        frame_id = id(qimage)
+        roi_hash = self._get_roi_hash()
+        cache_key = (frame_id, roi_hash)
+
+        # Return cached result if available
+        if cache_key in self._roi_masked_cache:
+            return self._roi_masked_cache[cache_key]
 
         # Convert QImage to numpy array
         width = qimage.width()
@@ -4075,7 +4312,15 @@ class MainWindow(QMainWindow):
         # Create new QImage from modified array
         result = QImage(arr_copy.data, width, height, width * 3, QImage.Format_RGB888)
         # Make a copy to ensure data persistence
-        return result.copy()
+        result_copy = result.copy()
+
+        # Cache the result (limit cache size to prevent memory bloat)
+        if len(self._roi_masked_cache) > 50:
+            # Remove oldest entries
+            self._roi_masked_cache.clear()
+        self._roi_masked_cache[cache_key] = result_copy
+
+        return result_copy
 
     @Slot(int, str)
     def on_progress_update(self, percentage, status_text):
@@ -5927,10 +6172,538 @@ class MainWindow(QMainWindow):
         label.setWordWrap(True)
         label.setStyleSheet(
             "color: #aaa; font-size: 11px; font-weight: normal; "
-            "background-color: #2a2a2a; padding: 8px; border-radius: 4px; "
-            "border-left: 3px solid #4a9eff;"
+            "font-style: italic; padding: 4px 2px; margin: 2px 0px;"
         )
         return label
+
+    def _get_roi_hash(self):
+        """Generate a hash of current ROI configuration for caching."""
+        if not self.roi_shapes:
+            return None
+
+        # Create a simple hash from ROI shapes
+        roi_str = str(
+            [
+                (
+                    s["type"],
+                    (
+                        tuple(s["params"])
+                        if isinstance(s["params"], list)
+                        else s["params"]
+                    ),
+                    s.get("mode", "include"),
+                )
+                for s in self.roi_shapes
+            ]
+        )
+        return hash(roi_str)
+
+    def _invalidate_roi_cache(self):
+        """Invalidate ROI display cache when ROI changes."""
+        self._roi_masked_cache.clear()
+        self._roi_hash = self._get_roi_hash()
+
+    # =========================================================================
+    # ROI OPTIMIZATION AND VIDEO CROPPING
+    # =========================================================================
+
+    def _load_advanced_config(self):
+        """Load advanced configuration for power users."""
+        # Store config in the package directory (where this file is located)
+        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(package_dir, "advanced_config.json")
+
+        default_config = {
+            "roi_crop_warning_threshold": 0.6,  # Warn if ROI is <60% of frame
+            "roi_crop_auto_suggest": True,  # Auto-suggest cropping
+            "roi_crop_remind_every_session": False,  # Remind every time or once
+            "roi_crop_padding_fraction": 0.05,  # Padding as fraction of min(width, height) - typically 5%
+            "video_crop_codec": "libx264",  # Codec for cropped videos (libx264 for quality)
+            "video_crop_crf": 18,  # CRF quality (lower = better, 18 = visually lossless)
+            "video_crop_preset": "medium",  # ffmpeg preset (ultrafast, fast, medium, slow, veryslow)
+        }
+
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    user_config = json.load(f)
+                default_config.update(user_config)
+                logger.info(f"Loaded advanced config from {config_path}")
+            except Exception as e:
+                logger.warning(f"Could not load advanced config: {e}")
+
+        return default_config
+
+    def _save_advanced_config(self):
+        """Save advanced configuration."""
+        config_path = os.path.expanduser("~/.multi_tracker_advanced.json")
+        try:
+            with open(config_path, "w") as f:
+                json.dump(self.advanced_config, f, indent=2)
+            logger.info(f"Saved advanced config to {config_path}")
+        except Exception as e:
+            logger.error(f"Could not save advanced config: {e}")
+
+    def _calculate_roi_bounding_box(self, padding=None):
+        """Calculate the bounding box of the current ROI mask with optional padding.
+
+        Args:
+            padding: Fraction of min(width, height) to add as padding (e.g., 0.05 = 5%).
+                    If None, uses value from advanced config.
+
+        Returns:
+            Tuple (x, y, w, h) or None if no ROI
+        """
+        if self.roi_mask is None:
+            return None
+
+        # Find all non-zero points in the mask
+        points = cv2.findNonZero(self.roi_mask)
+        if points is None or len(points) == 0:
+            return None
+
+        # Get bounding rectangle
+        x, y, w, h = cv2.boundingRect(points)
+
+        # Apply padding if requested (helps with detection by providing context)
+        if padding is None:
+            padding = self.advanced_config.get("roi_crop_padding_fraction", 0.05)
+
+        if padding > 0:
+            # Get frame dimensions
+            frame_h, frame_w = self.roi_mask.shape[:2]
+
+            # Calculate padding in pixels based on smaller dimension
+            min_dim = min(frame_w, frame_h)
+            padding_pixels = int(min_dim * padding)
+
+            # Add padding while staying within frame bounds
+            x = max(0, x - padding_pixels)
+            y = max(0, y - padding_pixels)
+            w = min(frame_w - x, w + 2 * padding_pixels)
+            h = min(frame_h - y, h + 2 * padding_pixels)
+
+        return (x, y, w, h)
+
+    def _estimate_roi_efficiency(self):
+        """Estimate the efficiency gain from cropping to ROI.
+
+        Returns:
+            tuple: (roi_coverage_percent, potential_speedup_factor) or (None, None)
+        """
+        if self.roi_mask is None or self.preview_frame_original is None:
+            return (None, None)
+
+        bbox = self._calculate_roi_bounding_box()
+        if bbox is None:
+            return (None, None)
+
+        x, y, w, h = bbox
+        frame_h, frame_w = self.roi_mask.shape
+
+        frame_area = frame_w * frame_h
+        roi_area = w * h
+
+        roi_coverage = roi_area / frame_area
+        # Speedup is roughly inverse of area ratio (simplification, but good estimate)
+        potential_speedup = 1.0 / roi_coverage if roi_coverage > 0 else 1.0
+
+        return (roi_coverage * 100, potential_speedup)
+
+    def _update_roi_optimization_info(self):
+        """Update the ROI optimization label with efficiency information."""
+        coverage, speedup = self._estimate_roi_efficiency()
+
+        if coverage is None:
+            if hasattr(self, "roi_optimization_label"):
+                self.roi_optimization_label.setText("")
+            return
+
+        threshold = self.advanced_config.get("roi_crop_warning_threshold", 0.6) * 100
+
+        if coverage < threshold and hasattr(self, "roi_optimization_label"):
+            self.roi_optimization_label.setText(
+                f"⚡ ROI is {coverage:.1f}% of frame - up to {speedup:.1f}x faster if cropped!"
+            )
+        elif hasattr(self, "roi_optimization_label"):
+            self.roi_optimization_label.setText("")
+
+    def _check_roi_optimization_warning(self):
+        """Check if we should warn the user about ROI optimization."""
+        if not self.advanced_config.get("roi_crop_auto_suggest", True):
+            return
+
+        # Don't warn if already shown this session (unless configured otherwise)
+        if self.roi_crop_warning_shown and not self.advanced_config.get(
+            "roi_crop_remind_every_session", False
+        ):
+            return
+
+        coverage, speedup = self._estimate_roi_efficiency()
+        if coverage is None:
+            return
+
+        threshold = self.advanced_config.get("roi_crop_warning_threshold", 0.6) * 100
+
+        if coverage < threshold:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("ROI Optimization Opportunity")
+            msg.setText(f"⚡ Performance Optimization Available")
+            msg.setInformativeText(
+                f"Your ROI covers only {coverage:.1f}% of the video frame.\\n\\n"
+                f"Cropping the video to the ROI bounding box could provide\\n"
+                f"up to {speedup:.1f}x speedup in tracking performance!\\n\\n"
+                f"Would you like to:"
+            )
+
+            btn_crop_now = msg.addButton("Crop Video Now", QMessageBox.AcceptRole)
+            btn_remind_later = msg.addButton(
+                "Remind Me When Tracking", QMessageBox.ActionRole
+            )
+            btn_dont_show = msg.addButton("Don't Show Again", QMessageBox.RejectRole)
+            msg.setDefaultButton(btn_crop_now)
+
+            msg.exec_()
+            clicked = msg.clickedButton()
+
+            if clicked == btn_crop_now:
+                self.crop_video_to_roi()
+            elif clicked == btn_remind_later:
+                self.roi_crop_warning_shown = True
+            elif clicked == btn_dont_show:
+                self.advanced_config["roi_crop_auto_suggest"] = False
+                self._save_advanced_config()
+                self.roi_crop_warning_shown = True
+
+    def crop_video_to_roi(self):
+        """Crop the video to the ROI bounding box and save as new file."""
+        if self.roi_mask is None:
+            QMessageBox.warning(self, "No ROI", "Please define an ROI before cropping.")
+            return
+
+        video_path = self.file_line.text()
+        if not video_path or not os.path.exists(video_path):
+            QMessageBox.warning(self, "No Video", "Please load a video first.")
+            return
+
+        # Get padding fraction from advanced config (default 5% of min dimension)
+        padding_fraction = self.advanced_config.get("roi_crop_padding_fraction", 0.05)
+
+        bbox = self._calculate_roi_bounding_box(padding=padding_fraction)
+        if bbox is None:
+            QMessageBox.warning(
+                self, "Invalid ROI", "Could not calculate ROI bounding box."
+            )
+            return
+
+        x, y, w, h = bbox
+        padding_percent = padding_fraction * 100
+        logger.info(
+            f"ROI crop with {padding_percent:.1f}% padding: x={x}, y={y}, w={w}, h={h}"
+        )
+
+        # Suggest output filename
+        video_dir = os.path.dirname(video_path)
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        suggested_name = f"{video_name}_cropped_roi.mp4"
+        suggested_path = os.path.join(video_dir, suggested_name)
+
+        # Ask user for output location
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Cropped Video",
+            suggested_path,
+            "Video Files (*.mp4 *.avi *.mov);;All Files (*)",
+        )
+
+        if not output_path:
+            return  # User cancelled
+
+        try:
+            # Use ffmpeg for high-quality cropping that preserves video properties
+            # This is much faster and maintains quality better than re-encoding with OpenCV
+            import subprocess
+
+            # Get video properties for the success message
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise Exception("Cannot open source video")
+
+            frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+
+            # Build ffmpeg command for high-quality cropping
+            # Get settings from advanced config
+            codec = self.advanced_config.get("video_crop_codec", "libx264")
+            crf = str(self.advanced_config.get("video_crop_crf", 18))
+            preset = self.advanced_config.get("video_crop_preset", "medium")
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-i",
+                video_path,
+                "-filter:v",
+                f"crop={w}:{h}:{x}:{y}",  # Crop to ROI bounding box
+                "-c:v",
+                codec,  # Video codec from config
+                "-crf",
+                crf,  # Quality (lower = better, 18 is visually lossless)
+                "-preset",
+                preset,  # Encoding speed preset
+                "-c:a",
+                "copy",  # Copy audio without re-encoding
+                "-movflags",
+                "+faststart",  # Enable streaming/fast preview
+                "-y",  # Overwrite output file
+                output_path,
+            ]
+
+            # Log the ffmpeg command for debugging
+            logger.info(
+                f"Starting video crop: {frame_w}x{frame_h} -> {w}x{h} (padding: {padding_percent:.1f}%)"
+            )
+            logger.info(f"ffmpeg command: {' '.join(ffmpeg_cmd)}")
+
+            # Show non-blocking message
+            QMessageBox.information(
+                self,
+                "Cropping Video",
+                f"Video cropping has started in the background.\n\n"
+                f"Original: {frame_w}x{frame_h}\n"
+                f"Cropped: {w}x{h}\n"
+                f"Padding: {padding_percent:.1f}% of frame (improves detection)\n\n"
+                f"Note: Padding provides visual context for better YOLO confidence.\n"
+                f"Adjust 'roi_crop_padding_fraction' in advanced_config.json if needed.\n\n"
+                f"This may take a few minutes. The application will remain responsive.\n"
+                f"You'll be notified when cropping is complete.",
+            )
+
+            # Run ffmpeg in background with progress logging
+
+            # Run ffmpeg in background with progress logging
+            # Capture stderr for progress tracking but don't block UI
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                start_new_session=True,  # Detach from parent process
+            )
+
+            # Get total frames for progress tracking
+            cap_temp = cv2.VideoCapture(video_path)
+            total_frames = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap_temp.release()
+
+            # Store process info for potential future use
+            self._crop_process = {
+                "process": process,
+                "output_path": output_path,
+                "original_size": (frame_w, frame_h),
+                "cropped_size": (w, h),
+                "total_frames": total_frames,
+                "last_logged_progress": 0,
+            }
+
+            # Set up a timer to check when process completes
+            from PySide2.QtCore import QTimer
+
+            self._crop_check_timer = QTimer()
+            self._crop_check_timer.timeout.connect(self._check_crop_completion)
+            self._crop_check_timer.start(2000)  # Check every 2 seconds
+
+            # Disable UI controls while cropping is in progress
+            self._set_ui_controls_enabled(False)
+            # Also disable crop button specifically
+            if hasattr(self, "btn_crop_video"):
+                self.btn_crop_video.setText("Cropping...")
+                self.btn_crop_video.setEnabled(False)
+
+            logger.info(f"Started background video crop: {video_path} -> {output_path}")
+
+        except Exception as e:
+            # Re-enable UI if crop failed to start
+            self._set_ui_controls_enabled(True)
+            if hasattr(self, "btn_crop_video"):
+                self.btn_crop_video.setText("Crop Video to ROI")
+                self.btn_crop_video.setEnabled(True)
+
+            QMessageBox.critical(
+                self,
+                "Crop Failed",
+                f"Failed to start video crop:\n{str(e)}",
+            )
+            logger.error(f"Video crop failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+    def _check_crop_completion(self):
+        """Check if background crop process has completed."""
+        if not hasattr(self, "_crop_process"):
+            if hasattr(self, "_crop_check_timer"):
+                self._crop_check_timer.stop()
+            return
+
+        process = self._crop_process["process"]
+
+        # Read and log any new stderr output (ffmpeg progress)
+        try:
+            # Read available lines without blocking (non-blocking I/O)
+            if process.stderr:
+                import fcntl
+                import os as os_module
+
+                # Set stderr to non-blocking mode
+                fd = process.stderr.fileno()
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os_module.O_NONBLOCK)
+
+                try:
+                    while True:
+                        line = process.stderr.readline()
+                        if not line:
+                            break
+
+                        # Parse progress from ffmpeg output
+                        if "frame=" in line:
+                            try:
+                                frame_str = line.split("frame=")[1].split()[0]
+                                current_frame = int(frame_str)
+                                total_frames = self._crop_process.get("total_frames", 0)
+
+                                # Log every 10% of progress
+                                if total_frames > 0:
+                                    progress_pct = int(
+                                        (current_frame / total_frames) * 100
+                                    )
+                                    last_logged = self._crop_process.get(
+                                        "last_logged_progress", 0
+                                    )
+
+                                    if progress_pct >= last_logged + 10:
+                                        logger.info(
+                                            f"Video crop progress: {progress_pct}% ({current_frame}/{total_frames} frames)"
+                                        )
+                                        self._crop_process["last_logged_progress"] = (
+                                            progress_pct
+                                        )
+                            except (ValueError, IndexError):
+                                pass
+                except (IOError, OSError):
+                    # No data available right now
+                    pass
+        except Exception:
+            # Don't let logging errors break the process
+            pass
+
+        return_code = process.poll()  # Non-blocking check
+
+        if return_code is not None:  # Process has finished
+            self._crop_check_timer.stop()
+            output_path = self._crop_process["output_path"]
+            orig_w, orig_h = self._crop_process["original_size"]
+            crop_w, crop_h = self._crop_process["cropped_size"]
+
+            if return_code == 0 and os.path.exists(output_path):
+                # Success - ask if user wants to load the cropped video
+                reply = QMessageBox.question(
+                    self,
+                    "Crop Complete",
+                    f"Video successfully cropped to ROI!\n\n"
+                    f"Original: {orig_w}x{orig_h}\n"
+                    f"Cropped: {crop_w}x{crop_h}\n"
+                    f"Saved to: {os.path.basename(output_path)}\n\n"
+                    f"Would you like to load the cropped video now?\n"
+                    f"(Note: ROI will be cleared since the video is already cropped)",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+
+                if reply == QMessageBox.Yes:
+                    # Load the cropped video with full initialization (same as select_file)
+                    self.file_line.setText(output_path)
+                    self.current_video_path = output_path
+                    self.clear_roi()  # Clear ROI since we're loading the cropped version
+
+                    # Auto-generate output paths based on cropped video name
+                    video_dir = os.path.dirname(output_path)
+                    video_name = os.path.splitext(os.path.basename(output_path))[0]
+
+                    # Auto-populate CSV output
+                    csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
+                    self.csv_line.setText(csv_path)
+
+                    # Auto-populate video output and enable it
+                    video_out_path = os.path.join(
+                        video_dir, f"{video_name}_tracking.mp4"
+                    )
+                    self.video_out_line.setText(video_out_path)
+                    self.check_video_output.setChecked(True)
+
+                    # Enable preview buttons
+                    self.btn_refresh_preview.setEnabled(True)
+                    self.btn_test_detection.setEnabled(True)
+                    self.btn_detect_fps.setEnabled(True)
+
+                    # Disable crop button and clear optimization info (no ROI anymore)
+                    self.btn_crop_video.setEnabled(False)
+                    if hasattr(self, "roi_optimization_label"):
+                        self.roi_optimization_label.setText("")
+                    self.roi_crop_warning_shown = False
+
+                    # Load preview frame
+                    self._load_preview_frame()
+
+                    # Auto-load config if it exists
+                    config_path = get_video_config_path(output_path)
+                    if config_path and os.path.isfile(config_path):
+                        self._load_config_from_file(config_path)
+                        self.config_status_label.setText(
+                            f"✓ Loaded: {os.path.basename(config_path)}"
+                        )
+                        self.config_status_label.setStyleSheet(
+                            "color: #4a9eff; font-style: italic; font-size: 10px;"
+                        )
+                        logger.info(
+                            f"Cropped video loaded: {output_path} (auto-loaded config)"
+                        )
+                    else:
+                        self.config_status_label.setText(
+                            "No config found (using current settings)"
+                        )
+                        self.config_status_label.setStyleSheet(
+                            "color: #f39c12; font-style: italic; font-size: 10px;"
+                        )
+                        logger.info(
+                            f"Cropped video loaded: {output_path} (no config found)"
+                        )
+
+                # Re-enable UI controls after successful crop
+                self._set_ui_controls_enabled(True)
+                if hasattr(self, "btn_crop_video"):
+                    self.btn_crop_video.setText("Crop Video to ROI")
+
+                logger.info(f"Successfully cropped video to {output_path}")
+            else:
+                # Process failed - re-enable UI
+                self._set_ui_controls_enabled(True)
+                if hasattr(self, "btn_crop_video"):
+                    self.btn_crop_video.setText("Crop Video to ROI")
+                    self.btn_crop_video.setEnabled(True)
+
+                logger.error(f"Video crop failed with return code {return_code}")
+                QMessageBox.critical(
+                    self,
+                    "Crop Failed",
+                    f"Video cropping failed (return code: {return_code})\n\n"
+                    f"Check that ffmpeg is installed and the video is valid.",
+                )
+
+            # Clean up
+            del self._crop_process
 
     def plot_fps(self, fps_list):
         if len(fps_list) < 2:
