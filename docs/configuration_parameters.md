@@ -312,17 +312,6 @@ This document provides a comprehensive reference of all configurable parameters 
 | Track Loss | `metric_track_loss` | bool | `true` | Flag frames with frequent track losses |
 | High Uncertainty | `metric_high_uncertainty` | bool | `false` | Flag frames with high Kalman uncertainty |
 
-### Pose Tracking Dataset Export
-
-| Parameter | Config Key | Type | Default | Range | Description |
-|-----------|------------|------|---------|-------|-------------|
-| Enable Pose Export | `enable_pose_export` | bool | `false` | Enable pose tracking export |
-| Pose Output Directory | `pose_output_dir` | string | `""` | Directory for pose datasets |
-| Pose Dataset Name | `pose_dataset_name` | string | `"pose_dataset"` | Base name for pose dataset |
-| Pose Crop Multiplier | `pose_crop_size_multiplier` | float | `4.0` | 1.0-10.0 | Crop size = body_size × multiplier |
-| Pose Min Trajectory Length | `pose_min_trajectory_length` | int | `30` | 5-1000 | Minimum trajectory length to export |
-| Pose Export FPS | `pose_export_fps` | int | `30` | 1-120 | Frame rate for exported pose videos |
-
 ---
 
 ## Individual Analysis Tab

@@ -323,19 +323,25 @@ class IdentityProcessor:
         """
 ```
 
-### PoseTrackingExporter
+### IndividualDatasetGenerator
 
 ```python
-class PoseTrackingExporter:
-    def __init__(self, params):
-        """Initialize pose tracking exporter."""
+class IndividualDatasetGenerator:
+    def __init__(self, params, video_path, output_dir):
+        """Initialize real-time individual dataset generator."""
         
-    def export_trajectories(self, video_path, csv_path, 
-                          output_dir, dataset_name):
-        """Export trajectory videos for pose training.
+    def process_frame(self, frame, frame_id, detections, track_ids, obb_corners):
+        """Process frame and save OBB-masked crops.
+        
+        Called during forward tracking for each frame with detections.
+        Generates crops with only the detected animal visible (OBB mask applied).
+        """
+        
+    def finalize(self):
+        """Finalize dataset and save metadata.
         
         Returns:
-            export_path: Path to exported dataset
+            output_path: Path to the generated dataset
         """
 ```
 

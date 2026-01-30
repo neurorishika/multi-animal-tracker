@@ -17,7 +17,7 @@ from .post_processing import (
     resolve_trajectories,
     interpolate_trajectories,
 )
-from .individual_analysis import IdentityProcessor, PoseTrackingExporter
+from .individual_analysis import IdentityProcessor, IndividualDatasetGenerator
 
 
 __all__ = [
@@ -31,5 +31,5 @@ __all__ = [
     "resolve_trajectories",
     "interpolate_trajectories",
     "IdentityProcessor",
-    "PoseTrackingExporter",
+    "IndividualDatasetGenerator",
 ]

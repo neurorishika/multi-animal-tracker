@@ -4,14 +4,14 @@ Example script demonstrating individual-level analysis features.
 
 This shows how to:
 1. Extract crops around detections for identity classification
-2. Export trajectory videos for pose tracking training
+2. Use real-time individual dataset generation during tracking
 """
 
 import cv2
 import numpy as np
 from multi_tracker.core.individual_analysis import (
     IdentityProcessor,
-    PoseTrackingExporter,
+    IndividualDatasetGenerator,
 )
 
 # Example 1: Identity Classification
@@ -50,43 +50,38 @@ for i, (det, identity, conf) in enumerate(zip(detections, identities, confidence
 
 print()
 
-# Example 2: Pose Tracking Export
-print("Example 2: Pose Tracking Export")
+# Example 2: Real-time Individual Dataset Generation
+print("Example 2: Real-time Individual Dataset Generation")
 print("=" * 50)
 
-pose_params = {
-    "ENABLE_POSE_EXPORT": True,
-    "POSE_CROP_SIZE_MULTIPLIER": 4.0,
-    "POSE_MIN_TRAJECTORY_LENGTH": 30,
-    "POSE_EXPORT_FPS": 30,
-    "REFERENCE_BODY_SIZE": 20.0,
+dataset_params = {
+    "ENABLE_INDIVIDUAL_DATASET": True,
+    "INDIVIDUAL_DATASET_OUTPUT_DIR": "/path/to/output",
+    "INDIVIDUAL_OUTPUT_FORMAT": "png",
+    "INDIVIDUAL_SAVE_INTERVAL": 1,  # Save every frame
+    "INDIVIDUAL_CROP_PADDING": 0.1,  # 10% padding around OBB
 }
 
-exporter = PoseTrackingExporter(pose_params)
+# Initialize generator
+generator = IndividualDatasetGenerator(
+    params=dataset_params,
+    video_path="/path/to/video.mp4",
+    output_dir=dataset_params["INDIVIDUAL_DATASET_OUTPUT_DIR"],
+)
 
-# These would be your actual paths after tracking
-video_path = "path/to/your/video.mp4"
-csv_path = "path/to/tracking_output.csv"
-output_dir = "path/to/pose_datasets"
-dataset_name = "my_pose_dataset"
-
-print(f"Pose exporter configured:")
-print(f"  Crop multiplier: {pose_params['POSE_CROP_SIZE_MULTIPLIER']}x")
-print(f"  Min trajectory length: {pose_params['POSE_MIN_TRAJECTORY_LENGTH']} frames")
-print(f"  Export FPS: {pose_params['POSE_EXPORT_FPS']}")
+print(f"Individual dataset generator configured:")
+print(f"  Output format: {dataset_params['INDIVIDUAL_OUTPUT_FORMAT']}")
+print(f"  Save interval: every {dataset_params['INDIVIDUAL_SAVE_INTERVAL']} frame(s)")
+print(f"  Padding: {dataset_params['INDIVIDUAL_CROP_PADDING'] * 100}%")
 print()
-print("To export pose dataset after tracking:")
-print(f"  exporter.export_trajectories(")
-print(f"      '{video_path}',")
-print(f"      '{csv_path}',")
-print(f"      '{output_dir}',")
-print(f"      '{dataset_name}'")
-print(f"  )")
+print("During tracking, call generator.process_frame() for each frame with:")
+print("  - frame: The current video frame")
+print("  - frame_id: Frame number")
+print("  - detections: List of filtered detections")
+print("  - track_ids: Assigned track IDs")
+print("  - obb_corners: OBB corner coordinates (4 corners x 2 coords)")
 print()
-print("This will create:")
-print("  - trajectory_0001.mp4, trajectory_0002.mp4, ... (one per animal)")
-print("  - metadata.json (frame mappings and trajectory info)")
-print("  - README.md (usage instructions)")
+print("This generates OBB-masked crops in real-time during forward tracking.")
 
 # Example 3: Custom Identity Classifier
 print()
@@ -120,7 +115,6 @@ To implement your own identity classifier:
 print("\n✓ Example script complete!")
 print("\nNext steps:")
 print("1. Configure individual analysis in the GUI (Individual Analysis tab)")
-print("2. Run tracking with identity analysis enabled")
-print("3. After tracking, export pose datasets using the button")
-print("4. Annotate pose videos in DeepLabCut/SLEAP")
-print("5. Train pose models and apply to full videos")
+print("2. Enable 'Real-time Individual Dataset Generation' for YOLO tracking")
+print("3. Run tracking - crops are saved automatically during forward pass")
+print("4. Use the OBB-masked crops for training identity classifiers or pose models")

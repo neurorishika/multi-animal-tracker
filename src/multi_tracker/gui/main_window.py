@@ -2317,123 +2317,7 @@ class MainWindow(QMainWindow):
 
         form.addWidget(self.g_quality_metrics)
 
-        # Add visual separator between sections
-        separator_frame = QFrame()
-        separator_frame.setFrameShape(QFrame.HLine)
-        separator_frame.setFrameShadow(QFrame.Sunken)
-        separator_frame.setStyleSheet("background-color: #555; margin: 20px 0px;")
-        separator_frame.setMinimumHeight(2)
-        form.addWidget(separator_frame)
-
-        # Section header for pose tracking
-        pose_section_label = QLabel("Pose Tracking Dataset Export")
-        pose_section_label.setStyleSheet(
-            "font-size: 14px; font-weight: bold; color: #4a9eff; margin-top: 10px;"
-        )
-        form.addWidget(pose_section_label)
-
-        # Pose Tracking Dataset Export
-        self.g_pose_export = QGroupBox("Configuration")
-        vl_pose = QVBoxLayout(self.g_pose_export)
-        vl_pose.addWidget(
-            self._create_help_label(
-                "Export individual trajectory videos for pose estimation training. "
-                "After tracking is complete, generates cropped videos centered on each animal, "
-                "ready for annotation with DeepLabCut, SLEAP, or other pose tracking tools.\n\n"
-                "This is independent from active learning dataset generation above."
-            )
-        )
-
-        # Enable checkbox
-        self.chk_enable_pose_export = QCheckBox("Enable Pose Tracking Export")
-        self.chk_enable_pose_export.setChecked(False)
-        self.chk_enable_pose_export.toggled.connect(self._on_pose_export_toggled)
-        vl_pose.addWidget(self.chk_enable_pose_export)
-
-        # Configuration group
-        pose_config_group = QGroupBox("Export Configuration")
-        fl_pose = QFormLayout(pose_config_group)
-        fl_pose.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        fl_pose.setSpacing(8)
-
-        # Output Directory
-        self.line_pose_output_dir = QLineEdit()
-        self.line_pose_output_dir.setPlaceholderText("directory/for/pose/datasets")
-        self.line_pose_output_dir.setEnabled(False)
-        btn_select_pose_dir = QPushButton("Browse...")
-        btn_select_pose_dir.clicked.connect(self._select_pose_output_dir)
-        btn_select_pose_dir.setEnabled(False)
-        self.btn_select_pose_dir = btn_select_pose_dir
-        pose_dir_layout = QHBoxLayout()
-        pose_dir_layout.addWidget(self.line_pose_output_dir, 1)
-        pose_dir_layout.addWidget(btn_select_pose_dir)
-        fl_pose.addRow("Output Directory:", pose_dir_layout)
-
-        # Dataset Name
-        self.line_pose_dataset_name = QLineEdit()
-        self.line_pose_dataset_name.setPlaceholderText("my_pose_dataset")
-        self.line_pose_dataset_name.setText("pose_dataset")
-        self.line_pose_dataset_name.setEnabled(False)
-        self.line_pose_dataset_name.setToolTip(
-            "Base name for pose tracking dataset (timestamp will be appended)"
-        )
-        fl_pose.addRow("Dataset Name:", self.line_pose_dataset_name)
-
-        vl_pose.addWidget(pose_config_group)
-
-        # Parameters group
-        pose_params_group = QGroupBox("Export Parameters")
-        fl_params = QFormLayout(pose_params_group)
-        fl_params.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        fl_params.setSpacing(8)
-
-        # Crop Multiplier
-        self.spin_pose_crop_multiplier = QDoubleSpinBox()
-        self.spin_pose_crop_multiplier.setRange(1.0, 10.0)
-        self.spin_pose_crop_multiplier.setValue(4.0)
-        self.spin_pose_crop_multiplier.setSingleStep(0.5)
-        self.spin_pose_crop_multiplier.setDecimals(1)
-        self.spin_pose_crop_multiplier.setEnabled(False)
-        self.spin_pose_crop_multiplier.setToolTip(
-            "Crop size for pose videos = body_size × multiplier\n"
-            "Should include full body + margin for pose estimation"
-        )
-        fl_params.addRow("Crop Multiplier:", self.spin_pose_crop_multiplier)
-
-        # Min Trajectory Length
-        self.spin_pose_min_length = QSpinBox()
-        self.spin_pose_min_length.setRange(5, 1000)
-        self.spin_pose_min_length.setValue(30)
-        self.spin_pose_min_length.setSingleStep(5)
-        self.spin_pose_min_length.setEnabled(False)
-        self.spin_pose_min_length.setToolTip(
-            "Minimum trajectory length (frames) to export.\n"
-            "Shorter trajectories are skipped."
-        )
-        fl_params.addRow("Min Length (frames):", self.spin_pose_min_length)
-
-        # Export FPS
-        self.spin_pose_export_fps = QSpinBox()
-        self.spin_pose_export_fps.setRange(1, 120)
-        self.spin_pose_export_fps.setValue(30)
-        self.spin_pose_export_fps.setSingleStep(1)
-        self.spin_pose_export_fps.setEnabled(False)
-        self.spin_pose_export_fps.setToolTip("Frame rate for exported pose videos")
-        fl_params.addRow("Export FPS:", self.spin_pose_export_fps)
-
-        vl_pose.addWidget(pose_params_group)
-
-        # Add note about automatic export
-        note_label = QLabel(
-            "Note: Pose dataset will be automatically exported after tracking completes."
-        )
-        note_label.setStyleSheet("color: #888; font-style: italic; margin-top: 5px;")
-        vl_pose.addWidget(note_label)
-
-        form.addWidget(self.g_pose_export)
-
         # Initially disable dataset generation config widgets
-        # Pose export is independent and stays enabled
         self.g_dataset_config.setEnabled(False)
         self.g_frame_selection.setEnabled(False)
         self.g_quality_metrics.setEnabled(False)
@@ -2458,10 +2342,9 @@ class MainWindow(QMainWindow):
         info_layout = QVBoxLayout(info_box)
         info_layout.addWidget(
             self._create_help_label(
-                "Process individual animals for identity classification and pose estimation.\n\n"
+                "Process individual animals for identity classification and dataset generation.\n\n"
                 "• Real-time Identity: Classify individual animals during tracking (color tags, AprilTags)\n"
-                "• Post-hoc Pose Tracking: Run pose estimation on exported trajectory videos (coming soon)\n\n"
-                "Note: Pose dataset export is available in the 'Dataset Generation' tab."
+                "• Real-time Dataset: Generate OBB-masked crops during YOLO tracking for pose/identity training"
             )
         )
         form.addWidget(info_box)
@@ -2695,43 +2578,12 @@ class MainWindow(QMainWindow):
 
         form.addWidget(self.g_individual_dataset)
 
-        # Post-hoc Pose Analysis Section (Placeholder)
-        self.g_pose_analysis = QGroupBox("Post-hoc Pose Tracking Analysis")
-        vl_pose_analysis = QVBoxLayout(self.g_pose_analysis)
-        vl_pose_analysis.addWidget(
-            self._create_help_label(
-                "Run pose estimation on exported trajectory videos.\n\n"
-                "Workflow:\n"
-                "1. Export pose dataset from 'Dataset Generation' tab\n"
-                "2. Annotate keypoints in DeepLabCut/SLEAP\n"
-                "3. Train pose estimation model\n"
-                "4. Use this section to apply trained model to all trajectories (coming soon)"
-            )
-        )
-
-        self.chk_enable_pose_analysis = QCheckBox("Enable Post-hoc Pose Analysis")
-        self.chk_enable_pose_analysis.setChecked(False)
-        self.chk_enable_pose_analysis.setEnabled(False)
-        self.chk_enable_pose_analysis.setToolTip(
-            "Feature coming soon: Apply trained pose models to trajectory videos"
-        )
-        vl_pose_analysis.addWidget(self.chk_enable_pose_analysis)
-
-        placeholder_label = QLabel("⚠️ This feature is under development")
-        placeholder_label.setStyleSheet(
-            "color: #888; font-style: italic; padding: 10px;"
-        )
-        vl_pose_analysis.addWidget(placeholder_label)
-
-        form.addWidget(self.g_pose_analysis)
-
         form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
         # Initially disable all controls
         self.g_identity.setEnabled(False)
-        self.g_pose_analysis.setEnabled(False)
 
     def _on_dataset_generation_toggled(self, state):
         """Enable/disable dataset generation controls."""
@@ -2739,7 +2591,6 @@ class MainWindow(QMainWindow):
         self.g_dataset_config.setEnabled(enabled)
         self.g_frame_selection.setEnabled(enabled)
         self.g_quality_metrics.setEnabled(enabled)
-        # Pose export is independent, doesn't need to be enabled with dataset gen
 
     def _select_dataset_output_dir(self):
         """Browse for dataset output directory."""
@@ -2753,7 +2604,6 @@ class MainWindow(QMainWindow):
         """Enable/disable individual analysis controls."""
         enabled = state == Qt.Checked
         self.g_identity.setEnabled(enabled)
-        # g_pose_analysis stays disabled for now (placeholder)
 
     def _on_identity_method_changed(self, index):
         """Update identity configuration stack when method changes."""
@@ -2766,24 +2616,6 @@ class MainWindow(QMainWindow):
         )
         if filepath:
             self.line_color_tag_model.setText(filepath)
-
-    def _on_pose_export_toggled(self, state):
-        """Enable/disable pose export controls."""
-        enabled = state  # toggled signal passes boolean, not Qt.CheckState
-        self.line_pose_output_dir.setEnabled(enabled)
-        self.btn_select_pose_dir.setEnabled(enabled)
-        self.line_pose_dataset_name.setEnabled(enabled)
-        self.spin_pose_crop_multiplier.setEnabled(enabled)
-        self.spin_pose_min_length.setEnabled(enabled)
-        self.spin_pose_export_fps.setEnabled(enabled)
-
-    def _select_pose_output_dir(self):
-        """Browse for pose dataset output directory."""
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Pose Dataset Output Directory"
-        )
-        if directory:
-            self.line_pose_output_dir.setText(directory)
 
     def _on_individual_dataset_toggled(self, enabled):
         """Enable/disable individual dataset generation controls."""
@@ -2799,94 +2631,6 @@ class MainWindow(QMainWindow):
         )
         if directory:
             self.line_individual_output.setText(directory)
-
-    def _export_pose_dataset(self):
-        """Export pose tracking dataset from trajectories."""
-        from ..core.individual_analysis import PoseTrackingExporter
-
-        # Get parameters
-        video_path = self.file_line.text()
-        raw_csv_path = self.csv_line.text()
-        output_dir = self.line_pose_output_dir.text()
-        dataset_name = self.line_pose_dataset_name.text() or "pose_dataset"
-
-        # Determine which CSV to use based on tracking mode
-        if raw_csv_path:
-            base, ext = os.path.splitext(raw_csv_path)
-            # Check for merged file first (backward tracking completed)
-            merged_csv = f"{base}_merged.csv"
-            if os.path.exists(merged_csv):
-                csv_path = merged_csv
-                logger.info("Using merged trajectories for pose export")
-            else:
-                # Use forward processed file (forward-only tracking)
-                processed_csv = f"{base}_forward_processed{ext}"
-                if os.path.exists(processed_csv):
-                    csv_path = processed_csv
-                    logger.info("Using forward processed trajectories for pose export")
-                else:
-                    # Fallback to raw CSV
-                    csv_path = raw_csv_path
-                    logger.warning(
-                        "Using raw CSV for pose export (no processed file found)"
-                    )
-        else:
-            csv_path = raw_csv_path
-
-        # Validate inputs
-        if not video_path or not os.path.exists(video_path):
-            logger.error("No valid video file selected")
-            return
-
-        if not csv_path or not os.path.exists(csv_path):
-            logger.error("No tracking CSV found. Complete tracking first.")
-            return
-
-        if not output_dir:
-            logger.error("No output directory selected")
-            return
-
-        # Create parameters dict
-        params = {
-            "ENABLE_POSE_EXPORT": True,
-            "POSE_CROP_SIZE_MULTIPLIER": self.spin_pose_crop_multiplier.value(),
-            "POSE_MIN_TRAJECTORY_LENGTH": self.spin_pose_min_length.value(),
-            "POSE_EXPORT_FPS": self.spin_pose_export_fps.value(),
-            "REFERENCE_BODY_SIZE": self.spin_reference_body_size.value(),
-        }
-
-        # Create exporter with progress callback
-        def update_progress(percentage, status):
-            self.progress_bar.setValue(percentage)
-            self.progress_label.setText(status)
-            QApplication.processEvents()
-
-        exporter = PoseTrackingExporter(params, progress_callback=update_progress)
-
-        # Show progress UI
-        self.progress_bar.setVisible(True)
-        self.progress_label.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.progress_label.setText("Starting pose dataset export...")
-        QApplication.processEvents()
-
-        logger.info("Starting pose tracking dataset export...")
-
-        try:
-            export_path = exporter.export_trajectories(
-                video_path, csv_path, output_dir, dataset_name
-            )
-            if export_path:
-                logger.info(f"✓ Pose dataset exported successfully to: {export_path}")
-        except Exception as e:
-            logger.error(f"Failed to export pose dataset: {e}")
-            import traceback
-
-            traceback.print_exc()
-        finally:
-            # Hide progress UI
-            self.progress_bar.setVisible(False)
-            self.progress_label.setVisible(False)
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -5002,13 +4746,6 @@ class MainWindow(QMainWindow):
                     if self.chk_enable_dataset_gen.isChecked():
                         self._generate_training_dataset()
 
-                    # Automatically export pose dataset if enabled
-                    if (
-                        self.chk_enable_pose_export.isChecked()
-                        and self.line_pose_output_dir.text()
-                    ):
-                        self._export_pose_dataset()
-
                     # Clean up session logging - forward-only tracking complete
                     self._cleanup_session_logging()
                     self._cleanup_temporary_files()
@@ -5057,13 +4794,6 @@ class MainWindow(QMainWindow):
                 # Generate dataset if enabled (BEFORE cleanup so files are still available)
                 if self.chk_enable_dataset_gen.isChecked():
                     self._generate_training_dataset()
-
-                # Automatically export pose dataset if enabled
-                if (
-                    self.chk_enable_pose_export.isChecked()
-                    and self.line_pose_output_dir.text()
-                ):
-                    self._export_pose_dataset()
 
                 # Clean up session logging - backward tracking and merging complete
                 self._cleanup_session_logging()
@@ -5463,12 +5193,6 @@ class MainWindow(QMainWindow):
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
-            "ENABLE_POSE_EXPORT": self.chk_enable_pose_export.isChecked(),
-            "POSE_OUTPUT_DIR": self.line_pose_output_dir.text(),
-            "POSE_DATASET_NAME": self.line_pose_dataset_name.text(),
-            "POSE_CROP_SIZE_MULTIPLIER": self.spin_pose_crop_multiplier.value(),
-            "POSE_MIN_TRAJECTORY_LENGTH": self.spin_pose_min_length.value(),
-            "POSE_EXPORT_FPS": self.spin_pose_export_fps.value(),
             # Real-time Individual Dataset Generation parameters
             "ENABLE_INDIVIDUAL_DATASET": self.chk_enable_individual_dataset.isChecked(),
             "INDIVIDUAL_DATASET_OUTPUT_DIR": self.line_individual_output.text(),
@@ -5916,25 +5640,6 @@ class MainWindow(QMainWindow):
                 get_cfg("apriltag_decimate", default=1.0)
             )
 
-            # === POSE EXPORT ===
-            self.chk_enable_pose_export.setChecked(
-                get_cfg("enable_pose_export", default=False)
-            )
-            if not self.line_pose_output_dir.text().strip():
-                self.line_pose_output_dir.setText(
-                    get_cfg("pose_output_dir", default="")
-                )
-            self.line_pose_dataset_name.setText(
-                get_cfg("pose_dataset_name", default="pose_dataset")
-            )
-            self.spin_pose_crop_multiplier.setValue(
-                get_cfg("pose_crop_size_multiplier", default=4.0)
-            )
-            self.spin_pose_min_length.setValue(
-                get_cfg("pose_min_trajectory_length", default=30)
-            )
-            self.spin_pose_export_fps.setValue(get_cfg("pose_export_fps", default=30))
-
             # === REAL-TIME INDIVIDUAL DATASET ===
             self.chk_enable_individual_dataset.setChecked(
                 get_cfg("enable_individual_dataset", default=False)
@@ -6147,13 +5852,6 @@ class MainWindow(QMainWindow):
             "color_tag_confidence": self.spin_color_tag_conf.value(),
             "apriltag_family": self.combo_apriltag_family.currentText(),
             "apriltag_decimate": self.spin_apriltag_decimate.value(),
-            # === POSE EXPORT ===
-            "enable_pose_export": self.chk_enable_pose_export.isChecked(),
-            "pose_output_dir": self.line_pose_output_dir.text(),
-            "pose_dataset_name": self.line_pose_dataset_name.text(),
-            "pose_crop_size_multiplier": self.spin_pose_crop_multiplier.value(),
-            "pose_min_trajectory_length": self.spin_pose_min_length.value(),
-            "pose_export_fps": self.spin_pose_export_fps.value(),
             # === REAL-TIME INDIVIDUAL DATASET ===
             "enable_individual_dataset": self.chk_enable_individual_dataset.isChecked(),
             "individual_dataset_output_dir": self.line_individual_output.text(),
