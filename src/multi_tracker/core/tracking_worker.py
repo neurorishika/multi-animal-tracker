@@ -14,6 +14,7 @@ from PySide2.QtCore import QThread, Signal, QMutex, Slot
 from ..utils.image_processing import apply_image_adjustments, stabilize_lighting
 from ..utils.geometry import wrap_angle_degs
 from ..utils.detection_cache import DetectionCache
+from ..utils.batch_optimizer import BatchOptimizer
 from .kalman_filters import KalmanFilterManager
 from .background_models import BackgroundModel
 from .detection import create_detector
@@ -42,6 +43,7 @@ class TrackingWorker(QThread):
         video_output_path=None,
         backward_mode=False,
         detection_cache_path=None,
+        preview_mode=False,
         parent=None,
     ):
         super().__init__(parent)
@@ -50,6 +52,7 @@ class TrackingWorker(QThread):
         self.video_output_path = video_output_path
         self.backward_mode = backward_mode
         self.detection_cache_path = detection_cache_path
+        self.preview_mode = preview_mode
         self.video_writer = None
         self.params_mutex = QMutex()
         self.parameters = {}
@@ -108,6 +111,109 @@ class TrackingWorker(QThread):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.frame_signal.emit(rgb)
 
+    def _run_batched_detection_phase(self, cap, detection_cache, detector, params):
+        """
+        Phase 1: Run batched YOLO detection on entire video and cache results.
+
+        Args:
+            cap: OpenCV VideoCapture object
+            detection_cache: DetectionCache instance for writing
+            detector: YOLOOBBDetector instance
+            params: Configuration parameters
+
+        Returns:
+            int: Total frames processed
+        """
+        logger.info("=" * 80)
+        logger.info("PHASE 1: Batched YOLO Detection")
+        logger.info("=" * 80)
+
+        # Get batch size using advanced config
+        advanced_config = params.get("ADVANCED_CONFIG", {})
+        batch_optimizer = BatchOptimizer(advanced_config)
+
+        # Get video properties
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        # Estimate optimal batch size
+        model_name = params.get("YOLO_MODEL_PATH", "yolo26s-obb.pt")
+        batch_size = batch_optimizer.estimate_batch_size(
+            frame_width, frame_height, model_name
+        )
+
+        logger.info(f"Video: {frame_width}x{frame_height}, {total_frames} frames")
+        logger.info(f"Batch size: {batch_size}")
+
+        # Process video in batches
+        frame_idx = 0
+        batch_count = 0
+        total_batches = (total_frames + batch_size - 1) // batch_size
+
+        resize_factor = params.get("RESIZE_FACTOR", 1.0)
+
+        while not self._stop_requested:
+            # Read a batch of frames
+            batch_frames = []
+            batch_start_idx = frame_idx
+
+            for _ in range(batch_size):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                # Apply resize if needed (same as single-frame mode)
+                if resize_factor < 1.0:
+                    frame = cv2.resize(
+                        frame,
+                        (0, 0),
+                        fx=resize_factor,
+                        fy=resize_factor,
+                        interpolation=cv2.INTER_AREA,
+                    )
+
+                batch_frames.append(frame)
+                frame_idx += 1
+
+            if not batch_frames:
+                break  # No more frames
+
+            # Run batched detection
+            batch_count += 1
+            logger.info(
+                f"Processing batch {batch_count}/{total_batches} ({len(batch_frames)} frames)"
+            )
+
+            # Progress callback for within-batch updates
+            def progress_cb(current, total, msg):
+                pass  # Could add finer-grained progress here if needed
+
+            batch_results = detector.detect_objects_batched(
+                batch_frames, batch_start_idx, progress_cb
+            )
+
+            # Cache each frame's detections
+            for local_idx, (meas, sizes, shapes, confidences, obb_corners) in enumerate(
+                batch_results
+            ):
+                global_idx = batch_start_idx + local_idx
+                detection_cache.add_frame(
+                    global_idx, meas, sizes, shapes, confidences, obb_corners
+                )
+
+            # Emit progress
+            percentage = (
+                int((frame_idx / total_frames) * 100) if total_frames > 0 else 0
+            )
+            status_text = f"Detecting objects: batch {batch_count}/{total_batches} ({percentage}%)"
+            self.progress_signal.emit(percentage, status_text)
+
+        logger.info(
+            f"Detection phase complete: {frame_idx} frames processed in {batch_count} batches"
+        )
+        return frame_idx
+
     def run(self):
         # === 1. INITIALIZATION (Identical to Original) ===
         gc.collect()
@@ -140,9 +246,28 @@ class TrackingWorker(QThread):
         # Initialize detector using factory function
         detector = create_detector(p)
 
+        # Determine if we should use batched detection
+        # Batching is only used for YOLO in full tracking mode (not preview, not backward)
+        detection_method = p.get("DETECTION_METHOD", "background_subtraction")
+        advanced_config = p.get("ADVANCED_CONFIG", {})
+        use_batched_detection = (
+            not self.preview_mode  # Not preview mode
+            and not self.backward_mode  # Not backward mode (uses cache)
+            and detection_method == "yolo_obb"  # Only YOLO benefits from batching
+            and advanced_config.get(
+                "enable_yolo_batching", True
+            )  # Batching enabled in config
+            and self.detection_cache_path
+            is not None  # Need cache path for two-phase approach
+        )
+
+        if use_batched_detection:
+            logger.info("Using batched YOLO detection (two-phase approach)")
+        elif detection_method == "yolo_obb" and not self.preview_mode:
+            logger.info("Using frame-by-frame YOLO detection")
+
         # Initialize background model only if using background subtraction
         bg_model = None
-        detection_method = p.get("DETECTION_METHOD", "background_subtraction")
         if detection_method == "background_subtraction":
             bg_model = BackgroundModel(p)
             bg_model.prime_background(cap)
@@ -214,17 +339,48 @@ class TrackingWorker(QThread):
                 detection_cache = DetectionCache(self.detection_cache_path, mode="w")
                 logger.info("Forward pass caching detections")
 
+        # === RUN BATCHED DETECTION PHASE (if applicable) ===
+        if use_batched_detection:
+            # Phase 1: Batched YOLO detection
+            frames_processed = self._run_batched_detection_phase(
+                cap, detection_cache, detector, p
+            )
+
+            # Save detection cache after phase 1
+            detection_cache.save()
+            logger.info("Detection cache saved after batched phase")
+
+            # Reopen cache in read mode for phase 2
+            detection_cache.close()
+            detection_cache = DetectionCache(self.detection_cache_path, mode="r")
+            total_frames = frames_processed
+            use_cached_detections = True  # Phase 2 uses cached detections
+
+            # Reset video capture for phase 2 (tracking + visualization)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+            logger.info("=" * 80)
+            logger.info("PHASE 2: Tracking and Visualization")
+            logger.info("=" * 80)
+
         # === 2. FRAME PROCESSING LOOP ===
         # Choose appropriate frame iterator
-        if self.backward_mode and use_cached_detections:
-            # Backward pass with cached detections: no frames needed, skip visualization
-            frame_iterator = self._cached_detection_iterator(total_frames)
-            skip_visualization = True
-            logger.info(
-                "Backward pass: Skipping frame reading and visualization for maximum speed"
-            )
+        if use_cached_detections:
+            if use_batched_detection:
+                # Phase 2 of batched detection: use forward iterator for visualization
+                # but load detections from cache
+                frame_iterator = self._forward_frame_iterator(cap)
+                skip_visualization = False  # Show visualization in phase 2
+                logger.info("Phase 2: Using cached detections with visualization")
+            else:
+                # Backward pass: no frames needed, skip visualization
+                frame_iterator = self._cached_detection_iterator(total_frames)
+                skip_visualization = True
+                logger.info(
+                    "Backward pass: Skipping frame reading and visualization for maximum speed"
+                )
         else:
-            # Forward pass or non-cached backward: need frames for detection/visualization
+            # Standard frame-by-frame with detection
             frame_iterator = self._forward_frame_iterator(cap)
             skip_visualization = False
 
@@ -289,11 +445,17 @@ class TrackingWorker(QThread):
 
             detect_start = time.time()
 
-            # Get detections either from cache (backward) or by detection (forward)
+            # Get detections either from cache or by detection
             if use_cached_detections:
-                # Backward pass: load cached detections (no frame needed)
+                # Load cached detections (backward pass or phase 2 of batched detection)
                 # Frame index is 0-based, but self.frame_count is 1-based during iteration
-                cache_frame_idx = total_frames - self.frame_count  # Reverse mapping
+                if use_batched_detection:
+                    # Phase 2: forward iteration, so use frame_count - 1 directly
+                    cache_frame_idx = self.frame_count - 1
+                else:
+                    # Backward pass: reverse mapping
+                    cache_frame_idx = total_frames - self.frame_count
+
                 meas, sizes, shapes, detection_confidences, filtered_obb_corners = (
                     detection_cache.get_frame(cache_frame_idx)
                 )
@@ -408,8 +570,8 @@ class TrackingWorker(QThread):
                     )
                     continue
 
-            # Cache detections during forward pass
-            if detection_cache and not self.backward_mode:
+            # Cache detections during forward pass (only when actively detecting, not when loading from cache)
+            if detection_cache and not self.backward_mode and not use_cached_detections:
                 # Frame index is 0-based (self.frame_count - 1)
                 detection_cache.add_frame(
                     self.frame_count - 1,
@@ -780,6 +942,7 @@ class TrackingWorker(QThread):
                     fg_mask,
                     bg_u8,
                     yolo_results,
+                    filtered_obb_corners,  # Pass OBB corners for visualization
                 )
                 profile_times["visualization"] += time.time() - viz_start
 
@@ -876,12 +1039,13 @@ class TrackingWorker(QThread):
 
         # Save or close detection cache
         if detection_cache:
-            if not self.backward_mode:
-                # Forward pass: save cache to disk
+            if not self.backward_mode and not use_cached_detections:
+                # Forward pass Phase 1 (detection phase): save cache to disk
+                # Note: In batched detection, cache is already saved after Phase 1
                 detection_cache.save()
                 logger.info("Detection cache saved successfully")
             else:
-                # Backward pass: close cache
+                # Backward pass or Phase 2: just close cache (read-only mode)
                 detection_cache.close()
 
         # Finalize individual dataset if enabled
@@ -974,42 +1138,58 @@ class TrackingWorker(QThread):
         continuity,
         fg,
         bg,
-        yolo_results=None,
+        yolo_results=None,  # YOLO results object (direct detection)
+        obb_corners=None,  # OBB corners list (cached detections)
     ):
         # Draw YOLO OBB boxes if enabled and available
-        if p.get("SHOW_YOLO_OBB", False) and yolo_results is not None:
-            if (
-                hasattr(yolo_results, "obb")
-                and yolo_results.obb is not None
-                and len(yolo_results.obb) > 0
-            ):
-                obb_data = yolo_results.obb
-                for i in range(len(obb_data)):
-                    # Get the 4 corner points of the OBB
-                    corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
-                    # Draw the OBB as a polygon
-                    cv2.polylines(
-                        overlay,
-                        [corners],
-                        isClosed=True,
-                        color=(0, 255, 255),
-                        thickness=2,
-                    )
-
-                    # Optionally draw confidence score
-                    if hasattr(obb_data, "conf"):
-                        conf = obb_data.conf[i].cpu().item()
-                        cx = int(corners[:, 0].mean())
-                        cy = int(corners[:, 1].mean())
-                        cv2.putText(
+        if p.get("SHOW_YOLO_OBB", False):
+            # First try to use filtered OBB corners (works with cached detections)
+            if obb_corners is not None and len(obb_corners) > 0:
+                for corners in obb_corners:
+                    if corners is not None:
+                        # corners is already a numpy array of shape (4, 2)
+                        corners_int = corners.astype(np.int32)
+                        cv2.polylines(
                             overlay,
-                            f"{conf:.2f}",
-                            (cx - 15, cy - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.4,
-                            (0, 255, 255),
-                            1,
+                            [corners_int],
+                            isClosed=True,
+                            color=(0, 255, 255),  # Yellow
+                            thickness=2,
                         )
+            # Fall back to yolo_results object (direct detection mode)
+            elif yolo_results is not None:
+                if (
+                    hasattr(yolo_results, "obb")
+                    and yolo_results.obb is not None
+                    and len(yolo_results.obb) > 0
+                ):
+                    obb_data = yolo_results.obb
+                    for i in range(len(obb_data)):
+                        # Get the 4 corner points of the OBB
+                        corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
+                        # Draw the OBB as a polygon
+                        cv2.polylines(
+                            overlay,
+                            [corners],
+                            isClosed=True,
+                            color=(0, 255, 255),
+                            thickness=2,
+                        )
+
+                        # Optionally draw confidence score
+                        if hasattr(obb_data, "conf"):
+                            conf = obb_data.conf[i].cpu().item()
+                            cx = int(corners[:, 0].mean())
+                            cy = int(corners[:, 1].mean())
+                            cv2.putText(
+                                overlay,
+                                f"{conf:.2f}",
+                                (cx - 15, cy - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.4,
+                                (0, 255, 255),
+                                1,
+                            )
 
         # Draw Kalman uncertainty ellipses if enabled (for debugging)
         if p.get("SHOW_KALMAN_UNCERTAINTY", False):

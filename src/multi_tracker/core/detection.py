@@ -321,6 +321,109 @@ class YOLOOBBDetector:
 
         return meas, sizes, shapes, results[0], confidences
 
+    def detect_objects_batched(self, frames, start_frame_idx, progress_callback=None):
+        """
+        Detect objects in a batch of frames using YOLO OBB.
+
+        Args:
+            frames: List of frames (numpy arrays)
+            start_frame_idx: Starting frame index for this batch
+            progress_callback: Optional callback(current, total, message) for progress updates
+
+        Returns:
+            List of tuples: [(meas, sizes, shapes, confidences, obb_corners), ...]
+                One tuple per frame in the batch
+        """
+        if self.model is None:
+            logger.error("YOLO model not initialized")
+            return [([], [], [], [], []) for _ in frames]
+
+        p = self.params
+        conf_threshold = p.get("YOLO_CONFIDENCE_THRESHOLD", 0.25)
+        iou_threshold = p.get("YOLO_IOU_THRESHOLD", 0.7)
+        target_classes = p.get("YOLO_TARGET_CLASSES", None)
+        max_det = p.get("MAX_TARGETS", 8) * p.get("MAX_CONTOUR_MULTIPLIER", 20)
+        N = p["MAX_TARGETS"]
+
+        # Run batched inference
+        try:
+            results_batch = self.model.predict(
+                frames,  # List of frames
+                conf=conf_threshold,
+                iou=iou_threshold,
+                classes=target_classes,
+                max_det=max_det,
+                device=self.device,
+                verbose=False,
+            )
+        except Exception as e:
+            logger.error(f"YOLO batched inference failed: {e}")
+            return [([], [], [], [], []) for _ in frames]
+
+        # Process each result
+        batch_detections = []
+        for idx, results in enumerate(results_batch):
+            frame_count = start_frame_idx + idx
+
+            if results.obb is None or len(results.obb) == 0:
+                batch_detections.append(([], [], [], [], []))
+                continue
+
+            # Extract OBB detections for this frame
+            obb_data = results.obb
+            conf_scores = obb_data.conf.cpu().numpy()
+
+            meas, sizes, shapes, confidences = [], [], [], []
+            obb_corners_list = []
+
+            for i in range(len(obb_data)):
+                xywhr = obb_data.xywhr[i].cpu().numpy()
+                cx, cy, w, h, angle_rad = xywhr
+
+                angle_deg = np.rad2deg(angle_rad) % 180
+
+                if w < h:
+                    w, h = h, w
+                    angle_deg = (angle_deg + 90) % 180
+
+                area = w * h
+                aspect_ratio = w / h if h > 0 else 0
+
+                # Apply size filtering
+                if p.get("ENABLE_SIZE_FILTERING", False):
+                    min_size = p.get("MIN_OBJECT_SIZE", 0)
+                    max_size = p.get("MAX_OBJECT_SIZE", float("inf"))
+                    if not (min_size <= area <= max_size):
+                        continue
+
+                meas.append(np.array([cx, cy, np.deg2rad(angle_deg)], dtype=np.float32))
+                sizes.append(float(area))
+                shapes.append((np.pi * (w / 2) * (h / 2), aspect_ratio))
+                confidences.append(float(conf_scores[i]))
+                obb_corners_list.append(obb_data.xyxyxyxy[i].cpu().numpy())
+
+            # Keep only top N by size
+            if len(meas) > N:
+                idxs = np.argsort(sizes)[::-1][:N]
+                meas = [meas[i] for i in idxs]
+                sizes = [sizes[i] for i in idxs]
+                shapes = [shapes[i] for i in idxs]
+                confidences = [confidences[i] for i in idxs]
+                obb_corners_list = [obb_corners_list[i] for i in idxs]
+
+            batch_detections.append(
+                (meas, sizes, shapes, confidences, obb_corners_list)
+            )
+
+            if progress_callback and (idx + 1) % 10 == 0:
+                progress_callback(
+                    idx + 1,
+                    len(frames),
+                    f"Processing batch frame {idx + 1}/{len(frames)}",
+                )
+
+        return batch_detections
+
     def apply_conservative_split(self, fg_mask):
         """
         Placeholder method for compatibility with ObjectDetector interface.

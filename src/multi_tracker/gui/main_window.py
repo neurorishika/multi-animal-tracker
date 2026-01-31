@@ -54,13 +54,130 @@ from PySide2.QtWidgets import (
 import matplotlib.pyplot as plt
 
 from ..core.tracking_worker import TrackingWorker
-from ..core.post_processing import process_trajectories, resolve_trajectories
+from ..core.post_processing import (
+    process_trajectories,
+    resolve_trajectories,
+    interpolate_trajectories,
+)
 from ..utils.csv_writer import CSVWriterThread
 from ..utils.geometry import fit_circle_to_points
 from .histogram_widgets import HistogramPanel
 
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
+
+
+class MergeWorker(QThread):
+    """Worker thread for merging trajectories without blocking the UI."""
+
+    progress_signal = Signal(int, str)  # progress value, status message
+    finished_signal = Signal(object)  # merged trajectories
+    error_signal = Signal(str)  # error message
+
+    def __init__(
+        self,
+        forward_trajs,
+        backward_trajs,
+        total_frames,
+        params,
+        resize_factor,
+        interp_method,
+        max_gap,
+    ):
+        super().__init__()
+        self.forward_trajs = forward_trajs
+        self.backward_trajs = backward_trajs
+        self.total_frames = total_frames
+        self.params = params
+        self.resize_factor = resize_factor
+        self.interp_method = interp_method
+        self.max_gap = max_gap
+
+    def run(self):
+        try:
+            self.progress_signal.emit(10, "Preparing trajectories...")
+
+            # Convert DataFrames to list of DataFrames (one per trajectory)
+            def prepare_trajs_for_merge(trajs):
+                if isinstance(trajs, pd.DataFrame):
+                    return [group for _, group in trajs.groupby("TrajectoryID")]
+                else:
+                    return trajs
+
+            forward_prepared = prepare_trajs_for_merge(self.forward_trajs)
+            backward_prepared = prepare_trajs_for_merge(self.backward_trajs)
+
+            self.progress_signal.emit(30, "Resolving trajectory conflicts...")
+
+            resolved_trajectories = resolve_trajectories(
+                forward_prepared,
+                backward_prepared,
+                video_length=self.total_frames,
+                params=self.params,
+            )
+
+            self.progress_signal.emit(60, "Converting to DataFrame...")
+
+            # Convert resolved trajectories to DataFrame
+            if resolved_trajectories and isinstance(resolved_trajectories, list):
+                if isinstance(resolved_trajectories[0], pd.DataFrame):
+                    # Reassign TrajectoryID to ensure unique IDs
+                    for new_id, traj_df in enumerate(resolved_trajectories):
+                        traj_df["TrajectoryID"] = new_id
+                    resolved_trajectories = pd.concat(
+                        resolved_trajectories, ignore_index=True
+                    )
+                else:
+                    # Fallback for old tuple format
+                    logger.warning(
+                        "Received tuple format from resolve_trajectories, converting..."
+                    )
+                    all_data = []
+                    for traj_id, traj in enumerate(resolved_trajectories):
+                        for x, y, theta, frame in traj:
+                            all_data.append(
+                                {
+                                    "TrajectoryID": traj_id,
+                                    "X": x,
+                                    "Y": y,
+                                    "Theta": theta,
+                                    "FrameID": frame,
+                                }
+                            )
+                    if all_data:
+                        resolved_trajectories = pd.DataFrame(all_data)
+                    else:
+                        resolved_trajectories = []
+
+            self.progress_signal.emit(75, "Applying interpolation...")
+
+            # Apply interpolation if enabled
+            if isinstance(resolved_trajectories, pd.DataFrame):
+                if self.interp_method != "none":
+                    resolved_trajectories = interpolate_trajectories(
+                        resolved_trajectories,
+                        method=self.interp_method,
+                        max_gap=self.max_gap,
+                    )
+
+            self.progress_signal.emit(90, "Scaling to original space...")
+
+            # Scale coordinates back to original video space
+            if isinstance(resolved_trajectories, pd.DataFrame):
+                resolved_trajectories[["X", "Y"]] = (
+                    resolved_trajectories[["X", "Y"]] / self.resize_factor
+                )
+                if "Width" in resolved_trajectories.columns:
+                    resolved_trajectories["Width"] /= self.resize_factor
+                if "Height" in resolved_trajectories.columns:
+                    resolved_trajectories["Height"] /= self.resize_factor
+
+            self.progress_signal.emit(100, "Merge complete!")
+            self.finished_signal.emit(resolved_trajectories)
+
+        except Exception as e:
+            logger.exception("Error during trajectory merging")
+            self.error_signal.emit(str(e))
 
 
 def get_video_config_path(video_path):
@@ -1498,6 +1615,54 @@ class MainWindow(QMainWindow):
         )
         f_yolo.addRow("Device:", self.combo_yolo_device)
 
+        # GPU Batching Settings
+        f_yolo.addRow(QLabel(""))  # Spacer
+        batching_label = QLabel("<b>GPU Batching (Full Tracking Only)</b>")
+        batching_label.setStyleSheet("color: #4a9eff; font-size: 11px;")
+        f_yolo.addRow(batching_label)
+
+        self.chk_enable_yolo_batching = QCheckBox("Enable Batched Detection")
+        self.chk_enable_yolo_batching.setChecked(
+            self.advanced_config.get("enable_yolo_batching", True)
+        )
+        self.chk_enable_yolo_batching.setToolTip(
+            "Process frames in batches on GPU for 2-5× faster detection.\n"
+            "Only works in full tracking mode (not preview).\n"
+            "Automatically disabled for CPU or background subtraction."
+        )
+        self.chk_enable_yolo_batching.stateChanged.connect(
+            self._on_yolo_batching_toggled
+        )
+        f_yolo.addRow("", self.chk_enable_yolo_batching)
+
+        self.combo_yolo_batch_mode = QComboBox()
+        self.combo_yolo_batch_mode.addItems(["Auto", "Manual"])
+        self.combo_yolo_batch_mode.setToolTip(
+            "Auto: Automatically estimate batch size based on GPU memory.\n"
+            "Manual: Specify a fixed batch size (use if auto doesn't work well)."
+        )
+        self.combo_yolo_batch_mode.currentIndexChanged.connect(
+            self._on_yolo_batch_mode_changed
+        )
+        f_yolo.addRow("Batch Size Mode:", self.combo_yolo_batch_mode)
+
+        self.spin_yolo_batch_size = QSpinBox()
+        self.spin_yolo_batch_size.setRange(1, 64)
+        self.spin_yolo_batch_size.setValue(
+            self.advanced_config.get("yolo_manual_batch_size", 16)
+        )
+        self.spin_yolo_batch_size.setToolTip(
+            "Manual batch size (only used when mode is Manual).\n"
+            "Larger = faster but uses more GPU memory.\n"
+            "If you get OOM errors, reduce this value.\n"
+            "Typical values: 8-32 depending on GPU."
+        )
+        self.spin_yolo_batch_size.setEnabled(False)  # Initially disabled (Auto mode)
+        f_yolo.addRow("Manual Batch Size:", self.spin_yolo_batch_size)
+
+        # Connect batch mode change after setting initial state
+        # (combo starts at index 0 = Auto, so spinner stays disabled)
+
         l_yolo.addWidget(self.yolo_group)
         l_yolo.addStretch()  # Push YOLO config to top
 
@@ -2812,6 +2977,21 @@ class MainWindow(QMainWindow):
         )
         if directory:
             self.line_individual_output.setText(directory)
+
+    def _on_yolo_batching_toggled(self, state):
+        """Enable/disable YOLO batching controls based on checkbox."""
+        enabled = state == Qt.Checked
+        self.combo_yolo_batch_mode.setEnabled(enabled)
+        # Manual batch size only enabled if batching is on AND mode is Manual
+        manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
+        self.spin_yolo_batch_size.setEnabled(enabled and manual_mode)
+
+    def _on_yolo_batch_mode_changed(self, index):
+        """Show/hide manual batch size based on selected mode."""
+        # index 0 = Auto, index 1 = Manual
+        is_manual = index == 1
+        batching_enabled = self.chk_enable_yolo_batching.isChecked()
+        self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -4714,88 +4894,61 @@ class MainWindow(QMainWindow):
         cap.release()
 
         current_params = self.get_parameters_dict()
-
-        # Convert DataFrames to list of DataFrames (one per trajectory) for resolve_trajectories
-        def prepare_trajs_for_merge(trajs):
-            """Convert trajectories to format expected by resolve_trajectories."""
-            if isinstance(trajs, pd.DataFrame):
-                # Split DataFrame by TrajectoryID into list of DataFrames
-                return [group for _, group in trajs.groupby("TrajectoryID")]
-            else:
-                # Already in list format
-                return trajs
-
-        forward_prepared = prepare_trajs_for_merge(forward_trajs)
-        backward_prepared = prepare_trajs_for_merge(backward_trajs)
-
-        resolved_trajectories = resolve_trajectories(
-            forward_prepared,
-            backward_prepared,
-            video_length=total_frames,
-            params=current_params,
-        )
-
-        # Convert resolved trajectories to DataFrame for interpolation
-        # resolve_trajectories now returns list of DataFrames, concatenate them
-        from ..core.post_processing import interpolate_trajectories
-
-        # Convert list of DataFrames to single DataFrame
-        if resolved_trajectories and isinstance(resolved_trajectories, list):
-            if isinstance(resolved_trajectories[0], pd.DataFrame):
-                # Concatenate all trajectory DataFrames
-                # Reassign TrajectoryID to ensure unique IDs
-                for new_id, traj_df in enumerate(resolved_trajectories):
-                    traj_df["TrajectoryID"] = new_id
-                resolved_trajectories = pd.concat(
-                    resolved_trajectories, ignore_index=True
-                )
-            else:
-                # Fallback for old tuple format (shouldn't happen)
-                logger.warning(
-                    "Received tuple format from resolve_trajectories, converting..."
-                )
-                all_data = []
-                for traj_id, traj in enumerate(resolved_trajectories):
-                    for x, y, theta, frame in traj:
-                        all_data.append(
-                            {
-                                "TrajectoryID": traj_id,
-                                "X": x,
-                                "Y": y,
-                                "Theta": theta,
-                                "FrameID": frame,
-                            }
-                        )
-                if all_data:
-                    resolved_trajectories = pd.DataFrame(all_data)
-                else:
-                    resolved_trajectories = []
-
-        # Apply interpolation if enabled
-        if isinstance(resolved_trajectories, pd.DataFrame):
-            interp_method = self.combo_interpolation_method.currentText().lower()
-            if interp_method != "none":
-                max_gap = self.spin_interpolation_max_gap.value()
-                resolved_trajectories = interpolate_trajectories(
-                    resolved_trajectories, method=interp_method, max_gap=max_gap
-                )
-
-        # Scale coordinates back to original video space
         resize_factor = self.spin_resize.value()
-        if isinstance(resolved_trajectories, pd.DataFrame):
-            resolved_trajectories = self._scale_trajectories_to_original_space(
-                resolved_trajectories, resize_factor
-            )
+        interp_method = self.combo_interpolation_method.currentText().lower()
+        max_gap = self.spin_interpolation_max_gap.value()
+
+        # Show progress bar
+        self.progress_bar.setVisible(True)
+        self.progress_label.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Merging trajectories...")
+
+        # Create and start merge worker thread
+        self.merge_worker = MergeWorker(
+            forward_trajs,
+            backward_trajs,
+            total_frames,
+            current_params,
+            resize_factor,
+            interp_method,
+            max_gap,
+        )
+        self.merge_worker.progress_signal.connect(self.on_merge_progress)
+        self.merge_worker.finished_signal.connect(self.on_merge_finished)
+        self.merge_worker.error_signal.connect(self.on_merge_error)
+        self.merge_worker.start()
+
+    def on_merge_progress(self, value, message):
+        """Update progress bar during merge."""
+        self.progress_bar.setValue(value)
+        self.progress_label.setText(message)
+
+    def on_merge_error(self, error_message):
+        """Handle merge errors."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        QMessageBox.critical(
+            self, "Merge Error", f"Error during trajectory merging:\n{error_message}"
+        )
+        logger.error(f"Trajectory merge error: {error_message}")
+
+    def on_merge_finished(self, resolved_trajectories):
+        """Handle completion of trajectory merging."""
+        self.progress_label.setText("Saving merged trajectories...")
 
         raw_csv_path = self.csv_line.text()
         if raw_csv_path:
             base, ext = os.path.splitext(raw_csv_path)
             merged_csv_path = f"{base}_merged.csv"
             if self.save_trajectories_to_csv(resolved_trajectories, merged_csv_path):
-                # Track initial tracking CSV as temporary (will be replaced by merged version)
+                # Track initial tracking CSV as temporary
                 if raw_csv_path not in self.temporary_files:
                     self.temporary_files.append(raw_csv_path)
                 logger.info(f"✓ Merged trajectory data saved to: {merged_csv_path}")
+
+        # Complete the tracking session
+        self._finish_tracking_session()
 
     @Slot(bool, list, list)
     def on_tracking_finished(self, finished_normally, fps_list, full_traj):
@@ -4968,35 +5121,28 @@ class MainWindow(QMainWindow):
                 )
 
                 if has_forward and has_backward:
+                    # Start merge in background thread (will handle cleanup when done)
                     self.merge_and_save_trajectories()
+                else:
+                    # No merge needed, do cleanup now
+                    self._finish_tracking_session()
 
-                # Generate dataset if enabled (BEFORE cleanup so files are still available)
-                if self.chk_enable_dataset_gen.isChecked():
-                    self._generate_training_dataset()
+    def _finish_tracking_session(self):
+        """Complete tracking session cleanup and UI updates."""
+        # Generate dataset if enabled (BEFORE cleanup so files are still available)
+        if self.chk_enable_dataset_gen.isChecked():
+            self._generate_training_dataset()
 
-                # Clean up session logging - backward tracking and merging complete
-                self._cleanup_session_logging()
-                self._cleanup_temporary_files()
+        # Clean up session logging
+        self._cleanup_session_logging()
+        self._cleanup_temporary_files()
 
-                # Hide stats labels
-                self.label_current_fps.setVisible(False)
-                self.label_elapsed_time.setVisible(False)
-                self.label_eta.setVisible(False)
-                self._set_ui_controls_enabled(True)
-                logger.info("✓ Backward tracking and merging complete.")
-        else:
-            # Hide stats labels
-            self.label_current_fps.setVisible(False)
-            self.label_elapsed_time.setVisible(False)
-            self.label_eta.setVisible(False)
-            self._set_ui_controls_enabled(True)
-            if not finished_normally:
-                QMessageBox.warning(
-                    self,
-                    "Tracking Interrupted",
-                    "Tracking was stopped or encountered an error.",
-                )
-        gc.collect()
+        # Hide stats labels
+        self.label_current_fps.setVisible(False)
+        self.label_elapsed_time.setVisible(False)
+        self.label_eta.setVisible(False)
+        self._set_ui_controls_enabled(True)
+        logger.info("✓ Tracking session complete.")
 
     @Slot(dict)
     def on_histogram_data(self, histogram_data):
@@ -5071,6 +5217,7 @@ class MainWindow(QMainWindow):
             video_output_path=None,
             backward_mode=False,
             detection_cache_path=None,  # No caching in preview mode
+            preview_mode=True,  # Preview mode - frame-by-frame only
         )
         self.tracking_worker.set_parameters(self.get_parameters_dict())
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
@@ -5167,6 +5314,7 @@ class MainWindow(QMainWindow):
             video_output_path=video_output_path,
             backward_mode=backward_mode,
             detection_cache_path=detection_cache_path,
+            preview_mode=False,  # Full tracking mode - batching enabled if applicable
         )
         self.tracking_worker.set_parameters(self.get_parameters_dict())
         self.parameters_changed.connect(self.tracking_worker.update_parameters)
@@ -5260,7 +5408,18 @@ class MainWindow(QMainWindow):
             self.spin_max_velocity_break.value() * scaled_body_size / fps
         )
 
+        # YOLO Batching settings from UI (overrides advanced_config defaults)
+        advanced_config = self.advanced_config.copy()
+        advanced_config["enable_yolo_batching"] = (
+            self.chk_enable_yolo_batching.isChecked()
+        )
+        advanced_config["yolo_batch_size_mode"] = (
+            "auto" if self.combo_yolo_batch_mode.currentIndex() == 0 else "manual"
+        )
+        advanced_config["yolo_manual_batch_size"] = self.spin_yolo_batch_size.value()
+
         return {
+            "ADVANCED_CONFIG": advanced_config,  # Include advanced config for batch optimization
             "DETECTION_METHOD": det_method,
             "FPS": fps,  # Acquisition frame rate
             "YOLO_MODEL_PATH": yolo_path,
@@ -5559,6 +5718,16 @@ class MainWindow(QMainWindow):
             idx = self.combo_yolo_device.findText(yolo_dev, Qt.MatchStartsWith)
             if idx >= 0:
                 self.combo_yolo_device.setCurrentIndex(idx)
+
+            # YOLO Batching settings
+            self.chk_enable_yolo_batching.setChecked(
+                get_cfg("enable_yolo_batching", default=True)
+            )
+            batch_mode = get_cfg("yolo_batch_size_mode", default="auto")
+            self.combo_yolo_batch_mode.setCurrentIndex(0 if batch_mode == "auto" else 1)
+            self.spin_yolo_batch_size.setValue(
+                get_cfg("yolo_manual_batch_size", default=16)
+            )
 
             # === CORE TRACKING ===
             self.spin_max_targets.setValue(get_cfg("max_targets", default=4))
@@ -5944,6 +6113,12 @@ class MainWindow(QMainWindow):
             "yolo_iou_threshold": self.spin_yolo_iou.value(),
             "yolo_target_classes": yolo_cls,
             "yolo_device": self.combo_yolo_device.currentText().split(" ")[0],
+            # YOLO Batching
+            "enable_yolo_batching": self.chk_enable_yolo_batching.isChecked(),
+            "yolo_batch_size_mode": (
+                "auto" if self.combo_yolo_batch_mode.currentIndex() == 0 else "manual"
+            ),
+            "yolo_manual_batch_size": self.spin_yolo_batch_size.value(),
             # === CORE TRACKING ===
             "max_targets": self.spin_max_targets.value(),
             "max_assignment_distance_multiplier": self.spin_max_dist.value(),
@@ -6409,6 +6584,9 @@ class MainWindow(QMainWindow):
             "video_crop_codec": "libx264",  # Codec for cropped videos (libx264 for quality)
             "video_crop_crf": 18,  # CRF quality (lower = better, 18 = visually lossless)
             "video_crop_preset": "medium",  # ffmpeg preset (ultrafast, fast, medium, slow, veryslow)
+            # YOLO Batching - Memory Fractions (device-specific optimization)
+            "mps_memory_fraction": 0.3,  # Conservative 30% of unified memory for MPS (Apple Silicon)
+            "cuda_memory_fraction": 0.7,  # 70% of VRAM for CUDA (NVIDIA GPUs)
         }
 
         if os.path.exists(config_path):

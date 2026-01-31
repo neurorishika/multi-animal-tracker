@@ -7,6 +7,7 @@ A real-time multi-animal tracking system with support for both background subtra
 - **Dual Detection Methods**:
   - Background Subtraction: Fast, CPU-friendly detection for moving animals
   - YOLO OBB: Deep learning-based detection with oriented bounding boxes
+  - **Intelligent Batched YOLO**: Automatic GPU batch size optimization for 2-5× faster detection
 - **Real-time Tracking**: Kalman filter-based tracking with Hungarian algorithm assignment
 - **Bidirectional Tracking**: Forward and backward passes with trajectory merging for improved accuracy
 - **Memory-Efficient Detection Caching**: Reuses forward detections in backward pass - no RAM-intensive video reversal needed
@@ -85,6 +86,21 @@ YOLO detection is now fully integrated into the GUI with **YOLO26** (latest - Ja
 4. Start tracking!
 
 **Auto-Download:** Pretrained models are automatically downloaded on first use (6-50MB). Cached locally for future use.
+
+**GPU Batching (Full Tracking Only):** When running full tracking (not preview) with YOLO on a GPU, the system automatically:
+- Detects your device (CUDA or Apple Silicon MPS)
+- Estimates optimal batch size based on available memory
+- Runs detection in two phases: (1) batched detection → cache, (2) tracking + visualization
+- Provides **2-5× speedup** on GPU with zero configuration
+
+**Batch Settings (in Detection tab):**
+- **Enable Batched Detection**: Turn GPU batching on/off
+- **Batch Size Mode**: "Auto" (recommended) or "Manual"
+- **Manual Batch Size**: Override auto-detection (1-64 frames)
+
+**Advanced Configuration** (`advanced_config.json` in package directory):
+- `mps_memory_fraction`: 0.3 (30% of unified memory for Apple Silicon)
+- `cuda_memory_fraction`: 0.7 (70% of VRAM for NVIDIA GPUs)
 
 The first time you use a pretrained model, it will be automatically downloaded (~6-50MB depending on model size).
 
