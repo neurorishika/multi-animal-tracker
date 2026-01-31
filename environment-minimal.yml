@@ -4,7 +4,7 @@ channels:
   - defaults
 dependencies:
   # Core Python
-  - python=3.11
+  - python=3.13
   
   # Scientific computing stack (minimal)
   - numpy
@@ -17,9 +17,9 @@ dependencies:
   - scikit-image
   - pillow
   
-  # GUI framework (Qt5 only - more stable)
-  - pyside2=5.15.*
-  - qt=5.15.*
+  # GUI framework (Qt6 - modern, better Apple Silicon support)
+  - pyside6>=6.6
+  - qt6-main
   
   # Development tools
   - pip

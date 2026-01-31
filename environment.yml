@@ -1,10 +1,10 @@
-name: multi-animal-tracker
+name: multi-animal-tracker-base
 channels:
   - conda-forge
   - defaults
 dependencies:
   # Core Python
-  - python=3.11
+  - python=3.13
   
   # Scientific computing stack
   - numpy
@@ -30,9 +30,9 @@ dependencies:
   # Efficiency - CPU acceleration
   - numba
   
-  # GUI framework (Qt5 only - more stable than Qt6)
-  - pyside2=5.15.*
-  - qt=5.15.*
+  # GUI framework (Qt6 - modern, better HiDPI and Apple Silicon support)
+  - pyside6>=6.6
+  - qt6-main
   
   # Development tools
   - pip

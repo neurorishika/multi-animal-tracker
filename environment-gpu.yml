@@ -6,7 +6,7 @@ channels:
   - defaults
 dependencies:
   # Core Python
-  - python=3.11
+  - python=3.13
   
   # Scientific computing stack
   - numpy
@@ -32,13 +32,9 @@ dependencies:
   # Efficiency - CPU and GPU
   - numba
   
-  # CUDA support (for NVIDIA GPUs)
-  - cudatoolkit
-  - cudnn
-  
-  # GUI framework (Qt5 only)
-  - pyside2=5.15.*
-  - qt=5.15.*
+  # GUI framework (Qt6 - modern, better HiDPI support)
+  - pyside6>=6.6
+  - qt6-main
   
   # Development tools
   - pip

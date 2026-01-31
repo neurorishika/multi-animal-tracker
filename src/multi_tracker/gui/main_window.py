@@ -13,7 +13,7 @@ from collections import deque
 import gc
 import csv
 
-from PySide2.QtCore import (
+from PySide6.QtCore import (
     Qt,
     Slot,
     Signal,
@@ -22,8 +22,8 @@ from PySide2.QtCore import (
     QPropertyAnimation,
     QEasingCurve,
 )
-from PySide2.QtGui import QImage, QPixmap, QPainter, QPen, QIcon, QColor
-from PySide2.QtWidgets import (
+from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QIcon, QColor, QAction
+from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
     QLabel,
@@ -3153,7 +3153,7 @@ class MainWindow(QMainWindow):
             self.detection_test_result = None
             self._update_preview_display()
             # Auto-fit to screen - use QTimer to ensure display is updated first
-            from PySide2.QtCore import QTimer
+            from PySide6.QtCore import QTimer
 
             QTimer.singleShot(10, self._fit_image_to_screen)
             logger.info(f"Loaded preview frame {random_frame_idx}/{total_frames}")
@@ -3470,7 +3470,7 @@ class MainWindow(QMainWindow):
             btn_cancel = msg.addButton("Cancel", QMessageBox.RejectRole)
             msg.setDefaultButton(btn_without)
 
-            msg.exec_()
+            msg.exec()
             clicked = msg.clickedButton()
 
             if clicked == btn_cancel:
@@ -3889,11 +3889,11 @@ class MainWindow(QMainWindow):
             return
 
         # Pan mode: Left button or Middle button
-        from PySide2.QtCore import Qt
+        from PySide6.QtCore import Qt
 
         if evt.button() == Qt.LeftButton or evt.button() == Qt.MiddleButton:
             self._is_panning = True
-            self._pan_start_pos = evt.globalPos()
+            self._pan_start_pos = evt.globalPosition().toPoint()
             self._scroll_start_h = self.scroll.horizontalScrollBar().value()
             self._scroll_start_v = self.scroll.verticalScrollBar().value()
             self.video_label.setCursor(Qt.ClosedHandCursor)
@@ -3902,21 +3902,21 @@ class MainWindow(QMainWindow):
     def _handle_video_mouse_move(self, evt):
         """Handle mouse move - update pan if active."""
         if self._is_panning and self._pan_start_pos:
-            from PySide2.QtCore import Qt
+            from PySide6.QtCore import Qt
 
-            delta = evt.globalPos() - self._pan_start_pos
+            delta = evt.globalPosition().toPoint() - self._pan_start_pos
             self.scroll.horizontalScrollBar().setValue(self._scroll_start_h - delta.x())
             self.scroll.verticalScrollBar().setValue(self._scroll_start_v - delta.y())
             evt.accept()
         elif not self.roi_selection_active:
             # Show open hand cursor to indicate draggable
-            from PySide2.QtCore import Qt
+            from PySide6.QtCore import Qt
 
             self.video_label.setCursor(Qt.OpenHandCursor)
 
     def _handle_video_mouse_release(self, evt):
         """Handle mouse release - end pan."""
-        from PySide2.QtCore import Qt
+        from PySide6.QtCore import Qt
 
         if self._is_panning:
             self._is_panning = False
@@ -3935,7 +3935,7 @@ class MainWindow(QMainWindow):
 
     def _handle_video_wheel(self, evt):
         """Handle mouse wheel - zoom in/out."""
-        from PySide2.QtCore import Qt
+        from PySide6.QtCore import Qt
 
         # Block zoom during ROI selection
         if self.roi_selection_active:
@@ -3962,7 +3962,7 @@ class MainWindow(QMainWindow):
 
     def _handle_video_event(self, evt):
         """Handle video events including pinch gestures."""
-        from PySide2.QtCore import QEvent, Qt
+        from PySide6.QtCore import QEvent, Qt
 
         if evt.type() == QEvent.Gesture:
             return self._handle_gesture_event(evt)
@@ -3972,7 +3972,7 @@ class MainWindow(QMainWindow):
 
     def _handle_gesture_event(self, evt):
         """Handle pinch-to-zoom gesture."""
-        from PySide2.QtCore import Qt
+        from PySide6.QtCore import Qt
 
         # Block gestures during ROI selection
         if self.roi_selection_active:
@@ -3980,7 +3980,7 @@ class MainWindow(QMainWindow):
 
         gesture = evt.gesture(Qt.PinchGesture)
         if gesture:
-            from PySide2.QtWidgets import QGesture
+            from PySide6.QtWidgets import QGesture
 
             if gesture.state() == Qt.GestureUpdated:
                 # Get scale factor
@@ -4095,7 +4095,8 @@ class MainWindow(QMainWindow):
         if evt.button() != Qt.LeftButton:
             return
 
-        x, y = evt.pos().x(), evt.pos().y()
+        pos = evt.position().toPoint()
+        x, y = pos.x(), pos.y()
 
         # Double-click detection for polygon closing
         if self.roi_current_mode == "polygon" and len(self.roi_points) >= 3:
@@ -4139,7 +4140,7 @@ class MainWindow(QMainWindow):
                     int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
                 )
             elif shape["type"] == "polygon":
-                from PySide2.QtCore import QPoint
+                from PySide6.QtCore import QPoint
 
                 points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
                 painter.setPen(QPen(color, 2))
@@ -4183,7 +4184,7 @@ class MainWindow(QMainWindow):
                 self.roi_status_label.setText("Invalid circle fit")
         elif self.roi_current_mode == "polygon" and len(self.roi_points) >= 3:
             # Draw preview polygon
-            from PySide2.QtCore import QPoint
+            from PySide6.QtCore import QPoint
 
             points = [QPoint(int(x), int(y)) for x, y in self.roi_points]
             painter.setPen(QPen(preview_color, 3))
@@ -4344,7 +4345,7 @@ class MainWindow(QMainWindow):
 
         # Auto-fit to screen after ROI change - use QTimer to ensure proper sequencing
         if self.roi_base_frame:
-            from PySide2.QtCore import QTimer
+            from PySide6.QtCore import QTimer
 
             # First fit the screen (sets zoom slider value)
             QTimer.singleShot(10, self._fit_image_to_screen)
@@ -4523,7 +4524,7 @@ class MainWindow(QMainWindow):
             msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
             msg.setDefaultButton(QMessageBox.Ok)
 
-            if msg.exec_() == QMessageBox.Ok:
+            if msg.exec() == QMessageBox.Ok:
                 self.start_tracking(preview_mode=True)
                 self.btn_preview.setText("Stop Preview")
                 self.btn_start.setEnabled(False)
@@ -4656,7 +4657,7 @@ class MainWindow(QMainWindow):
                 painter.setPen(QPen(Qt.cyan, 6))
                 painter.drawPoint(int(cx), int(cy))
             elif shape["type"] == "polygon":
-                from PySide2.QtCore import QPoint
+                from PySide6.QtCore import QPoint
 
                 points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
                 painter.setPen(QPen(Qt.cyan, 2, Qt.DashLine))
@@ -4704,11 +4705,11 @@ class MainWindow(QMainWindow):
         # Convert to numpy array using buffer protocol
         ptr = qimage.bits()
         if hasattr(ptr, "setsize"):
-            # Older PySide2 versions (sip.voidptr)
+            # Older PySide versions (sip.voidptr)
             ptr.setsize(height * width * 3)
             arr = np.array(ptr).reshape(height, width, 3)
         else:
-            # Newer PySide2 versions (memoryview)
+            # PySide6 and newer versions (memoryview)
             arr = np.frombuffer(ptr, dtype=np.uint8).reshape(height, width, 3)
 
         # Create a copy to modify
@@ -4866,7 +4867,7 @@ class MainWindow(QMainWindow):
         if self._tracking_first_frame:
             self._tracking_first_frame = False
             # Use QTimer to ensure frame is displayed first
-            from PySide2.QtCore import QTimer
+            from PySide6.QtCore import QTimer
 
             QTimer.singleShot(50, self._fit_image_to_screen)
 
@@ -6378,7 +6379,7 @@ class MainWindow(QMainWindow):
             cancel_btn = msg.addButton(QMessageBox.Cancel)
             msg.setDefaultButton(replace_btn)
 
-            result = msg.exec_()
+            result = msg.exec()
             clicked = msg.clickedButton()
 
             if clicked == replace_btn:
@@ -6866,7 +6867,7 @@ class MainWindow(QMainWindow):
             btn_dont_show = msg.addButton("Don't Show Again", QMessageBox.RejectRole)
             msg.setDefaultButton(btn_crop_now)
 
-            msg.exec_()
+            msg.exec()
             clicked = msg.clickedButton()
 
             if clicked == btn_crop_now:
@@ -7010,7 +7011,7 @@ class MainWindow(QMainWindow):
             }
 
             # Set up a timer to check when process completes
-            from PySide2.QtCore import QTimer
+            from PySide6.QtCore import QTimer
 
             self._crop_check_timer = QTimer()
             self._crop_check_timer.timeout.connect(self._check_crop_completion)

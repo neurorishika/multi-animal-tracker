@@ -17,13 +17,13 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 # Import Qt before other modules to avoid conflicts
 try:
-    from PySide2.QtWidgets import QApplication
-    from PySide2.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt
 except ImportError as e:
-    print("Error: PySide2 not found. Please install it with:")
-    print("conda install -c conda-forge pyside2")
+    print("Error: PySide6 not found. Please install it with:")
+    print("conda install -c conda-forge pyside6")
     print("or")
-    print("pip install PySide2")
+    print("pip install PySide6")
     sys.exit(1)
 
 
@@ -156,7 +156,7 @@ def main():
 
         # Set application icon if available
         try:
-            from PySide2.QtGui import QIcon
+            from PySide6.QtGui import QIcon
 
             icon_path = Path(__file__).parent / "resources" / "icon.png"
             if icon_path.exists():
@@ -172,7 +172,7 @@ def main():
         logger.info("Multi-Animal Tracker GUI launched successfully")
 
         # Start Qt event loop
-        exit_code = app.exec_()
+        exit_code = app.exec()
         logger.info(f"Application exited with code {exit_code}")
         sys.exit(exit_code)
 

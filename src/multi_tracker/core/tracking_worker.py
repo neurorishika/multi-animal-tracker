@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import cv2
 from collections import deque
-from PySide2.QtCore import QThread, Signal, QMutex, Slot
+from PySide6.QtCore import QThread, Signal, QMutex, Slot
 
 from ..utils.image_processing import apply_image_adjustments, stabilize_lighting
 from ..utils.geometry import wrap_angle_degs
