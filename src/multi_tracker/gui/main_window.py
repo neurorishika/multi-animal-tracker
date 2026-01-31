@@ -6424,7 +6424,10 @@ class MainWindow(QMainWindow):
 
     def _save_advanced_config(self):
         """Save advanced configuration."""
-        config_path = os.path.expanduser("~/.multi_tracker_advanced.json")
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "advanced_config.json",
+        )
         try:
             with open(config_path, "w") as f:
                 json.dump(self.advanced_config, f, indent=2)
