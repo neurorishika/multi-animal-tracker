@@ -2,7 +2,6 @@ name: multi-animal-tracker-gpu
 channels:
   - conda-forge
   - nvidia
-  - pytorch
   - defaults
 dependencies:
   # Core Python
