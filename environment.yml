@@ -9,7 +9,6 @@ dependencies:
   # Scientific computing stack
   - numpy
   - scipy
-  - matplotlib
   - pandas
   - jupyter
   - ipykernel
@@ -18,15 +17,20 @@ dependencies:
   - umap-learn
   - scikit-learn
   
+  # Visualization
+  - matplotlib
+  - seaborn
+  - bokeh
+  
   # Computer vision
   - opencv
   - scikit-image
   - pillow
   
-  # Efficiency
+  # Efficiency - CPU acceleration
   - numba
   
-  # GUI framework (Qt5 only, no Qt6)
+  # GUI framework (Qt5 only - more stable than Qt6)
   - pyside2=5.15.*
   - qt=5.15.*
   
@@ -40,11 +44,15 @@ dependencies:
   - black
   - flake8
   
-  # Install your package via pip (after conda deps are resolved)
+  # Install deep learning and additional packages via pip
   - pip:
+    # PyTorch (CPU version - change for GPU)
     - torch
     - torchvision
+    # Additional ML utilities
     - timm
     - pupil-apriltags
-    - ultralytics  # YOLO models for object detection
+    # YOLO models for object detection
+    - ultralytics
+    # Install package in editable mode
     - -e .

@@ -4,6 +4,7 @@ Batch size optimizer for YOLO detection based on available device memory.
 
 import logging
 import numpy as np
+from .gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE, torch
 
 logger = logging.getLogger(__name__)
 
@@ -30,54 +31,52 @@ class BatchOptimizer:
         Returns:
             tuple: (device_type, device_name, available_memory_mb)
         """
-        try:
-            import torch
-
-            if torch.cuda.is_available():
-                self.device_type = "cuda"
-                self.device_name = torch.cuda.get_device_name(0)
-                # Get available memory (free memory, not total)
-                free_memory, total_memory = torch.cuda.mem_get_info(0)
-                self.available_memory = free_memory / (1024**2)  # Convert to MB
-                logger.info(f"CUDA device detected: {self.device_name}")
-                logger.info(
-                    f"Available VRAM: {self.available_memory:.0f} MB / {total_memory / (1024 ** 2):.0f} MB"
-                )
-
-            elif torch.backends.mps.is_available():
-                self.device_type = "mps"
-                self.device_name = "Apple Silicon (MPS)"
-                # MPS uses unified memory - estimate conservatively
-                # Get system memory as approximation
-                try:
-                    import psutil
-
-                    available_memory = psutil.virtual_memory().available / (1024**2)
-                    # Use only a conservative fraction for MPS (30% default, configurable)
-                    mps_fraction = self.advanced_config.get("mps_memory_fraction", 0.3)
-                    self.available_memory = available_memory * mps_fraction
-                    logger.info(f"MPS device detected: {self.device_name}")
-                    logger.info(
-                        f"Available unified memory (conservative): {self.available_memory:.0f} MB ({mps_fraction*100:.0f}% of {available_memory:.0f} MB)"
-                    )
-                except ImportError:
-                    # Fallback if psutil not available
-                    self.available_memory = 2048  # Conservative 2GB default
-                    logger.warning(
-                        "psutil not available, using conservative 2GB estimate for MPS"
-                    )
-
-            else:
-                self.device_type = "cpu"
-                self.device_name = "CPU"
-                self.available_memory = 0  # CPU doesn't benefit from batching
-                logger.info("CPU device detected - batching disabled")
-
-        except ImportError:
+        if torch is None:
             self.device_type = "cpu"
             self.device_name = "CPU (PyTorch not available)"
             self.available_memory = 0
             logger.warning("PyTorch not available - batching disabled")
+            return
+
+        if TORCH_CUDA_AVAILABLE:
+            self.device_type = "cuda"
+            self.device_name = torch.cuda.get_device_name(0)
+            # Get available memory (free memory, not total)
+            free_memory, total_memory = torch.cuda.mem_get_info(0)
+            self.available_memory = free_memory / (1024**2)  # Convert to MB
+            logger.info(f"CUDA device detected: {self.device_name}")
+            logger.info(
+                f"Available VRAM: {self.available_memory:.0f} MB / {total_memory / (1024 ** 2):.0f} MB"
+            )
+
+        elif MPS_AVAILABLE:
+            self.device_type = "mps"
+            self.device_name = "Apple Silicon (MPS)"
+            # MPS uses unified memory - estimate conservatively
+            # Get system memory as approximation
+            try:
+                import psutil
+
+                available_memory = psutil.virtual_memory().available / (1024**2)
+                # Use only a conservative fraction for MPS (30% default, configurable)
+                mps_fraction = self.advanced_config.get("mps_memory_fraction", 0.3)
+                self.available_memory = available_memory * mps_fraction
+                logger.info(f"MPS device detected: {self.device_name}")
+                logger.info(
+                    f"Available unified memory (conservative): {self.available_memory:.0f} MB ({mps_fraction*100:.0f}% of {available_memory:.0f} MB)"
+                )
+            except ImportError:
+                # Fallback if psutil not available
+                self.available_memory = 2048  # Conservative 2GB default
+                logger.warning(
+                    "psutil not available, using conservative 2GB estimate for MPS"
+                )
+
+        else:
+            self.device_type = "cpu"
+            self.device_name = "CPU"
+            self.available_memory = 0  # CPU doesn't benefit from batching
+            logger.info("CPU device detected - batching disabled")
 
         return (self.device_type, self.device_name, self.available_memory)
 

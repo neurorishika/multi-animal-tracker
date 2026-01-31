@@ -138,7 +138,7 @@ class YOLOOBBDetector:
 
     def _detect_device(self):
         """Detect and configure the optimal device for inference."""
-        import torch
+        from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
 
         # Check user preference
         device_preference = self.params.get("YOLO_DEVICE", "auto")
@@ -147,11 +147,11 @@ class YOLOOBBDetector:
             logger.info(f"Using user-specified device: {device_preference}")
             return device_preference
 
-        # Auto-detect best available device
-        if torch.cuda.is_available():
+        # Auto-detect best available device using centralized gpu_utils
+        if TORCH_CUDA_AVAILABLE:
             device = "cuda:0"
             logger.info(f"CUDA GPU detected, using {device}")
-        elif torch.backends.mps.is_available():
+        elif MPS_AVAILABLE:
             device = "mps"  # Apple Silicon GPU
             logger.info("Apple Metal Performance Shaders (MPS) detected, using mps")
         else:

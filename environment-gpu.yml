@@ -1,0 +1,65 @@
+name: multi-animal-tracker-gpu
+channels:
+  - conda-forge
+  - nvidia
+  - pytorch
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.11
+  
+  # Scientific computing stack
+  - numpy
+  - scipy
+  - pandas
+  - jupyter
+  - ipykernel
+  - ipywidgets
+  - einops
+  - umap-learn
+  - scikit-learn
+  
+  # Visualization
+  - matplotlib
+  - seaborn
+  - bokeh
+  
+  # Computer vision
+  - opencv
+  - scikit-image
+  - pillow
+  
+  # Efficiency - CPU and GPU
+  - numba
+  
+  # CUDA support (for NVIDIA GPUs)
+  - cudatoolkit
+  - cudnn
+  
+  # GUI framework (Qt5 only)
+  - pyside2=5.15.*
+  - qt=5.15.*
+  
+  # Development tools
+  - pip
+  - setuptools
+  - wheel
+  - pytest
+  - black
+  - flake8
+  
+  # Install GPU-accelerated packages via pip
+  - pip:
+    # PyTorch with CUDA support
+    - torch
+    - torchvision
+    - torchaudio
+    # CuPy for GPU-accelerated NumPy operations
+    # - cupy-cuda11x  # (uncomment and specify version as needed)
+    # - cupy-cuda12x  # (uncomment and specify version as needed)
+    # - cupy-cuda13x  # (uncomment and specify version as needed)
+    # Additional tools
+    - timm>=0.9
+    - pupil-apriltags>=1.0
+    - ultralytics>=8.0
+    - -e .

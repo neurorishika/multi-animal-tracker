@@ -1,0 +1,34 @@
+name: multi-animal-tracker-minimal
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.11
+  
+  # Scientific computing stack (minimal)
+  - numpy
+  - scipy
+  - pandas
+  - numba
+  
+  # Computer vision
+  - opencv
+  - scikit-image
+  - pillow
+  
+  # GUI framework (Qt5 only - more stable)
+  - pyside2=5.15.*
+  - qt=5.15.*
+  
+  # Development tools
+  - pip
+  - setuptools
+  - wheel
+  
+  # Install additional packages via pip
+  - pip:
+    - torch
+    - torchvision
+    - ultralytics  # YOLO models
+    - -e .

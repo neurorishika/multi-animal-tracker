@@ -36,6 +36,7 @@ class TrackingWorker(QThread):
     progress_signal = Signal(int, str)
     histogram_data_signal = Signal(dict)
     stats_signal = Signal(dict)  # Real-time FPS/ETA stats
+    warning_signal = Signal(str, str)  # (title, message) for UI warnings
 
     def __init__(
         self,
@@ -317,7 +318,7 @@ class TrackingWorker(QThread):
                 )
 
         self.kf_manager = KalmanFilterManager(p["MAX_TARGETS"], p)
-        assigner = TrackAssigner(p)
+        assigner = TrackAssigner(p, worker=self)
 
         N = p["MAX_TARGETS"]
         track_states, missed_frames = ["active"] * N, [0] * N

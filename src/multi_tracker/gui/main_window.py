@@ -988,6 +988,13 @@ class MainWindow(QMainWindow):
         self.btn_save_config.setToolTip("Save current settings to a JSON file")
         config_layout.addWidget(self.btn_save_config)
 
+        self.btn_show_gpu_info = QPushButton("GPU Info")
+        self.btn_show_gpu_info.clicked.connect(self.show_gpu_info)
+        self.btn_show_gpu_info.setToolTip(
+            "Show available GPU and acceleration information"
+        )
+        config_layout.addWidget(self.btn_show_gpu_info)
+
         config_layout.addStretch()
         fl.addRow("Configuration:", config_layout)
 
@@ -1605,14 +1612,33 @@ class MainWindow(QMainWindow):
         )
         f_yolo.addRow("Target Classes:", self.line_yolo_classes)
 
+        # Dynamically populate device options based on available hardware
+        from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
+
         self.combo_yolo_device = QComboBox()
-        self.combo_yolo_device.addItems(["auto", "cpu", "cuda:0", "mps"])
-        self.combo_yolo_device.setToolTip(
-            "Hardware device for YOLO inference.\n"
-            "auto = automatic selection, cpu = CPU only.\n"
-            "cuda:0 = NVIDIA GPU, mps = Apple Silicon GPU.\n"
-            "GPU dramatically improves YOLO speed."
-        )
+        device_options = ["auto", "cpu"]
+        device_tooltip_parts = [
+            "Hardware device for YOLO inference.",
+            "• auto = automatic selection",
+            "• cpu = CPU only",
+        ]
+
+        if TORCH_CUDA_AVAILABLE:
+            device_options.append("cuda:0")
+            device_tooltip_parts.append("• cuda:0 = NVIDIA GPU ✓ Available")
+        else:
+            device_tooltip_parts.append("• cuda:0 = NVIDIA GPU (not available)")
+
+        if MPS_AVAILABLE:
+            device_options.append("mps")
+            device_tooltip_parts.append("• mps = Apple Silicon GPU ✓ Available")
+        else:
+            device_tooltip_parts.append("• mps = Apple Silicon GPU (not available)")
+
+        device_tooltip_parts.append("\nGPU dramatically improves YOLO speed.")
+
+        self.combo_yolo_device.addItems(device_options)
+        self.combo_yolo_device.setToolTip("\n".join(device_tooltip_parts))
         f_yolo.addRow("Device:", self.combo_yolo_device)
 
         # GPU Batching Settings
@@ -4688,6 +4714,60 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(percentage)
         self.progress_label.setText(status_text)
 
+    @Slot(str, str)
+    def on_tracking_warning(self, title, message):
+        """Display tracking warnings in the UI."""
+        QMessageBox.information(self, title, message)
+
+    def show_gpu_info(self):
+        """Display GPU and acceleration information dialog."""
+        from ..utils.gpu_utils import get_device_info
+
+        info = get_device_info()
+
+        # Build formatted message
+        lines = ["<b>GPU & Acceleration Status</b><br>"]
+
+        # CUDA
+        cuda_status = "✓ Available" if info["cuda_available"] else "✗ Not Available"
+        lines.append(f"<br><b>NVIDIA CUDA:</b> {cuda_status}")
+        if info["cuda_available"] and info["cuda_device_count"] > 0:
+            lines.append(f"&nbsp;&nbsp;• Devices: {info['cuda_device_count']}")
+            lines.append(f"&nbsp;&nbsp;• CuPy: {info['cupy_version']}")
+
+        # MPS (Apple Silicon)
+        mps_status = "✓ Available" if info["mps_available"] else "✗ Not Available"
+        lines.append(f"<br><b>Apple MPS:</b> {mps_status}")
+        if info["torch_available"]:
+            lines.append(f"&nbsp;&nbsp;• PyTorch: {info['torch_version']}")
+
+        # CPU Acceleration
+        numba_status = "✓ Available" if info["numba_available"] else "✗ Not Available"
+        lines.append(f"<br><b>CPU JIT (Numba):</b> {numba_status}")
+        if info["numba_available"]:
+            lines.append(f"&nbsp;&nbsp;• Version: {info['numba_version']}")
+
+        # Overall status
+        lines.append("<br><b>Overall Status:</b>")
+        if info["cuda_available"]:
+            lines.append("&nbsp;&nbsp;• Using NVIDIA GPU acceleration")
+        elif info["mps_available"]:
+            lines.append("&nbsp;&nbsp;• Using Apple Silicon GPU acceleration")
+        elif info["numba_available"]:
+            lines.append("&nbsp;&nbsp;• Using CPU JIT compilation")
+        else:
+            lines.append("&nbsp;&nbsp;• Using NumPy (no acceleration)")
+
+        message = "<br>".join(lines)
+
+        # Create message box with rich text
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("GPU & Acceleration Info")
+        msg_box.setTextFormat(Qt.RichText)
+        msg_box.setText(message)
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.exec()
+
     @Slot(dict)
     def on_stats_update(self, stats):
         """Update real-time tracking statistics."""
@@ -5225,6 +5305,7 @@ class MainWindow(QMainWindow):
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
         self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
+        self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
@@ -5323,6 +5404,7 @@ class MainWindow(QMainWindow):
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
         self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
+        self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)

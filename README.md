@@ -201,6 +201,7 @@ All tracking parameters are controlled via `tracking_config.json`:
 
 - [User Guide](docs/user_guide.md) - Comprehensive usage instructions
 - [YOLO Detection Guide](docs/yolo_detection_guide.md) - YOLO setup and configuration
+- [GPU Utils Developer Guide](docs/gpu_utils_developer_guide.md) - GPU acceleration and device detection
 - [API Reference](docs/api_reference.md) - Developer documentation
 - [Troubleshooting](docs/troubleshooting.md) - Common issues and solutions
 
@@ -225,9 +226,11 @@ multi-animal-tracker/
 │           ├── video_io.py
 │           ├── image_processing.py
 │           ├── geometry.py
-│           └── csv_writer.py
+│           ├── csv_writer.py
+│           └── gpu_utils.py     # GPU/acceleration detection
 ├── docs/
 │   ├── yolo_detection_guide.md
+│   ├── gpu_utils_developer_guide.md
 │   ├── user_guide.md
 │   └── api_reference.md
 ├── tracking_config.json         # Default configuration
