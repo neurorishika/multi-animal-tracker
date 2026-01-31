@@ -45,7 +45,11 @@ dependencies:
   
   # Install GPU-accelerated packages via pip
   - pip:
-    # PyTorch with CUDA support
+    # PyTorch with CUDA support (use appropriate CUDA version)
+    # - --index-url https://download.pytorch.org/whl/cu126
+    # - --index-url https://download.pytorch.org/whl/cu128
+    # - --index-url https://download.pytorch.org/whl/cu130
+    # - --index-url https://download.pytorch.org/whl/cpu
     - torch
     - torchvision
     - torchaudio
@@ -54,7 +58,7 @@ dependencies:
     # - cupy-cuda12x  # (uncomment and specify version as needed)
     # - cupy-cuda13x  # (uncomment and specify version as needed)
     # Additional tools
-    - timm>=0.9
-    - pupil-apriltags>=1.0
-    - ultralytics>=8.0
+    - timm
+    - pupil-apriltags
+    - ultralytics
     - -e .
