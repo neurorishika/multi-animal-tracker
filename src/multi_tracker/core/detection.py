@@ -134,7 +134,74 @@ class YOLOOBBDetector:
         self.params = params
         self.model = None
         self.device = self._detect_device()
+        self.use_tensorrt = False
+        self.tensorrt_model_path = None
         self._load_model()
+
+    def _try_load_tensorrt_model(self, model_path_str):
+        """Try to load or export TensorRT model for faster inference."""
+        try:
+            from ultralytics import YOLO
+
+            # Determine cache directory for TensorRT models
+            cache_dir = Path.home() / ".cache" / "multi_tracker" / "tensorrt"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+
+            # Generate TensorRT engine filename based on model name
+            model_name = Path(model_path_str).stem
+            engine_path = cache_dir / f"{model_name}.engine"
+
+            # Check if TensorRT engine already exists
+            if engine_path.exists():
+                logger.info(f"Loading cached TensorRT engine: {engine_path}")
+                try:
+                    self.model = YOLO(str(engine_path), task="obb")
+                    self.use_tensorrt = True
+                    self.tensorrt_model_path = str(engine_path)
+                    logger.info(
+                        "TensorRT model loaded successfully (2-5x faster inference expected)"
+                    )
+                    return
+                except Exception as e:
+                    logger.warning(f"Failed to load cached TensorRT engine: {e}")
+                    # Try to re-export
+                    engine_path.unlink(missing_ok=True)
+
+            # Export to TensorRT
+            logger.info(
+                f"Exporting YOLO model to TensorRT format (first-time only, may take 1-5 minutes)..."
+            )
+            base_model = YOLO(model_path_str)
+            base_model.to(self.device)
+
+            # Export to TensorRT engine format
+            export_path = base_model.export(
+                format="engine",
+                device=self.device,
+                half=True,  # Use FP16 for faster inference
+                workspace=4,  # 4GB workspace
+                verbose=False,
+            )
+
+            # Move exported engine to cache directory
+            if Path(export_path).exists():
+                import shutil
+
+                shutil.move(str(export_path), str(engine_path))
+                logger.info(f"TensorRT engine exported and cached: {engine_path}")
+
+                # Load the TensorRT model
+                self.model = YOLO(str(engine_path), task="obb")
+                self.use_tensorrt = True
+                self.tensorrt_model_path = str(engine_path)
+                logger.info("TensorRT optimization complete (2-5x speedup expected)")
+            else:
+                logger.warning("TensorRT export failed - exported file not found")
+
+        except Exception as e:
+            logger.warning(f"TensorRT optimization failed: {e}")
+            logger.info("Continuing with standard PyTorch inference")
+            self.use_tensorrt = False
 
     def _detect_device(self):
         """Detect and configure the optimal device for inference."""
@@ -161,7 +228,7 @@ class YOLOOBBDetector:
         return device
 
     def _load_model(self):
-        """Load the YOLO OBB model."""
+        """Load the YOLO OBB model with optional TensorRT optimization."""
         try:
             from ultralytics import YOLO
         except ImportError:
@@ -173,6 +240,17 @@ class YOLOOBBDetector:
             )
 
         model_path_str = self.params.get("YOLO_MODEL_PATH", "yolov8n-obb.pt")
+        enable_tensorrt = self.params.get("ENABLE_TENSORRT", False)
+
+        # Check if TensorRT is requested and available
+        from ..utils.gpu_utils import TENSORRT_AVAILABLE
+
+        if enable_tensorrt and TENSORRT_AVAILABLE and self.device.startswith("cuda"):
+            self._try_load_tensorrt_model(model_path_str)
+            if self.use_tensorrt:
+                return
+            else:
+                logger.info("Falling back to standard PyTorch inference")
 
         # For pretrained model names (yolo26s-obb.pt, etc.), pass directly to YOLO
         # These will be auto-downloaded by ultralytics

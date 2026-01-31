@@ -58,6 +58,17 @@ except ImportError:
     njit = None
     prange = None
 
+# TensorRT for NVIDIA GPU inference optimization
+try:
+    import tensorrt as trt
+
+    TENSORRT_AVAILABLE = CUDA_AVAILABLE  # TensorRT requires CUDA
+    if TENSORRT_AVAILABLE:
+        logger.info(f"TensorRT version {trt.__version__} available")
+except ImportError:
+    TENSORRT_AVAILABLE = False
+    trt = None
+
 # Summary flags
 GPU_AVAILABLE = CUDA_AVAILABLE or MPS_AVAILABLE
 ANY_ACCELERATION = GPU_AVAILABLE or NUMBA_AVAILABLE
@@ -74,6 +85,7 @@ def get_device_info():
         "cuda_available": CUDA_AVAILABLE,
         "mps_available": MPS_AVAILABLE,
         "torch_cuda_available": TORCH_CUDA_AVAILABLE,
+        "tensorrt_available": TENSORRT_AVAILABLE,
         "numba_available": NUMBA_AVAILABLE,
         "gpu_available": GPU_AVAILABLE,
         "any_acceleration": ANY_ACCELERATION,
@@ -126,6 +138,13 @@ def log_device_info():
             logger.info(f"  Device: {info['torch_cuda_device_name']}")
     else:
         logger.info("✗ CUDA (PyTorch): Not available")
+
+    if info["tensorrt_available"]:
+        logger.info("✓ TensorRT (NVIDIA): Available")
+        if trt is not None:
+            logger.info(f"  Version: {trt.__version__}")
+    else:
+        logger.info("✗ TensorRT (NVIDIA): Not available")
 
     if info["numba_available"]:
         logger.info("✓ Numba JIT: Available")
@@ -182,6 +201,7 @@ __all__ = [
     "TORCH_CUDA_AVAILABLE",
     "CUPY_AVAILABLE",
     "TORCH_AVAILABLE",
+    "TENSORRT_AVAILABLE",
     "NUMBA_AVAILABLE",
     "GPU_AVAILABLE",
     "ANY_ACCELERATION",
@@ -192,6 +212,7 @@ __all__ = [
     "F",
     "njit",
     "prange",
+    "trt",
     # Functions
     "get_device_info",
     "log_device_info",

@@ -61,6 +61,7 @@ from ..core.post_processing import (
 )
 from ..utils.csv_writer import CSVWriterThread
 from ..utils.geometry import fit_circle_to_points
+from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
 from .histogram_widgets import HistogramPanel
 
 # Configuration file for saving/loading tracking parameters
@@ -1170,16 +1171,44 @@ class MainWindow(QMainWindow):
                 "the static background and finding moving objects. YOLO uses deep learning to detect animals directly."
             )
         )
-        l_method = QHBoxLayout()
+        f_method = QFormLayout()
         self.combo_detection_method = QComboBox()
         self.combo_detection_method.addItems(["Background Subtraction", "YOLO OBB"])
         self.combo_detection_method.currentIndexChanged.connect(
             self._on_detection_method_changed_ui
         )
-        l_method.addWidget(QLabel("Method:"))
-        l_method.addWidget(self.combo_detection_method)
-        l_method.addStretch()
-        l_method_outer.addLayout(l_method)
+        f_method.addRow("Method:", self.combo_detection_method)
+
+        # Device selection (shared between both detection methods)
+        self.combo_device = QComboBox()
+        device_options = ["auto", "cpu"]
+        device_tooltip_parts = [
+            "Select compute device for detection:",
+            "  • auto - Automatically select best available device",
+            "  • cpu - CPU-only mode",
+        ]
+
+        if TORCH_CUDA_AVAILABLE:
+            device_options.append("cuda:0")
+            device_tooltip_parts.append("  • cuda:0 - NVIDIA GPU ✓ Available")
+        else:
+            device_tooltip_parts.append("  • cuda:0 - NVIDIA GPU (not available)")
+
+        if MPS_AVAILABLE:
+            device_options.append("mps")
+            device_tooltip_parts.append("  • mps - Apple Silicon GPU ✓ Available")
+        else:
+            device_tooltip_parts.append("  • mps - Apple Silicon GPU (not available)")
+
+        device_tooltip_parts.append(
+            "\nApplies to both YOLO and Background Subtraction GPU acceleration."
+        )
+
+        self.combo_device.addItems(device_options)
+        self.combo_device.setToolTip("\n".join(device_tooltip_parts))
+        f_method.addRow("Compute Device:", self.combo_device)
+
+        l_method_outer.addLayout(f_method)
         vbox.addWidget(g_method)
 
         # Stacked Widget for Method Specific Params
@@ -1612,34 +1641,30 @@ class MainWindow(QMainWindow):
         )
         f_yolo.addRow("Target Classes:", self.line_yolo_classes)
 
-        # Dynamically populate device options based on available hardware
-        from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
+        # TensorRT Optimization (NVIDIA only)
+        from ..utils.gpu_utils import TENSORRT_AVAILABLE
 
-        self.combo_yolo_device = QComboBox()
-        device_options = ["auto", "cpu"]
-        device_tooltip_parts = [
-            "Hardware device for YOLO inference.",
-            "• auto = automatic selection",
-            "• cpu = CPU only",
-        ]
+        self.chk_enable_tensorrt = QCheckBox(
+            "Enable TensorRT Optimization (NVIDIA GPUs)"
+        )
+        self.chk_enable_tensorrt.setChecked(False)
+        self.chk_enable_tensorrt.setEnabled(TENSORRT_AVAILABLE)
 
-        if TORCH_CUDA_AVAILABLE:
-            device_options.append("cuda:0")
-            device_tooltip_parts.append("• cuda:0 = NVIDIA GPU ✓ Available")
+        tensorrt_tooltip = (
+            "Enable NVIDIA TensorRT for 2-5× faster YOLO inference.\n"
+            "Requires NVIDIA GPU with CUDA.\n"
+            "First run will export model (1-5 min), then cached for future use.\n"
+            "Uses FP16 precision for maximum speed.\n"
+        )
+        if TENSORRT_AVAILABLE:
+            tensorrt_tooltip += "\n✓ TensorRT is available on this system"
         else:
-            device_tooltip_parts.append("• cuda:0 = NVIDIA GPU (not available)")
+            tensorrt_tooltip += (
+                "\n✗ TensorRT not available (requires NVIDIA GPU + tensorrt package)"
+            )
 
-        if MPS_AVAILABLE:
-            device_options.append("mps")
-            device_tooltip_parts.append("• mps = Apple Silicon GPU ✓ Available")
-        else:
-            device_tooltip_parts.append("• mps = Apple Silicon GPU (not available)")
-
-        device_tooltip_parts.append("\nGPU dramatically improves YOLO speed.")
-
-        self.combo_yolo_device.addItems(device_options)
-        self.combo_yolo_device.setToolTip("\n".join(device_tooltip_parts))
-        f_yolo.addRow("Device:", self.combo_yolo_device)
+        self.chk_enable_tensorrt.setToolTip(tensorrt_tooltip)
+        f_yolo.addRow("", self.chk_enable_tensorrt)
 
         # GPU Batching Settings
         f_yolo.addRow(QLabel(""))  # Spacer
@@ -3664,7 +3689,12 @@ class MainWindow(QMainWindow):
                         if self.line_yolo_classes.text().strip()
                         else None
                     ),
-                    "YOLO_DEVICE": self.combo_yolo_device.currentText().split(" ")[0],
+                    "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
+                    "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[
+                        0
+                    ]
+                    != "cpu",
+                    "ENABLE_TENSORRT": self.chk_enable_tensorrt.isChecked(),
                     "MAX_TARGETS": self.spin_max_targets.value(),
                     "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
                     "ENABLE_SIZE_FILTERING": use_size_filtering,  # Use the user's choice
@@ -4731,14 +4761,25 @@ class MainWindow(QMainWindow):
         # CUDA
         cuda_status = "✓ Available" if info["cuda_available"] else "✗ Not Available"
         lines.append(f"<br><b>NVIDIA CUDA:</b> {cuda_status}")
-        if info["cuda_available"] and info["cuda_device_count"] > 0:
+        if info["cuda_available"] and info.get("cuda_device_count", 0) > 0:
             lines.append(f"&nbsp;&nbsp;• Devices: {info['cuda_device_count']}")
-            lines.append(f"&nbsp;&nbsp;• CuPy: {info['cupy_version']}")
+            if "cupy_version" in info:
+                lines.append(f"&nbsp;&nbsp;• CuPy: {info['cupy_version']}")
+
+        # TensorRT
+        tensorrt_status = (
+            "✓ Available"
+            if info.get("tensorrt_available", False)
+            else "✗ Not Available"
+        )
+        lines.append(f"<br><b>NVIDIA TensorRT:</b> {tensorrt_status}")
+        if info.get("tensorrt_available", False):
+            lines.append("&nbsp;&nbsp;• 2-5× faster YOLO inference")
 
         # MPS (Apple Silicon)
         mps_status = "✓ Available" if info["mps_available"] else "✗ Not Available"
         lines.append(f"<br><b>Apple MPS:</b> {mps_status}")
-        if info["torch_available"]:
+        if info.get("torch_available", False) and "torch_version" in info:
             lines.append(f"&nbsp;&nbsp;• PyTorch: {info['torch_version']}")
 
         # CPU Acceleration
@@ -5508,7 +5549,10 @@ class MainWindow(QMainWindow):
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
             "YOLO_TARGET_CLASSES": yolo_cls,
-            "YOLO_DEVICE": self.combo_yolo_device.currentText().split(" ")[0],
+            "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
+            "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[0]
+            != "cpu",
+            "ENABLE_TENSORRT": self.chk_enable_tensorrt.isChecked(),
             "MAX_TARGETS": N,
             "THRESHOLD_VALUE": self.spin_threshold.value(),
             "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
@@ -5797,9 +5841,14 @@ class MainWindow(QMainWindow):
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
             yolo_dev = get_cfg("yolo_device", default="auto")
-            idx = self.combo_yolo_device.findText(yolo_dev, Qt.MatchStartsWith)
+            idx = self.combo_device.findText(yolo_dev, Qt.MatchStartsWith)
             if idx >= 0:
-                self.combo_yolo_device.setCurrentIndex(idx)
+                self.combo_device.setCurrentIndex(idx)
+
+            # TensorRT
+            self.chk_enable_tensorrt.setChecked(
+                get_cfg("enable_tensorrt", default=False)
+            )
 
             # YOLO Batching settings
             self.chk_enable_yolo_batching.setChecked(
@@ -6194,7 +6243,9 @@ class MainWindow(QMainWindow):
             "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
             "yolo_iou_threshold": self.spin_yolo_iou.value(),
             "yolo_target_classes": yolo_cls,
-            "yolo_device": self.combo_yolo_device.currentText().split(" ")[0],
+            "yolo_device": self.combo_device.currentText().split(" ")[0],
+            # TensorRT
+            "enable_tensorrt": self.chk_enable_tensorrt.isChecked(),
             # YOLO Batching
             "enable_yolo_batching": self.chk_enable_yolo_batching.isChecked(),
             "yolo_batch_size_mode": (
