@@ -57,7 +57,6 @@ from ..core.tracking_worker import TrackingWorker
 from ..core.post_processing import process_trajectories, resolve_trajectories
 from ..utils.csv_writer import CSVWriterThread
 from ..utils.geometry import fit_circle_to_points
-from ..utils.video_io import VideoReversalWorker
 from .histogram_widgets import HistogramPanel
 
 # Configuration file for saving/loading tracking parameters
@@ -1744,8 +1743,10 @@ class MainWindow(QMainWindow):
         self.chk_enable_backward = QCheckBox("Run Backward Tracking after Forward")
         self.chk_enable_backward.setChecked(True)
         self.chk_enable_backward.setToolTip(
-            "Run tracking in reverse after forward pass to improve accuracy.\n"
-            "Recommended: Enable for best results (takes 2× time).\n"
+            "Run tracking in reverse (using cached detections) after forward pass to improve accuracy.\n"
+            "Forward detections are cached (~10MB/10k frames), then tracking runs backward.\n"
+            "No video reversal needed - RAM efficient and faster.\n"
+            "Recommended: Enable for best results (takes ~2× time).\n"
             "Disable for faster processing if accuracy is sufficient."
         )
         f_core.addRow("", self.chk_enable_backward)
@@ -2241,7 +2242,7 @@ class MainWindow(QMainWindow):
         self.chk_cleanup_temp_files.setChecked(True)
         self.chk_cleanup_temp_files.setToolTip(
             "Automatically delete temporary files after successful tracking:\n"
-            "• Reversed video files (*_reversed.mp4)\n"
+            "• Detection cache files (*_detection_cache.npz)\n"
             "• Intermediate CSV files (*_forward.csv, *_backward.csv)\n"
             "Keeps only final merged/processed output files."
         )
@@ -5024,40 +5025,24 @@ class MainWindow(QMainWindow):
 
     def start_backward_tracking(self):
         logger.info(f"=" * 80)
-        logger.info("Starting backward tracking pass...")
+        logger.info("Starting backward tracking pass (using cached detections)...")
         logger.info(f"=" * 80)
 
         video_fp = self.file_line.text()
         if not video_fp:
             return
-        base_name, ext = os.path.splitext(video_fp)
-        reversed_video_path = f"{base_name}_reversed{ext}"
 
-        # Track reversed video as temporary file
-        if reversed_video_path not in self.temporary_files:
-            self.temporary_files.append(reversed_video_path)
-
+        # Use original video (no reversal needed with detection caching)
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
-        self.progress_bar.setRange(0, 0)
-        self.progress_label.setText("Creating reversed video (FFmpeg)...")
+        self.progress_bar.setValue(0)
+        self.progress_label.setText(
+            "Starting backward tracking (using cached detections)..."
+        )
         QApplication.processEvents()
 
-        self.reversal_worker = VideoReversalWorker(video_fp, reversed_video_path)
-        self.reversal_worker.finished.connect(self.on_reversal_finished)
-        self.reversal_worker.start()
-
-    @Slot(bool, str, str)
-    def on_reversal_finished(self, success, output_path, error_message):
-        self.progress_bar.setRange(0, 100)
-        if not success:
-            self.progress_bar.setVisible(False)
-            self.progress_label.setVisible(False)
-            QMessageBox.critical(self, "Error", error_message)
-            return
-        self.progress_label.setText("Starting backward tracking...")
-        QApplication.processEvents()
-        self.start_tracking_on_video(output_path, backward_mode=True)
+        # Start backward tracking directly on original video with cached detections
+        self.start_tracking_on_video(video_fp, backward_mode=True)
 
     def start_tracking(self, preview_mode: bool, backward_mode: bool = False):
         # Only save config when NOT in preview mode
@@ -5085,6 +5070,7 @@ class MainWindow(QMainWindow):
             csv_writer_thread=None,
             video_output_path=None,
             backward_mode=False,
+            detection_cache_path=None,  # No caching in preview mode
         )
         self.tracking_worker.set_parameters(self.get_parameters_dict())
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
@@ -5163,11 +5149,24 @@ class MainWindow(QMainWindow):
             else None
         )
 
+        # Generate detection cache path based on video
+        detection_cache_path = None
+        if (
+            self.chk_enable_backward.isChecked()
+        ):  # Only cache if backward tracking is enabled
+            base_name = os.path.splitext(video_path)[0]
+            detection_cache_path = f"{base_name}_detection_cache.npz"
+
+            # Track cache file as temporary
+            if detection_cache_path not in self.temporary_files:
+                self.temporary_files.append(detection_cache_path)
+
         self.tracking_worker = TrackingWorker(
             video_path,
             csv_writer_thread=self.csv_writer_thread,
             video_output_path=video_output_path,
             backward_mode=backward_mode,
+            detection_cache_path=detection_cache_path,
         )
         self.tracking_worker.set_parameters(self.get_parameters_dict())
         self.parameters_changed.connect(self.tracking_worker.update_parameters)

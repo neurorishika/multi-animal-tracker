@@ -8,6 +8,8 @@ A real-time multi-animal tracking system with support for both background subtra
   - Background Subtraction: Fast, CPU-friendly detection for moving animals
   - YOLO OBB: Deep learning-based detection with oriented bounding boxes
 - **Real-time Tracking**: Kalman filter-based tracking with Hungarian algorithm assignment
+- **Bidirectional Tracking**: Forward and backward passes with trajectory merging for improved accuracy
+- **Memory-Efficient Detection Caching**: Reuses forward detections in backward pass - no RAM-intensive video reversal needed
 - **Circular ROI Support**: Optimized for circular arenas
 - **Interactive GUI**: Live visualization with PySide2
 - **Trajectory Analysis**: Full trajectory recording and post-processing
@@ -109,6 +111,50 @@ Best for:
 **Configuration**: Set `"detection_method": "yolo_obb"` in your config file.
 
 For detailed YOLO setup and usage, see [YOLO Detection Guide](docs/yolo_detection_guide.md).
+
+## Bidirectional Tracking with Detection Caching
+
+The tracker supports bidirectional tracking to improve trajectory accuracy by running two passes:
+
+### How It Works
+
+1. **Forward Pass**: 
+   - Tracks animals from start to end
+   - Caches all detection data to disk (~10 MB per 10,000 frames)
+   - Outputs `*_forward.csv`
+
+2. **Backward Pass**:
+   - Loads cached detections from forward pass
+   - Runs tracking algorithm in reverse chronological order
+   - **No video reading** - operates purely on cached detection data
+   - **No visualization** - maximizes speed by skipping frame processing entirely
+   - Detection computation is skipped entirely (uses cache)
+   - Outputs `*_backward.csv`
+
+3. **Trajectory Merging**:
+   - Intelligently merges forward and backward trajectories
+   - Resolves ID switches and occlusions
+   - Outputs final `*_merged.csv`
+
+### Benefits
+
+- **Extremely Fast Backward Pass**: No frame reading/seeking, no detection, no visualization - pure tracking
+- **Memory Efficient**: No RAM-intensive FFmpeg video reversal required
+- **Consistent**: Same detections in both passes ensure reproducibility
+- **Robust**: Bidirectional tracking resolves ambiguities and improves accuracy
+- **Typical speedup**: Backward pass is ~50-70% faster than forward pass
+
+### Configuration
+
+Enable/disable in GUI: Check "Run Backward Tracking after Forward" in Tracking tab, or in config:
+
+```json
+{
+  "enable_backward_tracking": true
+}
+```
+
+**Temporary Files**: Detection cache (`*_detection_cache.npz`) is automatically cleaned up after merging if auto-cleanup is enabled.
 
 ## Configuration
 

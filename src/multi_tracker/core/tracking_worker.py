@@ -13,6 +13,7 @@ from PySide2.QtCore import QThread, Signal, QMutex, Slot
 
 from ..utils.image_processing import apply_image_adjustments, stabilize_lighting
 from ..utils.geometry import wrap_angle_degs
+from ..utils.detection_cache import DetectionCache
 from .kalman_filters import KalmanFilterManager
 from .background_models import BackgroundModel
 from .detection import create_detector
@@ -40,6 +41,7 @@ class TrackingWorker(QThread):
         csv_writer_thread=None,
         video_output_path=None,
         backward_mode=False,
+        detection_cache_path=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -47,6 +49,7 @@ class TrackingWorker(QThread):
         self.csv_writer_thread = csv_writer_thread
         self.video_output_path = video_output_path
         self.backward_mode = backward_mode
+        self.detection_cache_path = detection_cache_path
         self.video_writer = None
         self.params_mutex = QMutex()
         self.parameters = {}
@@ -83,6 +86,7 @@ class TrackingWorker(QThread):
         self._stop_requested = True
 
     def _forward_frame_iterator(self, cap):
+        """Iterate through frames in forward direction."""
         frame_num = 0
         while not self._stop_requested:
             ret, frame = cap.read()
@@ -90,6 +94,15 @@ class TrackingWorker(QThread):
                 break
             frame_num += 1
             yield frame, frame_num
+
+    def _cached_detection_iterator(self, total_frames):
+        """Iterate through frame indices for cached detection mode (no actual frames needed)."""
+        # In backward mode with cached detections, we don't need frames at all
+        # Just iterate through frame indices in reverse
+        for frame_idx in range(total_frames - 1, -1, -1):
+            if self._stop_requested:
+                break
+            yield None, total_frames - frame_idx  # Return None for frame, 1-indexed frame number
 
     def emit_frame(self, bgr):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
@@ -184,8 +197,38 @@ class TrackingWorker(QThread):
         profile_counts = 0
         PROFILE_INTERVAL = 100  # Log every 100 frames
 
-        # === 2. FRAME PROCESSING LOOP (Identical Flow to Original) ===
-        for frame, _ in self._forward_frame_iterator(cap):
+        # Initialize detection cache
+        detection_cache = None
+        use_cached_detections = False
+        if self.detection_cache_path:
+            if self.backward_mode:
+                # Backward pass: load cached detections
+                detection_cache = DetectionCache(self.detection_cache_path, mode="r")
+                total_frames = detection_cache.get_total_frames()
+                use_cached_detections = True
+                logger.info(
+                    f"Backward pass using cached detections ({total_frames} frames)"
+                )
+            else:
+                # Forward pass: create cache for writing
+                detection_cache = DetectionCache(self.detection_cache_path, mode="w")
+                logger.info("Forward pass caching detections")
+
+        # === 2. FRAME PROCESSING LOOP ===
+        # Choose appropriate frame iterator
+        if self.backward_mode and use_cached_detections:
+            # Backward pass with cached detections: no frames needed, skip visualization
+            frame_iterator = self._cached_detection_iterator(total_frames)
+            skip_visualization = True
+            logger.info(
+                "Backward pass: Skipping frame reading and visualization for maximum speed"
+            )
+        else:
+            # Forward pass or non-cached backward: need frames for detection/visualization
+            frame_iterator = self._forward_frame_iterator(cap)
+            skip_visualization = False
+
+        for frame, _ in frame_iterator:
             loop_start = time.time()
 
             params = self.get_current_params()
@@ -194,18 +237,23 @@ class TrackingWorker(QThread):
             # --- Preprocessing & Detection ---
             prep_start = time.time()
             resize_f = params["RESIZE_FACTOR"]
-            
-            # Keep original frame for individual dataset generation (high resolution)
-            original_frame = frame.copy() if individual_generator else None
-            
-            if resize_f < 1.0:
-                frame = cv2.resize(
-                    frame,
-                    (0, 0),
-                    fx=resize_f,
-                    fy=resize_f,
-                    interpolation=cv2.INTER_AREA,
-                )
+
+            # Skip preprocessing if no frame (cached detection mode)
+            if frame is not None:
+                # Keep original frame for individual dataset generation (high resolution)
+                original_frame = frame.copy() if individual_generator else None
+
+                if resize_f < 1.0:
+                    frame = cv2.resize(
+                        frame,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
+                    )
+            else:
+                original_frame = None
+
             profile_times["preprocessing"] += time.time() - prep_start
 
             detection_method = params.get("DETECTION_METHOD", "background_subtraction")
@@ -216,7 +264,7 @@ class TrackingWorker(QThread):
             ROI_mask_3ch = None
             mask_inv_3ch = None
 
-            if ROI_mask is not None:
+            if ROI_mask is not None and frame is not None:
                 ROI_mask_current = (
                     cv2.resize(
                         ROI_mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST
@@ -240,7 +288,21 @@ class TrackingWorker(QThread):
                 mask_inv_3ch = cv2.bitwise_not(ROI_mask_3ch)
 
             detect_start = time.time()
-            if detection_method == "background_subtraction":
+
+            # Get detections either from cache (backward) or by detection (forward)
+            if use_cached_detections:
+                # Backward pass: load cached detections (no frame needed)
+                # Frame index is 0-based, but self.frame_count is 1-based during iteration
+                cache_frame_idx = total_frames - self.frame_count  # Reverse mapping
+                meas, sizes, shapes, detection_confidences, filtered_obb_corners = (
+                    detection_cache.get_frame(cache_frame_idx)
+                )
+                # No yolo_results object in cached mode
+                yolo_results = None
+                fg_mask = None
+                bg_u8 = None
+
+            elif detection_method == "background_subtraction" and frame is not None:
                 # Background subtraction detection pipeline
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 gray = apply_image_adjustments(
@@ -262,7 +324,8 @@ class TrackingWorker(QThread):
                     gray, ROI_mask_current, tracking_stabilized
                 )
                 if bg_u8 is None:
-                    self.emit_frame(frame)
+                    if frame is not None:
+                        self.emit_frame(frame)
                     continue
 
                 fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
@@ -280,7 +343,9 @@ class TrackingWorker(QThread):
                 # No OBB corners for background subtraction
                 filtered_obb_corners = []
 
-            else:  # YOLO OBB detection
+            elif (
+                detection_method == "yolo_obb" and frame is not None
+            ):  # YOLO OBB detection
                 # YOLO uses the original BGR frame directly without masking
                 # This preserves natural image context for better confidence estimates
                 yolo_frame = frame.copy()
@@ -335,6 +400,26 @@ class TrackingWorker(QThread):
                         filtered_obb_corners[i] for i in keep_indices
                     ]
 
+            else:
+                # No frame and no cached detections - skip this iteration
+                if not use_cached_detections:
+                    logger.warning(
+                        f"Frame {self.frame_count}: No frame available and no cached detections"
+                    )
+                    continue
+
+            # Cache detections during forward pass
+            if detection_cache and not self.backward_mode:
+                # Frame index is 0-based (self.frame_count - 1)
+                detection_cache.add_frame(
+                    self.frame_count - 1,
+                    meas,
+                    sizes,
+                    shapes,
+                    detection_confidences,
+                    filtered_obb_corners if filtered_obb_corners else None,
+                )
+
             profile_times["detection"] += time.time() - detect_start
 
             if len(meas) >= params.get("MIN_DETECTIONS_TO_START", 1):
@@ -348,18 +433,22 @@ class TrackingWorker(QThread):
                 detection_initialized = True
                 logger.info(f"Tracking initialized with {len(meas)} detections.")
 
-            overlay = frame.copy()
+            # === VISUALIZATION (Skip in cached detection mode) ===
+            if not skip_visualization and frame is not None:
+                overlay = frame.copy()
 
-            # Apply ROI visualization - draw cyan boundary for all detection methods
-            # The actual masking for background subtraction happens earlier in the pipeline
-            if ROI_mask_current is not None:
-                # Draw cyan dashed boundary around ROI using contours from the mask
-                contours, _ = cv2.findContours(
-                    ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
-                if contours:
-                    # Draw cyan boundary (BGR: 255, 255, 0)
-                    cv2.drawContours(overlay, contours, -1, (255, 255, 0), 2)
+                # Apply ROI visualization - draw cyan boundary for all detection methods
+                # The actual masking for background subtraction happens earlier in the pipeline
+                if ROI_mask_current is not None:
+                    # Draw cyan dashed boundary around ROI using contours from the mask
+                    contours, _ = cv2.findContours(
+                        ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    if contours:
+                        # Draw cyan boundary (BGR: 255, 255, 0)
+                        cv2.drawContours(overlay, contours, -1, (255, 255, 0), 2)
+            else:
+                overlay = None
 
             hist_velocities = []
             hist_sizes = []
@@ -591,7 +680,7 @@ class TrackingWorker(QThread):
                 # Determine which data source to use
                 # Use original_frame (full resolution) and coord_scale_factor (1/resize_f)
                 coord_scale_factor = 1.0 / resize_f
-                
+
                 if filtered_obb_corners:
                     # YOLO OBB detection - use OBB corners directly
                     individual_generator.process_frame(
@@ -669,7 +758,7 @@ class TrackingWorker(QThread):
             # --- Visualization, Output & Loop Maintenance ---
             viz_free_mode = params.get("VISUALIZATION_FREE_MODE", False)
 
-            if not viz_free_mode:
+            if not viz_free_mode and overlay is not None:
                 viz_start = time.time()
                 trajectories_pruned = [
                     [
@@ -784,6 +873,16 @@ class TrackingWorker(QThread):
         cap.release()
         if self.video_writer:
             self.video_writer.release()
+
+        # Save or close detection cache
+        if detection_cache:
+            if not self.backward_mode:
+                # Forward pass: save cache to disk
+                detection_cache.save()
+                logger.info("Detection cache saved successfully")
+            else:
+                # Backward pass: close cache
+                detection_cache.close()
 
         # Finalize individual dataset if enabled
         if individual_generator is not None:
