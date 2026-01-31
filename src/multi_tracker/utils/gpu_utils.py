@@ -23,7 +23,7 @@ try:
     CUPY_AVAILABLE = True
     # Test if CUDA is actually available (not just installed)
     try:
-        _ = cp.cuda.Device(0)
+        device = cp.cuda.Device(0)
         CUDA_AVAILABLE = True
     except (cp.cuda.runtime.CUDARuntimeError, Exception):
         CUDA_AVAILABLE = False
@@ -63,8 +63,6 @@ try:
     import tensorrt as trt
 
     TENSORRT_AVAILABLE = CUDA_AVAILABLE  # TensorRT requires CUDA
-    if TENSORRT_AVAILABLE:
-        logger.info(f"TensorRT version {trt.__version__} available")
 except ImportError:
     TENSORRT_AVAILABLE = False
     trt = None

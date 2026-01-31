@@ -147,6 +147,10 @@ def main():
     try:
         # Import GUI components (after dependency check)
         from .gui.main_window import MainWindow
+        from .utils.gpu_utils import log_device_info
+
+        # Log GPU/acceleration availability
+        log_device_info()
 
         # Create Qt application
         app = QApplication(sys.argv)

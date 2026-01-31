@@ -52,10 +52,10 @@ dependencies:
   # Install GPU-accelerated packages via pip
   - pip:
     # PyTorch with CUDA support (use appropriate CUDA version)
-    # - --index-url https://download.pytorch.org/whl/cu126
-    # - --index-url https://download.pytorch.org/whl/cu128
-    - --index-url https://download.pytorch.org/whl/cu130
-    # - --index-url https://download.pytorch.org/whl/cpu
+    # - --extra-index-url https://download.pytorch.org/whl/cu126
+    # - --extra-index-url https://download.pytorch.org/whl/cu128
+    - --extra-index-url https://download.pytorch.org/whl/cu130
+    # - --extra-index-url https://download.pytorch.org/whl/cpu
     - torch
     - torchvision
     - torchaudio
@@ -63,4 +63,22 @@ dependencies:
     - timm
     - pupil-apriltags
     - ultralytics
+    # TensorRT - NVIDIA inference optimization for YOLO acceleration
+    # See: https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html
+    # Default: CUDA 13.0 (cu13) - change suffix if you have a different CUDA version
+    - tensorrt
+    - tensorrt-cu13
+    - tensorrt-cu13-bindings
+    - tensorrt-cu13-libs
+    # For CUDA 12.x, replace cu13 with cu12 above:
+    # - tensorrt
+    # - tensorrt-cu12
+    # - tensorrt-cu12-bindings
+    # - tensorrt-cu12-libs
+    # For CUDA 11.x, replace cu13 with cu11 above:
+    # - tensorrt
+    # - tensorrt-cu11
+    # - tensorrt-cu11-bindings
+    # - tensorrt-cu11-libs
     - -e .
+    
