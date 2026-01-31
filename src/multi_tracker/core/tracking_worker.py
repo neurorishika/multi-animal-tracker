@@ -15,6 +15,7 @@ from ..utils.image_processing import apply_image_adjustments, stabilize_lighting
 from ..utils.geometry import wrap_angle_degs
 from ..utils.detection_cache import DetectionCache
 from ..utils.batch_optimizer import BatchOptimizer
+from ..utils.frame_prefetcher import FramePrefetcher
 from .kalman_filters import KalmanFilterManager
 from .background_models import BackgroundModel
 from .detection import create_detector
@@ -66,6 +67,10 @@ class TrackingWorker(QThread):
         self.frame_count = 0
         self.trajectories_full = []
 
+        # Frame prefetcher for async I/O
+        self.frame_prefetcher = None
+        self.frame_prefetcher = None
+
     def set_parameters(self, p: dict):
         self.params_mutex.lock()
         self.parameters = p
@@ -88,15 +93,37 @@ class TrackingWorker(QThread):
     def stop(self):
         self._stop_requested = True
 
-    def _forward_frame_iterator(self, cap):
-        """Iterate through frames in forward direction."""
+    def _forward_frame_iterator(self, cap, use_prefetcher=False):
+        """Iterate through frames in forward direction.
+
+        Args:
+            cap: OpenCV VideoCapture object
+            use_prefetcher (bool): Use frame prefetching for better I/O performance
+        """
         frame_num = 0
-        while not self._stop_requested:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame_num += 1
-            yield frame, frame_num
+
+        if use_prefetcher:
+            # Use async frame prefetching for better performance
+            self.frame_prefetcher = FramePrefetcher(cap, buffer_size=2)
+            self.frame_prefetcher.start()
+
+            while not self._stop_requested:
+                ret, frame = self.frame_prefetcher.read()
+                if not ret:
+                    break
+                frame_num += 1
+                yield frame, frame_num
+
+            self.frame_prefetcher.stop()
+            self.frame_prefetcher = None
+        else:
+            # Standard synchronous frame reading
+            while not self._stop_requested:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_num += 1
+                yield frame, frame_num
 
     def _cached_detection_iterator(self, total_frames):
         """Iterate through frame indices for cached detection mode (no actual frames needed)."""
@@ -364,25 +391,45 @@ class TrackingWorker(QThread):
             logger.info("=" * 80)
 
         # === 2. FRAME PROCESSING LOOP ===
+        # Determine whether to use frame prefetcher
+        # Enable for forward passes where we're not batching detection (to avoid double buffering)
+        # Prefetching is most beneficial when frame I/O competes with processing time
+        use_prefetcher = (
+            not use_batched_detection  # Not in batched detection phase 1
+            and not self.backward_mode  # Not backward mode (uses cache iterator)
+            and not self.preview_mode  # Not preview (latency-sensitive)
+            and p.get("ENABLE_FRAME_PREFETCH", True)  # User hasn't disabled it
+        )
+
         # Choose appropriate frame iterator
         if use_cached_detections:
             if use_batched_detection:
                 # Phase 2 of batched detection: use forward iterator for visualization
                 # but load detections from cache
-                frame_iterator = self._forward_frame_iterator(cap)
+                frame_iterator = self._forward_frame_iterator(
+                    cap, use_prefetcher=use_prefetcher
+                )
                 skip_visualization = False  # Show visualization in phase 2
                 logger.info("Phase 2: Using cached detections with visualization")
             else:
                 # Backward pass: no frames needed, skip visualization
                 frame_iterator = self._cached_detection_iterator(total_frames)
                 skip_visualization = True
+                use_prefetcher = False  # No frames to prefetch
                 logger.info(
                     "Backward pass: Skipping frame reading and visualization for maximum speed"
                 )
         else:
             # Standard frame-by-frame with detection
-            frame_iterator = self._forward_frame_iterator(cap)
+            frame_iterator = self._forward_frame_iterator(
+                cap, use_prefetcher=use_prefetcher
+            )
             skip_visualization = False
+
+        if use_prefetcher:
+            logger.info("Frame prefetching ENABLED (background I/O buffering)")
+        else:
+            logger.info("Frame prefetching disabled")
 
         for frame, _ in frame_iterator:
             loop_start = time.time()
@@ -1033,6 +1080,11 @@ class TrackingWorker(QThread):
                 fps_list.append(self.frame_count / elapsed)
 
         # === 3. CLEANUP (Identical to Original) ===
+        # Stop frame prefetcher if still running
+        if self.frame_prefetcher is not None:
+            self.frame_prefetcher.stop()
+            self.frame_prefetcher = None
+
         cap.release()
         if self.video_writer:
             self.video_writer.release()
