@@ -157,7 +157,12 @@ class TrackingWorker(QThread):
         logger.info("=" * 80)
 
         # Get batch size using advanced config
-        advanced_config = params.get("ADVANCED_CONFIG", {})
+        # Include TensorRT settings from top-level params
+        advanced_config = params.get("ADVANCED_CONFIG", {}).copy()
+        advanced_config["enable_tensorrt"] = params.get("ENABLE_TENSORRT", False)
+        advanced_config["tensorrt_max_batch_size"] = params.get(
+            "TENSORRT_MAX_BATCH_SIZE", 16
+        )
         batch_optimizer = BatchOptimizer(advanced_config)
 
         # Get video properties
@@ -272,6 +277,12 @@ class TrackingWorker(QThread):
             )
 
         # Initialize detector using factory function
+        # Disable TensorRT in preview mode - TensorRT uses fixed batch sizes
+        # which is wasteful for single-frame processing
+        if self.preview_mode and p.get("ENABLE_TENSORRT", False):
+            logger.debug("TensorRT disabled for preview mode (single-frame processing)")
+            p = p.copy()
+            p["ENABLE_TENSORRT"] = False
         detector = create_detector(p)
 
         # Determine if we should use batched detection

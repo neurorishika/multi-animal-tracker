@@ -112,8 +112,15 @@ class BatchOptimizer:
         batch_mode = self.advanced_config.get("yolo_batch_size_mode", "auto")
         if batch_mode == "manual":
             manual_size = self.advanced_config.get("yolo_manual_batch_size", 16)
-            logger.info(f"Manual batch size override: {manual_size}")
-            return max(1, min(manual_size, 64))  # Clamp to 1-64
+            # If TensorRT is enabled, also clamp to TensorRT max batch size
+            tensorrt_max = self.advanced_config.get("tensorrt_max_batch_size", 64)
+            if self.advanced_config.get("enable_tensorrt", False):
+                max_allowed = min(64, tensorrt_max)
+            else:
+                max_allowed = 64
+            clamped_size = max(1, min(manual_size, max_allowed))
+            logger.info(f"Manual batch size: {manual_size} (clamped to {clamped_size})")
+            return clamped_size
 
         # Estimate memory per frame
         # Formula: width × height × 3 (RGB) × 4 (float32) + model overhead
@@ -162,7 +169,15 @@ class BatchOptimizer:
 
         # Apply safety margin (0.8x) and clamp to reasonable range
         safe_batch = int(estimated_batch * 0.8)
-        batch_size = max(1, min(safe_batch, 64))
+
+        # If TensorRT is enabled, clamp to TensorRT max batch size
+        tensorrt_max = self.advanced_config.get("tensorrt_max_batch_size", 64)
+        if self.advanced_config.get("enable_tensorrt", False):
+            max_allowed = tensorrt_max
+        else:
+            max_allowed = 64
+
+        batch_size = max(1, min(safe_batch, max_allowed))
 
         logger.info(f"Batch size estimation:")
         logger.info(f"  Device: {self.device_type.upper()} ({self.device_name})")

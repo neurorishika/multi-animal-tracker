@@ -1666,6 +1666,31 @@ class MainWindow(QMainWindow):
         self.chk_enable_tensorrt.setToolTip(tensorrt_tooltip)
         f_yolo.addRow("", self.chk_enable_tensorrt)
 
+        # TensorRT Max Batch Size (shown when TensorRT is enabled)
+        self.spin_tensorrt_batch = QSpinBox()
+        self.spin_tensorrt_batch.setRange(1, 64)
+        self.spin_tensorrt_batch.setValue(
+            self.advanced_config.get("tensorrt_max_batch_size", 16)
+        )
+        self.spin_tensorrt_batch.setToolTip(
+            "Maximum batch size for TensorRT engine.\n"
+            "Higher = potentially faster batched inference.\n"
+            "Lower = more likely to build successfully.\n\n"
+            "If TensorRT build fails with memory errors,\n"
+            "reduce this value (try 8, 4, or 1).\n\n"
+            "Typical values:\n"
+            "  • 16-32: High-end GPUs (24GB+ VRAM)\n"
+            "  • 8-16: Mid-range GPUs (8-16GB VRAM)\n"
+            "  • 1-8: Lower VRAM or large models"
+        )
+        self.spin_tensorrt_batch.setEnabled(False)  # Initially disabled
+        self.lbl_tensorrt_batch = QLabel("TensorRT Max Batch:")
+        self.lbl_tensorrt_batch.setEnabled(False)
+        f_yolo.addRow(self.lbl_tensorrt_batch, self.spin_tensorrt_batch)
+
+        # Connect TensorRT checkbox to show/hide batch size
+        self.chk_enable_tensorrt.stateChanged.connect(self._on_tensorrt_toggled)
+
         # GPU Batching Settings
         f_yolo.addRow(QLabel(""))  # Spacer
         batching_label = QLabel("<b>GPU Batching (Full Tracking Only)</b>")
@@ -3044,6 +3069,12 @@ class MainWindow(QMainWindow):
         batching_enabled = self.chk_enable_yolo_batching.isChecked()
         self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
 
+    def _on_tensorrt_toggled(self, state):
+        """Enable/disable TensorRT batch size control based on checkbox."""
+        enabled = state == Qt.Checked
+        self.spin_tensorrt_batch.setEnabled(enabled)
+        self.lbl_tensorrt_batch.setEnabled(enabled)
+
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
     # =========================================================================
@@ -3694,7 +3725,10 @@ class MainWindow(QMainWindow):
                         0
                     ]
                     != "cpu",
-                    "ENABLE_TENSORRT": self.chk_enable_tensorrt.isChecked(),
+                    # Disable TensorRT for preview - it's optimized for batch processing
+                    # Preview processes one frame at a time, so TensorRT overhead isn't worth it
+                    "ENABLE_TENSORRT": False,
+                    "TENSORRT_MAX_BATCH_SIZE": self.spin_tensorrt_batch.value(),
                     "MAX_TARGETS": self.spin_max_targets.value(),
                     "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
                     "ENABLE_SIZE_FILTERING": use_size_filtering,  # Use the user's choice
@@ -4786,7 +4820,7 @@ class MainWindow(QMainWindow):
         # CPU Acceleration
         numba_status = "✓ Available" if info["numba_available"] else "✗ Not Available"
         lines.append(f"<br><b>CPU JIT (Numba):</b> {numba_status}")
-        if info["numba_available"]:
+        if info["numba_available"] and "numba_version" in info:
             lines.append(f"&nbsp;&nbsp;• Version: {info['numba_version']}")
 
         # Overall status
@@ -5554,6 +5588,7 @@ class MainWindow(QMainWindow):
             "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[0]
             != "cpu",
             "ENABLE_TENSORRT": self.chk_enable_tensorrt.isChecked(),
+            "TENSORRT_MAX_BATCH_SIZE": self.spin_tensorrt_batch.value(),
             "MAX_TARGETS": N,
             "THRESHOLD_VALUE": self.spin_threshold.value(),
             "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
@@ -5850,6 +5885,13 @@ class MainWindow(QMainWindow):
             self.chk_enable_tensorrt.setChecked(
                 get_cfg("enable_tensorrt", default=False)
             )
+            self.spin_tensorrt_batch.setValue(
+                get_cfg("tensorrt_max_batch_size", default=16)
+            )
+            # Update TensorRT batch spinner state based on checkbox
+            tensorrt_enabled = self.chk_enable_tensorrt.isChecked()
+            self.spin_tensorrt_batch.setEnabled(tensorrt_enabled)
+            self.lbl_tensorrt_batch.setEnabled(tensorrt_enabled)
 
             # YOLO Batching settings
             self.chk_enable_yolo_batching.setChecked(
@@ -6247,6 +6289,7 @@ class MainWindow(QMainWindow):
             "yolo_device": self.combo_device.currentText().split(" ")[0],
             # TensorRT
             "enable_tensorrt": self.chk_enable_tensorrt.isChecked(),
+            "tensorrt_max_batch_size": self.spin_tensorrt_batch.value(),
             # YOLO Batching
             "enable_yolo_batching": self.chk_enable_yolo_batching.isChecked(),
             "yolo_batch_size_mode": (

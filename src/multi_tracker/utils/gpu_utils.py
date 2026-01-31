@@ -82,12 +82,40 @@ def get_device_info():
     info = {
         "cuda_available": CUDA_AVAILABLE,
         "mps_available": MPS_AVAILABLE,
+        "torch_available": TORCH_AVAILABLE,
         "torch_cuda_available": TORCH_CUDA_AVAILABLE,
         "tensorrt_available": TENSORRT_AVAILABLE,
         "numba_available": NUMBA_AVAILABLE,
         "gpu_available": GPU_AVAILABLE,
         "any_acceleration": ANY_ACCELERATION,
     }
+
+    # Add version information
+    if CUPY_AVAILABLE:
+        try:
+            info["cupy_version"] = cp.__version__
+        except Exception:
+            pass
+
+    if TORCH_AVAILABLE:
+        try:
+            info["torch_version"] = torch.__version__
+        except Exception:
+            pass
+
+    if NUMBA_AVAILABLE:
+        try:
+            import numba
+
+            info["numba_version"] = numba.__version__
+        except Exception:
+            pass
+
+    if TENSORRT_AVAILABLE and trt is not None:
+        try:
+            info["tensorrt_version"] = trt.__version__
+        except Exception:
+            pass
 
     # Add device details if available
     if CUDA_AVAILABLE:

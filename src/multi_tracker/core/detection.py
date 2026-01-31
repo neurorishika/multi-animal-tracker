@@ -147,9 +147,12 @@ class YOLOOBBDetector:
             cache_dir = Path.home() / ".cache" / "multi_tracker" / "tensorrt"
             cache_dir.mkdir(parents=True, exist_ok=True)
 
-            # Generate TensorRT engine filename based on model name
+            # Get max batch size from UI parameter
+            max_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
+
+            # Generate TensorRT engine filename based on model name and batch size
             model_name = Path(model_path_str).stem
-            engine_path = cache_dir / f"{model_name}.engine"
+            engine_path = cache_dir / f"{model_name}_batch{max_batch_size}.engine"
 
             # Check if TensorRT engine already exists
             if engine_path.exists():
@@ -158,8 +161,11 @@ class YOLOOBBDetector:
                     self.model = YOLO(str(engine_path), task="obb")
                     self.use_tensorrt = True
                     self.tensorrt_model_path = str(engine_path)
+                    self.tensorrt_batch_size = (
+                        max_batch_size  # Store batch size for chunking
+                    )
                     logger.info(
-                        "TensorRT model loaded successfully (2-5x faster inference expected)"
+                        f"TensorRT model loaded successfully (max batch={max_batch_size}, 2-5x faster inference expected)"
                     )
                     return
                 except Exception as e:
@@ -168,18 +174,27 @@ class YOLOOBBDetector:
                     engine_path.unlink(missing_ok=True)
 
             # Export to TensorRT
-            logger.info(
-                f"Exporting YOLO model to TensorRT format (first-time only, may take 1-5 minutes)..."
-            )
+            logger.info("=" * 60)
+            logger.info("BUILDING TENSORRT ENGINE - This is a one-time optimization")
+            logger.info(f"This may take 1-5 minutes. Please wait...")
+            logger.info("The engine will be cached for future use.")
+            logger.info("=" * 60)
             base_model = YOLO(model_path_str)
             base_model.to(self.device)
 
+            # Try dynamic batching first, fall back to static if it fails
+            logger.info(f"Building TensorRT engine (batch size: {max_batch_size})...")
+
             # Export to TensorRT engine format
+            # Note: dynamic=False uses fixed batch size which is more compatible
+            # but requires batches to exactly match max_batch_size
             export_path = base_model.export(
                 format="engine",
                 device=self.device,
                 half=True,  # Use FP16 for faster inference
                 workspace=4,  # 4GB workspace
+                dynamic=False,  # Static shapes (more compatible)
+                batch=max_batch_size,  # Fixed batch size
                 verbose=False,
             )
 
@@ -194,13 +209,40 @@ class YOLOOBBDetector:
                 self.model = YOLO(str(engine_path), task="obb")
                 self.use_tensorrt = True
                 self.tensorrt_model_path = str(engine_path)
-                logger.info("TensorRT optimization complete (2-5x speedup expected)")
+                self.tensorrt_batch_size = max_batch_size  # Store for batching logic
+                logger.info("=" * 60)
+                logger.info(f"TENSORRT OPTIMIZATION COMPLETE (batch={max_batch_size})")
+                logger.info("=" * 60)
             else:
                 logger.warning("TensorRT export failed - exported file not found")
 
         except Exception as e:
-            logger.warning(f"TensorRT optimization failed: {e}")
-            logger.info("Continuing with standard PyTorch inference")
+            error_msg = str(e)
+            logger.warning(f"TensorRT optimization failed: {error_msg}")
+
+            # Provide helpful suggestions based on error type
+            max_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
+            if "memory" in error_msg.lower() or "allocate" in error_msg.lower():
+                logger.warning("=" * 60)
+                logger.warning(
+                    f"TensorRT build ran out of GPU memory (max batch = {max_batch_size})."
+                )
+                logger.warning(
+                    "FIX: Reduce 'TensorRT Max Batch Size' in YOLO settings."
+                )
+                logger.warning(f"Try: 8, 4, or 1 instead of {max_batch_size}")
+                logger.warning("=" * 60)
+            elif "engine build failed" in error_msg.lower():
+                logger.warning("=" * 60)
+                logger.warning(
+                    f"TensorRT engine build failed (max batch = {max_batch_size})."
+                )
+                logger.warning(
+                    "FIX: Reduce 'TensorRT Max Batch Size' in YOLO settings."
+                )
+                logger.warning("=" * 60)
+
+            logger.info("Continuing with standard PyTorch inference (still uses GPU)")
             self.use_tensorrt = False
 
     def _detect_device(self):
@@ -423,25 +465,76 @@ class YOLOOBBDetector:
         max_det = p.get("MAX_TARGETS", 8) * p.get("MAX_CONTOUR_MULTIPLIER", 20)
         N = p["MAX_TARGETS"]
 
-        # Run batched inference
-        try:
-            results_batch = self.model.predict(
-                frames,  # List of frames
-                conf=conf_threshold,
-                iou=iou_threshold,
-                classes=target_classes,
-                max_det=max_det,
-                device=self.device,
-                verbose=False,
-            )
-        except Exception as e:
-            logger.error(f"YOLO batched inference failed: {e}")
-            return [([], [], [], [], []) for _ in frames]
+        # Handle TensorRT fixed batch size
+        # TensorRT requires exact batch size, so we need to:
+        # 1. Chunk larger batches into TensorRT batch-sized pieces
+        # 2. Pad the final chunk if smaller than TensorRT batch size
+        actual_frame_count = len(frames)
+
+        if self.use_tensorrt and hasattr(self, "tensorrt_batch_size"):
+            trt_batch = self.tensorrt_batch_size
+            all_results = []
+
+            # Process in TensorRT-sized chunks
+            for chunk_start in range(0, actual_frame_count, trt_batch):
+                chunk_end = min(chunk_start + trt_batch, actual_frame_count)
+                chunk_frames = frames[chunk_start:chunk_end]
+                chunk_size = len(chunk_frames)
+
+                # Pad chunk if smaller than TensorRT batch size
+                if chunk_size < trt_batch:
+                    padding_needed = trt_batch - chunk_size
+                    dummy_frame = chunk_frames[0]
+                    chunk_frames = list(chunk_frames) + [dummy_frame] * padding_needed
+                    logger.debug(
+                        f"Padded final chunk from {chunk_size} to {trt_batch} for TensorRT"
+                    )
+
+                # Run inference on this chunk
+                try:
+                    chunk_results = self.model.predict(
+                        chunk_frames,
+                        conf=conf_threshold,
+                        iou=iou_threshold,
+                        classes=target_classes,
+                        max_det=max_det,
+                        device=self.device,
+                        verbose=False,
+                    )
+                    # Only keep results for actual frames (not padding)
+                    all_results.extend(chunk_results[:chunk_size])
+                except Exception as e:
+                    logger.error(f"YOLO batched inference failed on chunk: {e}")
+                    # Return empty results for this chunk
+                    all_results.extend([None] * chunk_size)
+
+            results_batch = all_results
+        else:
+            # Standard PyTorch inference - no chunking needed
+            try:
+                results_batch = self.model.predict(
+                    frames,
+                    conf=conf_threshold,
+                    iou=iou_threshold,
+                    classes=target_classes,
+                    max_det=max_det,
+                    device=self.device,
+                    verbose=False,
+                )
+            except Exception as e:
+                logger.error(f"YOLO batched inference failed: {e}")
+                return [([], [], [], [], []) for _ in frames]
 
         # Process each result
         batch_detections = []
-        for idx, results in enumerate(results_batch):
+        for idx in range(actual_frame_count):
+            results = results_batch[idx]
             frame_count = start_frame_idx + idx
+
+            # Handle failed inference (None result from error)
+            if results is None:
+                batch_detections.append(([], [], [], [], []))
+                continue
 
             if results.obb is None or len(results.obb) == 0:
                 batch_detections.append(([], [], [], [], []))
@@ -496,8 +589,8 @@ class YOLOOBBDetector:
             if progress_callback and (idx + 1) % 10 == 0:
                 progress_callback(
                     idx + 1,
-                    len(frames),
-                    f"Processing batch frame {idx + 1}/{len(frames)}",
+                    actual_frame_count,
+                    f"Processing batch frame {idx + 1}/{actual_frame_count}",
                 )
 
         return batch_detections
