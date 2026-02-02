@@ -383,3 +383,5 @@ profiling/
 
 # ignore pytorch models
 *.pt
+# Custom user presets (gitignored)
+configs/custom.json

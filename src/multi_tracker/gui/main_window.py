@@ -886,6 +886,15 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(self.splitter)
 
+        # =====================================================================
+        # INITIALIZE PRESETS
+        # =====================================================================
+        # Populate preset combo box with available presets
+        self._populate_preset_combo()
+
+        # Load default preset (custom if available, otherwise default.json)
+        self._load_default_preset_on_startup()
+
     # =========================================================================
     # TAB UI BUILDERS
     # =========================================================================
@@ -900,6 +909,66 @@ class MainWindow(QMainWindow):
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         form = QVBoxLayout(content)
+
+        # ============================================================
+        # Preset Selector
+        # ============================================================
+        g_presets = QGroupBox("Default Presets")
+        vl_presets = QVBoxLayout(g_presets)
+        vl_presets.addWidget(
+            self._create_help_label(
+                "Load optimized default values for different model organisms. Video-specific configs override presets."
+            )
+        )
+
+        preset_layout = QHBoxLayout()
+        preset_label = QLabel("Organism Preset:")
+        preset_label.setStyleSheet("font-weight: bold;")
+
+        self.combo_presets = QComboBox()
+        self.combo_presets.setToolTip(
+            "Select preset optimized for your organism.\n"
+            "Custom: Your personal saved defaults (if exists)"
+        )
+        self._populate_preset_combo()
+
+        self.btn_load_preset = QPushButton("Load Preset")
+        self.btn_load_preset.clicked.connect(self._load_selected_preset)
+        self.btn_load_preset.setToolTip("Apply selected preset to all parameters")
+
+        self.btn_save_custom = QPushButton("Save as Custom")
+        self.btn_save_custom.clicked.connect(self._save_custom_preset)
+        self.btn_save_custom.setToolTip("Save current settings as your custom defaults")
+
+        self.preset_status_label = QLabel("")
+        self.preset_status_label.setStyleSheet(
+            "color: #888; font-style: italic; font-size: 10px;"
+        )
+
+        preset_layout.addWidget(preset_label)
+        preset_layout.addWidget(self.combo_presets, stretch=1)
+        preset_layout.addWidget(self.btn_load_preset)
+        preset_layout.addWidget(self.btn_save_custom)
+        preset_layout.addWidget(self.preset_status_label, stretch=1)
+
+        vl_presets.addLayout(preset_layout)
+
+        # Description display
+        self.preset_description_label = QLabel("")
+        self.preset_description_label.setWordWrap(True)
+        self.preset_description_label.setStyleSheet(
+            "color: #bbb; font-style: italic; font-size: 10px; padding: 5px; "
+            "background-color: #1a1a1a; border-radius: 3px;"
+        )
+        self.preset_description_label.setVisible(False)
+        vl_presets.addWidget(self.preset_description_label)
+
+        # Connect combo box to show description
+        self.combo_presets.currentIndexChanged.connect(
+            self._on_preset_selection_changed
+        )
+
+        form.addWidget(g_presets)
 
         # ============================================================
         # Video Setup (File Management + Frame Rate)
@@ -5824,11 +5893,15 @@ class MainWindow(QMainWindow):
             )
             logger.info(f"Configuration loaded from {config_path}")
 
-    def _load_config_from_file(self, config_path):
+    def _load_config_from_file(self, config_path, preset_mode=False):
         """Internal method to load config from a specific file path.
 
         This method supports both new standardized key names and legacy key names
         for backward compatibility with older config files.
+
+        Args:
+            config_path: Path to the config/preset file
+            preset_mode: If True, skip loading video paths and ROI data (for organism presets)
         """
         if not os.path.isfile(config_path):
             return
@@ -5847,26 +5920,30 @@ class MainWindow(QMainWindow):
                 cfg = json.load(f)
 
             # === FILE MANAGEMENT ===
-            # Only set paths if they're currently empty (preserve existing paths)
-            if not self.file_line.text().strip():
-                video_path = get_cfg("file_path", default="")
-                if video_path:
-                    # Use the same setup logic as browsing for a file
-                    self._setup_video_file(video_path, skip_config_load=True)
-            if not self.csv_line.text().strip():
-                self.csv_line.setText(get_cfg("csv_path", default=""))
-            self.check_video_output.setChecked(
-                get_cfg("video_output_enabled", default=False)
-            )
-            saved_video_path = get_cfg("video_output_path", default="")
-            if saved_video_path and not self.video_out_line.text().strip():
-                self.video_out_line.setText(saved_video_path)
+            # Skip file paths when loading presets (only load for full configs)
+            if not preset_mode:
+                # Only set paths if they're currently empty (preserve existing paths)
+                if not self.file_line.text().strip():
+                    video_path = get_cfg("file_path", default="")
+                    if video_path:
+                        # Use the same setup logic as browsing for a file
+                        self._setup_video_file(video_path, skip_config_load=True)
+                if not self.csv_line.text().strip():
+                    self.csv_line.setText(get_cfg("csv_path", default=""))
+                self.check_video_output.setChecked(
+                    get_cfg("video_output_enabled", default=False)
+                )
+                saved_video_path = get_cfg("video_output_path", default="")
+                if saved_video_path and not self.video_out_line.text().strip():
+                    self.video_out_line.setText(saved_video_path)
 
             # === REFERENCE PARAMETERS ===
-            self.spin_fps.setValue(get_cfg("fps", default=30.0))
-            self.spin_reference_body_size.setValue(
-                get_cfg("reference_body_size", default=20.0)
-            )
+            # Skip video-specific parameters in preset mode
+            if not preset_mode:
+                self.spin_fps.setValue(get_cfg("fps", default=30.0))
+                self.spin_reference_body_size.setValue(
+                    get_cfg("reference_body_size", default=20.0)
+                )
 
             # === SYSTEM PERFORMANCE ===
             self.spin_resize.setValue(get_cfg("resize_factor", default=1.0))
@@ -5987,10 +6064,13 @@ class MainWindow(QMainWindow):
             yolo_cls = get_cfg("yolo_target_classes", default=None)
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
-            yolo_dev = get_cfg("yolo_device", default="auto")
-            idx = self.combo_device.findText(yolo_dev, Qt.MatchStartsWith)
-            if idx >= 0:
-                self.combo_device.setCurrentIndex(idx)
+
+            # Device selection (skip in preset mode)
+            if not preset_mode:
+                yolo_dev = get_cfg("yolo_device", default="auto")
+                idx = self.combo_device.findText(yolo_dev, Qt.MatchStartsWith)
+                if idx >= 0:
+                    self.combo_device.setCurrentIndex(idx)
 
             # TensorRT
             self.chk_enable_tensorrt.setChecked(
@@ -6188,7 +6268,8 @@ class MainWindow(QMainWindow):
             self.line_dataset_class_name.setText(
                 get_cfg("dataset_class_name", default="object")
             )
-            if not self.line_dataset_output.text().strip():
+            # Skip output directory in preset mode
+            if not preset_mode and not self.line_dataset_output.text().strip():
                 self.line_dataset_output.setText(
                     get_cfg("dataset_output_dir", default="")
                 )
@@ -6250,7 +6331,8 @@ class MainWindow(QMainWindow):
             self.spin_identity_crop_max.setValue(
                 get_cfg("identity_crop_max_size", default=256)
             )
-            if not self.line_color_tag_model.text().strip():
+            # Skip model path in preset mode
+            if not preset_mode and not self.line_color_tag_model.text().strip():
                 self.line_color_tag_model.setText(
                     get_cfg("color_tag_model_path", default="")
                 )
@@ -6280,7 +6362,8 @@ class MainWindow(QMainWindow):
             self.line_individual_dataset_name.setText(
                 get_cfg("individual_dataset_name", default="individual_dataset")
             )
-            if not self.line_individual_output.text().strip():
+            # Skip output directory in preset mode
+            if not preset_mode and not self.line_individual_output.text().strip():
                 self.line_individual_output.setText(
                     get_cfg("individual_dataset_output_dir", default="")
                 )
@@ -6326,8 +6409,20 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.warning(f"Failed to load configuration: {e}")
 
-    def save_config(self):
+    def save_config(
+        self,
+        preset_mode=False,
+        preset_path=None,
+        preset_name=None,
+        preset_description=None,
+    ):
         """Save current configuration to JSON file.
+
+        Args:
+            preset_mode: If True, skip video paths, device settings, and ROI data (for organism presets)
+            preset_path: If provided, save directly to this path without prompting
+            preset_name: Name for the preset (only used in preset_mode)
+            preset_description: Description for the preset (only used in preset_mode)
 
         Returns:
             bool: True if config was saved successfully, False if cancelled or failed
@@ -6343,169 +6438,243 @@ class MainWindow(QMainWindow):
             else None
         )
 
-        cfg = {
-            # === FILE MANAGEMENT ===
-            "file_path": self.file_line.text(),
-            "csv_path": self.csv_line.text(),
-            "video_output_enabled": self.check_video_output.isChecked(),
-            "video_output_path": self.video_out_line.text(),
-            # === REFERENCE PARAMETERS ===
-            "fps": self.spin_fps.value(),
-            "reference_body_size": self.spin_reference_body_size.value(),
-            # === SYSTEM PERFORMANCE ===
-            "resize_factor": self.spin_resize.value(),
-            "save_confidence_metrics": self.check_save_confidence.isChecked(),
-            "visualization_free_mode": self.chk_visualization_free.isChecked(),
-            # === DETECTION STRATEGY ===
-            "detection_method": (
-                "background_subtraction"
-                if self.combo_detection_method.currentIndex() == 0
-                else "yolo_obb"
-            ),
-            # === SIZE FILTERING ===
-            "enable_size_filtering": self.chk_size_filtering.isChecked(),
-            "min_object_size_multiplier": self.spin_min_object_size.value(),
-            "max_object_size_multiplier": self.spin_max_object_size.value(),
-            # === IMAGE ENHANCEMENT ===
-            "brightness": self.slider_brightness.value(),
-            "contrast": self.slider_contrast.value() / 100.0,
-            "gamma": self.slider_gamma.value() / 100.0,
-            "dark_on_light_background": self.chk_dark_on_light.isChecked(),
-            # === BACKGROUND SUBTRACTION ===
-            "background_prime_frames": self.spin_bg_prime.value(),
-            "enable_adaptive_background": self.chk_adaptive_bg.isChecked(),
-            "background_learning_rate": self.spin_bg_learning.value(),
-            "subtraction_threshold": self.spin_threshold.value(),
-            # === LIGHTING STABILIZATION ===
-            "enable_lighting_stabilization": self.chk_lighting_stab.isChecked(),
-            "lighting_smooth_factor": self.spin_lighting_smooth.value(),
-            "lighting_median_window": self.spin_lighting_median.value(),
-            # === MORPHOLOGY & NOISE ===
-            "morph_kernel_size": self.spin_morph_size.value(),
-            "min_contour_area": self.spin_min_contour.value(),
-            "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
-            # === ADVANCED SEPARATION ===
-            "enable_conservative_split": self.chk_conservative_split.isChecked(),
-            "conservative_kernel_size": self.spin_conservative_kernel.value(),
-            "conservative_erode_iterations": self.spin_conservative_erode.value(),
-            "merge_area_threshold": self.spin_merge_threshold.value(),
-            "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
-            "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
-            "dilation_iterations": self.spin_dilation_iterations.value(),
-            # === YOLO CONFIGURATION ===
-            "yolo_model_path": yolo_path,
-            "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
-            "yolo_iou_threshold": self.spin_yolo_iou.value(),
-            "yolo_target_classes": yolo_cls,
-            "yolo_device": self.combo_device.currentText().split(" ")[0],
-            # TensorRT
-            "enable_tensorrt": self.chk_enable_tensorrt.isChecked(),
-            "tensorrt_max_batch_size": self.spin_tensorrt_batch.value(),
-            # YOLO Batching
-            "enable_yolo_batching": self.chk_enable_yolo_batching.isChecked(),
-            "yolo_batch_size_mode": (
-                "auto" if self.combo_yolo_batch_mode.currentIndex() == 0 else "manual"
-            ),
-            "yolo_manual_batch_size": self.spin_yolo_batch_size.value(),
-            # === CORE TRACKING ===
-            "max_targets": self.spin_max_targets.value(),
-            "max_assignment_distance_multiplier": self.spin_max_dist.value(),
-            "recovery_search_distance_multiplier": self.spin_continuity_thresh.value(),
-            "enable_backward_tracking": self.chk_enable_backward.isChecked(),
-            # === KALMAN FILTER ===
-            "kalman_process_noise": self.spin_kalman_noise.value(),
-            "kalman_measurement_noise": self.spin_kalman_meas.value(),
-            "kalman_velocity_damping": self.spin_kalman_damping.value(),
-            "kalman_maturity_age": self.spin_kalman_maturity_age.value(),
-            "kalman_initial_velocity_retention": self.spin_kalman_initial_velocity_retention.value(),
-            "kalman_max_velocity_multiplier": self.spin_kalman_max_velocity.value(),
-            "kalman_longitudinal_noise_multiplier": self.spin_kalman_longitudinal_noise.value(),
-            "kalman_lateral_noise_multiplier": self.spin_kalman_lateral_noise.value(),
-            # === COST FUNCTION WEIGHTS ===
-            "weight_position": self.spin_Wp.value(),
-            "weight_orientation": self.spin_Wo.value(),
-            "weight_area": self.spin_Wa.value(),
-            "weight_aspect_ratio": self.spin_Wasp.value(),
-            "use_mahalanobis_distance": self.chk_use_mahal.isChecked(),
-            # === ASSIGNMENT ALGORITHM ===
-            "enable_greedy_assignment": self.combo_assignment_method.currentIndex()
-            == 1,
-            "enable_spatial_optimization": self.chk_spatial_optimization.isChecked(),
-            # === ORIENTATION & MOTION ===
-            "velocity_threshold": self.spin_velocity.value(),
-            "enable_instant_flip": self.chk_instant_flip.isChecked(),
-            "max_orientation_delta_stopped": self.spin_max_orient.value(),
-            # === TRACK LIFECYCLE ===
-            "lost_frames_threshold": self.spin_lost_thresh.value(),
-            "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
-            "min_detections_to_start": self.spin_min_detections_to_start.value(),
-            "min_detect_frames": self.spin_min_detect.value(),
-            "min_track_frames": self.spin_min_track.value(),
-            # === POST-PROCESSING ===
-            "enable_postprocessing": self.enable_postprocessing.isChecked(),
-            "min_trajectory_length": self.spin_min_trajectory_length.value(),
-            "max_velocity_break": self.spin_max_velocity_break.value(),
-            "max_distance_break_multiplier": self.spin_max_distance_break.value(),
-            "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
-            "interpolation_method": self.combo_interpolation_method.currentText(),
-            "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
-            "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
-            # === REAL-TIME ANALYTICS ===
-            "enable_histograms": self.enable_histograms.isChecked(),
-            "histogram_history_frames": self.spin_histogram_history.value(),
-            # === VISUALIZATION OVERLAYS ===
-            "show_track_markers": self.chk_show_circles.isChecked(),
-            "show_orientation_lines": self.chk_show_orientation.isChecked(),
-            "show_trajectory_trails": self.chk_show_trajectories.isChecked(),
-            "show_id_labels": self.chk_show_labels.isChecked(),
-            "show_state_text": self.chk_show_state.isChecked(),
-            "show_kalman_uncertainty": self.chk_show_kalman_uncertainty.isChecked(),
-            "show_foreground_mask": self.chk_show_fg.isChecked(),
-            "show_background_model": self.chk_show_bg.isChecked(),
-            "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
-            "trajectory_history_seconds": self.spin_traj_hist.value(),
-            "debug_logging": self.chk_debug_logging.isChecked(),
-            "zoom_factor": self.slider_zoom.value() / 100.0,
-            # === ROI ===
-            "roi_shapes": self.roi_shapes,
-            # === DATASET GENERATION ===
-            "enable_dataset_generation": self.chk_enable_dataset_gen.isChecked(),
-            "dataset_name": self.line_dataset_name.text(),
-            "dataset_class_name": self.line_dataset_class_name.text(),
-            "dataset_output_dir": self.line_dataset_output.text(),
-            "dataset_max_frames": self.spin_dataset_max_frames.value(),
-            "dataset_confidence_threshold": self.spin_dataset_conf_threshold.value(),
-            "dataset_diversity_window": self.spin_dataset_diversity_window.value(),
-            "dataset_include_context": self.chk_dataset_include_context.isChecked(),
-            "dataset_probabilistic_sampling": self.chk_dataset_probabilistic.isChecked(),
-            "metric_low_confidence": self.chk_metric_low_confidence.isChecked(),
-            "metric_count_mismatch": self.chk_metric_count_mismatch.isChecked(),
-            "metric_high_assignment_cost": self.chk_metric_high_assignment_cost.isChecked(),
-            "metric_track_loss": self.chk_metric_track_loss.isChecked(),
-            "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
-            # === INDIVIDUAL ANALYSIS ===
-            "enable_identity_analysis": self.chk_enable_individual_analysis.isChecked(),
-            "identity_method": self.combo_identity_method.currentText()
-            .lower()
-            .replace(" ", "_")
-            .replace("(", "")
-            .replace(")", ""),
-            "identity_crop_size_multiplier": self.spin_identity_crop_multiplier.value(),
-            "identity_crop_min_size": self.spin_identity_crop_min.value(),
-            "identity_crop_max_size": self.spin_identity_crop_max.value(),
-            "color_tag_model_path": self.line_color_tag_model.text(),
-            "color_tag_confidence": self.spin_color_tag_conf.value(),
-            "apriltag_family": self.combo_apriltag_family.currentText(),
-            "apriltag_decimate": self.spin_apriltag_decimate.value(),
-            # === REAL-TIME INDIVIDUAL DATASET ===
-            "enable_individual_dataset": self.chk_enable_individual_dataset.isChecked(),
-            "individual_dataset_name": self.line_individual_dataset_name.text().strip()
-            or "individual_dataset",
-            "individual_dataset_output_dir": self.line_individual_output.text(),
-            "individual_output_format": self.combo_individual_format.currentText().lower(),
-            "individual_save_interval": self.spin_individual_interval.value(),
-            "individual_crop_padding": self.spin_individual_padding.value(),
-        }
+        cfg = {}
+
+        # === PRESET METADATA ===
+        # Add name and description when saving as preset
+        if preset_mode:
+            cfg.update(
+                {
+                    "preset_name": preset_name or "Custom",
+                    "description": preset_description or "User-defined custom preset",
+                }
+            )
+
+        # === FILE MANAGEMENT ===
+        # Skip file paths when saving as preset
+        if not preset_mode:
+            cfg.update(
+                {
+                    "file_path": self.file_line.text(),
+                    "csv_path": self.csv_line.text(),
+                    "video_output_enabled": self.check_video_output.isChecked(),
+                    "video_output_path": self.video_out_line.text(),
+                }
+            )
+
+        cfg.update(
+            {
+                # === SYSTEM PERFORMANCE ===
+                "resize_factor": self.spin_resize.value(),
+                "save_confidence_metrics": self.check_save_confidence.isChecked(),
+                "visualization_free_mode": self.chk_visualization_free.isChecked(),
+                # === DETECTION STRATEGY ===
+                "detection_method": (
+                    "background_subtraction"
+                    if self.combo_detection_method.currentIndex() == 0
+                    else "yolo_obb"
+                ),
+                # === SIZE FILTERING ===
+                "enable_size_filtering": self.chk_size_filtering.isChecked(),
+                "min_object_size_multiplier": self.spin_min_object_size.value(),
+                "max_object_size_multiplier": self.spin_max_object_size.value(),
+                # === IMAGE ENHANCEMENT ===
+                "brightness": self.slider_brightness.value(),
+                "contrast": self.slider_contrast.value() / 100.0,
+                "gamma": self.slider_gamma.value() / 100.0,
+                "dark_on_light_background": self.chk_dark_on_light.isChecked(),
+                # === BACKGROUND SUBTRACTION ===
+                "background_prime_frames": self.spin_bg_prime.value(),
+                "enable_adaptive_background": self.chk_adaptive_bg.isChecked(),
+                "background_learning_rate": self.spin_bg_learning.value(),
+                "subtraction_threshold": self.spin_threshold.value(),
+                # === LIGHTING STABILIZATION ===
+                "enable_lighting_stabilization": self.chk_lighting_stab.isChecked(),
+                "lighting_smooth_factor": self.spin_lighting_smooth.value(),
+                "lighting_median_window": self.spin_lighting_median.value(),
+                # === MORPHOLOGY & NOISE ===
+                "morph_kernel_size": self.spin_morph_size.value(),
+                "min_contour_area": self.spin_min_contour.value(),
+                "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
+                # === ADVANCED SEPARATION ===
+                "enable_conservative_split": self.chk_conservative_split.isChecked(),
+                "conservative_kernel_size": self.spin_conservative_kernel.value(),
+                "conservative_erode_iterations": self.spin_conservative_erode.value(),
+                "merge_area_threshold": self.spin_merge_threshold.value(),
+                "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
+                "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
+                "dilation_iterations": self.spin_dilation_iterations.value(),
+                # === YOLO CONFIGURATION ===
+                "yolo_model_path": yolo_path,
+                "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
+                "yolo_iou_threshold": self.spin_yolo_iou.value(),
+                "yolo_target_classes": yolo_cls,
+            }
+        )
+
+        # === DEVICE-SPECIFIC SETTINGS ===
+        # Skip device selection when saving as preset
+        if not preset_mode:
+            cfg["yolo_device"] = self.combo_device.currentText().split(" ")[0]
+
+        cfg.update(
+            {
+                # TensorRT
+                "enable_tensorrt": self.chk_enable_tensorrt.isChecked(),
+                "tensorrt_max_batch_size": self.spin_tensorrt_batch.value(),
+                # YOLO Batching
+                "enable_yolo_batching": self.chk_enable_yolo_batching.isChecked(),
+                "yolo_batch_size_mode": (
+                    "auto"
+                    if self.combo_yolo_batch_mode.currentIndex() == 0
+                    else "manual"
+                ),
+                "yolo_manual_batch_size": self.spin_yolo_batch_size.value(),
+                # === CORE TRACKING ===
+                "max_targets": self.spin_max_targets.value(),
+                "max_assignment_distance_multiplier": self.spin_max_dist.value(),
+                "recovery_search_distance_multiplier": self.spin_continuity_thresh.value(),
+                "enable_backward_tracking": self.chk_enable_backward.isChecked(),
+                # === KALMAN FILTER ===
+                "kalman_process_noise": self.spin_kalman_noise.value(),
+                "kalman_measurement_noise": self.spin_kalman_meas.value(),
+                "kalman_velocity_damping": self.spin_kalman_damping.value(),
+                "kalman_maturity_age": self.spin_kalman_maturity_age.value(),
+                "kalman_initial_velocity_retention": self.spin_kalman_initial_velocity_retention.value(),
+                "kalman_max_velocity_multiplier": self.spin_kalman_max_velocity.value(),
+                "kalman_longitudinal_noise_multiplier": self.spin_kalman_longitudinal_noise.value(),
+                "kalman_lateral_noise_multiplier": self.spin_kalman_lateral_noise.value(),
+                # === COST FUNCTION WEIGHTS ===
+                "weight_position": self.spin_Wp.value(),
+                "weight_orientation": self.spin_Wo.value(),
+                "weight_area": self.spin_Wa.value(),
+                "weight_aspect_ratio": self.spin_Wasp.value(),
+                "use_mahalanobis_distance": self.chk_use_mahal.isChecked(),
+                # === ASSIGNMENT ALGORITHM ===
+                "enable_greedy_assignment": self.combo_assignment_method.currentIndex()
+                == 1,
+                "enable_spatial_optimization": self.chk_spatial_optimization.isChecked(),
+                # === ORIENTATION & MOTION ===
+                "velocity_threshold": self.spin_velocity.value(),
+                "enable_instant_flip": self.chk_instant_flip.isChecked(),
+                "max_orientation_delta_stopped": self.spin_max_orient.value(),
+                # === TRACK LIFECYCLE ===
+                "lost_frames_threshold": self.spin_lost_thresh.value(),
+                "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
+                "min_detections_to_start": self.spin_min_detections_to_start.value(),
+                "min_detect_frames": self.spin_min_detect.value(),
+                "min_track_frames": self.spin_min_track.value(),
+                # === POST-PROCESSING ===
+                "enable_postprocessing": self.enable_postprocessing.isChecked(),
+                "min_trajectory_length": self.spin_min_trajectory_length.value(),
+                "max_velocity_break": self.spin_max_velocity_break.value(),
+                "max_distance_break_multiplier": self.spin_max_distance_break.value(),
+                "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
+                "interpolation_method": self.combo_interpolation_method.currentText(),
+                "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
+                "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
+                # === REAL-TIME ANALYTICS ===
+                "enable_histograms": self.enable_histograms.isChecked(),
+                "histogram_history_frames": self.spin_histogram_history.value(),
+                # === VISUALIZATION OVERLAYS ===
+                "show_track_markers": self.chk_show_circles.isChecked(),
+                "show_orientation_lines": self.chk_show_orientation.isChecked(),
+                "show_trajectory_trails": self.chk_show_trajectories.isChecked(),
+                "show_id_labels": self.chk_show_labels.isChecked(),
+                "show_state_text": self.chk_show_state.isChecked(),
+                "show_kalman_uncertainty": self.chk_show_kalman_uncertainty.isChecked(),
+                "show_foreground_mask": self.chk_show_fg.isChecked(),
+                "show_background_model": self.chk_show_bg.isChecked(),
+                "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
+                "trajectory_history_seconds": self.spin_traj_hist.value(),
+                "debug_logging": self.chk_debug_logging.isChecked(),
+                "zoom_factor": self.slider_zoom.value() / 100.0,
+            }
+        )
+
+        # === ROI ===
+        # Skip ROI when saving as preset
+        if not preset_mode:
+            cfg["roi_shapes"] = self.roi_shapes
+
+        cfg.update(
+            {
+                # === DATASET GENERATION ===
+                "enable_dataset_generation": self.chk_enable_dataset_gen.isChecked(),
+                "dataset_name": self.line_dataset_name.text(),
+                "dataset_class_name": self.line_dataset_class_name.text(),
+                "dataset_max_frames": self.spin_dataset_max_frames.value(),
+            }
+        )
+
+        # Dataset output directory (device-specific)
+        if not preset_mode:
+            cfg["dataset_output_dir"] = self.line_dataset_output.text()
+
+        cfg.update(
+            {
+                "dataset_confidence_threshold": self.spin_dataset_conf_threshold.value(),
+                "dataset_diversity_window": self.spin_dataset_diversity_window.value(),
+                "dataset_include_context": self.chk_dataset_include_context.isChecked(),
+                "dataset_probabilistic_sampling": self.chk_dataset_probabilistic.isChecked(),
+                "metric_low_confidence": self.chk_metric_low_confidence.isChecked(),
+                "metric_count_mismatch": self.chk_metric_count_mismatch.isChecked(),
+                "metric_high_assignment_cost": self.chk_metric_high_assignment_cost.isChecked(),
+                "metric_track_loss": self.chk_metric_track_loss.isChecked(),
+                "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
+                # === INDIVIDUAL ANALYSIS ===
+                "enable_identity_analysis": self.chk_enable_individual_analysis.isChecked(),
+                "identity_method": self.combo_identity_method.currentText()
+                .lower()
+                .replace(" ", "_")
+                .replace("(", "")
+                .replace(")", ""),
+                "identity_crop_size_multiplier": self.spin_identity_crop_multiplier.value(),
+                "identity_crop_min_size": self.spin_identity_crop_min.value(),
+                "identity_crop_max_size": self.spin_identity_crop_max.value(),
+                "color_tag_confidence": self.spin_color_tag_conf.value(),
+            }
+        )
+
+        # Model path (device-specific)
+        if not preset_mode:
+            cfg["color_tag_model_path"] = self.line_color_tag_model.text()
+
+        cfg.update(
+            {
+                "apriltag_family": self.combo_apriltag_family.currentText(),
+                "apriltag_decimate": self.spin_apriltag_decimate.value(),
+                # === REAL-TIME INDIVIDUAL DATASET ===
+                "enable_individual_dataset": self.chk_enable_individual_dataset.isChecked(),
+                "individual_dataset_name": self.line_individual_dataset_name.text().strip()
+                or "individual_dataset",
+                "individual_output_format": self.combo_individual_format.currentText().lower(),
+            }
+        )
+
+        # Individual output directory (device-specific)
+        if not preset_mode:
+            cfg["individual_dataset_output_dir"] = self.line_individual_output.text()
+
+        cfg.update(
+            {
+                "individual_save_interval": self.spin_individual_interval.value(),
+                "individual_crop_padding": self.spin_individual_padding.value(),
+            }
+        )
+
+        # If preset mode with path provided, save directly
+        if preset_mode and preset_path:
+            try:
+                os.makedirs(os.path.dirname(preset_path), exist_ok=True)
+                with open(preset_path, "w") as f:
+                    json.dump(cfg, f, indent=2)
+                logger.info(f"Saved preset to {preset_path}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to save preset: {e}")
+                QMessageBox.critical(self, "Save Error", f"Failed to save preset:\n{e}")
+                return False
 
         # Determine save path: video-based if video selected, otherwise ask user
         video_path = self.file_line.text()
@@ -6853,6 +7022,241 @@ class MainWindow(QMainWindow):
         """Invalidate ROI display cache when ROI changes."""
         self._roi_masked_cache.clear()
         self._roi_hash = self._get_roi_hash()
+
+    # =========================================================================
+    # PRESET MANAGEMENT
+    # =========================================================================
+
+    def _get_presets_dir(self):
+        """Get the presets directory path."""
+        # Get the repo root (3 levels up from this file)
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        )
+        presets_dir = os.path.join(repo_root, "configs")
+        return presets_dir
+
+    def _on_preset_selection_changed(self, index):
+        """Update description label when preset selection changes."""
+        filepath = self.combo_presets.currentData()
+        if not filepath or not os.path.exists(filepath):
+            self.preset_description_label.setVisible(False)
+            return
+
+        try:
+            with open(filepath, "r") as f:
+                cfg = json.load(f)
+
+            description = cfg.get("description", "")
+            if description:
+                self.preset_description_label.setText(f"📋 {description}")
+                self.preset_description_label.setVisible(True)
+            else:
+                self.preset_description_label.setVisible(False)
+        except:
+            self.preset_description_label.setVisible(False)
+
+    def _populate_preset_combo(self):
+        """Populate the preset combo box by auto-scanning configs folder."""
+        presets_dir = self._get_presets_dir()
+
+        if not os.path.exists(presets_dir):
+            return
+
+        presets = []
+        custom_preset = None
+
+        # Scan all JSON files in configs directory
+        for filename in sorted(os.listdir(presets_dir)):
+            if not filename.endswith(".json"):
+                continue
+
+            filepath = os.path.join(presets_dir, filename)
+
+            try:
+                with open(filepath, "r") as f:
+                    cfg = json.load(f)
+
+                # Get preset name from file, fallback to filename
+                preset_name = cfg.get(
+                    "preset_name",
+                    filename.replace(".json", "").replace("_", " ").title(),
+                )
+
+                # Custom preset gets special treatment (star marker, shown first)
+                if filename == "custom.json":
+                    custom_preset = (f"{preset_name} ★", filepath)
+                else:
+                    presets.append((preset_name, filepath))
+            except Exception as e:
+                logger.warning(f"Failed to load preset {filename}: {e}")
+                continue
+
+        # Populate combo box (custom first, then others alphabetically)
+        self.combo_presets.clear()
+        if custom_preset:
+            self.combo_presets.addItem(custom_preset[0], custom_preset[1])
+        for name, filepath in presets:
+            self.combo_presets.addItem(name, filepath)
+
+    def _load_selected_preset(self):
+        """Load the currently selected preset."""
+        filepath = self.combo_presets.currentData()
+        if not filepath or not os.path.exists(filepath):
+            QMessageBox.warning(
+                self, "Preset Not Found", f"Preset file not found: {filepath}"
+            )
+            return
+
+        # Confirm if current settings differ significantly
+        reply = QMessageBox.question(
+            self,
+            "Load Preset",
+            f"Load preset: {self.combo_presets.currentText()}?\n\n"
+            "This will replace your current parameter values.\n"
+            "(Video-specific configs will still override presets when loading videos)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if reply == QMessageBox.Yes:
+            # Use existing config loader in preset mode
+            self._load_config_from_file(filepath, preset_mode=True)
+
+            # Update status
+            preset_name = self.combo_presets.currentText()
+            self.preset_status_label.setText(f"✓ Loaded: {preset_name}")
+            self.preset_status_label.setStyleSheet(
+                "color: #4a9eff; font-style: italic; font-size: 10px;"
+            )
+            logger.info(f"Loaded preset: {preset_name} from {filepath}")
+
+    def _save_custom_preset(self):
+        """Save current settings as custom preset with user-defined name and description."""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QTextEdit
+
+        # Create dialog for preset metadata
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Save Preset")
+        dialog.setModal(True)
+        dialog_layout = QVBoxLayout(dialog)
+
+        # Name input
+        name_label = QLabel("Preset Name (e.g., 'Danio rerio (Zebrafish)'):")
+        name_label.setStyleSheet("color: #fff; font-weight: bold;")
+        name_input = QLineEdit()
+        name_input.setPlaceholderText("Scientific Name (Common Name)")
+        name_input.setText("Custom")
+
+        # Description input
+        desc_label = QLabel("Description (optional):")
+        desc_label.setStyleSheet("color: #fff; font-weight: bold; margin-top: 10px;")
+        desc_input = QTextEdit()
+        desc_input.setPlaceholderText(
+            "Describe the optimizations or use case for this preset..."
+        )
+        desc_input.setMaximumHeight(80)
+
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+
+        dialog_layout.addWidget(name_label)
+        dialog_layout.addWidget(name_input)
+        dialog_layout.addWidget(desc_label)
+        dialog_layout.addWidget(desc_input)
+        dialog_layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        preset_name = name_input.text().strip() or "Custom"
+        description = desc_input.toPlainText().strip() or "User-defined custom preset"
+
+        # Ask user for filename
+        presets_dir = self._get_presets_dir()
+        os.makedirs(presets_dir, exist_ok=True)
+
+        # Generate suggested filename from preset name
+        suggested_filename = preset_name.lower()
+        suggested_filename = suggested_filename.split("(")[
+            0
+        ].strip()  # Remove common name part
+        suggested_filename = suggested_filename.replace(" ", "_").replace(".", "")
+        suggested_filename = "".join(
+            c for c in suggested_filename if c.isalnum() or c == "_"
+        )
+        suggested_filename = suggested_filename or "custom"
+        suggested_path = os.path.join(presets_dir, f"{suggested_filename}.json")
+
+        preset_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Preset As", suggested_path, "JSON Files (*.json)"
+        )
+
+        if not preset_path:
+            return
+
+        custom_path = preset_path
+
+        # Use existing config saver in preset mode with custom metadata
+        success = self.save_config(
+            preset_mode=True,
+            preset_path=custom_path,
+            preset_name=preset_name,
+            preset_description=description,
+        )
+
+        if success:
+            # Refresh combo box to show new preset
+            self._populate_preset_combo()
+            # Select the newly saved preset
+            for i in range(self.combo_presets.count()):
+                item_path = self.combo_presets.itemData(i)
+                if item_path == custom_path:
+                    self.combo_presets.setCurrentIndex(i)
+                    break
+
+            self.preset_status_label.setText(f"✓ Saved: {preset_name}")
+            self.preset_status_label.setStyleSheet(
+                "color: #4a9eff; font-style: italic; font-size: 10px;"
+            )
+
+            filename = os.path.basename(custom_path)
+            is_custom = filename == "custom.json"
+
+            QMessageBox.information(
+                self,
+                "Preset Saved",
+                f"Your settings have been saved as:\n{preset_name}\n\n"
+                f"Location: {custom_path}\n\n"
+                + (
+                    "This preset will be loaded automatically on startup and will appear\n"
+                    "at the top of the preset selector with a ★ indicator."
+                    if is_custom
+                    else "This preset is now available in the preset selector."
+                ),
+            )
+
+    def _load_default_preset_on_startup(self):
+        """Load default preset on application startup."""
+        presets_dir = self._get_presets_dir()
+
+        # Try custom preset first
+        custom_path = os.path.join(presets_dir, "custom.json")
+        if os.path.exists(custom_path):
+            logger.info("Loading custom preset on startup")
+            self._load_config_from_file(custom_path, preset_mode=True)
+            return
+
+        # Fall back to default preset
+        default_path = os.path.join(presets_dir, "default.json")
+        if os.path.exists(default_path):
+            logger.info("Loading default preset on startup")
+            self._load_config_from_file(default_path, preset_mode=True)
+            return
+
+        logger.info("No preset found, using hardcoded defaults")
 
     # =========================================================================
     # ROI OPTIMIZATION AND VIDEO CROPPING
