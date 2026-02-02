@@ -26,9 +26,7 @@ dependencies:
   - setuptools
   - wheel
   
-  # Install additional packages via pip
+  # Install uv for fast pip package installation
+  # After creating environment, run: uv pip install -v -r requirements-minimal.txt
   - pip:
-    - torch
-    - torchvision
-    - ultralytics  # YOLO models
-    - -e .
+    - uv

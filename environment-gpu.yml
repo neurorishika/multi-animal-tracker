@@ -44,47 +44,8 @@ dependencies:
   - flake8
   
   # Install GPU-accelerated packages via pip
-  # For faster installation, run: pip install uv && uv pip install -r requirements-gpu.txt
+  # Step 1: mamba/conda installs core packages + uv
+  # Step 2: uv installs GPU packages from requirements-gpu.txt (much faster)
   - pip:
-    # Verbose output for debugging installation issues
-    - -v
-    # PyTorch with CUDA support (use appropriate CUDA version)
-    # - --extra-index-url https://download.pytorch.org/whl/cu126
-    # - --extra-index-url https://download.pytorch.org/whl/cu128
-    - --extra-index-url https://download.pytorch.org/whl/cu130
-    # - --extra-index-url https://download.pytorch.org/whl/cpu
-    - torch
-    - torchvision
-    - torchaudio
-    # Additional tools
-    - timm
-    - pupil-apriltags
-    - ultralytics
-    # TensorRT - NVIDIA inference optimization for YOLO acceleration
-    # See: https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html
-    # Default: CUDA 13.0 (cu13) - change suffix if you have a different CUDA version
-    - tensorrt
-    - tensorrt-cu13
-    - tensorrt-cu13-bindings
-    - tensorrt-cu13-libs
-    # For CUDA 12.x, replace cu13 with cu12 above:
-    # - tensorrt
-    # - tensorrt-cu12
-    # - tensorrt-cu12-bindings
-    # - tensorrt-cu12-libs
-    # For CUDA 11.x, replace cu13 with cu11 above:
-    # - tensorrt
-    # - tensorrt-cu11
-    # - tensorrt-cu11-bindings
-    # - tensorrt-cu11-libs
-    - -e .
-    # Install cupy for GPU-accelerated array computations
-    # Using prerelease for CUDA 13 compatibility fixes
-    - --pre
-    - -f https://pip.cupy.dev/pre
-    - cupy-cuda13x
-    # - cupy-cuda12x
-    # - cupy-cuda11x
-    # Fast package installer (optional, for manual reinstalls)
-    - uv
+    - uv  # Fast package installer for step 2
     

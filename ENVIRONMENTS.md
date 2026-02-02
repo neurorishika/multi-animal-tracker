@@ -2,9 +2,26 @@
 
 This directory contains multiple environment configuration files for different use cases. Choose the one that best fits your needs.
 
+## Quick Start
+
+All environments use a **two-step installation** for maximum speed:
+
+```bash
+# Step 1: Create conda environment with mamba (fast)
+mamba env create -f environment.yml
+
+# Step 2: Activate and install pip packages with uv (very fast)
+conda activate multi-animal-tracker-base
+uv pip install -v -r requirements.txt
+```
+
+> **Why two steps?** Mamba handles conda packages 10-100x faster than conda. UV handles pip packages 10-100x faster than pip. Combined, installation that took 30+ minutes now takes ~3 minutes.
+
+---
+
 ## Available Environments
 
-### 1. `environment.yml` - Standard Full Installation
+### 1. `environment.yml` + `requirements.txt` - Standard Full Installation
 **Recommended for**: Most users
 
 - Full feature set with all analysis tools
@@ -14,13 +31,14 @@ This directory contains multiple environment configuration files for different u
 
 **Installation**:
 ```bash
-conda env create -f environment.yml
-conda activate multi-animal-tracker
+mamba env create -f environment.yml
+conda activate multi-animal-tracker-base
+uv pip install -v -r requirements.txt
 ```
 
 ---
 
-### 2. `environment-minimal.yml` - Lightweight Installation
+### 2. `environment-minimal.yml` + `requirements-minimal.txt` - Lightweight Installation
 **Recommended for**: First-time users, limited disk space, production deployments
 
 - Minimal dependencies
@@ -30,29 +48,38 @@ conda activate multi-animal-tracker
 
 **Installation**:
 ```bash
-conda env create -f environment-minimal.yml
+mamba env create -f environment-minimal.yml
 conda activate multi-animal-tracker-minimal
+uv pip install -v -r requirements-minimal.txt
 ```
 
 ---
 
-### 3. `environment-gpu.yml` - GPU-Accelerated
+### 3. `environment-gpu.yml` + `requirements-gpu.txt` - GPU-Accelerated
 **Recommended for**: Users with NVIDIA GPUs, high-performance requirements
 
 - Includes CuPy for GPU-accelerated background processing (8-30x speedup)
+- TensorRT for accelerated YOLO inference (2-5x speedup)
 - CUDA toolkit and cuDNN
 - All features from standard environment
 - Automatic CPU fallback if GPU unavailable
 
 **Requirements**:
 - NVIDIA GPU with CUDA Compute Capability 3.5+
-- CUDA Toolkit 11.8+ installed
+- CUDA Toolkit 11.x, 12.x, or 13.x installed
 
 **Installation**:
 ```bash
-conda env create -f environment-gpu.yml
+mamba env create -f environment-gpu.yml
 conda activate multi-animal-tracker-gpu
+uv pip install -v -r requirements-gpu.txt
 ```
+
+**CUDA Version Configuration**:
+Edit `requirements-gpu.txt` and uncomment the appropriate lines:
+- CUDA 13.x: `cu130` (default)
+- CUDA 12.x: `cu126` or `cu128`
+- CUDA 11.x: `cu118`
 
 **Enable GPU in config**:
 ```json
@@ -68,12 +95,17 @@ You can have multiple environments installed simultaneously:
 
 ```bash
 # Create all environments
-conda env create -f environment.yml
-conda env create -f environment-minimal.yml
-conda env create -f environment-gpu.yml
+mamba env create -f environment.yml
+mamba env create -f environment-minimal.yml
+mamba env create -f environment-gpu.yml
+
+# Install pip packages for each
+conda activate multi-animal-tracker-base && uv pip install -v -r requirements.txt
+conda activate multi-animal-tracker-minimal && uv pip install -v -r requirements-minimal.txt
+conda activate multi-animal-tracker-gpu && uv pip install -v -r requirements-gpu.txt
 
 # Switch between them
-conda activate multi-animal-tracker          # Standard
+conda activate multi-animal-tracker-base     # Standard
 conda activate multi-animal-tracker-minimal  # Minimal
 conda activate multi-animal-tracker-gpu      # GPU
 
@@ -85,26 +117,48 @@ conda env list
 
 ## Updating Environments
 
-### Update existing environment
+### Update pip packages only (fast)
 ```bash
-# Activate environment
-conda activate multi-animal-tracker
+conda activate multi-animal-tracker-base
+uv pip install -v -r requirements.txt --upgrade
+```
 
-# Update from file
-conda env update -f environment.yml --prune
-
-# Reinstall package
-pip install -e . --upgrade
+### Update conda packages
+```bash
+conda activate multi-animal-tracker-base
+mamba update --all
 ```
 
 ### Recreate from scratch
 ```bash
 # Remove old environment
-conda env remove -n multi-animal-tracker
+conda env remove -n multi-animal-tracker-base
 
 # Create new one
-conda env create -f environment.yml
+mamba env create -f environment.yml
+conda activate multi-animal-tracker-base
+uv pip install -v -r requirements.txt
 ```
+
+---
+
+## Installation Without Mamba/UV (Slower Alternative)
+
+If you don't have mamba or uv installed:
+
+```bash
+# Standard conda (slower)
+conda env create -f environment.yml
+conda activate multi-animal-tracker-base
+pip install -r requirements.txt
+```
+
+To install mamba (recommended):
+```bash
+conda install -c conda-forge mamba
+```
+
+UV is automatically installed as part of each environment.
 
 ---
 

@@ -19,37 +19,51 @@ A real-time multi-animal tracking system with support for both background subtra
 
 ## Installation
 
-### Using Conda (Recommended)
+### Quick Install (Recommended)
+
+We use a two-step installation for maximum speed: **mamba** for conda packages, **uv** for pip packages.
 
 ```bash
 # Clone the repository
 git clone https://github.com/neurorishika/multi-animal-tracker.git
 cd multi-animal-tracker
 
-# Create and activate conda environment
-conda env create -f environment.yml
-conda activate multi-animal-tracker
+# Step 1: Create conda environment (use mamba for 10-100x faster install)
+mamba env create -f environment.yml
+conda activate multi-animal-tracker-base
 
-# Install the package
-pip install -e .
+# Step 2: Install pip packages (uv is 10-100x faster than pip)
+uv pip install -v -r requirements.txt
 ```
 
-### Manual Installation
+### GPU-Accelerated Install (NVIDIA GPUs)
+
+For 8-30x faster background subtraction and 2-5x faster YOLO inference:
 
 ```bash
-# Create a new conda environment
-conda create -n multi-animal-tracker python=3.11
-conda activate multi-animal-tracker
+mamba env create -f environment-gpu.yml
+conda activate multi-animal-tracker-gpu
+uv pip install -v -r requirements-gpu.txt
+```
 
-# Install core dependencies
-conda install -c conda-forge opencv numpy scipy matplotlib pyside2
+> **Note**: Edit `requirements-gpu.txt` to match your CUDA version (11.x, 12.x, or 13.x)
 
-# For YOLO detection (optional)
-conda install pytorch torchvision -c pytorch
-pip install ultralytics
+### Minimal Install
 
-# Install the package
-pip install -e .
+For lightweight deployments with minimal dependencies:
+
+```bash
+mamba env create -f environment-minimal.yml
+conda activate multi-animal-tracker-minimal
+uv pip install -v -r requirements-minimal.txt
+```
+
+📖 **See [ENVIRONMENTS.md](ENVIRONMENTS.md) for detailed installation options, troubleshooting, and platform-specific notes.**
+
+### Installing Mamba (if not already installed)
+
+```bash
+conda install -c conda-forge mamba
 ```
 
 ## Quick Start

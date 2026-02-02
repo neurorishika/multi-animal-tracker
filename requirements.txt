@@ -1,0 +1,17 @@
+# Standard pip packages for multi-animal-tracker
+# Install with: uv pip install -v -r requirements.txt
+#
+# For GPU-accelerated version, use requirements-gpu.txt instead
+
+# PyTorch (CPU version)
+# For GPU support, use requirements-gpu.txt with appropriate CUDA index
+torch
+torchvision
+
+# Computer vision & deep learning
+timm
+pupil-apriltags
+ultralytics
+
+# Install this package in editable mode
+-e .

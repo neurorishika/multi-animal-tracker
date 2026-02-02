@@ -44,15 +44,7 @@ dependencies:
   - black
   - flake8
   
-  # Install deep learning and additional packages via pip
+  # Install uv for fast pip package installation
+  # After creating environment, run: uv pip install -v -r requirements.txt
   - pip:
-    # PyTorch (CPU version - change for GPU)
-    - torch
-    - torchvision
-    # Additional ML utilities
-    - timm
-    - pupil-apriltags
-    # YOLO models for object detection
-    - ultralytics
-    # Install package in editable mode
-    - -e .
+    - uv
