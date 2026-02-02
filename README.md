@@ -113,22 +113,83 @@ conda activate multi-animal-tracker-minimal
 uv pip install -v -r requirements-minimal.txt
 ```
 
+### Apple Silicon (M1/M2/M3/M4)
+
+For macOS with Apple Silicon chips using Metal Performance Shaders:
+
+```bash
+mamba env create -f environment-mps.yml
+conda activate multi-animal-tracker-mps
+uv pip install -v -r requirements-mps.txt
+```
+
+**Features:**
+- ✅ YOLO inference with MPS GPU acceleration (~2-3× faster than CPU)
+- ✅ All core tracking features
+- ❌ No CuPy (background subtraction remains CPU-based with Numba)
+- ❌ No TensorRT (NVIDIA-only)
+
+**Performance:** YOLO ~30 FPS on M1 Pro, background subtraction ~60 FPS
+
+### AMD GPUs (ROCm)
+
+For AMD Radeon/Instinct GPUs with ROCm support (Linux only):
+
+```bash
+# Prerequisites: Install ROCm 6.0+ system-wide first
+# https://rocm.docs.amd.com/projects/install-on-linux/en/latest/
+
+mamba env create -f environment-rocm.yml
+conda activate multi-animal-tracker-rocm
+uv pip install -v -r requirements-rocm.txt
+```
+
+**Important:** Edit `requirements-rocm.txt` to match your ROCm version (6.0, 6.1, 6.2)
+
+**Features:**
+- ✅ YOLO inference with ROCm GPU acceleration
+- ✅ Background subtraction with CuPy-ROCm (experimental)
+- ❌ No TensorRT (NVIDIA-only)
+- ⚠️ Linux only (Ubuntu 22.04/24.04, RHEL 8/9)
+
+**Supported GPUs:** Radeon RX 5000+, Radeon Pro, Instinct MI series
+
 ### Using Makefile (Alternative)
 
 ```bash
 # View all available commands
 make help
 
-# Standard environment
+# Standard environment (CPU)
 make setup              # Step 1: Create env
 conda activate multi-animal-tracker-base
 make install            # Step 2: Install packages
 
-# GPU environment
+# NVIDIA GPU environment
 make setup-gpu
 conda activate multi-animal-tracker-gpu
 make install-gpu
+
+# Apple Silicon environment
+make setup-mps
+conda activate multi-animal-tracker-mps
+make install-mps
+
+# AMD GPU environment
+make setup-rocm
+conda activate multi-animal-tracker-rocm
+make install-rocm
 ```
+
+### Platform Comparison
+
+| Platform | Environment | GPU Acceleration | YOLO Speed | BG Subtraction Speed |
+|----------|-------------|------------------|------------|----------------------|
+| **NVIDIA GPU** | `setup-gpu` | CUDA + TensorRT + CuPy | 85 FPS | 400 FPS |
+| **Apple Silicon** | `setup-mps` | Metal (MPS) | 30 FPS | 60 FPS (CPU) |
+| **AMD GPU** | `setup-rocm` | ROCm + CuPy-ROCm | 40-60 FPS | 200-300 FPS |
+| **CPU Intel/AMD** | `setup` | Numba | 4 FPS | 60 FPS |
+| **Minimal** | `setup-minimal` | None | 4 FPS | 45 FPS |
 
 ### Troubleshooting Installation
 

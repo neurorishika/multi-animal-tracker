@@ -1,0 +1,49 @@
+name: multi-animal-tracker-mps
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.13
+  
+  # Scientific computing stack
+  - numpy
+  - scipy
+  - pandas
+  - jupyter
+  - ipykernel
+  - ipywidgets
+  - einops
+  - umap-learn
+  - scikit-learn
+  
+  # Visualization
+  - matplotlib
+  - seaborn
+  - bokeh
+  
+  # Computer vision
+  - opencv
+  - scikit-image
+  - pillow
+  
+  # Efficiency - CPU acceleration (Metal Performance Shaders via PyTorch)
+  - numba
+
+  # GUI framework (Qt6 - excellent Apple Silicon support)
+  - pyside6>=6.6
+  - qt6-main
+  
+  # Development tools
+  - pip
+  - setuptools
+  - wheel
+  - pytest
+  - black
+  - flake8
+  
+  # Install Apple Silicon optimized packages via pip
+  # Step 1: mamba/conda installs core packages + uv
+  # Step 2: uv installs MPS-optimized packages from requirements-mps.txt
+  - pip:
+    - uv  # Fast package installer for step 2

@@ -55,7 +55,7 @@ uv pip install -v -r requirements-minimal.txt
 
 ---
 
-### 3. `environment-gpu.yml` + `requirements-gpu.txt` - GPU-Accelerated
+### 3. `environment-gpu.yml` + `requirements-gpu.txt` - NVIDIA GPU Accelerated
 **Recommended for**: Users with NVIDIA GPUs, high-performance requirements
 
 - Includes CuPy for GPU-accelerated background processing (8-30x speedup)
@@ -85,9 +85,112 @@ Edit `requirements-gpu.txt` and uncomment the appropriate lines:
 ```json
 {
   "ENABLE_GPU_BACKGROUND": true,
-  "GPU_DEVICE_ID": 0
+  "GPU_DEVICE_ID": 0,
+  "ENABLE_TENSORRT": true,
+  "TENSORRT_MAX_BATCH_SIZE": 16
 }
 ```
+
+---
+
+### 4. `environment-mps.yml` + `requirements-mps.txt` - Apple Silicon (M1/M2/M3/M4)
+**Recommended for**: macOS with Apple Silicon chips
+
+- Metal Performance Shaders (MPS) GPU acceleration via PyTorch
+- Optimized for ARM64 architecture      # NVIDIA
+mamba env create -f environment-mps.yml      # Apple Silicon
+mamba env create -f environment-rocm.yml     # AMD
+
+# Install pip packages for each (after activating)
+mamba activate multi-animal-tracker-base && uv pip install -v -r requirements.txt
+mamba activate multi-animal-tracker-minimal && uv pip install -v -r requirements-minimal.txt
+mamba activate multi-animal-tracker-gpu && uv pip install -v -r requirements-gpu.txt
+mamba activate multi-animal-tracker-mps && uv pip install -v -r requirements-mps.txt
+mamba activate multi-animal-tracker-rocm && uv pip install -v -r requirements-rocm.txt
+
+# Switch between them
+mamba activate multi-animal-tracker-base     # Standard (CPU)
+mamba activate multi-animal-tracker-minimal  # Minimal
+mamba activate multi-animal-tracker-gpu      # NVIDIA GPU
+mamba activate multi-animal-tracker-mps      # Apple Silicon
+mamba activate multi-animal-tracker-rocm     # AMD
+mamba env create -f environment-mps.yml
+mamba activate multi-animal-tracker-mps
+uv pip install -v -r requirements-mps.txt
+```
+
+**Performance**: 
+- YOLO inference: ~2-3× faster than CPU (~30 FPS on M1 Pro)
+- Background subtraction: CPU-based (~60 FPS with Numba)
+
+**Enable MPS**:
+MPS is automatically detected and used by PyTorch. No configuration needed.
+
+---
+
+### 5. `environment-rocm.yml` + `requirements-rocm.txt` - AMD GPU (ROCm)
+**Recommended for**: Users with AMD Radeon/Instinct GPUs on Linux
+
+- ROCm GPU acceleration for YOLO inference
+- CuPy-ROCm for GPU-accelerated background processing (experimental)
+- All features from standard environment
+- Linux only (Ubuntu 22.04/24.04, RHEL 8/9, SLES 15)
+
+**Requirements**:
+- AMD GPU: Radeon RX 5000+, Radeon Pro, Instinct MI series
+- ROCm 6.0+ installed system-wide
+- Linux only
+
+**Pre-Installation**: Install ROCm first
+```bash
+# See: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/
+# Example for Ubuntu 22.04:
+sudo apt-get install rocm-hip-runtime rocm-smi-lib
+
+# Verify installation
+rocm-smi
+```
+
+**Installation**:
+```bash
+mamba env create -f environment-rocm.yml
+mamba activate multi-animal-tracker-rocm
+uv pip install -v -r requirements-rocm.txt
+```
+
+**ROCm Version Configuration**:
+Edit `requirements-rocm.txt` and uncomment the appropriate lines:
+- ROCm 6.2: `rocm6.2` (default, latest)
+- ROCm 6.1: `rocm6.1`
+- ROCm 6.0: `rocm6.0`
+- ROCm 5.7: `rocm5.7` (older)
+
+**Enable GPU in config**:
+```json
+{
+  "ENABLE_GPU_BACKGROUND": true,
+  "GPU_DEVICE_ID": 0,
+  "YOLO_DEVICE": "cuda:0"
+}
+```
+
+**Performance**:
+- YOLO inference: ~40-60 FPS (close to CUDA performance)
+- Background subtraction: ~200-300 FPS with CuPy-ROCm (experimental)
+
+**Note**: CuPy-ROCm is experimental and may have compatibility issues. Falls back to CPU if errors occur.
+
+---
+
+## Environment Comparison Table
+
+| Environment | Size | Platform | YOLO FPS | BG Sub FPS | Use Case |
+|-------------|------|----------|----------|------------|----------|
+| **standard** | ~5 GB | All | 4 | 60 | General use, development |
+| **minimal** | ~2 GB | All | 4 | 45 | Production, limited space |
+| **gpu** | ~8 GB | NVIDIA + Linux/Win | 85 | 400 | High performance NVIDIA |
+| **mps** | ~5 GB | Apple Silicon + macOS | 30 | 60 | Apple M1/M2/M3/M4 |
+| **rocm** | ~7 GB | AMD + Linux | 40-60 | 200-300 | AMD Radeon/Instinct |
 
 ## Switching Environments
 
@@ -158,23 +261,73 @@ To install mamba (recommended):
 conda install -c conda-forge mamba
 ```
 
-UV is automatically installed as part of each environment.
-
----
-
-## Platform-Specific Notes
-
-### macOS (Apple Silicon)
-- GPU environment NOT supported (no CUDA on M1/M2/M3)
-- Use `environment.yml` or `environment-minimal.yml`
+UV is aut
+**Apple Silicon (M1/M2/M3/M4)**:
+- ✅ Use `environment-mps.yml` for GPU-accelerated YOLO
+- ✅ MPS backend provides 2-3× YOLO speedup
+- ❌ No CUDA/CuPy (background subtraction uses CPU)
 - Automatic ARM64 optimization via conda
 
+**Intel Macs**:
+- Use `environment.yml` or `environment-minimal.yml`
+- CPU-only acceleration via Numba
+
 ### Linux
-- All environments fully supported
-- For GPU: Install NVIDIA drivers first
+**NVIDIA GPU**:
+- ✅ Use `environment-gpu.yml` (best performance)
+- Install NVIDIA drivers first:
   ```bash
   sudo apt-get install nvidia-driver-535  # Or latest
   ```
+- Supports CUDA 11.x, 12.x, 13.x
+
+**AMD GPU**:
+- ✅ Use `environment-rocm.yml` (ROCm support)
+- Install ROCm 6.0+ first:
+  ```bash
+  # See: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/
+  sudo apt-get install rocm-hip-runtime rocm-smi-lib
+  ```
+- Ubuntu 22.04/24.04, RHEL 8/9, SLES 15 supported
+- Supported GPUs: Radeon RX 5000+, Instinct MI series
+
+**Intel/AMD CPU**:
+- Use `environment.yml` or `environment-minimal.yml`
+- Numba JIT provides good CPU performance
+
+### Windows
+**NVIDIA GPU**:
+- ✅ Use `environment-gpu.yml`
+- Install CUDA Toolkit from NVIDIA first
+- Use Anaconda Prompt (not PowerShell/CMD)
+
+**AMD GPU**:
+- ❌ ROCm not officially supported on Windows
+- Use `environment.yml` (CPU-only)
+
+1. **NVIDIA GPU (Linux/Windows)**: Use `environment-gpu.yml` for 8-30× speedup
+2. **Apple Silicon (macOS)**: Use `environment-mps.yml` for 2-3× YOLO speedup
+3. **AMD GPU (Linux)**: Use `environment-rocm.yml` for GPU acceleration
+4. **CPU-only systems**: Use `environment.yml` (standard) with Numba optimization
+5. **Limited resources**: Use `environment-minimal.yml` (smaller footprint)
+6. **Development**: Use `environment.yml` + install dev dependencies
+
+### Which Environment Should I Choose?
+
+**Decision Tree:**
+1. Do you have a GPU?
+   - **NVIDIA** → `environment-gpu.yml` (best performance)
+   - **AMD** → `environment-rocm.yml` (Linux only)
+   - **Apple Silicon** → `environment-mps.yml` (macOS only)
+   - **No GPU/Intel GPU** → `environment.yml`
+
+2. Do you need all features?
+   - **Yes** → Use appropriate GPU environment or `environment.yml`
+   - **No** → `environment-minimal.yml` (smaller, faster install)
+
+3. Are you developing/analyzing?
+   - **Yes** → `environment.yml` or `environment-gpu.yml`
+   - **No** → `environment-minimal.yml`
 
 ### Windows
 - All environments supported

@@ -1,0 +1,62 @@
+# AMD ROCm GPU-accelerated packages for multi-animal-tracker
+# Install with: uv pip install -v -r requirements-rocm.txt
+#
+# PREREQUISITES:
+# - AMD GPU: Radeon RX/Pro (Polaris+), Instinct MI series
+# - ROCm 6.0+ installed system-wide
+# - Linux only (Ubuntu 22.04/24.04, RHEL 8/9, SLES 15)
+#
+# Check ROCm installation: rocm-smi
+# Verify PyTorch ROCm: python -c "import torch; print(torch.cuda.is_available())"
+
+# PyTorch with ROCm support
+# ROCm VERSION: Uncomment ONE index URL matching your ROCm version
+# Check your ROCm version with: rocm-smi or dpkg -l | grep rocm
+
+# ROCm 6.2 (latest as of 2026)
+--extra-index-url https://download.pytorch.org/whl/rocm6.2
+# ROCm 6.1
+# --extra-index-url https://download.pytorch.org/whl/rocm6.1
+# ROCm 6.0
+# --extra-index-url https://download.pytorch.org/whl/rocm6.0
+# ROCm 5.7 (older)
+# --extra-index-url https://download.pytorch.org/whl/rocm5.7
+
+torch
+torchvision
+torchaudio
+
+# Computer vision & deep learning
+timm
+pupil-apriltags
+ultralytics
+
+# ONNX runtime with DirectML support (works with ROCm via HIP)
+onnx
+onnxslim
+# Note: onnxruntime-rocm is not officially maintained
+# Use CPU version or DirectML on Windows
+onnxruntime
+
+# CuPy with ROCm support (experimental)
+# Provides GPU-accelerated background subtraction
+# ROCm 6.x support
+cupy-rocm-6-0
+# For ROCm 5.x, use: cupy-rocm-5-0
+
+# NOTE: The following are NOT available for AMD GPUs:
+# - TensorRT (NVIDIA only)
+# - CUDA-specific libraries
+#
+# ROCm provides GPU acceleration for:
+# - YOLO inference via PyTorch (ROCm-optimized)
+# - Background subtraction via CuPy-ROCm (experimental)
+# - Neural network training and inference
+#
+# Performance notes:
+# - PyTorch ROCm is well-supported and performs close to CUDA
+# - CuPy-ROCm is experimental, may have compatibility issues
+# - No TensorRT equivalent for ROCm (use PyTorch directly)
+
+# Install this package in editable mode
+-e .
