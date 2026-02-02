@@ -3622,6 +3622,35 @@ class MainWindow(QMainWindow):
                     []
                 )  # Collect (major, minor) axis pairs for statistics
 
+                # Size filtering is based on body area multipliers, not mm²
+                # Calculate pixel areas from reference body size
+                reference_body_size = self.spin_reference_body_size.value()
+                reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+                scaled_body_area = reference_body_area * (resize_f**2)
+
+                if use_size_filtering:
+                    min_size_multiplier = self.spin_min_object_size.value()
+                    max_size_multiplier = self.spin_max_object_size.value()
+                    min_size_px2 = min_size_multiplier * scaled_body_area
+                    max_size_px2 = max_size_multiplier * scaled_body_area
+                    logger.info(f"Background subtraction size filtering ENABLED:")
+                    logger.info(f"  Resize factor: {resize_f:.2f}")
+                    logger.info(f"  Reference body size: {reference_body_size:.1f} px")
+                    logger.info(
+                        f"  Reference body area (original): {reference_body_area:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Reference body area (resized): {scaled_body_area:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Min size multiplier: {min_size_multiplier:.2f}× → {min_size_px2:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Max size multiplier: {max_size_multiplier:.2f}× → {max_size_px2:.1f} px²"
+                    )
+
+                filtered_count = 0
+                detection_num = 0
                 for c in cnts:
                     area = cv2.contourArea(c)
                     if area < min_contour or len(c) < 5:
@@ -3629,9 +3658,18 @@ class MainWindow(QMainWindow):
 
                     # Apply size filtering based on user choice
                     if use_size_filtering:
-                        min_size = self.spin_min_object_size.value()
-                        max_size = self.spin_max_object_size.value()
-                        if not (min_size <= area <= max_size):
+                        # Compare pixel area to size thresholds (already in pixels)
+                        passes_filter = min_size_px2 <= area <= max_size_px2
+
+                        if detection_num < 5:  # Log first 5 detections for debugging
+                            logger.info(
+                                f"  Detection {detection_num+1}: {area:.1f} px² (range: {min_size_px2:.1f}-{max_size_px2:.1f}) - {'PASS' if passes_filter else 'FILTERED OUT'}"
+                            )
+
+                        detection_num += 1
+
+                        if not passes_filter:
+                            filtered_count += 1
                             continue
 
                     # Fit ellipse
@@ -3674,9 +3712,15 @@ class MainWindow(QMainWindow):
                 )
 
                 cap.release()
-                logger.info(
-                    f"Background subtraction test complete: {len(detections)} detections"
-                )
+
+                if use_size_filtering:
+                    logger.info(
+                        f"Background subtraction test complete: {len(detections)} detections passed size filter, {filtered_count} filtered out"
+                    )
+                else:
+                    logger.info(
+                        f"Background subtraction test complete: {len(detections)} detections"
+                    )
 
                 # Update detection statistics (scale dimensions back to original resolution)
                 self._update_detection_stats(detected_dimensions, resize_f)
@@ -3703,6 +3747,22 @@ class MainWindow(QMainWindow):
                     )
 
                 # Build parameters for YOLO
+                # Convert size multipliers to pixel areas for detector (same as full tracking run)
+                reference_body_size = self.spin_reference_body_size.value()
+                reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+                scaled_body_area = reference_body_area * (resize_f**2)
+
+                if use_size_filtering:
+                    min_size_px2 = int(
+                        self.spin_min_object_size.value() * scaled_body_area
+                    )
+                    max_size_px2 = int(
+                        self.spin_max_object_size.value() * scaled_body_area
+                    )
+                else:
+                    min_size_px2 = 0
+                    max_size_px2 = float("inf")
+
                 yolo_params = {
                     "YOLO_MODEL_PATH": (
                         self.yolo_custom_model_line.text()
@@ -3731,8 +3791,8 @@ class MainWindow(QMainWindow):
                     "MAX_TARGETS": self.spin_max_targets.value(),
                     "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
                     "ENABLE_SIZE_FILTERING": use_size_filtering,  # Use the user's choice
-                    "MIN_OBJECT_SIZE": self.spin_min_object_size.value(),
-                    "MAX_OBJECT_SIZE": self.spin_max_object_size.value(),
+                    "MIN_OBJECT_SIZE": min_size_px2,  # Already converted to pixels
+                    "MAX_OBJECT_SIZE": max_size_px2,  # Already converted to pixels
                 }
 
                 # Prepare ROI mask for filtering (resize if needed)
@@ -3746,12 +3806,51 @@ class MainWindow(QMainWindow):
                             interpolation=cv2.INTER_NEAREST,
                         )
 
+                # Log size filtering parameters if enabled
+                if use_size_filtering:
+                    # Logging parameters (already calculated above when building yolo_params)
+                    min_size_multiplier = self.spin_min_object_size.value()
+                    max_size_multiplier = self.spin_max_object_size.value()
+                    logger.info(f"YOLO size filtering ENABLED:")
+                    logger.info(f"  Resize factor: {resize_f:.2f}")
+                    logger.info(f"  Reference body size: {reference_body_size:.1f} px")
+                    logger.info(
+                        f"  Reference body area (original): {reference_body_area:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Reference body area (resized): {scaled_body_area:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Min size multiplier: {min_size_multiplier:.2f}× → {min_size_px2:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Max size multiplier: {max_size_multiplier:.2f}× → {max_size_px2:.1f} px²"
+                    )
+
                 # Create detector and run detection on FULL frame (no masking)
                 # This preserves natural image context for better YOLO confidence
                 detector = YOLOOBBDetector(yolo_params)
                 meas, sizes, shapes, yolo_results, detection_confidences = (
                     detector.detect_objects(frame_to_process, 0)
                 )
+
+                if use_size_filtering:
+                    logger.info(
+                        f"YOLO detected {len(meas)} objects before ROI filtering"
+                    )
+                    if len(sizes) > 0:
+                        logger.info(
+                            f"  Size range: {min(sizes):.1f} - {max(sizes):.1f} px²"
+                        )
+                        logger.info(
+                            f"  Filtering range: {min_size_px2:.1f} - {max_size_px2:.1f} px²"
+                        )
+                        # Show first few detections
+                        for i in range(min(5, len(sizes))):
+                            passes_filter = min_size_px2 <= sizes[i] <= max_size_px2
+                            logger.info(
+                                f"  Detection {i+1}: {sizes[i]:.1f} px² - {'PASS' if passes_filter else 'FILTERED OUT'}"
+                            )
 
                 # Filter detections by ROI AFTER detection (vectorized)
                 if roi_for_yolo is not None and len(meas) > 0:
@@ -3835,8 +3934,6 @@ class MainWindow(QMainWindow):
                     cx, cy, angle_rad = m
                     cv2.circle(test_frame, (int(cx), int(cy)), 5, (0, 255, 0), -1)
                     # Draw orientation
-                    import math
-
                     ex = int(cx + 30 * math.cos(angle_rad))
                     ey = int(cy + 30 * math.sin(angle_rad))
                     cv2.line(test_frame, (int(cx), int(cy)), (ex, ey), (0, 255, 0), 2)
