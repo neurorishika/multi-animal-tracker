@@ -44,7 +44,10 @@ dependencies:
   - flake8
   
   # Install GPU-accelerated packages via pip
+  # For faster installation, run: pip install uv && uv pip install -r requirements-gpu.txt
   - pip:
+    # Verbose output for debugging installation issues
+    - -v
     # PyTorch with CUDA support (use appropriate CUDA version)
     # - --extra-index-url https://download.pytorch.org/whl/cu126
     # - --extra-index-url https://download.pytorch.org/whl/cu128
@@ -82,4 +85,6 @@ dependencies:
     - cupy-cuda13x
     # - cupy-cuda12x
     # - cupy-cuda11x
+    # Fast package installer (optional, for manual reinstalls)
+    - uv
     

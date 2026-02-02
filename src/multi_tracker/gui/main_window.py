@@ -2573,9 +2573,7 @@ class MainWindow(QMainWindow):
         self.chk_enable_dataset_gen.setToolTip(
             "Enable automatic generation of training dataset from difficult frames."
         )
-        self.chk_enable_dataset_gen.stateChanged.connect(
-            self._on_dataset_generation_toggled
-        )
+        self.chk_enable_dataset_gen.toggled.connect(self._on_dataset_generation_toggled)
         form.addWidget(self.chk_enable_dataset_gen)
 
         # Dataset configuration
@@ -2609,10 +2607,10 @@ class MainWindow(QMainWindow):
         self.line_dataset_output.setToolTip(
             "Directory where the dataset will be saved."
         )
-        btn_browse_output = QPushButton("Browse...")
-        btn_browse_output.clicked.connect(self._select_dataset_output_dir)
+        self.btn_browse_output = QPushButton("Browse...")
+        self.btn_browse_output.clicked.connect(self._select_dataset_output_dir)
         h_output.addWidget(self.line_dataset_output)
-        h_output.addWidget(btn_browse_output)
+        h_output.addWidget(self.btn_browse_output)
         f_config.addRow("Output Directory:", h_output)
 
         form.addWidget(self.g_dataset_config)
@@ -2782,10 +2780,11 @@ class MainWindow(QMainWindow):
             "Directory where individual crops will be saved."
         )
         self.line_individual_output.setEnabled(False)
-        btn_browse_ind_output = QPushButton("Browse...")
-        btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
+        self.btn_browse_ind_output = QPushButton("Browse...")
+        self.btn_browse_ind_output.setEnabled(False)
+        self.btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
         h_ind_output.addWidget(self.line_individual_output)
-        h_ind_output.addWidget(btn_browse_ind_output)
+        h_ind_output.addWidget(self.btn_browse_ind_output)
         ind_output_layout.addRow("Output Directory:", h_ind_output)
 
         # Output format
@@ -3006,9 +3005,8 @@ class MainWindow(QMainWindow):
         # Initially disable all controls
         self.g_identity.setEnabled(False)
 
-    def _on_dataset_generation_toggled(self, state):
+    def _on_dataset_generation_toggled(self, enabled):
         """Enable/disable dataset generation controls."""
-        enabled = state == Qt.Checked
         self.g_dataset_config.setEnabled(enabled)
         self.g_frame_selection.setEnabled(enabled)
         self.g_quality_metrics.setEnabled(enabled)
@@ -3042,6 +3040,7 @@ class MainWindow(QMainWindow):
         """Enable/disable individual dataset generation controls."""
         self.line_individual_dataset_name.setEnabled(enabled)
         self.line_individual_output.setEnabled(enabled)
+        self.btn_browse_ind_output.setEnabled(enabled)
         self.combo_individual_format.setEnabled(enabled)
         self.spin_individual_interval.setEnabled(enabled)
         self.spin_individual_padding.setEnabled(enabled)
