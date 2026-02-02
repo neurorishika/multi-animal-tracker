@@ -76,6 +76,9 @@ dependencies:
     # - tensorrt-cu11-libs
     - -e .
     # Install cupy for GPU-accelerated array computations
+    # Using prerelease for CUDA 13 compatibility fixes
+    - --pre
+    - -f https://pip.cupy.dev/pre
     - cupy-cuda13x
     # - cupy-cuda12x
     # - cupy-cuda11x
