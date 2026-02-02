@@ -1805,8 +1805,10 @@ class MainWindow(QMainWindow):
         self.spin_yolo_batch_size.setEnabled(False)  # Initially disabled (Auto mode)
         f_yolo.addRow("Manual Batch Size:", self.spin_yolo_batch_size)
 
-        # Connect batch mode change after setting initial state
+        # Set initial enabled state of combo box based on checkbox state
         # (combo starts at index 0 = Auto, so spinner stays disabled)
+        initial_batching_enabled = self.chk_enable_yolo_batching.isChecked()
+        self.combo_yolo_batch_mode.setEnabled(initial_batching_enabled)
 
         l_yolo.addWidget(self.yolo_group)
         l_yolo.addStretch()  # Push YOLO config to top
