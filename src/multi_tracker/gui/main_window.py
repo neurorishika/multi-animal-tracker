@@ -5631,10 +5631,20 @@ class MainWindow(QMainWindow):
         )
 
         # Generate detection cache path based on video
+        # Cache is needed for:
+        # 1. Backward tracking (if enabled)
+        # 2. YOLO batching (if enabled)
         detection_cache_path = None
+        params = self.get_parameters_dict()
+        detection_method = params.get("DETECTION_METHOD", "background_subtraction")
+        advanced_config = params.get("ADVANCED_CONFIG", {})
+        yolo_batching_enabled = detection_method == "yolo_obb" and advanced_config.get(
+            "enable_yolo_batching", True
+        )
+
         if (
-            self.chk_enable_backward.isChecked()
-        ):  # Only cache if backward tracking is enabled
+            self.chk_enable_backward.isChecked() or yolo_batching_enabled
+        ):  # Cache if backward tracking OR YOLO batching is enabled
             base_name = os.path.splitext(video_path)[0]
             detection_cache_path = f"{base_name}_detection_cache.npz"
 
@@ -6093,6 +6103,11 @@ class MainWindow(QMainWindow):
             self.spin_yolo_batch_size.setValue(
                 get_cfg("yolo_manual_batch_size", default=16)
             )
+            # Update spinner enabled state based on loaded checkbox and combo box values
+            batching_enabled = self.chk_enable_yolo_batching.isChecked()
+            is_manual = self.combo_yolo_batch_mode.currentIndex() == 1
+            self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
+            self.combo_yolo_batch_mode.setEnabled(batching_enabled)
 
             # === CORE TRACKING ===
             self.spin_max_targets.setValue(get_cfg("max_targets", default=4))

@@ -15,13 +15,14 @@ env-create-gpu:
 	mamba env create -f environment-gpu.yml
 
 env-create-minimal:
+	mamba env create -f environment-minimal.yml
+
 env-create-mps:
 	mamba env create -f environment-mps.yml
 
 env-create-rocm:
 	mamba env create -f environment-rocm.yml
 
-	mamba env create -f environment-minimal.yml
 
 # Package installation (Step 2: pip packages with uv)
 install:
