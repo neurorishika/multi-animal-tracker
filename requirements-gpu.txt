@@ -37,6 +37,11 @@ tensorrt-cu13-libs
 # tensorrt-cu11-bindings
 # tensorrt-cu11-libs
 
+# ONNX runtime with GPU support for model export and optimization
+onnx
+onnxslim
+onnxruntime-gpu
+
 # CuPy for GPU-accelerated array computations
 # Using prerelease for CUDA 13 compatibility fixes
 --pre
