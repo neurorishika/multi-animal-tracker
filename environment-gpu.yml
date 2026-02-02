@@ -30,13 +30,7 @@ dependencies:
   
   # Efficiency - CPU and GPU
   - numba
-  
-  # CuPy - GPU-accelerated NumPy (conda-forge auto-detects CUDA version)
-  - cupy
-  - cudnn      # optional
-  - cutensor   # optional  
-  - nccl       # optional (multi-GPU)
-  
+
   # GUI framework (Qt6 - modern, better HiDPI support)
   - pyside6>=6.6
   - qt6-main
@@ -81,4 +75,8 @@ dependencies:
     # - tensorrt-cu11-bindings
     # - tensorrt-cu11-libs
     - -e .
+    # Install cupy for GPU-accelerated array computations
+    - cupy-cuda13x
+    # - cupy-cuda12x
+    # - cupy-cuda11x
     

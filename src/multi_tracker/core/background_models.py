@@ -375,23 +375,58 @@ class BackgroundModel:
 
             if self.use_gpu and self.gpu_type == "cuda":
                 # CUDA GPU-accelerated update (5-15x faster on large frames)
-                with self.gpu_device:
-                    gray_gpu = cp.asarray(gray_f32)
-                    bg_gpu = cp.asarray(self.adaptive_background)
-                    bg_gpu = _update_adaptive_background_gpu(
-                        bg_gpu, gray_gpu, learning_rate
-                    )
-                    self.adaptive_background = cp.asnumpy(bg_gpu)
+                try:
+                    with self.gpu_device:
+                        gray_gpu = cp.asarray(gray_f32)
+                        bg_gpu = cp.asarray(self.adaptive_background)
+                        bg_gpu = _update_adaptive_background_gpu(
+                            bg_gpu, gray_gpu, learning_rate
+                        )
+                        self.adaptive_background = cp.asnumpy(bg_gpu)
+                except Exception as e:
+                    # CuPy failed - disable GPU and use fallback
+                    if not hasattr(self, "_gpu_fallback_warned"):
+                        logger.warning(
+                            f"CuPy GPU operation failed, falling back to CPU: {e}"
+                        )
+                        self._gpu_fallback_warned = True
+                    self.use_gpu = False
+                    # Use Numba or numpy fallback
+                    if NUMBA_AVAILABLE:
+                        self.adaptive_background = _update_adaptive_background_numba(
+                            self.adaptive_background, gray_f32, learning_rate
+                        )
+                    else:
+                        self.adaptive_background = (
+                            1 - learning_rate
+                        ) * self.adaptive_background + learning_rate * gray_f32
             elif self.use_gpu and self.gpu_type == "mps":
                 # MPS GPU-accelerated update (Apple Silicon, ~3-10x faster)
-                gray_torch = torch.from_numpy(gray_f32).to(self.torch_device)
-                bg_torch = torch.from_numpy(self.adaptive_background).to(
-                    self.torch_device
-                )
-                bg_torch = _update_adaptive_background_mps(
-                    bg_torch, gray_torch, learning_rate
-                )
-                self.adaptive_background = bg_torch.cpu().numpy()
+                try:
+                    gray_torch = torch.from_numpy(gray_f32).to(self.torch_device)
+                    bg_torch = torch.from_numpy(self.adaptive_background).to(
+                        self.torch_device
+                    )
+                    bg_torch = _update_adaptive_background_mps(
+                        bg_torch, gray_torch, learning_rate
+                    )
+                    self.adaptive_background = bg_torch.cpu().numpy()
+                except Exception as e:
+                    if not hasattr(self, "_gpu_fallback_warned"):
+                        logger.warning(
+                            f"MPS GPU operation failed, falling back to CPU: {e}"
+                        )
+                        self._gpu_fallback_warned = True
+                    self.use_gpu = False
+                    # Use Numba or numpy fallback
+                    if NUMBA_AVAILABLE:
+                        self.adaptive_background = _update_adaptive_background_numba(
+                            self.adaptive_background, gray_f32, learning_rate
+                        )
+                    else:
+                        self.adaptive_background = (
+                            1 - learning_rate
+                        ) * self.adaptive_background + learning_rate * gray_f32
             elif NUMBA_AVAILABLE:
                 # Use Numba-accelerated update (2-5x faster on large frames)
                 self.adaptive_background = _update_adaptive_background_numba(
@@ -413,28 +448,54 @@ class BackgroundModel:
 
         Uses GPU acceleration if available for significant speedup on large frames.
         Supports both CUDA (NVIDIA) and MPS (Apple Silicon) GPUs.
+        Falls back to CPU if GPU operations fail (e.g., CuPy compilation errors).
         """
         p = self.params
 
         if self.use_gpu and self.gpu_type == "cuda":
             # CUDA GPU-accelerated foreground mask generation (10-30x faster)
-            with self.gpu_device:
-                gray_gpu = cp.asarray(gray.astype(np.float32))
-                bg_gpu = cp.asarray(background.astype(np.float32))
-                fg_mask_gpu = _generate_foreground_mask_gpu(gray_gpu, bg_gpu, p)
-                fg_mask = cp.asnumpy(fg_mask_gpu)
-            return fg_mask
+            try:
+                with self.gpu_device:
+                    gray_gpu = cp.asarray(gray.astype(np.float32))
+                    bg_gpu = cp.asarray(background.astype(np.float32))
+                    fg_mask_gpu = _generate_foreground_mask_gpu(gray_gpu, bg_gpu, p)
+                    fg_mask = cp.asnumpy(fg_mask_gpu)
+                return fg_mask
+            except Exception as e:
+                # CuPy compilation or runtime error - disable GPU and fall back to CPU
+                if not hasattr(self, "_gpu_fallback_warned"):
+                    logger.warning(
+                        f"CuPy GPU operation failed, falling back to CPU: {e}"
+                    )
+                    logger.info(
+                        "This may be due to CUDA/CuPy version incompatibility. "
+                        "Consider updating CuPy: pip install --upgrade cupy-cuda12x"
+                    )
+                    self._gpu_fallback_warned = True
+                self.use_gpu = False
+                # Fall through to CPU path below
 
         elif self.use_gpu and self.gpu_type == "mps":
             # MPS GPU-accelerated foreground mask generation (Apple Silicon, ~5-15x faster)
-            gray_torch = torch.from_numpy(gray.astype(np.float32)).to(self.torch_device)
-            bg_torch = torch.from_numpy(background.astype(np.float32)).to(
-                self.torch_device
-            )
-            fg_mask = _generate_foreground_mask_mps(
-                gray_torch, bg_torch, p, self.torch_device
-            )
-            return fg_mask
+            try:
+                gray_torch = torch.from_numpy(gray.astype(np.float32)).to(
+                    self.torch_device
+                )
+                bg_torch = torch.from_numpy(background.astype(np.float32)).to(
+                    self.torch_device
+                )
+                fg_mask = _generate_foreground_mask_mps(
+                    gray_torch, bg_torch, p, self.torch_device
+                )
+                return fg_mask
+            except Exception as e:
+                if not hasattr(self, "_gpu_fallback_warned"):
+                    logger.warning(
+                        f"MPS GPU operation failed, falling back to CPU: {e}"
+                    )
+                    self._gpu_fallback_warned = True
+                self.use_gpu = False
+                # Fall through to CPU path below
 
         # CPU fallback
         dark_on_light = p.get("DARK_ON_LIGHT_BACKGROUND", True)
