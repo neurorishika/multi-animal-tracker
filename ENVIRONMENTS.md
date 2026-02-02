@@ -141,21 +141,42 @@ MPS is automatically detected and used by PyTorch. No configuration needed.
 - ROCm 6.0+ installed system-wide
 - Linux only
 
-**Pre-Installation**: Install ROCm first
-```bash
-# See: https://rocm.docs.amd.com/projects/install-on-linux/en/latest/
-# Example for Ubuntu 22.04:
-sudo apt-get install rocm-hip-runtime rocm-smi-lib
+**⚠️ IMPORTANT: ROCm System Installation Required First**
 
-# Verify installation
-rocm-smi
+ROCm is NOT a Python package - it requires system-level installation before Python packages will work.
+
+**See detailed guide: [ROCM_SETUP.md](ROCM_SETUP.md)**
+
+**Quick Pre-Installation** (Ubuntu 22.04/24.04):
+```bash
+# Install ROCm system packages (required before Python packages)
+sudo apt install rocm-hip-runtime rocm-hip-sdk rocm-smi-lib
+sudo apt install rocm-dev rocrand rocblas rocsparse rocfft hipsparse
+
+# Add user to required groups
+sudo usermod -a -G video,render $USER
+# Log out and back in for group changes to take effect
+
+# Verify ROCm installation
+rocm-smi  # Should show your GPU
 ```
 
-**Installation**:
+For other distributions (RHEL, SLES) or troubleshooting, see [ROCM_SETUP.md](ROCM_SETUP.md).
+
+**Python Environment Installation** (after ROCm system install):
 ```bash
 mamba env create -f environment-rocm.yml
 mamba activate multi-animal-tracker-rocm
-uv pip install -v -r requirements-rocm.txt
+uv pip install -v -r requirements-rocm.txt  # May take 5-10 min (CuPy compilation)
+```
+
+**Verify Installation**:
+```bash
+# Test PyTorch ROCm
+python -c "import torch; print('ROCm available:', torch.cuda.is_available())"
+
+# Test CuPy-ROCm (may take a minute on first run)
+python -c "import cupy as cp; print('CuPy device:', cp.cuda.Device(0))"
 ```
 
 **ROCm Version Configuration**:
@@ -178,6 +199,7 @@ Edit `requirements-rocm.txt` and uncomment the appropriate lines:
 - YOLO inference: ~40-60 FPS (close to CUDA performance)
 - Background subtraction: ~200-300 FPS with CuPy-ROCm (experimental)
 
+**Note**: If CuPy-ROCm fails to install or compile, the tracker will automatically fall back to CPU for background subtraction (still ~60 FPS with Numba). See [ROCM_SETUP.md](ROCM_SETUP.md) for troubleshooting.
 **Note**: CuPy-ROCm is experimental and may have compatibility issues. Falls back to CPU if errors occur.
 
 ---

@@ -33,7 +33,7 @@ except ImportError:
     cp = None
     cupy_ndimage = None
 
-# PyTorch for MPS GPU acceleration (Apple Silicon) and CUDA
+# PyTorch for MPS GPU acceleration (Apple Silicon) and CUDA/ROCm
 try:
     import torch
     import torch.nn.functional as F
@@ -41,10 +41,24 @@ try:
     TORCH_AVAILABLE = True
     MPS_AVAILABLE = torch.backends.mps.is_available()
     TORCH_CUDA_AVAILABLE = torch.cuda.is_available()
+    
+    # Detect ROCm backend (AMD GPUs)
+    ROCM_AVAILABLE = False
+    if TORCH_CUDA_AVAILABLE:
+        try:
+            # ROCm identifies itself in torch.version.hip or via device name
+            if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+                ROCM_AVAILABLE = True
+            elif 'gfx' in torch.cuda.get_device_name(0).lower():  # AMD GCN architecture
+                ROCM_AVAILABLE = True
+        except Exception:
+            pass
+            
 except ImportError:
     TORCH_AVAILABLE = False
     MPS_AVAILABLE = False
     TORCH_CUDA_AVAILABLE = False
+    ROCM_AVAILABLE = False
     torch = None
     F = None
 
@@ -68,7 +82,8 @@ except ImportError:
     trt = None
 
 # Summary flags
-GPU_AVAILABLE = CUDA_AVAILABLE or MPS_AVAILABLE
+GPU_AVAILrocm_available": ROCM_AVAILABLE,
+        "ABLE = CUDA_AVAILABLE or MPS_AVAILABLE
 ANY_ACCELERATION = GPU_AVAILABLE or NUMBA_AVAILABLE
 
 
@@ -131,6 +146,14 @@ def get_device_info():
     if TORCH_CUDA_AVAILABLE:
         try:
             info["torch_cuda_device_count"] = torch.cuda.device_count()
+            
+            # Add ROCm-specific info
+            if ROCM_AVAILABLE:
+                if hasattr(torch.version, 'hip'):
+                    info["rocm_version"] = torch.version.hip
+                info["backend"] = "ROCm (AMD GPU)"
+            else:
+                info["backend"] = "CUDA (NVIDIA GPU)"
             info["torch_cuda_device_name"] = torch.cuda.get_device_name(0)
         except Exception:
             pass
@@ -153,6 +176,12 @@ def log_device_info():
     else:
         logger.info("✗ CUDA (CuPy): Not available")
 
+        if info.get("rocm_available"):
+            logger.info(f"  Backend: ROCm (AMD GPU)")
+            if "rocm_version" in info:
+                logger.info(f"  ROCm Version: {info['rocm_version']}")
+        else:
+            logger.info(f"  Backend: CUDA (NVIDIA GPU)")
     if info["mps_available"]:
         logger.info("✓ MPS (Apple Silicon): Available")
     else:
@@ -210,7 +239,8 @@ def get_optimal_device(enable_gpu=True, prefer_cuda=True):
     # Then try MPS
     if MPS_AVAILABLE:
         return "mps", torch.device("mps")
-
+ROCM_AVAILABLE",
+    "
     # Then CUDA if not already tried
     if not prefer_cuda and CUDA_AVAILABLE:
         return "cuda", cp.cuda.Device(0)

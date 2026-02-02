@@ -135,10 +135,20 @@ uv pip install -v -r requirements-mps.txt
 
 For AMD Radeon/Instinct GPUs with ROCm support (Linux only):
 
-```bash
-# Prerequisites: Install ROCm 6.0+ system-wide first
-# https://rocm.docs.amd.com/projects/install-on-linux/en/latest/
+⚠️ **CRITICAL**: ROCm requires **system-level installation** before Python packages will work.
 
+**See detailed guide:** [ROCM_SETUP.md](ROCM_SETUP.md)
+
+**Quick setup** (Ubuntu 22.04/24.04):
+
+```bash
+# Step 1: Install ROCm system packages (REQUIRED FIRST)
+sudo apt install rocm-hip-runtime rocm-hip-sdk rocm-smi-lib
+sudo apt install rocm-dev rocrand rocblas rocsparse rocfft hipsparse
+sudo usermod -a -G video,render $USER
+# Log out and back in, then verify: rocm-smi
+
+# Step 2: Install Python environment
 mamba env create -f environment-rocm.yml
 conda activate multi-animal-tracker-rocm
 uv pip install -v -r requirements-rocm.txt
@@ -147,12 +157,15 @@ uv pip install -v -r requirements-rocm.txt
 **Important:** Edit `requirements-rocm.txt` to match your ROCm version (6.0, 6.1, 6.2)
 
 **Features:**
-- ✅ YOLO inference with ROCm GPU acceleration
-- ✅ Background subtraction with CuPy-ROCm (experimental)
+- ✅ YOLO inference with ROCm GPU acceleration (~40-60 FPS)
+- ✅ Background subtraction with CuPy-ROCm (experimental, ~200-300 FPS)
 - ❌ No TensorRT (NVIDIA-only)
 - ⚠️ Linux only (Ubuntu 22.04/24.04, RHEL 8/9)
+- ⚠️ Requires system-level ROCm installation
 
 **Supported GPUs:** Radeon RX 5000+, Radeon Pro, Instinct MI series
+
+**Troubleshooting:** See [ROCM_SETUP.md](ROCM_SETUP.md) for detailed installation guide, verification steps, and troubleshooting.
 
 ### Using Makefile (Alternative)
 

@@ -68,6 +68,10 @@ env-remove-minimal:
 test:
 	python -c "from multi_tracker.main import main; print('Import successful')"
 
+verify-rocm:
+	@echo "Verifying ROCm installation..."
+	python verify_rocm.py
+
 clean:
 	find . -type d -name "__pycache__" -delete
 	find . -type f -name "*.pyc" -delete
@@ -108,6 +112,11 @@ setup-mps:
 	@echo "Maintenance:"
 	@echo "  make env-update      - Update conda and pip packages"
 	@echo "  make env-remove[-gpu|-mps|-rocm|-minimal] - Remove environment"
+	@echo ""
+	@echo "Testing & Verification:"
+	@echo "  make test            - Test package installation"
+	@echo "  make verify-rocm     - Verify ROCm installation (for AMD GPUs)"
+	@echo "  make clean           - Clean Python cache files"
 	@echo ""
 	@echo "Platform Guide:"
 	@echo "  NVIDIA GPUs:   use setup-gpu (CUDA + TensorRT + CuPy)"
