@@ -30,7 +30,7 @@ cd multi-animal-tracker
 
 # Step 1: Create conda environment (use mamba for 10-100x faster install)
 mamba env create -f environment.yml
-conda activate multi-animal-tracker-base
+mamba activate multi-animal-tracker-base
 
 # Step 2: Install pip packages (uv is 10-100x faster than pip)
 uv pip install -v -r requirements.txt
@@ -42,7 +42,7 @@ For 8-30x faster background subtraction and 2-5x faster YOLO inference:
 
 ```bash
 mamba env create -f environment-gpu.yml
-conda activate multi-animal-tracker-gpu
+mamba activate multi-animal-tracker-gpu
 uv pip install -v -r requirements-gpu.txt
 ```
 
@@ -54,7 +54,7 @@ For lightweight deployments with minimal dependencies:
 
 ```bash
 mamba env create -f environment-minimal.yml
-conda activate multi-animal-tracker-minimal
+mamba activate multi-animal-tracker-minimal
 uv pip install -v -r requirements-minimal.txt
 ```
 

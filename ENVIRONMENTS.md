@@ -11,7 +11,7 @@ All environments use a **two-step installation** for maximum speed:
 mamba env create -f environment.yml
 
 # Step 2: Activate and install pip packages with uv (very fast)
-conda activate multi-animal-tracker-base
+mamba activate multi-animal-tracker-base
 uv pip install -v -r requirements.txt
 ```
 
@@ -32,7 +32,7 @@ uv pip install -v -r requirements.txt
 **Installation**:
 ```bash
 mamba env create -f environment.yml
-conda activate multi-animal-tracker-base
+mamba activate multi-animal-tracker-base
 uv pip install -v -r requirements.txt
 ```
 
@@ -49,7 +49,7 @@ uv pip install -v -r requirements.txt
 **Installation**:
 ```bash
 mamba env create -f environment-minimal.yml
-conda activate multi-animal-tracker-minimal
+mamba activate multi-animal-tracker-minimal
 uv pip install -v -r requirements-minimal.txt
 ```
 
@@ -71,7 +71,7 @@ uv pip install -v -r requirements-minimal.txt
 **Installation**:
 ```bash
 mamba env create -f environment-gpu.yml
-conda activate multi-animal-tracker-gpu
+mamba activate multi-animal-tracker-gpu
 uv pip install -v -r requirements-gpu.txt
 ```
 
@@ -100,14 +100,14 @@ mamba env create -f environment-minimal.yml
 mamba env create -f environment-gpu.yml
 
 # Install pip packages for each
-conda activate multi-animal-tracker-base && uv pip install -v -r requirements.txt
-conda activate multi-animal-tracker-minimal && uv pip install -v -r requirements-minimal.txt
-conda activate multi-animal-tracker-gpu && uv pip install -v -r requirements-gpu.txt
+mamba activate multi-animal-tracker-base && uv pip install -v -r requirements.txt
+mamba activate multi-animal-tracker-minimal && uv pip install -v -r requirements-minimal.txt
+mamba activate multi-animal-tracker-gpu && uv pip install -v -r requirements-gpu.txt
 
 # Switch between them
-conda activate multi-animal-tracker-base     # Standard
-conda activate multi-animal-tracker-minimal  # Minimal
-conda activate multi-animal-tracker-gpu      # GPU
+mamba activate multi-animal-tracker-base     # Standard
+mamba activate multi-animal-tracker-minimal  # Minimal
+mamba activate multi-animal-tracker-gpu      # GPU
 
 # List installed environments
 conda env list
@@ -119,13 +119,13 @@ conda env list
 
 ### Update pip packages only (fast)
 ```bash
-conda activate multi-animal-tracker-base
+mamba activate multi-animal-tracker-base
 uv pip install -v -r requirements.txt --upgrade
 ```
 
 ### Update conda packages
 ```bash
-conda activate multi-animal-tracker-base
+mamba activate multi-animal-tracker-base
 mamba update --all
 ```
 
@@ -136,7 +136,7 @@ conda env remove -n multi-animal-tracker-base
 
 # Create new one
 mamba env create -f environment.yml
-conda activate multi-animal-tracker-base
+mamba activate multi-animal-tracker-base
 uv pip install -v -r requirements.txt
 ```
 
@@ -149,7 +149,7 @@ If you don't have mamba or uv installed:
 ```bash
 # Standard conda (slower)
 conda env create -f environment.yml
-conda activate multi-animal-tracker-base
+mamba activate multi-animal-tracker-base
 pip install -r requirements.txt
 ```
 
