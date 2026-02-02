@@ -3092,36 +3092,48 @@ class MainWindow(QMainWindow):
         self.on_detection_method_changed(index)
 
     def select_file(self):
+        """Select video file via file dialog."""
         fp, _ = QFileDialog.getOpenFileName(
             self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
         )
         if fp:
-            self.file_line.setText(fp)
-            self.current_video_path = fp
-            if self.roi_selection_active:
-                self.clear_roi()
+            self._setup_video_file(fp)
 
-            # Auto-generate output paths based on video name
-            video_dir = os.path.dirname(fp)
-            video_name = os.path.splitext(os.path.basename(fp))[0]
+    def _setup_video_file(self, fp, skip_config_load=False):
+        """
+        Setup a video file for tracking.
 
-            # Auto-populate CSV output
-            csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
-            self.csv_line.setText(csv_path)
+        Args:
+            fp: Path to the video file
+            skip_config_load: If True, skip auto-loading config (used when loading config itself)
+        """
+        self.file_line.setText(fp)
+        self.current_video_path = fp
+        if self.roi_selection_active:
+            self.clear_roi()
 
-            # Auto-populate video output and enable it
-            video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
-            self.video_out_line.setText(video_out_path)
-            self.check_video_output.setChecked(True)
+        # Auto-generate output paths based on video name
+        video_dir = os.path.dirname(fp)
+        video_name = os.path.splitext(os.path.basename(fp))[0]
 
-            # Enable preview refresh button and load a random frame
-            self.btn_refresh_preview.setEnabled(True)
-            self.btn_test_detection.setEnabled(True)
-            self.btn_detect_fps.setEnabled(True)
+        # Auto-populate CSV output
+        csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
+        self.csv_line.setText(csv_path)
 
-            self._load_preview_frame()
+        # Auto-populate video output and enable it
+        video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
+        self.video_out_line.setText(video_out_path)
+        self.check_video_output.setChecked(True)
 
-            # Auto-load config if it exists for this video
+        # Enable preview refresh button and load a random frame
+        self.btn_refresh_preview.setEnabled(True)
+        self.btn_test_detection.setEnabled(True)
+        self.btn_detect_fps.setEnabled(True)
+
+        self._load_preview_frame()
+
+        # Auto-load config if it exists for this video (unless explicitly skipped)
+        if not skip_config_load:
             config_path = get_video_config_path(fp)
             if config_path and os.path.isfile(config_path):
                 self._load_config_from_file(config_path)
@@ -5837,7 +5849,10 @@ class MainWindow(QMainWindow):
             # === FILE MANAGEMENT ===
             # Only set paths if they're currently empty (preserve existing paths)
             if not self.file_line.text().strip():
-                self.file_line.setText(get_cfg("file_path", default=""))
+                video_path = get_cfg("file_path", default="")
+                if video_path:
+                    # Use the same setup logic as browsing for a file
+                    self._setup_video_file(video_path, skip_config_load=True)
             if not self.csv_line.text().strip():
                 self.csv_line.setText(get_cfg("csv_path", default=""))
             self.check_video_output.setChecked(
