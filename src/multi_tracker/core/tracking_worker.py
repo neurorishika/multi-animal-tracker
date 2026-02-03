@@ -246,8 +246,17 @@ class TrackingWorker(QThread):
                 batch_results
             ):
                 global_idx = batch_start_idx + local_idx
+                # Calculate DetectionID for each detection in this frame
+                frame_id = global_idx + 1  # FrameID is 1-based
+                detection_ids = [frame_id * 10000 + i for i in range(len(meas))]
                 detection_cache.add_frame(
-                    global_idx, meas, sizes, shapes, confidences, obb_corners
+                    global_idx,
+                    meas,
+                    sizes,
+                    shapes,
+                    confidences,
+                    obb_corners,
+                    detection_ids,
                 )
 
             # Track batch timing
@@ -574,9 +583,14 @@ class TrackingWorker(QThread):
                     # Backward pass: reverse mapping
                     cache_frame_idx = total_frames - self.frame_count
 
-                meas, sizes, shapes, detection_confidences, filtered_obb_corners = (
-                    detection_cache.get_frame(cache_frame_idx)
-                )
+                (
+                    meas,
+                    sizes,
+                    shapes,
+                    detection_confidences,
+                    filtered_obb_corners,
+                    detection_ids,
+                ) = detection_cache.get_frame(cache_frame_idx)
                 # No yolo_results object in cached mode
                 yolo_results = None
                 fg_mask = None
@@ -628,6 +642,8 @@ class TrackingWorker(QThread):
                 )
                 # No OBB corners for background subtraction
                 filtered_obb_corners = []
+                # Calculate DetectionID for each detection
+                detection_ids = [self.frame_count * 10000 + i for i in range(len(meas))]
 
             elif (
                 detection_method == "yolo_obb" and frame is not None
@@ -685,6 +701,10 @@ class TrackingWorker(QThread):
                     filtered_obb_corners = [
                         filtered_obb_corners[i] for i in keep_indices
                     ]
+                    # Calculate DetectionID for each kept detection
+                    detection_ids = [
+                        self.frame_count * 10000 + i for i in range(len(meas))
+                    ]
 
             else:
                 # No frame and no cached detections - skip this iteration
@@ -696,6 +716,7 @@ class TrackingWorker(QThread):
 
             # Cache detections during forward pass (only when actively detecting, not when loading from cache)
             if detection_cache and not self.backward_mode and not use_cached_detections:
+                # detection_ids should already be calculated in detection blocks above
                 # Frame index is 0-based (self.frame_count - 1)
                 detection_cache.add_frame(
                     self.frame_count - 1,
@@ -704,6 +725,7 @@ class TrackingWorker(QThread):
                     shapes,
                     detection_confidences,
                     filtered_obb_corners if filtered_obb_corners else None,
+                    detection_ids,
                 )
 
             profile_times["detection"] += time.time() - detect_start
@@ -850,6 +872,12 @@ class TrackingWorker(QThread):
                             )
                             row_data.extend([det_conf, assign_conf, pos_uncertainty])
 
+                        # Add DetectionID (can be NaN for unmatched)
+                        det_id = (
+                            detection_ids[c] if c < len(detection_ids) else float("nan")
+                        )
+                        row_data.append(det_id)
+
                         self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1
                     current_cost = cost[r, c]
@@ -891,6 +919,9 @@ class TrackingWorker(QThread):
                                 else 0.0
                             )
                             row_data.extend([det_conf, assign_conf, pos_uncertainty])
+
+                        # Add DetectionID (NaN for unmatched tracks)
+                        row_data.append(float("nan"))
 
                         self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1

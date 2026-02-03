@@ -5995,11 +5995,28 @@ class MainWindow(QMainWindow):
                     )
 
                     # Re-save the scaled trajectories
+                    final_csv_path = None
                     if raw_csv_path:
                         base, ext = os.path.splitext(raw_csv_path)
-                        processed_csv_path = f"{base}_forward_processed{ext}"
+                        # In forward-only mode, the final output is _forward_processed.csv
+                        final_csv_path = f"{base}_forward_processed{ext}"
                         self.save_trajectories_to_csv(
-                            processed_trajectories, processed_csv_path
+                            processed_trajectories, final_csv_path
+                        )
+                        # Track initial tracking CSV as temporary (only if cleanup enabled)
+                        if (
+                            self.chk_cleanup_temp_files.isChecked()
+                            and raw_csv_path not in self.temporary_files
+                        ):
+                            self.temporary_files.append(raw_csv_path)
+
+                    # Generate video from post-processed trajectories if enabled
+                    if (
+                        self.check_video_output.isChecked()
+                        and self.video_out_line.text()
+                    ):
+                        self._generate_video_from_trajectories(
+                            processed_trajectories, final_csv_path
                         )
 
                     # Generate dataset if enabled (BEFORE cleanup so files are still available)
@@ -6220,6 +6237,7 @@ class MainWindow(QMainWindow):
                     "DetectionConfidence",
                     "AssignmentConfidence",
                     "PositionUncertainty",
+                    "DetectionID",
                 ]
             else:
                 hdr = [
@@ -6231,6 +6249,7 @@ class MainWindow(QMainWindow):
                     "Theta",
                     "FrameID",
                     "State",
+                    "DetectionID",
                 ]
             csv_path = self.csv_line.text()
             base, ext = os.path.splitext(csv_path)

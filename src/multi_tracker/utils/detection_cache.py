@@ -44,7 +44,16 @@ class DetectionCache:
                 self._total_frames = metadata.get("total_frames", 0)
             logger.info(f"Cache loaded: {self._total_frames} frames")
 
-    def add_frame(self, frame_idx, meas, sizes, shapes, confidences, obb_corners=None):
+    def add_frame(
+        self,
+        frame_idx,
+        meas,
+        sizes,
+        shapes,
+        confidences,
+        obb_corners=None,
+        detection_ids=None,
+    ):
         """
         Add detection data for a single frame (forward pass).
 
@@ -55,6 +64,7 @@ class DetectionCache:
             shapes: List of tuples (ellipse_area, aspect_ratio)
             confidences: List of confidence scores (float or nan)
             obb_corners: Optional list of OBB corner arrays for YOLO
+            detection_ids: Optional list of detection IDs (FrameID * 10000 + detection_index)
         """
         if self.mode != "w":
             raise RuntimeError("Cache opened in read mode, cannot write")
@@ -65,6 +75,12 @@ class DetectionCache:
             sizes_arr = np.array(sizes, dtype=np.float32)
             shapes_arr = np.array(shapes, dtype=np.float32)  # Shape: (n, 2)
             confidences_arr = np.array(confidences, dtype=np.float32)
+
+            # Store detection IDs if provided
+            if detection_ids and len(detection_ids) > 0:
+                detection_ids_arr = np.array(detection_ids, dtype=np.float64)
+            else:
+                detection_ids_arr = np.array([], dtype=np.float64)
 
             # Store OBB corners if provided (YOLO detection)
             if obb_corners and len(obb_corners) > 0:
@@ -77,6 +93,7 @@ class DetectionCache:
             sizes_arr = np.array([], dtype=np.float32)
             shapes_arr = np.array([], dtype=np.float32).reshape(0, 2)
             confidences_arr = np.array([], dtype=np.float32)
+            detection_ids_arr = np.array([], dtype=np.float64)
             obb_arr = np.array([], dtype=np.float32)
 
         # Store with frame index as key
@@ -85,6 +102,7 @@ class DetectionCache:
         self._data[f"{frame_key}_sizes"] = sizes_arr
         self._data[f"{frame_key}_shapes"] = shapes_arr
         self._data[f"{frame_key}_confidences"] = confidences_arr
+        self._data[f"{frame_key}_detection_ids"] = detection_ids_arr
         self._data[f"{frame_key}_obb"] = obb_arr
 
         self._total_frames = max(self._total_frames, frame_idx + 1)
@@ -121,7 +139,7 @@ class DetectionCache:
             frame_idx: Frame number (0-based)
 
         Returns:
-            Tuple of (meas, sizes, shapes, confidences, obb_corners)
+            Tuple of (meas, sizes, shapes, confidences, obb_corners, detection_ids)
             where meas is a list of numpy arrays to match the tracking worker API
         """
         if self.mode != "r":
@@ -145,6 +163,9 @@ class DetectionCache:
         confidences_arr = self._loaded_data.get(
             f"{frame_key}_confidences", np.array([], dtype=np.float32)
         )
+        detection_ids_arr = self._loaded_data.get(
+            f"{frame_key}_detection_ids", np.array([], dtype=np.float64)
+        )
         obb_arr = self._loaded_data.get(
             f"{frame_key}_obb", np.array([], dtype=np.float32)
         )
@@ -159,6 +180,7 @@ class DetectionCache:
             else []
         )
         confidences = confidences_arr.tolist()
+        detection_ids = detection_ids_arr.tolist()
 
         # OBB corners (list of arrays)
         if len(obb_arr) > 0 and obb_arr.ndim > 1:
@@ -166,7 +188,7 @@ class DetectionCache:
         else:
             obb_corners = []
 
-        return meas, sizes, shapes, confidences, obb_corners
+        return meas, sizes, shapes, confidences, obb_corners, detection_ids
 
     def get_total_frames(self):
         """Get total number of frames in cache."""
