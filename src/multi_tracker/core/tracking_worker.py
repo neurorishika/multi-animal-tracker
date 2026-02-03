@@ -170,13 +170,22 @@ class TrackingWorker(QThread):
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # Estimate optimal batch size
+        # Account for resize factor in batch size estimation
+        resize_factor = params.get("RESIZE_FACTOR", 1.0)
+        effective_width = int(frame_width * resize_factor)
+        effective_height = int(frame_height * resize_factor)
+
+        # Estimate optimal batch size using effective (resized) dimensions
         model_name = params.get("YOLO_MODEL_PATH", "yolo26s-obb.pt")
         batch_size = batch_optimizer.estimate_batch_size(
-            frame_width, frame_height, model_name
+            effective_width, effective_height, model_name
         )
 
         logger.info(f"Video: {frame_width}x{frame_height}, {total_frames} frames")
+        if resize_factor < 1.0:
+            logger.info(
+                f"Resize factor: {resize_factor} → Effective: {effective_width}x{effective_height}"
+            )
         logger.info(f"Batch size: {batch_size}")
 
         # Initialize timing stats for detection phase
@@ -188,7 +197,7 @@ class TrackingWorker(QThread):
         batch_count = 0
         total_batches = (total_frames + batch_size - 1) // batch_size
 
-        resize_factor = params.get("RESIZE_FACTOR", 1.0)
+        # Note: resize_factor already retrieved above
 
         while not self._stop_requested:
             batch_start_time = time.time()
@@ -451,22 +460,27 @@ class TrackingWorker(QThread):
         # Choose appropriate frame iterator
         if use_cached_detections:
             if use_batched_detection:
-                # Phase 2 of batched detection: only read frames if we need visualization
-                if p.get("ENABLE_VISUALIZATION", False) or p.get(
-                    "ENABLE_VIDEO_OUTPUT", False
-                ):
+                # Phase 2 of batched detection: only read frames if we need visualization OR individual analysis
+                needs_frames = (
+                    p.get("ENABLE_VISUALIZATION", False)
+                    or p.get("ENABLE_VIDEO_OUTPUT", False)
+                    or individual_generator
+                    is not None  # Need frames for cropping individuals
+                )
+
+                if needs_frames:
                     frame_iterator = self._forward_frame_iterator(
                         cap, use_prefetcher=use_prefetcher
                     )
                     skip_visualization = False
-                    logger.info("Phase 2: Using cached detections with visualization")
+                    logger.info("Phase 2: Using cached detections with frame reading")
                 else:
-                    # No visualization needed - skip frame reading entirely
+                    # No visualization or individual analysis - skip frame reading entirely
                     frame_iterator = self._cached_detection_iterator(total_frames)
                     skip_visualization = True
                     use_prefetcher = False
                     logger.info(
-                        "Phase 2: Skipping frame reading (visualization disabled, using cached detections)"
+                        "Phase 2: Skipping frame reading (no visualization/analysis needed, using cached detections)"
                     )
             else:
                 # Backward pass: no frames needed, skip visualization

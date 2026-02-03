@@ -1118,20 +1118,6 @@ class MainWindow(QMainWindow):
         self.csv_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         fl.addRow(self.btn_csv, self.csv_line)
 
-        self.check_video_output = QCheckBox("Enable Video Output")
-        self.check_video_output.setChecked(False)
-        self.check_video_output.toggled.connect(self._on_video_output_toggled)
-        fl.addRow("", self.check_video_output)
-
-        self.btn_video_out = QPushButton("Select Video Output...")
-        self.btn_video_out.clicked.connect(self.select_video_output)
-        self.btn_video_out.setEnabled(False)
-        self.video_out_line = QLineEdit()
-        self.video_out_line.setPlaceholderText("Optional visualization export")
-        self.video_out_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.video_out_line.setEnabled(False)
-        fl.addRow(self.btn_video_out, self.video_out_line)
-
         # Config Management
         config_layout = QHBoxLayout()
         self.btn_load_config = QPushButton("Load Config...")
@@ -2648,6 +2634,111 @@ class MainWindow(QMainWindow):
 
         vl_pp.addLayout(f_pp)
         vbox.addWidget(g_pp)
+
+        # Video Export (from post-processed trajectories)
+        g_video = QGroupBox("Video Export")
+        vl_video = QVBoxLayout(g_video)
+        vl_video.addWidget(
+            self._create_help_label(
+                "Generate annotated video from final post-processed trajectories. "
+                "Video is created AFTER merging and interpolation, showing clean tracks with stable IDs. "
+                "This is recommended over real-time video output during tracking."
+            )
+        )
+        f_video = QFormLayout()
+        f_video.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.check_video_output = QCheckBox("Generate Video from Final Trajectories")
+        self.check_video_output.setChecked(False)
+        self.check_video_output.toggled.connect(self._on_video_output_toggled)
+        self.check_video_output.setToolTip(
+            "Generate annotated video showing post-processed trajectories.\n"
+            "Video is created from merged/interpolated tracks, not raw tracking.\n"
+            "Shows clean, stable trajectories with final IDs.\n"
+            "Recommended for publication and visualization."
+        )
+        f_video.addRow("", self.check_video_output)
+
+        self.btn_video_out = QPushButton("Select Video Output...")
+        self.btn_video_out.clicked.connect(self.select_video_output)
+        self.btn_video_out.setEnabled(False)
+        self.video_out_line = QLineEdit()
+        self.video_out_line.setPlaceholderText("Path for annotated video output")
+        self.video_out_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.video_out_line.setEnabled(False)
+        f_video.addRow(self.btn_video_out, self.video_out_line)
+
+        # Video Visualization Settings
+        f_video.addRow(QLabel(""))  # Spacer
+        f_video.addRow(QLabel("<b>Visualization Settings</b>"))
+
+        self.check_show_labels = QCheckBox("Show Track IDs")
+        self.check_show_labels.setChecked(True)
+        self.check_show_labels.setToolTip(
+            "Display trajectory ID labels next to each tracked animal."
+        )
+        f_video.addRow("", self.check_show_labels)
+
+        self.check_show_orientation = QCheckBox("Show Orientation Arrows")
+        self.check_show_orientation.setChecked(True)
+        self.check_show_orientation.setToolTip(
+            "Display arrows indicating heading direction."
+        )
+        f_video.addRow("", self.check_show_orientation)
+
+        self.check_show_trails = QCheckBox("Show Trajectory Trails")
+        self.check_show_trails.setChecked(False)
+        self.check_show_trails.setToolTip(
+            "Display past trajectory path as a fading trail."
+        )
+        f_video.addRow("", self.check_show_trails)
+
+        self.spin_trail_duration = QDoubleSpinBox()
+        self.spin_trail_duration.setRange(0.1, 10.0)
+        self.spin_trail_duration.setSingleStep(0.5)
+        self.spin_trail_duration.setDecimals(1)
+        self.spin_trail_duration.setValue(1.0)
+        self.spin_trail_duration.setToolTip(
+            "Duration of trail history in seconds (0.1-10.0).\n"
+            "Longer trails show more movement history.\n"
+            "Automatically converted to frames using video FPS."
+        )
+        f_video.addRow("Trail Duration (seconds):", self.spin_trail_duration)
+
+        self.spin_marker_size = QDoubleSpinBox()
+        self.spin_marker_size.setRange(0.1, 5.0)
+        self.spin_marker_size.setSingleStep(0.1)
+        self.spin_marker_size.setDecimals(1)
+        self.spin_marker_size.setValue(0.5)
+        self.spin_marker_size.setToolTip(
+            "Size of position marker (0.1-5.0 × body size).\n"
+            "Scaled by reference body size for consistency."
+        )
+        f_video.addRow("Marker Size (×body):", self.spin_marker_size)
+
+        self.spin_text_scale = QDoubleSpinBox()
+        self.spin_text_scale.setRange(0.3, 3.0)
+        self.spin_text_scale.setSingleStep(0.1)
+        self.spin_text_scale.setDecimals(1)
+        self.spin_text_scale.setValue(1.0)
+        self.spin_text_scale.setToolTip(
+            "Scale factor for ID labels (0.3-3.0).\n" "Larger values = bigger text."
+        )
+        f_video.addRow("Text Scale:", self.spin_text_scale)
+
+        self.spin_arrow_length = QDoubleSpinBox()
+        self.spin_arrow_length.setRange(0.5, 10.0)
+        self.spin_arrow_length.setSingleStep(0.5)
+        self.spin_arrow_length.setDecimals(1)
+        self.spin_arrow_length.setValue(1.5)
+        self.spin_arrow_length.setToolTip(
+            "Length of orientation arrow (0.5-10.0 × body size).\n"
+            "Scaled by reference body size."
+        )
+        f_video.addRow("Arrow Length (×body):", self.spin_arrow_length)
+
+        vl_video.addLayout(f_video)
+        vbox.addWidget(g_video)
 
         # Histograms
         g_hist = QGroupBox("Real-Time Analytics")
@@ -5483,16 +5574,253 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("Saving merged trajectories...")
 
         raw_csv_path = self.csv_line.text()
+        merged_csv_path = None
         if raw_csv_path:
             base, ext = os.path.splitext(raw_csv_path)
-            merged_csv_path = f"{base}_merged.csv"
+            merged_csv_path = f"{base}_final.csv"
             if self.save_trajectories_to_csv(resolved_trajectories, merged_csv_path):
                 # Track initial tracking CSV as temporary
                 if raw_csv_path not in self.temporary_files:
                     self.temporary_files.append(raw_csv_path)
                 logger.info(f"✓ Merged trajectory data saved to: {merged_csv_path}")
 
-        # Complete the tracking session
+        # Generate video from post-processed trajectories if enabled
+        if self.check_video_output.isChecked() and self.video_out_line.text():
+            self._generate_video_from_trajectories(
+                resolved_trajectories, merged_csv_path
+            )
+        else:
+            # Complete the tracking session without video generation
+            self._finish_tracking_session()
+
+    def _generate_video_from_trajectories(self, trajectories_df, csv_path=None):
+        """
+        Generate annotated video from post-processed trajectories.
+
+        Args:
+            trajectories_df: DataFrame with merged/interpolated trajectories
+            csv_path: Path to the CSV file (optional, for logging)
+        """
+        logger.info("=" * 80)
+        logger.info("Generating video from post-processed trajectories...")
+        logger.info("=" * 80)
+
+        video_path = self.file_line.text()
+        output_path = self.video_out_line.text()
+
+        if not video_path or not output_path:
+            logger.error("Video input or output path not specified")
+            self._finish_tracking_session()
+            return
+
+        # Open video
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.error(f"Failed to open video: {video_path}")
+            self._finish_tracking_session()
+            return
+
+        # Get video properties
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        # Create video writer
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+
+        if not out.isOpened():
+            logger.error(f"Failed to create output video: {output_path}")
+            cap.release()
+            self._finish_tracking_session()
+            return
+
+        logger.info(f"Writing video: {frame_width}x{frame_height} @ {fps} FPS")
+        logger.info(f"Total frames: {total_frames}")
+
+        # Get visualization parameters
+        params = self.get_parameters_dict()
+        colors = params.get("TRAJECTORY_COLORS", [])
+        reference_body_size = params.get("REFERENCE_BODY_SIZE", 30.0)
+        resize_factor = params.get("RESIZE_FACTOR", 1.0)
+
+        # Get video visualization settings
+        show_labels = self.check_show_labels.isChecked()
+        show_orientation = self.check_show_orientation.isChecked()
+        show_trails = self.check_show_trails.isChecked()
+        trail_duration_sec = self.spin_trail_duration.value()
+        trail_duration_frames = int(
+            trail_duration_sec * fps
+        )  # Convert seconds to frames
+        marker_size = self.spin_marker_size.value()
+        text_scale = self.spin_text_scale.value()
+        arrow_length = self.spin_arrow_length.value()
+
+        # Convert parameters from resized to original coordinates
+        # Trajectories are stored in resized coordinates, need to scale back
+        scale_to_original = 1.0 / resize_factor
+
+        # Scale drawing parameters by body size (in original coordinates)
+        marker_radius = int(marker_size * reference_body_size)
+        arrow_len = int(arrow_length * reference_body_size)
+        text_size = 0.5 * text_scale
+        marker_thickness = max(2, int(0.15 * reference_body_size))
+
+        # Build lookup for trajectories by frame and track
+        traj_by_frame = {}
+        traj_by_track = {}  # For trails
+        for _, row in trajectories_df.iterrows():
+            frame_num = int(row["FrameID"])
+            track_id = int(row["TrajectoryID"])
+
+            if frame_num not in traj_by_frame:
+                traj_by_frame[frame_num] = []
+            traj_by_frame[frame_num].append(row)
+
+            if track_id not in traj_by_track:
+                traj_by_track[track_id] = []
+            traj_by_track[track_id].append(row)
+
+        # Process video frame by frame
+        self.progress_label.setText("Generating video...")
+        for frame_idx in range(total_frames):
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Get trajectories for this frame
+            frame_trajs = traj_by_frame.get(frame_idx, [])
+
+            # Draw trails first (underneath current positions)
+            if show_trails:
+                for traj in frame_trajs:
+                    track_id = int(traj["TrajectoryID"])
+
+                    # Get color for this track
+                    if colors and track_id < len(colors):
+                        color = colors[track_id]
+                    else:
+                        default_colors = [
+                            (0, 255, 0),
+                            (255, 0, 0),
+                            (0, 0, 255),
+                            (255, 255, 0),
+                        ]
+                        color = default_colors[track_id % len(default_colors)]
+
+                    # Get trail points (past N frames based on duration in seconds)
+                    trail_points = []
+                    if track_id in traj_by_track:
+                        for past_row in traj_by_track[track_id]:
+                            past_frame = int(past_row["FrameID"])
+                            if (
+                                frame_idx - trail_duration_frames
+                                <= past_frame
+                                < frame_idx
+                            ):
+                                px, py = past_row["X"], past_row["Y"]
+                                if not pd.isna(px) and not pd.isna(py):
+                                    # Scale to original coordinates
+                                    px_orig = int(px * scale_to_original)
+                                    py_orig = int(py * scale_to_original)
+                                    trail_points.append((px_orig, py_orig, past_frame))
+
+                    # Draw trail as fading line segments
+                    if len(trail_points) > 1:
+                        trail_points.sort(key=lambda p: p[2])  # Sort by frame
+                        for i in range(len(trail_points) - 1):
+                            pt1 = (trail_points[i][0], trail_points[i][1])
+                            pt2 = (trail_points[i + 1][0], trail_points[i + 1][1])
+
+                            # Calculate opacity based on age
+                            age = frame_idx - trail_points[i][2]
+                            alpha = 1.0 - (age / trail_duration_frames)
+                            faded_color = tuple(int(c * alpha) for c in color)
+
+                            cv2.line(
+                                frame,
+                                pt1,
+                                pt2,
+                                faded_color,
+                                max(1, marker_thickness // 2),
+                            )
+
+            # Draw current positions
+            for traj in frame_trajs:
+                track_id = int(traj["TrajectoryID"])
+                cx, cy = traj["X"], traj["Y"]
+
+                # Skip if NaN
+                if pd.isna(cx) or pd.isna(cy):
+                    continue
+
+                # Scale to original coordinates
+                cx_orig = int(cx * scale_to_original)
+                cy_orig = int(cy * scale_to_original)
+
+                # Get color for this track
+                if colors and track_id < len(colors):
+                    color = colors[track_id]
+                else:
+                    default_colors = [
+                        (0, 255, 0),
+                        (255, 0, 0),
+                        (0, 0, 255),
+                        (255, 255, 0),
+                    ]
+                    color = default_colors[track_id % len(default_colors)]
+
+                # Draw circle at position
+                cv2.circle(
+                    frame, (cx_orig, cy_orig), marker_radius, color, marker_thickness
+                )
+
+                # Draw label
+                if show_labels:
+                    label = f"ID{track_id}"
+                    label_offset = int(marker_radius + 5)
+                    cv2.putText(
+                        frame,
+                        label,
+                        (cx_orig + label_offset, cy_orig - label_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        text_size,
+                        color,
+                        max(1, int(text_scale * 2)),
+                    )
+
+                # Draw orientation if available
+                if show_orientation and "Theta" in traj and not pd.isna(traj["Theta"]):
+                    heading = traj["Theta"]
+                    end_x = int(cx_orig + arrow_len * np.cos(heading))
+                    end_y = int(cy_orig + arrow_len * np.sin(heading))
+                    cv2.arrowedLine(
+                        frame,
+                        (cx_orig, cy_orig),
+                        (end_x, end_y),
+                        color,
+                        marker_thickness,
+                        tipLength=0.3,
+                    )
+
+            # Write frame
+            out.write(frame)
+
+            # Update progress every 30 frames
+            if frame_idx % 30 == 0:
+                progress = int((frame_idx / total_frames) * 100)
+                self.progress_bar.setValue(progress)
+                QApplication.processEvents()
+
+        # Cleanup
+        cap.release()
+        out.release()
+
+        logger.info(f"✓ Video saved to: {output_path}")
+        logger.info("=" * 80)
+
+        # Now finish tracking session
         self._finish_tracking_session()
 
     @Slot(bool, list, list)
@@ -5840,11 +6168,10 @@ class MainWindow(QMainWindow):
             self.csv_writer_thread = CSVWriterThread(csv_path, header=hdr)
             self.csv_writer_thread.start()
 
-        video_output_path = (
-            self.video_out_line.text()
-            if (self.check_video_output.isChecked() and self.video_out_line.text())
-            else None
-        )
+        # Video output is no longer generated during tracking
+        # Instead, it's generated from post-processed trajectories after merging
+        # This ensures the video shows clean, merged trajectories with stable IDs
+        video_output_path = None
 
         # Generate detection cache path based on video
         # Cache is needed for:
@@ -6306,10 +6633,10 @@ class MainWindow(QMainWindow):
                     found = True
                     break
             if not found:
+                # Model not in dropdown, use custom model
                 self.combo_yolo_model.setCurrentIndex(self.combo_yolo_model.count() - 1)
-                if not self.yolo_custom_model_line.text().strip():
-                    # Use resolved path in UI
-                    self.yolo_custom_model_line.setText(resolved_yolo_model)
+                # Always update custom model line with resolved path
+                self.yolo_custom_model_line.setText(resolved_yolo_model)
 
             self.spin_yolo_confidence.setValue(
                 get_cfg("yolo_confidence_threshold", default=0.25)
@@ -6479,6 +6806,23 @@ class MainWindow(QMainWindow):
                 get_cfg("cleanup_temp_files", default=True)
             )
 
+            # === VIDEO VISUALIZATION ===
+            self.check_show_labels.setChecked(
+                get_cfg("video_show_labels", default=True)
+            )
+            self.check_show_orientation.setChecked(
+                get_cfg("video_show_orientation", default=True)
+            )
+            self.check_show_trails.setChecked(
+                get_cfg("video_show_trails", default=False)
+            )
+            self.spin_trail_duration.setValue(
+                get_cfg("video_trail_duration", default=1.0)
+            )
+            self.spin_marker_size.setValue(get_cfg("video_marker_size", default=0.5))
+            self.spin_text_scale.setValue(get_cfg("video_text_scale", default=1.0))
+            self.spin_arrow_length.setValue(get_cfg("video_arrow_length", default=1.5))
+
             # === REAL-TIME ANALYTICS ===
             self.enable_histograms.setChecked(
                 get_cfg("enable_histograms", default=False)
@@ -6528,7 +6872,7 @@ class MainWindow(QMainWindow):
                 get_cfg("dataset_class_name", default="object")
             )
             # Skip output directory in preset mode
-            if not preset_mode and not self.line_dataset_output.text().strip():
+            if not preset_mode:
                 self.line_dataset_output.setText(
                     get_cfg("dataset_output_dir", default="")
                 )
@@ -6642,7 +6986,7 @@ class MainWindow(QMainWindow):
                 get_cfg("individual_dataset_name", default="individual_dataset")
             )
             # Skip output directory in preset mode
-            if not preset_mode and not self.line_individual_output.text().strip():
+            if not preset_mode:
                 self.line_individual_output.setText(
                     get_cfg("individual_dataset_output_dir", default="")
                 )
@@ -6856,6 +7200,14 @@ class MainWindow(QMainWindow):
                 "interpolation_method": self.combo_interpolation_method.currentText(),
                 "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
                 "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
+                # === VIDEO VISUALIZATION ===
+                "video_show_labels": self.check_show_labels.isChecked(),
+                "video_show_orientation": self.check_show_orientation.isChecked(),
+                "video_show_trails": self.check_show_trails.isChecked(),
+                "video_trail_duration": self.spin_trail_duration.value(),
+                "video_marker_size": self.spin_marker_size.value(),
+                "video_text_scale": self.spin_text_scale.value(),
+                "video_arrow_length": self.spin_arrow_length.value(),
                 # === REAL-TIME ANALYTICS ===
                 "enable_histograms": self.enable_histograms.isChecked(),
                 "histogram_history_frames": self.spin_histogram_history.value(),

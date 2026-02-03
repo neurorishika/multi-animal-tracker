@@ -357,7 +357,7 @@ mat
 # 5. Outputs:
 #    - video_forward.csv
 #    - video_backward.csv
-#    - video_merged.csv (use this one!)
+#    - video_final.csv (use this one!)
 #    - video_detection_cache.npz (auto-deleted)
 ```
 
@@ -650,7 +650,7 @@ Frame 3 →            ← Frame 998          resolution
 Frame 1000 →         ← Frame 1
 
    ↓                      ↓                    ↓
-*_forward.csv      *_backward.csv       *_merged.csv
+*_forward.csv      *_backward.csv       *_final.csv
                                          (USE THIS!)
 ```
 
@@ -673,7 +673,7 @@ Frame 1000 →         ← Frame 1
 - Aligns forward and backward trajectories
 - Resolves ID switches and occlusions
 - Fills gaps using bidirectional context
-- Outputs: `*_merged.csv` (final result)
+- Outputs: `*_final.csv` (final result)
 - Time: ~5% of forward pass
 
 **Total Time**: ~135-155% of single-pass tracking for significantly improved accuracy

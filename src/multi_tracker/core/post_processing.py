@@ -364,6 +364,9 @@ def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, param
     if params is None:
         params = {}
 
+    # Thresholds are already in scaled pixel units from get_parameters_dict()
+    # UI values (body sizes) are multiplied by scaled_body_size (reference_body_size * resize_factor)
+    # So these values are already correct for the resized coordinate system
     TRUE_OVERLAP_THRESHOLD = params.get("TRUE_OVERLAP_THRESHOLD", 30.0)
     COMMONALITY_THRESHOLD = params.get("COMMONALITY_THRESHOLD", 10.0)
     MIN_LENGTH = params.get("MIN_TRAJECTORY_LENGTH", 5)
