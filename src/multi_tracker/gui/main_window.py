@@ -2621,6 +2621,45 @@ class MainWindow(QMainWindow):
         )
         f_pp.addRow("Max Interpolation Gap:", self.spin_interpolation_max_gap)
 
+        # Trajectory Merging Settings
+        self.spin_merge_overlap_multiplier = QDoubleSpinBox()
+        self.spin_merge_overlap_multiplier.setRange(0.1, 10.0)
+        self.spin_merge_overlap_multiplier.setSingleStep(0.1)
+        self.spin_merge_overlap_multiplier.setDecimals(2)
+        self.spin_merge_overlap_multiplier.setValue(1.0)
+        self.spin_merge_overlap_multiplier.setToolTip(
+            "Overlap threshold for merging forward/backward trajectories (×body size).\n"
+            "Trajectories must be within this distance to merge.\n"
+            "Larger values = more permissive merging.\n"
+            "Recommended: 0.8-1.5× body size."
+        )
+        f_pp.addRow("Merge Overlap (×body):", self.spin_merge_overlap_multiplier)
+
+        self.spin_merge_commonality_multiplier = QDoubleSpinBox()
+        self.spin_merge_commonality_multiplier.setRange(0.1, 5.0)
+        self.spin_merge_commonality_multiplier.setSingleStep(0.05)
+        self.spin_merge_commonality_multiplier.setDecimals(2)
+        self.spin_merge_commonality_multiplier.setValue(0.33)
+        self.spin_merge_commonality_multiplier.setToolTip(
+            "Commonality threshold for trajectory merging (×body size).\n"
+            "Trajectories must have consistent overlap within this distance.\n"
+            "Smaller values = stricter merging (avoids false merges).\n"
+            "Recommended: 0.25-0.5× body size."
+        )
+        f_pp.addRow(
+            "Merge Commonality (×body):", self.spin_merge_commonality_multiplier
+        )
+
+        self.spin_max_merge_iterations = QSpinBox()
+        self.spin_max_merge_iterations.setRange(1, 50)
+        self.spin_max_merge_iterations.setValue(10)
+        self.spin_max_merge_iterations.setToolTip(
+            "Maximum iterations for trajectory merging (1-50).\n"
+            "More iterations allow complex merging scenarios.\n"
+            "Recommended: 10 iterations for most cases."
+        )
+        f_pp.addRow("Max Merge Iterations:", self.spin_max_merge_iterations)
+
         # Cleanup option
         self.chk_cleanup_temp_files = QCheckBox("Auto-cleanup temporary files")
         self.chk_cleanup_temp_files.setChecked(True)
@@ -6389,6 +6428,15 @@ class MainWindow(QMainWindow):
             "ENABLE_HISTOGRAMS": self.enable_histograms.isChecked(),
             "HISTOGRAM_HISTORY_FRAMES": self.spin_histogram_history.value(),
             "ROI_MASK": self.roi_mask,
+            "REFERENCE_BODY_SIZE": reference_body_size,
+            # Trajectory merging thresholds (in resized coordinate space)
+            # These are used in resolve_trajectories() for bidirectional merging
+            # Use loaded values or defaults if not set
+            "TRUE_OVERLAP_THRESHOLD": self.spin_merge_overlap_multiplier.value()
+            * scaled_body_size,
+            "COMMONALITY_THRESHOLD": self.spin_merge_commonality_multiplier.value()
+            * scaled_body_size,
+            "MAX_MERGE_ITERATIONS": self.spin_max_merge_iterations.value(),
             # Dataset generation parameters
             "ENABLE_DATASET_GENERATION": self.chk_enable_dataset_gen.isChecked(),
             "DATASET_NAME": self.line_dataset_name.text(),
@@ -6803,6 +6851,20 @@ class MainWindow(QMainWindow):
                 get_cfg("cleanup_temp_files", default=True)
             )
 
+            # === TRAJECTORY MERGING ===
+            # These are stored in config but don't have UI controls
+            # They are used directly in get_parameters_dict() via the saved values
+            # Defaults: overlap=2.0×body, commonality=0.67×body, iterations=10
+            self.spin_merge_overlap_multiplier.setValue(
+                get_cfg("merge_overlap_threshold_multiplier", default=1.0)
+            )
+            self.spin_merge_commonality_multiplier.setValue(
+                get_cfg("merge_commonality_threshold_multiplier", default=0.33)
+            )
+            self.spin_max_merge_iterations.setValue(
+                get_cfg("max_merge_iterations", default=10)
+            )
+
             # === VIDEO VISUALIZATION ===
             self.check_show_labels.setChecked(
                 get_cfg("video_show_labels", default=True)
@@ -7197,6 +7259,11 @@ class MainWindow(QMainWindow):
                 "interpolation_method": self.combo_interpolation_method.currentText(),
                 "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
                 "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
+                # === TRAJECTORY MERGING ===
+                # These are stored as multipliers and converted to pixels in get_parameters_dict()
+                "merge_overlap_threshold_multiplier": self.spin_merge_overlap_multiplier.value(),
+                "merge_commonality_threshold_multiplier": self.spin_merge_commonality_multiplier.value(),
+                "max_merge_iterations": self.spin_max_merge_iterations.value(),
                 # === VIDEO VISUALIZATION ===
                 "video_show_labels": self.check_show_labels.isChecked(),
                 "video_show_orientation": self.check_show_orientation.isChecked(),
