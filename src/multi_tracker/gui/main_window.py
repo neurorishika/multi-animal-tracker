@@ -2573,18 +2573,6 @@ class MainWindow(QMainWindow):
         )
         f_pp.addRow("Max Velocity Break (body/s):", self.spin_max_velocity_break)
 
-        self.spin_max_distance_break = QDoubleSpinBox()
-        self.spin_max_distance_break.setRange(1.0, 50.0)
-        self.spin_max_distance_break.setSingleStep(0.5)
-        self.spin_max_distance_break.setDecimals(2)
-        self.spin_max_distance_break.setValue(15.0)
-        self.spin_max_distance_break.setToolTip(
-            "Maximum distance jump before breaking trajectory (×body size, 1-50).\n"
-            "Splits tracks at unrealistic position jumps (likely identity swaps).\n"
-            "Recommended: 10-20× body size."
-        )
-        f_pp.addRow("Max Distance Break (×body):", self.spin_max_distance_break)
-
         self.spin_max_occlusion_gap = QSpinBox()
         self.spin_max_occlusion_gap.setRange(0, 200)
         self.spin_max_occlusion_gap.setValue(30)
@@ -2621,44 +2609,30 @@ class MainWindow(QMainWindow):
         )
         f_pp.addRow("Max Interpolation Gap:", self.spin_interpolation_max_gap)
 
-        # Trajectory Merging Settings
+        # Trajectory Merging Settings (Conservative Strategy)
         self.spin_merge_overlap_multiplier = QDoubleSpinBox()
         self.spin_merge_overlap_multiplier.setRange(0.1, 10.0)
         self.spin_merge_overlap_multiplier.setSingleStep(0.1)
         self.spin_merge_overlap_multiplier.setDecimals(2)
-        self.spin_merge_overlap_multiplier.setValue(1.0)
+        self.spin_merge_overlap_multiplier.setValue(0.5)
         self.spin_merge_overlap_multiplier.setToolTip(
-            "Overlap threshold for merging forward/backward trajectories (×body size).\n"
-            "Trajectories must be within this distance to merge.\n"
-            "Larger values = more permissive merging.\n"
-            "Recommended: 0.8-1.5× body size."
+            "Agreement distance for merging forward/backward trajectories (×body size).\n"
+            "Frames where both trajectories are within this distance are considered 'agreeing'.\n"
+            "Disagreeing frames cause trajectory splits for conservative identity handling.\n"
+            "Recommended: 0.3-0.7× body size."
         )
-        f_pp.addRow("Merge Overlap (×body):", self.spin_merge_overlap_multiplier)
+        f_pp.addRow("Agreement Distance (×body):", self.spin_merge_overlap_multiplier)
 
-        self.spin_merge_commonality_multiplier = QDoubleSpinBox()
-        self.spin_merge_commonality_multiplier.setRange(0.1, 5.0)
-        self.spin_merge_commonality_multiplier.setSingleStep(0.05)
-        self.spin_merge_commonality_multiplier.setDecimals(2)
-        self.spin_merge_commonality_multiplier.setValue(0.33)
-        self.spin_merge_commonality_multiplier.setToolTip(
-            "Commonality threshold for trajectory merging (×body size).\n"
-            "Trajectories must have consistent overlap within this distance.\n"
-            "Smaller values = stricter merging (avoids false merges).\n"
-            "Recommended: 0.25-0.5× body size."
+        self.spin_min_overlap_frames = QSpinBox()
+        self.spin_min_overlap_frames.setRange(1, 100)
+        self.spin_min_overlap_frames.setValue(5)
+        self.spin_min_overlap_frames.setToolTip(
+            "Minimum agreeing frames required to consider trajectories as merge candidates.\n"
+            "Forward/backward trajectory pairs need at least this many frames within\n"
+            "the agreement distance to be merged. Higher = more conservative.\n"
+            "Recommended: 5-15 frames."
         )
-        f_pp.addRow(
-            "Merge Commonality (×body):", self.spin_merge_commonality_multiplier
-        )
-
-        self.spin_max_merge_iterations = QSpinBox()
-        self.spin_max_merge_iterations.setRange(1, 50)
-        self.spin_max_merge_iterations.setValue(10)
-        self.spin_max_merge_iterations.setToolTip(
-            "Maximum iterations for trajectory merging (1-50).\n"
-            "More iterations allow complex merging scenarios.\n"
-            "Recommended: 10 iterations for most cases."
-        )
-        f_pp.addRow("Max Merge Iterations:", self.spin_max_merge_iterations)
+        f_pp.addRow("Min Overlap Frames:", self.spin_min_overlap_frames)
 
         # Cleanup option
         self.chk_cleanup_temp_files = QCheckBox("Auto-cleanup temporary files")
@@ -5618,8 +5592,11 @@ class MainWindow(QMainWindow):
             base, ext = os.path.splitext(raw_csv_path)
             merged_csv_path = f"{base}_final.csv"
             if self.save_trajectories_to_csv(resolved_trajectories, merged_csv_path):
-                # Track initial tracking CSV as temporary
-                if raw_csv_path not in self.temporary_files:
+                # Track initial tracking CSV as temporary (only if cleanup enabled)
+                if (
+                    self.chk_cleanup_temp_files.isChecked()
+                    and raw_csv_path not in self.temporary_files
+                ):
                     self.temporary_files.append(raw_csv_path)
                 logger.info(f"✓ Merged trajectory data saved to: {merged_csv_path}")
 
@@ -5947,16 +5924,21 @@ class MainWindow(QMainWindow):
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
                     base, ext = os.path.splitext(raw_csv_path)
-                    # Track intermediate forward CSV as temporary (always removed)
+                    # Track intermediate forward CSV as temporary (only if cleanup enabled)
                     forward_csv = f"{base}_forward{ext}"
-                    if forward_csv not in self.temporary_files:
+                    if (
+                        self.chk_cleanup_temp_files.isChecked()
+                        and forward_csv not in self.temporary_files
+                    ):
                         self.temporary_files.append(forward_csv)
 
                     processed_csv_path = f"{base}_forward_processed{ext}"
                     # Only track processed CSV as temporary if backward tracking will run
-                    # (it will be merged into final file). Otherwise, this IS the final file.
+                    # and cleanup is enabled (it will be merged into final file).
+                    # Otherwise, this IS the final file.
                     if (
                         is_backward_enabled
+                        and self.chk_cleanup_temp_files.isChecked()
                         and processed_csv_path not in self.temporary_files
                     ):
                         self.temporary_files.append(processed_csv_path)
@@ -6001,14 +5983,20 @@ class MainWindow(QMainWindow):
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
                     base, ext = os.path.splitext(raw_csv_path)
-                    # Track intermediate backward CSV as temporary
+                    # Track intermediate backward CSV as temporary (only if cleanup enabled)
                     backward_csv = f"{base}_backward{ext}"
-                    if backward_csv not in self.temporary_files:
+                    if (
+                        self.chk_cleanup_temp_files.isChecked()
+                        and backward_csv not in self.temporary_files
+                    ):
                         self.temporary_files.append(backward_csv)
 
                     processed_csv_path = f"{base}_backward_processed{ext}"
-                    # Track processed CSV as temporary
-                    if processed_csv_path not in self.temporary_files:
+                    # Track processed CSV as temporary (only if cleanup enabled)
+                    if (
+                        self.chk_cleanup_temp_files.isChecked()
+                        and processed_csv_path not in self.temporary_files
+                    ):
                         self.temporary_files.append(processed_csv_path)
                     self.save_trajectories_to_csv(
                         processed_trajectories, processed_csv_path
@@ -6198,9 +6186,12 @@ class MainWindow(QMainWindow):
                     "State",
                 ]
             csv_path = self.csv_line.text()
+            base, ext = os.path.splitext(csv_path)
             if backward_mode:
-                base, ext = os.path.splitext(csv_path)
                 csv_path = f"{base}_backward{ext}"
+            elif self.chk_enable_backward.isChecked():
+                # Forward mode with backward tracking enabled - save as _forward.csv
+                csv_path = f"{base}_forward{ext}"
             self.csv_writer_thread = CSVWriterThread(csv_path, header=hdr)
             self.csv_writer_thread.start()
 
@@ -6227,8 +6218,11 @@ class MainWindow(QMainWindow):
             base_name = os.path.splitext(video_path)[0]
             detection_cache_path = f"{base_name}_detection_cache.npz"
 
-            # Track cache file as temporary
-            if detection_cache_path not in self.temporary_files:
+            # Track cache file as temporary (only if cleanup enabled)
+            if (
+                self.chk_cleanup_temp_files.isChecked()
+                and detection_cache_path not in self.temporary_files
+            ):
                 self.temporary_files.append(detection_cache_path)
 
         self.tracking_worker = TrackingWorker(
@@ -6319,9 +6313,6 @@ class MainWindow(QMainWindow):
         min_respawn_distance_pixels = (
             self.spin_min_respawn_distance.value() * scaled_body_size
         )
-        max_distance_break_pixels = (
-            self.spin_max_distance_break.value() * scaled_body_size
-        )
 
         # Convert time-based velocities to frame-based for tracking
         fps = self.spin_fps.value()
@@ -6367,7 +6358,6 @@ class MainWindow(QMainWindow):
             "ENABLE_POSTPROCESSING": self.enable_postprocessing.isChecked(),
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
             "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
-            "MAX_DISTANCE_BREAK": max_distance_break_pixels,
             "MAX_OCCLUSION_GAP": self.spin_max_occlusion_gap.value(),
             "CONTINUITY_THRESHOLD": recovery_search_distance_pixels,
             "MIN_RESPAWN_DISTANCE": min_respawn_distance_pixels,
@@ -6429,14 +6419,13 @@ class MainWindow(QMainWindow):
             "HISTOGRAM_HISTORY_FRAMES": self.spin_histogram_history.value(),
             "ROI_MASK": self.roi_mask,
             "REFERENCE_BODY_SIZE": reference_body_size,
-            # Trajectory merging thresholds (in resized coordinate space)
+            # Conservative trajectory merging parameters (in resized coordinate space)
             # These are used in resolve_trajectories() for bidirectional merging
-            # Use loaded values or defaults if not set
-            "TRUE_OVERLAP_THRESHOLD": self.spin_merge_overlap_multiplier.value()
+            # AGREEMENT_DISTANCE: max distance for frames to be considered "agreeing"
+            # MIN_OVERLAP_FRAMES: minimum agreeing frames to consider merge candidates
+            "AGREEMENT_DISTANCE": self.spin_merge_overlap_multiplier.value()
             * scaled_body_size,
-            "COMMONALITY_THRESHOLD": self.spin_merge_commonality_multiplier.value()
-            * scaled_body_size,
-            "MAX_MERGE_ITERATIONS": self.spin_max_merge_iterations.value(),
+            "MIN_OVERLAP_FRAMES": self.spin_min_overlap_frames.value(),
             # Dataset generation parameters
             "ENABLE_DATASET_GENERATION": self.chk_enable_dataset_gen.isChecked(),
             "DATASET_NAME": self.line_dataset_name.text(),
@@ -6832,9 +6821,6 @@ class MainWindow(QMainWindow):
             self.spin_max_velocity_break.setValue(
                 get_cfg("max_velocity_break", default=50.0)
             )
-            self.spin_max_distance_break.setValue(
-                get_cfg("max_distance_break_multiplier", default=15.0)
-            )
             self.spin_max_occlusion_gap.setValue(
                 get_cfg("max_occlusion_gap", default=30)
             )
@@ -6851,18 +6837,13 @@ class MainWindow(QMainWindow):
                 get_cfg("cleanup_temp_files", default=True)
             )
 
-            # === TRAJECTORY MERGING ===
-            # These are stored in config but don't have UI controls
-            # They are used directly in get_parameters_dict() via the saved values
-            # Defaults: overlap=2.0×body, commonality=0.67×body, iterations=10
+            # === TRAJECTORY MERGING (Conservative Strategy) ===
+            # Agreement distance and min overlap frames for conservative merging
             self.spin_merge_overlap_multiplier.setValue(
-                get_cfg("merge_overlap_threshold_multiplier", default=1.0)
+                get_cfg("merge_agreement_distance_multiplier", default=0.5)
             )
-            self.spin_merge_commonality_multiplier.setValue(
-                get_cfg("merge_commonality_threshold_multiplier", default=0.33)
-            )
-            self.spin_max_merge_iterations.setValue(
-                get_cfg("max_merge_iterations", default=10)
+            self.spin_min_overlap_frames.setValue(
+                get_cfg("min_overlap_frames", default=5)
             )
 
             # === VIDEO VISUALIZATION ===
@@ -7254,16 +7235,14 @@ class MainWindow(QMainWindow):
                 "enable_postprocessing": self.enable_postprocessing.isChecked(),
                 "min_trajectory_length": self.spin_min_trajectory_length.value(),
                 "max_velocity_break": self.spin_max_velocity_break.value(),
-                "max_distance_break_multiplier": self.spin_max_distance_break.value(),
                 "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
                 "interpolation_method": self.combo_interpolation_method.currentText(),
                 "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
                 "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
-                # === TRAJECTORY MERGING ===
-                # These are stored as multipliers and converted to pixels in get_parameters_dict()
-                "merge_overlap_threshold_multiplier": self.spin_merge_overlap_multiplier.value(),
-                "merge_commonality_threshold_multiplier": self.spin_merge_commonality_multiplier.value(),
-                "max_merge_iterations": self.spin_max_merge_iterations.value(),
+                # === TRAJECTORY MERGING (Conservative Strategy) ===
+                # Agreement distance and min overlap frames for conservative merging
+                "merge_agreement_distance_multiplier": self.spin_merge_overlap_multiplier.value(),
+                "min_overlap_frames": self.spin_min_overlap_frames.value(),
                 # === VIDEO VISUALIZATION ===
                 "video_show_labels": self.check_show_labels.isChecked(),
                 "video_show_orientation": self.check_show_orientation.isChecked(),

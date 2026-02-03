@@ -68,7 +68,6 @@
   "enable_postprocessing": true,
   "min_trajectory_length": 10,
   "max_velocity_break": 100.0,
-  "max_distance_break_multiplier": 4.5,
   "max_occlusion_gap": 5,
   "interpolation_method": "Linear",
   "interpolation_max_gap": 5,

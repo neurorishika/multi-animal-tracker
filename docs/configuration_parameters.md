@@ -210,8 +210,7 @@ This document provides a comprehensive reference of all configurable parameters 
 |-----------|------------|------|---------|-------|-------------|
 | Enable Post-processing | `enable_postprocessing` | bool | `true` | - | Automatically clean trajectories |
 | Min Trajectory Length | `min_trajectory_length` | int | `10` | 1-1000 | Remove trajectories shorter than this (frames) |
-| Max Velocity Break | `max_velocity_break` | float | `50.0` | 1.0-500.0 | Maximum velocity (body-sizes/second) before breaking trajectory |
-| Max Distance Break | `max_distance_break_multiplier` | float | `15.0` | 1.0-50.0 | Maximum distance jump before breaking trajectory (×body size) |
+| Max Velocity Break | `max_velocity_break` | float | `50.0` | 1.0-500.0 | Maximum velocity (body-sizes/second) before breaking trajectory. Distance threshold is computed dynamically as velocity × frame_gap. |
 | Max Occlusion Gap | `max_occlusion_gap` | int | `30` | 0-200 | Maximum consecutive occluded frames before splitting trajectory |
 
 ### Interpolation

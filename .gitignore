@@ -385,3 +385,5 @@ profiling/
 *.pt
 # Custom user presets (gitignored)
 configs/custom.json
+
+*.mp4
