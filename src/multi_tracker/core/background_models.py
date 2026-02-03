@@ -308,7 +308,7 @@ class BackgroundModel:
                 )
 
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            gray = apply_image_adjustments(gray, br, ct, gm)
+            gray = apply_image_adjustments(gray, br, ct, gm, self.use_gpu)
 
             if roi_resized is not None:
                 roi_pixels = gray[roi_resized > 0]

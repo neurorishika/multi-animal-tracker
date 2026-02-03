@@ -3092,7 +3092,8 @@ class MainWindow(QMainWindow):
 
     def _on_individual_analysis_toggled(self, state):
         """Enable/disable individual analysis controls."""
-        enabled = state == Qt.Checked
+        # Directly check checkbox state for reliability
+        enabled = self.chk_enable_individual_analysis.isChecked()
         self.g_identity.setEnabled(enabled)
 
     def _on_identity_method_changed(self, index):
@@ -3126,7 +3127,8 @@ class MainWindow(QMainWindow):
 
     def _on_yolo_batching_toggled(self, state):
         """Enable/disable YOLO batching controls based on checkbox."""
-        enabled = state == Qt.Checked
+        # Directly check checkbox state for reliability
+        enabled = self.chk_enable_yolo_batching.isChecked()
         self.combo_yolo_batch_mode.setEnabled(enabled)
         # Manual batch size only enabled if batching is on AND mode is Manual
         manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
@@ -3141,7 +3143,8 @@ class MainWindow(QMainWindow):
 
     def _on_tensorrt_toggled(self, state):
         """Enable/disable TensorRT batch size control based on checkbox."""
-        enabled = state == Qt.Checked
+        # Directly check checkbox state for reliability
+        enabled = self.chk_enable_tensorrt.isChecked()
         self.spin_tensorrt_batch.setEnabled(enabled)
         self.lbl_tensorrt_batch.setEnabled(enabled)
 
@@ -3502,7 +3505,10 @@ class MainWindow(QMainWindow):
         if is_background_subtraction:
             # Background subtraction uses grayscale with adjustments
             gray = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2GRAY)
-            adjusted = apply_image_adjustments(gray, brightness, contrast, gamma)
+            # GPU not needed for preview - single frame
+            adjusted = apply_image_adjustments(
+                gray, brightness, contrast, gamma, use_gpu=False
+            )
             # Convert back to RGB for display
             adjusted_rgb = cv2.cvtColor(adjusted, cv2.COLOR_GRAY2RGB)
         else:
@@ -3670,11 +3676,13 @@ class MainWindow(QMainWindow):
                     )
 
                 gray = cv2.cvtColor(frame_to_process, cv2.COLOR_BGR2GRAY)
+                # GPU not needed for single-frame test
                 gray = apply_image_adjustments(
                     gray,
                     bg_params["BRIGHTNESS"],
                     bg_params["CONTRAST"],
                     bg_params["GAMMA"],
+                    use_gpu=False,
                 )
 
                 # Apply ROI mask if exists (resize it too if needed)
@@ -5950,12 +5958,17 @@ class MainWindow(QMainWindow):
                     self.video_out_line.setText(saved_video_path)
 
             # === REFERENCE PARAMETERS ===
-            # Skip video-specific parameters in preset mode
+            # Only load video-specific reference parameters from configs (not presets)
             if not preset_mode:
-                self.spin_fps.setValue(get_cfg("fps", default=30.0))
-                self.spin_reference_body_size.setValue(
-                    get_cfg("reference_body_size", default=20.0)
-                )
+                # Load FPS if saved in config
+                saved_fps = get_cfg("fps", default=None)
+                if saved_fps is not None:
+                    self.spin_fps.setValue(saved_fps)
+                
+                # Load reference body size if saved in config
+                saved_body_size = get_cfg("reference_body_size", default=None)
+                if saved_body_size is not None:
+                    self.spin_reference_body_size.setValue(saved_body_size)
 
             # === SYSTEM PERFORMANCE ===
             self.spin_resize.setValue(get_cfg("resize_factor", default=1.0))
@@ -6476,6 +6489,9 @@ class MainWindow(QMainWindow):
                     "csv_path": self.csv_line.text(),
                     "video_output_enabled": self.check_video_output.isChecked(),
                     "video_output_path": self.video_out_line.text(),
+                    # Video-specific reference parameters
+                    "fps": self.spin_fps.value(),
+                    "reference_body_size": self.spin_reference_body_size.value(),
                 }
             )
 

@@ -526,8 +526,13 @@ class TrackingWorker(QThread):
             elif detection_method == "background_subtraction" and frame is not None:
                 # Background subtraction detection pipeline
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                use_gpu = params.get("ENABLE_GPU_BACKGROUND", False)
                 gray = apply_image_adjustments(
-                    gray, params["BRIGHTNESS"], params["CONTRAST"], params["GAMMA"]
+                    gray,
+                    params["BRIGHTNESS"],
+                    params["CONTRAST"],
+                    params["GAMMA"],
+                    use_gpu,
                 )
 
                 if params.get("ENABLE_LIGHTING_STABILIZATION", True):
@@ -539,6 +544,7 @@ class TrackingWorker(QThread):
                         ROI_mask_current,
                         params.get("LIGHTING_MEDIAN_WINDOW", 5),
                         lighting_state,
+                        use_gpu,
                     )
 
                 bg_u8 = bg_model.update_and_get_background(

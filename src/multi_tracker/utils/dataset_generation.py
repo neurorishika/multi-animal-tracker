@@ -324,23 +324,37 @@ def export_dataset(
         "frames": [],
     }
 
-    for frame_id in frames_to_export:
-        # Read frame
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
-        ret, frame = cap.read()
-        if not ret:
-            logger.warning(f"Could not read frame {frame_id}, skipping")
-            continue
+    # Determine batch size for YOLO processing
+    batch_size = 1  # Default to single frame processing
+    if (
+        detector is not None
+        and hasattr(detector, "use_tensorrt")
+        and detector.use_tensorrt
+    ):
+        if hasattr(detector, "tensorrt_batch_size"):
+            batch_size = detector.tensorrt_batch_size
+            logger.info(f"Using TensorRT batch processing with batch size {batch_size}")
 
-        # Run YOLO detection on this frame to get actual dimensions
-        # Use lower confidence threshold to get more preliminary labels for annotation
-        yolo_detections = {}  # {(cx, cy): (w, h, theta)}
-        if detector is not None:
-            try:
-                # Apply same resize factor as during tracking to match detection behavior
+    # Process frames in batches
+    frame_batches = []
+    for i in range(0, len(frames_to_export), batch_size):
+        frame_batches.append(frames_to_export[i : i + batch_size])
+
+    for batch_idx, batch_frame_ids in enumerate(frame_batches):
+        # Read all frames in this batch
+        batch_frames = []
+        batch_frames_original = []
+        valid_batch_indices = []
+
+        for idx, frame_id in enumerate(batch_frame_ids):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+            ret, frame = cap.read()
+            if ret:
+                batch_frames_original.append((frame_id, frame))
+
+                # Apply resize if needed for detection
                 resize_factor = params.get("RESIZE_FACTOR", 1.0)
                 if resize_factor != 1.0:
-                    # Resize frame for detection (matching tracking behavior)
                     h, w = frame.shape[:2]
                     new_w = int(w * resize_factor)
                     new_h = int(h * resize_factor)
@@ -348,194 +362,285 @@ def export_dataset(
                 else:
                     frame_for_detection = frame
 
-                # Run YOLO with lower confidence (0.1) to get more preliminary detections
-                # Human annotators will correct these, so we want to be inclusive
+                batch_frames.append(frame_for_detection)
+                valid_batch_indices.append(idx)
+            else:
+                logger.warning(f"Could not read frame {frame_id}, skipping")
+
+        if not batch_frames:
+            continue
+
+        # Run YOLO detection on batch
+        batch_yolo_detections = [{}] * len(
+            batch_frames
+        )  # List of {(cx, cy): (w, h, theta)} dicts
+
+        if detector is not None and batch_frames:
+            try:
                 iou_threshold = params.get("YOLO_IOU_THRESHOLD", 0.7)
                 target_classes = params.get("YOLO_TARGET_CLASSES", None)
                 max_det = params.get("MAX_TARGETS", 8) * params.get(
                     "MAX_CONTOUR_MULTIPLIER", 20
                 )
 
+                # Prepare batch for inference
+                if len(batch_frames) < batch_size:
+                    # Pad the last batch to match TensorRT batch size
+                    padding_needed = batch_size - len(batch_frames)
+                    batch_frames_padded = (
+                        batch_frames + [batch_frames[-1]] * padding_needed
+                    )
+                else:
+                    batch_frames_padded = batch_frames
+
+                # Stack into batch
+                frame_batch = np.stack(batch_frames_padded, axis=0)
+
                 try:
-                    yolo_results = detector.model.predict(
-                        frame_for_detection,
+                    # Run batched prediction
+                    results = detector.model.predict(
+                        frame_batch,
                         conf=0.1,  # Lower confidence for dataset generation
                         iou=iou_threshold,
                         classes=target_classes,
                         max_det=max_det,
                         device=detector.device,
                         verbose=False,
-                    )[0]
+                    )
+
+                    # Process results for each frame in the batch (excluding padding)
+                    for result_idx in range(len(batch_frames)):
+                        yolo_results = results[result_idx]
+                        yolo_detections = {}
+
+                        # Extract actual dimensions from YOLO results
+                        if (
+                            yolo_results is not None
+                            and hasattr(yolo_results, "obb")
+                            and yolo_results.obb is not None
+                        ):
+                            obb_data = yolo_results.obb
+                            for i in range(len(obb_data)):
+                                # Get center and dimensions from YOLO
+                                xywhr = obb_data.xywhr[i].cpu().numpy()
+                                cx_det, cy_det, w_det, h_det, angle_rad = xywhr
+
+                                # Scale back to original frame coordinates
+                                resize_factor = params.get("RESIZE_FACTOR", 1.0)
+                                scale_back = 1.0 / resize_factor
+                                cx_det = cx_det * scale_back
+                                cy_det = cy_det * scale_back
+                                w_det = w_det * scale_back
+                                h_det = h_det * scale_back
+
+                                # Ensure major axis is first (matching detection.py logic)
+                                if w_det < h_det:
+                                    w_det, h_det = h_det, w_det
+                                    angle_rad = (np.rad2deg(angle_rad) + 90) % 180
+                                    angle_rad = np.deg2rad(angle_rad)
+
+                                # Store detection keyed by position
+                                yolo_detections[(cx_det, cy_det)] = (
+                                    w_det,
+                                    h_det,
+                                    angle_rad,
+                                )
+
+                        batch_yolo_detections[result_idx] = yolo_detections
+
                 except Exception as e:
                     logger.warning(
-                        f"Direct YOLO prediction failed: {e}, using detector method"
+                        f"Batched YOLO prediction failed: {e}, falling back to single-frame processing"
                     )
-                    # Fallback to detector method
-                    meas, sizes, shapes, yolo_results, confidences = (
-                        detector.detect_objects(frame_for_detection, frame_id)
-                    )
+                    # Fallback to single-frame processing for this batch
+                    for frame_idx, frame_for_detection in enumerate(batch_frames):
+                        try:
+                            original_conf = params.get(
+                                "YOLO_CONFIDENCE_THRESHOLD", 0.25
+                            )
+                            params["YOLO_CONFIDENCE_THRESHOLD"] = 0.1
+                            try:
+                                meas, sizes, shapes, yolo_results, confidences = (
+                                    detector.detect_objects(
+                                        frame_for_detection,
+                                        batch_frame_ids[valid_batch_indices[frame_idx]],
+                                    )
+                                )
+                            finally:
+                                params["YOLO_CONFIDENCE_THRESHOLD"] = original_conf
 
-                # Extract actual dimensions from YOLO results
-                if (
-                    yolo_results is not None
-                    and hasattr(yolo_results, "obb")
-                    and yolo_results.obb is not None
-                ):
-                    obb_data = yolo_results.obb
-                    for i in range(len(obb_data)):
-                        # Get center and dimensions from YOLO
-                        xywhr = obb_data.xywhr[i].cpu().numpy()
-                        cx_det, cy_det, w_det, h_det, angle_rad = xywhr
+                            # Extract detections from results
+                            yolo_detections = {}
+                            if (
+                                yolo_results is not None
+                                and hasattr(yolo_results, "obb")
+                                and yolo_results.obb is not None
+                            ):
+                                obb_data = yolo_results.obb
+                                for i in range(len(obb_data)):
+                                    xywhr = obb_data.xywhr[i].cpu().numpy()
+                                    cx_det, cy_det, w_det, h_det, angle_rad = xywhr
+                                    resize_factor = params.get("RESIZE_FACTOR", 1.0)
+                                    scale_back = 1.0 / resize_factor
+                                    cx_det = cx_det * scale_back
+                                    cy_det = cy_det * scale_back
+                                    w_det = w_det * scale_back
+                                    h_det = h_det * scale_back
+                                    if w_det < h_det:
+                                        w_det, h_det = h_det, w_det
+                                        angle_rad = (np.rad2deg(angle_rad) + 90) % 180
+                                        angle_rad = np.deg2rad(angle_rad)
+                                    yolo_detections[(cx_det, cy_det)] = (
+                                        w_det,
+                                        h_det,
+                                        angle_rad,
+                                    )
+                            batch_yolo_detections[frame_idx] = yolo_detections
+                        except Exception as inner_e:
+                            logger.warning(
+                                f"Single-frame fallback also failed for frame {batch_frame_ids[valid_batch_indices[frame_idx]]}: {inner_e}"
+                            )
+                            batch_yolo_detections[frame_idx] = {}
 
-                        # Scale back to original frame coordinates
-                        scale_back = 1.0 / resize_factor
-                        cx_det = cx_det * scale_back
-                        cy_det = cy_det * scale_back
-                        w_det = w_det * scale_back
-                        h_det = h_det * scale_back
-
-                        # Ensure major axis is first (matching detection.py logic)
-                        if w_det < h_det:
-                            w_det, h_det = h_det, w_det
-                            angle_rad = (np.rad2deg(angle_rad) + 90) % 180
-                            angle_rad = np.deg2rad(angle_rad)
-
-                        # Store detection keyed by position
-                        yolo_detections[(cx_det, cy_det)] = (w_det, h_det, angle_rad)
-
-                logger.debug(
-                    f"Frame {frame_id}: Found {len(yolo_detections)} YOLO detections at conf=0.1"
-                )
             except Exception as e:
-                logger.warning(f"YOLO detection failed for frame {frame_id}: {e}")
+                logger.error(f"YOLO detection failed for batch {batch_idx}: {e}")
+                batch_yolo_detections = [{}] * len(batch_frames)
 
-        # Save image
-        image_filename = f"frame_{frame_id:06d}.jpg"
-        image_path = images_dir / image_filename
-        cv2.imwrite(str(image_path), frame)
+        # Now process each frame with its detections
+        for frame_idx, (frame_id, frame) in enumerate(batch_frames_original):
+            yolo_detections = batch_yolo_detections[frame_idx]
 
-        # Create YOLO format annotation
-        label_filename = f"frame_{frame_id:06d}.txt"
-        label_path = labels_dir / label_filename
+            logger.debug(
+                f"Frame {frame_id}: Found {len(yolo_detections)} YOLO detections at conf=0.1"
+            )
 
-        # Get detections for this frame from CSV
-        frame_detections = df[df["FrameID"] == frame_id]
+            # Save image
+            image_filename = f"frame_{frame_id:06d}.jpg"
+            image_path = images_dir / image_filename
+            cv2.imwrite(str(image_path), frame)
 
-        # Get resize factor to scale CSV coordinates back to original space
-        resize_factor = params.get("RESIZE_FACTOR", 1.0)
-        scale_back = 1.0 / resize_factor
+            # Create YOLO format annotation
+            label_filename = f"frame_{frame_id:06d}.txt"
+            label_path = labels_dir / label_filename
 
-        annotations = []
-        with open(label_path, "w") as f:
-            for _, detection in frame_detections.iterrows():
-                # Skip if position is NaN (occluded)
-                if pd.isna(detection["X"]) or pd.isna(detection["Y"]):
-                    continue
+            # Get detections for this frame from CSV
+            frame_detections = df[df["FrameID"] == frame_id]
 
-                # CSV coordinates are in resized frame space, scale back to original
-                cx = detection["X"] * scale_back
-                cy = detection["Y"] * scale_back
-                theta = detection["Theta"]
+            # Get resize factor to scale CSV coordinates back to original space
+            resize_factor = params.get("RESIZE_FACTOR", 1.0)
+            scale_back = 1.0 / resize_factor
 
-                # Try to find matching YOLO detection for this tracked object
-                w, h = None, None
-                if yolo_detections:
-                    # Find closest YOLO detection to this tracked position
-                    # (both are now in original frame space)
-                    min_dist = float("inf")
-                    matched_detection = None
-                    for (cx_det, cy_det), (
-                        w_det,
-                        h_det,
-                        theta_det,
-                    ) in yolo_detections.items():
-                        dist = np.sqrt((cx - cx_det) ** 2 + (cy - cy_det) ** 2)
-                        if dist < min_dist:
-                            min_dist = dist
-                            matched_detection = (w_det, h_det, theta_det)
+            annotations = []
+            with open(label_path, "w") as f:
+                for _, detection in frame_detections.iterrows():
+                    # Skip if position is NaN (occluded)
+                    if pd.isna(detection["X"]) or pd.isna(detection["Y"]):
+                        continue
 
-                    # Use YOLO dimensions if match is close enough (within 50 pixels in original space)
-                    if min_dist < 50 and matched_detection is not None:
-                        w, h, _ = (
-                            matched_detection  # Use YOLO dimensions, keep tracked theta
-                        )
+                    # CSV coordinates are in resized frame space, scale back to original
+                    cx = detection["X"] * scale_back
+                    cy = detection["Y"] * scale_back
+                    theta = detection["Theta"]
+
+                    # Try to find matching YOLO detection for this tracked object
+                    w, h = None, None
+                    if yolo_detections:
+                        # Find closest YOLO detection to this tracked position
+                        # (both are now in original frame space)
+                        min_dist = float("inf")
+                        matched_detection = None
+                        for (cx_det, cy_det), (
+                            w_det,
+                            h_det,
+                            theta_det,
+                        ) in yolo_detections.items():
+                            dist = np.sqrt((cx - cx_det) ** 2 + (cy - cy_det) ** 2)
+                            if dist < min_dist:
+                                min_dist = dist
+                                matched_detection = (w_det, h_det, theta_det)
+
+                        # Use YOLO dimensions if match is close enough (within 50 pixels in original space)
+                        if min_dist < 50 and matched_detection is not None:
+                            w, h, _ = (
+                                matched_detection  # Use YOLO dimensions, keep tracked theta
+                            )
+                            logger.debug(
+                                f"Frame {frame_id}: Matched tracking to YOLO detection (dist={min_dist:.1f})"
+                            )
+
+                    # Fallback to reference size if no YOLO match
+                    if w is None or h is None:
+                        # REFERENCE_BODY_SIZE is in original frame space, use it directly
+                        ref_size = params.get("REFERENCE_BODY_SIZE", 20.0)
+                        w = ref_size * 2.2  # Width (major axis)
+                        h = ref_size * 0.8  # Height (minor axis)
                         logger.debug(
-                            f"Frame {frame_id}: Matched tracking to YOLO detection (dist={min_dist:.1f})"
+                            f"Frame {frame_id}: Using reference size approximation"
                         )
 
-                # Fallback to reference size if no YOLO match
-                if w is None or h is None:
-                    # REFERENCE_BODY_SIZE is in original frame space, use it directly
-                    ref_size = params.get("REFERENCE_BODY_SIZE", 20.0)
-                    w = ref_size * 2.2  # Width (major axis)
-                    h = ref_size * 0.8  # Height (minor axis)
-                    logger.debug(
-                        f"Frame {frame_id}: Using reference size approximation"
+                    # Normalize to [0, 1]
+                    cx_norm = cx / frame_width
+                    cy_norm = cy / frame_height
+                    w_norm = w / frame_width
+                    h_norm = h / frame_height
+
+                    # YOLO OBB format for x-AnyLabeling: class_id x1 y1 x2 y2 x3 y3 x4 y4
+                    # Calculate 4 corner points from center, size, and rotation
+                    cos_theta = np.cos(theta)
+                    sin_theta = np.sin(theta)
+
+                    # Half dimensions
+                    hw = w / 2.0
+                    hh = h / 2.0
+
+                    # Corner points in local coordinates (centered at origin)
+                    corners_local = np.array(
+                        [
+                            [-hw, -hh],  # top-left
+                            [hw, -hh],  # top-right
+                            [hw, hh],  # bottom-right
+                            [-hw, hh],  # bottom-left
+                        ]
                     )
 
-                # Normalize to [0, 1]
-                cx_norm = cx / frame_width
-                cy_norm = cy / frame_height
-                w_norm = w / frame_width
-                h_norm = h / frame_height
+                    # Rotate corners
+                    rotation_matrix = np.array(
+                        [[cos_theta, -sin_theta], [sin_theta, cos_theta]]
+                    )
+                    corners_rotated = corners_local @ rotation_matrix.T
 
-                # YOLO OBB format for x-AnyLabeling: class_id x1 y1 x2 y2 x3 y3 x4 y4
-                # Calculate 4 corner points from center, size, and rotation
-                cos_theta = np.cos(theta)
-                sin_theta = np.sin(theta)
+                    # Translate to center position
+                    corners = corners_rotated + np.array([cx, cy])
 
-                # Half dimensions
-                hw = w / 2.0
-                hh = h / 2.0
+                    # Normalize corner points to [0, 1]
+                    corners_norm = corners.copy()
+                    corners_norm[:, 0] /= frame_width
+                    corners_norm[:, 1] /= frame_height
 
-                # Corner points in local coordinates (centered at origin)
-                corners_local = np.array(
-                    [
-                        [-hw, -hh],  # top-left
-                        [hw, -hh],  # top-right
-                        [hw, hh],  # bottom-right
-                        [-hw, hh],  # bottom-left
-                    ]
-                )
+                    # Format: class_id x1 y1 x2 y2 x3 y3 x4 y4
+                    obb_line = f"0 {corners_norm[0,0]:.6f} {corners_norm[0,1]:.6f} {corners_norm[1,0]:.6f} {corners_norm[1,1]:.6f} {corners_norm[2,0]:.6f} {corners_norm[2,1]:.6f} {corners_norm[3,0]:.6f} {corners_norm[3,1]:.6f}\n"
+                    f.write(obb_line)
 
-                # Rotate corners
-                rotation_matrix = np.array(
-                    [[cos_theta, -sin_theta], [sin_theta, cos_theta]]
-                )
-                corners_rotated = corners_local @ rotation_matrix.T
+                    annotations.append(
+                        {
+                            "track_id": int(detection["TrackID"]),
+                            "x": float(cx),  # Now in original frame space
+                            "y": float(cy),  # Now in original frame space
+                            "theta": float(theta),
+                            "state": detection.get("State", "unknown"),
+                        }
+                    )
 
-                # Translate to center position
-                corners = corners_rotated + np.array([cx, cy])
+            metadata["frames"].append(
+                {
+                    "frame_id": int(frame_id),
+                    "image_file": image_filename,
+                    "label_file": label_filename,
+                    "annotations": annotations,
+                }
+            )
 
-                # Normalize corner points to [0, 1]
-                corners_norm = corners.copy()
-                corners_norm[:, 0] /= frame_width
-                corners_norm[:, 1] /= frame_height
-
-                # Format: class_id x1 y1 x2 y2 x3 y3 x4 y4
-                obb_line = f"0 {corners_norm[0,0]:.6f} {corners_norm[0,1]:.6f} {corners_norm[1,0]:.6f} {corners_norm[1,1]:.6f} {corners_norm[2,0]:.6f} {corners_norm[2,1]:.6f} {corners_norm[3,0]:.6f} {corners_norm[3,1]:.6f}\n"
-                f.write(obb_line)
-
-                annotations.append(
-                    {
-                        "track_id": int(detection["TrackID"]),
-                        "x": float(cx),  # Now in original frame space
-                        "y": float(cy),  # Now in original frame space
-                        "theta": float(theta),
-                        "state": detection.get("State", "unknown"),
-                    }
-                )
-
-        metadata["frames"].append(
-            {
-                "frame_id": int(frame_id),
-                "image_file": image_filename,
-                "label_file": label_filename,
-                "annotations": annotations,
-            }
-        )
-
-        exported_count += 1
+            exported_count += 1
 
     cap.release()
 
