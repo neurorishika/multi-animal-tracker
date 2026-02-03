@@ -2709,7 +2709,7 @@ class MainWindow(QMainWindow):
         self.spin_marker_size.setRange(0.1, 5.0)
         self.spin_marker_size.setSingleStep(0.1)
         self.spin_marker_size.setDecimals(1)
-        self.spin_marker_size.setValue(0.5)
+        self.spin_marker_size.setValue(0.3)
         self.spin_marker_size.setToolTip(
             "Size of position marker (0.1-5.0 × body size).\n"
             "Scaled by reference body size for consistency."
@@ -2720,7 +2720,7 @@ class MainWindow(QMainWindow):
         self.spin_text_scale.setRange(0.3, 3.0)
         self.spin_text_scale.setSingleStep(0.1)
         self.spin_text_scale.setDecimals(1)
-        self.spin_text_scale.setValue(1.0)
+        self.spin_text_scale.setValue(0.5)
         self.spin_text_scale.setToolTip(
             "Scale factor for ID labels (0.3-3.0).\n" "Larger values = bigger text."
         )
@@ -2730,7 +2730,7 @@ class MainWindow(QMainWindow):
         self.spin_arrow_length.setRange(0.5, 10.0)
         self.spin_arrow_length.setSingleStep(0.5)
         self.spin_arrow_length.setDecimals(1)
-        self.spin_arrow_length.setValue(1.5)
+        self.spin_arrow_length.setValue(0.7)
         self.spin_arrow_length.setToolTip(
             "Length of orientation arrow (0.5-10.0 × body size).\n"
             "Scaled by reference body size."
@@ -5657,11 +5657,13 @@ class MainWindow(QMainWindow):
         text_scale = self.spin_text_scale.value()
         arrow_length = self.spin_arrow_length.value()
 
-        # Convert parameters from resized to original coordinates
-        # Trajectories are stored in resized coordinates, need to scale back
-        scale_to_original = 1.0 / resize_factor
+        # NOTE: Trajectories in merged CSV are already scaled to original coordinates
+        # (see MergeWorker line ~173: coordinates divided by resize_factor)
+        # So we use them directly without additional scaling
 
-        # Scale drawing parameters by body size (in original coordinates)
+        # Scale drawing parameters by body size
+        # reference_body_size is in original (unresized) coordinates
+        # Video is at original resolution, so use body size directly
         marker_radius = int(marker_size * reference_body_size)
         arrow_len = int(arrow_length * reference_body_size)
         text_size = 0.5 * text_scale
@@ -5721,10 +5723,8 @@ class MainWindow(QMainWindow):
                             ):
                                 px, py = past_row["X"], past_row["Y"]
                                 if not pd.isna(px) and not pd.isna(py):
-                                    # Scale to original coordinates
-                                    px_orig = int(px * scale_to_original)
-                                    py_orig = int(py * scale_to_original)
-                                    trail_points.append((px_orig, py_orig, past_frame))
+                                    # Coordinates already in original space from merged CSV
+                                    trail_points.append((int(px), int(py), past_frame))
 
                     # Draw trail as fading line segments
                     if len(trail_points) > 1:
@@ -5755,9 +5755,8 @@ class MainWindow(QMainWindow):
                 if pd.isna(cx) or pd.isna(cy):
                     continue
 
-                # Scale to original coordinates
-                cx_orig = int(cx * scale_to_original)
-                cy_orig = int(cy * scale_to_original)
+                # Coordinates already in original space from merged CSV
+                cx, cy = int(cx), int(cy)
 
                 # Get color for this track
                 if colors and track_id < len(colors):
@@ -5772,9 +5771,7 @@ class MainWindow(QMainWindow):
                     color = default_colors[track_id % len(default_colors)]
 
                 # Draw circle at position
-                cv2.circle(
-                    frame, (cx_orig, cy_orig), marker_radius, color, marker_thickness
-                )
+                cv2.circle(frame, (cx, cy), marker_radius, color, marker_thickness)
 
                 # Draw label
                 if show_labels:
@@ -5783,7 +5780,7 @@ class MainWindow(QMainWindow):
                     cv2.putText(
                         frame,
                         label,
-                        (cx_orig + label_offset, cy_orig - label_offset),
+                        (cx + label_offset, cy - label_offset),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         text_size,
                         color,
@@ -5793,11 +5790,11 @@ class MainWindow(QMainWindow):
                 # Draw orientation if available
                 if show_orientation and "Theta" in traj and not pd.isna(traj["Theta"]):
                     heading = traj["Theta"]
-                    end_x = int(cx_orig + arrow_len * np.cos(heading))
-                    end_y = int(cy_orig + arrow_len * np.sin(heading))
+                    end_x = int(cx + arrow_len * np.cos(heading))
+                    end_y = int(cy + arrow_len * np.sin(heading))
                     cv2.arrowedLine(
                         frame,
-                        (cx_orig, cy_orig),
+                        (cx, cy),
                         (end_x, end_y),
                         color,
                         marker_thickness,
@@ -6819,9 +6816,9 @@ class MainWindow(QMainWindow):
             self.spin_trail_duration.setValue(
                 get_cfg("video_trail_duration", default=1.0)
             )
-            self.spin_marker_size.setValue(get_cfg("video_marker_size", default=0.5))
-            self.spin_text_scale.setValue(get_cfg("video_text_scale", default=1.0))
-            self.spin_arrow_length.setValue(get_cfg("video_arrow_length", default=1.5))
+            self.spin_marker_size.setValue(get_cfg("video_marker_size", default=0.3))
+            self.spin_text_scale.setValue(get_cfg("video_text_scale", default=0.5))
+            self.spin_arrow_length.setValue(get_cfg("video_arrow_length", default=0.7))
 
             # === REAL-TIME ANALYTICS ===
             self.enable_histograms.setChecked(
