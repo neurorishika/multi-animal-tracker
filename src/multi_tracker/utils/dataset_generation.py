@@ -345,22 +345,47 @@ def export_dataset(
         batch_frames = []
         batch_frames_original = []
         valid_batch_indices = []
+        first_frame_shape = None
 
         for idx, frame_id in enumerate(batch_frame_ids):
             cap.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
             ret, frame = cap.read()
-            if ret:
+            if ret and frame is not None and frame.size > 0:
                 batch_frames_original.append((frame_id, frame))
 
                 # Apply resize if needed for detection
                 resize_factor = params.get("RESIZE_FACTOR", 1.0)
-                if resize_factor != 1.0:
+                if resize_factor != 1.0 and resize_factor > 0:
                     h, w = frame.shape[:2]
                     new_w = int(w * resize_factor)
                     new_h = int(h * resize_factor)
-                    frame_for_detection = cv2.resize(frame, (new_w, new_h))
+
+                    # Validate dimensions
+                    if new_w > 0 and new_h > 0:
+                        frame_for_detection = cv2.resize(frame, (new_w, new_h))
+                    else:
+                        logger.warning(
+                            f"Invalid resize dimensions for frame {frame_id}, using original"
+                        )
+                        frame_for_detection = frame
                 else:
                     frame_for_detection = frame
+
+                # Validate frame shape
+                if frame_for_detection.size == 0:
+                    logger.warning(f"Frame {frame_id} has zero size, skipping")
+                    continue
+
+                # Ensure all frames have the same shape for batching
+                if first_frame_shape is None:
+                    first_frame_shape = frame_for_detection.shape
+                elif frame_for_detection.shape != first_frame_shape:
+                    # Resize to match first frame dimensions
+                    h, w = first_frame_shape[:2]
+                    frame_for_detection = cv2.resize(frame_for_detection, (w, h))
+                    logger.debug(
+                        f"Resized frame {frame_id} to match batch dimensions: {first_frame_shape}"
+                    )
 
                 batch_frames.append(frame_for_detection)
                 valid_batch_indices.append(idx)
@@ -383,23 +408,11 @@ def export_dataset(
                     "MAX_CONTOUR_MULTIPLIER", 20
                 )
 
-                # Prepare batch for inference
-                if len(batch_frames) < batch_size:
-                    # Pad the last batch to match TensorRT batch size
-                    padding_needed = batch_size - len(batch_frames)
-                    batch_frames_padded = (
-                        batch_frames + [batch_frames[-1]] * padding_needed
-                    )
-                else:
-                    batch_frames_padded = batch_frames
-
-                # Stack into batch
-                frame_batch = np.stack(batch_frames_padded, axis=0)
-
                 try:
-                    # Run batched prediction
+                    # Run batched prediction using detector method (handles TensorRT properly)
+                    # Pass frames as list, not stacked array - YOLO handles preprocessing
                     results = detector.model.predict(
-                        frame_batch,
+                        batch_frames,  # List of frames, not stacked array
                         conf=0.1,  # Lower confidence for dataset generation
                         iou=iou_threshold,
                         classes=target_classes,
@@ -408,7 +421,7 @@ def export_dataset(
                         verbose=False,
                     )
 
-                    # Process results for each frame in the batch (excluding padding)
+                    # Process results for each frame in the batch
                     for result_idx in range(len(batch_frames)):
                         yolo_results = results[result_idx]
                         yolo_detections = {}

@@ -179,6 +179,10 @@ class TrackingWorker(QThread):
         logger.info(f"Video: {frame_width}x{frame_height}, {total_frames} frames")
         logger.info(f"Batch size: {batch_size}")
 
+        # Initialize timing stats for detection phase
+        detection_start_time = time.time()
+        batch_times = deque(maxlen=30)  # Track last 30 batch times for FPS calculation
+
         # Process video in batches
         frame_idx = 0
         batch_count = 0
@@ -187,6 +191,8 @@ class TrackingWorker(QThread):
         resize_factor = params.get("RESIZE_FACTOR", 1.0)
 
         while not self._stop_requested:
+            batch_start_time = time.time()
+
             # Read a batch of frames
             batch_frames = []
             batch_start_idx = frame_idx
@@ -235,12 +241,41 @@ class TrackingWorker(QThread):
                     global_idx, meas, sizes, shapes, confidences, obb_corners
                 )
 
-            # Emit progress
+            # Track batch timing
+            batch_time = time.time() - batch_start_time
+            batch_times.append(batch_time)
+
+            # Calculate stats
+            elapsed = time.time() - detection_start_time
+
+            # Calculate FPS based on recent batch times
+            if len(batch_times) > 0:
+                avg_batch_time = sum(batch_times) / len(batch_times)
+                frames_per_batch = (
+                    batch_size if len(batch_frames) == batch_size else len(batch_frames)
+                )
+                current_fps = (
+                    frames_per_batch / avg_batch_time if avg_batch_time > 0 else 0
+                )
+            else:
+                current_fps = 0
+
+            # Calculate ETA
+            if current_fps > 0:
+                remaining_frames = total_frames - frame_idx
+                eta = remaining_frames / current_fps
+            else:
+                eta = 0
+
+            # Emit progress and stats
             percentage = (
                 int((frame_idx / total_frames) * 100) if total_frames > 0 else 0
             )
             status_text = f"Detecting objects: batch {batch_count}/{total_batches} ({percentage}%)"
             self.progress_signal.emit(percentage, status_text)
+
+            # Emit stats signal for FPS/elapsed/ETA display
+            self.stats_signal.emit({"fps": current_fps, "elapsed": elapsed, "eta": eta})
 
         logger.info(
             f"Detection phase complete: {frame_idx} frames processed in {batch_count} batches"
@@ -416,13 +451,23 @@ class TrackingWorker(QThread):
         # Choose appropriate frame iterator
         if use_cached_detections:
             if use_batched_detection:
-                # Phase 2 of batched detection: use forward iterator for visualization
-                # but load detections from cache
-                frame_iterator = self._forward_frame_iterator(
-                    cap, use_prefetcher=use_prefetcher
-                )
-                skip_visualization = False  # Show visualization in phase 2
-                logger.info("Phase 2: Using cached detections with visualization")
+                # Phase 2 of batched detection: only read frames if we need visualization
+                if p.get("ENABLE_VISUALIZATION", False) or p.get(
+                    "ENABLE_VIDEO_OUTPUT", False
+                ):
+                    frame_iterator = self._forward_frame_iterator(
+                        cap, use_prefetcher=use_prefetcher
+                    )
+                    skip_visualization = False
+                    logger.info("Phase 2: Using cached detections with visualization")
+                else:
+                    # No visualization needed - skip frame reading entirely
+                    frame_iterator = self._cached_detection_iterator(total_frames)
+                    skip_visualization = True
+                    use_prefetcher = False
+                    logger.info(
+                        "Phase 2: Skipping frame reading (visualization disabled, using cached detections)"
+                    )
             else:
                 # Backward pass: no frames needed, skip visualization
                 frame_iterator = self._cached_detection_iterator(total_frames)
@@ -974,12 +1019,20 @@ class TrackingWorker(QThread):
             # Emit progress signal periodically to avoid overwhelming the GUI thread
             # We also check that total_frames is valid
             if total_frames and total_frames > 0:
-                # Emit every 100 frames or so to keep GUI responsive
-                if self.frame_count % 100 == 0:
+                # Emit more frequently (every 10 frames) to show better progress feedback
+                # Especially important for batched detection where users need ETA
+                if self.frame_count % 10 == 0:
                     percentage = int((self.frame_count * 100) / total_frames)
-                    status_text = (
-                        f"Processing Frame {self.frame_count} / {total_frames}"
-                    )
+
+                    # Add mode information to status text
+                    if use_cached_detections:
+                        if use_batched_detection:
+                            status_text = f"Tracking (batched): {self.frame_count} / {total_frames}"
+                        else:
+                            status_text = f"Tracking (cached): {self.frame_count} / {total_frames}"
+                    else:
+                        status_text = f"Processing: {self.frame_count} / {total_frames}"
+
                     self.progress_signal.emit(percentage, status_text)
 
             # --- Visualization, Output & Loop Maintenance ---

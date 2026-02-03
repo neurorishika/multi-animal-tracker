@@ -190,6 +190,92 @@ def get_video_config_path(video_path):
     return os.path.join(video_dir, f"{video_name}_config.json")
 
 
+def get_models_directory():
+    """
+    Get the path to the local models directory.
+
+    Returns the models/YOLO-obb directory for OBB detection models.
+    Creates the directory if it doesn't exist.
+    """
+    # Get project root directory (multi-animal-tracker/)
+    # __file__ is: .../multi-animal-tracker/src/multi_tracker/gui/main_window.py
+    # Need to go up 4 levels: gui -> multi_tracker -> src -> multi-animal-tracker
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
+    models_dir = os.path.join(project_root, "models", "YOLO-obb")
+
+    # Create directory if it doesn't exist
+    os.makedirs(models_dir, exist_ok=True)
+
+    return models_dir
+
+
+def resolve_model_path(model_path):
+    """
+    Resolve a model path to an absolute path.
+
+    If the path is relative, look for it in the models directory.
+    If absolute and exists, return as-is.
+
+    Args:
+        model_path: Relative or absolute model path
+
+    Returns:
+        Absolute path to the model file, or original path if not found
+    """
+    if not model_path:
+        return model_path
+
+    # If already absolute and exists, return it
+    if os.path.isabs(model_path) and os.path.exists(model_path):
+        return model_path
+
+    # Try to resolve relative to models directory
+    models_dir = get_models_directory()
+    resolved_path = os.path.join(models_dir, model_path)
+
+    if os.path.exists(resolved_path):
+        return resolved_path
+
+    # If relative path doesn't exist in models dir, try as-is
+    if os.path.exists(model_path):
+        return os.path.abspath(model_path)
+
+    # Return original if nothing works (will fail later with clear error)
+    return model_path
+
+
+def make_model_path_relative(model_path):
+    """
+    Convert an absolute model path to relative if it's in the models directory.
+
+    This allows presets to be portable across devices.
+
+    Args:
+        model_path: Absolute or relative model path
+
+    Returns:
+        Relative path if model is in archive, otherwise absolute path
+    """
+    if not model_path or not os.path.isabs(model_path):
+        return model_path
+
+    models_dir = get_models_directory()
+
+    # Check if model is inside the models directory
+    try:
+        rel_path = os.path.relpath(model_path, models_dir)
+        # If relpath doesn't start with .., it's inside models_dir
+        if not rel_path.startswith(".."):
+            return rel_path
+    except (ValueError, TypeError):
+        pass
+
+    # Return absolute path if not in models directory
+    return model_path
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -3102,10 +3188,70 @@ class MainWindow(QMainWindow):
 
     def _select_color_tag_model(self):
         """Browse for color tag YOLO model."""
+        # Default to models directory
+        start_dir = get_models_directory()
+        if self.line_color_tag_model.text():
+            current_path = resolve_model_path(self.line_color_tag_model.text())
+            if os.path.exists(current_path):
+                start_dir = os.path.dirname(current_path)
+
         filepath, _ = QFileDialog.getOpenFileName(
-            self, "Select Color Tag YOLO Model", "", "YOLO Models (*.pt *.onnx)"
+            self, "Select Color Tag YOLO Model", start_dir, "YOLO Models (*.pt *.onnx)"
         )
         if filepath:
+            # Check if model is outside the archive
+            models_dir = get_models_directory()
+            try:
+                rel_path = os.path.relpath(filepath, models_dir)
+                is_in_archive = not rel_path.startswith("..")
+            except (ValueError, TypeError):
+                is_in_archive = False
+
+            if not is_in_archive:
+                # Ask user if they want to copy to archive
+                reply = QMessageBox.question(
+                    self,
+                    "Copy Model to Archive?",
+                    f"The selected model is outside the local model archive.\n\n"
+                    f"Would you like to copy it to the archive at:\n{models_dir}\n\n"
+                    f"This makes presets portable across devices.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+
+                if reply == QMessageBox.Yes:
+                    import shutil
+
+                    filename = os.path.basename(filepath)
+                    dest_path = os.path.join(models_dir, filename)
+
+                    # Handle duplicate filenames
+                    if os.path.exists(dest_path):
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        while os.path.exists(dest_path):
+                            dest_path = os.path.join(
+                                models_dir, f"{base}_{counter}{ext}"
+                            )
+                            counter += 1
+
+                    try:
+                        shutil.copy2(filepath, dest_path)
+                        filepath = dest_path
+                        logger.info(f"Copied color tag model to archive: {dest_path}")
+                        QMessageBox.information(
+                            self,
+                            "Model Copied",
+                            f"Model copied to archive as:\n{os.path.basename(dest_path)}",
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to copy model: {e}")
+                        QMessageBox.warning(
+                            self,
+                            "Copy Failed",
+                            f"Could not copy model to archive:\n{e}\n\nUsing original path.",
+                        )
+
             self.line_color_tag_model.setText(filepath)
 
     def _on_individual_dataset_toggled(self, enabled):
@@ -4684,11 +4830,13 @@ class MainWindow(QMainWindow):
         self.yolo_custom_model_widget.setVisible(is_custom)
 
     def select_yolo_custom_model(self):
-        start_dir = (
-            os.path.dirname(self.yolo_custom_model_line.text())
-            if self.yolo_custom_model_line.text()
-            else os.path.expanduser("~")
-        )
+        # Default to models directory, or current model location if set
+        start_dir = get_models_directory()
+        if self.yolo_custom_model_line.text():
+            current_path = resolve_model_path(self.yolo_custom_model_line.text())
+            if os.path.exists(current_path):
+                start_dir = os.path.dirname(current_path)
+
         fp, _ = QFileDialog.getOpenFileName(
             self,
             "Select YOLO Model",
@@ -4696,6 +4844,60 @@ class MainWindow(QMainWindow):
             "PyTorch Model Files (*.pt *.pth);;All Files (*)",
         )
         if fp:
+            # Check if model is outside the archive
+            models_dir = get_models_directory()
+            try:
+                rel_path = os.path.relpath(fp, models_dir)
+                is_in_archive = not rel_path.startswith("..")
+            except (ValueError, TypeError):
+                is_in_archive = False
+
+            if not is_in_archive:
+                # Ask user if they want to copy to archive
+                reply = QMessageBox.question(
+                    self,
+                    "Copy Model to Archive?",
+                    f"The selected model is outside the local model archive.\n\n"
+                    f"Would you like to copy it to the archive at:\n{models_dir}\n\n"
+                    f"This makes presets portable across devices.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+
+                if reply == QMessageBox.Yes:
+                    import shutil
+
+                    filename = os.path.basename(fp)
+                    dest_path = os.path.join(models_dir, filename)
+
+                    # Handle duplicate filenames
+                    if os.path.exists(dest_path):
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        while os.path.exists(dest_path):
+                            dest_path = os.path.join(
+                                models_dir, f"{base}_{counter}{ext}"
+                            )
+                            counter += 1
+
+                    try:
+                        shutil.copy2(fp, dest_path)
+                        fp = dest_path
+                        logger.info(f"Copied model to archive: {dest_path}")
+                        QMessageBox.information(
+                            self,
+                            "Model Copied",
+                            f"Model copied to archive as:\n{os.path.basename(dest_path)}",
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to copy model: {e}")
+                        QMessageBox.warning(
+                            self,
+                            "Copy Failed",
+                            f"Could not copy model to archive:\n{e}\n\nUsing original path.",
+                        )
+
+            # Store the path (will be made relative on save if in archive)
             self.yolo_custom_model_line.setText(fp)
 
     def toggle_histogram_window(self):
@@ -5472,6 +5674,10 @@ class MainWindow(QMainWindow):
 
     def _finish_tracking_session(self):
         """Complete tracking session cleanup and UI updates."""
+        # Hide progress elements
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+
         # Generate dataset if enabled (BEFORE cleanup so files are still available)
         if self.chk_enable_dataset_gen.isChecked():
             self._generate_training_dataset()
@@ -5964,7 +6170,7 @@ class MainWindow(QMainWindow):
                 saved_fps = get_cfg("fps", default=None)
                 if saved_fps is not None:
                     self.spin_fps.setValue(saved_fps)
-                
+
                 # Load reference body size if saved in config
                 saved_body_size = get_cfg("reference_body_size", default=None)
                 if saved_body_size is not None:
@@ -6071,6 +6277,28 @@ class MainWindow(QMainWindow):
 
             # === YOLO CONFIGURATION ===
             yolo_model = get_cfg("yolo_model_path", default="yolo26s-obb.pt")
+
+            # Resolve model path (handles both relative and absolute)
+            resolved_yolo_model = resolve_model_path(yolo_model)
+
+            # Validate model exists if it's a relative path from preset
+            if preset_mode and not os.path.isabs(yolo_model):
+                if not os.path.exists(resolved_yolo_model):
+                    logger.warning(
+                        f"Preset references non-existent model: {yolo_model}\n"
+                        f"Expected location: {resolved_yolo_model}"
+                    )
+                    QMessageBox.warning(
+                        self,
+                        "Model Not Found",
+                        f"The preset references a model that doesn't exist:\n\n"
+                        f"Model: {yolo_model}\n"
+                        f"Expected at: {resolved_yolo_model}\n\n"
+                        f"Please ensure the model is in your local models archive:\n"
+                        f"{get_models_directory()}",
+                    )
+
+            # Try to find model in combo box
             found = False
             for i in range(self.combo_yolo_model.count() - 1):
                 if self.combo_yolo_model.itemText(i).startswith(yolo_model):
@@ -6080,7 +6308,8 @@ class MainWindow(QMainWindow):
             if not found:
                 self.combo_yolo_model.setCurrentIndex(self.combo_yolo_model.count() - 1)
                 if not self.yolo_custom_model_line.text().strip():
-                    self.yolo_custom_model_line.setText(yolo_model)
+                    # Use resolved path in UI
+                    self.yolo_custom_model_line.setText(resolved_yolo_model)
 
             self.spin_yolo_confidence.setValue(
                 get_cfg("yolo_confidence_threshold", default=0.25)
@@ -6363,9 +6592,29 @@ class MainWindow(QMainWindow):
             )
             # Skip model path in preset mode
             if not preset_mode and not self.line_color_tag_model.text().strip():
-                self.line_color_tag_model.setText(
-                    get_cfg("color_tag_model_path", default="")
-                )
+                color_tag_model = get_cfg("color_tag_model_path", default="")
+                if color_tag_model:
+                    # Resolve model path
+                    resolved_path = resolve_model_path(color_tag_model)
+                    self.line_color_tag_model.setText(resolved_path)
+            elif preset_mode:
+                # For presets, resolve but also validate
+                color_tag_model = get_cfg("color_tag_model_path", default="")
+                if color_tag_model:
+                    resolved_path = resolve_model_path(color_tag_model)
+
+                    # Validate if it's a relative path
+                    if not os.path.isabs(color_tag_model) and not os.path.exists(
+                        resolved_path
+                    ):
+                        logger.warning(
+                            f"Preset references non-existent color tag model: {color_tag_model}\n"
+                            f"Expected location: {resolved_path}"
+                        )
+                        # Don't show dialog for color tag model since it's optional
+                        # Just log the warning
+                    elif not self.line_color_tag_model.text().strip():
+                        self.line_color_tag_model.setText(resolved_path)
             self.spin_color_tag_conf.setValue(
                 get_cfg("color_tag_confidence", default=0.5)
             )
@@ -6538,7 +6787,8 @@ class MainWindow(QMainWindow):
                 "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
                 "dilation_iterations": self.spin_dilation_iterations.value(),
                 # === YOLO CONFIGURATION ===
-                "yolo_model_path": yolo_path,
+                # Store relative path if model is in archive, otherwise absolute
+                "yolo_model_path": make_model_path_relative(yolo_path),
                 "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
                 "yolo_iou_threshold": self.spin_yolo_iou.value(),
                 "yolo_target_classes": yolo_cls,
@@ -6669,9 +6919,18 @@ class MainWindow(QMainWindow):
             }
         )
 
-        # Model path (device-specific)
-        if not preset_mode:
-            cfg["color_tag_model_path"] = self.line_color_tag_model.text()
+        # Model paths - save differently for configs vs presets
+        color_tag_path = self.line_color_tag_model.text()
+        if preset_mode:
+            # For presets: always try to make relative if in archive
+            cfg["color_tag_model_path"] = (
+                make_model_path_relative(color_tag_path) if color_tag_path else ""
+            )
+        else:
+            # For configs: store relative if in archive, absolute otherwise
+            cfg["color_tag_model_path"] = (
+                make_model_path_relative(color_tag_path) if color_tag_path else ""
+            )
 
         cfg.update(
             {
