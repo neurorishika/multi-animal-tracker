@@ -307,6 +307,7 @@ def process_trajectories_from_csv(csv_path, params):
         "removed_short": 0,
         "broken_velocity": 0,
         "broken_occlusion": 0,
+        "broken_spatial_gap": 0,  # New: breaks due to spatial jumps across NaN gaps
         "final_count": 0,
     }
 
@@ -412,6 +413,69 @@ def process_trajectories_from_csv(csv_path, params):
                     final_segments.append(last_subseg)
 
         cleaned_segments = final_segments
+
+    # Split segments on large spatial discontinuities across NaN gaps (hidden jumps)
+    # These would create unrealistic velocities when interpolated
+    final_segments_spatial = []
+    for segment in cleaned_segments:
+        # Find all valid (non-NaN) positions in this segment
+        valid_mask = segment["X"].notna()
+        if valid_mask.sum() < 2:
+            # Not enough valid positions to check for jumps
+            final_segments_spatial.append(segment)
+            continue
+
+        # Get indices of valid positions
+        valid_indices = segment[valid_mask].index.tolist()
+
+        # Check for spatial jumps between consecutive valid positions
+        split_indices = []
+        for i in range(1, len(valid_indices)):
+            curr_idx = valid_indices[i]
+            prev_idx = valid_indices[i - 1]
+
+            curr_row = segment.loc[curr_idx]
+            prev_row = segment.loc[prev_idx]
+
+            frame_gap = curr_row["FrameID"] - prev_row["FrameID"]
+
+            # Only check if there's a gap (NaN frames between valid positions)
+            if frame_gap > 1:
+                distance = np.sqrt(
+                    (curr_row["X"] - prev_row["X"]) ** 2
+                    + (curr_row["Y"] - prev_row["Y"]) ** 2
+                )
+                velocity = distance / frame_gap  # Average velocity across gap
+
+                # If velocity exceeds threshold, mark for split
+                if velocity > max_vel_break:
+                    split_indices.append(curr_idx)
+                    stats["broken_spatial_gap"] += 1
+
+        if not split_indices:
+            # No spatial jumps, keep segment as is
+            final_segments_spatial.append(segment)
+        else:
+            # Split segment at spatial jump points
+            split_indices = sorted(split_indices)
+            subseg_start_idx = segment.index[0]
+
+            for split_idx in split_indices:
+                subseg = segment.loc[subseg_start_idx : split_idx - 1].copy()
+                if len(subseg) >= min_len:
+                    subseg["TrajectoryID"] = new_traj_id
+                    new_traj_id += 1
+                    final_segments_spatial.append(subseg)
+                subseg_start_idx = split_idx
+
+            # Add the last subsegment
+            last_subseg = segment.loc[subseg_start_idx:].copy()
+            if len(last_subseg) >= min_len:
+                last_subseg["TrajectoryID"] = new_traj_id
+                new_traj_id += 1
+                final_segments_spatial.append(last_subseg)
+
+    cleaned_segments = final_segments_spatial
 
     stats["final_count"] = len(cleaned_segments)
 

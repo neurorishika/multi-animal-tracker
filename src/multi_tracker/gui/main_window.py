@@ -165,6 +165,13 @@ class MergeWorker(QThread):
 
             # Scale coordinates back to original video space
             if isinstance(resolved_trajectories, pd.DataFrame):
+                # Log pre-scaling ranges for debugging
+                logger.info(
+                    f"Pre-scaling (resize_factor={self.resize_factor:.3f}): "
+                    f"X range [{resolved_trajectories['X'].min():.1f}, {resolved_trajectories['X'].max():.1f}], "
+                    f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
+                )
+
                 resolved_trajectories[["X", "Y"]] = (
                     resolved_trajectories[["X", "Y"]] / self.resize_factor
                 )
@@ -172,6 +179,13 @@ class MergeWorker(QThread):
                     resolved_trajectories["Width"] /= self.resize_factor
                 if "Height" in resolved_trajectories.columns:
                     resolved_trajectories["Height"] /= self.resize_factor
+
+                # Log post-scaling ranges for debugging
+                logger.info(
+                    f"Post-scaling: "
+                    f"X range [{resolved_trajectories['X'].min():.1f}, {resolved_trajectories['X'].max():.1f}], "
+                    f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
+                )
 
             self.progress_signal.emit(100, "Merge complete!")
             self.finished_signal.emit(resolved_trajectories)
@@ -5884,7 +5898,13 @@ class MainWindow(QMainWindow):
                     # Use backward CSV for processing
                     base, ext = os.path.splitext(raw_csv_path)
                     csv_to_process = f"{base}_backward{ext}"
+                elif is_backward_enabled and raw_csv_path:
+                    # Forward mode with backward enabled: use _forward.csv
+                    # (tracking writes to _forward.csv when backward is enabled)
+                    base, ext = os.path.splitext(raw_csv_path)
+                    csv_to_process = f"{base}_forward{ext}"
                 else:
+                    # Forward-only mode: use base path
                     csv_to_process = raw_csv_path
 
                 if csv_to_process and os.path.exists(csv_to_process):
@@ -5899,17 +5919,10 @@ class MainWindow(QMainWindow):
                     )
                     logger.info(f"Post-processing stats: {stats}")
 
-                    # Apply interpolation if enabled
-                    interp_method = (
-                        self.combo_interpolation_method.currentText().lower()
-                    )
-                    if interp_method != "none":
-                        max_gap = self.spin_interpolation_max_gap.value()
-                        processed_trajectories = interpolate_trajectories(
-                            processed_trajectories,
-                            method=interp_method,
-                            max_gap=max_gap,
-                        )
+                    # NOTE: Do NOT apply interpolation here if backward tracking will follow
+                    # Interpolation should only be applied AFTER merging (in MergeWorker)
+                    # or in forward-only mode (below). Pre-merge interpolation can affect
+                    # merge candidate detection by filling gaps that should remain as gaps.
 
                     # NOTE: Do NOT scale to original space yet if backward tracking will happen
                     # Scaling will be done after merging or in forward-only mode
@@ -5949,8 +5962,32 @@ class MainWindow(QMainWindow):
 
                 if is_backward_enabled:
                     self.forward_processed_trajs = processed_trajectories
+                    # Log coordinate ranges for debugging
+                    if (
+                        isinstance(processed_trajectories, pd.DataFrame)
+                        and not processed_trajectories.empty
+                    ):
+                        logger.info(
+                            f"Forward trajectories stored for merge: "
+                            f"X range [{processed_trajectories['X'].min():.1f}, {processed_trajectories['X'].max():.1f}], "
+                            f"Y range [{processed_trajectories['Y'].min():.1f}, {processed_trajectories['Y'].max():.1f}]"
+                        )
                     self.start_backward_tracking()
                 else:
+                    # Forward-only mode: Apply interpolation here (no merge step)
+                    from ..core.post_processing import interpolate_trajectories
+
+                    interp_method = (
+                        self.combo_interpolation_method.currentText().lower()
+                    )
+                    if interp_method != "none":
+                        max_gap = self.spin_interpolation_max_gap.value()
+                        processed_trajectories = interpolate_trajectories(
+                            processed_trajectories,
+                            method=interp_method,
+                            max_gap=max_gap,
+                        )
+
                     # Scale coordinates to original video space (forward-only mode)
                     resize_factor = self.spin_resize.value()
                     processed_trajectories = self._scale_trajectories_to_original_space(
@@ -6002,6 +6039,16 @@ class MainWindow(QMainWindow):
                         processed_trajectories, processed_csv_path
                     )
                 self.backward_processed_trajs = processed_trajectories
+                # Log coordinate ranges for debugging
+                if (
+                    isinstance(processed_trajectories, pd.DataFrame)
+                    and not processed_trajectories.empty
+                ):
+                    logger.info(
+                        f"Backward trajectories stored for merge: "
+                        f"X range [{processed_trajectories['X'].min():.1f}, {processed_trajectories['X'].max():.1f}], "
+                        f"Y range [{processed_trajectories['Y'].min():.1f}, {processed_trajectories['Y'].max():.1f}]"
+                    )
 
                 # Check if both forward and backward trajectories exist for merging
                 has_forward = self.forward_processed_trajs is not None and (
