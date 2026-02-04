@@ -3656,17 +3656,18 @@ class MainWindow(QMainWindow):
         try:
             if system == "Darwin":  # macOS
                 # Create an AppleScript to open Terminal and run commands
+                # Source conda.sh directly to initialize conda in the session
                 script = f"""
                 tell application "Terminal"
                     activate
-                    do script "cd '{dataset_path}' && conda init &&  conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"
+                    do script "source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"
                 end tell
                 """
                 subprocess.Popen(["osascript", "-e", script])
 
             elif system == "Windows":
                 # Use cmd.exe with conda activation
-                cmd = f'start cmd /k "cd /d {dataset_path} && conda init &&  conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"'
+                cmd = f'start cmd /k "conda activate {env_name} && cd /d {dataset_path} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"'
                 subprocess.Popen(cmd, shell=True)
 
             else:  # Linux
@@ -3683,7 +3684,7 @@ class MainWindow(QMainWindow):
                                     "--",
                                     "bash",
                                     "-c",
-                                    f"cd '{dataset_path}' && conda init && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
                                 ]
                             )
                         elif terminal == "konsole":
@@ -3693,7 +3694,7 @@ class MainWindow(QMainWindow):
                                     "-e",
                                     "bash",
                                     "-c",
-                                    f"cd '{dataset_path}' && conda init && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
                                 ]
                             )
                         else:  # xterm
@@ -3703,7 +3704,7 @@ class MainWindow(QMainWindow):
                                     "-e",
                                     "bash",
                                     "-c",
-                                    f"cd '{dataset_path}' && conda init &&  conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
                                 ]
                             )
                         terminal_found = True
@@ -7398,6 +7399,15 @@ class MainWindow(QMainWindow):
                 if saved_body_size is not None:
                     self.spin_reference_body_size.setValue(saved_body_size)
 
+                # Load frame range if saved in config
+                saved_start_frame = get_cfg("start_frame", default=None)
+                if saved_start_frame is not None and self.spin_start_frame.isEnabled():
+                    self.spin_start_frame.setValue(saved_start_frame)
+                
+                saved_end_frame = get_cfg("end_frame", default=None)
+                if saved_end_frame is not None and self.spin_end_frame.isEnabled():
+                    self.spin_end_frame.setValue(saved_end_frame)
+
             # === SYSTEM PERFORMANCE ===
             self.spin_resize.setValue(get_cfg("resize_factor", default=1.0))
             self.check_save_confidence.setChecked(
@@ -7989,6 +7999,9 @@ class MainWindow(QMainWindow):
                     # Video-specific reference parameters
                     "fps": self.spin_fps.value(),
                     "reference_body_size": self.spin_reference_body_size.value(),
+                    # Frame range
+                    "start_frame": self.spin_start_frame.value() if self.spin_start_frame.isEnabled() else 0,
+                    "end_frame": self.spin_end_frame.value() if self.spin_end_frame.isEnabled() else None,
                 }
             )
 
