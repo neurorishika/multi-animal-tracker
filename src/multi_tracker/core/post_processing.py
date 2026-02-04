@@ -614,7 +614,7 @@ def process_trajectories(trajectories_full, params):
     return final_trajectories, stats
 
 
-def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, params=None):
+def resolve_trajectories(forward_trajs, backward_trajs, params=None):
     """
     Merges forward and backward trajectories using conservative consensus-based merging.
 
@@ -634,7 +634,6 @@ def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, param
     Args:
         forward_trajs (list): List of forward trajectory DataFrames or lists of tuples
         backward_trajs (list): List of backward trajectory DataFrames or lists of tuples
-        video_length (int, optional): Total number of frames in video for frame adjustment
         params (dict, optional): Parameters for merging thresholds
 
     Returns:
@@ -676,9 +675,7 @@ def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, param
     for i, traj in enumerate(backward_trajs):
         df = _convert_trajectory_to_dataframe(traj, f"backward_{i}")
         if len(df) >= MIN_LENGTH:
-            # Adjust frame numbers if video_length is provided
-            if video_length is not None:
-                df["FrameID"] = video_length + 1 - df["FrameID"]
+            # No frame adjustment needed - tracking worker now saves actual frame indices
             # Rotate theta by 180 degrees for backward trajectories
             df["Theta"] = (df["Theta"] + np.pi) % (2 * np.pi)
             df["_source"] = "backward"

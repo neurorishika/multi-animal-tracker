@@ -128,28 +128,51 @@ class TrackingWorker(QThread):
                 frame_num += 1
                 yield frame, frame_num
 
-    def _cached_detection_iterator(self, total_frames):
-        """Iterate through frame indices for cached detection mode (no actual frames needed)."""
-        # In backward mode with cached detections, we don't need frames at all
-        # Just iterate through frame indices in reverse
-        for frame_idx in range(total_frames - 1, -1, -1):
-            if self._stop_requested:
-                break
-            yield None, total_frames - frame_idx  # Return None for frame, 1-indexed frame number
+    def _cached_detection_iterator(
+        self, total_frames, start_frame=0, end_frame=None, backward=False
+    ):
+        """Iterate through frame indices for cached detection mode (no actual frames needed).
+
+        Args:
+            total_frames: Total number of frames to process
+            start_frame: Starting frame index (0-based, actual video frame)
+            end_frame: Ending frame index (0-based, actual video frame)
+            backward: If True, iterate in reverse order (for backward tracking)
+        """
+        if end_frame is None:
+            end_frame = start_frame + total_frames - 1
+
+        if backward:
+            # Backward mode: iterate from end_frame down to start_frame
+            # This matches the cache keys which are actual video frame indices
+            for relative_idx in range(total_frames):
+                if self._stop_requested:
+                    break
+                yield None, relative_idx + 1  # Return None for frame, 1-indexed count
+        else:
+            # Forward cached mode: iterate from start_frame to end_frame
+            for relative_idx in range(total_frames):
+                if self._stop_requested:
+                    break
+                yield None, relative_idx + 1  # Return None for frame, 1-indexed count
 
     def emit_frame(self, bgr):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.frame_signal.emit(rgb)
 
-    def _run_batched_detection_phase(self, cap, detection_cache, detector, params):
+    def _run_batched_detection_phase(
+        self, cap, detection_cache, detector, params, start_frame, end_frame
+    ):
         """
-        Phase 1: Run batched YOLO detection on entire video and cache results.
+        Phase 1: Run batched YOLO detection on specified frame range and cache results.
 
         Args:
             cap: OpenCV VideoCapture object
             detection_cache: DetectionCache instance for writing
             detector: YOLOOBBDetector instance
             params: Configuration parameters
+            start_frame: Starting frame index (0-based)
+            end_frame: Ending frame index (0-based)
 
         Returns:
             int: Total frames processed
@@ -170,7 +193,15 @@ class TrackingWorker(QThread):
         # Get video properties
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total_frames = end_frame - start_frame + 1  # Process only the specified range
+
+        logger.info(
+            f"Processing frame range: {start_frame} to {end_frame} ({total_frames} frames)"
+        )
+
+        # Seek to start frame
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
         # Account for resize factor in batch size estimation
         resize_factor = params.get("RESIZE_FACTOR", 1.0)
@@ -213,6 +244,11 @@ class TrackingWorker(QThread):
                 if not ret:
                     break
 
+                # Check if we've exceeded end_frame
+                current_frame_index = start_frame + frame_idx
+                if current_frame_index > end_frame:
+                    break
+
                 # Apply resize if needed (same as single-frame mode)
                 if resize_factor < 1.0:
                     frame = cv2.resize(
@@ -247,12 +283,14 @@ class TrackingWorker(QThread):
             for local_idx, (meas, sizes, shapes, confidences, obb_corners) in enumerate(
                 batch_results
             ):
-                global_idx = batch_start_idx + local_idx
-                # Calculate DetectionID for each detection in this frame
-                frame_id = global_idx + 1  # FrameID is 1-based
-                detection_ids = [frame_id * 10000 + i for i in range(len(meas))]
+                relative_idx = batch_start_idx + local_idx
+                actual_frame_idx = (
+                    start_frame + relative_idx
+                )  # Convert to actual video frame
+                # Calculate DetectionID for each detection using actual frame index
+                detection_ids = [actual_frame_idx * 10000 + i for i in range(len(meas))]
                 detection_cache.add_frame(
-                    global_idx,
+                    actual_frame_idx,  # Use actual frame index for cache key
                     meas,
                     sizes,
                     shapes,
@@ -314,9 +352,28 @@ class TrackingWorker(QThread):
             self.finished_signal.emit(True, [], [])
             return
 
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames <= 0:
-            total_frames = None
+        total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_video_frames <= 0:
+            total_video_frames = None
+
+        # Get frame range parameters early (before video writer init)
+        start_frame = p.get("START_FRAME", 0)
+        end_frame = p.get("END_FRAME", None)
+        if end_frame is None:
+            end_frame = total_video_frames - 1 if total_video_frames else 0
+
+        # Validate frame range
+        if total_video_frames:
+            start_frame = max(0, min(start_frame, total_video_frames - 1))
+            end_frame = max(start_frame, min(end_frame, total_video_frames - 1))
+
+        # Set total_frames to the range we'll actually process
+        total_frames = end_frame - start_frame + 1
+
+        logger.info(f"Video has {total_video_frames} frames total")
+        logger.info(
+            f"Processing frame range: {start_frame} to {end_frame} ({total_frames} frames)"
+        )
 
         if self.video_output_path:
             fps, resize_f = cap.get(cv2.CAP_PROP_FPS), p.get("RESIZE_FACTOR", 1.0)
@@ -365,6 +422,11 @@ class TrackingWorker(QThread):
         if detection_method == "background_subtraction":
             bg_model = BackgroundModel(p)
             bg_model.prime_background(cap)
+
+        # Seek to start frame if not at beginning
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            logger.info(f"Seeking to start frame {start_frame}")
 
         # Initialize individual dataset generator (supports both YOLO OBB and BG subtraction)
         individual_generator = None
@@ -426,35 +488,52 @@ class TrackingWorker(QThread):
                 self.use_cached_detections and cache_exists
             )
 
-            if should_load_cache:
-                # Load cached detections
+            if should_load_cache and cache_exists:
+                # Load cached detections and validate frame range
                 detection_cache = DetectionCache(self.detection_cache_path, mode="r")
-                total_frames = detection_cache.get_total_frames()
-                use_cached_detections = True
-                if self.backward_mode:
-                    logger.info(
-                        f"Backward pass using cached detections ({total_frames} frames)"
-                    )
+                cached_start, cached_end = detection_cache.get_frame_range()
+
+                # Check if cache matches current frame range
+                if detection_cache.matches_frame_range(start_frame, end_frame):
+                    total_frames = detection_cache.get_total_frames()
+                    use_cached_detections = True
+                    if self.backward_mode:
+                        logger.info(
+                            f"Backward pass using cached detections ({total_frames} frames, range: {start_frame}-{end_frame})"
+                        )
+                    else:
+                        logger.info(
+                            f"Reusing cached detections from previous run ({total_frames} frames, range: {start_frame}-{end_frame})"
+                        )
                 else:
-                    logger.info(
-                        f"Reusing cached detections from previous run ({total_frames} frames)"
+                    # Frame range mismatch - invalidate cache
+                    logger.warning(
+                        f"Cache frame range mismatch! Cache: {cached_start}-{cached_end}, Requested: {start_frame}-{end_frame}"
                     )
-            else:
-                # Forward pass: create cache for writing
-                detection_cache = DetectionCache(self.detection_cache_path, mode="w")
-                if cache_exists and not self.use_cached_detections:
-                    logger.info(
-                        "Forward pass caching detections (overwriting existing cache)"
-                    )
-                else:
-                    logger.info("Forward pass caching detections")
+                    logger.warning("Deleting old cache and regenerating detections...")
+                    detection_cache.close()
+                    detection_cache = None
+                    os.remove(self.detection_cache_path)
+                    cache_exists = False
+
+            # Create new cache for writing if needed
+            if not use_cached_detections:
+                detection_cache = DetectionCache(
+                    self.detection_cache_path,
+                    mode="w",
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                )
+                logger.info(
+                    f"Forward pass caching detections for range {start_frame}-{end_frame}"
+                )
 
         # === RUN BATCHED DETECTION PHASE (if applicable) ===
         # Only run batched detection if we don't already have cached detections
         if use_batched_detection and not use_cached_detections:
             # Phase 1: Batched YOLO detection
             frames_processed = self._run_batched_detection_phase(
-                cap, detection_cache, detector, p
+                cap, detection_cache, detector, p, start_frame, end_frame
             )
 
             # Save detection cache after phase 1
@@ -467,8 +546,9 @@ class TrackingWorker(QThread):
             total_frames = frames_processed
             use_cached_detections = True  # Phase 2 uses cached detections
 
-            # Reset video capture for phase 2 (tracking + visualization)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            # Reset video capture to start frame for phase 2 (tracking + visualization)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            logger.info(f"Reset video to start frame {start_frame} for phase 2")
 
             logger.info("=" * 80)
             logger.info("PHASE 2: Tracking and Visualization")
@@ -510,7 +590,9 @@ class TrackingWorker(QThread):
                     )
                 else:
                     # No visualization or individual analysis - skip frame reading entirely
-                    frame_iterator = self._cached_detection_iterator(total_frames)
+                    frame_iterator = self._cached_detection_iterator(
+                        total_frames, start_frame, end_frame, backward=False
+                    )
                     skip_visualization = True
                     use_prefetcher = False
                     logger.info(
@@ -518,7 +600,9 @@ class TrackingWorker(QThread):
                     )
             else:
                 # Backward pass: no frames needed, skip visualization
-                frame_iterator = self._cached_detection_iterator(total_frames)
+                frame_iterator = self._cached_detection_iterator(
+                    total_frames, start_frame, end_frame, backward=True
+                )
                 skip_visualization = True
                 use_prefetcher = False  # No frames to prefetch
                 logger.info(
@@ -541,6 +625,25 @@ class TrackingWorker(QThread):
 
             params = self.get_current_params()
             self.frame_count += 1
+
+            # Calculate actual frame index (0-based) accounting for start_frame offset
+            # In backward mode, go from end_frame backward to start_frame
+            if self.backward_mode:
+                actual_frame_index = end_frame - (self.frame_count - 1)
+            else:
+                actual_frame_index = start_frame + (self.frame_count - 1)
+
+            # Check if we've reached the boundary
+            if self.backward_mode:
+                if actual_frame_index < start_frame:
+                    logger.info(
+                        f"Reached start frame {start_frame}, stopping backward tracking"
+                    )
+                    break
+            else:
+                if actual_frame_index > end_frame:
+                    logger.info(f"Reached end frame {end_frame}, stopping tracking")
+                    break
 
             # --- Preprocessing & Detection ---
             prep_start = time.time()
@@ -597,17 +700,15 @@ class TrackingWorker(QThread):
 
             detect_start = time.time()
 
+            # Initialize detection-related variables (in case no detection occurs)
+            detection_ids = []
+            filtered_obb_corners = []
+            detection_confidences = []
+
             # Get detections either from cache or by detection
             if use_cached_detections:
-                # Load cached detections (backward pass or phase 2 of batched detection)
-                # Frame index is 0-based, but self.frame_count is 1-based during iteration
-                if use_batched_detection:
-                    # Phase 2: forward iteration, so use frame_count - 1 directly
-                    cache_frame_idx = self.frame_count - 1
-                else:
-                    # Backward pass: reverse mapping
-                    cache_frame_idx = total_frames - self.frame_count
-
+                # Load cached detections using actual frame index
+                # The cache keys are actual video frame indices, so we use actual_frame_index directly
                 (
                     meas,
                     sizes,
@@ -615,7 +716,7 @@ class TrackingWorker(QThread):
                     detection_confidences,
                     filtered_obb_corners,
                     detection_ids,
-                ) = detection_cache.get_frame(cache_frame_idx)
+                ) = detection_cache.get_frame(actual_frame_index)
                 # No yolo_results object in cached mode
                 yolo_results = None
                 fg_mask = None
@@ -663,12 +764,14 @@ class TrackingWorker(QThread):
                 ):
                     fg_mask = detector.apply_conservative_split(fg_mask)
                 meas, sizes, shapes, yolo_results, detection_confidences = (
-                    detector.detect_objects(fg_mask, self.frame_count)
+                    detector.detect_objects(fg_mask, actual_frame_index)
                 )
                 # No OBB corners for background subtraction
                 filtered_obb_corners = []
-                # Calculate DetectionID for each detection
-                detection_ids = [self.frame_count * 10000 + i for i in range(len(meas))]
+                # Calculate DetectionID for each detection using actual frame index
+                detection_ids = [
+                    actual_frame_index * 10000 + i for i in range(len(meas))
+                ]
 
             elif (
                 detection_method == "yolo_obb" and frame is not None
@@ -726,9 +829,9 @@ class TrackingWorker(QThread):
                     filtered_obb_corners = [
                         filtered_obb_corners[i] for i in keep_indices
                     ]
-                    # Calculate DetectionID for each kept detection
+                    # Calculate DetectionID for each kept detection using actual frame index
                     detection_ids = [
-                        self.frame_count * 10000 + i for i in range(len(meas))
+                        actual_frame_index * 10000 + i for i in range(len(meas))
                     ]
 
             else:
@@ -742,9 +845,9 @@ class TrackingWorker(QThread):
             # Cache detections during forward pass (only when actively detecting, not when loading from cache)
             if detection_cache and not self.backward_mode and not use_cached_detections:
                 # detection_ids should already be calculated in detection blocks above
-                # Frame index is 0-based (self.frame_count - 1)
+                # Use actual frame index for cache key
                 detection_cache.add_frame(
-                    self.frame_count - 1,
+                    actual_frame_index,
                     meas,
                     sizes,
                     shapes,
@@ -865,12 +968,13 @@ class TrackingWorker(QThread):
                     )
                     last_shape_info[r] = shapes[c]
 
-                    pt = (int(x), int(y), orientation_last[r], self.frame_count)
+                    # Update trajectory with actual frame index
+                    pt = (int(x), int(y), orientation_last[r], actual_frame_index)
                     self.trajectories_full[r].append(pt)
                     trajectories_pruned[r].append(pt)
 
                     if self.csv_writer_thread:
-                        # Build base data row
+                        # Build base data row with actual frame index
                         row_data = [
                             r,
                             trajectory_ids[r],
@@ -922,7 +1026,7 @@ class TrackingWorker(QThread):
                             if self.trajectories_full[r]
                             else (float("nan"),) * 4
                         )
-                        # Build base data row
+                        # Build base data row with actual frame index
                         row_data = [
                             r,
                             trajectory_ids[r],
@@ -930,7 +1034,7 @@ class TrackingWorker(QThread):
                             last_pos[0],
                             last_pos[1],
                             last_pos[2],
-                            self.frame_count,
+                            actual_frame_index,
                             track_states[r],
                         ]
 
@@ -1027,7 +1131,7 @@ class TrackingWorker(QThread):
                     # YOLO OBB detection - use OBB corners directly
                     individual_generator.process_frame(
                         frame=original_frame,
-                        frame_id=self.frame_count,
+                        frame_id=actual_frame_index,
                         meas=meas,
                         obb_corners=filtered_obb_corners,
                         ellipse_params=None,
@@ -1060,7 +1164,7 @@ class TrackingWorker(QThread):
 
                     individual_generator.process_frame(
                         frame=original_frame,
-                        frame_id=self.frame_count,
+                        frame_id=actual_frame_index,
                         meas=meas,
                         obb_corners=None,
                         ellipse_params=ellipse_params,
@@ -1099,11 +1203,11 @@ class TrackingWorker(QThread):
                     # Add mode information to status text
                     if use_cached_detections:
                         if use_batched_detection:
-                            status_text = f"Tracking (batched): {self.frame_count} / {total_frames}"
+                            status_text = f"Tracking (batched): Frame {actual_frame_index} ({self.frame_count} / {total_frames})"
                         else:
-                            status_text = f"Tracking (cached): {self.frame_count} / {total_frames}"
+                            status_text = f"Tracking (cached): Frame {actual_frame_index} ({self.frame_count} / {total_frames})"
                     else:
-                        status_text = f"Processing: {self.frame_count} / {total_frames}"
+                        status_text = f"Processing: Frame {actual_frame_index} ({self.frame_count} / {total_frames})"
 
                     self.progress_signal.emit(percentage, status_text)
 

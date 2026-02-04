@@ -22,6 +22,7 @@ from PySide6.QtCore import (
     QMutex,
     QPropertyAnimation,
     QEasingCurve,
+    QTimer,
 )
 from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QIcon, QColor, QAction
 from PySide6.QtWidgets import (
@@ -114,7 +115,6 @@ class MergeWorker(QThread):
             resolved_trajectories = resolve_trajectories(
                 forward_prepared,
                 backward_prepared,
-                video_length=self.total_frames,
                 params=self.params,
             )
 
@@ -643,6 +643,14 @@ class MainWindow(QMainWindow):
 
         # Advanced configuration (for power users)
         self.advanced_config = self._load_advanced_config()
+        
+        # Video player state
+        self.video_cap = None  # cv2.VideoCapture for video playback
+        self.video_total_frames = 0
+        self.video_current_frame_idx = 0
+        self.last_read_frame_idx = -1  # Track last frame read for sequential optimization
+        self.is_playing = False
+        self.playback_timer = None  # QTimer for playback
 
         # === UI CONSTRUCTION ===
         self.init_ui()
@@ -1126,12 +1134,166 @@ class MainWindow(QMainWindow):
         )
         fl.addRow("", self.label_fps_info)
 
+        vl_files.addLayout(fl)
+        form.addWidget(g_files)
+
+        # ============================================================
+        # Video Player & Frame Range
+        # ============================================================
+        self.g_video_player = QGroupBox("Video Player & Frame Range")
+        vl_player = QVBoxLayout(self.g_video_player)
+        vl_player.addWidget(
+            self._create_help_label(
+                "Preview video and select frame range for tracking. Use the slider to seek through the video."
+            )
+        )
+
+        # Video info label
+        self.lbl_video_info = QLabel("No video loaded")
+        self.lbl_video_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic; padding: 5px;"
+        )
+        vl_player.addWidget(self.lbl_video_info)
+
+        # Timeline slider
+        timeline_layout = QVBoxLayout()
+        self.lbl_current_frame = QLabel("Frame: -")
+        self.lbl_current_frame.setStyleSheet("font-size: 10px; color: #aaa;")
+        timeline_layout.addWidget(self.lbl_current_frame)
+
+        self.slider_timeline = QSlider(Qt.Horizontal)
+        self.slider_timeline.setMinimum(0)
+        self.slider_timeline.setMaximum(0)
+        self.slider_timeline.setValue(0)
+        self.slider_timeline.setEnabled(False)
+        self.slider_timeline.setToolTip("Seek through video frames")
+        self.slider_timeline.valueChanged.connect(self._on_timeline_changed)
+        timeline_layout.addWidget(self.slider_timeline)
+        vl_player.addLayout(timeline_layout)
+
+        # Playback controls
+        controls_layout = QHBoxLayout()
+
+        self.btn_first_frame = QPushButton("⏮ First")
+        self.btn_first_frame.setEnabled(False)
+        self.btn_first_frame.clicked.connect(self._goto_first_frame)
+        self.btn_first_frame.setToolTip("Go to first frame")
+        controls_layout.addWidget(self.btn_first_frame)
+
+        self.btn_prev_frame = QPushButton("◀ Prev")
+        self.btn_prev_frame.setEnabled(False)
+        self.btn_prev_frame.clicked.connect(self._goto_prev_frame)
+        self.btn_prev_frame.setToolTip("Previous frame")
+        controls_layout.addWidget(self.btn_prev_frame)
+
+        self.btn_play_pause = QPushButton("▶ Play")
+        self.btn_play_pause.setEnabled(False)
+        self.btn_play_pause.clicked.connect(self._toggle_playback)
+        self.btn_play_pause.setToolTip("Play/pause video")
+        controls_layout.addWidget(self.btn_play_pause)
+
+        self.btn_next_frame = QPushButton("Next ▶")
+        self.btn_next_frame.setEnabled(False)
+        self.btn_next_frame.clicked.connect(self._goto_next_frame)
+        self.btn_next_frame.setToolTip("Next frame")
+        controls_layout.addWidget(self.btn_next_frame)
+
+        self.btn_last_frame = QPushButton("Last ⏭")
+        self.btn_last_frame.setEnabled(False)
+        self.btn_last_frame.clicked.connect(self._goto_last_frame)
+        self.btn_last_frame.setToolTip("Go to last frame")
+        controls_layout.addWidget(self.btn_last_frame)
+
+        controls_layout.addStretch()
+
+        # Playback speed control
+        controls_layout.addWidget(QLabel("Speed:"))
+        self.combo_playback_speed = QComboBox()
+        self.combo_playback_speed.addItems(["0.25x", "0.5x", "1x", "2x", "4x"])
+        self.combo_playback_speed.setCurrentText("1x")
+        self.combo_playback_speed.setEnabled(False)
+        self.combo_playback_speed.setToolTip("Playback speed")
+        controls_layout.addWidget(self.combo_playback_speed)
+
+        vl_player.addLayout(controls_layout)
+
+        # Frame range selection
+        range_group = QGroupBox("Tracking Frame Range")
+        range_layout = QFormLayout(range_group)
+        range_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # Start frame
+        start_layout = QHBoxLayout()
+        self.spin_start_frame = QSpinBox()
+        self.spin_start_frame.setMinimum(0)
+        self.spin_start_frame.setMaximum(0)
+        self.spin_start_frame.setValue(0)
+        self.spin_start_frame.setEnabled(False)
+        self.spin_start_frame.setToolTip("First frame to track (0-based index)")
+        self.spin_start_frame.valueChanged.connect(self._on_frame_range_changed)
+        start_layout.addWidget(self.spin_start_frame)
+
+        self.btn_set_start_current = QPushButton("Set to Current")
+        self.btn_set_start_current.setEnabled(False)
+        self.btn_set_start_current.clicked.connect(self._set_start_to_current)
+        self.btn_set_start_current.setToolTip("Set start frame to current frame")
+        start_layout.addWidget(self.btn_set_start_current)
+        range_layout.addRow("Start Frame:", start_layout)
+
+        # End frame
+        end_layout = QHBoxLayout()
+        self.spin_end_frame = QSpinBox()
+        self.spin_end_frame.setMinimum(0)
+        self.spin_end_frame.setMaximum(0)
+        self.spin_end_frame.setValue(0)
+        self.spin_end_frame.setEnabled(False)
+        self.spin_end_frame.setToolTip("Last frame to track (0-based index, inclusive)")
+        self.spin_end_frame.valueChanged.connect(self._on_frame_range_changed)
+        end_layout.addWidget(self.spin_end_frame)
+
+        self.btn_set_end_current = QPushButton("Set to Current")
+        self.btn_set_end_current.setEnabled(False)
+        self.btn_set_end_current.clicked.connect(self._set_end_to_current)
+        self.btn_set_end_current.setToolTip("Set end frame to current frame")
+        end_layout.addWidget(self.btn_set_end_current)
+        range_layout.addRow("End Frame:", end_layout)
+
+        # Range info
+        self.lbl_range_info = QLabel()
+        self.lbl_range_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic; padding: 5px;"
+        )
+        range_layout.addRow("", self.lbl_range_info)
+
+        # Reset to full range button
+        self.btn_reset_range = QPushButton("Reset to Full Video")
+        self.btn_reset_range.setEnabled(False)
+        self.btn_reset_range.clicked.connect(self._reset_frame_range)
+        self.btn_reset_range.setToolTip("Reset to track entire video")
+        range_layout.addRow("", self.btn_reset_range)
+
+        vl_player.addWidget(range_group)
+        form.addWidget(self.g_video_player)
+
+        # Initially hide video player (shown when video is loaded)
+        self.g_video_player.setVisible(False)
+
+        # ============================================================
+        # Output Files
+        # ============================================================
+        g_output = QGroupBox("Output Files")
+        vl_output = QVBoxLayout(g_output)
+        fl_output = QFormLayout()
+        fl_output.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        fl_output.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
         self.btn_csv = QPushButton("Select CSV Output...")
         self.btn_csv.clicked.connect(self.select_csv)
         self.csv_line = QLineEdit()
         self.csv_line.setPlaceholderText("path/to/output.csv")
         self.csv_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        fl.addRow(self.btn_csv, self.csv_line)
+        fl_output.addRow(self.btn_csv, self.csv_line)
 
         # Config Management
         config_layout = QHBoxLayout()
@@ -3497,14 +3659,14 @@ class MainWindow(QMainWindow):
                 script = f"""
                 tell application "Terminal"
                     activate
-                    do script "cd '{dataset_path}' && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"
+                    do script "cd '{dataset_path}' && conda init &&  conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"
                 end tell
                 """
                 subprocess.Popen(["osascript", "-e", script])
 
             elif system == "Windows":
                 # Use cmd.exe with conda activation
-                cmd = f'start cmd /k "cd /d {dataset_path} && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"'
+                cmd = f'start cmd /k "cd /d {dataset_path} && conda init &&  conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"'
                 subprocess.Popen(cmd, shell=True)
 
             else:  # Linux
@@ -3521,7 +3683,7 @@ class MainWindow(QMainWindow):
                                     "--",
                                     "bash",
                                     "-c",
-                                    f"cd '{dataset_path}' && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                    f"cd '{dataset_path}' && conda init && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
                                 ]
                             )
                         elif terminal == "konsole":
@@ -3531,7 +3693,7 @@ class MainWindow(QMainWindow):
                                     "-e",
                                     "bash",
                                     "-c",
-                                    f"cd '{dataset_path}' && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                    f"cd '{dataset_path}' && conda init && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
                                 ]
                             )
                         else:  # xterm
@@ -3541,7 +3703,7 @@ class MainWindow(QMainWindow):
                                     "-e",
                                     "bash",
                                     "-c",
-                                    f"cd '{dataset_path}' && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                    f"cd '{dataset_path}' && conda init &&  conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
                                 ]
                             )
                         terminal_found = True
@@ -3794,6 +3956,9 @@ class MainWindow(QMainWindow):
         self.btn_detect_fps.setEnabled(True)
 
         self._load_preview_frame()
+        
+        # Initialize video player
+        self._init_video_player(fp)
 
         # Auto-load config if it exists for this video (unless explicitly skipped)
         if not skip_config_load:
@@ -3864,6 +4029,254 @@ class MainWindow(QMainWindow):
             logger.info(f"Loaded preview frame {random_frame_idx}/{total_frames}")
         else:
             logger.warning("Failed to read preview frame")
+    
+    # =========================================================================
+    # VIDEO PLAYER FUNCTIONS
+    # =========================================================================
+    
+    def _init_video_player(self, video_path):
+        """Initialize video player with the loaded video."""
+        # Release any existing video capture
+        if self.video_cap is not None:
+            self.video_cap.release()
+        
+        # Stop any active playback
+        if self.playback_timer:
+            self.playback_timer.stop()
+            self.playback_timer = None
+        self.is_playing = False
+        
+        # Open video
+        self.video_cap = cv2.VideoCapture(video_path)
+        if not self.video_cap.isOpened():
+            logger.error(f"Failed to open video: {video_path}")
+            return
+        
+        # Get video properties
+        self.video_total_frames = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+        width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        # Update UI
+        self.lbl_video_info.setText(
+            f"Video: {self.video_total_frames} frames, {width}x{height}, {fps:.2f} FPS"
+        )
+        
+        # Enable controls
+        self.slider_timeline.setMaximum(self.video_total_frames - 1)
+        self.slider_timeline.setEnabled(True)
+        self.btn_first_frame.setEnabled(True)
+        self.btn_prev_frame.setEnabled(True)
+        self.btn_play_pause.setEnabled(True)
+        self.btn_next_frame.setEnabled(True)
+        self.btn_last_frame.setEnabled(True)
+        self.combo_playback_speed.setEnabled(True)
+        
+        # Enable frame range controls
+        self.spin_start_frame.setMaximum(self.video_total_frames - 1)
+        self.spin_start_frame.setEnabled(True)
+        self.spin_end_frame.setMaximum(self.video_total_frames - 1)
+        self.spin_end_frame.setValue(self.video_total_frames - 1)
+        self.spin_end_frame.setEnabled(True)
+        self.btn_set_start_current.setEnabled(True)
+        self.btn_set_end_current.setEnabled(True)
+        self.btn_reset_range.setEnabled(True)
+        
+        # Show video player group
+        self.g_video_player.setVisible(True)
+        
+        # Go to first frame
+        self.video_current_frame_idx = 0
+        self._display_current_frame()
+        self._update_range_info()
+        
+        logger.info(f"Video player initialized: {self.video_total_frames} frames")
+    
+    def _display_current_frame(self):
+        """Display the current frame in the video label."""
+        if self.video_cap is None:
+            return
+        
+        # Only seek if not reading sequentially (seeking is slow)
+        if self.last_read_frame_idx != self.video_current_frame_idx - 1:
+            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, self.video_current_frame_idx)
+        
+        ret, frame = self.video_cap.read()
+        
+        if not ret:
+            return
+        
+        self.last_read_frame_idx = self.video_current_frame_idx
+        
+        # Convert to RGB and update preview
+        self.preview_frame_original = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.detection_test_result = None  # Clear any detection overlay
+        self._update_preview_display()
+        
+        # Update UI
+        self.lbl_current_frame.setText(f"Frame: {self.video_current_frame_idx}/{self.video_total_frames-1}")
+        self.slider_timeline.blockSignals(True)
+        self.slider_timeline.setValue(self.video_current_frame_idx)
+        self.slider_timeline.blockSignals(False)
+    
+    def _on_timeline_changed(self, value):
+        """Handle timeline slider change."""
+        # Only stop playback if this is a manual user change (not from playback itself)
+        if self.is_playing and not self.slider_timeline.signalsBlocked():
+            self._stop_playback()
+        
+        self.video_current_frame_idx = value
+        self._display_current_frame()
+    
+    def _goto_first_frame(self):
+        """Go to the first frame."""
+        if self.is_playing:
+            self._stop_playback()
+        self.video_current_frame_idx = 0
+        self.slider_timeline.setValue(0)
+        self._display_current_frame()
+    
+    def _goto_prev_frame(self):
+        """Go to the previous frame."""
+        if self.is_playing:
+            self._stop_playback()
+        if self.video_current_frame_idx > 0:
+            self.video_current_frame_idx -= 1
+            self.slider_timeline.setValue(self.video_current_frame_idx)
+            self._display_current_frame()
+    
+    def _goto_next_frame(self):
+        """Go to the next frame."""
+        if self.is_playing:
+            self._stop_playback()
+        if self.video_current_frame_idx < self.video_total_frames - 1:
+            self.video_current_frame_idx += 1
+            self.slider_timeline.setValue(self.video_current_frame_idx)
+            self._display_current_frame()
+    
+    def _goto_last_frame(self):
+        """Go to the last frame."""
+        if self.is_playing:
+            self._stop_playback()
+        self.video_current_frame_idx = self.video_total_frames - 1
+        self.slider_timeline.setValue(self.video_current_frame_idx)
+        self._display_current_frame()
+    
+    def _toggle_playback(self):
+        """Toggle play/pause."""
+        if self.is_playing:
+            self._stop_playback()
+        else:
+            self._start_playback()
+    
+    def _start_playback(self):
+        """Start video playback."""
+        if self.video_cap is None or self.is_playing:
+            return
+        
+        self.is_playing = True
+        self.btn_play_pause.setText("⏸ Pause")
+        
+        # Get playback speed
+        speed_text = self.combo_playback_speed.currentText()
+        speed = float(speed_text.replace("x", ""))
+        
+        # Calculate interval based on FPS and speed
+        fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            fps = 30  # Default
+        
+        interval_ms = max(1, int((1000.0 / fps) / speed))
+        
+        # Create timer if needed (use as single-shot timer)
+        if self.playback_timer is None:
+            self.playback_timer = QTimer(self)
+        
+        # Start first frame with single-shot
+        self.playback_timer.singleShot(interval_ms, self._playback_step)
+        logger.debug(f"Started playback at {speed}x speed ({interval_ms}ms interval)")
+    
+    def _stop_playback(self):
+        """Stop video playback."""
+        if not self.is_playing:
+            return
+        
+        self.is_playing = False
+        self.btn_play_pause.setText("▶ Play")
+        
+        if self.playback_timer and self.playback_timer.isActive():
+            self.playback_timer.stop()
+        
+        logger.debug("Stopped playback")
+    
+    def _playback_step(self):
+        """Advance one frame during playback."""
+        # Stop timer first to prevent event queueing
+        if self.playback_timer and self.playback_timer.isActive():
+            self.playback_timer.stop()
+        
+        # Check if still playing (user might have stopped it)
+        if not self.is_playing:
+            return
+        
+        if self.video_current_frame_idx < self.video_total_frames - 1:
+            self.video_current_frame_idx += 1
+            self._display_current_frame()
+            
+            # Process events to keep UI responsive
+            from PySide6.QtWidgets import QApplication
+            QApplication.processEvents()
+            
+            # Re-check if still playing after processing events
+            if self.is_playing and self.playback_timer:
+                # Calculate next interval
+                speed_text = self.combo_playback_speed.currentText()
+                speed = float(speed_text.replace("x", ""))
+                fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+                if fps <= 0:
+                    fps = 30
+                interval_ms = max(1, int((1000.0 / fps) / speed))
+                
+                # Schedule next frame
+                self.playback_timer.singleShot(interval_ms, self._playback_step)
+        else:
+            # Reached end of video
+            self._stop_playback()
+    
+    def _on_frame_range_changed(self):
+        """Handle frame range spinbox changes."""
+        # Ensure start <= end
+        if self.spin_start_frame.value() > self.spin_end_frame.value():
+            self.spin_end_frame.setValue(self.spin_start_frame.value())
+        
+        self._update_range_info()
+    
+    def _update_range_info(self):
+        """Update the frame range info label."""
+        start = self.spin_start_frame.value()
+        end = self.spin_end_frame.value()
+        num_frames = end - start + 1
+        
+        fps = self.spin_fps.value()
+        duration_sec = num_frames / fps if fps > 0 else 0
+        
+        self.lbl_range_info.setText(
+            f"Tracking {num_frames} frames ({duration_sec:.2f} seconds)"
+        )
+    
+    def _set_start_to_current(self):
+        """Set start frame to current frame."""
+        self.spin_start_frame.setValue(self.video_current_frame_idx)
+    
+    def _set_end_to_current(self):
+        """Set end frame to current frame."""
+        self.spin_end_frame.setValue(self.video_current_frame_idx)
+    
+    def _reset_frame_range(self):
+        """Reset frame range to full video."""
+        self.spin_start_frame.setValue(0)
+        self.spin_end_frame.setValue(self.video_total_frames - 1)
 
     def _on_brightness_changed(self, value):
         """Handle brightness slider change."""
@@ -4120,8 +4533,7 @@ class MainWindow(QMainWindow):
             adjusted_rgb = cv2.cvtColor(adjusted, cv2.COLOR_GRAY2RGB)
         else:
             # YOLO uses color frames directly without brightness/contrast/gamma adjustments
-            # Just show the original color frame
-            adjusted_rgb = self.preview_frame_original.copy()
+            adjusted_rgb = self.preview_frame_original
 
         # Display the adjusted frame
         h, w, ch = adjusted_rgb.shape
@@ -4132,13 +4544,13 @@ class MainWindow(QMainWindow):
         if self.roi_mask is not None:
             qimg = self._apply_roi_mask_to_image(qimg)
 
-        # Apply zoom
+        # Apply zoom (always use fast transformation for responsive UI)
         zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
         if zoom_val != 1.0:
             scaled_w = int(w * zoom_val)
             scaled_h = int(h * zoom_val)
             qimg = qimg.scaled(
-                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation
             )
 
         pixmap = QPixmap.fromImage(qimg)
@@ -4154,7 +4566,7 @@ class MainWindow(QMainWindow):
         bytes_per_line = ch * w
         qimg = QImage(test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
 
-        # Apply zoom
+        # Apply zoom (always use fast transformation for responsive UI)
         zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
         effective_scale = zoom_val * resize_f
 
@@ -4163,7 +4575,7 @@ class MainWindow(QMainWindow):
             scaled_w = int(orig_w * effective_scale)
             scaled_h = int(orig_h * effective_scale)
             qimg = qimg.scaled(
-                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation
             )
 
         pixmap = QPixmap.fromImage(qimg)
@@ -6522,6 +6934,11 @@ class MainWindow(QMainWindow):
     def start_preview_on_video(self, video_path):
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+        
+        # Stop video playback if active
+        if self.is_playing:
+            self._stop_playback()
+        
         # Reset first frame flag for auto-fit
         self._tracking_first_frame = True
         self.csv_writer_thread = None
@@ -6562,6 +6979,10 @@ class MainWindow(QMainWindow):
     def start_tracking_on_video(self, video_path, backward_mode=False):
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+        
+        # Stop video playback if active
+        if self.is_playing:
+            self._stop_playback()
 
         # Reset first frame flag for auto-fit
         self._tracking_first_frame = True
@@ -6775,6 +7196,8 @@ class MainWindow(QMainWindow):
             "ADVANCED_CONFIG": advanced_config,  # Include advanced config for batch optimization
             "DETECTION_METHOD": det_method,
             "FPS": fps,  # Acquisition frame rate
+            "START_FRAME": self.spin_start_frame.value() if self.spin_start_frame.isEnabled() else 0,
+            "END_FRAME": self.spin_end_frame.value() if self.spin_end_frame.isEnabled() else None,
             "YOLO_MODEL_PATH": yolo_path,
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),

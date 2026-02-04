@@ -21,28 +21,36 @@ class DetectionCache:
     during backward pass, minimizing memory footprint while enabling detection reuse.
     """
 
-    def __init__(self, cache_path, mode="w"):
+    def __init__(self, cache_path, mode="w", start_frame=0, end_frame=None):
         """
         Initialize detection cache.
 
         Args:
             cache_path: Path to the .npz cache file
             mode: 'w' for writing (forward pass), 'r' for reading (backward pass)
+            start_frame: Starting frame index for writing
+            end_frame: Ending frame index for writing
         """
         self.cache_path = Path(cache_path)
         self.mode = mode
         self._data = {}  # Temporary storage during writing
         self._loaded_data = None  # Loaded data during reading
         self._total_frames = 0
+        self._start_frame = start_frame
+        self._end_frame = end_frame
 
         if mode == "r" and self.cache_path.exists():
             logger.info(f"Loading detection cache from {self.cache_path}")
             self._loaded_data = np.load(str(self.cache_path), allow_pickle=True)
-            # Extract total frames from metadata
+            # Extract metadata
             if "metadata" in self._loaded_data:
                 metadata = self._loaded_data["metadata"].item()
                 self._total_frames = metadata.get("total_frames", 0)
-            logger.info(f"Cache loaded: {self._total_frames} frames")
+                self._start_frame = metadata.get("start_frame", 0)
+                self._end_frame = metadata.get("end_frame", self._total_frames - 1)
+            logger.info(
+                f"Cache loaded: {self._total_frames} frames (range: {self._start_frame}-{self._end_frame})"
+            )
 
     def add_frame(
         self,
@@ -112,9 +120,14 @@ class DetectionCache:
         if self.mode != "w":
             raise RuntimeError("Cache opened in read mode, cannot save")
 
-        # Add metadata
+        # Add metadata including frame range
         self._data["metadata"] = np.array(
-            {"total_frames": self._total_frames, "version": "1.0"}
+            {
+                "total_frames": self._total_frames,
+                "start_frame": self._start_frame,
+                "end_frame": self._end_frame,
+                "version": "1.1",
+            }
         )
 
         logger.info(
@@ -193,6 +206,14 @@ class DetectionCache:
     def get_total_frames(self):
         """Get total number of frames in cache."""
         return self._total_frames
+
+    def get_frame_range(self):
+        """Get the frame range stored in cache."""
+        return self._start_frame, self._end_frame
+
+    def matches_frame_range(self, start_frame, end_frame):
+        """Check if cache matches the requested frame range."""
+        return self._start_frame == start_frame and self._end_frame == end_frame
 
     def close(self):
         """Close and cleanup cache resources."""
