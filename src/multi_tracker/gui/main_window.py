@@ -1235,8 +1235,8 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Display Settings (moved from Visuals tab)
         # ============================================================
-        g_display = QGroupBox("Display Settings")
-        vl_display = QVBoxLayout(g_display)
+        self.g_display = QGroupBox("Display Settings")
+        vl_display = QVBoxLayout(self.g_display)
         vl_display.addWidget(
             self._create_help_label(
                 "Configure visual overlays shown during tracking. These settings affect "
@@ -1296,7 +1296,7 @@ class MainWindow(QMainWindow):
         f_trail.addRow("Trail History (sec):", self.spin_traj_hist)
         vl_display.addLayout(f_trail)
 
-        form.addWidget(g_display)
+        form.addWidget(self.g_display)
 
         # ============================================================
         # Advanced / Debug (moved from Visuals tab)
@@ -1810,12 +1810,26 @@ class MainWindow(QMainWindow):
         )
         f_yolo.addRow("Target Classes:", self.line_yolo_classes)
 
-        # TensorRT Optimization (NVIDIA only)
+        l_yolo.addWidget(self.yolo_group)
+
+        # ============================================================
+        # GPU Acceleration Settings (TensorRT + Batching)
+        # ============================================================
+        self.g_gpu_accel = QGroupBox("GPU Acceleration")
+        vl_gpu = QVBoxLayout(self.g_gpu_accel)
+        vl_gpu.addWidget(
+            self._create_help_label(
+                "Optimize YOLO inference speed using GPU acceleration. Only applies to YOLO detection on GPU devices."
+            )
+        )
+
+        f_gpu = QFormLayout()
+        f_gpu.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # TensorRT Optimization
         from ..utils.gpu_utils import TENSORRT_AVAILABLE
 
-        self.chk_enable_tensorrt = QCheckBox(
-            "Enable TensorRT Optimization (NVIDIA GPUs)"
-        )
+        self.chk_enable_tensorrt = QCheckBox("Enable TensorRT (NVIDIA Only)")
         self.chk_enable_tensorrt.setChecked(False)
         self.chk_enable_tensorrt.setEnabled(TENSORRT_AVAILABLE)
 
@@ -1833,9 +1847,9 @@ class MainWindow(QMainWindow):
             )
 
         self.chk_enable_tensorrt.setToolTip(tensorrt_tooltip)
-        f_yolo.addRow("", self.chk_enable_tensorrt)
+        self.chk_enable_tensorrt.stateChanged.connect(self._on_tensorrt_toggled)
+        f_gpu.addRow("", self.chk_enable_tensorrt)
 
-        # TensorRT Max Batch Size (shown when TensorRT is enabled)
         self.spin_tensorrt_batch = QSpinBox()
         self.spin_tensorrt_batch.setRange(1, 64)
         self.spin_tensorrt_batch.setValue(
@@ -1843,53 +1857,42 @@ class MainWindow(QMainWindow):
         )
         self.spin_tensorrt_batch.setToolTip(
             "Maximum batch size for TensorRT engine.\n"
-            "Higher = potentially faster batched inference.\n"
-            "Lower = more likely to build successfully.\n\n"
-            "If TensorRT build fails with memory errors,\n"
-            "reduce this value (try 8, 4, or 1).\n\n"
-            "Typical values:\n"
-            "  • 16-32: High-end GPUs (24GB+ VRAM)\n"
-            "  • 8-16: Mid-range GPUs (8-16GB VRAM)\n"
-            "  • 1-8: Lower VRAM or large models"
+            "Higher = potentially faster, Lower = more stable.\n"
+            "Reduce if build fails (try 8, 4, or 1).\n"
+            "Typical: 16-32 (high-end), 8-16 (mid-range), 1-8 (low VRAM)"
         )
-        self.spin_tensorrt_batch.setEnabled(False)  # Initially disabled
-        self.lbl_tensorrt_batch = QLabel("TensorRT Max Batch:")
-        self.lbl_tensorrt_batch.setEnabled(False)
-        f_yolo.addRow(self.lbl_tensorrt_batch, self.spin_tensorrt_batch)
+        self.lbl_tensorrt_batch = QLabel("  Max Batch Size:")
+        f_gpu.addRow(self.lbl_tensorrt_batch, self.spin_tensorrt_batch)
 
-        # Connect TensorRT checkbox to show/hide batch size
-        self.chk_enable_tensorrt.stateChanged.connect(self._on_tensorrt_toggled)
+        # GPU Batching
+        f_gpu.addRow(QLabel(""))  # Spacer
 
-        # GPU Batching Settings
-        f_yolo.addRow(QLabel(""))  # Spacer
-        batching_label = QLabel("<b>GPU Batching (Full Tracking Only)</b>")
-        batching_label.setStyleSheet("color: #4a9eff; font-size: 11px;")
-        f_yolo.addRow(batching_label)
-
-        self.chk_enable_yolo_batching = QCheckBox("Enable Batched Detection")
+        self.chk_enable_yolo_batching = QCheckBox(
+            "Enable Batched Detection (Full Tracking Only)"
+        )
         self.chk_enable_yolo_batching.setChecked(
             self.advanced_config.get("enable_yolo_batching", True)
         )
         self.chk_enable_yolo_batching.setToolTip(
             "Process frames in batches on GPU for 2-5× faster detection.\n"
-            "Only works in full tracking mode (not preview).\n"
-            "Automatically disabled for CPU or background subtraction."
+            "Only works in full tracking mode (not preview)."
         )
         self.chk_enable_yolo_batching.stateChanged.connect(
             self._on_yolo_batching_toggled
         )
-        f_yolo.addRow("", self.chk_enable_yolo_batching)
+        f_gpu.addRow("", self.chk_enable_yolo_batching)
 
         self.combo_yolo_batch_mode = QComboBox()
         self.combo_yolo_batch_mode.addItems(["Auto", "Manual"])
         self.combo_yolo_batch_mode.setToolTip(
             "Auto: Automatically estimate batch size based on GPU memory.\n"
-            "Manual: Specify a fixed batch size (use if auto doesn't work well)."
+            "Manual: Specify a fixed batch size."
         )
         self.combo_yolo_batch_mode.currentIndexChanged.connect(
             self._on_yolo_batch_mode_changed
         )
-        f_yolo.addRow("Batch Size Mode:", self.combo_yolo_batch_mode)
+        self.lbl_yolo_batch_mode = QLabel("  Batch Size Mode:")
+        f_gpu.addRow(self.lbl_yolo_batch_mode, self.combo_yolo_batch_mode)
 
         self.spin_yolo_batch_size = QSpinBox()
         self.spin_yolo_batch_size.setRange(1, 64)
@@ -1899,18 +1902,26 @@ class MainWindow(QMainWindow):
         self.spin_yolo_batch_size.setToolTip(
             "Manual batch size (only used when mode is Manual).\n"
             "Larger = faster but uses more GPU memory.\n"
-            "If you get OOM errors, reduce this value.\n"
             "Typical values: 8-32 depending on GPU."
         )
-        self.spin_yolo_batch_size.setEnabled(False)  # Initially disabled (Auto mode)
-        f_yolo.addRow("Manual Batch Size:", self.spin_yolo_batch_size)
+        self.lbl_yolo_batch_size = QLabel("  Manual Batch Size:")
+        f_gpu.addRow(self.lbl_yolo_batch_size, self.spin_yolo_batch_size)
 
-        # Set initial enabled state of combo box based on checkbox state
-        # (combo starts at index 0 = Auto, so spinner stays disabled)
+        vl_gpu.addLayout(f_gpu)
+        l_yolo.addWidget(self.g_gpu_accel)
+
+        # Set initial visibility for TensorRT widgets
+        self.spin_tensorrt_batch.setVisible(False)
+        self.lbl_tensorrt_batch.setVisible(False)
+
+        # Set initial visibility for batching widgets
         initial_batching_enabled = self.chk_enable_yolo_batching.isChecked()
+        self.combo_yolo_batch_mode.setVisible(initial_batching_enabled)
+        self.lbl_yolo_batch_mode.setVisible(initial_batching_enabled)
+        self.spin_yolo_batch_size.setVisible(initial_batching_enabled)
+        self.lbl_yolo_batch_size.setVisible(initial_batching_enabled)
         self.combo_yolo_batch_mode.setEnabled(initial_batching_enabled)
-
-        l_yolo.addWidget(self.yolo_group)
+        self.spin_yolo_batch_size.setEnabled(False)  # Auto mode by default
         l_yolo.addStretch()  # Push YOLO config to top
 
         # Add pages to stack
@@ -2576,6 +2587,7 @@ class MainWindow(QMainWindow):
             "Uses velocity and distance thresholds to detect anomalies.\n"
             "Recommended: Enable for cleaner data output."
         )
+        self.enable_postprocessing.stateChanged.connect(self._on_cleaning_toggled)
         f_pp.addRow(self.enable_postprocessing)
 
         self.spin_min_trajectory_length = QSpinBox()
@@ -2586,7 +2598,8 @@ class MainWindow(QMainWindow):
             "Filters out brief false detections and transient tracks.\n"
             "Recommended: 5-30 frames depending on video length."
         )
-        f_pp.addRow("Min Length (frames):", self.spin_min_trajectory_length)
+        self.lbl_min_trajectory_length = QLabel("Min Length (frames):")
+        f_pp.addRow(self.lbl_min_trajectory_length, self.spin_min_trajectory_length)
 
         self.spin_max_velocity_break = QDoubleSpinBox()
         self.spin_max_velocity_break.setRange(1.0, 500.0)
@@ -2599,7 +2612,8 @@ class MainWindow(QMainWindow):
             "Independent of frame rate - automatically scaled by FPS.\n"
             "Recommended: 30-100 body-sizes/s for typical animal motion."
         )
-        f_pp.addRow("Max Velocity Break (body/s):", self.spin_max_velocity_break)
+        self.lbl_max_velocity_break = QLabel("Max Velocity Break (body/s):")
+        f_pp.addRow(self.lbl_max_velocity_break, self.spin_max_velocity_break)
 
         self.spin_max_occlusion_gap = QSpinBox()
         self.spin_max_occlusion_gap.setRange(0, 200)
@@ -2610,7 +2624,8 @@ class MainWindow(QMainWindow):
             "Set to 0 to disable occlusion-based splitting.\n"
             "Recommended: 20-50 frames for typical tracking scenarios."
         )
-        f_pp.addRow("Max Occlusion Gap (frames):", self.spin_max_occlusion_gap)
+        self.lbl_max_occlusion_gap = QLabel("Max Occlusion Gap (frames):")
+        f_pp.addRow(self.lbl_max_occlusion_gap, self.spin_max_occlusion_gap)
 
         # Interpolation settings
         self.combo_interpolation_method = QComboBox()
@@ -2624,7 +2639,8 @@ class MainWindow(QMainWindow):
             "• Spline: Smoothing spline with automatic smoothing\n"
             "Applied to X, Y positions and heading (circular interpolation)."
         )
-        f_pp.addRow("Interpolation Method:", self.combo_interpolation_method)
+        self.lbl_interpolation_method = QLabel("Interpolation Method:")
+        f_pp.addRow(self.lbl_interpolation_method, self.combo_interpolation_method)
 
         self.spin_interpolation_max_gap = QSpinBox()
         self.spin_interpolation_max_gap.setRange(1, 100)
@@ -2635,7 +2651,8 @@ class MainWindow(QMainWindow):
             "Prevents interpolation across large occlusions.\n"
             "Recommended: 5-15 frames."
         )
-        f_pp.addRow("Max Interpolation Gap:", self.spin_interpolation_max_gap)
+        self.lbl_interpolation_max_gap = QLabel("Max Interpolation Gap:")
+        f_pp.addRow(self.lbl_interpolation_max_gap, self.spin_interpolation_max_gap)
 
         # Trajectory Merging Settings (Conservative Strategy)
         self.spin_merge_overlap_multiplier = QDoubleSpinBox()
@@ -2649,7 +2666,10 @@ class MainWindow(QMainWindow):
             "Disagreeing frames cause trajectory splits for conservative identity handling.\n"
             "Recommended: 0.3-0.7× body size."
         )
-        f_pp.addRow("Agreement Distance (×body):", self.spin_merge_overlap_multiplier)
+        self.lbl_merge_overlap_multiplier = QLabel("Agreement Distance (×body):")
+        f_pp.addRow(
+            self.lbl_merge_overlap_multiplier, self.spin_merge_overlap_multiplier
+        )
 
         self.spin_min_overlap_frames = QSpinBox()
         self.spin_min_overlap_frames.setRange(1, 100)
@@ -2660,7 +2680,8 @@ class MainWindow(QMainWindow):
             "the agreement distance to be merged. Higher = more conservative.\n"
             "Recommended: 5-15 frames."
         )
-        f_pp.addRow("Min Overlap Frames:", self.spin_min_overlap_frames)
+        self.lbl_min_overlap_frames = QLabel("Min Overlap Frames:")
+        f_pp.addRow(self.lbl_min_overlap_frames, self.spin_min_overlap_frames)
 
         # Cleanup option
         self.chk_cleanup_temp_files = QCheckBox("Auto-cleanup temporary files")
@@ -2707,11 +2728,14 @@ class MainWindow(QMainWindow):
         self.video_out_line.setPlaceholderText("Path for annotated video output")
         self.video_out_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.video_out_line.setEnabled(False)
-        f_video.addRow(self.btn_video_out, self.video_out_line)
+        self.lbl_video_path = QLabel("")
+        f_video.addRow(self.lbl_video_path, self.btn_video_out)
+        f_video.addRow("", self.video_out_line)
 
         # Video Visualization Settings
         f_video.addRow(QLabel(""))  # Spacer
-        f_video.addRow(QLabel("<b>Visualization Settings</b>"))
+        self.lbl_video_viz_settings = QLabel("<b>Visualization Settings</b>")
+        f_video.addRow(self.lbl_video_viz_settings)
 
         self.check_show_labels = QCheckBox("Show Track IDs")
         self.check_show_labels.setChecked(True)
@@ -2744,7 +2768,8 @@ class MainWindow(QMainWindow):
             "Longer trails show more movement history.\n"
             "Automatically converted to frames using video FPS."
         )
-        f_video.addRow("Trail Duration (seconds):", self.spin_trail_duration)
+        self.lbl_trail_duration = QLabel("Trail Duration (seconds):")
+        f_video.addRow(self.lbl_trail_duration, self.spin_trail_duration)
 
         self.spin_marker_size = QDoubleSpinBox()
         self.spin_marker_size.setRange(0.1, 5.0)
@@ -2755,7 +2780,8 @@ class MainWindow(QMainWindow):
             "Size of position marker (0.1-5.0 × body size).\n"
             "Scaled by reference body size for consistency."
         )
-        f_video.addRow("Marker Size (×body):", self.spin_marker_size)
+        self.lbl_marker_size = QLabel("Marker Size (×body):")
+        f_video.addRow(self.lbl_marker_size, self.spin_marker_size)
 
         self.spin_text_scale = QDoubleSpinBox()
         self.spin_text_scale.setRange(0.3, 3.0)
@@ -2765,7 +2791,8 @@ class MainWindow(QMainWindow):
         self.spin_text_scale.setToolTip(
             "Scale factor for ID labels (0.3-3.0).\n" "Larger values = bigger text."
         )
-        f_video.addRow("Text Scale:", self.spin_text_scale)
+        self.lbl_text_scale = QLabel("Text Scale:")
+        f_video.addRow(self.lbl_text_scale, self.spin_text_scale)
 
         self.spin_arrow_length = QDoubleSpinBox()
         self.spin_arrow_length.setRange(0.5, 10.0)
@@ -2776,10 +2803,28 @@ class MainWindow(QMainWindow):
             "Length of orientation arrow (0.5-10.0 × body size).\n"
             "Scaled by reference body size."
         )
-        f_video.addRow("Arrow Length (×body):", self.spin_arrow_length)
+        self.lbl_arrow_length = QLabel("Arrow Length (×body):")
+        f_video.addRow(self.lbl_arrow_length, self.spin_arrow_length)
 
         vl_video.addLayout(f_video)
         vbox.addWidget(g_video)
+
+        # Set initial visibility for video export widgets (hidden since checkbox starts unchecked)
+        self.btn_video_out.setVisible(False)
+        self.video_out_line.setVisible(False)
+        self.lbl_video_path.setVisible(False)
+        self.lbl_video_viz_settings.setVisible(False)
+        self.check_show_labels.setVisible(False)
+        self.check_show_orientation.setVisible(False)
+        self.check_show_trails.setVisible(False)
+        self.spin_trail_duration.setVisible(False)
+        self.lbl_trail_duration.setVisible(False)
+        self.spin_marker_size.setVisible(False)
+        self.lbl_marker_size.setVisible(False)
+        self.spin_text_scale.setVisible(False)
+        self.lbl_text_scale.setVisible(False)
+        self.spin_arrow_length.setVisible(False)
+        self.lbl_arrow_length.setVisible(False)
 
         # Histograms
         g_hist = QGroupBox("Real-Time Analytics")
@@ -2834,36 +2879,32 @@ class MainWindow(QMainWindow):
         form = QVBoxLayout(content)
         form.setContentsMargins(10, 10, 10, 10)
 
-        # Info box
-        info_box = QGroupBox("Active Learning - Training Dataset Generation")
-        info_layout = QVBoxLayout(info_box)
-        info_layout.addWidget(
+        # ============================================================
+        # Active Learning Dataset Section
+        # ============================================================
+        self.g_active_learning = QGroupBox("Active Learning Dataset Generation")
+        vl_active = QVBoxLayout(self.g_active_learning)
+        vl_active.addWidget(
             self._create_help_label(
-                "Automatically identify challenging frames during tracking and export them "
-                "for annotation. This helps improve YOLO model performance through active learning.\n\n"
-                "The system will:\n"
-                "• Identify frames with low detection confidence, assignment issues, or tracking failures\n"
-                "• Select the worst N frames while ensuring visual diversity\n"
-                "• Export frames with YOLO-format annotations for initial labeling\n"
-                "• Package everything in a zip file ready for x-AnyLabeling\n\n"
-                "Recommended workflow:\n"
-                "1. Run tracking with dataset generation enabled\n"
-                "2. Use x-AnyLabeling to correct/refine the exported annotations\n"
-                "3. Train an improved YOLO model with the new labeled data"
+                "Automatically identify challenging frames during tracking and export them for annotation.\n\n"
+                "Workflow: Run tracking → Review/correct in X-AnyLabeling → Train improved YOLO model"
             )
         )
-        form.addWidget(info_box)
 
-        # Enable dataset generation
+        # Enable checkbox
         self.chk_enable_dataset_gen = QCheckBox(
             "Enable Active Learning Dataset Generation"
         )
-        self.chk_enable_dataset_gen.setChecked(False)
-        self.chk_enable_dataset_gen.setToolTip(
-            "Enable automatic generation of training dataset from difficult frames."
+        self.chk_enable_dataset_gen.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #4a9eff;"
         )
+        self.chk_enable_dataset_gen.setChecked(False)
         self.chk_enable_dataset_gen.toggled.connect(self._on_dataset_generation_toggled)
-        form.addWidget(self.chk_enable_dataset_gen)
+        vl_active.addWidget(self.chk_enable_dataset_gen)
+
+        # Content container for all configuration options
+        self.active_learning_content = QWidget()
+        vl_content = QVBoxLayout(self.active_learning_content)
 
         # Dataset configuration
         self.g_dataset_config = QGroupBox("Dataset Configuration")
@@ -2902,7 +2943,7 @@ class MainWindow(QMainWindow):
         h_output.addWidget(self.btn_browse_output)
         f_config.addRow("Output Directory:", h_output)
 
-        form.addWidget(self.g_dataset_config)
+        vl_content.addWidget(self.g_dataset_config)
 
         # Frame selection parameters
         self.g_frame_selection = QGroupBox("Frame Selection Criteria")
@@ -2968,16 +3009,11 @@ class MainWindow(QMainWindow):
         )
         f_selection.addRow("Sampling Strategy:", self.chk_dataset_probabilistic)
 
-        form.addWidget(self.g_frame_selection)
+        vl_content.addWidget(self.g_frame_selection)
 
         # Quality metrics
-        self.g_quality_metrics = QGroupBox("Quality Metrics (Frame Scoring)")
+        self.g_quality_metrics = QGroupBox("Quality Metrics")
         v_metrics = QVBoxLayout(self.g_quality_metrics)
-        v_metrics.addWidget(
-            self._create_help_label(
-                "Select which quality metrics to use for identifying problematic frames:"
-            )
-        )
 
         self.chk_metric_low_confidence = QCheckBox("Low Detection Confidence")
         self.chk_metric_low_confidence.setChecked(True)
@@ -3014,17 +3050,11 @@ class MainWindow(QMainWindow):
         )
         v_metrics.addWidget(self.chk_metric_high_uncertainty)
 
-        form.addWidget(self.g_quality_metrics)
+        vl_content.addWidget(self.g_quality_metrics)
 
         # X-AnyLabeling Integration
         self.g_xanylabeling = QGroupBox("X-AnyLabeling Integration")
         vl_xany = QVBoxLayout(self.g_xanylabeling)
-        vl_xany.addWidget(
-            self._create_help_label(
-                "Open generated datasets directly in X-AnyLabeling for annotation review.\n"
-                "Requires X-AnyLabeling installed in a conda environment (e.g., 'x-anylabeling-env')."
-            )
-        )
 
         # Conda environment selection
         h_env = QHBoxLayout()
@@ -3052,16 +3082,19 @@ class MainWindow(QMainWindow):
         self.btn_open_xanylabeling.setEnabled(False)
         vl_xany.addWidget(self.btn_open_xanylabeling)
 
-        form.addWidget(self.g_xanylabeling)
+        vl_content.addWidget(self.g_xanylabeling)
+
+        # Add content to main group box
+        vl_active.addWidget(self.active_learning_content)
+
+        # Add main group box to form
+        form.addWidget(self.g_active_learning)
 
         # Populate conda environments on startup
         self._refresh_xanylabeling_envs()
 
-        # Initially disable dataset generation config widgets
-        self.g_dataset_config.setEnabled(False)
-        self.g_frame_selection.setEnabled(False)
-        self.g_quality_metrics.setEnabled(False)
-        self.g_xanylabeling.setEnabled(False)
+        # Initially hide content (checkbox starts unchecked)
+        self.active_learning_content.setVisible(False)
 
         # ============================================================
         # Individual Dataset Generator Section (Real-time OBB crops)
@@ -3090,8 +3123,8 @@ class MainWindow(QMainWindow):
         vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
 
         # Output Configuration
-        ind_output_group = QGroupBox("Output Configuration")
-        ind_output_layout = QFormLayout(ind_output_group)
+        self.ind_output_group = QGroupBox("Output Configuration")
+        ind_output_layout = QFormLayout(self.ind_output_group)
         ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         # Dataset name
@@ -3100,7 +3133,6 @@ class MainWindow(QMainWindow):
         self.line_individual_dataset_name.setToolTip(
             "Name for this dataset. Timestamp will be appended automatically."
         )
-        self.line_individual_dataset_name.setEnabled(False)
         ind_output_layout.addRow("Dataset Name:", self.line_individual_dataset_name)
 
         # Output directory
@@ -3110,9 +3142,7 @@ class MainWindow(QMainWindow):
         self.line_individual_output.setToolTip(
             "Directory where individual crops will be saved."
         )
-        self.line_individual_output.setEnabled(False)
         self.btn_browse_ind_output = QPushButton("Browse...")
-        self.btn_browse_ind_output.setEnabled(False)
         self.btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
         h_ind_output.addWidget(self.line_individual_output)
         h_ind_output.addWidget(self.btn_browse_ind_output)
@@ -3124,7 +3154,6 @@ class MainWindow(QMainWindow):
         self.combo_individual_format.setToolTip(
             "PNG: Lossless, larger files\nJPEG: Smaller files, slight quality loss"
         )
-        self.combo_individual_format.setEnabled(False)
         ind_output_layout.addRow("Image Format:", self.combo_individual_format)
 
         # Save interval
@@ -3136,7 +3165,6 @@ class MainWindow(QMainWindow):
             "Save crops every N frames.\n"
             "1 = every frame, 10 = every 10th frame, etc."
         )
-        self.spin_individual_interval.setEnabled(False)
         ind_output_layout.addRow("Save Every N Frames:", self.spin_individual_interval)
 
         # Padding fraction (only crop parameter needed - size is determined by OBB)
@@ -3149,19 +3177,22 @@ class MainWindow(QMainWindow):
             "Padding around OBB bounding box as fraction of size.\n"
             "0.1 = 10% padding on each side."
         )
-        self.spin_individual_padding.setEnabled(False)
         ind_output_layout.addRow("Padding Fraction:", self.spin_individual_padding)
 
-        vl_ind_dataset.addWidget(ind_output_group)
+        vl_ind_dataset.addWidget(self.ind_output_group)
 
         # Info label about filtering
-        info_label = self._create_help_label(
+        self.lbl_individual_info = self._create_help_label(
             "Note: Crops use detections already filtered by ROI and size settings.\n"
             "No additional filtering parameters needed."
         )
-        vl_ind_dataset.addWidget(info_label)
+        vl_ind_dataset.addWidget(self.lbl_individual_info)
 
         form.addWidget(self.g_individual_dataset)
+
+        # Initially hide individual dataset widgets (checkbox starts unchecked)
+        self.ind_output_group.setVisible(False)
+        self.lbl_individual_info.setVisible(False)
 
         form.addStretch()
         scroll.setWidget(content)
@@ -3338,10 +3369,8 @@ class MainWindow(QMainWindow):
 
     def _on_dataset_generation_toggled(self, enabled):
         """Enable/disable dataset generation controls."""
-        self.g_dataset_config.setEnabled(enabled)
-        self.g_frame_selection.setEnabled(enabled)
-        self.g_quality_metrics.setEnabled(enabled)
-        self.g_xanylabeling.setEnabled(enabled)
+        # Hide/show entire content container
+        self.active_learning_content.setVisible(enabled)
 
     def _select_dataset_output_dir(self):
         """Browse for dataset output directory."""
@@ -3625,12 +3654,12 @@ class MainWindow(QMainWindow):
 
     def _on_individual_dataset_toggled(self, enabled):
         """Enable/disable individual dataset generation controls."""
-        self.line_individual_dataset_name.setEnabled(enabled)
-        self.line_individual_output.setEnabled(enabled)
-        self.btn_browse_ind_output.setEnabled(enabled)
-        self.combo_individual_format.setEnabled(enabled)
-        self.spin_individual_interval.setEnabled(enabled)
-        self.spin_individual_padding.setEnabled(enabled)
+        # Hide/show individual dataset configuration group and info label
+        self.ind_output_group.setVisible(enabled)
+        self.lbl_individual_info.setVisible(enabled)
+
+        # Also control enable state
+        self.ind_output_group.setEnabled(enabled)
 
     def _select_individual_output_dir(self):
         """Browse for individual dataset output directory."""
@@ -3644,6 +3673,14 @@ class MainWindow(QMainWindow):
         """Enable/disable YOLO batching controls based on checkbox."""
         # Directly check checkbox state for reliability
         enabled = self.chk_enable_yolo_batching.isChecked()
+
+        # Hide/show batching widgets
+        self.combo_yolo_batch_mode.setVisible(enabled)
+        self.lbl_yolo_batch_mode.setVisible(enabled)
+        self.spin_yolo_batch_size.setVisible(enabled)
+        self.lbl_yolo_batch_size.setVisible(enabled)
+
+        # Also control enable state
         self.combo_yolo_batch_mode.setEnabled(enabled)
         # Manual batch size only enabled if batching is on AND mode is Manual
         manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
@@ -3660,8 +3697,45 @@ class MainWindow(QMainWindow):
         """Enable/disable TensorRT batch size control based on checkbox."""
         # Directly check checkbox state for reliability
         enabled = self.chk_enable_tensorrt.isChecked()
+
+        # Hide/show TensorRT batch size widgets
+        self.spin_tensorrt_batch.setVisible(enabled)
+        self.lbl_tensorrt_batch.setVisible(enabled)
+
+        # Also control enable state
         self.spin_tensorrt_batch.setEnabled(enabled)
         self.lbl_tensorrt_batch.setEnabled(enabled)
+
+    def _on_cleaning_toggled(self, state):
+        """Enable/disable trajectory cleaning controls based on checkbox."""
+        enabled = self.enable_postprocessing.isChecked()
+
+        # Hide/show all cleaning parameter widgets
+        self.spin_min_trajectory_length.setVisible(enabled)
+        self.lbl_min_trajectory_length.setVisible(enabled)
+        self.spin_max_velocity_break.setVisible(enabled)
+        self.lbl_max_velocity_break.setVisible(enabled)
+        self.spin_max_occlusion_gap.setVisible(enabled)
+        self.lbl_max_occlusion_gap.setVisible(enabled)
+        self.combo_interpolation_method.setVisible(enabled)
+        self.lbl_interpolation_method.setVisible(enabled)
+        self.spin_interpolation_max_gap.setVisible(enabled)
+        self.lbl_interpolation_max_gap.setVisible(enabled)
+        self.spin_merge_overlap_multiplier.setVisible(enabled)
+        self.lbl_merge_overlap_multiplier.setVisible(enabled)
+        self.spin_min_overlap_frames.setVisible(enabled)
+        self.lbl_min_overlap_frames.setVisible(enabled)
+        self.chk_cleanup_temp_files.setVisible(enabled)
+
+        # Also control enable state
+        self.spin_min_trajectory_length.setEnabled(enabled)
+        self.spin_max_velocity_break.setEnabled(enabled)
+        self.spin_max_occlusion_gap.setEnabled(enabled)
+        self.combo_interpolation_method.setEnabled(enabled)
+        self.spin_interpolation_max_gap.setEnabled(enabled)
+        self.spin_merge_overlap_multiplier.setEnabled(enabled)
+        self.spin_min_overlap_frames.setEnabled(enabled)
+        self.chk_cleanup_temp_files.setEnabled(enabled)
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -3992,6 +4066,24 @@ class MainWindow(QMainWindow):
 
     def _on_video_output_toggled(self, checked):
         """Enable/disable video output controls."""
+        # Hide/show all video output widgets
+        self.btn_video_out.setVisible(checked)
+        self.video_out_line.setVisible(checked)
+        self.lbl_video_path.setVisible(checked)
+        self.lbl_video_viz_settings.setVisible(checked)
+        self.check_show_labels.setVisible(checked)
+        self.check_show_orientation.setVisible(checked)
+        self.check_show_trails.setVisible(checked)
+        self.spin_trail_duration.setVisible(checked)
+        self.lbl_trail_duration.setVisible(checked)
+        self.spin_marker_size.setVisible(checked)
+        self.lbl_marker_size.setVisible(checked)
+        self.spin_text_scale.setVisible(checked)
+        self.lbl_text_scale.setVisible(checked)
+        self.spin_arrow_length.setVisible(checked)
+        self.lbl_arrow_length.setVisible(checked)
+
+        # Also control enable state
         self.btn_video_out.setEnabled(checked)
         self.video_out_line.setEnabled(checked)
 
@@ -5339,7 +5431,10 @@ class MainWindow(QMainWindow):
         """Handle visualization-free mode toggle."""
         is_viz_free = self.chk_visualization_free.isChecked()
 
-        # Disable all visualization options when in viz-free mode
+        # Hide entire display settings group when in viz-free mode
+        self.g_display.setVisible(not is_viz_free)
+
+        # Also disable individual checkboxes for safety
         self.chk_show_circles.setEnabled(not is_viz_free)
         self.chk_show_orientation.setEnabled(not is_viz_free)
         self.chk_show_trajectories.setEnabled(not is_viz_free)
