@@ -1199,6 +1199,19 @@ class MainWindow(QMainWindow):
         )
         fl_sys.addRow("", self.check_save_confidence)
 
+        # Use Cached Detections
+        self.chk_use_cached_detections = QCheckBox(
+            "Reuse Cached Detections When Available"
+        )
+        self.chk_use_cached_detections.setChecked(True)
+        self.chk_use_cached_detections.setToolTip(
+            "Automatically reuse detections from previous runs if available.\n"
+            "Cache is model-specific: only reused if detection method/model hasn't changed.\n"
+            "Massive speedup for re-processing with different tracking parameters.\n"
+            "Disable to force fresh detection on every run."
+        )
+        fl_sys.addRow("", self.chk_use_cached_detections)
+
         # Visualization-Free Mode
         self.chk_visualization_free = QCheckBox(
             "Enable Visualization-Free Mode (Maximum Speed)"
@@ -3002,10 +3015,52 @@ class MainWindow(QMainWindow):
 
         form.addWidget(self.g_quality_metrics)
 
+        # X-AnyLabeling Integration
+        self.g_xanylabeling = QGroupBox("X-AnyLabeling Integration")
+        vl_xany = QVBoxLayout(self.g_xanylabeling)
+        vl_xany.addWidget(
+            self._create_help_label(
+                "Open generated datasets directly in X-AnyLabeling for annotation review.\n"
+                "Requires X-AnyLabeling installed in a conda environment (e.g., 'x-anylabeling-env')."
+            )
+        )
+
+        # Conda environment selection
+        h_env = QHBoxLayout()
+        h_env.addWidget(QLabel("Conda Environment:"))
+        self.combo_xanylabeling_env = QComboBox()
+        self.combo_xanylabeling_env.setToolTip(
+            "Select a conda environment with X-AnyLabeling installed.\n"
+            "Environment names should start with 'x-anylabeling-' to be detected."
+        )
+        h_env.addWidget(self.combo_xanylabeling_env, 1)
+        self.btn_refresh_envs = QPushButton("🔄")
+        self.btn_refresh_envs.setMaximumWidth(40)
+        self.btn_refresh_envs.setToolTip("Refresh conda environments list")
+        self.btn_refresh_envs.clicked.connect(self._refresh_xanylabeling_envs)
+        h_env.addWidget(self.btn_refresh_envs)
+        vl_xany.addLayout(h_env)
+
+        # Open in X-AnyLabeling button
+        self.btn_open_xanylabeling = QPushButton("Open Dataset in X-AnyLabeling")
+        self.btn_open_xanylabeling.setToolTip(
+            "Browse for a dataset directory and open it in X-AnyLabeling.\n"
+            "Directory must contain: classes.txt, images/, and labels/"
+        )
+        self.btn_open_xanylabeling.clicked.connect(self._open_in_xanylabeling)
+        self.btn_open_xanylabeling.setEnabled(False)
+        vl_xany.addWidget(self.btn_open_xanylabeling)
+
+        form.addWidget(self.g_xanylabeling)
+
+        # Populate conda environments on startup
+        self._refresh_xanylabeling_envs()
+
         # Initially disable dataset generation config widgets
         self.g_dataset_config.setEnabled(False)
         self.g_frame_selection.setEnabled(False)
         self.g_quality_metrics.setEnabled(False)
+        self.g_xanylabeling.setEnabled(False)
 
         # ============================================================
         # Individual Dataset Generator Section (Real-time OBB crops)
@@ -3285,6 +3340,7 @@ class MainWindow(QMainWindow):
         self.g_dataset_config.setEnabled(enabled)
         self.g_frame_selection.setEnabled(enabled)
         self.g_quality_metrics.setEnabled(enabled)
+        self.g_xanylabeling.setEnabled(enabled)
 
     def _select_dataset_output_dir(self):
         """Browse for dataset output directory."""
@@ -3293,6 +3349,200 @@ class MainWindow(QMainWindow):
         )
         if directory:
             self.line_dataset_output.setText(directory)
+
+    def _refresh_xanylabeling_envs(self):
+        """Scan for conda environments starting with 'x-anylabeling-'."""
+        self.combo_xanylabeling_env.clear()
+
+        try:
+            import subprocess
+
+            # Get list of conda environments
+            result = subprocess.run(
+                ["conda", "env", "list"], capture_output=True, text=True, timeout=10
+            )
+
+            if result.returncode == 0:
+                envs = []
+                for line in result.stdout.split("\n"):
+                    # Skip comments and empty lines
+                    if line.strip() and not line.startswith("#"):
+                        # Parse environment name (first column)
+                        parts = line.split()
+                        if parts:
+                            env_name = parts[0]
+                            # Check if it starts with 'x-anylabeling-'
+                            if env_name.startswith("x-anylabeling-"):
+                                envs.append(env_name)
+
+                if envs:
+                    self.combo_xanylabeling_env.addItems(envs)
+                    self.btn_open_xanylabeling.setEnabled(True)
+                    logger.info(f"Found {len(envs)} X-AnyLabeling conda environment(s)")
+                else:
+                    self.combo_xanylabeling_env.addItem("No X-AnyLabeling envs found")
+                    self.btn_open_xanylabeling.setEnabled(False)
+                    logger.warning(
+                        "No conda environments starting with 'x-anylabeling-' found. "
+                        "Create one with: conda create -n x-anylabeling-env python=3.10 && "
+                        "conda activate x-anylabeling-env && pip install x-anylabeling"
+                    )
+            else:
+                self.combo_xanylabeling_env.addItem("Conda not available")
+                self.btn_open_xanylabeling.setEnabled(False)
+                logger.warning("Could not detect conda environments")
+
+        except FileNotFoundError:
+            self.combo_xanylabeling_env.addItem("Conda not installed")
+            self.btn_open_xanylabeling.setEnabled(False)
+            logger.warning("Conda not found in PATH")
+        except Exception as e:
+            self.combo_xanylabeling_env.addItem("Error detecting envs")
+            self.btn_open_xanylabeling.setEnabled(False)
+            logger.error(f"Error detecting conda environments: {e}")
+
+    def _open_in_xanylabeling(self):
+        """Open a dataset directory in X-AnyLabeling."""
+        # Get selected conda environment
+        env_name = self.combo_xanylabeling_env.currentText()
+        if (
+            not env_name
+            or env_name.startswith("No ")
+            or env_name.startswith("Conda ")
+            or env_name.startswith("Error")
+        ):
+            QMessageBox.warning(
+                self,
+                "No Environment",
+                "Please select a valid conda environment with X-AnyLabeling installed.",
+            )
+            return
+
+        # Browse for dataset directory
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Dataset Directory",
+            self.line_dataset_output.text() if self.line_dataset_output.text() else "",
+        )
+
+        if not directory:
+            return
+
+        dataset_path = Path(directory)
+
+        # Validate directory structure
+        classes_file = dataset_path / "classes.txt"
+        images_dir = dataset_path / "images"
+        labels_dir = dataset_path / "labels"
+
+        missing = []
+        if not classes_file.exists():
+            missing.append("classes.txt")
+        if not images_dir.exists() or not images_dir.is_dir():
+            missing.append("images/")
+        if not labels_dir.exists() or not labels_dir.is_dir():
+            missing.append("labels/")
+
+        if missing:
+            QMessageBox.warning(
+                self,
+                "Invalid Dataset",
+                f"Dataset directory is missing required items:\n{', '.join(missing)}\n\n"
+                f"A valid dataset must contain:\n"
+                f"- classes.txt\n"
+                f"- images/ (directory)\n"
+                f"- labels/ (directory)",
+            )
+            return
+
+        # Determine shell command based on OS
+        import platform
+        import subprocess
+
+        system = platform.system()
+
+        try:
+            if system == "Darwin":  # macOS
+                # Create an AppleScript to open Terminal and run commands
+                script = f"""
+                tell application "Terminal"
+                    activate
+                    do script "cd '{dataset_path}' && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"
+                end tell
+                """
+                subprocess.Popen(["osascript", "-e", script])
+
+            elif system == "Windows":
+                # Use cmd.exe with conda activation
+                cmd = f'start cmd /k "cd /d {dataset_path} && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"'
+                subprocess.Popen(cmd, shell=True)
+
+            else:  # Linux
+                # Try common terminal emulators
+                terminals = ["gnome-terminal", "konsole", "xterm"]
+                terminal_found = False
+
+                for terminal in terminals:
+                    try:
+                        if terminal == "gnome-terminal":
+                            subprocess.Popen(
+                                [
+                                    terminal,
+                                    "--",
+                                    "bash",
+                                    "-c",
+                                    f"cd '{dataset_path}' && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                ]
+                            )
+                        elif terminal == "konsole":
+                            subprocess.Popen(
+                                [
+                                    terminal,
+                                    "-e",
+                                    "bash",
+                                    "-c",
+                                    f"cd '{dataset_path}' && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                ]
+                            )
+                        else:  # xterm
+                            subprocess.Popen(
+                                [
+                                    terminal,
+                                    "-e",
+                                    "bash",
+                                    "-c",
+                                    f"cd '{dataset_path}' && conda activate {env_name} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                ]
+                            )
+                        terminal_found = True
+                        break
+                    except FileNotFoundError:
+                        continue
+
+                if not terminal_found:
+                    QMessageBox.warning(
+                        self,
+                        "No Terminal Found",
+                        "Could not find a supported terminal emulator (gnome-terminal, konsole, or xterm).",
+                    )
+                    return
+
+            logger.info(f"Opened X-AnyLabeling for dataset: {dataset_path}")
+            QMessageBox.information(
+                self,
+                "X-AnyLabeling Launched",
+                f"X-AnyLabeling is starting in environment: {env_name}\n\n"
+                f"Commands being executed:\n"
+                f"1. Convert YOLO to X-Label format\n"
+                f"2. Open X-AnyLabeling with images\n\n"
+                f"Dataset: {dataset_path}",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to open X-AnyLabeling: {e}", exc_info=True)
+            QMessageBox.critical(
+                self, "Launch Error", f"Failed to open X-AnyLabeling:\n{str(e)}"
+            )
 
     def _on_individual_analysis_toggled(self, state):
         """Enable/disable individual analysis controls."""
@@ -5621,7 +5871,7 @@ class MainWindow(QMainWindow):
             )
         else:
             # Complete the tracking session without video generation
-            self._finish_tracking_session()
+            self._finish_tracking_session(final_csv_path=merged_csv_path)
 
     def _generate_video_from_trajectories(self, trajectories_df, csv_path=None):
         """
@@ -5848,7 +6098,7 @@ class MainWindow(QMainWindow):
         logger.info("=" * 80)
 
         # Now finish tracking session
-        self._finish_tracking_session()
+        self._finish_tracking_session(final_csv_path=csv_path)
 
     @Slot(bool, list, list)
     def on_tracking_finished(self, finished_normally, fps_list, full_traj):
@@ -6021,7 +6271,9 @@ class MainWindow(QMainWindow):
 
                     # Generate dataset if enabled (BEFORE cleanup so files are still available)
                     if self.chk_enable_dataset_gen.isChecked():
-                        self._generate_training_dataset()
+                        self._generate_training_dataset(
+                            override_csv_path=final_csv_path
+                        )
 
                     # Clean up session logging - forward-only tracking complete
                     self._cleanup_session_logging()
@@ -6086,9 +6338,10 @@ class MainWindow(QMainWindow):
                     self.merge_and_save_trajectories()
                 else:
                     # No merge needed, do cleanup now
-                    self._finish_tracking_session()
+                    # Pass the correct CSV path based on what we processed
+                    self._finish_tracking_session(final_csv_path=processed_csv_path)
 
-    def _finish_tracking_session(self):
+    def _finish_tracking_session(self, final_csv_path=None):
         """Complete tracking session cleanup and UI updates."""
         # Hide progress elements
         self.progress_bar.setVisible(False)
@@ -6096,7 +6349,7 @@ class MainWindow(QMainWindow):
 
         # Generate dataset if enabled (BEFORE cleanup so files are still available)
         if self.chk_enable_dataset_gen.isChecked():
-            self._generate_training_dataset()
+            self._generate_training_dataset(override_csv_path=final_csv_path)
 
         # Clean up session logging
         self._cleanup_session_logging()
@@ -6266,10 +6519,11 @@ class MainWindow(QMainWindow):
         # This ensures the video shows clean, merged trajectories with stable IDs
         video_output_path = None
 
-        # Generate detection cache path based on video
+        # Generate detection cache path based on video and detection method
         # Cache is needed for:
         # 1. Backward tracking (if enabled)
         # 2. YOLO batching (if enabled)
+        # 3. Reusing detections from previous runs (if enabled)
         detection_cache_path = None
         params = self.get_parameters_dict()
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
@@ -6277,17 +6531,38 @@ class MainWindow(QMainWindow):
         yolo_batching_enabled = detection_method == "yolo_obb" and advanced_config.get(
             "enable_yolo_batching", True
         )
+        use_cached_detections = self.chk_use_cached_detections.isChecked()
+
+        # Generate model-specific cache name
+        def get_cache_model_id():
+            """Generate a unique identifier for the current detection configuration."""
+            # Include resize factor in cache ID since detections are scale-dependent
+            resize_factor = params.get("RESIZE_FACTOR", 1.0)
+            resize_str = f"r{int(resize_factor*100)}"
+
+            if detection_method == "yolo_obb":
+                yolo_model = params.get("YOLO_MODEL", "best.pt")
+                # Extract just the filename without path
+                model_name = os.path.basename(yolo_model)
+                return f"yolo_{model_name.replace('.pt', '')}_{resize_str}"
+            else:
+                # Background subtraction - use method name
+                return f"bgsub_{resize_str}"
 
         if (
-            self.chk_enable_backward.isChecked() or yolo_batching_enabled
-        ):  # Cache if backward tracking OR YOLO batching is enabled
+            self.chk_enable_backward.isChecked()
+            or yolo_batching_enabled
+            or use_cached_detections
+        ):
             base_name = os.path.splitext(video_path)[0]
-            detection_cache_path = f"{base_name}_detection_cache.npz"
+            model_id = get_cache_model_id()
+            detection_cache_path = f"{base_name}_detection_cache_{model_id}.npz"
 
-            # Track cache file as temporary (only if cleanup enabled)
+            # Track cache file as temporary (only if cleanup enabled AND not reusing from previous run)
             if (
                 self.chk_cleanup_temp_files.isChecked()
                 and detection_cache_path not in self.temporary_files
+                and not (use_cached_detections and os.path.exists(detection_cache_path))
             ):
                 self.temporary_files.append(detection_cache_path)
 
@@ -6298,6 +6573,7 @@ class MainWindow(QMainWindow):
             backward_mode=backward_mode,
             detection_cache_path=detection_cache_path,
             preview_mode=False,  # Full tracking mode - batching enabled if applicable
+            use_cached_detections=use_cached_detections,
         )
         self.tracking_worker.set_parameters(self.get_parameters_dict())
         self.parameters_changed.connect(self.tracking_worker.update_parameters)
@@ -6607,6 +6883,9 @@ class MainWindow(QMainWindow):
             self.spin_resize.setValue(get_cfg("resize_factor", default=1.0))
             self.check_save_confidence.setChecked(
                 get_cfg("save_confidence_metrics", default=True)
+            )
+            self.chk_use_cached_detections.setChecked(
+                get_cfg("use_cached_detections", default=True)
             )
             self.chk_visualization_free.setChecked(
                 get_cfg("visualization_free_mode", default=False)
@@ -7199,6 +7478,7 @@ class MainWindow(QMainWindow):
                 # === SYSTEM PERFORMANCE ===
                 "resize_factor": self.spin_resize.value(),
                 "save_confidence_metrics": self.check_save_confidence.isChecked(),
+                "use_cached_detections": self.chk_use_cached_detections.isChecked(),
                 "visualization_free_mode": self.chk_visualization_free.isChecked(),
                 # === DETECTION STRATEGY ===
                 "detection_method": (
@@ -7544,7 +7824,7 @@ class MainWindow(QMainWindow):
             self.session_log_handler.close()
             self.session_log_handler = None
 
-    def _generate_training_dataset(self):
+    def _generate_training_dataset(self, override_csv_path=None):
         """Generate training dataset from tracking results for active learning."""
         try:
             from ..utils.dataset_generation import export_dataset, FrameQualityScorer
@@ -7578,7 +7858,8 @@ class MainWindow(QMainWindow):
                 return
 
             video_path = self.file_line.text()
-            csv_path = self.csv_line.text()
+            # Use override path if provided (e.g. valid processed CSV), otherwise fallback to UI field
+            csv_path = override_csv_path if override_csv_path else self.csv_line.text()
 
             if not video_path or not os.path.exists(video_path):
                 QMessageBox.warning(
@@ -7649,7 +7930,7 @@ class MainWindow(QMainWindow):
 
             # Export dataset (non-blocking - runs in background)
             logger.info(f"Exporting {len(selected_frames)} frames to dataset...")
-            zip_path = export_dataset(
+            dataset_dir = export_dataset(
                 video_path=video_path,
                 csv_path=csv_path,
                 frame_ids=selected_frames,
@@ -7660,10 +7941,10 @@ class MainWindow(QMainWindow):
                 include_context=include_context,
             )
 
-            logger.info(f"Dataset generation complete: {zip_path}")
+            logger.info(f"Dataset generation complete: {dataset_dir}")
             logger.info(f"Frames exported: {len(selected_frames)}")
             logger.info(
-                "Next steps: Extract zip, use x-AnyLabeling to review/correct annotations, train improved YOLO model"
+                "Use 'Open Dataset in X-AnyLabeling' button to review/correct annotations"
             )
 
         except Exception as e:

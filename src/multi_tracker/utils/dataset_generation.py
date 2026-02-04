@@ -266,8 +266,16 @@ def export_dataset(
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     dataset_name_with_timestamp = f"{dataset_name}_{timestamp}"
 
+    # Verify and resolve output directory
+    output_path = Path(output_dir).resolve()
+    if not output_path.exists():
+        try:
+            output_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise OSError(f"Could not create output directory {output_path}: {e}")
+
     # Create output directory structure
-    dataset_dir = Path(output_dir) / dataset_name_with_timestamp
+    dataset_dir = output_path / dataset_name_with_timestamp
     images_dir = dataset_dir / "images"
     labels_dir = dataset_dir / "labels"
 
@@ -528,12 +536,14 @@ def export_dataset(
             )
 
             # Save image
-            image_filename = f"frame_{frame_id:06d}.jpg"
+            # Use matching filename format regardless of dataset type
+            # Using simple f{frame_id:06d}.jpg as requested
+            image_filename = f"f{frame_id:06d}.jpg"
             image_path = images_dir / image_filename
             cv2.imwrite(str(image_path), frame)
 
             # Create YOLO format annotation
-            label_filename = f"frame_{frame_id:06d}.txt"
+            label_filename = f"f{frame_id:06d}.txt"
             label_path = labels_dir / label_filename
 
             # Get detections for this frame from CSV
@@ -634,9 +644,16 @@ def export_dataset(
                     obb_line = f"0 {corners_norm[0,0]:.6f} {corners_norm[0,1]:.6f} {corners_norm[1,0]:.6f} {corners_norm[1,1]:.6f} {corners_norm[2,0]:.6f} {corners_norm[2,1]:.6f} {corners_norm[3,0]:.6f} {corners_norm[3,1]:.6f}\n"
                     f.write(obb_line)
 
+                    # Get track ID - handle different column names
+                    track_id = -1
+                    if "TrackID" in detection:
+                        track_id = int(detection["TrackID"])
+                    elif "TrajectoryID" in detection:
+                        track_id = int(detection["TrajectoryID"])
+
                     annotations.append(
                         {
-                            "track_id": int(detection["TrackID"]),
+                            "track_id": track_id,
                             "x": float(cx),  # Now in original frame space
                             "y": float(cy),  # Now in original frame space
                             "theta": float(theta),
@@ -680,9 +697,9 @@ def export_dataset(
         f.write(f"- **metadata.json**: Detailed frame and annotation metadata\n\n")
         f.write("## Next Steps\n\n")
         f.write("1. **Review and correct annotations** using x-AnyLabeling:\n")
-        f.write("   - Install: `pip install x-anylabeling`\n")
-        f.write("   - Load the images/ folder and review/correct the annotations\n")
-        f.write("   - x-AnyLabeling supports YOLO OBB format natively\n\n")
+        f.write("   - Use the 'Open in X-AnyLabeling' button in the tracker GUI\n")
+        f.write("   - Or manually run: xanylabeling --filename ./images\n")
+        f.write("   - Review and correct the OBB annotations\n\n")
         f.write("2. **Train improved YOLO model**:\n")
         f.write("   - Combine this dataset with your existing training data\n")
         f.write("   - Use YOLO training scripts with the corrected annotations\n")
@@ -692,20 +709,7 @@ def export_dataset(
         f.write("   - Generate another dataset if needed\n")
         f.write("   - Repeat until performance is satisfactory\n")
 
-    # Create zip file
-    zip_path = Path(output_dir) / f"{dataset_name_with_timestamp}.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
-        for root, dirs, files in os.walk(dataset_dir):
-            for file in files:
-                file_path = Path(root) / file
-                arcname = file_path.relative_to(dataset_dir.parent)
-                zipf.write(file_path, arcname)
-
-    # Delete the temporary folder after creating the zip
-    shutil.rmtree(dataset_dir)
-    logger.info(f"Cleaned up temporary directory: {dataset_dir}")
-
-    logger.info(f"Dataset exported successfully to {zip_path}")
+    logger.info(f"Dataset exported successfully to {dataset_dir}")
     logger.info(f"Exported {exported_count} frames with annotations")
 
-    return str(zip_path)
+    return str(dataset_dir)

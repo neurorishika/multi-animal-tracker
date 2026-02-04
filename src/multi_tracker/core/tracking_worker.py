@@ -46,6 +46,7 @@ class TrackingWorker(QThread):
         backward_mode=False,
         detection_cache_path=None,
         preview_mode=False,
+        use_cached_detections=False,
         parent=None,
     ):
         super().__init__(parent)
@@ -55,6 +56,7 @@ class TrackingWorker(QThread):
         self.backward_mode = backward_mode
         self.detection_cache_path = detection_cache_path
         self.preview_mode = preview_mode
+        self.use_cached_detections = use_cached_detections
         self.video_writer = None
         self.params_mutex = QMutex()
         self.parameters = {}
@@ -418,21 +420,38 @@ class TrackingWorker(QThread):
         detection_cache = None
         use_cached_detections = False
         if self.detection_cache_path:
-            if self.backward_mode:
-                # Backward pass: load cached detections
+            # Check if we should load existing cache
+            cache_exists = os.path.exists(self.detection_cache_path)
+            should_load_cache = self.backward_mode or (
+                self.use_cached_detections and cache_exists
+            )
+
+            if should_load_cache:
+                # Load cached detections
                 detection_cache = DetectionCache(self.detection_cache_path, mode="r")
                 total_frames = detection_cache.get_total_frames()
                 use_cached_detections = True
-                logger.info(
-                    f"Backward pass using cached detections ({total_frames} frames)"
-                )
+                if self.backward_mode:
+                    logger.info(
+                        f"Backward pass using cached detections ({total_frames} frames)"
+                    )
+                else:
+                    logger.info(
+                        f"Reusing cached detections from previous run ({total_frames} frames)"
+                    )
             else:
                 # Forward pass: create cache for writing
                 detection_cache = DetectionCache(self.detection_cache_path, mode="w")
-                logger.info("Forward pass caching detections")
+                if cache_exists and not self.use_cached_detections:
+                    logger.info(
+                        "Forward pass caching detections (overwriting existing cache)"
+                    )
+                else:
+                    logger.info("Forward pass caching detections")
 
         # === RUN BATCHED DETECTION PHASE (if applicable) ===
-        if use_batched_detection:
+        # Only run batched detection if we don't already have cached detections
+        if use_batched_detection and not use_cached_detections:
             # Phase 1: Batched YOLO detection
             frames_processed = self._run_batched_detection_phase(
                 cap, detection_cache, detector, p
@@ -468,11 +487,15 @@ class TrackingWorker(QThread):
 
         # Choose appropriate frame iterator
         if use_cached_detections:
-            if use_batched_detection:
-                # Phase 2 of batched detection: only read frames if we need visualization OR individual analysis
+            # Check if we are in forward mode (either Reuse or Batched Phase 2) or backward mode
+            # If forward mode, we might need frames for visualization/video/dataset
+            if not self.backward_mode:
+                # Phase 2 of batched detection OR Cached Reuse: only read frames if we need visualization OR individual analysis
+                # Update condition: Check for NOT visualization_free_mode (since ENABLE_VISUALIZATION isn't used)
+                # Also check self.video_output_path (since ENABLE_VIDEO_OUTPUT isn't reliably in params)
                 needs_frames = (
-                    p.get("ENABLE_VISUALIZATION", False)
-                    or p.get("ENABLE_VIDEO_OUTPUT", False)
+                    not p.get("VISUALIZATION_FREE_MODE", False)
+                    or (self.video_output_path is not None)
                     or individual_generator
                     is not None  # Need frames for cropping individuals
                 )
@@ -482,14 +505,16 @@ class TrackingWorker(QThread):
                         cap, use_prefetcher=use_prefetcher
                     )
                     skip_visualization = False
-                    logger.info("Phase 2: Using cached detections with frame reading")
+                    logger.info(
+                        "Forward Cached: Using cached detections with frame reading"
+                    )
                 else:
                     # No visualization or individual analysis - skip frame reading entirely
                     frame_iterator = self._cached_detection_iterator(total_frames)
                     skip_visualization = True
                     use_prefetcher = False
                     logger.info(
-                        "Phase 2: Skipping frame reading (no visualization/analysis needed, using cached detections)"
+                        "Forward Cached: Skipping frame reading (no visualization/analysis needed, using cached detections)"
                     )
             else:
                 # Backward pass: no frames needed, skip visualization
@@ -1012,6 +1037,7 @@ class TrackingWorker(QThread):
                         track_ids=matched_track_ids if matched_track_ids else None,
                         trajectory_ids=matched_traj_ids if matched_traj_ids else None,
                         coord_scale_factor=coord_scale_factor,
+                        detection_ids=detection_ids,
                     )
                 elif shapes:
                     # Background subtraction - compute ellipse params from shapes
@@ -1044,6 +1070,7 @@ class TrackingWorker(QThread):
                         track_ids=matched_track_ids if matched_track_ids else None,
                         trajectory_ids=matched_traj_ids if matched_traj_ids else None,
                         coord_scale_factor=coord_scale_factor,
+                        detection_ids=detection_ids,
                     )
 
             # --- Tracking State Updates ---

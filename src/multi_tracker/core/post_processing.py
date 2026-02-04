@@ -788,9 +788,8 @@ def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, param
         if bi not in used_backward:
             result_trajectories.append(bwd.copy())
 
-    # Clean and filter by minimum length
-    result_trajectories = [t for t in result_trajectories if len(t) >= MIN_LENGTH]
-    result_trajectories = _clean_trajectories(result_trajectories, MIN_LENGTH)
+    # Note: Filtering by MIN_LENGTH is deferred until after stitching
+    # to allow small fragments to be reconnected.
 
     # CRITICAL: Remove duplicate trajectories that are spatially contained within others
     # This can happen when a forward trajectory matches multiple backward trajectories,
@@ -804,6 +803,20 @@ def resolve_trajectories(forward_trajs, backward_trajs, video_length=None, param
     result_trajectories = _merge_overlapping_agreeing_trajectories(
         result_trajectories, AGREEMENT_DISTANCE, MIN_OVERLAP_FRAMES, MIN_LENGTH
     )
+
+    # NEW: Stitch consecutive fragments that are spatially close
+    # This fixes tracking breaks during turns or fast movements
+    # Use 2x agreement distance to allow for fast movements/ambiguities across small gaps
+    # Allow larger gap (3 frames) to jump over short occlusions
+    result_trajectories = _stitch_broken_trajectory_fragments(
+        result_trajectories,
+        AGREEMENT_DISTANCE * 2,
+        max_gap=3,
+    )
+
+    # FINAL CLEANING: Now that stitching is done, remove trajectories that are still too short
+    result_trajectories = [t for t in result_trajectories if len(t) >= MIN_LENGTH]
+    result_trajectories = _clean_trajectories(result_trajectories, MIN_LENGTH)
 
     # Reassign trajectory IDs and remove internal columns
     for new_id, traj in enumerate(result_trajectories):
@@ -1091,7 +1104,7 @@ def _remove_spatially_redundant_trajectories(
     return result
 
 
-def _merge_overlapping_agreeing_trajectories(
+def _merge_overlapping_agreeing_trajectories_old(
     trajectories, agreement_distance, min_overlap, min_length
 ):
     """
@@ -1303,6 +1316,597 @@ def _merge_overlapping_agreeing_trajectories(
         logger.info(f"Processed overlapping trajectories in {iteration} iterations")
 
     return trajectories
+
+
+def _merge_overlapping_agreeing_trajectories(
+    trajectories, agreement_distance, min_overlap, min_length
+):
+    """
+    Merge trajectories that overlap in time and agree spatially or share DetectionIDs.
+
+    ENHANCED with DetectionID support for deterministic merging:
+    - Trajectories sharing DetectionIDs are guaranteed to be the same animal
+    - DetectionID matches override spatial discontinuity checks
+    - Falls back to spatial agreement for frames without DetectionID
+
+    CONSERVATIVE approach: Only merge the frames that actually agree.
+    Non-overlapping parts that are spatially distant become separate trajectories.
+
+    For two overlapping trajectories:
+    - Frames where BOTH share same DetectionID: MUST merge (same detection)
+    - Frames where BOTH agree spatially (within distance threshold): Merge into averaged position
+    - Frames where only ONE exists: Keep, but split if there's a spatial discontinuity
+    - Frames where BOTH exist but DISAGREE: Each becomes its own trajectory segment
+
+    Uses iterative processing until no more merges are possible.
+    """
+    if not trajectories:
+        return trajectories
+
+    # Check if DetectionID column is available
+    has_detection_id = (
+        "DetectionID" in trajectories[0].columns if trajectories else False
+    )
+
+    # Spatial jump threshold - if a frame is this far from previous, break the segment
+    # UNLESS DetectionID confirms continuity
+    max_spatial_jump = agreement_distance * 5  # ~50px for 9.62 agreement_distance
+
+    def get_last_position(segment):
+        """Get the (X, Y) of the last frame in a segment."""
+        if not segment:
+            return None, None
+        last = segment[-1]
+        return last.get("X"), last.get("Y")
+
+    def is_spatially_continuous(segment, new_row, threshold, check_detection_id=True):
+        """
+        Check if new_row is spatially close to the end of segment.
+
+        If both have valid DetectionID and they match consecutive detections,
+        spatial continuity is enforced more strictly. If DetectionID suggests
+        a jump in detection sequence, we're more lenient with spatial distance.
+        """
+        if not segment:
+            return True
+        last_x, last_y = get_last_position(segment)
+        if last_x is None or pd.isna(last_x):
+            return True
+        new_x, new_y = new_row.get("X"), new_row.get("Y")
+        if new_x is None or pd.isna(new_x):
+            return True
+        dist = np.sqrt((new_x - last_x) ** 2 + (new_y - last_y) ** 2)
+
+        # If DetectionID is available and both rows have it, use it to inform continuity
+        if has_detection_id and check_detection_id:
+            last_det_id = segment[-1].get("DetectionID")
+            new_det_id = new_row.get("DetectionID")
+
+            # If both have valid DetectionIDs (not NaN)
+            if (
+                last_det_id is not None
+                and not pd.isna(last_det_id)
+                and new_det_id is not None
+                and not pd.isna(new_det_id)
+            ):
+                # If DetectionIDs differ, it's a different detection - be lenient with spatial distance
+                # This handles cases where tracking switched between detections
+                if last_det_id != new_det_id:
+                    # Allow larger spatial jumps when DetectionID changes
+                    return dist <= threshold * 2
+
+        return dist <= threshold
+
+    max_iterations = 50
+    iteration = 0
+
+    while iteration < max_iterations:
+        iteration += 1
+        merged_any = False
+        used = set()
+        new_trajectories = []
+
+        # Build lookup for each trajectory (OPTIMIZED: use NumPy arrays)
+        traj_lookups = []
+        for traj in trajectories:
+            frames = traj["FrameID"].values
+            x = traj["X"].values
+            valid_mask = ~np.isnan(x)
+
+            # Build lookup dict from arrays - faster than iterrows
+            lookup = {}
+            for idx in np.where(valid_mask)[0]:
+                row_dict = {col: traj.iloc[idx][col] for col in traj.columns}
+                lookup[frames[idx]] = row_dict
+            traj_lookups.append(lookup)
+
+        for i in range(len(trajectories)):
+            if i in used:
+                continue
+
+            traj_a = trajectories[i]
+            lookup_a = traj_lookups[i]
+
+            for j in range(i + 1, len(trajectories)):
+                if j in used:
+                    continue
+
+                traj_b = trajectories[j]
+                lookup_b = traj_lookups[j]
+
+                # Find overlapping frames
+                common_frames = set(lookup_a.keys()).intersection(set(lookup_b.keys()))
+                if len(common_frames) < min_overlap:
+                    continue
+
+                # Count agreeing frames in the overlap
+                # Enhanced: Also count DetectionID matches
+                agreeing = 0
+                detection_id_matches = 0
+                for frame in common_frames:
+                    ra, rb = lookup_a[frame], lookup_b[frame]
+
+                    # Check DetectionID match first (strongest evidence)
+                    if has_detection_id:
+                        det_a = ra.get("DetectionID")
+                        det_b = rb.get("DetectionID")
+                        # If both have valid DetectionIDs and they match, it's the same detection
+                        if (
+                            det_a is not None
+                            and not pd.isna(det_a)
+                            and det_b is not None
+                            and not pd.isna(det_b)
+                            and det_a == det_b
+                        ):
+                            detection_id_matches += 1
+                            agreeing += 1
+                            continue
+
+                    # Fall back to spatial agreement
+                    dist = np.sqrt((ra["X"] - rb["X"]) ** 2 + (ra["Y"] - rb["Y"]) ** 2)
+                    if dist <= agreement_distance:
+                        agreeing += 1
+
+                # Only process if there's significant agreement
+                # DetectionID matches are stronger evidence, so require fewer matches
+                required_matches = (
+                    min_overlap
+                    if detection_id_matches < 2
+                    else max(2, min_overlap // 2)
+                )
+                if agreeing < required_matches:
+                    continue
+
+                # Log if we found DetectionID matches
+                if detection_id_matches > 0:
+                    logger.debug(
+                        f"Found {detection_id_matches} DetectionID matches out of {len(common_frames)} overlapping frames"
+                    )
+
+                # CONSERVATIVE MERGE with spatial continuity checks
+                all_frames_set = set(lookup_a.keys()).union(set(lookup_b.keys()))
+                all_frames = sorted(all_frames_set)
+
+                # Classify frames
+                frame_classifications = {}
+                for frame in all_frames:
+                    in_a = frame in lookup_a
+                    in_b = frame in lookup_b
+
+                    if in_a and in_b:
+                        ra, rb = lookup_a[frame], lookup_b[frame]
+
+                        # Check DetectionID match first (strongest evidence of same animal)
+                        detection_id_match = False
+                        if has_detection_id:
+                            det_a = ra.get("DetectionID")
+                            det_b = rb.get("DetectionID")
+                            if (
+                                det_a is not None
+                                and not pd.isna(det_a)
+                                and det_b is not None
+                                and not pd.isna(det_b)
+                                and det_a == det_b
+                            ):
+                                detection_id_match = True
+
+                        # If DetectionID matches, they MUST agree (same physical detection)
+                        if detection_id_match:
+                            merged = _average_trajectory_rows(ra, rb)
+                            frame_classifications[frame] = ("agree_detid", merged)
+                        else:
+                            # Fall back to spatial agreement
+                            dist = np.sqrt(
+                                (ra["X"] - rb["X"]) ** 2 + (ra["Y"] - rb["Y"]) ** 2
+                            )
+                            if dist <= agreement_distance:
+                                merged = _average_trajectory_rows(ra, rb)
+                                frame_classifications[frame] = ("agree", merged)
+                            else:
+                                frame_classifications[frame] = ("disagree", (ra, rb))
+                    elif in_a:
+                        frame_classifications[frame] = ("a_only", lookup_a[frame])
+                    else:
+                        frame_classifications[frame] = ("b_only", lookup_b[frame])
+
+                # Build segments using state machine WITH spatial continuity checks
+                # ENHANCED: DetectionID matches bypass spatial continuity checks
+                result_segments = []
+                current_segment = []
+                # Keep disagreeing observations separate by source to avoid FrameID duplicates
+                disagree_a_observations = []  # From trajectory A
+                disagree_b_observations = []  # From trajectory B
+
+                for frame in all_frames:
+                    classification, data = frame_classifications[frame]
+
+                    if classification == "agree_detid":
+                        # DetectionID match - ALWAYS continuous (same physical detection)
+                        # This overrides spatial discontinuity
+                        current_segment.append(data)
+
+                    elif classification == "agree":
+                        # Spatial agreement without DetectionID confirmation
+                        # Check spatial continuity
+                        if is_spatially_continuous(
+                            current_segment, data, max_spatial_jump
+                        ):
+                            current_segment.append(data)
+                        else:
+                            # Spatial discontinuity - save current and start new
+                            if len(current_segment) >= min_length:
+                                result_segments.append(pd.DataFrame(current_segment))
+                            current_segment = [data]
+
+                    elif classification in ("a_only", "b_only"):
+                        # Single-source frame: be LENIENT with spatial continuity
+                        # These frames don't have disagreement, they're just continuing one trajectory
+                        # Only break if the jump is VERY large (indicates genuine trajectory switch)
+                        lenient_threshold = (
+                            max_spatial_jump  # 3x more lenient for single-source
+                        )
+                        if is_spatially_continuous(
+                            current_segment,
+                            data,
+                            lenient_threshold,
+                            check_detection_id=False,
+                        ):
+                            current_segment.append(data)
+                        else:
+                            # VERY large spatial jump - likely different animal
+                            if len(current_segment) >= min_length:
+                                result_segments.append(pd.DataFrame(current_segment))
+                            current_segment = [data]
+
+                    elif classification == "disagree":
+                        # Both exist but disagree - check if one is occluded
+                        ra, rb = data
+
+                        # Check state of each observation
+                        state_a = ra.get("State", "active")
+                        state_b = rb.get("State", "active")
+
+                        # If one is active and the other is occluded/lost, prefer the active one
+                        # Don't create separate trajectories for predicted vs detected positions
+                        if state_a == "active" and state_b in ("occluded", "lost"):
+                            # Prefer A (actual detection), discard B (prediction)
+                            lenient_threshold = max_spatial_jump * 2
+                            if is_spatially_continuous(
+                                current_segment,
+                                ra,
+                                lenient_threshold,
+                                check_detection_id=False,
+                            ):
+                                current_segment.append(ra.copy())
+                            else:
+                                if len(current_segment) >= min_length:
+                                    result_segments.append(
+                                        pd.DataFrame(current_segment)
+                                    )
+                                current_segment = [ra.copy()]
+                            # B is discarded (it's just a prediction during occlusion)
+
+                        elif state_b == "active" and state_a in ("occluded", "lost"):
+                            # Prefer B (actual detection), discard A (prediction)
+                            lenient_threshold = max_spatial_jump * 2
+                            if is_spatially_continuous(
+                                current_segment,
+                                rb,
+                                lenient_threshold,
+                                check_detection_id=False,
+                            ):
+                                current_segment.append(rb.copy())
+                            else:
+                                if len(current_segment) >= min_length:
+                                    result_segments.append(
+                                        pd.DataFrame(current_segment)
+                                    )
+                                current_segment = [rb.copy()]
+                            # A is discarded (it's just a prediction during occlusion)
+
+                        else:
+                            # Both active or both occluded - genuine disagreement
+                            # Preserve BOTH as separate trajectories
+                            lenient_threshold = max_spatial_jump * 2
+                            a_continuous = is_spatially_continuous(
+                                current_segment,
+                                ra,
+                                lenient_threshold,
+                                check_detection_id=False,
+                            )
+                            b_continuous = is_spatially_continuous(
+                                current_segment,
+                                rb,
+                                lenient_threshold,
+                                check_detection_id=False,
+                            )
+
+                            if a_continuous and not b_continuous:
+                                # Keep a in current segment, save b for separate trajectory
+                                current_segment.append(ra.copy())
+                                disagree_b_observations.append(rb.copy())
+                            elif b_continuous and not a_continuous:
+                                # Keep b in current segment, save a for separate trajectory
+                                current_segment.append(rb.copy())
+                                disagree_a_observations.append(ra.copy())
+                            elif a_continuous and b_continuous:
+                                # Both could continue - ambiguous case
+                                # NEW: Prefer the one minimizing spatial jump (smoother path) instead of splitting
+                                last_x, last_y = get_last_position(current_segment)
+
+                                if last_x is None or pd.isna(last_x):
+                                    # Start of segment or last position unknown, prefer A
+                                    current_segment.append(ra.copy())
+                                    disagree_b_observations.append(rb.copy())
+                                else:
+                                    # Handle potential NaNs in current observations
+                                    xa, ya = ra.get("X"), ra.get("Y")
+                                    xb, yb = rb.get("X"), rb.get("Y")
+
+                                    dist_a = float("inf")
+                                    dist_b = float("inf")
+
+                                    if not pd.isna(xa):
+                                        dist_a = np.sqrt(
+                                            (xa - last_x) ** 2 + (ya - last_y) ** 2
+                                        )
+                                    if not pd.isna(xb):
+                                        dist_b = np.sqrt(
+                                            (xb - last_x) ** 2 + (yb - last_y) ** 2
+                                        )
+
+                                    # If both have valid distances, compare
+                                    if dist_a <= dist_b:
+                                        current_segment.append(ra.copy())
+                                        disagree_b_observations.append(rb.copy())
+                                    else:
+                                        current_segment.append(rb.copy())
+                                        disagree_a_observations.append(ra.copy())
+                            else:
+                                # Neither continuous - save current and preserve both separately
+                                if len(current_segment) >= min_length:
+                                    result_segments.append(
+                                        pd.DataFrame(current_segment)
+                                    )
+                                current_segment = []
+                                disagree_a_observations.append(ra.copy())
+                                disagree_b_observations.append(rb.copy())
+
+                # Finalize remaining segment
+                if len(current_segment) >= min_length:
+                    result_segments.append(pd.DataFrame(current_segment))
+
+                # Convert disagree observations to separate trajectories
+                # Process each source separately to avoid FrameID duplicates
+                def build_disagree_trajectory(obs_list, source_name):
+                    """Build trajectory segments from a list of disagree observations."""
+                    if not obs_list:
+                        return []
+
+                    segments = []
+                    # Sort by FrameID
+                    obs_list.sort(key=lambda x: x.get("FrameID", 0))
+
+                    # Build trajectory segments
+                    current_seg = []
+                    for obs in obs_list:
+                        if not current_seg:
+                            current_seg = [obs]
+                        else:
+                            last_frame = current_seg[-1].get("FrameID", 0)
+                            curr_frame = obs.get("FrameID", 0)
+
+                            # Skip if same frame (shouldn't happen but safety check)
+                            if curr_frame == last_frame:
+                                continue
+
+                            # If frames are close in time and space, continue segment
+                            if curr_frame - last_frame <= 5:  # Within 5 frames
+                                if is_spatially_continuous(
+                                    current_seg,
+                                    obs,
+                                    max_spatial_jump * 3,
+                                    check_detection_id=False,
+                                ):
+                                    current_seg.append(obs)
+                                else:
+                                    # Spatially discontinuous - save and start new
+                                    if len(current_seg) >= min_length:
+                                        segments.append(pd.DataFrame(current_seg))
+                                    current_seg = [obs]
+                            else:
+                                # Temporal gap - save current and start new
+                                if len(current_seg) >= min_length:
+                                    segments.append(pd.DataFrame(current_seg))
+                                current_seg = [obs]
+
+                    # Finalize last segment
+                    if len(current_seg) >= min_length:
+                        segments.append(pd.DataFrame(current_seg))
+
+                    return segments
+
+                # Build trajectories from disagreeing observations (kept separate by source)
+                disagree_segs_a = build_disagree_trajectory(
+                    disagree_a_observations, "A"
+                )
+                disagree_segs_b = build_disagree_trajectory(
+                    disagree_b_observations, "B"
+                )
+                result_segments.extend(disagree_segs_a)
+                result_segments.extend(disagree_segs_b)
+
+                # If we produced any segments, mark both as used
+                if result_segments:
+                    used.add(i)
+                    used.add(j)
+                    new_trajectories.extend(result_segments)
+                    merged_any = True
+
+                    # Log merge results
+                    total_merged_frames = sum(len(seg) for seg in result_segments)
+                    disagree_count = len(disagree_a_observations) + len(
+                        disagree_b_observations
+                    )
+                    logger.debug(
+                        f"Merged trajectories {i} ({len(lookup_a)} frames) + {j} ({len(lookup_b)} frames) "
+                        f"→ {len(result_segments)} segments with {total_merged_frames} total frames "
+                        f"(DetectionID matches: {detection_id_matches}, disagree preserved: {disagree_count})"
+                    )
+                    break
+
+            # If trajectory i wasn't merged with anything, keep it
+            if i not in used:
+                if len(traj_a) >= min_length:
+                    new_trajectories.append(traj_a)
+                used.add(i)
+
+        trajectories = new_trajectories
+
+        if not merged_any:
+            break
+
+    if iteration > 1:
+        logger.info(f"Processed overlapping trajectories in {iteration} iterations")
+
+    return trajectories
+
+
+def _stitch_broken_trajectory_fragments(trajectories, agreement_distance, max_gap=2):
+    """
+    Stitch together trajectories that are likely fragmented parts of the same track.
+
+    This handles sequential fragments where T2 starts shortly after T1 ends,
+    and they are spatially close (within agreement_distance).
+
+    Args:
+        trajectories: List of trajectory DataFrames
+        agreement_distance: Max spatial distance to allow stitching
+        max_gap: Max frame gap between end of T1 and start of T2
+    """
+    if not trajectories:
+        return trajectories
+
+    # Iterative stitching
+    max_iterations = 20
+    iteration = 0
+    current_trajectories = trajectories
+
+    while iteration < max_iterations:
+        iteration += 1
+        merged_any = False
+        used = set()
+        new_trajectories = []
+
+        # Sort by start frame for efficient searching
+        sorted_indices = sorted(
+            range(len(current_trajectories)),
+            key=lambda i: current_trajectories[i].iloc[0]["FrameID"],
+        )
+
+        # Build lookup for start/end info
+        traj_info = {}
+        for idx in sorted_indices:
+            df = current_trajectories[idx]
+            if df.empty:
+                continue
+            traj_info[idx] = {
+                "start_frame": df.iloc[0]["FrameID"],
+                "end_frame": df.iloc[-1]["FrameID"],
+                "start_pos": (df.iloc[0]["X"], df.iloc[0]["Y"]),
+                "end_pos": (df.iloc[-1]["X"], df.iloc[-1]["Y"]),
+                "df": df,
+            }
+
+        idx_ptr = 0
+        while idx_ptr < len(sorted_indices):
+            idx_a = sorted_indices[idx_ptr]
+
+            if idx_a in used:
+                idx_ptr += 1
+                continue
+
+            info_a = traj_info[idx_a]
+            best_idx_b = -1
+            min_dist = float("inf")
+
+            # Look ahead for stitch candidates
+            for idx_next in range(idx_ptr + 1, len(sorted_indices)):
+                idx_b = sorted_indices[idx_next]
+                if idx_b in used:
+                    continue
+
+                info_b = traj_info[idx_b]
+
+                # Check frame gap
+                gap = info_b["start_frame"] - info_a["end_frame"]
+
+                if gap <= 0:
+                    continue  # Overlapping (handled by other function)
+
+                if gap > max_gap:
+                    break  # Too far ahead (list is sorted)
+
+                # Check spatial distance
+                ax, ay = info_a["end_pos"]
+                bx, by = info_b["start_pos"]
+
+                if pd.isna(ax) or pd.isna(bx):
+                    continue
+
+                dist = np.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
+
+                if dist <= agreement_distance:
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_idx_b = idx_b
+
+            if best_idx_b != -1:
+                # Merge sequential fragments
+                merged = pd.concat(
+                    [info_a["df"], traj_info[best_idx_b]["df"]], ignore_index=True
+                )
+                new_trajectories.append(merged)
+                used.add(idx_a)
+                used.add(best_idx_b)
+                merged_any = True
+                logger.debug(
+                    f"Stitched fragment {idx_a} -> {best_idx_b} (gap: {traj_info[best_idx_b]['start_frame'] - info_a['end_frame']} frames, dist: {min_dist:.2f}px)"
+                )
+            else:
+                new_trajectories.append(info_a["df"])
+                used.add(idx_a)
+
+            idx_ptr += 1
+
+        current_trajectories = new_trajectories
+        if not merged_any:
+            break
+
+    if iteration > 1:
+        logger.info(f"Stitched broken fragments in {iteration} iterations")
+
+    return current_trajectories
 
 
 def _convert_trajectory_to_dataframe(traj, traj_id):

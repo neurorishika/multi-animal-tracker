@@ -304,6 +304,7 @@ class IndividualDatasetGenerator:
         track_ids=None,
         trajectory_ids=None,
         coord_scale_factor=1.0,
+        detection_ids=None,
     ):
         """
         Process a frame and save masked crops for each detection.
@@ -326,6 +327,7 @@ class IndividualDatasetGenerator:
             track_ids: Optional list of track IDs for each detection
             trajectory_ids: Optional list of trajectory IDs for each detection
             coord_scale_factor: Scale factor to convert detection coords to original resolution (1/resize_factor)
+            detection_ids: Optional list of unique Detection IDs for each detection
 
         Returns:
             num_saved: Number of crops saved from this frame
@@ -393,12 +395,18 @@ class IndividualDatasetGenerator:
                     if trajectory_ids and i < len(trajectory_ids)
                     else -1
                 )
+                det_id = (
+                    detection_ids[i]
+                    if detection_ids and i < len(detection_ids)
+                    else None
+                )
 
                 crop_metadata = {
                     "frame_id": int(frame_id),
                     "detection_idx": i,
                     "track_id": int(track_id),
                     "trajectory_id": int(traj_id),
+                    "detection_id": int(det_id) if det_id is not None else None,
                     "confidence": float(conf),
                     "center": [cx, cy],
                     "theta": theta,
@@ -408,7 +416,9 @@ class IndividualDatasetGenerator:
                 }
 
                 # Save crop
-                saved = self._save_crop(crop, frame_id, i, track_id, crop_metadata)
+                saved = self._save_crop(
+                    crop, frame_id, i, track_id, crop_metadata, detection_id=det_id
+                )
                 if saved:
                     num_saved += 1
 
@@ -489,7 +499,9 @@ class IndividualDatasetGenerator:
 
         return masked_crop, crop_info
 
-    def _save_crop(self, crop, frame_id, det_idx, track_id, metadata):
+    def _save_crop(
+        self, crop, frame_id, det_idx, track_id, metadata, detection_id=None
+    ):
         """
         Save a crop to disk.
 
@@ -499,13 +511,20 @@ class IndividualDatasetGenerator:
             det_idx: Detection index within frame
             track_id: Track ID
             metadata: Metadata dict for this crop
+            detection_id: Unique Detection ID (optional)
 
         Returns:
             bool: True if saved successfully
         """
         try:
             # Generate filename
-            if track_id >= 0:
+            if detection_id is not None:
+                # Use DetectionID if available (preferred/unique)
+                if track_id >= 0:
+                    filename = f"f{frame_id:06d}_t{track_id:04d}_did{detection_id}.{self.output_format}"
+                else:
+                    filename = f"f{frame_id:06d}_did{detection_id}.{self.output_format}"
+            elif track_id >= 0:
                 filename = f"f{frame_id:06d}_t{track_id:04d}_d{det_idx:02d}.{self.output_format}"
             else:
                 filename = f"f{frame_id:06d}_d{det_idx:02d}.{self.output_format}"
