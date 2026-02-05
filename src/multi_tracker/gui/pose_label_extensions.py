@@ -993,3 +993,308 @@ class EmbeddingWorker(QObject):
 
         except Exception as e:
             self.failed.emit(str(e))
+
+
+# -----------------------------
+# Incremental Embedding Cache
+# -----------------------------
+
+
+class IncrementalEmbeddingCache:
+    """Manages incremental embedding computation and caching."""
+
+    def __init__(self, cache_root: Path, model_name: str):
+        self.cache_root = cache_root
+        self.model_name = model_name
+        self.cache_dir = (
+            cache_root / "embeddings" / self._sanitize_model_name(model_name)
+        )
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+        self.embeddings_path = self.cache_dir / "embeddings.npy"
+        self.index_path = self.cache_dir / "index.csv"
+        self.meta_path = self.cache_dir / "metadata.json"
+
+        self._embeddings: Optional[np.ndarray] = None
+        self._index: Dict[str, int] = {}  # filename -> row index
+        self._load()
+
+    @staticmethod
+    def _sanitize_model_name(name: str) -> str:
+        """Convert model name to safe directory name."""
+        import re
+
+        return re.sub(r"[^\w\-.]", "_", name)
+
+    def _load(self):
+        """Load existing embeddings and index."""
+        if self.embeddings_path.exists() and self.index_path.exists():
+            try:
+                self._embeddings = np.load(self.embeddings_path)
+
+                # Load index CSV
+                with self.index_path.open("r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        self._index[row["path"]] = int(row["index"])
+
+                logger.info(
+                    f"Loaded {len(self._index)} cached embeddings for {self.model_name}"
+                )
+            except Exception as e:
+                logger.warning(f"Failed to load cache: {e}")
+                self._embeddings = None
+                self._index = {}
+
+    def _save(self):
+        """Save embeddings and index to disk."""
+        if self._embeddings is None:
+            return
+
+        try:
+            np.save(self.embeddings_path, self._embeddings)
+
+            # Save index CSV
+            with self.index_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["path", "index", "mtime", "size"])
+                for path, idx in sorted(self._index.items(), key=lambda x: x[1]):
+                    p = Path(path)
+                    if p.exists():
+                        writer.writerow(
+                            [path, idx, int(p.stat().st_mtime), int(p.stat().st_size)]
+                        )
+                    else:
+                        writer.writerow([path, idx, 0, 0])
+
+            logger.info(f"Saved {len(self._index)} embeddings to cache")
+        except Exception as e:
+            logger.error(f"Failed to save cache: {e}")
+
+    def get_metadata(self) -> Dict:
+        """Get cache metadata."""
+        if self.meta_path.exists():
+            try:
+                return json.loads(self.meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+    def set_metadata(self, meta: Dict):
+        """Save cache metadata."""
+        try:
+            self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.error(f"Failed to save metadata: {e}")
+
+    def needs_update(self, image_paths: List[Path]) -> Tuple[List[int], List[int]]:
+        """
+        Check which images need embedding computation.
+        Returns: (needs_compute_indices, cached_indices)
+        """
+        needs_compute = []
+        cached = []
+
+        for i, path in enumerate(image_paths):
+            path_str = str(path)
+
+            # Check if in cache
+            if path_str in self._index:
+                # Verify file hasn't changed
+                try:
+                    stat = path.stat()
+                    # Simple check - could be enhanced with hash
+                    cached.append(i)
+                except Exception:
+                    needs_compute.append(i)
+            else:
+                needs_compute.append(i)
+
+        return needs_compute, cached
+
+    def get_embeddings(self, image_paths: List[Path]) -> Optional[np.ndarray]:
+        """Get embeddings for given paths (if all are cached)."""
+        if self._embeddings is None:
+            return None
+
+        indices = []
+        for path in image_paths:
+            path_str = str(path)
+            if path_str not in self._index:
+                return None
+            indices.append(self._index[path_str])
+
+        return self._embeddings[indices]
+
+    def add_embeddings(self, image_paths: List[Path], embeddings: np.ndarray):
+        """Add new embeddings to cache."""
+        if len(image_paths) != embeddings.shape[0]:
+            raise ValueError("Mismatch between paths and embeddings")
+
+        # Initialize if empty
+        if self._embeddings is None:
+            self._embeddings = embeddings
+            for i, path in enumerate(image_paths):
+                self._index[str(path)] = i
+        else:
+            # Append new embeddings
+            start_idx = len(self._embeddings)
+            self._embeddings = np.vstack([self._embeddings, embeddings])
+            for i, path in enumerate(image_paths):
+                self._index[str(path)] = start_idx + i
+
+        self._save()
+
+    def clear(self):
+        """Clear all cached embeddings."""
+        self._embeddings = None
+        self._index = {}
+        for p in [self.embeddings_path, self.index_path, self.meta_path]:
+            if p.exists():
+                p.unlink()
+
+
+# -----------------------------
+# Difficulty Score Computation
+# -----------------------------
+
+
+def compute_difficulty_scores(
+    image_paths: List[Path], keypoint_data: Optional[List[Optional[List]]] = None
+) -> np.ndarray:
+    """
+    Compute difficulty scores for frames based on image quality and labeling.
+    Returns array of scores in [0, 1] where higher = more difficult.
+    """
+    scores = np.zeros(len(image_paths))
+
+    for i, path in enumerate(image_paths):
+        try:
+            # Read image
+            img = cv2.imread(str(path))
+            if img is None:
+                scores[i] = 0.5
+                continue
+
+            # 1. Blur detection (Laplacian variance)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+            blur_score = 1.0 / (
+                1.0 + laplacian_var / 100.0
+            )  # Lower variance = more blur
+
+            # 2. Contrast (std of pixel values)
+            contrast = gray.std()
+            contrast_score = 1.0 / (1.0 + contrast / 50.0)  # Lower std = low contrast
+
+            # 3. Brightness extremes
+            mean_brightness = gray.mean()
+            brightness_score = (
+                abs(mean_brightness - 128) / 128.0
+            )  # Distance from middle gray
+
+            # 4. Occlusion rate (if keypoint data available)
+            occlusion_score = 0.0
+            if keypoint_data and i < len(keypoint_data) and keypoint_data[i]:
+                kpts = keypoint_data[i]
+                if kpts:
+                    occluded = sum(1 for kp in kpts if kp.v == 1)
+                    visible = sum(1 for kp in kpts if kp.v == 2)
+                    total = occluded + visible
+                    if total > 0:
+                        occlusion_score = occluded / total
+
+            # Combine scores
+            scores[i] = (
+                blur_score * 0.3
+                + contrast_score * 0.3
+                + brightness_score * 0.2
+                + occlusion_score * 0.2
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to compute difficulty for {path}: {e}")
+            scores[i] = 0.5
+
+    return scores
+
+
+# -----------------------------
+# UMAP Projection
+# -----------------------------
+
+
+def compute_umap_projection(
+    embeddings: np.ndarray,
+    n_neighbors: int = 15,
+    min_dist: float = 0.1,
+    metric: str = "cosine",
+    random_state: int = 42,
+) -> np.ndarray:
+    """
+    Compute UMAP 2D projection of embeddings.
+    Returns (n, 2) array of 2D coordinates.
+    """
+    try:
+        import umap
+
+        reducer = umap.UMAP(
+            n_components=2,
+            n_neighbors=n_neighbors,
+            min_dist=min_dist,
+            metric=metric,
+            random_state=random_state,
+        )
+
+        projection = reducer.fit_transform(embeddings)
+        return projection.astype(np.float32)
+
+    except ImportError:
+        logger.error("UMAP not installed. Install with: pip install umap-learn")
+        raise
+    except Exception as e:
+        logger.error(f"UMAP projection failed: {e}")
+        raise
+
+
+# -----------------------------
+# Utility: Filter Near-Duplicates
+# -----------------------------
+
+
+def filter_near_duplicates(
+    embeddings: np.ndarray, indices: List[int], threshold: float = 0.95
+) -> List[int]:
+    """
+    Remove near-duplicate frames based on cosine similarity.
+    Returns filtered indices.
+
+    Args:
+        embeddings: All embeddings (N x D)
+        indices: List of frame indices to filter
+        threshold: Cosine similarity threshold (0-1). Higher = more strict filtering.
+
+    Returns:
+        Filtered list of indices with near-duplicates removed
+    """
+    if len(indices) <= 1:
+        return indices
+
+    sub_emb = embeddings[indices]
+
+    # Compute pairwise similarities
+    sims = _cosine_sim_matrix(sub_emb, sub_emb)
+
+    # Greedy filtering: keep first frame, then only add frames dissimilar to kept ones
+    keep = []
+    for i in range(len(indices)):
+        if not keep:
+            keep.append(i)
+            continue
+
+        # Check similarity to all kept frames
+        max_sim = max(sims[i, j] for j in keep)
+        if max_sim < threshold:
+            keep.append(i)
+
+    return [indices[i] for i in keep]

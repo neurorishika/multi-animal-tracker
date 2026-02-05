@@ -333,6 +333,22 @@ def save_ui_settings(settings: Dict):
         pass
 
 
+def _clamp01(value: float) -> float:
+    """Clamp value to [0, 1] range."""
+    return max(0.0, min(1.0, value))
+
+
+def _xyxy_to_cxcywh(
+    x1: float, y1: float, x2: float, y2: float
+) -> Tuple[float, float, float, float]:
+    """Convert bounding box from (x1, y1, x2, y2) to (center_x, center_y, width, height)."""
+    cx = (x1 + x2) / 2.0
+    cy = (y1 + y2) / 2.0
+    bw = x2 - x1
+    bh = y2 - y1
+    return cx, cy, bw, bh
+
+
 def compute_bbox_from_kpts(
     kpts: List[Keypoint], pad_frac: float, w: int, h: int
 ) -> Optional[Tuple[float, float, float, float]]:
@@ -799,6 +815,8 @@ class PoseCanvas(QGraphicsView):
         self._on_place = None
         self._on_move = None
         self._on_select = None
+        self._dragging_kpt = None
+        self._drag_start_pos = None
 
     def set_callbacks(self, on_place, on_move, on_select=None):
         self._on_place = on_place
@@ -1006,30 +1024,131 @@ class PoseCanvas(QGraphicsView):
 
         item = self.itemAt(event.position().toPoint())
         if item is not None and isinstance(item, QGraphicsEllipseItem):
-            # Clicking on existing keypoint - select it instead of moving
+            # Clicked on existing keypoint
             idx = int(item.data(0))
-            if self._on_select:
-                self._on_select(idx)
-            return super().mousePressEvent(event)
+
+            # Get parent's mode
+            parent = self.parent()
+            mode = getattr(parent, "mode", "frame") if parent else "frame"
+
+            if mode == "keypoint":
+                # In keypoint mode: NEVER allow dragging - treat click as placing next unlabeled keypoint
+                ann = getattr(parent, "_ann", None) if parent else None
+                if ann and hasattr(ann, "kpts"):
+                    # Find next unlabeled keypoint
+                    next_unlabeled = None
+                    for i, kp in enumerate(ann.kpts):
+                        if kp.v == 0:
+                            next_unlabeled = i
+                            break
+
+                    if next_unlabeled is not None:
+                        # Update canvas internal state FIRST
+                        self._current_kpt = next_unlabeled
+
+                        # Get position
+                        pos = self.mapToScene(event.position().toPoint())
+
+                        # Update parent state
+                        if parent:
+                            parent.current_kpt = next_unlabeled
+                            parent.kpt_list.setCurrentRow(next_unlabeled)
+                            # Update canvas visual state
+                            parent.canvas.set_current_keypoint(next_unlabeled)
+                            # Force UI update
+                            QApplication.processEvents()
+
+                        # Now place the keypoint with the updated state
+                        if self._on_place:
+                            self._on_place(
+                                next_unlabeled,
+                                float(pos.x()),
+                                float(pos.y()),
+                                self._click_vis,
+                            )
+                    # If all labeled, ignore click
+                return super().mousePressEvent(event)
+            else:
+                # In frame mode: start dragging existing keypoint
+                if self._on_select:
+                    self._on_select(idx)
+                self._dragging_kpt = idx
+                self._drag_start_pos = self.mapToScene(event.position().toPoint())
+                return super().mousePressEvent(event)
 
         if event.button() == Qt.LeftButton:
+            # Clicking on empty space - always place next unlabeled keypoint in both modes
+            parent = self.parent()
             pos = self.mapToScene(event.position().toPoint())
-            if self._on_place:
-                self._on_place(
-                    self._current_kpt, float(pos.x()), float(pos.y()), self._click_vis
-                )
+            ann = getattr(parent, "_ann", None) if parent else None
+
+            if ann and hasattr(ann, "kpts"):
+                # Check if all keypoints are already labeled
+                all_labeled = all(kp.v > 0 for kp in ann.kpts)
+                if all_labeled:
+                    # Ignore click - all keypoints exist
+                    super().mousePressEvent(event)
+                    return
+
+                # Find next unlabeled keypoint
+                next_unlabeled = None
+                for i, kp in enumerate(ann.kpts):
+                    if kp.v == 0:
+                        next_unlabeled = i
+                        break
+
+                if next_unlabeled is not None:
+                    # Update canvas internal state FIRST
+                    self._current_kpt = next_unlabeled
+
+                    # Update parent state
+                    if parent:
+                        parent.current_kpt = next_unlabeled
+                        parent.kpt_list.setCurrentRow(next_unlabeled)
+                        # Update canvas visual state
+                        parent.canvas.set_current_keypoint(next_unlabeled)
+                        # Force UI update
+                        QApplication.processEvents()
+
+                    # Now place the keypoint with the updated state
+                    if self._on_place:
+                        self._on_place(
+                            next_unlabeled,
+                            float(pos.x()),
+                            float(pos.y()),
+                            self._click_vis,
+                        )
+            else:
+                # No annotation data, place normally
+                if self._on_place:
+                    self._on_place(
+                        self._current_kpt,
+                        float(pos.x()),
+                        float(pos.y()),
+                        self._click_vis,
+                    )
         super().mousePressEvent(event)
 
-    def mouseReleaseEvent(self, event):
-        item = self.itemAt(event.position().toPoint())
-        if item is not None and isinstance(item, QGraphicsEllipseItem):
-            idx = int(item.data(0))
-            # Get the center position in scene coordinates
-            rect = item.rect()
-            center = rect.center()
-            scene_pos = item.mapToScene(center)
+    def mouseMoveEvent(self, event):
+        if self._dragging_kpt is not None and self._drag_start_pos is not None:
+            # Never allow drag in keypoint mode
+            parent = self.parent()
+            mode = getattr(parent, "mode", "frame") if parent else "frame"
+            if mode == "keypoint":
+                # Keypoint mode: no dragging allowed
+                super().mouseMoveEvent(event)
+                return
+            # Update keypoint position during drag (frame mode only)
+            pos = self.mapToScene(event.position().toPoint())
             if self._on_move:
-                self._on_move(idx, float(scene_pos.x()), float(scene_pos.y()))
+                self._on_move(self._dragging_kpt, float(pos.x()), float(pos.y()))
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging_kpt is not None:
+            # Complete drag operation
+            self._dragging_kpt = None
+            self._drag_start_pos = None
         super().mouseReleaseEvent(event)
 
 
@@ -1872,6 +1991,85 @@ class MainWindow(QMainWindow):
         self._save_ui_settings()
         super().closeEvent(event)
 
+    def keyPressEvent(self, event):
+        """Handle arrow key nudging of keypoints with modifier keys."""
+        # Only process arrow keys
+        if event.key() not in [Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down]:
+            super().keyPressEvent(event)
+            return
+
+        # Get current keypoint value
+        if self._ann is None or self.current_kpt >= len(self._ann.kpts):
+            super().keyPressEvent(event)
+            return
+
+        x, y, v = (
+            self._ann.kpts[self.current_kpt].x,
+            self._ann.kpts[self.current_kpt].y,
+            self._ann.kpts[self.current_kpt].v,
+        )
+
+        # Only nudge if keypoint is placed
+        if v <= 0:
+            super().keyPressEvent(event)
+            return
+
+        # In keypoint mode, only allow nudging if all keypoints are labeled
+        if self.mode == "keypoint":
+            all_labeled = all(kp.v > 0 for kp in self._ann.kpts)
+            if not all_labeled:
+                super().keyPressEvent(event)
+                return
+
+        # Calculate base nudge amount (0.5% of average image dimension)
+        if self._img_bgr is not None:
+            h, w = self._img_bgr.shape[:2]
+            base_nudge = 0.005 * ((w + h) / 2)
+        else:
+            base_nudge = 2.0  # fallback
+
+        # Apply modifiers
+        modifiers = event.modifiers()
+        if modifiers & Qt.ShiftModifier:
+            nudge = base_nudge * 5.0  # 5x faster
+        elif modifiers & Qt.ControlModifier:
+            nudge = base_nudge * 0.2  # 0.2x slower (pixel-level precision)
+        else:
+            nudge = base_nudge  # normal speed
+
+        # Apply nudge based on arrow key
+        if event.key() == Qt.Key_Left:
+            x -= nudge
+        elif event.key() == Qt.Key_Right:
+            x += nudge
+        elif event.key() == Qt.Key_Up:
+            y -= nudge
+        elif event.key() == Qt.Key_Down:
+            y += nudge
+
+        # Bounds checking
+        if self._img_bgr is not None:
+            h, w = self._img_bgr.shape[:2]
+            x = max(0, min(x, w - 1))
+            y = max(0, min(y, h - 1))
+
+        # Update keypoint
+        self._ann.kpts[self.current_kpt] = Keypoint(x, y, v)
+        self._dirty = True
+
+        # Rebuild overlays
+        self.canvas.rebuild_overlays(
+            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
+        )
+
+        # Save/cache based on mode
+        if self.mode == "frame":
+            self.save_current(refresh_ui=False)
+        else:  # keypoint mode
+            self._cache_current_frame()
+
+        event.accept()
+
     def _save_ui_settings(self):
         """Save UI settings to persistent storage."""
         settings = {
@@ -2052,31 +2250,46 @@ class MainWindow(QMainWindow):
         self.frame_list.clear()
 
         for idx, img_path in enumerate(self.image_paths):
-            labeled = "✓ " if self._is_labeled(img_path) else "  "
-            item_text = f"{labeled}{img_path.name}"
+            # Check if saved to disk
+            is_saved = self._is_labeled(img_path)
+            tick = "✓ " if is_saved else "  "
+
+            # Count labeled keypoints
+            num_labeled = 0
+            total_kpts = len(self.project.keypoint_names)
+            if is_saved:
+                # Load from disk to check keypoint status
+                ann = self._load_ann_from_disk(idx)
+                num_labeled = sum(1 for kp in ann.kpts if kp.v > 0)
+            elif idx in self._frame_cache:
+                # Check cache
+                cached = self._frame_cache[idx]
+                num_labeled = sum(1 for kp in cached.kpts if kp.v > 0)
+
+            # Determine color: Green=all labeled, Orange=some labeled, White=none
+            if num_labeled == total_kpts:
+                color = QColor(0, 200, 0)  # Green
+            elif num_labeled > 0:
+                color = QColor(255, 165, 0)  # Orange
+            else:
+                color = QColor(220, 220, 220)  # White
+
+            item_text = f"{tick}{img_path.name}"
 
             # Labeled frames always go to labeling list
-            if self._is_labeled(img_path) or idx in self.labeling_frames:
+            if is_saved or idx in self.labeling_frames:
                 # Ensure labeled frames are in the labeling set
-                if self._is_labeled(img_path):
+                if is_saved:
                     self.labeling_frames.add(idx)
 
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, idx)  # Store actual index
-                item.setForeground(
-                    QColor(0, 200, 0)
-                    if self._is_labeled(img_path)
-                    else QColor(220, 220, 220)
-                )
+                item.setForeground(color)
                 self.labeling_list.addItem(item)
             else:
                 item = QListWidgetItem(item_text)
                 item.setData(Qt.UserRole, idx)  # Store actual index
-                item.setForeground(
-                    QColor(0, 200, 0)
-                    if self._is_labeled(img_path)
-                    else QColor(220, 220, 220)
-                )
+                item.setForeground(color)
                 self.frame_list.addItem(item)
 
         self.labeling_list.blockSignals(False)
@@ -2213,6 +2426,25 @@ class MainWindow(QMainWindow):
 
         # Clear undo stack when changing frames to prevent cross-frame undo
         self._undo_stack.clear()
+
+        # In keypoint mode, auto-switch to first unlabeled keypoint
+        if self.mode == "keypoint":
+            first_unlabeled = None
+            for i, kp in enumerate(self._ann.kpts):
+                if kp.v == 0:
+                    first_unlabeled = i
+                    break
+
+            if first_unlabeled is not None and first_unlabeled != self.current_kpt:
+                # Notify user that we're switching keypoints
+                old_kpt_name = self.project.keypoint_names[self.current_kpt]
+                new_kpt_name = self.project.keypoint_names[first_unlabeled]
+                self.statusBar().showMessage(
+                    f"Switched from '{old_kpt_name}' to unlabeled '{new_kpt_name}'",
+                    3000,
+                )
+                self.current_kpt = first_unlabeled
+                self.kpt_list.setCurrentRow(first_unlabeled)
 
         self.canvas.set_current_keypoint(self.current_kpt)
         self.canvas.set_click_visibility(self.click_vis)
@@ -2605,6 +2837,8 @@ class MainWindow(QMainWindow):
                         self.current_kpt = i
                         self.kpt_list.setCurrentRow(i)
                         self.canvas.set_current_keypoint(i)
+                        # Force UI update to prevent race condition with next click
+                        QApplication.processEvents()
                         break
 
     def _advance_keypoint_mode(self):
@@ -2636,6 +2870,8 @@ class MainWindow(QMainWindow):
             self.current_kpt = next_kpt
             self.kpt_list.setCurrentRow(next_kpt)
             self.canvas.set_current_keypoint(next_kpt)
+            # Force UI update to prevent race condition
+            QApplication.processEvents()
 
             next_kpt_name = self.project.keypoint_names[next_kpt]
             QMessageBox.information(

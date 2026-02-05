@@ -16,6 +16,7 @@ dependencies:
   - einops
   - umap-learn
   - scikit-learn
+  - pyyaml
   
   # Visualization
   - matplotlib

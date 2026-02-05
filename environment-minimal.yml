@@ -11,7 +11,8 @@ dependencies:
   - scipy
   - pandas
   - numba
-  
+  - pyyaml
+
   # Computer vision
   - opencv
   - scikit-image
