@@ -1,4 +1,4 @@
-name: multi-animal-tracker-gpu
+name: multi-animal-tracker-cuda
 channels:
   - conda-forge
   - nvidia
@@ -35,6 +35,7 @@ dependencies:
   # GUI framework (Qt6 - modern, better HiDPI support)
   - pyside6>=6.6
   - qt6-main
+  - pyqtwebengine
   
   # Development tools
   - pip

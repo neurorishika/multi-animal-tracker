@@ -213,7 +213,12 @@ class IndividualDatasetGenerator:
 
         # Crop parameters - only padding (crop size is determined by OBB)
         self.padding_fraction = params.get("INDIVIDUAL_CROP_PADDING", 0.1)
-        self.mask_fill_value = params.get("INDIVIDUAL_MASK_FILL", 0)  # Black fill
+        # Background color as BGR tuple (default: black)
+        bg_color = params.get("INDIVIDUAL_BACKGROUND_COLOR", (0, 0, 0))
+        if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
+            self.background_color = tuple(bg_color)
+        else:
+            self.background_color = (0, 0, 0)
 
         # Save interval (use detections as-is, just control frequency)
         self.save_every_n_frames = params.get("INDIVIDUAL_SAVE_INTERVAL", 1)
@@ -235,6 +240,39 @@ class IndividualDatasetGenerator:
             f"Individual dataset generator initialized: enabled={self.enabled}, "
             f"output_dir={self.output_dir}"
         )
+
+    def set_background_color(self, color):
+        """
+        Set the background color for masked crops.
+
+        Args:
+            color: Tuple of (B, G, R) values (0-255) or single value for grayscale
+        """
+        if isinstance(color, (list, tuple)) and len(color) == 3:
+            self.background_color = tuple(color)
+        else:
+            raise ValueError(
+                f"Background color must be a tuple of 3 values (BGR), got {color}"
+            )
+
+    @staticmethod
+    def compute_median_color_from_frame(frame):
+        """
+        Compute the median color (BGR) from a frame.
+
+        Useful for setting background color to match the input video's color profile.
+
+        Args:
+            frame: Input frame (BGR, shape: H x W x 3)
+
+        Returns:
+            Tuple of (B, G, R) median values
+        """
+        # Reshape frame to list of pixels
+        pixels = frame.reshape(-1, 3)
+        # Compute median for each channel
+        median_color = tuple(np.median(pixels, axis=0).astype(np.uint8))
+        return median_color
 
     @staticmethod
     def ellipse_to_obb_corners(cx, cy, major_axis, minor_axis, theta):
@@ -479,16 +517,15 @@ class IndividualDatasetGenerator:
         mask = np.zeros((crop_h, crop_w), dtype=np.uint8)
         cv2.fillPoly(mask, [shifted_corners.astype(np.int32)], 255)
 
-        # Apply mask - keep OBB region, fill rest with mask_fill_value
+        # Apply mask - keep OBB region, fill rest with background color
         mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         masked_crop = cv2.bitwise_and(crop, mask_3ch)
 
-        # Fill background if not black
-        if self.mask_fill_value != 0:
-            background = np.full_like(crop, self.mask_fill_value)
-            mask_inv = cv2.bitwise_not(mask_3ch)
-            background = cv2.bitwise_and(background, mask_inv)
-            masked_crop = cv2.add(masked_crop, background)
+        # Fill background with the specified color
+        background = np.full_like(crop, self.background_color, dtype=np.uint8)
+        mask_inv = cv2.bitwise_not(mask_3ch)
+        background = cv2.bitwise_and(background, mask_inv)
+        masked_crop = cv2.add(masked_crop, background)
 
         crop_info = {
             "crop_size": (crop_w, crop_h),

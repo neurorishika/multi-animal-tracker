@@ -1990,10 +1990,14 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self.canvas)
         splitter.addWidget(right_scroll)
 
-        # Give significantly more space to canvas
+        # Give significantly more space to canvas (center is 10x larger than side panels)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 10)
         splitter.setStretchFactor(2, 1)
+        
+        # Set initial sizes: ~200px per side panel, rest to center
+        # This will be adjusted when window is shown based on total width
+        splitter.setSizes([200, 800, 200])
 
         # Set minimum sizes to 0 to allow full collapsing/scaling
         splitter.setCollapsible(0, True)

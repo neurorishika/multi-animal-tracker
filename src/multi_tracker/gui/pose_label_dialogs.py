@@ -78,6 +78,7 @@ except ImportError:
         build_yolo_pose_dataset,
         load_yolo_pose_label,
     )
+
     try:
         from utils.gpu_utils import CUDA_AVAILABLE, MPS_AVAILABLE
     except ImportError:
@@ -542,14 +543,18 @@ class SmartSelectDialog(QDialog):
         self.k_spin = QSpinBox()
         self.k_spin.setRange(1, 5000)
         self.k_spin.setValue(20)
-        self.k_spin.setToolTip("Number of clusters for diversity. Higher = more diversity")
+        self.k_spin.setToolTip(
+            "Number of clusters for diversity. Higher = more diversity"
+        )
         sel_row.addWidget(self.k_spin)
 
         sel_row.addWidget(QLabel("Min/cluster:"))
         self.min_per_spin = QSpinBox()
         self.min_per_spin.setRange(1, 1000)
         self.min_per_spin.setValue(1)
-        self.min_per_spin.setToolTip("Minimum frames per cluster. Min frames = clusters × min/cluster")
+        self.min_per_spin.setToolTip(
+            "Minimum frames per cluster. Min frames = clusters × min/cluster"
+        )
         sel_row.addWidget(self.min_per_spin)
 
         self.strategy_combo = QComboBox()
