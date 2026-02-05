@@ -47,6 +47,49 @@ import cv2
 import numpy as np
 import yaml
 
+# Handle both package imports and direct script execution
+try:
+    from .pose_label_extensions import (
+        FrameMetadata,
+        MetadataManager,
+        CrashSafeWriter,
+        LabelVersioning,
+        cluster_stratified_split,
+        cluster_kfold_split,
+        save_split_files,
+        Keypoint,
+        load_yolo_pose_label,
+        save_yolo_pose_label,
+        migrate_labels_keypoints,
+    )
+
+    from .pose_label_dialogs import (
+        DatasetSplitDialog,
+        FrameMetadataDialog,
+        SmartSelectDialog,
+    )
+except ImportError:
+    # Direct script execution - use absolute imports
+    from pose_label_extensions import (
+        FrameMetadata,
+        MetadataManager,
+        CrashSafeWriter,
+        LabelVersioning,
+        cluster_stratified_split,
+        cluster_kfold_split,
+        save_split_files,
+        Keypoint,
+        load_yolo_pose_label,
+        save_yolo_pose_label,
+        migrate_labels_keypoints,
+    )
+
+    from pose_label_dialogs import (
+        DatasetSplitDialog,
+        FrameMetadataDialog,
+        SmartSelectDialog,
+    )
+
 from PySide6.QtCore import Qt, QRectF, QSize, QObject, Signal, Slot, QThread
 from PySide6.QtGui import (
     QAction,
@@ -212,18 +255,6 @@ def list_images(images_dir: Path) -> List[Path]:
         if p.is_file() and p.suffix.lower() in IMG_EXTS:
             paths.append(p)
     return paths
-
-
-def _clamp01(x: float) -> float:
-    return max(0.0, min(1.0, x))
-
-
-def _xyxy_to_cxcywh(x1, y1, x2, y2):
-    cx = (x1 + x2) / 2.0
-    cy = (y1 + y2) / 2.0
-    w = x2 - x1
-    h = y2 - y1
-    return cx, cy, w, h
 
 
 def enhance_for_pose(
@@ -602,13 +633,22 @@ def save_yolo_pose_label(
     kpts_px: List[Keypoint],
     bbox_xyxy_px: Optional[Tuple[float, float, float, float]],
     pad_frac: float,
+    create_backup: bool = True,
 ) -> None:
+    # Create backup of existing label before overwriting
+    if create_backup and label_path.exists():
+        try:
+            versioning = LabelVersioning(label_path.parent)
+            versioning.backup_label(label_path)
+        except Exception as e:
+            logger.warning(f"Failed to create backup: {e}")
+
     if bbox_xyxy_px is None:
         bbox_xyxy_px = compute_bbox_from_kpts(kpts_px, pad_frac, img_w, img_h)
 
     if bbox_xyxy_px is None:
         label_path.parent.mkdir(parents=True, exist_ok=True)
-        label_path.write_text("", encoding="utf-8")
+        CrashSafeWriter.write_label(label_path, "")
         return
 
     x1, y1, x2, y2 = bbox_xyxy_px
@@ -629,8 +669,10 @@ def save_yolo_pose_label(
                 f"{_clamp01(kp.y / img_h):.6f}",
                 str(int(kp.v)),
             ]
-    label_path.parent.mkdir(parents=True, exist_ok=True)
-    label_path.write_text(" ".join(vals) + "\n", encoding="utf-8")
+
+    # Use crash-safe atomic write
+    content = " ".join(vals) + "\n"
+    CrashSafeWriter.write_label(label_path, content)
 
 
 # -----------------------------
@@ -719,465 +761,7 @@ def migrate_labels_keypoints(
     return files_modified, len(txts)
 
 
-# -----------------------------
-# Embedding Worker Thread
-# -----------------------------
-
-
-class EmbeddingWorker(QObject):
-    progress = Signal(int, int)  # done, total
-    status = Signal(str)
-    finished = Signal(
-        object, object, object
-    )  # embeddings(np.ndarray), eligible_indices(list[int]), meta(dict)
-    failed = Signal(str)
-
-    def __init__(
-        self,
-        image_paths: List[Path],
-        eligible_indices: List[int],
-        cache_dir: Path,
-        model_name: str,
-        device_pref: str,
-        batch_size: int,
-        use_enhance: bool,
-        max_side: int,
-        cache_ok: bool = True,
-    ):
-        super().__init__()
-        self.image_paths = image_paths
-        self.eligible_indices = eligible_indices
-        self.cache_dir = cache_dir
-        self.model_name = model_name
-        self.device_pref = device_pref
-        self.batch_size = batch_size
-        self.use_enhance = use_enhance
-        self.max_side = max_side
-        self.cache_ok = cache_ok
-        self._cancel = False
-
-    def cancel(self):
-        self._cancel = True
-
-    @Slot()
-    def run(self):
-        try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-
-            meta = {
-                "model_name": self.model_name,
-                "device_pref": self.device_pref,
-                "batch_size": int(self.batch_size),
-                "use_enhance": bool(self.use_enhance),
-                "max_side": int(self.max_side),
-                # include eligible image signatures to validate cache
-                "images": [
-                    {
-                        "p": str(self.image_paths[i]),
-                        "mt": int(self.image_paths[i].stat().st_mtime),
-                        "sz": int(self.image_paths[i].stat().st_size),
-                    }
-                    for i in self.eligible_indices
-                ],
-            }
-            key = _stable_hash_dict(meta)
-            npy_path = self.cache_dir / f"{key}.npy"
-            json_path = self.cache_dir / f"{key}.json"
-
-            if self.cache_ok and npy_path.exists() and json_path.exists():
-                self.status.emit("Loading cached embeddings…")
-                emb = np.load(npy_path)
-                self.finished.emit(emb, self.eligible_indices, meta)
-                return
-
-            self.status.emit("Loading model…")
-            device = _choose_device(self.device_pref)
-
-            import torch
-            import timm
-            from timm.data import resolve_data_config
-            from timm.data.transforms_factory import create_transform
-
-            model = timm.create_model(self.model_name, pretrained=True, num_classes=0)
-            model.eval().to(device)
-            data_config = resolve_data_config({}, model=model)
-            transform = create_transform(**data_config)
-
-            # embed
-            feats = []
-            total = len(self.eligible_indices)
-            done = 0
-
-            for start in range(0, total, self.batch_size):
-                if self._cancel:
-                    self.failed.emit("Canceled.")
-                    return
-
-                batch_idx = self.eligible_indices[start : start + self.batch_size]
-                imgs = []
-                for i in batch_idx:
-                    img = _read_image_pil(self.image_paths[i])
-                    img = _maybe_downscale_pil(img, self.max_side)
-                    if self.use_enhance:
-                        img = _enhance_pil_for_pose(img)
-                    imgs.append(transform(img))
-
-                batch = torch.stack(imgs).to(device)
-
-                with torch.no_grad():
-                    out = model(batch)
-                    out = out.detach().float().cpu().numpy()
-
-                # L2 normalize
-                out = out / (np.linalg.norm(out, axis=1, keepdims=True) + 1e-8)
-                feats.append(out)
-
-                done += len(batch_idx)
-                self.progress.emit(done, total)
-                self.status.emit(f"Embedding {done}/{total}")
-
-            emb = np.vstack(feats).astype(np.float32)
-
-            self.status.emit("Saving cache…")
-            np.save(npy_path, emb)
-            json_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-            self.finished.emit(emb, self.eligible_indices, meta)
-
-        except Exception as e:
-            self.failed.emit(str(e))
-
-
-# -----------------------------
-# Smart Select Dialog
-# -----------------------------
-
-
-class SmartSelectDialog(QDialog):
-    def __init__(
-        self, parent, project: Project, image_paths: List[Path], is_labeled_fn
-    ):
-        super().__init__(parent)
-        self.setWindowTitle("Smart Select (Embeddings)")
-        self.setMinimumSize(QSize(720, 420))
-        self.project = project
-        self.image_paths = image_paths
-        self.is_labeled_fn = is_labeled_fn
-
-        self._emb = None
-        self._eligible_indices = None
-        self._cluster = None
-
-        layout = QVBoxLayout(self)
-
-        # --- scope
-        scope_row = QHBoxLayout()
-        scope_row.addWidget(QLabel("Scope:"))
-        self.cb_scope = QComboBox()
-        self.cb_scope.addItems(["Unlabeled only", "All frames", "Labeling set"])
-        scope_row.addWidget(self.cb_scope, 1)
-        self.cb_exclude_in_labeling = QCheckBox("Exclude already in labeling set")
-        self.cb_exclude_in_labeling.setChecked(True)
-        scope_row.addWidget(self.cb_exclude_in_labeling)
-        layout.addLayout(scope_row)
-
-        # --- embeddings
-        emb_form = QFormLayout()
-        self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
-        self.model_combo.addItems(
-            [
-                "timm/vit_base_patch14_dinov2.lvd142m",
-                "timm/vit_small_patch14_dinov2.lvd142m",
-                "timm/resnet50.a1_in1k",
-                "timm/mobilenetv3_small_100.lamb_in1k",
-            ]
-        )
-        emb_form.addRow("Model:", self.model_combo)
-
-        dev_row = QHBoxLayout()
-        self.dev_combo = QComboBox()
-        self.dev_combo.addItems(["auto", "cpu", "cuda", "mps"])
-        dev_row.addWidget(self.dev_combo)
-        dev_row.addWidget(QLabel("Batch"))
-        self.batch_spin = QSpinBox()
-        self.batch_spin.setRange(1, 512)
-        self.batch_spin.setValue(32)
-        dev_row.addWidget(self.batch_spin)
-        dev_row.addWidget(QLabel("Max side"))
-        self.max_side_spin = QSpinBox()
-        self.max_side_spin.setRange(0, 2048)
-        self.max_side_spin.setValue(512)
-        dev_row.addWidget(self.max_side_spin)
-        emb_form.addRow("Device / batch:", dev_row)
-
-        self.cb_use_enhance = QCheckBox("Use Enhance (CLAHE+unsharp)")
-        self.cb_use_enhance.setChecked(bool(self.project.enhance_enabled))
-        emb_form.addRow("", self.cb_use_enhance)
-
-        layout.addLayout(emb_form)
-
-        # --- compute button + progress
-        row = QHBoxLayout()
-        self.btn_compute = QPushButton("Compute / Load cached embeddings")
-        self.btn_cancel = QPushButton("Cancel compute")
-        self.btn_cancel.setEnabled(False)
-        row.addWidget(self.btn_compute, 1)
-        row.addWidget(self.btn_cancel)
-        layout.addLayout(row)
-
-        self.progress = QDoubleSpinBox()
-        self.progress.setRange(0.0, 1.0)
-        self.progress.setSingleStep(0.01)
-        self.progress.setValue(0.0)
-        self.progress.setEnabled(False)
-        layout.addWidget(self.progress)
-
-        self.lbl_status = QLabel("")
-        layout.addWidget(self.lbl_status)
-
-        # --- selection params
-        sel_row = QHBoxLayout()
-        sel_row.addWidget(QLabel("Add frames:"))
-        self.n_spin = QSpinBox()
-        self.n_spin.setRange(1, 50000)
-        self.n_spin.setValue(50)
-        sel_row.addWidget(self.n_spin)
-
-        sel_row.addWidget(QLabel("Clusters:"))
-        self.k_spin = QSpinBox()
-        self.k_spin.setRange(1, 5000)
-        self.k_spin.setValue(20)
-        sel_row.addWidget(self.k_spin)
-
-        sel_row.addWidget(QLabel("Min/cluster:"))
-        self.min_per_spin = QSpinBox()
-        self.min_per_spin.setRange(1, 1000)
-        self.min_per_spin.setValue(1)
-        sel_row.addWidget(self.min_per_spin)
-
-        self.strategy_combo = QComboBox()
-        self.strategy_combo.addItems(["centroid_then_diverse", "centroid"])
-        sel_row.addWidget(QLabel("Strategy:"))
-        sel_row.addWidget(self.strategy_combo, 1)
-
-        layout.addLayout(sel_row)
-
-        # --- clustering method row
-        cluster_row = QHBoxLayout()
-        cluster_row.addWidget(QLabel("Clustering method:"))
-        self.cluster_method_combo = QComboBox()
-        self.cluster_method_combo.addItems(["hierarchical", "linkage"])
-        self.cluster_method_combo.setCurrentIndex(0)  # default to hierarchical
-        cluster_row.addWidget(self.cluster_method_combo, 1)
-        cluster_row.addStretch(2)
-        layout.addLayout(cluster_row)
-
-        # --- preview text
-        self.preview = QPlainTextEdit()
-        self.preview.setReadOnly(True)
-        layout.addWidget(self.preview, 1)
-
-        # --- bottom buttons
-        bottom = QHBoxLayout()
-        self.btn_preview = QPushButton("Preview selection")
-        self.btn_add = QPushButton("Add to labeling set")
-        self.btn_save_csv = QPushButton("Save clusters CSV…")
-        self.btn_close = QPushButton("Close")
-        bottom.addWidget(self.btn_preview)
-        bottom.addWidget(self.btn_add)
-        bottom.addWidget(self.btn_save_csv)
-        bottom.addStretch(1)
-        bottom.addWidget(self.btn_close)
-        layout.addLayout(bottom)
-
-        self.btn_preview.setEnabled(False)
-        self.btn_add.setEnabled(False)
-        self.btn_save_csv.setEnabled(False)
-
-        # wiring
-        self.btn_close.clicked.connect(self.reject)
-        self.btn_compute.clicked.connect(self._compute)
-        self.btn_cancel.clicked.connect(self._cancel_compute)
-        self.btn_preview.clicked.connect(self._preview)
-        self.btn_save_csv.clicked.connect(self._save_csv)
-
-        self.selected_indices: List[int] = []
-
-        self._thread = None
-        self._worker = None
-
-    def _build_eligible_indices(self) -> List[int]:
-        scope = self.cb_scope.currentText()
-        if scope == "All frames":
-            idxs = list(range(len(self.image_paths)))
-        elif scope == "Labeling set":
-            # parent (MainWindow) should set this property before opening, but fallback:
-            idxs = list(getattr(self.parent(), "labeling_frames", set()))
-        else:
-            # Unlabeled only
-            idxs = [
-                i for i, p in enumerate(self.image_paths) if not self.is_labeled_fn(p)
-            ]
-        # optionally exclude already in labeling set
-        if self.cb_exclude_in_labeling.isChecked():
-            in_labeling = set(getattr(self.parent(), "labeling_frames", set()))
-            idxs = [i for i in idxs if i not in in_labeling]
-        return sorted(idxs)
-
-    def _compute(self):
-        eligible = self._build_eligible_indices()
-        if not eligible:
-            QMessageBox.information(
-                self, "No frames", "No eligible frames in this scope."
-            )
-            return
-
-        cache_dir = self.project.out_root / ".posekit" / "embeddings"
-
-        self.btn_compute.setEnabled(False)
-        self.btn_cancel.setEnabled(True)
-        self.btn_preview.setEnabled(False)
-        self.btn_add.setEnabled(False)
-        self.btn_save_csv.setEnabled(False)
-        self.preview.setPlainText("")
-        self.lbl_status.setText("Starting…")
-        self.progress.setValue(0.0)
-
-        self._thread = QThread(self)
-        self._worker = EmbeddingWorker(
-            image_paths=self.image_paths,
-            eligible_indices=eligible,
-            cache_dir=cache_dir,
-            model_name=self.model_combo.currentText().strip(),
-            device_pref=self.dev_combo.currentText(),
-            batch_size=int(self.batch_spin.value()),
-            use_enhance=bool(self.cb_use_enhance.isChecked()),
-            max_side=int(self.max_side_spin.value()),
-            cache_ok=True,
-        )
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.progress.connect(self._on_progress)
-        self._worker.status.connect(self._on_status)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.finished.connect(self._on_finished)
-        self._thread.start()
-
-    def _cancel_compute(self):
-        if self._worker:
-            self._worker.cancel()
-
-    def _on_progress(self, done: int, total: int):
-        self.progress.setValue(done / max(1, total))
-
-    def _on_status(self, s: str):
-        self.lbl_status.setText(s)
-
-    def _on_failed(self, msg: str):
-        self._cleanup_thread()
-        QMessageBox.critical(self, "Embedding failed", msg)
-        self.btn_compute.setEnabled(True)
-        self.btn_cancel.setEnabled(False)
-
-    def _on_finished(self, emb, eligible_indices, meta):
-        self._cleanup_thread()
-        self._emb = emb
-        self._eligible_indices = eligible_indices
-        self.lbl_status.setText(f"Embeddings ready: {emb.shape[0]} × {emb.shape[1]}")
-        self.btn_compute.setEnabled(True)
-        self.btn_cancel.setEnabled(False)
-        self.btn_preview.setEnabled(True)
-        self.btn_add.setEnabled(True)
-        self.btn_save_csv.setEnabled(True)
-
-    def _cleanup_thread(self):
-        if self._thread:
-            self._thread.quit()
-            self._thread.wait(2000)
-        self._thread = None
-        self._worker = None
-
-    def _preview(self):
-        if self._emb is None or self._eligible_indices is None:
-            return
-        n = int(self.n_spin.value())
-        k = int(self.k_spin.value())
-        min_per = int(self.min_per_spin.value())
-        strategy = self.strategy_combo.currentText().strip()
-        cluster_method = self.cluster_method_combo.currentText().strip()
-
-        # Check if we should warn about large dataset with hierarchical clustering
-        n_frames = len(self._eligible_indices)
-        if cluster_method == "hierarchical" and n_frames > 2500:
-            reply = QMessageBox.warning(
-                self,
-                "Large Dataset Warning",
-                f"You have {n_frames} frames selected.\n\n"
-                "Hierarchical clustering may be slow or memory-intensive for large datasets.\n\n"
-                "Would you like to switch to 'linkage' method instead?\n"
-                "(You can also change this manually in the dropdown)",
-                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-                QMessageBox.Yes,
-            )
-            if reply == QMessageBox.Yes:
-                self.cluster_method_combo.setCurrentText("linkage")
-                cluster_method = "linkage"
-            elif reply == QMessageBox.Cancel:
-                return
-
-        cluster = cluster_embeddings_cosine(
-            self._emb, k=k, method=cluster_method, seed=0
-        )
-        self._cluster = cluster
-
-        picked = pick_frames_stratified(
-            emb=self._emb,
-            cluster_id=cluster,
-            want_n=n,
-            eligible_indices=self._eligible_indices,
-            min_per_cluster=min_per,
-            seed=0,
-            strategy=strategy,
-        )
-        self.selected_indices = picked
-
-        lines = []
-        for idx in picked[:300]:  # avoid huge previews
-            # find local pos to show cluster
-            local = self._eligible_indices.index(idx)
-            cid = int(cluster[local])
-            lines.append(f"[c{cid:03d}] {self.image_paths[idx].name}")
-        if len(picked) > 300:
-            lines.append(f"... ({len(picked)-300} more)")
-        self.preview.setPlainText("\n".join(lines))
-
-    def _save_csv(self):
-        if self._cluster is None or self._eligible_indices is None:
-            QMessageBox.information(self, "No clusters", "Run Preview selection first.")
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save cluster assignments",
-            str(
-                (self.project.out_root / ".posekit" / "clusters").resolve()
-                / "clusters.csv"
-            ),
-            "CSV (*.csv)",
-        )
-        if not path:
-            return
-        out = Path(path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-
-        # write: image_path, cluster_id
-        with out.open("w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["image", "cluster_id"])
-            for local_pos, idx in enumerate(self._eligible_indices):
-                w.writerow([str(self.image_paths[idx]), int(self._cluster[local_pos])])
-
-        QMessageBox.information(self, "Saved", f"Wrote cluster CSV:\n{out}")
+# EmbeddingWorker and SmartSelectDialog moved to pose_label_dialogs
 
 
 # -----------------------------
