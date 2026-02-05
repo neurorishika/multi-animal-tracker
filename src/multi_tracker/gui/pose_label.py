@@ -1871,12 +1871,43 @@ class MainWindow(QMainWindow):
         self.canvas_hint.setWordWrap(True)
         self.canvas_hint.setAlignment(Qt.AlignCenter)
         self.canvas_hint.setStyleSheet("QLabel { color: #666; padding: 6px; }")
+
+        self._setting_meta = False
+        self.meta_tags_label = QLabel("Frame tags:")
+        self.meta_tags = {}
+        tags_row = QHBoxLayout()
+        for tag in [
+            "occluded",
+            "weird_posture",
+            "motion_blur",
+            "poor_lighting",
+            "partial_view",
+            "unclear",
+        ]:
+            cb = QCheckBox(tag)
+            cb.toggled.connect(self._on_meta_changed)
+            self.meta_tags[tag] = cb
+            tags_row.addWidget(cb)
+        tags_row.addStretch(1)
+
+        self.meta_notes = QLineEdit()
+        self.meta_notes.setPlaceholderText("Notes for this frame…")
+        self.meta_notes.textEdited.connect(self._on_meta_changed)
+
+        meta_box = QWidget()
+        meta_layout = QVBoxLayout(meta_box)
+        meta_layout.setContentsMargins(0, 0, 0, 0)
+        meta_layout.setSpacing(4)
+        meta_layout.addWidget(self.meta_tags_label)
+        meta_layout.addLayout(tags_row)
+        meta_layout.addWidget(self.meta_notes)
         canvas_container = QWidget()
         canvas_layout = QVBoxLayout(canvas_container)
         canvas_layout.setContentsMargins(0, 0, 0, 0)
         canvas_layout.setSpacing(4)
         canvas_layout.addWidget(self.canvas, 1)
         canvas_layout.addWidget(self.canvas_hint, 0)
+        canvas_layout.addWidget(meta_box, 0)
 
         # Tools
         right = QWidget()
@@ -1984,8 +2015,6 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.btn_proj)
         right_layout.addWidget(self.btn_export)
 
-        self.btn_meta = QPushButton("Frame metadata/tags…")
-        right_layout.addWidget(self.btn_meta)
 
         right_layout.addSpacing(8)
         right_layout.addWidget(QLabel("Model"))
@@ -2074,7 +2103,6 @@ class MainWindow(QMainWindow):
         self.btn_skel.clicked.connect(self.open_skeleton_editor)
         self.btn_proj.clicked.connect(self.open_project_settings)
         self.btn_export.clicked.connect(self.export_dataset_dialog)
-        self.btn_meta.clicked.connect(self.open_frame_metadata)
         self.btn_train.clicked.connect(self.open_training_runner)
         self.btn_eval.clicked.connect(self.open_evaluation_dashboard)
         self.btn_active.clicked.connect(self.open_active_learning)
@@ -2342,10 +2370,6 @@ class MainWindow(QMainWindow):
         m_tools.addSeparator()
         m_tools.addAction(self.act_enhance)
         m_tools.addAction(self.act_enhance_settings)
-        act_meta = QAction("Frame Metadata/Tags…", self)
-        act_meta.setShortcut(QKeySequence("Ctrl+M"))
-        act_meta.triggered.connect(self.open_frame_metadata)
-        m_tools.addAction(act_meta)
 
         m_model.addAction(act_train)
         m_model.addAction(act_eval)
@@ -2656,6 +2680,7 @@ class MainWindow(QMainWindow):
             self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
         )
         self._update_info()
+        self._load_metadata_ui()
 
     # ----- events -----
     def _on_labeling_frame_selected(self, row: int):
@@ -3785,12 +3810,25 @@ class MainWindow(QMainWindow):
     def open_active_learning_sampler(self):
         self.open_active_learning()
 
-    def open_frame_metadata(self):
+    def _load_metadata_ui(self):
         if not self.image_paths:
             return
+        self._setting_meta = True
         img_path = str(self.image_paths[self.current_index])
-        dlg = FrameMetadataDialog(self, img_path, self.metadata_manager)
-        dlg.exec()
+        meta = self.metadata_manager.get_metadata(img_path)
+        for tag, cb in self.meta_tags.items():
+            cb.setChecked(tag in meta.tags)
+        self.meta_notes.setText(meta.notes or "")
+        self._setting_meta = False
+
+    def _on_meta_changed(self, *_args):
+        if self._setting_meta or not self.image_paths:
+            return
+        img_path = str(self.image_paths[self.current_index])
+        meta = self.metadata_manager.get_metadata(img_path)
+        meta.tags = {t for t, cb in self.meta_tags.items() if cb.isChecked()}
+        meta.notes = self.meta_notes.text().strip()
+        self.metadata_manager.save()
 
     def _load_cluster_ids_from_csv(self, csv_path: Path) -> Optional[List[int]]:
         if not csv_path.exists():
