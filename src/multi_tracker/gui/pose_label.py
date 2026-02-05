@@ -61,6 +61,7 @@ try:
         load_yolo_pose_label,
         save_yolo_pose_label,
         migrate_labels_keypoints,
+        build_yolo_pose_dataset,
     )
 
     from .pose_label_dialogs import (
@@ -85,6 +86,7 @@ except ImportError:
         load_yolo_pose_label,
         save_yolo_pose_label,
         migrate_labels_keypoints,
+        build_yolo_pose_dataset,
     )
 
     from pose_label_dialogs import (
@@ -1853,6 +1855,19 @@ class MainWindow(QMainWindow):
         self.canvas.set_label_font_size(self.project.label_font_size)
         self.canvas.set_kpt_opacity(self.project.kpt_opacity)
         self.canvas.set_edge_opacity(self.project.edge_opacity)
+        self.canvas_hint = QLabel(
+            "Left click: place/move  •  Right click: pan  •  Wheel: zoom  •  "
+            "A/D: prev/next  •  Q/E: prev/next keypoint  •  Space: advance  •  Ctrl+S: save"
+        )
+        self.canvas_hint.setWordWrap(True)
+        self.canvas_hint.setAlignment(Qt.AlignCenter)
+        self.canvas_hint.setStyleSheet("QLabel { color: #666; padding: 6px; }")
+        canvas_container = QWidget()
+        canvas_layout = QVBoxLayout(canvas_container)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.setSpacing(4)
+        canvas_layout.addWidget(self.canvas, 1)
+        canvas_layout.addWidget(self.canvas_hint, 0)
 
         # Tools
         right = QWidget()
@@ -1956,9 +1971,11 @@ class MainWindow(QMainWindow):
         self.btn_skel = QPushButton("Skeleton Editor (Ctrl+G)")
         self.btn_proj = QPushButton("Project Settings (Ctrl+P)")
         self.btn_export = QPushButton("Export dataset.yaml + splits…")
+        self.btn_cluster_split = QPushButton("Cluster Split…")
         right_layout.addWidget(self.btn_skel)
         right_layout.addWidget(self.btn_proj)
         right_layout.addWidget(self.btn_export)
+        right_layout.addWidget(self.btn_cluster_split)
 
         right_layout.addSpacing(8)
         right_layout.addWidget(QLabel("Model"))
@@ -1987,7 +2004,7 @@ class MainWindow(QMainWindow):
         right_scroll.setFrameShape(QFrame.NoFrame)
 
         splitter.addWidget(left_scroll)
-        splitter.addWidget(self.canvas)
+        splitter.addWidget(canvas_container)
         splitter.addWidget(right_scroll)
 
         # Give significantly more space to canvas (center is 10x larger than side panels)
@@ -2021,6 +2038,7 @@ class MainWindow(QMainWindow):
         self.btn_skel.clicked.connect(self.open_skeleton_editor)
         self.btn_proj.clicked.connect(self.open_project_settings)
         self.btn_export.clicked.connect(self.export_dataset_dialog)
+        self.btn_cluster_split.clicked.connect(self.open_cluster_split_dialog)
         self.btn_train.clicked.connect(self.open_training_runner)
         self.btn_eval.clicked.connect(self.open_evaluation_dashboard)
         self.btn_active.clicked.connect(self.open_active_learning)
@@ -2281,6 +2299,10 @@ class MainWindow(QMainWindow):
         m_tools.addSeparator()
         m_tools.addAction(self.act_enhance)
         m_tools.addAction(self.act_enhance_settings)
+        m_tools.addSeparator()
+        act_cluster_split = QAction("Dataset Split (Cluster-Stratified)…", self)
+        act_cluster_split.triggered.connect(self.open_cluster_split_dialog)
+        m_tools.addAction(act_cluster_split)
 
         m_model.addAction(act_train)
         m_model.addAction(act_eval)
@@ -3642,6 +3664,68 @@ class MainWindow(QMainWindow):
     # Backwards/alternate name used in older menu wiring.
     def open_active_learning_sampler(self):
         self.open_active_learning()
+
+    def _load_cluster_ids_from_csv(self, csv_path: Path) -> Optional[List[int]]:
+        if not csv_path.exists():
+            return None
+        mapping = {}
+        try:
+            with csv_path.open("r", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    img = row.get("image") or row.get("image_path") or row.get("path")
+                    cid = row.get("cluster_id") or row.get("cluster")
+                    if img is None or cid is None:
+                        continue
+                    try:
+                        mapping[str(Path(img).resolve())] = int(float(cid))
+                    except Exception:
+                        continue
+        except Exception:
+            return None
+
+        if not mapping:
+            return None
+
+        cluster_ids: List[int] = []
+        for p in self.image_paths:
+            key = str(p.resolve())
+            if key in mapping:
+                cluster_ids.append(mapping[key])
+            else:
+                cluster_ids.append(-1)
+        return cluster_ids
+
+    def open_cluster_split_dialog(self):
+        default_csv = (
+            self.project.out_root / ".posekit" / "clusters" / "clusters.csv"
+        )
+        csv_path = default_csv if default_csv.exists() else None
+        if csv_path is None:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select cluster CSV",
+                str(self.project.out_root),
+                "CSV (*.csv)",
+            )
+            if not path:
+                return
+            csv_path = Path(path)
+
+        cluster_ids = self._load_cluster_ids_from_csv(csv_path)
+        if not cluster_ids:
+            QMessageBox.warning(
+                self,
+                "No clusters",
+                "Could not load cluster IDs from CSV. "
+                "Use Smart Select → Save clusters CSV, then try again.",
+            )
+            return
+
+        dlg = DatasetSplitDialog(
+            self, self.project, self.image_paths, cluster_ids=cluster_ids
+        )
+        dlg.exec()
 
 
 # -----------------------------
