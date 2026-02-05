@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import List, Optional, Tuple, Dict
 import hashlib
 import csv
+import gc
 
 logger = logging.getLogger("pose_label")
 
@@ -98,7 +99,7 @@ except ImportError:
         ActiveLearningDialog,
     )
 
-from PySide6.QtCore import Qt, QRectF, QSize, QObject, Signal, Slot, QThread
+from PySide6.QtCore import Qt, QRectF, QSize, QObject, Signal, Slot, QThread, QTimer
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -1805,6 +1806,10 @@ class MainWindow(QMainWindow):
         self.labeling_list.setSelectionMode(QListWidget.ExtendedSelection)
         left_layout.addWidget(self.labeling_list, 1)
 
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Find frame...")
+        left_layout.addWidget(self.search_edit)
+
         left_layout.addWidget(QLabel("All Frames"))
         self.frame_list = QListWidget()
         self.frame_list.setDragDropMode(QListWidget.DragDrop)
@@ -1975,11 +1980,9 @@ class MainWindow(QMainWindow):
         self.btn_skel = QPushButton("Skeleton Editor (Ctrl+G)")
         self.btn_proj = QPushButton("Project Settings (Ctrl+P)")
         self.btn_export = QPushButton("Export dataset.yaml + splits…")
-        self.btn_cluster_split = QPushButton("Cluster Split…")
         right_layout.addWidget(self.btn_skel)
         right_layout.addWidget(self.btn_proj)
         right_layout.addWidget(self.btn_export)
-        right_layout.addWidget(self.btn_cluster_split)
 
         self.btn_meta = QPushButton("Frame metadata/tags…")
         right_layout.addWidget(self.btn_meta)
@@ -2052,6 +2055,12 @@ class MainWindow(QMainWindow):
 
         self._build_actions()
 
+        # Periodic garbage collection to keep memory pressure down after heavy ops.
+        self._gc_timer = QTimer(self)
+        self._gc_timer.setInterval(60000)
+        self._gc_timer.timeout.connect(lambda: gc.collect())
+        self._gc_timer.start()
+
         # Signals
         self.labeling_list.currentRowChanged.connect(self._on_labeling_frame_selected)
         self.frame_list.currentRowChanged.connect(self._on_all_frame_selected)
@@ -2065,7 +2074,6 @@ class MainWindow(QMainWindow):
         self.btn_skel.clicked.connect(self.open_skeleton_editor)
         self.btn_proj.clicked.connect(self.open_project_settings)
         self.btn_export.clicked.connect(self.export_dataset_dialog)
-        self.btn_cluster_split.clicked.connect(self.open_cluster_split_dialog)
         self.btn_meta.clicked.connect(self.open_frame_metadata)
         self.btn_train.clicked.connect(self.open_training_runner)
         self.btn_eval.clicked.connect(self.open_evaluation_dashboard)
@@ -2073,6 +2081,7 @@ class MainWindow(QMainWindow):
         self.btn_unlabeled_to_labeling.clicked.connect(self._move_unlabeled_to_labeling)
         self.btn_unlabeled_to_all.clicked.connect(self._move_unlabeled_to_all)
         self.btn_random_to_labeling.clicked.connect(self._add_random_to_labeling)
+        self.search_edit.textChanged.connect(self._populate_frames)
         self.rb_frame.toggled.connect(self._update_mode)
         self.vis_group.buttonClicked.connect(self._update_vis_mode)
         self.class_combo.currentIndexChanged.connect(self._mark_dirty)
@@ -2191,6 +2200,7 @@ class MainWindow(QMainWindow):
             "sharpen_amt": self.project.sharpen_amt,
             "blur_sigma": self.project.blur_sigma,
             "controls_open": bool(self.controls_group.isChecked()),
+            "frame_search": self.search_edit.text().strip(),
         }
         save_ui_settings(settings)
 
@@ -2213,6 +2223,8 @@ class MainWindow(QMainWindow):
                 self.sp_edge_opacity.setValue(self.project.edge_opacity)
             if "controls_open" in settings:
                 self.controls_group.setChecked(bool(settings["controls_open"]))
+            if "frame_search" in settings:
+                self.search_edit.setText(str(settings["frame_search"]))
 
     # ----- menus / shortcuts -----
     def _build_actions(self):
@@ -2330,10 +2342,6 @@ class MainWindow(QMainWindow):
         m_tools.addSeparator()
         m_tools.addAction(self.act_enhance)
         m_tools.addAction(self.act_enhance_settings)
-        m_tools.addSeparator()
-        act_cluster_split = QAction("Dataset Split (Cluster-Stratified)…", self)
-        act_cluster_split.triggered.connect(self.open_cluster_split_dialog)
-        m_tools.addAction(act_cluster_split)
         act_meta = QAction("Frame Metadata/Tags…", self)
         act_meta.setShortcut(QKeySequence("Ctrl+M"))
         act_meta.triggered.connect(self.open_frame_metadata)
@@ -2382,7 +2390,10 @@ class MainWindow(QMainWindow):
         self.labeling_list.clear()
         self.frame_list.clear()
 
+        query = self.search_edit.text().strip().lower()
         for idx, img_path in enumerate(self.image_paths):
+            if query and query not in img_path.name.lower():
+                continue
             # Check if saved to disk
             is_saved = self._is_labeled(img_path)
             in_cache = idx in self._frame_cache
@@ -3584,7 +3595,12 @@ class MainWindow(QMainWindow):
         seed.setRange(0, 999999)
         seed.setValue(0)
 
-        btn_pick = QPushButton("Choose…")
+        split_method = QComboBox()
+        split_method.addItems(["Random", "Cluster-stratified"])
+
+        cluster_csv = QLineEdit("")
+        cluster_csv.setPlaceholderText("Optional: clusters.csv (auto-detected)")
+        btn_cluster = QPushButton("Choose…")
 
         def pick_dir():
             d = QFileDialog.getExistingDirectory(
@@ -3593,15 +3609,30 @@ class MainWindow(QMainWindow):
             if d:
                 out_root.setText(d)
 
+        def pick_cluster():
+            path, _ = QFileDialog.getOpenFileName(
+                self, "Select cluster CSV", str(self.project.out_root), "CSV (*.csv)"
+            )
+            if path:
+                cluster_csv.setText(path)
+
+        btn_pick = QPushButton("Choose…")
         btn_pick.clicked.connect(pick_dir)
+        btn_cluster.clicked.connect(pick_cluster)
 
         row = QHBoxLayout()
         row.addWidget(out_root, 1)
         row.addWidget(btn_pick)
 
+        cl_row = QHBoxLayout()
+        cl_row.addWidget(cluster_csv, 1)
+        cl_row.addWidget(btn_cluster)
+
         layout.addRow("Output root:", row)
+        layout.addRow("Split method:", split_method)
         layout.addRow("Train fraction:", split)
         layout.addRow("Random seed:", seed)
+        layout.addRow("Cluster CSV:", cl_row)
 
         btns = QHBoxLayout()
         ok = QPushButton("Export")
@@ -3620,6 +3651,58 @@ class MainWindow(QMainWindow):
         root = Path(out_root.text()).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
 
+        train_items = None
+        val_items = None
+        if split_method.currentText() == "Cluster-stratified":
+            csv_path = Path(cluster_csv.text().strip()) if cluster_csv.text().strip() else None
+            if csv_path is None or not csv_path.exists():
+                default_csv = self.project.out_root / ".posekit" / "clusters" / "clusters.csv"
+                csv_path = default_csv if default_csv.exists() else None
+            if not csv_path:
+                QMessageBox.warning(
+                    self,
+                    "Missing clusters",
+                    "No cluster CSV found. Run Smart Select → Clustering first.",
+                )
+                return
+
+            cluster_ids = self._load_cluster_ids_from_csv(csv_path)
+            if not cluster_ids:
+                QMessageBox.warning(
+                    self,
+                    "Missing clusters",
+                    "Could not load cluster IDs from CSV.",
+                )
+                return
+
+            labeled_indices = [
+                i for i, p in enumerate(self.image_paths) if self._is_labeled(p)
+            ]
+            items = []
+            item_cluster_ids = []
+            for i in labeled_indices:
+                img = self.image_paths[i]
+                lbl = self._label_path_for(img)
+                if lbl.exists():
+                    items.append((img, lbl))
+                    item_cluster_ids.append(cluster_ids[i])
+
+            if len(items) < 2:
+                QMessageBox.warning(self, "Not enough labels", "Need at least 2 labeled frames.")
+                return
+
+            train_idx, val_idx, _ = cluster_stratified_split(
+                [p for p, _ in items],
+                item_cluster_ids,
+                train_frac=float(split.value()),
+                val_frac=1.0 - float(split.value()),
+                test_frac=0.0,
+                min_per_cluster=1,
+                seed=int(seed.value()),
+            )
+            train_items = [items[i] for i in train_idx]
+            val_items = [items[i] for i in val_idx]
+
         try:
             info = build_yolo_pose_dataset(
                 self.image_paths,
@@ -3629,6 +3712,8 @@ class MainWindow(QMainWindow):
                 int(seed.value()),
                 self.project.class_names,
                 self.project.keypoint_names,
+                train_items=train_items,
+                val_items=val_items,
             )
         except Exception as e:
             QMessageBox.critical(self, "Export failed", str(e))
@@ -3737,37 +3822,6 @@ class MainWindow(QMainWindow):
             else:
                 cluster_ids.append(-1)
         return cluster_ids
-
-    def open_cluster_split_dialog(self):
-        default_csv = (
-            self.project.out_root / ".posekit" / "clusters" / "clusters.csv"
-        )
-        csv_path = default_csv if default_csv.exists() else None
-        if csv_path is None:
-            path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select cluster CSV",
-                str(self.project.out_root),
-                "CSV (*.csv)",
-            )
-            if not path:
-                return
-            csv_path = Path(path)
-
-        cluster_ids = self._load_cluster_ids_from_csv(csv_path)
-        if not cluster_ids:
-            QMessageBox.warning(
-                self,
-                "No clusters",
-                "Could not load cluster IDs from CSV. "
-                "Use Smart Select → Save clusters CSV, then try again.",
-            )
-            return
-
-        dlg = DatasetSplitDialog(
-            self, self.project, self.image_paths, cluster_ids=cluster_ids
-        )
-        dlg.exec()
 
 
 # -----------------------------

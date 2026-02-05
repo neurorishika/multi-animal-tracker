@@ -12,6 +12,7 @@ from typing import List, Optional, Dict, Tuple
 import logging
 import numpy as np
 import yaml
+import gc
 
 from PySide6.QtCore import Qt, QSize, QThread, QObject, Signal, Slot
 from PySide6.QtGui import QPixmap, QPainter, QColor
@@ -243,34 +244,9 @@ class DatasetSplitDialog(QDialog):
         scroll.setWidget(content)
         content_layout = QVBoxLayout(content)
 
-        scroll = QScrollArea(self)
-        scroll.setWidgetResizable(True)
-        layout.addWidget(scroll, 1)
-
-        content = QWidget()
-        scroll.setWidget(content)
-        content_layout = QVBoxLayout(content)
-
-        # Info
-        info_label = QLabel(
-            f"Total frames: {len(image_paths)}\n"
-            + (
-                f"Clusters detected: {len(set(cluster_ids))}"
-                if cluster_ids
-                else "No cluster info available"
-            )
-        )
-        layout.addWidget(info_label)
-
-        # Split mode
-        mode_group = QGroupBox("Split Mode")
-        mode_layout = QVBoxLayout(mode_group)
-
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Train/Val/Test", "K-Fold Cross-Validation"])
-        mode_layout.addWidget(self.mode_combo)
-
-        layout.addWidget(mode_group)
+        content_layout.addWidget(self.mode_combo)
 
         # Train/Val/Test parameters
         self.tvt_widget = QGroupBox("Train/Val/Test Parameters")
@@ -294,7 +270,7 @@ class DatasetSplitDialog(QDialog):
         self.test_spin.setValue(0.15)
         tvt_layout.addRow("Test fraction:", self.test_spin)
 
-        layout.addWidget(self.tvt_widget)
+        content_layout.addWidget(self.tvt_widget)
 
         # K-Fold parameters
         self.kfold_widget = QGroupBox("K-Fold Parameters")
@@ -305,7 +281,7 @@ class DatasetSplitDialog(QDialog):
         self.kfold_spin.setValue(5)
         kfold_layout.addRow("Number of folds:", self.kfold_spin)
 
-        layout.addWidget(self.kfold_widget)
+        content_layout.addWidget(self.kfold_widget)
         self.kfold_widget.setVisible(False)
 
         # Common parameters
@@ -325,7 +301,7 @@ class DatasetSplitDialog(QDialog):
         self.split_name_edit = QLineEdit("split")
         common_layout.addRow("Split name:", self.split_name_edit)
 
-        layout.addWidget(common_group)
+        content_layout.addWidget(common_group)
 
         # Buttons
         btn_layout = QHBoxLayout()
@@ -334,7 +310,7 @@ class DatasetSplitDialog(QDialog):
         btn_layout.addWidget(self.btn_generate)
         btn_layout.addStretch()
         btn_layout.addWidget(self.btn_close)
-        layout.addLayout(btn_layout)
+        content_layout.addLayout(btn_layout)
 
         # Wiring
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
@@ -376,6 +352,14 @@ class DatasetSplitDialog(QDialog):
         )
 
     def closeEvent(self, event):
+        # Drop large arrays to reduce memory footprint between sessions.
+        self._emb = None
+        self._eligible_indices = None
+        self._cluster = None
+        try:
+            gc.collect()
+        except Exception:
+            pass
         self._save_settings()
         super().closeEvent(event)
 
@@ -787,15 +771,12 @@ class SmartSelectDialog(QDialog):
         self.btn_add = QPushButton("Add to Labeling Set && Close")
         self.btn_save_csv = QPushButton("Save clusters CSV…")
         self.btn_explorer = QPushButton("Embedding Explorer…")
-        self.btn_open_split = QPushButton("Open Cluster Split…")
         self.btn_explorer.setEnabled(False)
-        self.btn_open_split.setEnabled(False)
         self.btn_close = QPushButton("Close Without Saving")
         bottom.addWidget(self.btn_preview)
         bottom.addWidget(self.btn_add)
         bottom.addWidget(self.btn_save_csv)
         bottom.addWidget(self.btn_explorer)
-        bottom.addWidget(self.btn_open_split)
         bottom.addStretch(1)
         bottom.addWidget(self.btn_close)
         layout.addLayout(bottom)
@@ -813,7 +794,6 @@ class SmartSelectDialog(QDialog):
         self.btn_preview.clicked.connect(self._preview)
         self.btn_save_csv.clicked.connect(self._save_csv)
         self.btn_explorer.clicked.connect(self._open_explorer)
-        self.btn_open_split.clicked.connect(self._open_cluster_split)
 
         self.selected_indices: List[int] = []
 
@@ -996,6 +976,11 @@ class SmartSelectDialog(QDialog):
             self._thread.wait(2000)
         self._thread = None
         self._worker = None
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
 
     def _preview(self):
         if self._emb is None or self._eligible_indices is None:
@@ -1032,10 +1017,7 @@ class SmartSelectDialog(QDialog):
         self._cluster = cluster
         self._autosave_clusters()
         self.btn_explorer.setEnabled(True)
-        self.btn_open_split.setEnabled(True)
-        self.lbl_status.setText(
-            "Clusters saved. Use 'Open Cluster Split…' to create splits."
-        )
+        self.lbl_status.setText("Clusters saved. Use Export → Split method to apply.")
 
         # Use existing pick_frames_stratified with strategy
         picked = pick_frames_stratified(
@@ -1181,16 +1163,6 @@ class SmartSelectDialog(QDialog):
 
         QMessageBox.information(self, "Saved", f"Wrote cluster CSV:\n{out}")
 
-    def _open_cluster_split(self):
-        win = self.window()
-        if hasattr(win, "open_cluster_split_dialog"):
-            win.open_cluster_split_dialog()
-        else:
-            QMessageBox.information(
-                self,
-                "Not available",
-                "Cluster split is available from the main window Tools menu.",
-            )
 
     def _autosave_clusters(self):
         if self._cluster is None or self._eligible_indices is None:
@@ -1282,18 +1254,6 @@ class EmbeddingExplorerDialog(QDialog):
         )
         layout.addWidget(self.umap_progress)
 
-        # Placeholder for Bokeh visualization
-        self.viz_label = QLabel(
-            "Bokeh visualization will appear in your browser after UMAP computation."
-        )
-        self.viz_label.setWordWrap(True)
-        self.viz_label.setAlignment(Qt.AlignCenter)
-        self.viz_label.setMinimumHeight(400)
-        self.viz_label.setStyleSheet(
-            "QLabel { background-color: #f0f0f0; border: 1px solid #ccc; padding: 20px; }"
-        )
-        layout.addWidget(self.viz_label, 1)
-
         # Selection info
         info_layout = QHBoxLayout()
 
@@ -1372,6 +1332,11 @@ class EmbeddingExplorerDialog(QDialog):
             self._umap_thread.wait(2000)
         self._umap_thread = None
         self._umap_worker = None
+        try:
+            import gc
+            gc.collect()
+        except Exception:
+            pass
 
     def _generate_bokeh_viz(self):
         """Generate Bokeh visualization with image hover."""
@@ -1510,10 +1475,7 @@ class EmbeddingExplorerDialog(QDialog):
             output_file(self.bokeh_html_path, title="Embedding Explorer")
             save(p)
 
-            self.umap_progress.setText(f"✓ Visualization ready!")
-            self.viz_label.setText(
-                f"Use Box Select tool to select frames.\\n\\nHTML: {self.bokeh_html_path}"
-            )
+            self.umap_progress.setText(f"✓ Visualization ready! HTML: {self.bokeh_html_path}")
 
             # Load in web view or open in browser
             self._load_visualization()
@@ -1543,6 +1505,16 @@ class EmbeddingExplorerDialog(QDialog):
     def _refresh_viz(self):
         """Refresh the visualization."""
         self._load_visualization()
+
+    def closeEvent(self, event):
+        self.embeddings = None
+        self.umap_projection = None
+        self.cluster_ids = None
+        try:
+            gc.collect()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
 
 class UMAPWorker(QObject):

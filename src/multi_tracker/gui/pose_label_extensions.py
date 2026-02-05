@@ -893,6 +893,8 @@ def build_yolo_pose_dataset(
     keypoint_names: List[str],
     extra_datasets: Optional[List[Tuple[List[Path], Path]]] = None,
     extra_items: Optional[List[Tuple[Path, Path]]] = None,
+    train_items: Optional[List[Tuple[Path, Path]]] = None,
+    val_items: Optional[List[Tuple[Path, Path]]] = None,
 ) -> Dict[str, object]:
     """
     Build a YOLO Pose dataset with copied images/labels under output_dir.
@@ -937,18 +939,19 @@ def build_yolo_pose_dataset(
             if img_path.exists() and label_path.exists():
                 items.append((img_path, label_path))
 
-    if len(items) < 2:
+    if len(items) < 2 and (not train_items or not val_items):
         raise ValueError("Need at least 2 labeled frames to build train/val split.")
 
-    rng = random.Random(int(seed))
-    rng.shuffle(items)
+    if train_items is None or val_items is None:
+        rng = random.Random(int(seed))
+        rng.shuffle(items)
 
-    train_frac = max(0.05, min(0.95, float(train_frac)))
-    n_train = int(len(items) * train_frac)
-    n_train = max(1, min(n_train, len(items) - 1))
+        train_frac = max(0.05, min(0.95, float(train_frac)))
+        n_train = int(len(items) * train_frac)
+        n_train = max(1, min(n_train, len(items) - 1))
 
-    train_items = items[:n_train]
-    val_items = items[n_train:]
+        train_items = items[:n_train]
+        val_items = items[n_train:]
 
     used_stems = set()
     manifest_rows = []
@@ -1060,25 +1063,26 @@ class EmbeddingWorker(QObject):
                 "batch_size": int(self.batch_size),
                 "use_enhance": bool(self.use_enhance),
                 "max_side": int(self.max_side),
-                # include eligible image signatures to validate cache
-                "images": [
-                    {
-                        "p": str(self.image_paths[i]),
-                        "mt": int(self.image_paths[i].stat().st_mtime),
-                        "sz": int(self.image_paths[i].stat().st_size),
-                    }
-                    for i in self.eligible_indices
-                ],
             }
             key = _stable_hash_dict(meta)
-            npy_path = self.cache_dir / f"{key}.npy"
-            json_path = self.cache_dir / f"{key}.json"
+            cache = IncrementalEmbeddingCache(self.cache_dir, key)
+            cache.set_metadata(meta)
 
-            if self.cache_ok and npy_path.exists() and json_path.exists():
+            if self.cache_ok:
+                needs_compute, cached = cache.needs_update(self.image_paths)
+            else:
+                needs_compute = list(range(len(self.image_paths)))
+                cached = []
+
+            if not needs_compute:
                 self.status.emit("Loading cached embeddings…")
-                emb = np.load(npy_path)
-                self.finished.emit(emb, self.eligible_indices, meta)
-                return
+                emb_all = cache.get_embeddings(self.image_paths)
+                if emb_all is None:
+                    needs_compute = list(range(len(self.image_paths)))
+                else:
+                    emb = emb_all[self.eligible_indices]
+                    self.finished.emit(emb, self.eligible_indices, meta)
+                    return
 
             self.status.emit("Loading model…")
             device = _choose_device(self.device_pref)
@@ -1093,9 +1097,9 @@ class EmbeddingWorker(QObject):
             data_config = resolve_data_config({}, model=model)
             transform = create_transform(**data_config)
 
-            # embed
+            # embed missing
             feats = []
-            total = len(self.eligible_indices)
+            total = len(needs_compute)
             done = 0
 
             for start in range(0, total, self.batch_size):
@@ -1103,7 +1107,7 @@ class EmbeddingWorker(QObject):
                     self.failed.emit("Canceled.")
                     return
 
-                batch_idx = self.eligible_indices[start : start + self.batch_size]
+                batch_idx = needs_compute[start : start + self.batch_size]
                 imgs = []
                 for i in batch_idx:
                     img = _read_image_pil(self.image_paths[i])
@@ -1126,12 +1130,17 @@ class EmbeddingWorker(QObject):
                 self.progress.emit(done, total)
                 self.status.emit(f"Embedding {done}/{total}")
 
-            emb = np.vstack(feats).astype(np.float32)
+            if feats:
+                new_emb = np.vstack(feats).astype(np.float32)
+                cache.update_embeddings(
+                    [self.image_paths[i] for i in needs_compute], new_emb
+                )
 
-            self.status.emit("Saving cache…")
-            np.save(npy_path, emb)
-            json_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
+            emb_all = cache.get_embeddings(self.image_paths)
+            if emb_all is None:
+                self.failed.emit("Failed to load embeddings from cache.")
+                return
+            emb = emb_all[self.eligible_indices]
             self.finished.emit(emb, self.eligible_indices, meta)
 
         except Exception as e:
@@ -1146,12 +1155,10 @@ class EmbeddingWorker(QObject):
 class IncrementalEmbeddingCache:
     """Manages incremental embedding computation and caching."""
 
-    def __init__(self, cache_root: Path, model_name: str):
+    def __init__(self, cache_root: Path, cache_key: str):
         self.cache_root = cache_root
-        self.model_name = model_name
-        self.cache_dir = (
-            cache_root / "embeddings" / self._sanitize_model_name(model_name)
-        )
+        self.cache_key = cache_key
+        self.cache_dir = cache_root / "embeddings" / self._sanitize_model_name(cache_key)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.embeddings_path = self.cache_dir / "embeddings.npy"
@@ -1160,6 +1167,7 @@ class IncrementalEmbeddingCache:
 
         self._embeddings: Optional[np.ndarray] = None
         self._index: Dict[str, int] = {}  # filename -> row index
+        self._stats: Dict[str, Tuple[int, int]] = {}  # path -> (mtime, size)
         self._load()
 
     @staticmethod
@@ -1180,9 +1188,16 @@ class IncrementalEmbeddingCache:
                     reader = csv.DictReader(f)
                     for row in reader:
                         self._index[row["path"]] = int(row["index"])
+                        try:
+                            self._stats[row["path"]] = (
+                                int(row.get("mtime", 0)),
+                                int(row.get("size", 0)),
+                            )
+                        except Exception:
+                            self._stats[row["path"]] = (0, 0)
 
                 logger.info(
-                    f"Loaded {len(self._index)} cached embeddings for {self.model_name}"
+                    f"Loaded {len(self._index)} cached embeddings for {self.cache_key}"
                 )
             except Exception as e:
                 logger.warning(f"Failed to load cache: {e}")
@@ -1204,9 +1219,10 @@ class IncrementalEmbeddingCache:
                 for path, idx in sorted(self._index.items(), key=lambda x: x[1]):
                     p = Path(path)
                     if p.exists():
-                        writer.writerow(
-                            [path, idx, int(p.stat().st_mtime), int(p.stat().st_size)]
-                        )
+                        mtime = int(p.stat().st_mtime)
+                        size = int(p.stat().st_size)
+                        writer.writerow([path, idx, mtime, size])
+                        self._stats[path] = (mtime, size)
                     else:
                         writer.writerow([path, idx, 0, 0])
 
@@ -1241,13 +1257,15 @@ class IncrementalEmbeddingCache:
         for i, path in enumerate(image_paths):
             path_str = str(path)
 
-            # Check if in cache
+            # Check if in cache and unchanged
             if path_str in self._index:
-                # Verify file hasn't changed
                 try:
                     stat = path.stat()
-                    # Simple check - could be enhanced with hash
-                    cached.append(i)
+                    prev = self._stats.get(path_str, (0, 0))
+                    if int(stat.st_mtime) == prev[0] and int(stat.st_size) == prev[1]:
+                        cached.append(i)
+                    else:
+                        needs_compute.append(i)
                 except Exception:
                     needs_compute.append(i)
             else:
@@ -1287,6 +1305,28 @@ class IncrementalEmbeddingCache:
                 self._index[str(path)] = start_idx + i
 
         self._save()
+
+    def update_embeddings(self, image_paths: List[Path], embeddings: np.ndarray):
+        """Update or add embeddings for given paths."""
+        if len(image_paths) != embeddings.shape[0]:
+            raise ValueError("Mismatch between paths and embeddings")
+        if self._embeddings is None:
+            self.add_embeddings(image_paths, embeddings)
+            return
+        to_add_paths = []
+        to_add_emb = []
+        for i, path in enumerate(image_paths):
+            key = str(path)
+            if key in self._index:
+                idx = self._index[key]
+                self._embeddings[idx] = embeddings[i]
+            else:
+                to_add_paths.append(path)
+                to_add_emb.append(embeddings[i])
+        if to_add_paths:
+            self.add_embeddings(to_add_paths, np.vstack(to_add_emb))
+        else:
+            self._save()
 
     def clear(self):
         """Clear all cached embeddings."""
