@@ -735,7 +735,7 @@ def save_yolo_pose_label(
     # Create backup of existing label before overwriting
     if create_backup and label_path.exists():
         try:
-            LabelVersioning.backup(label_path)
+            LabelVersioning(label_path.parent).backup_label(label_path)
         except Exception as e:
             logger.warning(f"Failed to create backup: {e}")
 
@@ -892,6 +892,7 @@ def build_yolo_pose_dataset(
     class_names: List[str],
     keypoint_names: List[str],
     extra_datasets: Optional[List[Tuple[List[Path], Path]]] = None,
+    extra_items: Optional[List[Tuple[Path, Path]]] = None,
 ) -> Dict[str, object]:
     """
     Build a YOLO Pose dataset with copied images/labels under output_dir.
@@ -929,6 +930,11 @@ def build_yolo_pose_dataset(
             img_path = imgs[idx]
             label_path = lbl_dir / f"{img_path.stem}.txt"
             if label_path.exists():
+                items.append((img_path, label_path))
+
+    if extra_items:
+        for img_path, label_path in extra_items:
+            if img_path.exists() and label_path.exists():
                 items.append((img_path, label_path))
 
     if len(items) < 2:

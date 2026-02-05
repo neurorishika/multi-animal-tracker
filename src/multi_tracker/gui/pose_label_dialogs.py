@@ -6,12 +6,12 @@ Dialogs for PoseKit Labeler extensions.
 import csv
 import json
 import math
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 import logging
 import numpy as np
+import yaml
 
 from PySide6.QtCore import Qt, QSize, QThread, QObject, Signal, Slot
 from PySide6.QtGui import QPixmap, QPainter, QColor
@@ -43,6 +43,19 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QGridLayout,
 )
+
+# Settings helpers
+try:
+    from .pose_label import load_ui_settings, save_ui_settings
+except ImportError:
+    try:
+        from pose_label import load_ui_settings, save_ui_settings
+    except Exception:
+        def load_ui_settings():
+            return {}
+
+        def save_ui_settings(_settings: Dict):
+            return
 
 # Handle both package imports and direct script execution
 try:
@@ -107,6 +120,19 @@ def get_available_devices():
     return devices
 
 
+def _load_dialog_settings(key: str) -> Dict:
+    settings = load_ui_settings()
+    return settings.get("dialogs", {}).get(key, {})
+
+
+def _save_dialog_settings(key: str, data: Dict) -> None:
+    settings = load_ui_settings()
+    dialogs = settings.get("dialogs", {})
+    dialogs[key] = data
+    settings["dialogs"] = dialogs
+    save_ui_settings(settings)
+
+
 def get_yolo_pose_base_models() -> List[str]:
     """Known YOLO Pose base models from Ultralytics docs."""
     return [
@@ -124,6 +150,69 @@ def list_images_in_dir(images_dir: Path) -> List[Path]:
         if p.is_file() and p.suffix.lower() in IMG_EXTS:
             paths.append(p)
     return paths
+
+
+def _label_path_for_image(base_dir: Path, img_path: Path) -> Optional[Path]:
+    parts = list(img_path.parts)
+    if "images" in parts:
+        idx = parts.index("images")
+        parts[idx] = "labels"
+        lbl = Path(*parts).with_suffix(".txt")
+        if lbl.exists():
+            return lbl
+    # fallback to base/labels/<stem>.txt
+    lbl = base_dir / "labels" / f"{img_path.stem}.txt"
+    if lbl.exists():
+        return lbl
+    return None
+
+
+def load_yolo_dataset_items(
+    dataset_yaml: Path,
+) -> Tuple[List[Tuple[Path, Path]], Dict[str, object]]:
+    data = yaml.safe_load(dataset_yaml.read_text(encoding="utf-8"))
+    base = Path(data.get("path", dataset_yaml.parent)).expanduser().resolve()
+    train = data.get("train")
+    val = data.get("val")
+    names = data.get("names", {})
+    kpt_shape = data.get("kpt_shape")
+    kpt_names = data.get("kpt_names")
+
+    def _resolve_source(src):
+        if src is None:
+            return []
+        p = Path(src)
+        if not p.is_absolute():
+            p = (base / p).resolve()
+        if p.is_file() and p.suffix.lower() in [".txt"]:
+            lines = [l.strip() for l in p.read_text(encoding="utf-8").splitlines()]
+            out = []
+            for l in lines:
+                if not l:
+                    continue
+                lp = Path(l)
+                if not lp.is_absolute():
+                    lp = (base / lp).resolve()
+                out.append(lp)
+            return out
+        if p.is_dir():
+            return list_images_in_dir(p)
+        return []
+
+    images = _resolve_source(train) + _resolve_source(val)
+    items: List[Tuple[Path, Path]] = []
+    for img in images:
+        lbl = _label_path_for_image(base, img)
+        if lbl is not None:
+            items.append((img, lbl))
+
+    info = {
+        "base": str(base),
+        "names": names,
+        "kpt_shape": kpt_shape,
+        "kpt_names": kpt_names,
+    }
+    return items, info
 
 
 class DatasetSplitDialog(QDialog):
@@ -251,6 +340,44 @@ class DatasetSplitDialog(QDialog):
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         self.btn_generate.clicked.connect(self._generate_split)
         self.btn_close.clicked.connect(self.reject)
+
+        self._apply_settings()
+
+    def _apply_settings(self):
+        settings = _load_dialog_settings("dataset_split")
+        if not settings:
+            return
+        mode = settings.get("mode_index")
+        if mode is not None:
+            self.mode_combo.setCurrentIndex(int(mode))
+        self.train_spin.setValue(float(settings.get("train_frac", self.train_spin.value())))
+        self.val_spin.setValue(float(settings.get("val_frac", self.val_spin.value())))
+        self.test_spin.setValue(float(settings.get("test_frac", self.test_spin.value())))
+        self.kfold_spin.setValue(int(settings.get("kfold", self.kfold_spin.value())))
+        self.min_per_cluster_spin.setValue(
+            int(settings.get("min_per_cluster", self.min_per_cluster_spin.value()))
+        )
+        self.seed_spin.setValue(int(settings.get("seed", self.seed_spin.value())))
+        self.split_name_edit.setText(settings.get("split_name", self.split_name_edit.text()))
+
+    def _save_settings(self):
+        _save_dialog_settings(
+            "dataset_split",
+            {
+                "mode_index": int(self.mode_combo.currentIndex()),
+                "train_frac": float(self.train_spin.value()),
+                "val_frac": float(self.val_spin.value()),
+                "test_frac": float(self.test_spin.value()),
+                "kfold": int(self.kfold_spin.value()),
+                "min_per_cluster": int(self.min_per_cluster_spin.value()),
+                "seed": int(self.seed_spin.value()),
+                "split_name": self.split_name_edit.text().strip(),
+            },
+        )
+
+    def closeEvent(self, event):
+        self._save_settings()
+        super().closeEvent(event)
 
     def _on_mode_changed(self, index: int):
         """Toggle visibility of parameter groups."""
@@ -660,12 +787,15 @@ class SmartSelectDialog(QDialog):
         self.btn_add = QPushButton("Add to Labeling Set && Close")
         self.btn_save_csv = QPushButton("Save clusters CSV…")
         self.btn_explorer = QPushButton("Embedding Explorer…")
+        self.btn_open_split = QPushButton("Open Cluster Split…")
         self.btn_explorer.setEnabled(False)
+        self.btn_open_split.setEnabled(False)
         self.btn_close = QPushButton("Close Without Saving")
         bottom.addWidget(self.btn_preview)
         bottom.addWidget(self.btn_add)
         bottom.addWidget(self.btn_save_csv)
         bottom.addWidget(self.btn_explorer)
+        bottom.addWidget(self.btn_open_split)
         bottom.addStretch(1)
         bottom.addWidget(self.btn_close)
         layout.addLayout(bottom)
@@ -683,6 +813,7 @@ class SmartSelectDialog(QDialog):
         self.btn_preview.clicked.connect(self._preview)
         self.btn_save_csv.clicked.connect(self._save_csv)
         self.btn_explorer.clicked.connect(self._open_explorer)
+        self.btn_open_split.clicked.connect(self._open_cluster_split)
 
         self.selected_indices: List[int] = []
 
@@ -700,6 +831,64 @@ class SmartSelectDialog(QDialog):
         self.min_per_spin.valueChanged.connect(self._update_min_frames)
         # Set initial minimum
         self._update_min_frames()
+
+        self._apply_settings()
+
+    def _apply_settings(self):
+        settings = _load_dialog_settings("smart_select")
+        if not settings:
+            return
+        self.cb_scope.setCurrentText(settings.get("scope", self.cb_scope.currentText()))
+        self.cb_exclude_in_labeling.setChecked(
+            bool(settings.get("exclude_labeling", self.cb_exclude_in_labeling.isChecked()))
+        )
+        self.model_combo.setCurrentText(settings.get("model", self.model_combo.currentText()))
+        self.dev_combo.setCurrentText(settings.get("device", self.dev_combo.currentText()))
+        self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
+        self.max_side_spin.setValue(int(settings.get("max_side", self.max_side_spin.value())))
+        self.cb_use_enhance.setChecked(
+            bool(settings.get("use_enhance", self.cb_use_enhance.isChecked()))
+        )
+        self.n_spin.setValue(int(settings.get("n", self.n_spin.value())))
+        self.k_spin.setValue(int(settings.get("k", self.k_spin.value())))
+        self.min_per_spin.setValue(int(settings.get("min_per", self.min_per_spin.value())))
+        self.strategy_combo.setCurrentText(settings.get("strategy", self.strategy_combo.currentText()))
+        self.cb_filter_duplicates.setChecked(
+            bool(settings.get("filter_dups", self.cb_filter_duplicates.isChecked()))
+        )
+        self.dup_threshold_spin.setValue(float(settings.get("dup_thresh", self.dup_threshold_spin.value())))
+        self.cb_prefer_unlabeled.setChecked(
+            bool(settings.get("prefer_unlabeled", self.cb_prefer_unlabeled.isChecked()))
+        )
+        self.cluster_method_combo.setCurrentText(
+            settings.get("cluster_method", self.cluster_method_combo.currentText())
+        )
+
+    def _save_settings(self):
+        _save_dialog_settings(
+            "smart_select",
+            {
+                "scope": self.cb_scope.currentText(),
+                "exclude_labeling": bool(self.cb_exclude_in_labeling.isChecked()),
+                "model": self.model_combo.currentText().strip(),
+                "device": self.dev_combo.currentText(),
+                "batch": int(self.batch_spin.value()),
+                "max_side": int(self.max_side_spin.value()),
+                "use_enhance": bool(self.cb_use_enhance.isChecked()),
+                "n": int(self.n_spin.value()),
+                "k": int(self.k_spin.value()),
+                "min_per": int(self.min_per_spin.value()),
+                "strategy": self.strategy_combo.currentText(),
+                "filter_dups": bool(self.cb_filter_duplicates.isChecked()),
+                "dup_thresh": float(self.dup_threshold_spin.value()),
+                "prefer_unlabeled": bool(self.cb_prefer_unlabeled.isChecked()),
+                "cluster_method": self.cluster_method_combo.currentText(),
+            },
+        )
+
+    def closeEvent(self, event):
+        self._save_settings()
+        super().closeEvent(event)
 
     def _build_eligible_indices(self) -> List[int]:
         scope = self.cb_scope.currentText()
@@ -841,7 +1030,12 @@ class SmartSelectDialog(QDialog):
             self._emb, k=k, method=cluster_method, seed=0
         )
         self._cluster = cluster
+        self._autosave_clusters()
         self.btn_explorer.setEnabled(True)
+        self.btn_open_split.setEnabled(True)
+        self.lbl_status.setText(
+            "Clusters saved. Use 'Open Cluster Split…' to create splits."
+        )
 
         # Use existing pick_frames_stratified with strategy
         picked = pick_frames_stratified(
@@ -986,6 +1180,40 @@ class SmartSelectDialog(QDialog):
                 w.writerow([str(self.image_paths[idx]), int(self._cluster[local_pos])])
 
         QMessageBox.information(self, "Saved", f"Wrote cluster CSV:\n{out}")
+
+    def _open_cluster_split(self):
+        win = self.window()
+        if hasattr(win, "open_cluster_split_dialog"):
+            win.open_cluster_split_dialog()
+        else:
+            QMessageBox.information(
+                self,
+                "Not available",
+                "Cluster split is available from the main window Tools menu.",
+            )
+
+    def _autosave_clusters(self):
+        if self._cluster is None or self._eligible_indices is None:
+            return
+        out = (
+            self.project.out_root / ".posekit" / "clusters" / "clusters.csv"
+        )
+        out.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with out.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["image", "cluster_id"])
+                for local_pos, idx in enumerate(self._eligible_indices):
+                    w.writerow([str(self.image_paths[idx]), int(self._cluster[local_pos])])
+            self.lbl_status.setText(f"Clusters saved: {out}")
+            win = self.window()
+            if hasattr(win, "statusBar"):
+                win.statusBar().showMessage(
+                    f"Clusters saved → {out}", 4000
+                )
+        except Exception:
+            # Silent fail; user can still export manually.
+            pass
 
 
 # -----------------------------
@@ -1372,312 +1600,6 @@ class UMAPWorker(QObject):
             self.failed.emit("UMAP not installed. Install with: pip install umap-learn")
         except Exception as e:
             self.failed.emit(str(e))
-
-
-# -----------------------------
-# Training Runner
-# -----------------------------
-
-
-class TrainWorker(QObject):
-    """Run a training command and stream logs."""
-
-    log = Signal(str)
-    status = Signal(str)
-    finished = Signal(int)
-    failed = Signal(str)
-
-    def __init__(self, command: List[str], workdir: Path):
-        super().__init__()
-        self.command = command
-        self.workdir = workdir
-        self._cancelled = False
-        self._proc = None
-
-    def cancel(self):
-        self._cancelled = True
-        if self._proc is not None:
-            try:
-                self._proc.terminate()
-            except Exception:
-                pass
-
-    @Slot()
-    def run(self):
-        try:
-            if self._cancelled:
-                return
-            self.status.emit("Starting training...")
-            self.log.emit(" ".join(self.command))
-            self._proc = subprocess.Popen(
-                self.command,
-                cwd=str(self.workdir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
-            assert self._proc.stdout is not None
-            for line in self._proc.stdout:
-                if self._cancelled:
-                    break
-                self.log.emit(line.rstrip())
-            code = self._proc.wait()
-            if self._cancelled:
-                self.status.emit("Canceled.")
-                self.finished.emit(code if code is not None else -1)
-                return
-            if code != 0:
-                self.failed.emit(f"Training failed with exit code {code}.")
-                return
-            self.status.emit("Training finished.")
-            self.finished.emit(code)
-        except FileNotFoundError:
-            self.failed.emit("Training command not found.")
-        except Exception as e:
-            self.failed.emit(str(e))
-
-
-class TrainingRunnerDialog(QDialog):
-    """Dialog to configure and run training."""
-
-    def __init__(self, parent, project, image_paths: List[Path]):
-        super().__init__(parent)
-        self.setWindowTitle("Training Runner")
-        self.setMinimumSize(QSize(900, 620))
-        self.project = project
-        self.image_paths = image_paths
-
-        self._worker_thread = None
-        self._worker = None
-        self._run_dir = None
-
-        layout = QVBoxLayout(self)
-
-        # Backend
-        backend_group = QGroupBox("Backend")
-        backend_layout = QHBoxLayout(backend_group)
-        backend_layout.addWidget(QLabel("Backend:"))
-        self.backend_combo = QComboBox()
-        self.backend_combo.addItems(
-            ["YOLO Pose", "ViTPose (coming soon)", "SLEAP (coming soon)"]
-        )
-        backend_layout.addWidget(self.backend_combo, 1)
-        content_layout.addWidget(backend_group)
-
-        # Config
-        cfg_group = QGroupBox("Config")
-        cfg_layout = QFormLayout(cfg_group)
-        self.batch_spin = QSpinBox()
-        self.batch_spin.setRange(1, 512)
-        self.batch_spin.setValue(16)
-        cfg_layout.addRow("Batch size:", self.batch_spin)
-
-        self.epochs_spin = QSpinBox()
-        self.epochs_spin.setRange(1, 10000)
-        self.epochs_spin.setValue(50)
-        cfg_layout.addRow("Epochs:", self.epochs_spin)
-
-        self.imgsz_spin = QSpinBox()
-        self.imgsz_spin.setRange(64, 2048)
-        self.imgsz_spin.setValue(640)
-        cfg_layout.addRow("Image size:", self.imgsz_spin)
-
-        self.device_combo = QComboBox()
-        self.device_combo.addItems(get_available_devices())
-        cfg_layout.addRow("Device:", self.device_combo)
-
-        self.cb_augment = QCheckBox("Use augmentations")
-        self.cb_augment.setChecked(True)
-        cfg_layout.addRow("", self.cb_augment)
-
-        self.model_edit = QLineEdit("yolov8n-pose.pt")
-        cfg_layout.addRow("Base model:", self.model_edit)
-
-        content_layout.addWidget(cfg_group)
-
-        # Dataset
-        data_group = QGroupBox("Dataset")
-        data_layout = QFormLayout(data_group)
-        self.train_frac_spin = QDoubleSpinBox()
-        self.train_frac_spin.setRange(0.05, 0.95)
-        self.train_frac_spin.setSingleStep(0.05)
-        self.train_frac_spin.setValue(0.8)
-        data_layout.addRow("Train fraction:", self.train_frac_spin)
-        self.seed_spin = QSpinBox()
-        self.seed_spin.setRange(0, 999999)
-        self.seed_spin.setValue(0)
-        data_layout.addRow("Random seed:", self.seed_spin)
-        layout.addWidget(data_group)
-
-        # Run output
-        out_group = QGroupBox("Run Output")
-        out_layout = QFormLayout(out_group)
-        self.run_root_edit = QLineEdit(str(self.project.out_root / "runs"))
-        self.run_root_edit.setReadOnly(True)
-        out_layout.addRow("Runs root:", self.run_root_edit)
-        self.run_name_edit = QLineEdit("")
-        out_layout.addRow("Run name (optional):", self.run_name_edit)
-        layout.addWidget(out_group)
-
-        # Command override
-        cmd_group = QGroupBox("Command Override (optional)")
-        cmd_layout = QVBoxLayout(cmd_group)
-        self.cmd_edit = QLineEdit("")
-        self.cmd_edit.setPlaceholderText(
-            "Leave empty to use default YOLO command. Example: yolo pose train ..."
-        )
-        cmd_layout.addWidget(self.cmd_edit)
-        layout.addWidget(cmd_group)
-
-        # Logs
-        self.progress = QProgressBar()
-        self.progress.setRange(0, 0)  # indeterminate
-        self.progress.setVisible(False)
-        layout.addWidget(self.progress)
-        self.log_text = QPlainTextEdit()
-        self.log_text.setReadOnly(True)
-        layout.addWidget(self.log_text, 1)
-
-        # Buttons
-        btns = QHBoxLayout()
-        self.btn_start = QPushButton("Start Training")
-        self.btn_stop = QPushButton("Stop")
-        self.btn_stop.setEnabled(False)
-        self.btn_close = QPushButton("Close")
-        btns.addWidget(self.btn_start)
-        btns.addWidget(self.btn_stop)
-        btns.addStretch(1)
-        btns.addWidget(self.btn_close)
-        layout.addLayout(btns)
-
-        self.btn_start.clicked.connect(self._start)
-        self.btn_stop.clicked.connect(self._stop)
-        self.btn_close.clicked.connect(self.reject)
-
-    def _append_log(self, text: str):
-        if not text:
-            return
-        self.log_text.appendPlainText(text)
-        self.log_text.verticalScrollBar().setValue(
-            self.log_text.verticalScrollBar().maximum()
-        )
-
-    def _start(self):
-        backend = self.backend_combo.currentText()
-        if not backend.startswith("YOLO"):
-            QMessageBox.information(
-                self,
-                "Coming soon",
-                "Only YOLO Pose training is supported right now.",
-            )
-            return
-
-        try:
-            runs_root = Path(self.run_root_edit.text()).expanduser().resolve()
-            runs_root.mkdir(parents=True, exist_ok=True)
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            run_name = self.run_name_edit.text().strip() or timestamp
-            run_dir = runs_root / "yolo_pose" / run_name
-            run_dir.mkdir(parents=True, exist_ok=True)
-            self._run_dir = run_dir
-
-            # Build dataset
-            data_dir = run_dir / "data"
-            data_info = build_yolo_pose_dataset(
-                self.image_paths,
-                self.project.labels_dir,
-                data_dir,
-                self.train_frac_spin.value(),
-                self.seed_spin.value(),
-                self.project.class_names,
-                self.project.keypoint_names,
-            )
-
-            cmd_override = self.cmd_edit.text().strip()
-            if cmd_override:
-                command = cmd_override.split()
-            else:
-                model = self.model_edit.text().strip() or "yolov8n-pose.pt"
-                command = [
-                    "yolo",
-                    "pose",
-                    "train",
-                    f"data={data_info['yaml_path']}",
-                    f"model={model}",
-                    f"epochs={self.epochs_spin.value()}",
-                    f"batch={self.batch_spin.value()}",
-                    f"imgsz={self.imgsz_spin.value()}",
-                    f"device={self.device_combo.currentText()}",
-                    f"augment={str(self.cb_augment.isChecked()).lower()}",
-                    f"project={runs_root / 'yolo_pose'}",
-                    f"name={run_name}",
-                ]
-
-            # Save config
-            config = {
-                "backend": "yolo_pose",
-                "run_dir": str(run_dir),
-                "data_dir": str(data_dir),
-                "dataset_yaml": str(data_info["yaml_path"]),
-                "command": command,
-                "settings": {
-                    "batch": self.batch_spin.value(),
-                    "epochs": self.epochs_spin.value(),
-                    "imgsz": self.imgsz_spin.value(),
-                    "device": self.device_combo.currentText(),
-                    "augment": bool(self.cb_augment.isChecked()),
-                    "model": self.model_edit.text().strip(),
-                },
-                "timestamp": timestamp,
-            }
-            (run_dir / "run_config.json").write_text(
-                json.dumps(config, indent=2), encoding="utf-8"
-            )
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
-            return
-
-        self.log_text.clear()
-        self.progress.setVisible(True)
-        self.btn_start.setEnabled(False)
-        self.btn_stop.setEnabled(True)
-
-        self._worker_thread = QThread(self)
-        self._worker = TrainWorker(command, run_dir)
-        self._worker.moveToThread(self._worker_thread)
-        self._worker.log.connect(self._append_log)
-        self._worker.status.connect(self._append_log)
-        self._worker.failed.connect(self._on_failed)
-        self._worker.finished.connect(self._on_finished)
-        self._worker_thread.started.connect(self._worker.run)
-        self._worker_thread.start()
-
-    def _stop(self):
-        if self._worker:
-            self._worker.cancel()
-        self.btn_stop.setEnabled(False)
-
-    def _on_failed(self, msg: str):
-        self._append_log(msg)
-        QMessageBox.critical(self, "Training Failed", msg)
-        self._cleanup_worker()
-
-    def _on_finished(self, code: int):
-        self._append_log(f"Finished with code {code}.")
-        QMessageBox.information(self, "Training Complete", "Training finished.")
-        self._cleanup_worker()
-
-    def _cleanup_worker(self):
-        self.progress.setVisible(False)
-        self.btn_start.setEnabled(True)
-        self.btn_stop.setEnabled(False)
-        if self._worker_thread:
-            self._worker_thread.quit()
-            self._worker_thread.wait(2000)
-        self._worker_thread = None
-        self._worker = None
 
 
 # -----------------------------
@@ -2678,6 +2600,8 @@ class TrainingRunnerDialog(QDialog):
         data_layout.addRow("Random seed:", self.seed_spin)
 
         self._aux_datasets: List[Dict[str, object]] = []
+        self._aux_items: List[Tuple[Path, Path]] = []
+        self._last_aux_path = ""
 
         self.lbl_labeled = QLabel("")
         self._refresh_labeled_count()
@@ -2737,6 +2661,7 @@ class TrainingRunnerDialog(QDialog):
         self.cb_augment.toggled.connect(self._toggle_aug_widgets)
 
         self._toggle_aug_widgets(self.cb_augment.isChecked())
+        self._apply_settings()
 
     def _append_log(self, msg: str):
         self.log_view.appendPlainText(msg)
@@ -2754,40 +2679,146 @@ class TrainingRunnerDialog(QDialog):
             w.setEnabled(enabled)
 
     def _add_aux_project(self):
+        start_dir = self._last_aux_path or ""
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select pose_project.json", "", "pose_project.json"
+            self,
+            "Select pose_project.json or dataset.yaml",
+            start_dir,
+            "pose_project.json;dataset.yaml;*.yaml;*.yml",
         )
         if not path:
             return
-        try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-            images_dir = Path(data["images_dir"]).expanduser().resolve()
-            labels_dir = Path(data["labels_dir"]).expanduser().resolve()
-            class_names = data.get("class_names", [])
-            keypoint_names = data.get("keypoint_names", [])
-        except Exception as e:
-            QMessageBox.warning(self, "Invalid project", str(e))
-            return
+        self._last_aux_path = str(Path(path).parent)
+        path_obj = Path(path)
+        if path_obj.name == "pose_project.json":
+            try:
+                data = json.loads(path_obj.read_text(encoding="utf-8"))
+                images_dir = Path(data["images_dir"]).expanduser().resolve()
+                labels_dir = Path(data["labels_dir"]).expanduser().resolve()
+                class_names = data.get("class_names", [])
+                keypoint_names = data.get("keypoint_names", [])
+            except Exception as e:
+                QMessageBox.warning(self, "Invalid project", str(e))
+                return
 
-        if class_names != self.project.class_names or keypoint_names != self.project.keypoint_names:
-            QMessageBox.warning(
-                self,
-                "Mismatch",
-                "Aux project classes/keypoints do not match the current project.",
+            if (
+                class_names != self.project.class_names
+                or keypoint_names != self.project.keypoint_names
+            ):
+                QMessageBox.warning(
+                    self,
+                    "Mismatch",
+                    "Aux project classes/keypoints do not match the current project.",
+                )
+                return
+
+            image_paths = list_images_in_dir(images_dir)
+            if not image_paths:
+                QMessageBox.warning(self, "Empty", "No images found in aux project.")
+                return
+
+            item = QListWidgetItem(f"{images_dir}  (labels: {labels_dir})")
+            self.aux_list.addItem(item)
+            self._aux_datasets.append(
+                {"images": image_paths, "labels_dir": labels_dir, "project_path": path}
             )
-            return
+        else:
+            try:
+                items, info = load_yolo_dataset_items(path_obj)
+            except Exception as e:
+                QMessageBox.warning(self, "Invalid dataset", str(e))
+                return
 
-        image_paths = list_images_in_dir(images_dir)
-        if not image_paths:
-            QMessageBox.warning(self, "Empty", "No images found in aux project.")
-            return
+            names = info.get("names") or {}
+            kpt_shape = info.get("kpt_shape")
+            kpt_names = info.get("kpt_names")
+            if list(names.values()) != self.project.class_names:
+                QMessageBox.warning(
+                    self,
+                    "Mismatch",
+                    "YOLO dataset class names do not match the current project.",
+                )
+                return
+            if not kpt_shape or not kpt_names:
+                QMessageBox.warning(
+                    self,
+                    "Missing keypoints",
+                    "YOLO dataset is missing keypoint metadata.",
+                )
+                return
+            if list(kpt_names.values())[0] != self.project.keypoint_names:
+                QMessageBox.warning(
+                    self,
+                    "Mismatch",
+                    "YOLO dataset keypoint names do not match the current project.",
+                )
+                return
+            if not items:
+                QMessageBox.warning(self, "Empty", "No labeled items found in dataset.")
+                return
 
-        item = QListWidgetItem(f"{images_dir}  (labels: {labels_dir})")
-        self.aux_list.addItem(item)
-        self._aux_datasets.append(
-            {"images": image_paths, "labels_dir": labels_dir, "project_path": path}
-        )
+            item = QListWidgetItem(f"{path_obj}  (YOLO dataset)")
+            self.aux_list.addItem(item)
+            self._aux_items.extend(items)
+            self._aux_datasets.append({"project_path": str(path_obj), "items": items})
+
         self._refresh_labeled_count()
+
+    def _apply_settings(self):
+        settings = _load_dialog_settings("training_runner")
+        if not settings:
+            return
+        self.backend_combo.setCurrentText(settings.get("backend", self.backend_combo.currentText()))
+        self.model_combo.setCurrentText(settings.get("model", self.model_combo.currentText()))
+        self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
+        self.epochs_spin.setValue(int(settings.get("epochs", self.epochs_spin.value())))
+        self.imgsz_spin.setValue(int(settings.get("imgsz", self.imgsz_spin.value())))
+        self.device_combo.setCurrentText(settings.get("device", self.device_combo.currentText()))
+        self.cb_augment.setChecked(bool(settings.get("augment", self.cb_augment.isChecked())))
+        self.hsv_h_spin.setValue(float(settings.get("hsv_h", self.hsv_h_spin.value())))
+        self.hsv_s_spin.setValue(float(settings.get("hsv_s", self.hsv_s_spin.value())))
+        self.hsv_v_spin.setValue(float(settings.get("hsv_v", self.hsv_v_spin.value())))
+        self.degrees_spin.setValue(float(settings.get("degrees", self.degrees_spin.value())))
+        self.translate_spin.setValue(float(settings.get("translate", self.translate_spin.value())))
+        self.scale_spin.setValue(float(settings.get("scale", self.scale_spin.value())))
+        self.fliplr_spin.setValue(float(settings.get("fliplr", self.fliplr_spin.value())))
+        self.mosaic_spin.setValue(float(settings.get("mosaic", self.mosaic_spin.value())))
+        self.mixup_spin.setValue(float(settings.get("mixup", self.mixup_spin.value())))
+        self.train_split_spin.setValue(
+            float(settings.get("train_split", self.train_split_spin.value()))
+        )
+        self.seed_spin.setValue(int(settings.get("seed", self.seed_spin.value())))
+        self._last_aux_path = settings.get("last_aux_path", self._last_aux_path)
+
+    def _save_settings(self):
+        _save_dialog_settings(
+            "training_runner",
+            {
+                "backend": self.backend_combo.currentText(),
+                "model": self.model_combo.currentText().strip(),
+                "batch": int(self.batch_spin.value()),
+                "epochs": int(self.epochs_spin.value()),
+                "imgsz": int(self.imgsz_spin.value()),
+                "device": self.device_combo.currentText(),
+                "augment": bool(self.cb_augment.isChecked()),
+                "hsv_h": float(self.hsv_h_spin.value()),
+                "hsv_s": float(self.hsv_s_spin.value()),
+                "hsv_v": float(self.hsv_v_spin.value()),
+                "degrees": float(self.degrees_spin.value()),
+                "translate": float(self.translate_spin.value()),
+                "scale": float(self.scale_spin.value()),
+                "fliplr": float(self.fliplr_spin.value()),
+                "mosaic": float(self.mosaic_spin.value()),
+                "mixup": float(self.mixup_spin.value()),
+                "train_split": float(self.train_split_spin.value()),
+                "seed": int(self.seed_spin.value()),
+                "last_aux_path": self._last_aux_path,
+            },
+        )
+
+    def closeEvent(self, event):
+        self._save_settings()
+        super().closeEvent(event)
 
     def _remove_aux_project(self):
         row = self.aux_list.currentRow()
@@ -2795,7 +2826,10 @@ class TrainingRunnerDialog(QDialog):
             return
         self.aux_list.takeItem(row)
         try:
-            self._aux_datasets.pop(row)
+            removed = self._aux_datasets.pop(row)
+            if "items" in removed:
+                items = set(removed.get("items") or [])
+                self._aux_items = [i for i in self._aux_items if i not in items]
         except Exception:
             pass
         self._refresh_labeled_count()
@@ -2804,10 +2838,12 @@ class TrainingRunnerDialog(QDialog):
         labeled_count = len(
             list_labeled_indices(self.image_paths, self.project.labels_dir)
         )
+        labeled_count += len(self._aux_items)
         for aux in self._aux_datasets:
-            labeled_count += len(
-                list_labeled_indices(aux["images"], aux["labels_dir"])
-            )
+            if "images" in aux and "labels_dir" in aux:
+                labeled_count += len(
+                    list_labeled_indices(aux["images"], aux["labels_dir"])
+                )
         self.lbl_labeled.setText(f"Labeled frames: {labeled_count}")
 
     def _start_training(self):
@@ -2852,7 +2888,9 @@ class TrainingRunnerDialog(QDialog):
                 self.project.keypoint_names,
                 extra_datasets=[
                     (d["images"], d["labels_dir"]) for d in self._aux_datasets
+                    if "images" in d and "labels_dir" in d
                 ],
+                extra_items=list(self._aux_items),
             )
         except Exception as e:
             QMessageBox.critical(self, "Dataset error", str(e))
@@ -3433,6 +3471,41 @@ class EvaluationDashboardDialog(QDialog):
         self.btn_add_top.clicked.connect(self._add_top)
 
         self._update_default_out_dir()
+        self._apply_settings()
+
+    def _apply_settings(self):
+        settings = _load_dialog_settings("evaluation_dashboard")
+        if not settings:
+            return
+        self.weights_edit.setText(settings.get("weights", self.weights_edit.text()))
+        self.device_combo.setCurrentText(settings.get("device", self.device_combo.currentText()))
+        self.imgsz_spin.setValue(int(settings.get("imgsz", self.imgsz_spin.value())))
+        self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
+        self.conf_spin.setValue(float(settings.get("conf", self.conf_spin.value())))
+        self.pck_spin.setValue(float(settings.get("pck", self.pck_spin.value())))
+        self.oks_spin.setValue(float(settings.get("oks", self.oks_spin.value())))
+        self.val_list_edit.setText(settings.get("val_list", self.val_list_edit.text()))
+        self.out_dir_edit.setText(settings.get("out_dir", self.out_dir_edit.text()))
+
+    def _save_settings(self):
+        _save_dialog_settings(
+            "evaluation_dashboard",
+            {
+                "weights": self.weights_edit.text().strip(),
+                "device": self.device_combo.currentText(),
+                "imgsz": int(self.imgsz_spin.value()),
+                "batch": int(self.batch_spin.value()),
+                "conf": float(self.conf_spin.value()),
+                "pck": float(self.pck_spin.value()),
+                "oks": float(self.oks_spin.value()),
+                "val_list": self.val_list_edit.text().strip(),
+                "out_dir": self.out_dir_edit.text().strip(),
+            },
+        )
+
+    def closeEvent(self, event):
+        self._save_settings()
+        super().closeEvent(event)
 
     def _append_log(self, msg: str):
         self.log_view.appendPlainText(msg)
@@ -4011,6 +4084,45 @@ class ActiveLearningDialog(QDialog):
         self.btn_close.clicked.connect(self.reject)
 
         self._on_strategy_changed(0)
+        self._apply_settings()
+
+    def _apply_settings(self):
+        settings = _load_dialog_settings("active_learning")
+        if not settings:
+            return
+        self.strategy_combo.setCurrentIndex(int(settings.get("strategy_index", 0)))
+        self.scope_combo.setCurrentText(settings.get("scope", self.scope_combo.currentText()))
+        self.n_spin.setValue(int(settings.get("n", self.n_spin.value())))
+        self.device_combo.setCurrentText(settings.get("device", self.device_combo.currentText()))
+        self.imgsz_spin.setValue(int(settings.get("imgsz", self.imgsz_spin.value())))
+        self.conf_spin.setValue(float(settings.get("conf", self.conf_spin.value())))
+        self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
+        self.weights_a_edit.setText(settings.get("weights_a", self.weights_a_edit.text()))
+        self.weights_b1_edit.setText(settings.get("weights_b1", self.weights_b1_edit.text()))
+        self.weights_b2_edit.setText(settings.get("weights_b2", self.weights_b2_edit.text()))
+        self.eval_csv_edit.setText(settings.get("eval_csv", self.eval_csv_edit.text()))
+
+    def _save_settings(self):
+        _save_dialog_settings(
+            "active_learning",
+            {
+                "strategy_index": int(self.strategy_combo.currentIndex()),
+                "scope": self.scope_combo.currentText(),
+                "n": int(self.n_spin.value()),
+                "device": self.device_combo.currentText(),
+                "imgsz": int(self.imgsz_spin.value()),
+                "conf": float(self.conf_spin.value()),
+                "batch": int(self.batch_spin.value()),
+                "weights_a": self.weights_a_edit.text().strip(),
+                "weights_b1": self.weights_b1_edit.text().strip(),
+                "weights_b2": self.weights_b2_edit.text().strip(),
+                "eval_csv": self.eval_csv_edit.text().strip(),
+            },
+        )
+
+    def closeEvent(self, event):
+        self._save_settings()
+        super().closeEvent(event)
 
     def _append_log(self, msg: str):
         self.log_view.appendPlainText(msg)

@@ -144,6 +144,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QScrollArea,
     QFrame,
+    QGroupBox,
 )
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -1786,6 +1787,9 @@ class MainWindow(QMainWindow):
 
         # Track which frames are in the labeling set (empty by default)
         self.labeling_frames: set = set()
+        self.metadata_manager = MetadataManager(
+            self.project.out_root / ".posekit" / "metadata.json"
+        )
 
         splitter = QSplitter(Qt.Horizontal, self)
         self.setCentralWidget(splitter)
@@ -1977,6 +1981,9 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.btn_export)
         right_layout.addWidget(self.btn_cluster_split)
 
+        self.btn_meta = QPushButton("Frame metadata/tags…")
+        right_layout.addWidget(self.btn_meta)
+
         right_layout.addSpacing(8)
         right_layout.addWidget(QLabel("Model"))
         self.btn_train = QPushButton("Train / Fine-tune…")
@@ -1985,6 +1992,26 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.btn_train)
         right_layout.addWidget(self.btn_eval)
         right_layout.addWidget(self.btn_active)
+
+        self.controls_group = QGroupBox("Controls")
+        self.controls_group.setCheckable(True)
+        self.controls_group.setChecked(False)
+        controls_layout = QVBoxLayout(self.controls_group)
+        self.controls_label = QLabel(
+            "Left click: place/move keypoint\n"
+            "Right click: pan\n"
+            "Wheel: zoom\n"
+            "A/D: prev/next frame\n"
+            "Q/E: prev/next keypoint\n"
+            "Space: advance\n"
+            "V/O/N: set visibility\n"
+            "Ctrl+S: save\n"
+            "Ctrl+F: next unlabeled"
+        )
+        self.controls_label.setWordWrap(True)
+        controls_layout.addWidget(self.controls_label)
+        right_layout.addSpacing(6)
+        right_layout.addWidget(self.controls_group)
 
         self.lbl_info = QLabel("")
         self.lbl_info.setWordWrap(True)
@@ -2039,6 +2066,7 @@ class MainWindow(QMainWindow):
         self.btn_proj.clicked.connect(self.open_project_settings)
         self.btn_export.clicked.connect(self.export_dataset_dialog)
         self.btn_cluster_split.clicked.connect(self.open_cluster_split_dialog)
+        self.btn_meta.clicked.connect(self.open_frame_metadata)
         self.btn_train.clicked.connect(self.open_training_runner)
         self.btn_eval.clicked.connect(self.open_evaluation_dashboard)
         self.btn_active.clicked.connect(self.open_active_learning)
@@ -2162,6 +2190,7 @@ class MainWindow(QMainWindow):
             "clahe_grid": list(self.project.clahe_grid),
             "sharpen_amt": self.project.sharpen_amt,
             "blur_sigma": self.project.blur_sigma,
+            "controls_open": bool(self.controls_group.isChecked()),
         }
         save_ui_settings(settings)
 
@@ -2182,6 +2211,8 @@ class MainWindow(QMainWindow):
             if "edge_opacity" in settings:
                 self.project.edge_opacity = float(settings["edge_opacity"])
                 self.sp_edge_opacity.setValue(self.project.edge_opacity)
+            if "controls_open" in settings:
+                self.controls_group.setChecked(bool(settings["controls_open"]))
 
     # ----- menus / shortcuts -----
     def _build_actions(self):
@@ -2303,6 +2334,10 @@ class MainWindow(QMainWindow):
         act_cluster_split = QAction("Dataset Split (Cluster-Stratified)…", self)
         act_cluster_split.triggered.connect(self.open_cluster_split_dialog)
         m_tools.addAction(act_cluster_split)
+        act_meta = QAction("Frame Metadata/Tags…", self)
+        act_meta.setShortcut(QKeySequence("Ctrl+M"))
+        act_meta.triggered.connect(self.open_frame_metadata)
+        m_tools.addAction(act_meta)
 
         m_model.addAction(act_train)
         m_model.addAction(act_eval)
@@ -3664,6 +3699,13 @@ class MainWindow(QMainWindow):
     # Backwards/alternate name used in older menu wiring.
     def open_active_learning_sampler(self):
         self.open_active_learning()
+
+    def open_frame_metadata(self):
+        if not self.image_paths:
+            return
+        img_path = str(self.image_paths[self.current_index])
+        dlg = FrameMetadataDialog(self, img_path, self.metadata_manager)
+        dlg.exec()
 
     def _load_cluster_ids_from_csv(self, csv_path: Path) -> Optional[List[int]]:
         if not csv_path.exists():
