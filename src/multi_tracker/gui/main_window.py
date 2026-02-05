@@ -2852,7 +2852,6 @@ class MainWindow(QMainWindow):
         self.chk_cleanup_temp_files.setChecked(True)
         self.chk_cleanup_temp_files.setToolTip(
             "Automatically delete temporary files after successful tracking:\n"
-            "• Detection cache files (*_detection_cache.npz)\n"
             "• Intermediate CSV files (*_forward.csv, *_backward.csv)\n"
             "Keeps only final merged/processed output files."
         )
@@ -4015,22 +4014,38 @@ class MainWindow(QMainWindow):
         self.lbl_background_color.setText(f"{self._background_color}")
 
     def _compute_median_background_color(self):
-        """Compute median color from current preview frame."""
-        if not hasattr(self, "current_frame") or self.current_frame is None:
+        """Compute median color from current preview frame or load from video."""
+        frame = None
+
+        # Try to use preview frame first
+        if (
+            hasattr(self, "preview_frame_original")
+            and self.preview_frame_original is not None
+        ):
+            # preview_frame_original is in RGB, convert to BGR for processing
+            frame = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2BGR)
+        # Otherwise, try to load from video if available
+        elif self.current_video_path:
+            cap = cv2.VideoCapture(self.current_video_path)
+            if cap.isOpened():
+                ret, frame_bgr = cap.read()
+                cap.release()
+                if ret:
+                    frame = frame_bgr
+
+        if frame is None:
             QMessageBox.warning(
                 self, "No Frame", "Please load a video first to compute median color."
             )
             return
 
         try:
-            from ..core.individual_analysis import IndividualDatasetGenerator
-            import numpy as np
+            from ..utils.image_processing import compute_median_color_from_frame
 
             # Compute median color
-            median_color = IndividualDatasetGenerator.compute_median_color_from_frame(
-                self.current_frame
-            )
-            self._background_color = median_color
+            median_color = compute_median_color_from_frame(frame)
+            # Convert numpy.uint8 to regular int for JSON serialization
+            self._background_color = tuple(int(c) for c in median_color)
             self._update_background_color_button()
 
             QMessageBox.information(
@@ -7297,14 +7312,6 @@ class MainWindow(QMainWindow):
             model_id = get_cache_model_id()
             detection_cache_path = f"{base_name}_detection_cache_{model_id}.npz"
 
-            # Track cache file as temporary (only if cleanup enabled AND not reusing from previous run)
-            if (
-                self.chk_cleanup_temp_files.isChecked()
-                and detection_cache_path not in self.temporary_files
-                and not (use_cached_detections and os.path.exists(detection_cache_path))
-            ):
-                self.temporary_files.append(detection_cache_path)
-
         self.tracking_worker = TrackingWorker(
             video_path,
             csv_writer_thread=self.csv_writer_thread,
@@ -7552,9 +7559,9 @@ class MainWindow(QMainWindow):
             "INDIVIDUAL_OUTPUT_FORMAT": self.combo_individual_format.currentText().lower(),
             "INDIVIDUAL_SAVE_INTERVAL": self.spin_individual_interval.value(),
             "INDIVIDUAL_CROP_PADDING": self.spin_individual_padding.value(),
-            "INDIVIDUAL_BACKGROUND_COLOR": list(
-                self._background_color
-            ),  # Convert tuple to list for JSON
+            "INDIVIDUAL_BACKGROUND_COLOR": [
+                int(c) for c in self._background_color
+            ],  # Ensure JSON serializable
         }
 
     def load_config(self):
@@ -8468,18 +8475,28 @@ class MainWindow(QMainWindow):
             {
                 "individual_save_interval": self.spin_individual_interval.value(),
                 "individual_crop_padding": self.spin_individual_padding.value(),
-                "individual_background_color": list(
-                    self._background_color
-                ),  # Convert tuple to list for JSON
+                "individual_background_color": [
+                    int(c) for c in self._background_color
+                ],  # Ensure JSON serializable
             }
         )
 
         # If preset mode with path provided, save directly
         if preset_mode and preset_path:
             try:
+                import tempfile
+
                 os.makedirs(os.path.dirname(preset_path), exist_ok=True)
-                with open(preset_path, "w") as f:
-                    json.dump(cfg, f, indent=2)
+                # Write to temp file first, then rename (atomic on most filesystems)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    dir=os.path.dirname(preset_path),
+                    delete=False,
+                    suffix=".tmp",
+                ) as tmp:
+                    json.dump(cfg, tmp, indent=2)
+                    tmp_path = tmp.name
+                os.replace(tmp_path, preset_path)  # Atomic rename
                 logger.info(f"Saved preset to {preset_path}")
                 return True
             except Exception as e:
@@ -8537,14 +8554,30 @@ class MainWindow(QMainWindow):
 
         if config_path:
             try:
-                with open(config_path, "w") as f:
-                    json.dump(cfg, f, indent=2)
+                import tempfile
+
+                # Write to temp file first, then rename (atomic on most filesystems)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    dir=os.path.dirname(config_path),
+                    delete=False,
+                    suffix=".tmp",
+                ) as tmp:
+                    json.dump(cfg, tmp, indent=2)
+                    tmp_path = tmp.name
+                os.replace(tmp_path, config_path)  # Atomic rename
                 logger.info(
                     f"Configuration saved to {config_path} (including ROI shapes)"
                 )
                 return True
             except Exception as e:
                 logger.warning(f"Failed to save configuration: {e}")
+                # Clean up temp file if save failed
+                try:
+                    if "tmp_path" in locals() and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except:
+                    pass
                 return False
         else:
             # User cancelled file dialog
@@ -9111,8 +9144,17 @@ class MainWindow(QMainWindow):
             "advanced_config.json",
         )
         try:
-            with open(config_path, "w") as f:
-                json.dump(self.advanced_config, f, indent=2)
+            import tempfile
+
+            # Write to temp file first, then rename (atomic on most filesystems)
+            config_dir = os.path.dirname(config_path)
+            os.makedirs(config_dir, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=config_dir, delete=False, suffix=".tmp"
+            ) as tmp:
+                json.dump(self.advanced_config, tmp, indent=2)
+                tmp_path = tmp.name
+            os.replace(tmp_path, config_path)  # Atomic rename
             logger.info(f"Saved advanced config to {config_path}")
         except Exception as e:
             logger.error(f"Could not save advanced config: {e}")

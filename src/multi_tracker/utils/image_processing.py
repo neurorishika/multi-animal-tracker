@@ -263,3 +263,22 @@ def stabilize_lighting(
         stabilized = cv2.convertScaleAbs(frame, alpha=correction_factor, beta=0)
 
     return stabilized, current_intensity_history, current_mean
+
+
+def compute_median_color_from_frame(frame):
+    """
+    Compute the median color (BGR) from a frame.
+
+    Useful for setting background color to match the input video's color profile.
+
+    Args:
+        frame: Input frame (BGR, shape: H x W x 3)
+
+    Returns:
+        Tuple of (B, G, R) median values
+    """
+    # Reshape frame to list of pixels
+    pixels = frame.reshape(-1, 3)
+    # Compute median for each channel
+    median_color = tuple(np.median(pixels, axis=0).astype(np.uint8))
+    return median_color

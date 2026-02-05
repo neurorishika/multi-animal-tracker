@@ -9,6 +9,8 @@ import logging
 from pathlib import Path
 import json
 
+from multi_tracker.utils.image_processing import compute_median_color_from_frame
+
 logger = logging.getLogger(__name__)
 
 
@@ -260,7 +262,8 @@ class IndividualDatasetGenerator:
         """
         Compute the median color (BGR) from a frame.
 
-        Useful for setting background color to match the input video's color profile.
+        DEPRECATED: Use compute_median_color_from_frame from image_processing utils instead.
+        This method is kept for backward compatibility.
 
         Args:
             frame: Input frame (BGR, shape: H x W x 3)
@@ -268,11 +271,7 @@ class IndividualDatasetGenerator:
         Returns:
             Tuple of (B, G, R) median values
         """
-        # Reshape frame to list of pixels
-        pixels = frame.reshape(-1, 3)
-        # Compute median for each channel
-        median_color = tuple(np.median(pixels, axis=0).astype(np.uint8))
-        return median_color
+        return compute_median_color_from_frame(frame)
 
     @staticmethod
     def ellipse_to_obb_corners(cx, cy, major_axis, minor_axis, theta):

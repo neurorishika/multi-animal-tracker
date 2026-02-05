@@ -358,7 +358,7 @@ mat
 #    - video_forward.csv
 #    - video_backward.csv
 #    - video_final.csv (use this one!)
-#    - video_detection_cache.npz (auto-deleted)
+#    - video_detection_cache.npz
 ```
 
 #### Workflow 4: Batch Processing (Command Line)
