@@ -13,16 +13,8 @@ from typing import List, Optional, Dict, Tuple
 import logging
 import numpy as np
 
-from PySide6.QtCore import Qt, QSize, QThread, QObject, Signal, QUrl, Slot
+from PySide6.QtCore import Qt, QSize, QThread, QObject, Signal, Slot
 from PySide6.QtGui import QPixmap, QPainter, QColor
-
-try:
-    from PySide6.QtWebEngineWidgets import QWebEngineView
-
-    HAS_WEBENGINE = True
-except ImportError:
-    HAS_WEBENGINE = False
-    QWebEngineView = None
 
 from PySide6.QtWidgets import (
     QDialog,
@@ -48,6 +40,8 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QStackedWidget,
     QWidget,
+    QScrollArea,
+    QGridLayout,
 )
 
 # Handle both package imports and direct script execution
@@ -64,7 +58,12 @@ try:
         build_yolo_pose_dataset,
         load_yolo_pose_label,
     )
-    from .utils.gpu_utils import CUDA_AVAILABLE, MPS_AVAILABLE
+    from ..utils.gpu_utils import (
+        CUDA_AVAILABLE,
+        MPS_AVAILABLE,
+        TORCH_CUDA_AVAILABLE,
+        ROCM_AVAILABLE,
+    )
 except ImportError:
     from pose_label_extensions import (
         MetadataManager,
@@ -80,23 +79,51 @@ except ImportError:
     )
 
     try:
-        from utils.gpu_utils import CUDA_AVAILABLE, MPS_AVAILABLE
+        from multi_tracker.utils.gpu_utils import (
+            CUDA_AVAILABLE,
+            MPS_AVAILABLE,
+            TORCH_CUDA_AVAILABLE,
+            ROCM_AVAILABLE,
+        )
     except ImportError:
         # Fallback if gpu_utils not available
         CUDA_AVAILABLE = False
         MPS_AVAILABLE = False
+        TORCH_CUDA_AVAILABLE = False
+        ROCM_AVAILABLE = False
 
 logger = logging.getLogger("pose_label.dialogs")
+
+IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
 
 def get_available_devices():
     """Get list of available compute devices based on gpu_utils flags."""
     devices = ["auto", "cpu"]
-    if CUDA_AVAILABLE:
+    if CUDA_AVAILABLE or TORCH_CUDA_AVAILABLE or ROCM_AVAILABLE:
         devices.append("cuda")
     if MPS_AVAILABLE:
         devices.append("mps")
     return devices
+
+
+def get_yolo_pose_base_models() -> List[str]:
+    """Known YOLO Pose base models from Ultralytics docs."""
+    return [
+        "yolo26n-pose.pt",
+        "yolo26s-pose.pt",
+        "yolo26m-pose.pt",
+        "yolo26l-pose.pt",
+        "yolo26x-pose.pt",
+    ]
+
+
+def list_images_in_dir(images_dir: Path) -> List[Path]:
+    paths: List[Path] = []
+    for p in sorted(images_dir.rglob("*")):
+        if p.is_file() and p.suffix.lower() in IMG_EXTS:
+            paths.append(p)
+    return paths
 
 
 class DatasetSplitDialog(QDialog):
@@ -118,6 +145,22 @@ class DatasetSplitDialog(QDialog):
         self.cluster_ids = cluster_ids
 
         layout = QVBoxLayout(self)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll, 1)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        content_layout = QVBoxLayout(content)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll, 1)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        content_layout = QVBoxLayout(content)
 
         # Info
         info_label = QLabel(
@@ -756,7 +799,7 @@ class SmartSelectDialog(QDialog):
         self.btn_preview.setEnabled(True)
         self.btn_add.setEnabled(True)
         self.btn_save_csv.setEnabled(True)
-        self.btn_explorer.setEnabled(True)  # Enable explorer now!
+        self.btn_explorer.setEnabled(False)
 
     def _cleanup_thread(self):
         if self._thread:
@@ -798,6 +841,7 @@ class SmartSelectDialog(QDialog):
             self._emb, k=k, method=cluster_method, seed=0
         )
         self._cluster = cluster
+        self.btn_explorer.setEnabled(True)
 
         # Use existing pick_frames_stratified with strategy
         picked = pick_frames_stratified(
@@ -1038,15 +1082,7 @@ class EmbeddingExplorerDialog(QDialog):
 
         layout.addLayout(info_layout)
 
-        # Add web view for Bokeh visualization (if available)
-        if HAS_WEBENGINE:
-            self.web_view = QWebEngineView()
-            layout.addWidget(self.web_view, 2)  # Give it more stretch
-        else:
-            self.web_view = None
-            layout.addWidget(
-                QLabel("QWebEngineView not available. Install PySide6-WebEngine.")
-            )
+        # Visualization opens in the system browser.
 
     def _compute_umap(self):
         """Compute UMAP in background thread."""
@@ -1268,18 +1304,13 @@ class EmbeddingExplorerDialog(QDialog):
             )
 
     def _load_visualization(self):
-        """Load Bokeh HTML in web view or open in browser."""
+        """Open Bokeh HTML in the system browser."""
         if not self.bokeh_html_path:
             return
 
-        if HAS_WEBENGINE and self.web_view:
-            # Load in QWebEngineView
-            self.web_view.setUrl(QUrl.fromLocalFile(self.bokeh_html_path))
-        else:
-            # Fallback to external browser
-            import webbrowser
+        import webbrowser
 
-            webbrowser.open("file://" + self.bokeh_html_path)
+        webbrowser.open("file://" + self.bokeh_html_path)
 
     def _refresh_viz(self):
         """Refresh the visualization."""
@@ -1432,7 +1463,7 @@ class TrainingRunnerDialog(QDialog):
             ["YOLO Pose", "ViTPose (coming soon)", "SLEAP (coming soon)"]
         )
         backend_layout.addWidget(self.backend_combo, 1)
-        layout.addWidget(backend_group)
+        content_layout.addWidget(backend_group)
 
         # Config
         cfg_group = QGroupBox("Config")
@@ -1463,7 +1494,7 @@ class TrainingRunnerDialog(QDialog):
         self.model_edit = QLineEdit("yolov8n-pose.pt")
         cfg_layout.addRow("Base model:", self.model_edit)
 
-        layout.addWidget(cfg_group)
+        content_layout.addWidget(cfg_group)
 
         # Dataset
         data_group = QGroupBox("Dataset")
@@ -2298,9 +2329,15 @@ class TrainingWorker(QObject):
         imgsz: int,
         device: str,
         augment: bool,
+        hsv_h: float,
+        hsv_s: float,
+        hsv_v: float,
+        degrees: float,
+        translate: float,
+        scale: float,
+        fliplr: float,
         mosaic: float,
         mixup: float,
-        fliplr: float,
     ):
         super().__init__()
         self.model_weights = model_weights
@@ -2311,6 +2348,12 @@ class TrainingWorker(QObject):
         self.imgsz = int(imgsz)
         self.device = device
         self.augment = bool(augment)
+        self.hsv_h = float(hsv_h)
+        self.hsv_s = float(hsv_s)
+        self.hsv_v = float(hsv_v)
+        self.degrees = float(degrees)
+        self.translate = float(translate)
+        self.scale = float(scale)
         self.mosaic = float(mosaic)
         self.mixup = float(mixup)
         self.fliplr = float(fliplr)
@@ -2387,9 +2430,19 @@ class TrainingWorker(QObject):
                 train_kwargs["device"] = self.device
             if self.augment:
                 train_kwargs["augment"] = True
-                train_kwargs["mosaic"] = self.mosaic
-                train_kwargs["mixup"] = self.mixup
-                train_kwargs["fliplr"] = self.fliplr
+                train_kwargs.update(
+                    {
+                        "hsv_h": self.hsv_h,
+                        "hsv_s": self.hsv_s,
+                        "hsv_v": self.hsv_v,
+                        "degrees": self.degrees,
+                        "translate": self.translate,
+                        "scale": self.scale,
+                        "fliplr": self.fliplr,
+                        "mosaic": self.mosaic,
+                        "mixup": self.mixup,
+                    }
+                )
 
             self.log.emit("Starting training...")
             model.train(**train_kwargs)
@@ -2427,6 +2480,14 @@ class TrainingRunnerDialog(QDialog):
 
         layout = QVBoxLayout(self)
 
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll, 1)
+
+        content = QWidget()
+        scroll.setWidget(content)
+        content_layout = QVBoxLayout(content)
+
         # Backend
         backend_group = QGroupBox("Backend")
         backend_layout = QFormLayout(backend_group)
@@ -2435,14 +2496,17 @@ class TrainingRunnerDialog(QDialog):
         self.backend_combo.addItems(["YOLO Pose", "ViTPose (soon)", "SLEAP (soon)"])
         backend_layout.addRow("Backend:", self.backend_combo)
 
-        self.model_edit = QLineEdit("yolov8n-pose.pt")
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(True)
+        self.model_combo.addItems(get_yolo_pose_base_models())
+        self.model_combo.setCurrentText("yolo26n-pose.pt")
         self.btn_model_browse = QPushButton("Browse…")
         model_row = QHBoxLayout()
-        model_row.addWidget(self.model_edit, 1)
+        model_row.addWidget(self.model_combo, 1)
         model_row.addWidget(self.btn_model_browse)
         backend_layout.addRow("Base weights:", model_row)
 
-        layout.addWidget(backend_group)
+        content_layout.addWidget(backend_group)
 
         # Config
         cfg_group = QGroupBox("Config")
@@ -2464,37 +2528,139 @@ class TrainingRunnerDialog(QDialog):
         cfg_layout.addRow("Image size:", self.imgsz_spin)
 
         self.device_combo = QComboBox()
-        self.device_combo.addItems(["auto", "cpu", "cuda", "mps"])
+        self.device_combo.addItems(get_available_devices())
         cfg_layout.addRow("Device:", self.device_combo)
 
-        layout.addWidget(cfg_group)
+        content_layout.addWidget(cfg_group)
 
         # Augmentations
         aug_group = QGroupBox("Augmentations")
-        aug_layout = QFormLayout(aug_group)
+        aug_layout = QVBoxLayout(aug_group)
         self.cb_augment = QCheckBox("Enable augmentations")
         self.cb_augment.setChecked(True)
-        aug_layout.addRow(self.cb_augment)
+        aug_layout.addWidget(self.cb_augment)
+
+        self.aug_widgets = []
+
+        grid = QGridLayout()
+        aug_layout.addLayout(grid)
+
+        row = 0
+        col = 0
+
+        def add_row(label: str, widget: QWidget, tip: str):
+            nonlocal row, col
+            lbl = QLabel(label)
+            lbl.setToolTip(tip)
+            widget.setToolTip(tip)
+            grid.addWidget(lbl, row, col * 2)
+            grid.addWidget(widget, row, col * 2 + 1)
+            if col == 0:
+                col = 1
+            else:
+                col = 0
+                row += 1
+
+        self.hsv_h_spin = QDoubleSpinBox()
+        self.hsv_h_spin.setRange(0.0, 1.0)
+        self.hsv_h_spin.setSingleStep(0.005)
+        self.hsv_h_spin.setValue(0.01)
+        add_row(
+            "hsv_h:",
+            self.hsv_h_spin,
+            "Hue jitter (fraction). Small values recommended.",
+        )
+        self.aug_widgets.append(self.hsv_h_spin)
+
+        self.hsv_s_spin = QDoubleSpinBox()
+        self.hsv_s_spin.setRange(0.0, 1.0)
+        self.hsv_s_spin.setSingleStep(0.05)
+        self.hsv_s_spin.setValue(0.2)
+        add_row(
+            "hsv_s:",
+            self.hsv_s_spin,
+            "Saturation jitter (fraction).",
+        )
+        self.aug_widgets.append(self.hsv_s_spin)
+
+        self.hsv_v_spin = QDoubleSpinBox()
+        self.hsv_v_spin.setRange(0.0, 1.0)
+        self.hsv_v_spin.setSingleStep(0.05)
+        self.hsv_v_spin.setValue(0.1)
+        add_row(
+            "hsv_v:",
+            self.hsv_v_spin,
+            "Value/brightness jitter (fraction).",
+        )
+        self.aug_widgets.append(self.hsv_v_spin)
+
+        self.degrees_spin = QDoubleSpinBox()
+        self.degrees_spin.setRange(0.0, 180.0)
+        self.degrees_spin.setSingleStep(1.0)
+        self.degrees_spin.setValue(5.0)
+        add_row(
+            "degrees:",
+            self.degrees_spin,
+            "Rotation range in degrees.",
+        )
+        self.aug_widgets.append(self.degrees_spin)
+
+        self.translate_spin = QDoubleSpinBox()
+        self.translate_spin.setRange(0.0, 1.0)
+        self.translate_spin.setSingleStep(0.05)
+        self.translate_spin.setValue(0.05)
+        add_row(
+            "translate:",
+            self.translate_spin,
+            "Translation range as fraction of image size.",
+        )
+        self.aug_widgets.append(self.translate_spin)
+
+        self.scale_spin = QDoubleSpinBox()
+        self.scale_spin.setRange(0.0, 1.0)
+        self.scale_spin.setSingleStep(0.05)
+        self.scale_spin.setValue(0.2)
+        add_row(
+            "scale:",
+            self.scale_spin,
+            "Scale variation (fraction).",
+        )
+        self.aug_widgets.append(self.scale_spin)
 
         self.mosaic_spin = QDoubleSpinBox()
         self.mosaic_spin.setRange(0.0, 1.0)
         self.mosaic_spin.setSingleStep(0.05)
-        self.mosaic_spin.setValue(1.0)
-        aug_layout.addRow("Mosaic:", self.mosaic_spin)
+        self.mosaic_spin.setValue(0.1)
+        add_row(
+            "mosaic:",
+            self.mosaic_spin,
+            "Mosaic augmentation probability.",
+        )
+        self.aug_widgets.append(self.mosaic_spin)
 
         self.mixup_spin = QDoubleSpinBox()
         self.mixup_spin.setRange(0.0, 1.0)
         self.mixup_spin.setSingleStep(0.05)
         self.mixup_spin.setValue(0.0)
-        aug_layout.addRow("MixUp:", self.mixup_spin)
+        add_row(
+            "mixup:",
+            self.mixup_spin,
+            "MixUp probability.",
+        )
+        self.aug_widgets.append(self.mixup_spin)
 
         self.fliplr_spin = QDoubleSpinBox()
         self.fliplr_spin.setRange(0.0, 1.0)
         self.fliplr_spin.setSingleStep(0.05)
-        self.fliplr_spin.setValue(0.5)
-        aug_layout.addRow("Flip LR:", self.fliplr_spin)
+        self.fliplr_spin.setValue(0.2)
+        add_row(
+            "fliplr:",
+            self.fliplr_spin,
+            "Horizontal flip probability.",
+        )
+        self.aug_widgets.append(self.fliplr_spin)
 
-        layout.addWidget(aug_group)
+        content_layout.addWidget(aug_group)
 
         # Dataset
         data_group = QGroupBox("Dataset")
@@ -2511,30 +2677,39 @@ class TrainingRunnerDialog(QDialog):
         self.seed_spin.setValue(42)
         data_layout.addRow("Random seed:", self.seed_spin)
 
-        labeled_count = len(
-            list_labeled_indices(self.image_paths, self.project.labels_dir)
-        )
-        self.lbl_labeled = QLabel(f"Labeled frames: {labeled_count}")
+        self._aux_datasets: List[Dict[str, object]] = []
+
+        self.lbl_labeled = QLabel("")
+        self._refresh_labeled_count()
         data_layout.addRow("Status:", self.lbl_labeled)
 
-        layout.addWidget(data_group)
+        self.aux_list = QListWidget()
+        self.btn_add_aux = QPushButton("Add auxiliary project…")
+        self.btn_remove_aux = QPushButton("Remove selected")
+        aux_row = QHBoxLayout()
+        aux_row.addWidget(self.btn_add_aux)
+        aux_row.addWidget(self.btn_remove_aux)
+        data_layout.addRow("Auxiliary datasets:", self.aux_list)
+        data_layout.addRow("", aux_row)
+
+        content_layout.addWidget(data_group)
 
         # Run info
         info_group = QGroupBox("Run")
         info_layout = QFormLayout(info_group)
         self.lbl_run_dir = QLabel("Run dir: (not started)")
         info_layout.addRow(self.lbl_run_dir)
-        layout.addWidget(info_group)
+        content_layout.addWidget(info_group)
 
         # Logs + progress
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        layout.addWidget(self.progress)
+        content_layout.addWidget(self.progress)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        layout.addWidget(self.log_view, 1)
+        content_layout.addWidget(self.log_view, 1)
 
         # Buttons
         btns = QHBoxLayout()
@@ -2549,7 +2724,7 @@ class TrainingRunnerDialog(QDialog):
         btns.addWidget(self.btn_open_eval)
         btns.addStretch(1)
         btns.addWidget(self.btn_close)
-        layout.addLayout(btns)
+        content_layout.addLayout(btns)
 
         # Wiring
         self.btn_model_browse.clicked.connect(self._browse_model)
@@ -2557,6 +2732,11 @@ class TrainingRunnerDialog(QDialog):
         self.btn_stop.clicked.connect(self._stop_training)
         self.btn_close.clicked.connect(self.reject)
         self.btn_open_eval.clicked.connect(self._open_eval)
+        self.btn_add_aux.clicked.connect(self._add_aux_project)
+        self.btn_remove_aux.clicked.connect(self._remove_aux_project)
+        self.cb_augment.toggled.connect(self._toggle_aug_widgets)
+
+        self._toggle_aug_widgets(self.cb_augment.isChecked())
 
     def _append_log(self, msg: str):
         self.log_view.appendPlainText(msg)
@@ -2567,7 +2747,68 @@ class TrainingRunnerDialog(QDialog):
     def _browse_model(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select weights", "", "*.pt")
         if path:
-            self.model_edit.setText(path)
+            self.model_combo.setCurrentText(path)
+
+    def _toggle_aug_widgets(self, enabled: bool):
+        for w in self.aug_widgets:
+            w.setEnabled(enabled)
+
+    def _add_aux_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select pose_project.json", "", "pose_project.json"
+        )
+        if not path:
+            return
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+            images_dir = Path(data["images_dir"]).expanduser().resolve()
+            labels_dir = Path(data["labels_dir"]).expanduser().resolve()
+            class_names = data.get("class_names", [])
+            keypoint_names = data.get("keypoint_names", [])
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid project", str(e))
+            return
+
+        if class_names != self.project.class_names or keypoint_names != self.project.keypoint_names:
+            QMessageBox.warning(
+                self,
+                "Mismatch",
+                "Aux project classes/keypoints do not match the current project.",
+            )
+            return
+
+        image_paths = list_images_in_dir(images_dir)
+        if not image_paths:
+            QMessageBox.warning(self, "Empty", "No images found in aux project.")
+            return
+
+        item = QListWidgetItem(f"{images_dir}  (labels: {labels_dir})")
+        self.aux_list.addItem(item)
+        self._aux_datasets.append(
+            {"images": image_paths, "labels_dir": labels_dir, "project_path": path}
+        )
+        self._refresh_labeled_count()
+
+    def _remove_aux_project(self):
+        row = self.aux_list.currentRow()
+        if row < 0:
+            return
+        self.aux_list.takeItem(row)
+        try:
+            self._aux_datasets.pop(row)
+        except Exception:
+            pass
+        self._refresh_labeled_count()
+
+    def _refresh_labeled_count(self):
+        labeled_count = len(
+            list_labeled_indices(self.image_paths, self.project.labels_dir)
+        )
+        for aux in self._aux_datasets:
+            labeled_count += len(
+                list_labeled_indices(aux["images"], aux["labels_dir"])
+            )
+        self.lbl_labeled.setText(f"Labeled frames: {labeled_count}")
 
     def _start_training(self):
         backend = self.backend_combo.currentText()
@@ -2582,6 +2823,10 @@ class TrainingRunnerDialog(QDialog):
         labeled_count = len(
             list_labeled_indices(self.image_paths, self.project.labels_dir)
         )
+        for aux in self._aux_datasets:
+            labeled_count += len(
+                list_labeled_indices(aux["images"], aux["labels_dir"])
+            )
         if labeled_count < 2:
             QMessageBox.warning(
                 self,
@@ -2605,6 +2850,9 @@ class TrainingRunnerDialog(QDialog):
                 self.seed_spin.value(),
                 self.project.class_names,
                 self.project.keypoint_names,
+                extra_datasets=[
+                    (d["images"], d["labels_dir"]) for d in self._aux_datasets
+                ],
             )
         except Exception as e:
             QMessageBox.critical(self, "Dataset error", str(e))
@@ -2612,22 +2860,30 @@ class TrainingRunnerDialog(QDialog):
 
         config = {
             "backend": "yolo_pose",
-            "model_weights": self.model_edit.text().strip(),
+            "model_weights": self.model_combo.currentText().strip(),
             "epochs": int(self.epochs_spin.value()),
             "batch": int(self.batch_spin.value()),
             "imgsz": int(self.imgsz_spin.value()),
             "device": self.device_combo.currentText(),
             "augment": bool(self.cb_augment.isChecked()),
+            "hsv_h": float(self.hsv_h_spin.value()),
+            "hsv_s": float(self.hsv_s_spin.value()),
+            "hsv_v": float(self.hsv_v_spin.value()),
+            "degrees": float(self.degrees_spin.value()),
+            "translate": float(self.translate_spin.value()),
+            "scale": float(self.scale_spin.value()),
+            "fliplr": float(self.fliplr_spin.value()),
             "mosaic": float(self.mosaic_spin.value()),
             "mixup": float(self.mixup_spin.value()),
-            "fliplr": float(self.fliplr_spin.value()),
             "dataset": {
                 "yaml": str(dataset_info["yaml_path"]),
                 "train": str(dataset_info["train_list"]),
                 "val": str(dataset_info["val_list"]),
                 "train_count": dataset_info["train_count"],
                 "val_count": dataset_info["val_count"],
+                "manifest": str(dataset_info.get("manifest", "")),
             },
+            "aux_datasets": [d["project_path"] for d in self._aux_datasets],
         }
         (run_dir / "config.json").write_text(
             json.dumps(config, indent=2), encoding="utf-8"
@@ -2641,7 +2897,7 @@ class TrainingRunnerDialog(QDialog):
         # Start worker
         self._thread = QThread()
         self._worker = TrainingWorker(
-            model_weights=self.model_edit.text().strip(),
+            model_weights=self.model_combo.currentText().strip(),
             dataset_yaml=Path(dataset_info["yaml_path"]),
             run_dir=run_dir,
             epochs=self.epochs_spin.value(),
@@ -2649,9 +2905,15 @@ class TrainingRunnerDialog(QDialog):
             imgsz=self.imgsz_spin.value(),
             device=self.device_combo.currentText(),
             augment=self.cb_augment.isChecked(),
+            hsv_h=self.hsv_h_spin.value(),
+            hsv_s=self.hsv_s_spin.value(),
+            hsv_v=self.hsv_v_spin.value(),
+            degrees=self.degrees_spin.value(),
+            translate=self.translate_spin.value(),
+            scale=self.scale_spin.value(),
+            fliplr=self.fliplr_spin.value(),
             mosaic=self.mosaic_spin.value(),
             mixup=self.mixup_spin.value(),
-            fliplr=self.fliplr_spin.value(),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -3060,7 +3322,7 @@ class EvaluationDashboardDialog(QDialog):
         cfg_layout.addRow("Weights:", weights_row)
 
         self.device_combo = QComboBox()
-        self.device_combo.addItems(["auto", "cpu", "cuda", "mps"])
+        self.device_combo.addItems(get_available_devices())
         cfg_layout.addRow("Device:", self.device_combo)
 
         self.imgsz_spin = QSpinBox()
@@ -3639,7 +3901,7 @@ class ActiveLearningDialog(QDialog):
         common_layout.addRow("Suggest N frames:", self.n_spin)
 
         self.device_combo = QComboBox()
-        self.device_combo.addItems(["auto", "cpu", "cuda", "mps"])
+        self.device_combo.addItems(get_available_devices())
         common_layout.addRow("Device:", self.device_combo)
 
         self.imgsz_spin = QSpinBox()

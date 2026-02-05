@@ -3389,6 +3389,46 @@ class MainWindow(QMainWindow):
 
         form.addWidget(self.g_individual_dataset)
 
+        # ============================================================
+        # Pose Label UI Integration (Top-level section)
+        # ============================================================
+        self.g_pose_label = QGroupBox("Pose Label & Keypoint Annotation")
+        vl_pose = QVBoxLayout(self.g_pose_label)
+        vl_pose.addWidget(
+            self._create_help_label(
+                "Open any image folder with the PoseKit Labeler UI for keypoint annotation.\n"
+                "Supports YOLO Pose format labels (.txt) with normalized bbox + keypoints + visibility."
+            )
+        )
+
+        # Folder selection
+        h_pose_folder = QHBoxLayout()
+        h_pose_folder.addWidget(QLabel("Folder to Label:"))
+        self.line_pose_folder = QLineEdit()
+        self.line_pose_folder.setPlaceholderText("Select images folder...")
+        self.line_pose_folder.setToolTip(
+            "Folder containing images to label with keypoints.\n"
+            "Labels will be saved as .txt files in the same directory."
+        )
+        h_pose_folder.addWidget(self.line_pose_folder, 1)
+        self.btn_browse_pose_folder = QPushButton("Browse...")
+        self.btn_browse_pose_folder.clicked.connect(self._select_pose_folder)
+        h_pose_folder.addWidget(self.btn_browse_pose_folder)
+        vl_pose.addLayout(h_pose_folder)
+
+        # Open in Pose Label button
+        self.btn_open_pose_label = QPushButton("Open Folder in Pose Label UI")
+        self.btn_open_pose_label.setToolTip(
+            "Launch the PoseKit Labeler for keypoint annotation.\n"
+            "You can create/edit project settings, import skeleton definitions, etc.\n"
+            "Labels are auto-saved and compatible with YOLO training."
+        )
+        self.btn_open_pose_label.clicked.connect(self._open_pose_label_ui)
+        self.btn_open_pose_label.setEnabled(False)
+        vl_pose.addWidget(self.btn_open_pose_label)
+
+        form.addWidget(self.g_pose_label)
+
         # Initially hide individual dataset widgets (checkbox starts unchecked)
         self.ind_output_group.setVisible(False)
         self.lbl_individual_info.setVisible(False)
@@ -3772,6 +3812,93 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to open X-AnyLabeling: {e}", exc_info=True)
             QMessageBox.critical(
                 self, "Launch Error", f"Failed to open X-AnyLabeling:\n{str(e)}"
+            )
+
+    def _select_pose_folder(self):
+        """Browse for a folder to label with Pose Label UI."""
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Folder with Images to Label",
+            (
+                self.line_pose_folder.text()
+                if self.line_pose_folder.text()
+                else str(Path.home())
+            ),
+        )
+
+        if directory:
+            self.line_pose_folder.setText(directory)
+            self.btn_open_pose_label.setEnabled(True)
+
+    def _open_pose_label_ui(self):
+        """Open a folder in the Pose Label UI using the current environment."""
+        folder_path = self.line_pose_folder.text()
+
+        if not folder_path or not Path(folder_path).exists():
+            QMessageBox.warning(
+                self,
+                "Invalid Folder",
+                "Please select a valid folder with images to label.",
+            )
+            return
+
+        folder = Path(folder_path)
+
+        # Check if folder has any images
+        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+        has_images = any(
+            f.suffix.lower() in image_extensions
+            for f in folder.iterdir()
+            if f.is_file()
+        )
+
+        if not has_images:
+            QMessageBox.warning(
+                self,
+                "No Images Found",
+                f"No image files found in:\n{folder_path}\n\n"
+                f"Supported formats: {', '.join(image_extensions)}",
+            )
+            return
+
+        # Launch pose_label.py using the current Python interpreter
+        import subprocess
+        import sys
+
+        try:
+            # Find the pose_label.py script in the same directory as main_window.py
+            gui_dir = Path(__file__).parent
+            pose_label_script = gui_dir / "pose_label.py"
+
+            if not pose_label_script.exists():
+                QMessageBox.critical(
+                    self,
+                    "Script Not Found",
+                    f"Could not find pose_label.py at:\n{pose_label_script}",
+                )
+                return
+
+            # Use the current Python executable (same environment as mat)
+            # This avoids conda activation and terminal detection complexity
+            subprocess.Popen(
+                [sys.executable, str(pose_label_script), str(folder)],
+                cwd=str(gui_dir),
+            )
+
+            logger.info(f"Opened Pose Label UI for folder: {folder}")
+            QMessageBox.information(
+                self,
+                "Pose Label UI Launched",
+                f"Pose Label UI is starting...\n\n"
+                f"Folder: {folder}\n\n"
+                f"You can now create/edit project settings, define skeletons,\n"
+                f"and annotate keypoints. Labels will be auto-saved.",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to open Pose Label UI: {e}", exc_info=True)
+            QMessageBox.critical(
+                self, "Launch Error", f"Failed to open Pose Label UI:\n{str(e)}"
             )
 
     def _on_individual_analysis_toggled(self, state):

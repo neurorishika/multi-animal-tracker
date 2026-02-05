@@ -3514,7 +3514,7 @@ class MainWindow(QMainWindow):
 
     def export_dataset_dialog(self):
         dlg = QDialog(self)
-        dlg.setWindowTitle("Export dataset.yaml + train/val splits")
+        dlg.setWindowTitle("Export dataset.yaml + copied images/labels")
         layout = QFormLayout(dlg)
 
         out_root = QLineEdit(str(self.project.out_root))
@@ -3563,44 +3563,28 @@ class MainWindow(QMainWindow):
         root = Path(out_root.text()).expanduser().resolve()
         root.mkdir(parents=True, exist_ok=True)
 
-        imgs = list(self.image_paths)
-        rnd = random.Random(int(seed.value()))
-        rnd.shuffle(imgs)
-
-        n_train = int(len(imgs) * float(split.value()))
-        train_imgs = imgs[:n_train]
-        val_imgs = imgs[n_train:]
-
-        train_txt = root / "train.txt"
-        val_txt = root / "val.txt"
-
-        def rel_or_abs(p: Path) -> str:
-            try:
-                return str(p.resolve().relative_to(root))
-            except Exception:
-                return str(p.resolve())
-
-        train_txt.write_text(
-            "\n".join(rel_or_abs(p) for p in train_imgs) + "\n", encoding="utf-8"
-        )
-        val_txt.write_text(
-            "\n".join(rel_or_abs(p) for p in val_imgs) + "\n", encoding="utf-8"
-        )
-
-        k = len(self.project.keypoint_names)
-        data = {
-            "path": str(root),
-            "train": "train.txt",
-            "val": "val.txt",
-            "kpt_shape": [k, 3],
-            "names": {i: n for i, n in enumerate(self.project.class_names)},
-            "kpt_names": {0: self.project.keypoint_names},
-        }
-        yaml_path = root / "dataset.yaml"
-        yaml_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        try:
+            info = build_yolo_pose_dataset(
+                self.image_paths,
+                self.project.labels_dir,
+                root,
+                float(split.value()),
+                int(seed.value()),
+                self.project.class_names,
+                self.project.keypoint_names,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Export failed", str(e))
+            return
 
         QMessageBox.information(
-            self, "Exported", f"Wrote:\n- {yaml_path}\n- {train_txt}\n- {val_txt}"
+            self,
+            "Exported",
+            "Wrote:\n"
+            f"- {info['yaml_path']}\n"
+            f"- images/train + labels/train\n"
+            f"- images/val + labels/val\n"
+            f"- {info.get('manifest', '')}",
         )
 
     def open_smart_select(self):

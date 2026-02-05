@@ -891,44 +891,91 @@ def build_yolo_pose_dataset(
     seed: int,
     class_names: List[str],
     keypoint_names: List[str],
+    extra_datasets: Optional[List[Tuple[List[Path], Path]]] = None,
 ) -> Dict[str, object]:
     """
-    Build a YOLO Pose dataset.yaml + train/val lists from labeled frames.
+    Build a YOLO Pose dataset with copied images/labels under output_dir.
 
     Returns dict with paths and counts.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
 
-    labeled_indices = list_labeled_indices(image_paths, labels_dir)
-    if len(labeled_indices) < 2:
+    def _unique_stem(stem: str, used: set, salt: str) -> str:
+        if stem not in used:
+            used.add(stem)
+            return stem
+        h = hashlib.sha1(salt.encode("utf-8")).hexdigest()[:8]
+        cand = f"{stem}_{h}"
+        used.add(cand)
+        return cand
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    images_train = output_dir / "images" / "train"
+    images_val = output_dir / "images" / "val"
+    labels_train = output_dir / "labels" / "train"
+    labels_val = output_dir / "labels" / "val"
+    images_train.mkdir(parents=True, exist_ok=True)
+    images_val.mkdir(parents=True, exist_ok=True)
+    labels_train.mkdir(parents=True, exist_ok=True)
+    labels_val.mkdir(parents=True, exist_ok=True)
+
+    datasets = [(image_paths, labels_dir)]
+    if extra_datasets:
+        datasets.extend(extra_datasets)
+
+    items: List[Tuple[Path, Path]] = []
+    for imgs, lbl_dir in datasets:
+        labeled_indices = list_labeled_indices(imgs, lbl_dir)
+        for idx in labeled_indices:
+            img_path = imgs[idx]
+            label_path = lbl_dir / f"{img_path.stem}.txt"
+            if label_path.exists():
+                items.append((img_path, label_path))
+
+    if len(items) < 2:
         raise ValueError("Need at least 2 labeled frames to build train/val split.")
 
-    labeled_paths = [image_paths[i] for i in labeled_indices]
     rng = random.Random(int(seed))
-    rng.shuffle(labeled_paths)
+    rng.shuffle(items)
 
     train_frac = max(0.05, min(0.95, float(train_frac)))
-    n_train = int(len(labeled_paths) * train_frac)
-    n_train = max(1, min(n_train, len(labeled_paths) - 1))
+    n_train = int(len(items) * train_frac)
+    n_train = max(1, min(n_train, len(items) - 1))
 
-    train_paths = labeled_paths[:n_train]
-    val_paths = labeled_paths[n_train:]
+    train_items = items[:n_train]
+    val_items = items[n_train:]
+
+    used_stems = set()
+    manifest_rows = []
+
+    def _copy_split(split_items: List[Tuple[Path, Path]], img_dir: Path, lbl_dir: Path):
+        for img_path, label_path in split_items:
+            stem = _unique_stem(img_path.stem, used_stems, str(img_path))
+            img_dst = img_dir / f"{stem}{img_path.suffix.lower()}"
+            lbl_dst = lbl_dir / f"{stem}.txt"
+            shutil.copy2(img_path, img_dst)
+            shutil.copy2(label_path, lbl_dst)
+            manifest_rows.append(
+                {
+                    "src_image": str(img_path),
+                    "src_label": str(label_path),
+                    "dst_image": str(img_dst),
+                    "dst_label": str(lbl_dst),
+                }
+            )
+
+    _copy_split(train_items, images_train, labels_train)
+    _copy_split(val_items, images_val, labels_val)
 
     train_txt = output_dir / "train.txt"
     val_txt = output_dir / "val.txt"
-
-    train_txt.write_text(
-        "\n".join(str(p.resolve()) for p in train_paths) + "\n", encoding="utf-8"
-    )
-    val_txt.write_text(
-        "\n".join(str(p.resolve()) for p in val_paths) + "\n", encoding="utf-8"
-    )
+    train_txt.write_text("images/train\n", encoding="utf-8")
+    val_txt.write_text("images/val\n", encoding="utf-8")
 
     k = len(keypoint_names)
     data = {
         "path": str(output_dir),
-        "train": "train.txt",
-        "val": "val.txt",
+        "train": "images/train",
+        "val": "images/val",
         "kpt_shape": [k, 3],
         "names": {i: n for i, n in enumerate(class_names)},
         "kpt_names": {0: keypoint_names},
@@ -937,14 +984,18 @@ def build_yolo_pose_dataset(
     import yaml
 
     yaml_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest_rows, indent=2), encoding="utf-8"
+    )
 
     return {
         "yaml_path": yaml_path,
         "train_list": train_txt,
         "val_list": val_txt,
-        "train_count": len(train_paths),
-        "val_count": len(val_paths),
-        "labeled_count": len(labeled_paths),
+        "train_count": len(train_items),
+        "val_count": len(val_items),
+        "labeled_count": len(items),
+        "manifest": output_dir / "manifest.json",
     }
 
 
