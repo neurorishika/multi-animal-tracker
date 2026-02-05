@@ -12,6 +12,7 @@ Extensions for PoseKit Labeler:
 from __future__ import annotations
 
 import csv
+import random
 import hashlib
 import json
 import shutil
@@ -860,6 +861,91 @@ def migrate_labels_keypoints(
             logger.warning(f"Failed to migrate {lp}: {e}")
 
     return (files_modified, len(txts))
+
+
+# -----------------------------
+# Dataset utilities
+# -----------------------------
+
+
+def list_labeled_indices(image_paths: List[Path], labels_dir: Path) -> List[int]:
+    """Return indices of images that have non-empty label files."""
+    labeled = []
+    for idx, img_path in enumerate(image_paths):
+        label_path = labels_dir / f"{img_path.stem}.txt"
+        if not label_path.exists():
+            continue
+        try:
+            if label_path.read_text(encoding="utf-8").strip():
+                labeled.append(idx)
+        except Exception:
+            continue
+    return labeled
+
+
+def build_yolo_pose_dataset(
+    image_paths: List[Path],
+    labels_dir: Path,
+    output_dir: Path,
+    train_frac: float,
+    seed: int,
+    class_names: List[str],
+    keypoint_names: List[str],
+) -> Dict[str, object]:
+    """
+    Build a YOLO Pose dataset.yaml + train/val lists from labeled frames.
+
+    Returns dict with paths and counts.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    labeled_indices = list_labeled_indices(image_paths, labels_dir)
+    if len(labeled_indices) < 2:
+        raise ValueError("Need at least 2 labeled frames to build train/val split.")
+
+    labeled_paths = [image_paths[i] for i in labeled_indices]
+    rng = random.Random(int(seed))
+    rng.shuffle(labeled_paths)
+
+    train_frac = max(0.05, min(0.95, float(train_frac)))
+    n_train = int(len(labeled_paths) * train_frac)
+    n_train = max(1, min(n_train, len(labeled_paths) - 1))
+
+    train_paths = labeled_paths[:n_train]
+    val_paths = labeled_paths[n_train:]
+
+    train_txt = output_dir / "train.txt"
+    val_txt = output_dir / "val.txt"
+
+    train_txt.write_text(
+        "\n".join(str(p.resolve()) for p in train_paths) + "\n", encoding="utf-8"
+    )
+    val_txt.write_text(
+        "\n".join(str(p.resolve()) for p in val_paths) + "\n", encoding="utf-8"
+    )
+
+    k = len(keypoint_names)
+    data = {
+        "path": str(output_dir),
+        "train": "train.txt",
+        "val": "val.txt",
+        "kpt_shape": [k, 3],
+        "names": {i: n for i, n in enumerate(class_names)},
+        "kpt_names": {0: keypoint_names},
+    }
+    yaml_path = output_dir / "dataset.yaml"
+    import yaml
+
+    yaml_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    return {
+        "yaml_path": yaml_path,
+        "train_list": train_txt,
+        "val_list": val_txt,
+        "train_count": len(train_paths),
+        "val_count": len(val_paths),
+        "labeled_count": len(labeled_paths),
+    }
 
 
 # -----------------------------

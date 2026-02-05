@@ -67,6 +67,9 @@ try:
         DatasetSplitDialog,
         FrameMetadataDialog,
         SmartSelectDialog,
+        TrainingRunnerDialog,
+        EvaluationDashboardDialog,
+        ActiveLearningDialog,
     )
 except ImportError:
     # Direct script execution - use absolute imports
@@ -88,6 +91,9 @@ except ImportError:
         DatasetSplitDialog,
         FrameMetadataDialog,
         SmartSelectDialog,
+        TrainingRunnerDialog,
+        EvaluationDashboardDialog,
+        ActiveLearningDialog,
     )
 
 from PySide6.QtCore import Qt, QRectF, QSize, QObject, Signal, Slot, QThread
@@ -134,6 +140,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QPlainTextEdit,
+    QScrollArea,
+    QFrame,
 )
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -809,8 +817,8 @@ class PoseCanvas(QGraphicsView):
         self._kpt_opacity = 1.0
         self._edge_opacity = 0.7
         self._zoom_factor = 1.0
-        self._min_zoom = 0.1
-        self._max_zoom = 10.0
+        self._min_zoom = 0.3
+        self._max_zoom = 30.0
 
         self._on_place = None
         self._on_move = None
@@ -1004,15 +1012,21 @@ class PoseCanvas(QGraphicsView):
         return candidates[0]
 
     def wheelEvent(self, event):
-        factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        # Use smaller zoom increments for smoother control
+        factor = 1.01 if event.angleDelta().y() > 0 else 1 / 1.01
         new_zoom = self._zoom_factor * factor
 
-        # Clamp zoom
-        if new_zoom < self._min_zoom or new_zoom > self._max_zoom:
-            return
+        # Clamp zoom to reasonable bounds
+        if new_zoom < self._min_zoom:
+            new_zoom = self._min_zoom
+            factor = new_zoom / self._zoom_factor
+        elif new_zoom > self._max_zoom:
+            new_zoom = self._max_zoom
+            factor = new_zoom / self._zoom_factor
 
         self.scale(factor, factor)
         self._zoom_factor = new_zoom
+        event.accept()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
@@ -1029,6 +1043,10 @@ class PoseCanvas(QGraphicsView):
 
             # Get parent's mode
             parent = self.parent()
+            # If parent is splitter (default Qt behavior when added to splitter), try window()
+            if parent and not hasattr(parent, "mode"):
+                parent = self.window()
+
             mode = getattr(parent, "mode", "frame") if parent else "frame"
 
             if mode == "keypoint":
@@ -1079,6 +1097,10 @@ class PoseCanvas(QGraphicsView):
         if event.button() == Qt.LeftButton:
             # Clicking on empty space - always place next unlabeled keypoint in both modes
             parent = self.parent()
+            # If parent is splitter, try window()
+            if parent and not hasattr(parent, "mode"):
+                parent = self.window()
+
             pos = self.mapToScene(event.position().toPoint())
             ann = getattr(parent, "_ann", None) if parent else None
 
@@ -1133,6 +1155,10 @@ class PoseCanvas(QGraphicsView):
         if self._dragging_kpt is not None and self._drag_start_pos is not None:
             # Never allow drag in keypoint mode
             parent = self.parent()
+            # If parent is splitter, try window()
+            if parent and not hasattr(parent, "mode"):
+                parent = self.window()
+
             mode = getattr(parent, "mode", "frame") if parent else "frame"
             if mode == "keypoint":
                 # Keypoint mode: no dragging allowed
@@ -1819,7 +1845,7 @@ class MainWindow(QMainWindow):
         # Load UI settings - will be applied after widgets are created
         self._ui_settings = load_ui_settings()
 
-        self.canvas = PoseCanvas()
+        self.canvas = PoseCanvas(parent=self)
         self.canvas.set_callbacks(
             self.on_place_kpt, self.on_move_kpt, self.on_select_kpt
         )
@@ -1934,18 +1960,45 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.btn_proj)
         right_layout.addWidget(self.btn_export)
 
+        right_layout.addSpacing(8)
+        right_layout.addWidget(QLabel("Model"))
+        self.btn_train = QPushButton("Train / Fine-tune…")
+        self.btn_eval = QPushButton("Evaluate…")
+        self.btn_active = QPushButton("Active Learning…")
+        right_layout.addWidget(self.btn_train)
+        right_layout.addWidget(self.btn_eval)
+        right_layout.addWidget(self.btn_active)
+
         self.lbl_info = QLabel("")
         self.lbl_info.setWordWrap(True)
         right_layout.addSpacing(8)
         right_layout.addWidget(self.lbl_info)
         right_layout.addStretch(1)
 
-        splitter.addWidget(left)
+        # Wrap left and right panels in ScrollAreas to allow scaling
+        left_scroll = QScrollArea()
+        left_scroll.setWidget(left)
+        left_scroll.setWidgetResizable(True)
+        left_scroll.setFrameShape(QFrame.NoFrame)
+
+        right_scroll = QScrollArea()
+        right_scroll.setWidget(right)
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setFrameShape(QFrame.NoFrame)
+
+        splitter.addWidget(left_scroll)
         splitter.addWidget(self.canvas)
-        splitter.addWidget(right)
+        splitter.addWidget(right_scroll)
+
+        # Give significantly more space to canvas
         splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 4)
-        splitter.setStretchFactor(2, 2)
+        splitter.setStretchFactor(1, 10)
+        splitter.setStretchFactor(2, 1)
+
+        # Set minimum sizes to 0 to allow full collapsing/scaling
+        splitter.setCollapsible(0, True)
+        splitter.setCollapsible(1, False)
+        splitter.setCollapsible(2, True)
 
         self.setStatusBar(QStatusBar())
 
@@ -1964,6 +2017,9 @@ class MainWindow(QMainWindow):
         self.btn_skel.clicked.connect(self.open_skeleton_editor)
         self.btn_proj.clicked.connect(self.open_project_settings)
         self.btn_export.clicked.connect(self.export_dataset_dialog)
+        self.btn_train.clicked.connect(self.open_training_runner)
+        self.btn_eval.clicked.connect(self.open_evaluation_dashboard)
+        self.btn_active.clicked.connect(self.open_active_learning)
         self.btn_unlabeled_to_labeling.clicked.connect(self._move_unlabeled_to_labeling)
         self.btn_unlabeled_to_all.clicked.connect(self._move_unlabeled_to_all)
         self.btn_random_to_labeling.clicked.connect(self._add_random_to_labeling)
@@ -1983,8 +2039,10 @@ class MainWindow(QMainWindow):
 
         # Populate list + load
         self._populate_frames()
-        self.frame_list.setCurrentRow(self.current_index)
-        self.load_frame(self.current_index)
+        # Don't auto-load a frame on startup to avoid odd zoom; user clicks to load.
+        self.frame_list.setCurrentRow(-1)
+        self.labeling_list.setCurrentRow(-1)
+        self.lbl_info.setText("Select a frame to display.")
 
     def closeEvent(self, event):
         """Save UI settings when window closes."""
@@ -2109,6 +2167,7 @@ class MainWindow(QMainWindow):
         m_file = menubar.addMenu("&File")
         m_nav = menubar.addMenu("&Navigate")
         m_tools = menubar.addMenu("&Tools")
+        m_model = menubar.addMenu("&Model")
 
         act_save = QAction("Save", self)
         act_save.setShortcut(QKeySequence.Save)
@@ -2183,6 +2242,15 @@ class MainWindow(QMainWindow):
         self.act_enhance_settings = QAction("Enhancement Settings…", self)
         self.act_enhance_settings.triggered.connect(self._open_enhancement_settings)
 
+        act_train = QAction("Training Runner…", self)
+        act_train.triggered.connect(self.open_training_runner)
+
+        act_eval = QAction("Evaluation Dashboard…", self)
+        act_eval.triggered.connect(self.open_evaluation_dashboard)
+
+        act_active = QAction("Active Learning…", self)
+        act_active.triggered.connect(self.open_active_learning)
+
         m_file.addAction(act_save)
         m_file.addAction(act_proj)
         m_file.addSeparator()
@@ -2209,6 +2277,10 @@ class MainWindow(QMainWindow):
         m_tools.addSeparator()
         m_tools.addAction(self.act_enhance)
         m_tools.addAction(self.act_enhance_settings)
+
+        m_model.addAction(act_train)
+        m_model.addAction(act_eval)
+        m_model.addAction(act_active)
 
         tb = QToolBar("Main", self)
         self.addToolBar(tb)
@@ -2252,19 +2324,27 @@ class MainWindow(QMainWindow):
         for idx, img_path in enumerate(self.image_paths):
             # Check if saved to disk
             is_saved = self._is_labeled(img_path)
-            tick = "✓ " if is_saved else "  "
+            in_cache = idx in self._frame_cache
 
-            # Count labeled keypoints
+            # Determine marker: tick (saved), asterisk (modified but unsaved), or empty
+            if in_cache and not is_saved:
+                tick = "* "  # Modified but not saved
+            elif is_saved:
+                tick = "✓ "  # Saved to disk
+            else:
+                tick = "  "  # No changes
+
+            # Count labeled keypoints - prefer cache over disk
             num_labeled = 0
             total_kpts = len(self.project.keypoint_names)
-            if is_saved:
+            if in_cache:
+                # Use cache if available (most up-to-date)
+                cached = self._frame_cache[idx]
+                num_labeled = sum(1 for kp in cached.kpts if kp.v > 0)
+            elif is_saved:
                 # Load from disk to check keypoint status
                 ann = self._load_ann_from_disk(idx)
                 num_labeled = sum(1 for kp in ann.kpts if kp.v > 0)
-            elif idx in self._frame_cache:
-                # Check cache
-                cached = self._frame_cache[idx]
-                num_labeled = sum(1 for kp in cached.kpts if kp.v > 0)
 
             # Determine color: Green=all labeled, Orange=some labeled, White=none
             if num_labeled == total_kpts:
@@ -2295,6 +2375,55 @@ class MainWindow(QMainWindow):
         self.labeling_list.blockSignals(False)
         self.frame_list.blockSignals(False)
         self._suppress_list_rebuild = False
+
+    def _update_frame_item(self, idx: int):
+        """Update a single frame item in the lists without rebuilding everything."""
+        img_path = self.image_paths[idx]
+        is_saved = self._is_labeled(img_path)
+        in_cache = idx in self._frame_cache
+
+        # Determine marker
+        if in_cache and not is_saved:
+            tick = "* "  # Modified but not saved
+        elif is_saved:
+            tick = "✓ "  # Saved to disk
+        else:
+            tick = "  "  # No changes
+
+        # Count labeled keypoints
+        num_labeled = 0
+        total_kpts = len(self.project.keypoint_names)
+        if in_cache:
+            cached = self._frame_cache[idx]
+            num_labeled = sum(1 for kp in cached.kpts if kp.v > 0)
+        elif is_saved:
+            ann = self._load_ann_from_disk(idx)
+            num_labeled = sum(1 for kp in ann.kpts if kp.v > 0)
+
+        # Determine color
+        if num_labeled == total_kpts:
+            color = QColor(0, 200, 0)  # Green
+        elif num_labeled > 0:
+            color = QColor(255, 165, 0)  # Orange
+        else:
+            color = QColor(220, 220, 220)  # White
+
+        item_text = f"{tick}{img_path.name}"
+
+        # Find and update the item in the appropriate list
+        for i in range(self.labeling_list.count()):
+            item = self.labeling_list.item(i)
+            if item.data(Qt.UserRole) == idx:
+                item.setText(item_text)
+                item.setForeground(color)
+                return
+
+        for i in range(self.frame_list.count()):
+            item = self.frame_list.item(i)
+            if item.data(Qt.UserRole) == idx:
+                item.setText(item_text)
+                item.setForeground(color)
+                return
 
     def _rebuild_kpt_list(self):
         self.kpt_list.clear()
@@ -2336,6 +2465,8 @@ class MainWindow(QMainWindow):
         logger.debug(
             "Cached frame %d (kpts=%d)", self.current_index, len(self._ann.kpts)
         )
+        # Update the frame item display to reflect cache state
+        self._update_frame_item(self.current_index)
 
     def _prime_cache_for_labeling(self):
         if not self.labeling_frames:
@@ -2816,6 +2947,7 @@ class MainWindow(QMainWindow):
         if self.mode == "keypoint":
             # In keypoint mode, keep in-memory cache only
             self._cache_current_frame()
+            # Frame item is already updated by _cache_current_frame
             # Find next frame that needs this keypoint
             self._advance_keypoint_mode()
         else:
@@ -3478,15 +3610,50 @@ class MainWindow(QMainWindow):
         if not picked:
             return
 
-        # Add to labeling set
-        for idx in picked:
-            self.labeling_frames.add(int(idx))
+        self._add_indices_to_labeling(picked, "Smart Select")
 
+    def _add_indices_to_labeling(self, indices: List[int], title: str):
+        if not indices:
+            return
+        for idx in indices:
+            self.labeling_frames.add(int(idx))
         self._populate_frames()
         self._select_frame_in_list(self.current_index)
         QMessageBox.information(
-            self, "Smart Select", f"Added {len(picked)} frames to labeling set."
+            self, title, f"Added {len(indices)} frames to labeling set."
         )
+
+    def open_training_runner(self):
+        dlg = TrainingRunnerDialog(self, self.project, self.image_paths)
+        dlg.exec()
+
+    def open_evaluation_dashboard(self):
+        dlg = EvaluationDashboardDialog(
+            self,
+            self.project,
+            self.image_paths,
+            add_frames_callback=lambda idxs, reason="Evaluation": self._add_indices_to_labeling(
+                idxs, reason
+            ),
+        )
+        dlg.exec()
+
+    def open_active_learning(self):
+        dlg = ActiveLearningDialog(
+            self,
+            self.project,
+            self.image_paths,
+            self._is_labeled,
+            set(self.labeling_frames),
+            add_frames_callback=lambda idxs, reason="Active learning": self._add_indices_to_labeling(
+                idxs, reason
+            ),
+        )
+        dlg.exec()
+
+    # Backwards/alternate name used in older menu wiring.
+    def open_active_learning_sampler(self):
+        self.open_active_learning()
 
 
 # -----------------------------
