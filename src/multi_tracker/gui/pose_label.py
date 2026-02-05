@@ -153,6 +153,7 @@ DEFAULT_PROJECT_NAME = "pose_project.json"
 DEFAULT_SKELETON_DIRNAME = "configs"
 DEFAULT_KPT_RADIUS = 5.0
 DEFAULT_LABEL_FONT_SIZE = 10
+DEFAULT_AUTOSAVE_DELAY_MS = 3000
 
 
 # -----------------------------
@@ -1791,6 +1792,7 @@ class MainWindow(QMainWindow):
         self.metadata_manager = MetadataManager(
             self.project.out_root / ".posekit" / "metadata.json"
         )
+        self.autosave_delay_ms = DEFAULT_AUTOSAVE_DELAY_MS
 
         splitter = QSplitter(Qt.Horizontal, self)
         self.setCentralWidget(splitter)
@@ -1954,6 +1956,15 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.cb_enhance)
         right_layout.addWidget(self.btn_enhance_settings)
 
+        autosave_row = QHBoxLayout()
+        autosave_row.addWidget(QLabel("Autosave delay (sec):"))
+        self.sp_autosave_delay = QDoubleSpinBox()
+        self.sp_autosave_delay.setRange(0.5, 30.0)
+        self.sp_autosave_delay.setSingleStep(0.5)
+        self.sp_autosave_delay.setValue(self.autosave_delay_ms / 1000.0)
+        autosave_row.addWidget(self.sp_autosave_delay)
+        right_layout.addLayout(autosave_row)
+
         # Opacity controls
         opacity_row1 = QHBoxLayout()
         opacity_row1.addWidget(QLabel("Keypoint opacity:"))
@@ -2090,6 +2101,11 @@ class MainWindow(QMainWindow):
         self._gc_timer.timeout.connect(lambda: gc.collect())
         self._gc_timer.start()
 
+        # Timed autosave to avoid frequent blocking writes.
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.setSingleShot(True)
+        self._autosave_timer.timeout.connect(self._perform_autosave)
+
         # Signals
         self.labeling_list.currentRowChanged.connect(self._on_labeling_frame_selected)
         self.frame_list.currentRowChanged.connect(self._on_all_frame_selected)
@@ -2103,6 +2119,7 @@ class MainWindow(QMainWindow):
         self.btn_skel.clicked.connect(self.open_skeleton_editor)
         self.btn_proj.clicked.connect(self.open_project_settings)
         self.btn_export.clicked.connect(self.export_dataset_dialog)
+        self.sp_autosave_delay.valueChanged.connect(self._update_autosave_delay)
         self.btn_train.clicked.connect(self.open_training_runner)
         self.btn_eval.clicked.connect(self.open_evaluation_dashboard)
         self.btn_active.clicked.connect(self.open_active_learning)
@@ -2133,6 +2150,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Save UI settings when window closes."""
+        self._perform_autosave()
         self._save_ui_settings()
         super().closeEvent(event)
 
@@ -2229,6 +2247,7 @@ class MainWindow(QMainWindow):
             "blur_sigma": self.project.blur_sigma,
             "controls_open": bool(self.controls_group.isChecked()),
             "frame_search": self.search_edit.text().strip(),
+            "autosave_delay_ms": int(self.autosave_delay_ms),
         }
         save_ui_settings(settings)
 
@@ -2253,6 +2272,9 @@ class MainWindow(QMainWindow):
                 self.controls_group.setChecked(bool(settings["controls_open"]))
             if "frame_search" in settings:
                 self.search_edit.setText(str(settings["frame_search"]))
+            if "autosave_delay_ms" in settings:
+                self.autosave_delay_ms = int(settings["autosave_delay_ms"])
+                self.sp_autosave_delay.setValue(self.autosave_delay_ms / 1000.0)
 
     # ----- menus / shortcuts -----
     def _build_actions(self):
@@ -2973,6 +2995,7 @@ class MainWindow(QMainWindow):
 
     def _mark_dirty(self, *_):
         self._dirty = True
+        self._schedule_autosave()
 
     # ----- undo -----
     def _snapshot_kpts(self) -> Optional[List[Keypoint]]:
@@ -3224,9 +3247,26 @@ class MainWindow(QMainWindow):
         if self.mode == "keypoint":
             # In keypoint mode, keep in-memory cache only
             self._cache_current_frame()
+            if self.project.autosave and self._dirty:
+                self._schedule_autosave()
             return
         if self.project.autosave and self._dirty:
+            self._schedule_autosave()
+
+    def _schedule_autosave(self):
+        if not self.project.autosave:
+            return
+        if self._dirty:
+            self._autosave_timer.start(self.autosave_delay_ms)
+
+    def _perform_autosave(self):
+        if self.project.autosave and self._dirty:
             self.save_current()
+
+    def _update_autosave_delay(self, seconds: float):
+        self.autosave_delay_ms = int(max(0.5, float(seconds)) * 1000)
+        if self._autosave_timer.isActive():
+            self._autosave_timer.start(self.autosave_delay_ms)
 
     def prev_frame(self):
         # Find previous frame in labeling set
@@ -3413,6 +3453,8 @@ class MainWindow(QMainWindow):
             bbox_xyxy_px=bbox,
             pad_frac=self.project.bbox_pad_frac,
         )
+        if self._autosave_timer.isActive():
+            self._autosave_timer.stop()
         self._dirty = False
 
         # Only refresh UI if we're staying on the current frame
