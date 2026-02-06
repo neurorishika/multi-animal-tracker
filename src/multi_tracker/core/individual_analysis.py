@@ -556,7 +556,7 @@ class IndividualDatasetGenerator:
             # Generate filename
             if detection_id is not None:
                 # Use DetectionID if available (preferred/unique)
-                filename = f"did{detection_id}.{self.output_format}"
+                filename = f"did{int(detection_id)}.{self.output_format}"
             elif track_id >= 0:
                 filename = f"f{frame_id:06d}_t{track_id:04d}_d{det_idx:02d}.{self.output_format}"
             else:

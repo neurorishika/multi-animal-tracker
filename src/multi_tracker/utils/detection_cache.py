@@ -38,6 +38,7 @@ class DetectionCache:
         self._total_frames = 0
         self._start_frame = start_frame
         self._end_frame = end_frame
+        self._cached_frames = None
 
         if mode == "r" and self.cache_path.exists():
             logger.info(f"Loading detection cache from {self.cache_path}")
@@ -51,6 +52,23 @@ class DetectionCache:
             logger.info(
                 f"Cache loaded: {self._total_frames} frames (range: {self._start_frame}-{self._end_frame})"
             )
+            self._cached_frames = self._extract_cached_frames()
+
+    def _extract_cached_frames(self):
+        """Extract available frame indices from loaded cache keys."""
+        if self._loaded_data is None:
+            return set()
+
+        cached = set()
+        for key in self._loaded_data.files:
+            if not key.startswith("frame_") or not key.endswith("_meas"):
+                continue
+            try:
+                frame_str = key.split("_")[1]
+                cached.add(int(frame_str))
+            except (IndexError, ValueError):
+                continue
+        return cached
 
     def add_frame(
         self,
@@ -214,6 +232,27 @@ class DetectionCache:
     def matches_frame_range(self, start_frame, end_frame):
         """Check if cache matches the requested frame range."""
         return self._start_frame == start_frame and self._end_frame == end_frame
+
+    def covers_frame_range(self, start_frame, end_frame):
+        """Check if cache fully covers the requested frame range."""
+        if self._loaded_data is None:
+            return False
+        if self._start_frame > start_frame or self._end_frame < end_frame:
+            return False
+        if self._cached_frames is None:
+            return False
+        return all(frame_idx in self._cached_frames for frame_idx in range(start_frame, end_frame + 1))
+
+    def get_missing_frames(self, start_frame, end_frame, max_report=10):
+        """Return a list of missing frame indices (up to max_report)."""
+        if self._cached_frames is None:
+            return []
+        missing = [
+            frame_idx
+            for frame_idx in range(start_frame, end_frame + 1)
+            if frame_idx not in self._cached_frames
+        ]
+        return missing[:max_report]
 
     def close(self):
         """Close and cleanup cache resources."""

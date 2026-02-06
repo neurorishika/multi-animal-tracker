@@ -6,6 +6,7 @@ Refactored for improved UX with Tabbed interface and logical grouping.
 """
 
 import sys, os, json, math, logging
+import hashlib
 import numpy as np
 import pandas as pd
 import cv2
@@ -2941,7 +2942,7 @@ class MainWindow(QMainWindow):
         f_video.addRow(self.lbl_trail_duration, self.spin_trail_duration)
 
         self.spin_marker_size = QDoubleSpinBox()
-        self.spin_marker_size.setRange(0.1, 5.0)
+        self.spin_marker_size.setRange(0.1, 300.0)
         self.spin_marker_size.setSingleStep(0.1)
         self.spin_marker_size.setDecimals(1)
         self.spin_marker_size.setValue(0.3)
@@ -6130,23 +6131,25 @@ class MainWindow(QMainWindow):
     def _on_visualization_mode_changed(self, state):
         """Handle visualization-free mode toggle."""
         is_viz_free = self.chk_visualization_free.isChecked()
+        is_preview_active = self.btn_preview.isChecked()
+        is_tracking_active = self.tracking_worker and self.tracking_worker.isRunning()
 
-        # Hide entire display settings group when in viz-free mode
-        self.g_display.setVisible(not is_viz_free)
+        # Keep display settings visible; only gate their effect at runtime
+        self.g_display.setVisible(True)
 
-        # Also disable individual checkboxes for safety
-        self.chk_show_circles.setEnabled(not is_viz_free)
-        self.chk_show_orientation.setEnabled(not is_viz_free)
-        self.chk_show_trajectories.setEnabled(not is_viz_free)
-        self.chk_show_labels.setEnabled(not is_viz_free)
-        self.chk_show_state.setEnabled(not is_viz_free)
-        self.chk_show_kalman_uncertainty.setEnabled(not is_viz_free)
-        self.chk_show_fg.setEnabled(not is_viz_free)
-        self.chk_show_bg.setEnabled(not is_viz_free)
-        self.chk_show_yolo_obb.setEnabled(not is_viz_free)
+        # Keep individual checkboxes enabled for pre-configuration
+        self.chk_show_circles.setEnabled(True)
+        self.chk_show_orientation.setEnabled(True)
+        self.chk_show_trajectories.setEnabled(True)
+        self.chk_show_labels.setEnabled(True)
+        self.chk_show_state.setEnabled(True)
+        self.chk_show_kalman_uncertainty.setEnabled(True)
+        self.chk_show_fg.setEnabled(True)
+        self.chk_show_bg.setEnabled(True)
+        self.chk_show_yolo_obb.setEnabled(True)
 
-        # Show/hide video preview
-        if is_viz_free:
+        # Only affect display during active tracking (not setup/preview)
+        if is_tracking_active and is_viz_free and not is_preview_active:
             # Store current preview if any, then show placeholder
             self._stored_preview_text = (
                 self.video_label.text() if not self.video_label.pixmap() else None
@@ -6159,7 +6162,7 @@ class MainWindow(QMainWindow):
             )
             self.video_label.setStyleSheet("color: #888; font-size: 14px;")
             logger.info("Visualization-Free Mode enabled - Maximum speed processing")
-        else:
+        elif is_tracking_active and not is_viz_free:
             # Restore previous state or default message
             if hasattr(self, "_stored_preview_text") and self._stored_preview_text:
                 self.video_label.setText(self._stored_preview_text)
@@ -6186,6 +6189,11 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(False)
             self.progress_label.setVisible(False)
         self._set_ui_controls_enabled(True)
+        # Ensure UI state is restored after stopping
+        if self.current_video_path:
+            self._apply_ui_state("idle")
+        else:
+            self._apply_ui_state("no_video")
         self.btn_preview.setChecked(False)
         self.btn_preview.setText("Preview Mode")
         self.btn_start.blockSignals(True)
@@ -6306,17 +6314,24 @@ class MainWindow(QMainWindow):
             self.video_label.setStyleSheet("color: #888; font-size: 14px;")
 
     def _is_visualization_enabled(self) -> bool:
-        return not self.chk_visualization_free.isChecked()
+        # Preview should always render frames regardless of visualization-free toggle
+        return (
+            not self.chk_visualization_free.isChecked() or self.btn_preview.isChecked()
+        )
 
     def _sync_contextual_controls(self):
         # ROI
         self.btn_finish_roi.setEnabled(self.roi_selection_active)
         self.btn_undo_roi.setEnabled(len(self.roi_shapes) > 0)
-        self.btn_clear_roi.setEnabled(len(self.roi_shapes) > 0 or self.roi_selection_active)
+        self.btn_clear_roi.setEnabled(
+            len(self.roi_shapes) > 0 or self.roi_selection_active
+        )
 
         # Crop video only if ROI exists and video loaded
         if hasattr(self, "btn_crop_video"):
-            self.btn_crop_video.setEnabled(bool(self.roi_shapes) and bool(self.current_video_path))
+            self.btn_crop_video.setEnabled(
+                bool(self.roi_shapes) and bool(self.current_video_path)
+            )
 
     def _apply_ui_state(self, state: str):
         self._ui_state = state
@@ -6821,6 +6836,13 @@ class MainWindow(QMainWindow):
         logger.info("Generating video from post-processed trajectories...")
         logger.info("=" * 80)
 
+        # Ensure progress UI is visible for video generation
+        self.progress_bar.setVisible(True)
+        self.progress_label.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Generating video...")
+        QApplication.processEvents()
+
         video_path = self.file_line.text()
         output_path = self.video_out_line.text()
 
@@ -6901,7 +6923,6 @@ class MainWindow(QMainWindow):
             traj_by_track[track_id].append(row)
 
         # Process video frame by frame
-        self.progress_label.setText("Generating video...")
         for frame_idx in range(total_frames):
             ret, frame = cap.read()
             if not ret:
@@ -7056,6 +7077,11 @@ class MainWindow(QMainWindow):
             self.label_elapsed_time.setVisible(False)
             self.label_eta.setVisible(False)
             self._set_ui_controls_enabled(True)
+            self.btn_start.blockSignals(True)
+            self.btn_start.setChecked(False)
+            self.btn_start.blockSignals(False)
+            self.btn_start.setText("Start Full Tracking")
+            self._apply_ui_state("idle" if self.current_video_path else "no_video")
             if finished_normally:
                 logger.info("Preview completed.")
             else:
@@ -7296,6 +7322,11 @@ class MainWindow(QMainWindow):
         self.label_elapsed_time.setVisible(False)
         self.label_eta.setVisible(False)
         self._set_ui_controls_enabled(True)
+        self.btn_start.blockSignals(True)
+        self.btn_start.setChecked(False)
+        self.btn_start.blockSignals(False)
+        self.btn_start.setText("Start Full Tracking")
+        self._apply_ui_state("idle" if self.current_video_path else "no_video")
         logger.info("✓ Tracking session complete.")
 
     @Slot(dict)
@@ -7459,10 +7490,7 @@ class MainWindow(QMainWindow):
         video_output_path = None
 
         # Generate detection cache path based on video and detection method
-        # Cache is needed for:
-        # 1. Backward tracking (if enabled)
-        # 2. YOLO batching (if enabled)
-        # 3. Reusing detections from previous runs (if enabled)
+        # Cache is always created for forward tracking to allow reuse on reruns
         detection_cache_path = None
         params = self.get_parameters_dict()
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
@@ -7480,22 +7508,50 @@ class MainWindow(QMainWindow):
             resize_str = f"r{int(resize_factor*100)}"
 
             if detection_method == "yolo_obb":
-                yolo_model = params.get("YOLO_MODEL", "best.pt")
-                # Extract just the filename without path
+                yolo_model = params.get("YOLO_MODEL_PATH", "best.pt")
                 model_name = os.path.basename(yolo_model)
-                return f"yolo_{model_name.replace('.pt', '')}_{resize_str}"
+                cache_params = {
+                    "model": model_name,
+                    "conf": params.get("YOLO_CONFIDENCE_THRESHOLD"),
+                    "iou": params.get("YOLO_IOU_THRESHOLD"),
+                    "classes": params.get("YOLO_TARGET_CLASSES"),
+                    "device": params.get("YOLO_DEVICE"),
+                }
+                h = hashlib.md5(
+                    json.dumps(cache_params, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:8]
+                return f"yolo_{model_name.replace('.pt', '')}_{resize_str}_{h}"
             else:
-                # Background subtraction - use method name
-                return f"bgsub_{resize_str}"
+                cache_params = {
+                    "learning_rate": params.get("BACKGROUND_LEARNING_RATE"),
+                    "prime_frames": params.get("BACKGROUND_PRIME_FRAMES"),
+                    "dark_on_light": params.get("DARK_ON_LIGHT_BACKGROUND"),
+                    "adaptive": params.get("ENABLE_ADAPTIVE_BACKGROUND"),
+                    "gpu": params.get("ENABLE_GPU_BACKGROUND"),
+                    "min_detections": params.get("MIN_DETECTIONS_TO_START"),
+                    "min_counts": params.get("MIN_DETECTION_COUNTS"),
+                }
+                h = hashlib.md5(
+                    json.dumps(cache_params, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:8]
+                return f"bgsub_{resize_str}_{h}"
 
-        if (
-            self.chk_enable_backward.isChecked()
-            or yolo_batching_enabled
-            or use_cached_detections
-        ):
-            base_name = os.path.splitext(video_path)[0]
-            model_id = get_cache_model_id()
-            detection_cache_path = f"{base_name}_detection_cache_{model_id}.npz"
+        base_name = os.path.splitext(video_path)[0]
+        model_id = get_cache_model_id()
+        detection_cache_path = f"{base_name}_detection_cache_{model_id}.npz"
+
+        # Delete old cache hashes for this video (keep only current settings)
+        try:
+            cache_dir = os.path.dirname(detection_cache_path)
+            base_prefix = os.path.basename(base_name) + "_detection_cache_"
+            for fname in os.listdir(cache_dir):
+                if not fname.startswith(base_prefix) or not fname.endswith(".npz"):
+                    continue
+                full_path = os.path.join(cache_dir, fname)
+                if full_path != detection_cache_path and os.path.isfile(full_path):
+                    os.remove(full_path)
+        except Exception as e:
+            logger.warning(f"Failed to clean old detection caches: {e}")
 
         self.tracking_worker = TrackingWorker(
             video_path,

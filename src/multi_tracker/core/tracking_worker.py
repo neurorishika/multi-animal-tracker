@@ -493,8 +493,8 @@ class TrackingWorker(QThread):
                 detection_cache = DetectionCache(self.detection_cache_path, mode="r")
                 cached_start, cached_end = detection_cache.get_frame_range()
 
-                # Check if cache matches current frame range
-                if detection_cache.matches_frame_range(start_frame, end_frame):
+                # Check if cache fully covers requested frame range
+                if detection_cache.covers_frame_range(start_frame, end_frame):
                     total_frames = detection_cache.get_total_frames()
                     use_cached_detections = True
                     if self.backward_mode:
@@ -507,6 +507,11 @@ class TrackingWorker(QThread):
                         )
                 else:
                     # Frame range mismatch - invalidate cache
+                    missing = detection_cache.get_missing_frames(start_frame, end_frame)
+                    if missing:
+                        logger.warning(
+                            f"Cache missing {len(missing)}+ frame(s) in requested range (sample: {missing[:5]})"
+                        )
                     logger.warning(
                         f"Cache frame range mismatch! Cache: {cached_start}-{cached_end}, Requested: {start_frame}-{end_frame}"
                     )
