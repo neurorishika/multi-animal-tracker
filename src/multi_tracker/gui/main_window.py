@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QSlider,
     QToolButton,
+    QAbstractButton,
 )
 import matplotlib.pyplot as plt
 
@@ -641,6 +642,11 @@ class MainWindow(QMainWindow):
         self._tracking_first_frame = True
         self._tracking_frame_size = None  # (width, height) of resized tracking frames
 
+        # UI interaction state
+        self._video_interactions_enabled = True
+        self._ui_state = "idle"
+        self._saved_widget_enabled_states = {}
+
         # Advanced configuration (for power users)
         self.advanced_config = self._load_advanced_config()
 
@@ -664,6 +670,12 @@ class MainWindow(QMainWindow):
         # Config is now loaded automatically when a video is selected
         # instead of at startup
         self._connect_parameter_signals()
+
+        # Cache preview-related controls for UI state transitions
+        self._preview_controls = self._collect_preview_controls()
+
+        # Default to "no video loaded" state
+        self._apply_ui_state("no_video")
 
     def init_ui(self):
         """Build the structured UI using Splitter and Tabs."""
@@ -964,18 +976,12 @@ class MainWindow(QMainWindow):
 
         self.btn_start = QPushButton("Start Full Tracking")
         self.btn_start.setObjectName("ActionBtn")
-        self.btn_start.clicked.connect(self.start_full)
+        self.btn_start.setCheckable(True)
+        self.btn_start.clicked.connect(lambda ch: self.toggle_tracking(ch))
         self.btn_start.setMinimumHeight(40)
-
-        self.btn_stop = QPushButton("STOP")
-        self.btn_stop.setObjectName("StopBtn")
-        self.btn_stop.clicked.connect(self.stop_tracking)
-        self.btn_stop.setMinimumHeight(40)
-        self.btn_stop.setEnabled(False)  # Start disabled
 
         btn_layout.addWidget(self.btn_preview)
         btn_layout.addWidget(self.btn_start)
-        btn_layout.addWidget(self.btn_stop)
 
         action_layout.addLayout(prog_layout)
         action_layout.addLayout(stats_layout)
@@ -4219,6 +4225,9 @@ class MainWindow(QMainWindow):
                     f"Video selected: {fp} (no config found, using current settings)"
                 )
 
+        # Enable full UI now that a video is loaded
+        self._apply_ui_state("idle")
+
     def select_csv(self):
         fp, _ = QFileDialog.getSaveFileName(self, "Select CSV", "", "CSV Files (*.csv)")
         if fp:
@@ -5360,6 +5369,9 @@ class MainWindow(QMainWindow):
 
     def _handle_video_mouse_press(self, evt):
         """Handle mouse press on video - either ROI selection or pan/zoom."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
         # ROI selection takes priority
         if self.roi_selection_active:
             self.record_roi_click(evt)
@@ -5378,6 +5390,9 @@ class MainWindow(QMainWindow):
 
     def _handle_video_mouse_move(self, evt):
         """Handle mouse move - update pan if active."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
         if self._is_panning and self._pan_start_pos:
             from PySide6.QtCore import Qt
 
@@ -5393,6 +5408,9 @@ class MainWindow(QMainWindow):
 
     def _handle_video_mouse_release(self, evt):
         """Handle mouse release - end pan."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
         from PySide6.QtCore import Qt
 
         if self._is_panning:
@@ -5407,11 +5425,17 @@ class MainWindow(QMainWindow):
 
     def _handle_video_double_click(self, evt):
         """Handle double-click on video to fit to screen."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
         if evt.button() == Qt.LeftButton:
             self._fit_image_to_screen()
 
     def _handle_video_wheel(self, evt):
         """Handle mouse wheel - zoom in/out."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
         from PySide6.QtCore import Qt
 
         # Block zoom during ROI selection
@@ -5439,6 +5463,9 @@ class MainWindow(QMainWindow):
 
     def _handle_video_event(self, evt):
         """Handle video events including pinch gestures."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return False
         from PySide6.QtCore import QEvent, Qt
 
         if evt.type() == QEvent.Gesture:
@@ -5449,6 +5476,8 @@ class MainWindow(QMainWindow):
 
     def _handle_gesture_event(self, evt):
         """Handle pinch-to-zoom gesture."""
+        if not self._video_interactions_enabled:
+            return False
         from PySide6.QtCore import Qt
 
         # Block gestures during ROI selection
@@ -6068,6 +6097,28 @@ class MainWindow(QMainWindow):
             self.btn_preview.setText("Preview Mode")
             self.btn_start.setEnabled(True)
 
+    def toggle_tracking(self, checked):
+        if checked:
+            # If preview is active, stop it first
+            if self.btn_preview.isChecked():
+                self.btn_preview.setChecked(False)
+                self.btn_preview.setText("Preview Mode")
+                self.stop_tracking()
+
+            self.btn_start.setText("Stop Tracking")
+            self.btn_preview.setEnabled(False)
+            self.start_full()
+
+            if not (self.tracking_worker and self.tracking_worker.isRunning()):
+                # Tracking did not start (e.g., no video or config save cancelled)
+                self.btn_start.blockSignals(True)
+                self.btn_start.setChecked(False)
+                self.btn_start.blockSignals(False)
+                self.btn_start.setText("Start Full Tracking")
+                self.btn_preview.setEnabled(True)
+        else:
+            self.stop_tracking()
+
     def toggle_debug_logging(self, checked):
         if checked:
             logger.setLevel(logging.DEBUG)
@@ -6137,7 +6188,12 @@ class MainWindow(QMainWindow):
         self._set_ui_controls_enabled(True)
         self.btn_preview.setChecked(False)
         self.btn_preview.setText("Preview Mode")
+        self.btn_start.blockSignals(True)
+        self.btn_start.setChecked(False)
+        self.btn_start.blockSignals(False)
+        self.btn_start.setText("Start Full Tracking")
         self.btn_start.setEnabled(True)
+        self.btn_preview.setEnabled(True)
 
         # Hide stats labels when tracking stops
         self.label_current_fps.setVisible(False)
@@ -6148,29 +6204,164 @@ class MainWindow(QMainWindow):
         self._tracking_frame_size = None
 
     def _set_ui_controls_enabled(self, enabled: bool):
-        # Disable Main setup
-        self.btn_file.setEnabled(enabled)
-        self.btn_csv.setEnabled(enabled)
-        self.btn_video_out.setEnabled(enabled)
-        self.spin_resize.setEnabled(enabled)
+        if enabled:
+            if self.current_video_path:
+                self._apply_ui_state("idle")
+            else:
+                self._apply_ui_state("no_video")
+            return
 
-        # Disable tabs except for Visualization and maybe some display settings
-        self.tab_detection.setEnabled(enabled)
-        self.tab_tracking.setEnabled(enabled)
-        self.tab_data.setEnabled(enabled)
+        # Disabled state - choose mode based on tracking/preview status
+        if self.tracking_worker and self.tracking_worker.isRunning():
+            if self.btn_preview.isChecked():
+                self._apply_ui_state("preview")
+            else:
+                self._apply_ui_state("tracking")
+        else:
+            self._apply_ui_state("locked")
 
+    def _collect_preview_controls(self):
+        return [
+            self.btn_refresh_preview,
+            self.btn_test_detection,
+            self.slider_timeline,
+            self.btn_first_frame,
+            self.btn_prev_frame,
+            self.btn_play_pause,
+            self.btn_next_frame,
+            self.btn_last_frame,
+            self.combo_playback_speed,
+            self.spin_start_frame,
+            self.spin_end_frame,
+            self.btn_set_start_current,
+            self.btn_set_end_current,
+            self.btn_reset_range,
+        ]
+
+    def _set_interactive_widgets_enabled(
+        self,
+        enabled: bool,
+        allowlist=None,
+        blocklist=None,
+        remember_state: bool = True,
+    ):
+        allow = set(allowlist or [])
+        block = set(blocklist or [])
+        interactive_types = (
+            QAbstractButton,
+            QLineEdit,
+            QComboBox,
+            QSpinBox,
+            QDoubleSpinBox,
+            QSlider,
+        )
+        widgets = []
+        for widget_type in interactive_types:
+            widgets.extend(self.findChildren(widget_type))
+
+        if enabled and remember_state and self._saved_widget_enabled_states:
+            for widget in widgets:
+                if widget in block:
+                    widget.setEnabled(False)
+                elif widget in allow:
+                    widget.setEnabled(True)
+                elif widget in self._saved_widget_enabled_states:
+                    widget.setEnabled(self._saved_widget_enabled_states[widget])
+            self._saved_widget_enabled_states = {}
+            return
+
+        if not enabled and remember_state:
+            for widget in widgets:
+                if widget in block or widget in allow:
+                    continue
+                self._saved_widget_enabled_states[widget] = widget.isEnabled()
+
+        for widget in widgets:
+            if widget in block:
+                widget.setEnabled(False)
+            elif widget in allow:
+                widget.setEnabled(True)
+            else:
+                widget.setEnabled(enabled)
+
+    def _set_video_interaction_enabled(self, enabled: bool):
+        self._video_interactions_enabled = enabled
+        self.slider_zoom.setEnabled(enabled)
+        self.scroll.setEnabled(enabled)
+        if not enabled:
+            self.video_label.unsetCursor()
+
+    def _prepare_tracking_display(self):
+        """Clear any stale frame before tracking starts."""
+        self.video_label.clear()
+        if self._is_visualization_enabled():
+            self.video_label.setText("")
+            self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+        else:
+            self.video_label.setText(
+                "Visualization Disabled\n\n"
+                "Maximum speed processing mode active.\n"
+                "Real-time stats displayed below."
+            )
+            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+
+    def _is_visualization_enabled(self) -> bool:
+        return not self.chk_visualization_free.isChecked()
+
+    def _sync_contextual_controls(self):
         # ROI
-        self.btn_start_roi.setEnabled(enabled)
-        self.btn_finish_roi.setEnabled(enabled and self.roi_selection_active)
-        self.btn_clear_roi.setEnabled(enabled)
+        self.btn_finish_roi.setEnabled(self.roi_selection_active)
+        self.btn_undo_roi.setEnabled(len(self.roi_shapes) > 0)
+        self.btn_clear_roi.setEnabled(len(self.roi_shapes) > 0 or self.roi_selection_active)
 
-        # Buttons
-        self.btn_preview.setEnabled(enabled)
-        self.btn_start.setEnabled(enabled)
-        self.btn_stop.setEnabled(not enabled)
+        # Crop video only if ROI exists and video loaded
+        if hasattr(self, "btn_crop_video"):
+            self.btn_crop_video.setEnabled(bool(self.roi_shapes) and bool(self.current_video_path))
 
-        # Zoom is always enabled
-        self.slider_zoom.setEnabled(True)
+    def _apply_ui_state(self, state: str):
+        self._ui_state = state
+
+        if state == "no_video":
+            self._set_interactive_widgets_enabled(
+                False,
+                allowlist=[self.btn_file, self.btn_load_config],
+                remember_state=False,
+            )
+            self.btn_start.setEnabled(False)
+            self._set_video_interaction_enabled(False)
+            self.g_video_player.setVisible(False)
+            return
+
+        if state == "idle":
+            self._set_interactive_widgets_enabled(True)
+            self.btn_start.setEnabled(True)
+            self._set_video_interaction_enabled(True)
+            self._sync_contextual_controls()
+            return
+
+        if state == "tracking":
+            allow = [self.btn_start]
+            if self._is_visualization_enabled():
+                allow.append(self.slider_zoom)
+            self._set_interactive_widgets_enabled(False, allowlist=allow)
+            self.btn_start.setEnabled(True)
+            self._set_video_interaction_enabled(self._is_visualization_enabled())
+            return
+
+        if state == "preview":
+            allow = [self.btn_preview] + list(self._preview_controls)
+            if self._is_visualization_enabled():
+                allow.append(self.slider_zoom)
+            self._set_interactive_widgets_enabled(False, allowlist=allow)
+            self.btn_preview.setEnabled(True)
+            self._set_video_interaction_enabled(self._is_visualization_enabled())
+            return
+
+        # Locked (non-tracking) state: disable all interactive widgets
+        if state == "locked":
+            self._set_interactive_widgets_enabled(False)
+            self._set_video_interaction_enabled(False)
+            return
 
     def _draw_roi_overlay(self, qimage):
         """Draw ROI shapes overlay on a QImage."""
@@ -7187,7 +7378,10 @@ class MainWindow(QMainWindow):
             detection_cache_path=None,  # No caching in preview mode
             preview_mode=True,  # Preview mode - frame-by-frame only
         )
-        self.tracking_worker.set_parameters(self.get_parameters_dict())
+        params = self.get_parameters_dict()
+        # Preview should always render frames regardless of visualization-free toggle
+        params["VISUALIZATION_FREE_MODE"] = False
+        self.tracking_worker.set_parameters(params)
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
@@ -7200,17 +7394,8 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_label.setText("Preview Mode Active")
 
-        # Update video preview for viz-free mode
-        if self.get_parameters_dict().get("VISUALIZATION_FREE_MODE", False):
-            self.video_label.clear()
-            self.video_label.setText(
-                "Visualization Disabled\n\n"
-                "Maximum speed processing mode active.\n"
-                "Real-time stats displayed below."
-            )
-            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
-
-        self._set_ui_controls_enabled(False)
+        self._prepare_tracking_display()
+        self._apply_ui_state("preview")
         self.tracking_worker.start()
 
     def start_tracking_on_video(self, video_path, backward_mode=False):
@@ -7337,17 +7522,8 @@ class MainWindow(QMainWindow):
             "Backward Tracking..." if backward_mode else "Forward Tracking..."
         )
 
-        # Update video preview for viz-free mode
-        if self.get_parameters_dict().get("VISUALIZATION_FREE_MODE", False):
-            self.video_label.clear()
-            self.video_label.setText(
-                "Visualization Disabled\n\n"
-                "Maximum speed processing mode active.\n"
-                "Real-time stats displayed below."
-            )
-            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
-
-        self._set_ui_controls_enabled(False)
+        self._prepare_tracking_display()
+        self._apply_ui_state("tracking")
         self.tracking_worker.start()
 
     def get_parameters_dict(self):
