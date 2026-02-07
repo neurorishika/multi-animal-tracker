@@ -5,7 +5,7 @@ Main application window for the Multi-Animal Tracker.
 Refactored for improved UX with Tabbed interface and logical grouping.
 """
 
-import sys, os, json, math, logging
+import sys, os, json, math, logging, tempfile
 import hashlib
 import numpy as np
 import pandas as pd
@@ -855,23 +855,11 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(zoom_frame)
 
-        # Preview refresh button
+        # Preview detection button (uses current player frame)
         preview_frame = QFrame()
         preview_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
         preview_layout = QHBoxLayout(preview_frame)
         preview_layout.setContentsMargins(10, 5, 10, 5)
-
-        self.btn_refresh_preview = QPushButton("Load Random Frame for Preview")
-        self.btn_refresh_preview.clicked.connect(self._load_preview_frame)
-        self.btn_refresh_preview.setEnabled(False)
-        self.btn_refresh_preview.setToolTip(
-            "Load a random frame from your video.\n\n"
-            "For size estimation: Choose a frame with:\n"
-            "• Many animals visible\n"
-            "• Animals well-separated (not overlapping)\n"
-            "• Representative of typical body sizes"
-        )
-        preview_layout.addWidget(self.btn_refresh_preview)
 
         self.btn_test_detection = QPushButton("Test Detection on Preview")
         self.btn_test_detection.clicked.connect(self._test_detection_on_preview)
@@ -1212,6 +1200,12 @@ class MainWindow(QMainWindow):
         self.btn_last_frame.clicked.connect(self._goto_last_frame)
         self.btn_last_frame.setToolTip("Go to last frame")
         controls_layout.addWidget(self.btn_last_frame)
+
+        self.btn_random_seek = QPushButton("🎲 Random")
+        self.btn_random_seek.setEnabled(False)
+        self.btn_random_seek.clicked.connect(self._goto_random_frame)
+        self.btn_random_seek.setToolTip("Jump to a random frame")
+        controls_layout.addWidget(self.btn_random_seek)
 
         controls_layout.addStretch()
 
@@ -4191,12 +4185,9 @@ class MainWindow(QMainWindow):
         self.video_out_line.setText(video_out_path)
         self.check_video_output.setChecked(True)
 
-        # Enable preview refresh button and load a random frame
-        self.btn_refresh_preview.setEnabled(True)
+        # Enable preview detection button
         self.btn_test_detection.setEnabled(True)
         self.btn_detect_fps.setEnabled(True)
-
-        self._load_preview_frame()
 
         # Initialize video player
         self._init_video_player(fp)
@@ -4315,6 +4306,7 @@ class MainWindow(QMainWindow):
         self.btn_play_pause.setEnabled(True)
         self.btn_next_frame.setEnabled(True)
         self.btn_last_frame.setEnabled(True)
+        self.btn_random_seek.setEnabled(True)
         self.combo_playback_speed.setEnabled(True)
 
         # Enable frame range controls
@@ -4406,6 +4398,16 @@ class MainWindow(QMainWindow):
         if self.is_playing:
             self._stop_playback()
         self.video_current_frame_idx = self.video_total_frames - 1
+        self.slider_timeline.setValue(self.video_current_frame_idx)
+        self._display_current_frame()
+
+    def _goto_random_frame(self):
+        """Jump to a random frame."""
+        if self.is_playing:
+            self._stop_playback()
+        if self.video_total_frames <= 0:
+            return
+        self.video_current_frame_idx = np.random.randint(0, self.video_total_frames)
         self.slider_timeline.setValue(self.video_current_frame_idx)
         self._display_current_frame()
 
@@ -6230,7 +6232,6 @@ class MainWindow(QMainWindow):
 
     def _collect_preview_controls(self):
         return [
-            self.btn_refresh_preview,
             self.btn_test_detection,
             self.slider_timeline,
             self.btn_first_frame,
@@ -6238,6 +6239,7 @@ class MainWindow(QMainWindow):
             self.btn_play_pause,
             self.btn_next_frame,
             self.btn_last_frame,
+            self.btn_random_seek,
             self.combo_playback_speed,
             self.spin_start_frame,
             self.spin_end_frame,
@@ -7538,12 +7540,26 @@ class MainWindow(QMainWindow):
 
         base_name = os.path.splitext(video_path)[0]
         model_id = get_cache_model_id()
-        detection_cache_path = f"{base_name}_detection_cache_{model_id}.npz"
+        base_prefix = os.path.basename(base_name) + "_detection_cache_"
+
+        # Choose a writable directory for cache (prefer video dir, then CSV dir, else temp)
+        cache_dir = os.path.dirname(video_path)
+        if not os.access(cache_dir, os.W_OK):
+            csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+            if csv_dir and os.access(csv_dir, os.W_OK):
+                cache_dir = csv_dir
+            else:
+                cache_dir = tempfile.gettempdir()
+                logger.warning(
+                    f"Video directory not writable; using temp cache dir: {cache_dir}"
+                )
+
+        detection_cache_path = os.path.join(
+            cache_dir, f"{base_prefix}{model_id}.npz"
+        )
 
         # Delete old cache hashes for this video (keep only current settings)
         try:
-            cache_dir = os.path.dirname(detection_cache_path)
-            base_prefix = os.path.basename(base_name) + "_detection_cache_"
             for fname in os.listdir(cache_dir):
                 if not fname.startswith(base_prefix) or not fname.endswith(".npz"):
                     continue
@@ -9790,8 +9806,7 @@ class MainWindow(QMainWindow):
                     self.video_out_line.setText(video_out_path)
                     self.check_video_output.setChecked(True)
 
-                    # Enable preview buttons
-                    self.btn_refresh_preview.setEnabled(True)
+                    # Enable preview detection button
                     self.btn_test_detection.setEnabled(True)
                     self.btn_detect_fps.setEnabled(True)
 
@@ -9800,9 +9815,6 @@ class MainWindow(QMainWindow):
                     if hasattr(self, "roi_optimization_label"):
                         self.roi_optimization_label.setText("")
                     self.roi_crop_warning_shown = False
-
-                    # Load preview frame
-                    self._load_preview_frame()
 
                     # Auto-load config if it exists
                     config_path = get_video_config_path(output_path)
