@@ -549,9 +549,20 @@ def export_dataset(
             # Get detections for this frame from CSV
             frame_detections = df[df["FrameID"] == frame_id]
 
-            # Get resize factor to scale CSV coordinates back to original space
+            # Decide whether CSV coordinates are already in original space
             resize_factor = params.get("RESIZE_FACTOR", 1.0)
-            scale_back = 1.0 / resize_factor
+            scale_back = 1.0
+            if resize_factor and resize_factor < 1.0:
+                try:
+                    max_x = df["X"].max()
+                    max_y = df["Y"].max()
+                    if (
+                        max_x <= frame_width * resize_factor * 1.05
+                        and max_y <= frame_height * resize_factor * 1.05
+                    ):
+                        scale_back = 1.0 / resize_factor
+                except Exception:
+                    pass
 
             annotations = []
             with open(label_path, "w") as f:
@@ -560,7 +571,7 @@ def export_dataset(
                     if pd.isna(detection["X"]) or pd.isna(detection["Y"]):
                         continue
 
-                    # CSV coordinates are in resized frame space, scale back to original
+                    # CSV coordinates might already be in original space
                     cx = detection["X"] * scale_back
                     cy = detection["Y"] * scale_back
                     theta = detection["Theta"]

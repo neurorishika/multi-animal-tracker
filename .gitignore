@@ -386,4 +386,9 @@ profiling/
 # Custom user presets (gitignored)
 configs/custom.json
 
+# Video files
 *.mp4
+
+# model files (ignore datasets generated from training)
+training/YOLO-obb/combined_dataset*
+training/YOLO-obb/training_runs/combined_dataset*

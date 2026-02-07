@@ -433,6 +433,7 @@ class TrackingWorker(QThread):
         if (
             p.get("ENABLE_INDIVIDUAL_DATASET", False)
             and not self.backward_mode  # Only generate dataset in forward pass
+            and not self.preview_mode  # Never generate in preview
         ):
             output_dir = p.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
             video_name = Path(self.video_path).stem
@@ -481,6 +482,7 @@ class TrackingWorker(QThread):
         # Initialize detection cache
         detection_cache = None
         use_cached_detections = False
+        cached_frame_indices = set()
         if self.detection_cache_path:
             # Check if we should load existing cache
             cache_exists = os.path.exists(self.detection_cache_path)
@@ -860,6 +862,7 @@ class TrackingWorker(QThread):
                     filtered_obb_corners if filtered_obb_corners else None,
                     detection_ids,
                 )
+                cached_frame_indices.add(actual_frame_index)
 
             profile_times["detection"] += time.time() - detect_start
 
@@ -1330,6 +1333,20 @@ class TrackingWorker(QThread):
             elapsed = time.time() - start_time
             if elapsed > 0:
                 fps_list.append(self.frame_count / elapsed)
+
+        # Ensure cache has entries for all frames in the requested range (forward pass)
+        if detection_cache and not self.backward_mode and not use_cached_detections:
+            for frame_idx in range(start_frame, end_frame + 1):
+                if frame_idx not in cached_frame_indices:
+                    detection_cache.add_frame(
+                        frame_idx,
+                        [],
+                        [],
+                        [],
+                        [],
+                        None,
+                        [],
+                    )
 
         # === 3. CLEANUP (Identical to Original) ===
         # Stop frame prefetcher if still running

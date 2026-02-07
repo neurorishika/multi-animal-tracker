@@ -67,6 +67,7 @@ from ..utils.csv_writer import CSVWriterThread
 from ..utils.geometry import fit_circle_to_points
 from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
 from .histogram_widgets import HistogramPanel
+from .train_yolo_dialog import TrainYoloDialog
 
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
@@ -614,6 +615,7 @@ class MainWindow(QMainWindow):
         self.final_full_trajs = []
         self.temporary_files = []  # Track temporary files for cleanup
         self.session_log_handler = None  # Track current session log file handler
+        self._individual_dataset_run_id = None
 
         # Preview frame for live image adjustments
         self.preview_frame_original = None  # Original frame without adjustments
@@ -1289,8 +1291,6 @@ class MainWindow(QMainWindow):
         fl_output = QFormLayout(None)
         fl_output.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
-        fl_output.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
         self.btn_csv = QPushButton("Select CSV Output...")
         self.btn_csv.clicked.connect(self.select_csv)
         self.csv_line = QLineEdit()
@@ -1318,17 +1318,17 @@ class MainWindow(QMainWindow):
         config_layout.addWidget(self.btn_show_gpu_info)
 
         config_layout.addStretch()
-        fl.addRow("Configuration:", config_layout)
+        fl_output.addRow("Configuration:", config_layout)
 
         # Config status label
         self.config_status_label = QLabel("No config loaded (using defaults)")
         self.config_status_label.setStyleSheet(
             "color: #888; font-style: italic; font-size: 10px;"
         )
-        fl.addRow("", self.config_status_label)
-        vl_files.addLayout(fl)
+        fl_output.addRow("", self.config_status_label)
+        vl_output.addLayout(fl_output)
 
-        form.addWidget(g_files)
+        form.addWidget(g_output)
 
         # ============================================================
         # System Performance
@@ -3046,7 +3046,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Active Learning Dataset Section
         # ============================================================
-        self.g_active_learning = QGroupBox("Active Learning Dataset Generation")
+        self.g_active_learning = QGroupBox("Generate Animal Detection Dataset...")
         vl_active = QVBoxLayout(self.g_active_learning)
         vl_active.addWidget(
             self._create_help_label(
@@ -3057,7 +3057,7 @@ class MainWindow(QMainWindow):
 
         # Enable checkbox
         self.chk_enable_dataset_gen = QCheckBox(
-            "Enable Active Learning Dataset Generation"
+            "Enable Dataset Generation for Active Learning"
         )
         self.chk_enable_dataset_gen.setStyleSheet(
             "font-weight: bold; font-size: 13px; color: #4a9eff;"
@@ -3237,7 +3237,9 @@ class MainWindow(QMainWindow):
         vl_xany.addLayout(h_env)
 
         # Open in X-AnyLabeling button
-        self.btn_open_xanylabeling = QPushButton("Open Dataset in X-AnyLabeling")
+        self.btn_open_xanylabeling = QPushButton(
+            "Open Active Learning Dataset in X-AnyLabeling"
+        )
         self.btn_open_xanylabeling.setToolTip(
             "Browse for a dataset directory and open it in X-AnyLabeling.\n"
             "Directory must contain: classes.txt, images/, and labels/"
@@ -3246,13 +3248,31 @@ class MainWindow(QMainWindow):
         self.btn_open_xanylabeling.setEnabled(False)
         vl_xany.addWidget(self.btn_open_xanylabeling)
 
-        vl_content.addWidget(self.g_xanylabeling)
+        # X-AnyLabeling integration is now separate from Active Learning content
 
         # Add content to main group box
         vl_active.addWidget(self.active_learning_content)
 
         # Add main group box to form
         form.addWidget(self.g_active_learning)
+
+        # ============================================================
+        # X-AnyLabeling Integration (separate section)
+        # ============================================================
+        form.addWidget(self.g_xanylabeling)
+
+        # ============================================================
+        # YOLO-OBB Training (separate section)
+        # ============================================================
+        self.g_yolo_training = QGroupBox("YOLO-OBB Training")
+        vl_yolo_train = QVBoxLayout(self.g_yolo_training)
+        self.btn_open_training_dialog = QPushButton("Train YOLO-OBB Model...")
+        self.btn_open_training_dialog.setToolTip(
+            "Open training dialog to merge datasets and train a YOLO-OBB model."
+        )
+        self.btn_open_training_dialog.clicked.connect(self._open_training_dialog)
+        vl_yolo_train.addWidget(self.btn_open_training_dialog)
+        form.addWidget(self.g_yolo_training)
 
         # Populate conda environments on startup
         self._refresh_xanylabeling_envs()
@@ -3315,6 +3335,7 @@ class MainWindow(QMainWindow):
         # Output format
         self.combo_individual_format = QComboBox()
         self.combo_individual_format.addItems(["PNG", "JPEG"])
+        self.combo_individual_format.setCurrentText("PNG")
         self.combo_individual_format.setToolTip(
             "PNG: Lossless, larger files\nJPEG: Smaller files, slight quality loss"
         )
@@ -3392,7 +3413,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Pose Label UI Integration (Top-level section)
         # ============================================================
-        self.g_pose_label = QGroupBox("Pose Label & Keypoint Annotation")
+        self.g_pose_label = QGroupBox("Pose Labelling")
         vl_pose = QVBoxLayout(self.g_pose_label)
         vl_pose.addWidget(
             self._create_help_label(
@@ -3417,7 +3438,7 @@ class MainWindow(QMainWindow):
         vl_pose.addLayout(h_pose_folder)
 
         # Open in Pose Label button
-        self.btn_open_pose_label = QPushButton("Open Folder in Pose Label UI")
+        self.btn_open_pose_label = QPushButton("Open PoseKit Labeler")
         self.btn_open_pose_label.setToolTip(
             "Launch the PoseKit Labeler for keypoint annotation.\n"
             "You can create/edit project settings, import skeleton definitions, etc.\n"
@@ -3618,6 +3639,17 @@ class MainWindow(QMainWindow):
         )
         if directory:
             self.line_dataset_output.setText(directory)
+
+    def _open_training_dialog(self):
+        class_name = self.line_dataset_class_name.text().strip() or "object"
+        envs = []
+        for i in range(self.combo_xanylabeling_env.count()):
+            name = self.combo_xanylabeling_env.itemText(i)
+            if "No X-AnyLabeling" in name or "Conda not available" in name:
+                continue
+            envs.append(name)
+        dialog = TrainYoloDialog(self, class_name=class_name, conda_envs=envs)
+        dialog.exec()
 
     def _refresh_xanylabeling_envs(self):
         """Scan for conda environments starting with 'x-anylabeling-'."""
@@ -6039,8 +6071,8 @@ class MainWindow(QMainWindow):
                             f"Could not copy model to archive:\n{e}\n\nUsing original path.",
                         )
 
-            # Store the path (will be made relative on save if in archive)
-            self.yolo_custom_model_line.setText(fp)
+            # Store relative path if model is in archive (portable across devices)
+            self.yolo_custom_model_line.setText(make_model_path_relative(fp))
 
     def toggle_histogram_window(self):
         if self.histogram_window is None:
@@ -6182,6 +6214,9 @@ class MainWindow(QMainWindow):
         video_path = self.file_line.text()
         if video_path:
             self._setup_session_logging(video_path, backward_mode=False)
+            from datetime import datetime
+
+            self._individual_dataset_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         self.start_tracking(preview_mode=False)
 
@@ -6204,6 +6239,7 @@ class MainWindow(QMainWindow):
         self.btn_start.setText("Start Full Tracking")
         self.btn_start.setEnabled(True)
         self.btn_preview.setEnabled(True)
+        self._individual_dataset_run_id = None
 
         # Hide stats labels when tracking stops
         self.label_current_fps.setVisible(False)
@@ -6339,9 +6375,18 @@ class MainWindow(QMainWindow):
         self._ui_state = state
 
         if state == "no_video":
+            extra_allowed = [
+                self.combo_xanylabeling_env,
+                self.btn_refresh_envs,
+                self.btn_open_xanylabeling,
+                self.btn_open_training_dialog,
+                self.line_pose_folder,
+                self.btn_browse_pose_folder,
+                self.btn_open_pose_label,
+            ]
             self._set_interactive_widgets_enabled(
                 False,
-                allowlist=[self.btn_file, self.btn_load_config],
+                allowlist=[self.btn_file, self.btn_load_config] + extra_allowed,
                 remember_state=False,
             )
             self.btn_start.setEnabled(False)
@@ -7545,7 +7590,9 @@ class MainWindow(QMainWindow):
         # Choose a writable directory for cache (prefer video dir, then CSV dir, else temp)
         cache_dir = os.path.dirname(video_path)
         if not os.access(cache_dir, os.W_OK):
-            csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+            csv_dir = (
+                os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+            )
             if csv_dir and os.access(csv_dir, os.W_OK):
                 cache_dir = csv_dir
             else:
@@ -7554,20 +7601,9 @@ class MainWindow(QMainWindow):
                     f"Video directory not writable; using temp cache dir: {cache_dir}"
                 )
 
-        detection_cache_path = os.path.join(
-            cache_dir, f"{base_prefix}{model_id}.npz"
-        )
+        detection_cache_path = os.path.join(cache_dir, f"{base_prefix}{model_id}.npz")
 
-        # Delete old cache hashes for this video (keep only current settings)
-        try:
-            for fname in os.listdir(cache_dir):
-                if not fname.startswith(base_prefix) or not fname.endswith(".npz"):
-                    continue
-                full_path = os.path.join(cache_dir, fname)
-                if full_path != detection_cache_path and os.path.isfile(full_path):
-                    os.remove(full_path)
-        except Exception as e:
-            logger.warning(f"Failed to clean old detection caches: {e}")
+        # Do NOT delete old detection caches; keep all for reuse
 
         self.tracking_worker = TrackingWorker(
             video_path,
@@ -7810,6 +7846,7 @@ class MainWindow(QMainWindow):
             "INDIVIDUAL_BACKGROUND_COLOR": [
                 int(c) for c in self._background_color
             ],  # Ensure JSON serializable
+            "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
         }
 
     def load_config(self):

@@ -1769,7 +1769,7 @@ class ProjectWizard(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, project: Project, image_paths: List[Path]):
         super().__init__()
-        self.setWindowTitle("PoseKit (Ultralytics YOLO Pose)")
+        self.setWindowTitle("PoseKit Labeler")
 
         self.project = project
         self.image_paths = image_paths
@@ -2026,7 +2026,6 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.btn_proj)
         right_layout.addWidget(self.btn_export)
 
-
         right_layout.addSpacing(8)
         right_layout.addWidget(QLabel("Model"))
         self.btn_train = QPushButton("Train / Fine-tune…")
@@ -2081,7 +2080,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 10)
         splitter.setStretchFactor(2, 1)
-        
+
         # Set initial sizes: ~200px per side panel, rest to center
         # This will be adjusted when window is shown based on total width
         splitter.setSizes([200, 800, 200])
@@ -3721,9 +3720,13 @@ class MainWindow(QMainWindow):
         train_items = None
         val_items = None
         if split_method.currentText() == "Cluster-stratified":
-            csv_path = Path(cluster_csv.text().strip()) if cluster_csv.text().strip() else None
+            csv_path = (
+                Path(cluster_csv.text().strip()) if cluster_csv.text().strip() else None
+            )
             if csv_path is None or not csv_path.exists():
-                default_csv = self.project.out_root / ".posekit" / "clusters" / "clusters.csv"
+                default_csv = (
+                    self.project.out_root / ".posekit" / "clusters" / "clusters.csv"
+                )
                 csv_path = default_csv if default_csv.exists() else None
             if not csv_path:
                 QMessageBox.warning(
@@ -3755,7 +3758,9 @@ class MainWindow(QMainWindow):
                     item_cluster_ids.append(cluster_ids[i])
 
             if len(items) < 2:
-                QMessageBox.warning(self, "Not enough labels", "Need at least 2 labeled frames.")
+                QMessageBox.warning(
+                    self, "Not enough labels", "Need at least 2 labeled frames."
+                )
                 return
 
             train_idx, val_idx, _ = cluster_stratified_split(
@@ -3977,7 +3982,7 @@ def create_project_via_wizard(
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="PoseKit labeler (Ultralytics YOLO Pose)")
+    ap = argparse.ArgumentParser(description="PoseKit labeler")
     ap.add_argument("images", help="Folder of images (recursively scanned)")
     ap.add_argument(
         "--out", default=None, help="Output root (default: <images>/../pose_project)"

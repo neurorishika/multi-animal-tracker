@@ -227,7 +227,7 @@ class IndividualDatasetGenerator:
 
         # Output format
         self.output_format = params.get("INDIVIDUAL_OUTPUT_FORMAT", "png")  # png or jpg
-        self.jpg_quality = params.get("INDIVIDUAL_JPG_QUALITY", 95)
+        self.jpg_quality = params.get("INDIVIDUAL_JPG_QUALITY", 100)
 
         # Statistics
         self.total_saved = 0
@@ -318,10 +318,13 @@ class IndividualDatasetGenerator:
 
     def _setup_output_directory(self):
         """Create output directory structure."""
-        from datetime import datetime
-
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        dataset_folder_name = f"{self.dataset_name}_{timestamp}"
+        run_id = self.params.get("INDIVIDUAL_DATASET_RUN_ID")
+        if run_id:
+            dataset_folder_name = f"{self.dataset_name}_{run_id}"
+        else:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dataset_folder_name = f"{self.dataset_name}_{timestamp}"
         self.crops_dir = self.output_dir / dataset_folder_name / "crops"
         self.crops_dir.mkdir(parents=True, exist_ok=True)
 
