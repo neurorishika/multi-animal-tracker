@@ -65,8 +65,11 @@ from ..core.post_processing import (
 )
 from ..utils.csv_writer import CSVWriterThread
 from ..utils.geometry import fit_circle_to_points
+from ..utils.geometry import wrap_angle_degs
 from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
+from ..utils.detection_cache import DetectionCache
 from .histogram_widgets import HistogramPanel
+from ..core.individual_analysis import IndividualDatasetGenerator
 from .train_yolo_dialog import TrainYoloDialog
 
 # Configuration file for saving/loading tracking parameters
@@ -616,6 +619,7 @@ class MainWindow(QMainWindow):
         self.temporary_files = []  # Track temporary files for cleanup
         self.session_log_handler = None  # Track current session log file handler
         self._individual_dataset_run_id = None
+        self.current_detection_cache_path = None
 
         # Preview frame for live image adjustments
         self.preview_frame_original = None  # Original frame without adjustments
@@ -3351,6 +3355,16 @@ class MainWindow(QMainWindow):
             "1 = every frame, 10 = every 10th frame, etc."
         )
         ind_output_layout.addRow("Save Every N Frames:", self.spin_individual_interval)
+
+        self.chk_individual_interpolate = QCheckBox(
+            "Interpolate Occluded Frames After Tracking"
+        )
+        self.chk_individual_interpolate.setChecked(True)
+        self.chk_individual_interpolate.setToolTip(
+            "After tracking completes, fill occluded gaps by interpolating center/size/angle\n"
+            "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
+        )
+        ind_output_layout.addRow("Occlusion Interpolation:", self.chk_individual_interpolate)
 
         # Padding fraction (only crop parameter needed - size is determined by OBB)
         self.spin_individual_padding = QDoubleSpinBox()
@@ -6217,6 +6231,7 @@ class MainWindow(QMainWindow):
             from datetime import datetime
 
             self._individual_dataset_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.current_detection_cache_path = None
 
         self.start_tracking(preview_mode=False)
 
@@ -6240,6 +6255,7 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_preview.setEnabled(True)
         self._individual_dataset_run_id = None
+        self.current_detection_cache_path = None
 
         # Hide stats labels when tracking stops
         self.label_current_fps.setVisible(False)
@@ -7284,6 +7300,10 @@ class MainWindow(QMainWindow):
                             override_csv_path=final_csv_path
                         )
 
+                    # Interpolate occlusions for individual dataset (post-pass)
+                    if self.chk_enable_individual_dataset.isChecked():
+                        self._generate_interpolated_individual_crops(final_csv_path)
+
                     # Clean up session logging - forward-only tracking complete
                     self._cleanup_session_logging()
                     self._cleanup_temporary_files()
@@ -7360,6 +7380,10 @@ class MainWindow(QMainWindow):
         if self.chk_enable_dataset_gen.isChecked():
             self._generate_training_dataset(override_csv_path=final_csv_path)
 
+        # Interpolate occlusions for individual dataset (post-pass)
+        if self.chk_enable_individual_dataset.isChecked():
+            self._generate_interpolated_individual_crops(final_csv_path)
+
         # Clean up session logging
         self._cleanup_session_logging()
         self._cleanup_temporary_files()
@@ -7375,6 +7399,255 @@ class MainWindow(QMainWindow):
         self.btn_start.setText("Start Full Tracking")
         self._apply_ui_state("idle" if self.current_video_path else "no_video")
         logger.info("✓ Tracking session complete.")
+
+    def _generate_interpolated_individual_crops(self, csv_path):
+        """Post-pass interpolation for occluded segments in individual dataset."""
+        try:
+            if not self.chk_individual_interpolate.isChecked():
+                return
+
+            # Use post-processed CSV by default (occlusions recorded in State column)
+            target_csv = None
+            if csv_path and os.path.exists(csv_path):
+                target_csv = csv_path
+            elif self.csv_line.text() and os.path.exists(self.csv_line.text()):
+                target_csv = self.csv_line.text()
+            if not target_csv or not os.path.exists(target_csv):
+                return
+
+            video_path = self.file_line.text()
+            if not video_path or not os.path.exists(video_path):
+                return
+
+            params = self.get_parameters_dict()
+            output_dir = params.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
+            if not output_dir:
+                return
+
+            df = pd.read_csv(target_csv)
+            if df.empty or "FrameID" not in df.columns:
+                return
+            if "State" not in df.columns:
+                logger.warning("Interpolated crops skipped: CSV missing State column.")
+                return
+
+            resize_factor = params.get("RESIZE_FACTOR", 1.0)
+            position_scale = 1.0
+            size_scale = 1.0 / resize_factor if resize_factor else 1.0
+
+            # Open detection cache if available
+            detection_cache = None
+            if self.current_detection_cache_path and os.path.exists(
+                self.current_detection_cache_path
+            ):
+                detection_cache = DetectionCache(
+                    self.current_detection_cache_path, mode="r"
+                )
+
+            # Initialize generator (append mode)
+            gen = IndividualDatasetGenerator(
+                params,
+                output_dir,
+                Path(video_path).stem,
+                params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
+            )
+            gen.enabled = True
+
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                if detection_cache:
+                    detection_cache.close()
+                return
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+            # Determine if CSV coordinates are already in original space
+            try:
+                max_x = df["X"].dropna().max()
+                max_y = df["Y"].dropna().max()
+                if (
+                    resize_factor
+                    and resize_factor < 1.0
+                    and max_x <= frame_width * resize_factor * 1.05
+                    and max_y <= frame_height * resize_factor * 1.05
+                ):
+                    position_scale = 1.0 / resize_factor
+            except Exception:
+                position_scale = 1.0
+
+            # Build per-trajectory interpolation using occluded segments
+            interp_saved = 0
+            interp_gaps = 0
+            for traj_id, group in df.groupby("TrajectoryID"):
+                group = group.sort_values("FrameID").reset_index(drop=True)
+                states = group["State"].astype(str).str.lower()
+
+                last_valid_idx = None
+                i = 0
+                while i < len(group):
+                    if states[i] != "occluded":
+                        # Use only valid rows with numeric positions
+                        if not pd.isna(group.at[i, "X"]) and not pd.isna(
+                            group.at[i, "Y"]
+                        ):
+                            last_valid_idx = i
+                        i += 1
+                        continue
+
+                    # Start of occluded run
+                    if last_valid_idx is None:
+                        i += 1
+                        continue
+
+                    j = i
+                    while j < len(group) and states[j] == "occluded":
+                        j += 1
+                    if j >= len(group):
+                        break
+
+                    prev_row = group.iloc[last_valid_idx]
+                    next_row = group.iloc[j]
+                    if pd.isna(prev_row["X"]) or pd.isna(prev_row["Y"]) or pd.isna(
+                        next_row["X"]
+                    ) or pd.isna(next_row["Y"]):
+                        i = j
+                        continue
+
+                    f0 = int(prev_row["FrameID"])
+                    f1 = int(next_row["FrameID"])
+                    if f1 - f0 <= 1:
+                        i = j
+                        continue
+
+                    interp_gaps += max(0, f1 - f0 - 1)
+
+                    det_id_prev = (
+                        prev_row["DetectionID"]
+                        if "DetectionID" in group.columns
+                        else None
+                    )
+                    det_id_next = (
+                        next_row["DetectionID"]
+                        if "DetectionID" in group.columns
+                        else None
+                    )
+
+                    w0, h0 = self._get_detection_size(
+                        detection_cache, f0, det_id_prev, params
+                    )
+                    w1, h1 = self._get_detection_size(
+                        detection_cache, f1, det_id_next, params
+                    )
+
+                    if w0 is None or h0 is None or w1 is None or h1 is None:
+                        ref_size = params.get("REFERENCE_BODY_SIZE", 20.0)
+                        w0 = w0 or ref_size * 2.2
+                        h0 = h0 or ref_size * 0.8
+                        w1 = w1 or ref_size * 2.2
+                        h1 = h1 or ref_size * 0.8
+
+                    for k in range(i, j):
+                        row = group.iloc[k]
+                        f = int(row["FrameID"])
+                        t = (f - f0) / (f1 - f0)
+                        cx = float(prev_row["X"]) + t * (
+                            float(next_row["X"]) - float(prev_row["X"])
+                        )
+                        cy = float(prev_row["Y"]) + t * (
+                            float(next_row["Y"]) - float(prev_row["Y"])
+                        )
+                        theta = self._interp_angle(
+                            float(prev_row["Theta"]), float(next_row["Theta"]), t
+                        )
+                        w = w0 + t * (w1 - w0)
+                        h = h0 + t * (h1 - h0)
+
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+                        ret, frame = cap.read()
+                        if not ret or frame is None:
+                            continue
+
+                        track_id = (
+                            int(prev_row["TrackID"])
+                            if "TrackID" in group.columns
+                            and not pd.isna(prev_row["TrackID"])
+                            else -1
+                        )
+
+                        if gen.save_interpolated_crop(
+                            frame=frame,
+                            frame_id=f,
+                            cx=cx * position_scale,
+                            cy=cy * position_scale,
+                            w=w * size_scale,
+                            h=h * size_scale,
+                            theta=theta,
+                            track_id=track_id,
+                            traj_id=traj_id,
+                            interp_from=(f0, f1),
+                        ):
+                            interp_saved += 1
+
+                    i = j
+                    continue
+
+            cap.release()
+            if detection_cache:
+                detection_cache.close()
+            gen.finalize()
+            logger.info(
+                f"Interpolated individual crops saved: {interp_saved} (gaps: {interp_gaps})"
+            )
+        except Exception as e:
+            logger.warning(f"Interpolated individual crops failed: {e}")
+
+    def _interp_angle(self, theta_start, theta_end, t):
+        deg0 = math.degrees(theta_start)
+        deg1 = math.degrees(theta_end)
+        delta = wrap_angle_degs(deg1 - deg0)
+        return math.radians(deg0 + delta * t)
+
+    def _get_detection_size(self, detection_cache, frame_id, detection_id, params):
+        if detection_cache is None or detection_id is None or pd.isna(detection_id):
+            return None, None
+        try:
+            _, _, shapes, _, obb_corners, detection_ids = detection_cache.get_frame(
+                int(frame_id)
+            )
+        except Exception:
+            return None, None
+
+        idx = None
+        try:
+            for i, did in enumerate(detection_ids):
+                if int(did) == int(detection_id):
+                    idx = i
+                    break
+        except Exception:
+            idx = None
+
+        if idx is None:
+            return None, None
+
+        # YOLO OBB corners
+        if obb_corners and idx < len(obb_corners):
+            c = np.asarray(obb_corners[idx], dtype=np.float32)
+            if c.shape[0] >= 4:
+                w = float(np.linalg.norm(c[1] - c[0]))
+                h = float(np.linalg.norm(c[2] - c[1]))
+                if w < h:
+                    w, h = h, w
+                return w, h
+
+        # Background subtraction shapes
+        if shapes and idx < len(shapes):
+            area, aspect_ratio = shapes[idx][0], shapes[idx][1]
+            if aspect_ratio > 0 and area > 0:
+                ax2 = math.sqrt(4 * area / (math.pi * aspect_ratio))
+                ax1 = aspect_ratio * ax2
+                return ax1, ax2
+
+        return None, None
 
     @Slot(dict)
     def on_histogram_data(self, histogram_data):
@@ -7604,6 +7877,7 @@ class MainWindow(QMainWindow):
         detection_cache_path = os.path.join(cache_dir, f"{base_prefix}{model_id}.npz")
 
         # Do NOT delete old detection caches; keep all for reuse
+        self.current_detection_cache_path = detection_cache_path
 
         self.tracking_worker = TrackingWorker(
             video_path,
@@ -7842,6 +8116,7 @@ class MainWindow(QMainWindow):
             "INDIVIDUAL_DATASET_OUTPUT_DIR": self.line_individual_output.text(),
             "INDIVIDUAL_OUTPUT_FORMAT": self.combo_individual_format.currentText().lower(),
             "INDIVIDUAL_SAVE_INTERVAL": self.spin_individual_interval.value(),
+            "INDIVIDUAL_INTERPOLATE_OCCLUSIONS": self.chk_individual_interpolate.isChecked(),
             "INDIVIDUAL_CROP_PADDING": self.spin_individual_padding.value(),
             "INDIVIDUAL_BACKGROUND_COLOR": [
                 int(c) for c in self._background_color
@@ -8433,6 +8708,9 @@ class MainWindow(QMainWindow):
             self.spin_individual_interval.setValue(
                 get_cfg("individual_save_interval", default=1)
             )
+            self.chk_individual_interpolate.setChecked(
+                get_cfg("individual_interpolate_occlusions", default=True)
+            )
             self.spin_individual_padding.setValue(
                 get_cfg("individual_crop_padding", default=0.1)
             )
@@ -8759,6 +9037,7 @@ class MainWindow(QMainWindow):
         cfg.update(
             {
                 "individual_save_interval": self.spin_individual_interval.value(),
+                "individual_interpolate_occlusions": self.chk_individual_interpolate.isChecked(),
                 "individual_crop_padding": self.spin_individual_padding.value(),
                 "individual_background_color": [
                     int(c) for c in self._background_color

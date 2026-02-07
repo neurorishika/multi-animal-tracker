@@ -331,6 +331,16 @@ class IndividualDatasetGenerator:
         # Create metadata file path
         self.metadata_path = self.crops_dir.parent / "metadata.json"
 
+        # Load existing metadata if present (append mode)
+        if self.metadata_path.exists():
+            try:
+                with open(self.metadata_path, "r") as f:
+                    data = json.load(f)
+                self.metadata = data.get("crops", [])
+                self.total_saved = len(self.metadata)
+            except Exception:
+                pass
+
         logger.info(f"Individual dataset output directory: {self.crops_dir}")
 
     def process_frame(
@@ -464,6 +474,55 @@ class IndividualDatasetGenerator:
 
         return num_saved
 
+    def save_interpolated_crop(
+        self,
+        frame,
+        frame_id,
+        cx,
+        cy,
+        w,
+        h,
+        theta,
+        track_id,
+        traj_id,
+        interp_from,
+    ):
+        if not self.enabled or self.crops_dir is None:
+            return False
+
+        corners = self.ellipse_to_obb_corners(cx, cy, w, h, theta)
+        crop, crop_info = self._extract_obb_masked_crop(
+            frame, corners, frame.shape[0], frame.shape[1]
+        )
+        if crop is None:
+            return False
+
+        metadata = {
+            "frame_id": int(frame_id),
+            "detection_idx": -1,
+            "track_id": int(track_id),
+            "trajectory_id": int(traj_id),
+            "detection_id": None,
+            "confidence": None,
+            "center": [float(cx), float(cy)],
+            "theta": float(theta),
+            "crop_size": crop_info["crop_size"],
+            "obb_corners": corners.tolist(),
+            "source_type": "interpolated",
+            "interpolated": True,
+            "interp_from_frames": [int(interp_from[0]), int(interp_from[1])],
+        }
+
+        return self._save_crop(
+            crop,
+            frame_id,
+            0,
+            track_id,
+            metadata,
+            detection_id=None,
+            name_prefix="interp_",
+        )
+
     def _extract_obb_masked_crop(self, frame, corners, frame_h, frame_w):
         """
         Extract a crop with only the OBB region visible.
@@ -539,7 +598,14 @@ class IndividualDatasetGenerator:
         return masked_crop, crop_info
 
     def _save_crop(
-        self, crop, frame_id, det_idx, track_id, metadata, detection_id=None
+        self,
+        crop,
+        frame_id,
+        det_idx,
+        track_id,
+        metadata,
+        detection_id=None,
+        name_prefix="",
     ):
         """
         Save a crop to disk.
@@ -559,11 +625,11 @@ class IndividualDatasetGenerator:
             # Generate filename
             if detection_id is not None:
                 # Use DetectionID if available (preferred/unique)
-                filename = f"did{int(detection_id)}.{self.output_format}"
+                filename = f"{name_prefix}did{int(detection_id)}.{self.output_format}"
             elif track_id >= 0:
-                filename = f"f{frame_id:06d}_t{track_id:04d}_d{det_idx:02d}.{self.output_format}"
+                filename = f"{name_prefix}f{frame_id:06d}_t{track_id:04d}_d{det_idx:02d}.{self.output_format}"
             else:
-                filename = f"f{frame_id:06d}_d{det_idx:02d}.{self.output_format}"
+                filename = f"{name_prefix}f{frame_id:06d}_d{det_idx:02d}.{self.output_format}"
 
             filepath = self.crops_dir / filename
 
