@@ -146,6 +146,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QFrame,
     QGroupBox,
+    QInputDialog,
 )
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -154,6 +155,7 @@ DEFAULT_SKELETON_DIRNAME = "configs"
 DEFAULT_KPT_RADIUS = 5.0
 DEFAULT_LABEL_FONT_SIZE = 10
 DEFAULT_AUTOSAVE_DELAY_MS = 3000
+PRED_CACHE_DIRNAME = ".posekit/predictions"
 
 
 # -----------------------------
@@ -204,12 +206,29 @@ class Project:
     # Opacity
     kpt_opacity: float = 1.0
     edge_opacity: float = 0.7
+    latest_pose_weights: Optional[Path] = None
 
     def to_json(self) -> dict:
+        base = self.project_path.parent
+        images_dir = _relativize_path(self.images_dir, base)
+        labels_dir = _relativize_path(self.labels_dir, base)
+        out_root = _relativize_path(self.out_root, base)
+        latest_weights = (
+            _relativize_path(self.latest_pose_weights, base)
+            if self.latest_pose_weights
+            else None
+        )
+        paths_relative = (
+            not Path(images_dir).is_absolute()
+            and not Path(labels_dir).is_absolute()
+            and not Path(out_root).is_absolute()
+        )
         return {
-            "images_dir": str(self.images_dir),
-            "out_root": str(self.out_root),
-            "labels_dir": str(self.labels_dir),
+            "images_dir": str(images_dir),
+            "out_root": str(out_root),
+            "labels_dir": str(labels_dir),
+            "latest_pose_weights": str(latest_weights) if latest_weights else "",
+            "paths_relative": bool(paths_relative),
             "class_names": self.class_names,
             "keypoint_names": self.keypoint_names,
             "skeleton_edges": [[a, b] for a, b in self.skeleton_edges],
@@ -235,10 +254,19 @@ class Project:
         grid = data.get("clahe_grid", [8, 8])
         if not isinstance(grid, (list, tuple)) or len(grid) != 2:
             grid = [8, 8]
+        base = project_path.parent
+        images_dir = _resolve_project_path(Path(data["images_dir"]), base, data)
+        labels_dir = _resolve_project_path(Path(data["labels_dir"]), base, data)
+        out_root_raw = Path(data.get("out_root", labels_dir.parent))
+        out_root = _resolve_project_path(out_root_raw, base, data)
+        latest_raw = Path(data.get("latest_pose_weights", "") or "")
+        latest_pose_weights = (
+            _resolve_project_path(latest_raw, base, data) if str(latest_raw) else None
+        )
         return Project(
-            images_dir=Path(data["images_dir"]),
-            out_root=Path(data.get("out_root", Path(data["labels_dir"]).parent)),
-            labels_dir=Path(data["labels_dir"]),
+            images_dir=images_dir,
+            out_root=out_root,
+            labels_dir=labels_dir,
             project_path=project_path,
             class_names=list(data.get("class_names", ["object"])),
             keypoint_names=list(data.get("keypoint_names", ["kp1", "kp2"])),
@@ -259,12 +287,299 @@ class Project:
             label_font_size=int(data.get("label_font_size", DEFAULT_LABEL_FONT_SIZE)),
             kpt_opacity=float(data.get("kpt_opacity", 1.0)),
             edge_opacity=float(data.get("edge_opacity", 0.7)),
+            latest_pose_weights=latest_pose_weights,
         )
+
+
+class PosePredictWorker(QObject):
+    finished = Signal(list)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        weights_path: Path,
+        image_path: Path,
+        num_kpts: int,
+        device: str = "auto",
+        imgsz: int = 640,
+        conf: float = 0.25,
+    ):
+        super().__init__()
+        self.weights_path = Path(weights_path)
+        self.image_path = Path(image_path)
+        self.num_kpts = int(num_kpts)
+        self.device = device
+        self.imgsz = int(imgsz)
+        self.conf = float(conf)
+
+    def _extract_best_prediction(self, result):
+        if result is None or result.keypoints is None:
+            return None, None
+        kpts = result.keypoints
+        try:
+            xy = kpts.xy
+            conf = getattr(kpts, "conf", None)
+            xy = xy.cpu().numpy() if hasattr(xy, "cpu") else np.array(xy)
+            if conf is not None:
+                conf = conf.cpu().numpy() if hasattr(conf, "cpu") else np.array(conf)
+        except Exception:
+            return None, None
+
+        if xy.ndim == 2:
+            xy = xy[None, :, :]
+        if conf is not None and conf.ndim == 1:
+            conf = conf[None, :]
+
+        if xy.size == 0:
+            return None, None
+
+        if conf is not None:
+            scores = np.nanmean(conf, axis=1)
+        else:
+            scores = None
+            try:
+                if result.boxes is not None and hasattr(result.boxes, "conf"):
+                    scores = result.boxes.conf.cpu().numpy()
+            except Exception:
+                scores = None
+            if scores is None:
+                scores = np.zeros((xy.shape[0],), dtype=np.float32)
+
+        best = int(np.argmax(scores)) if len(scores) > 0 else 0
+        pred_xy = xy[best]
+        pred_conf = conf[best] if conf is not None else np.zeros((self.num_kpts,))
+
+        if pred_xy.shape[0] != self.num_kpts:
+            num = min(pred_xy.shape[0], self.num_kpts)
+            tmp_xy = np.zeros((self.num_kpts, 2), dtype=np.float32)
+            tmp_conf = np.zeros((self.num_kpts,), dtype=np.float32)
+            tmp_xy[:num] = pred_xy[:num]
+            tmp_conf[:num] = pred_conf[:num]
+            pred_xy = tmp_xy
+            pred_conf = tmp_conf
+
+        return pred_xy, pred_conf
+
+    def run(self):
+        try:
+            try:
+                from ultralytics import YOLO
+            except Exception as e:
+                self.failed.emit(
+                    f"Ultralytics not available. Install with: pip install ultralytics\n{e}"
+                )
+                return
+
+            if not self.weights_path.exists():
+                self.failed.emit(f"Weights not found: {self.weights_path}")
+                return
+
+            model = YOLO(str(self.weights_path))
+            pred_kwargs = {
+                "source": str(self.image_path),
+                "imgsz": self.imgsz,
+                "conf": self.conf,
+                "max_det": 1,
+                "stream": False,
+                "verbose": False,
+            }
+            if self.device and self.device != "auto":
+                pred_kwargs["device"] = self.device
+            if _is_cuda_device(self.device):
+                _maybe_limit_cuda_memory()
+                pred_kwargs["half"] = True
+
+            results = model.predict(**pred_kwargs)
+            result = results[0] if results else None
+            pred_xy, pred_conf = self._extract_best_prediction(result)
+
+            preds = []
+            if pred_xy is None:
+                for _ in range(self.num_kpts):
+                    preds.append((0.0, 0.0, 0.0))
+            else:
+                for i in range(self.num_kpts):
+                    c = float(pred_conf[i]) if pred_conf is not None else 0.0
+                    preds.append((float(pred_xy[i][0]), float(pred_xy[i][1]), c))
+
+            self.finished.emit(preds)
+        except Exception as e:
+            _maybe_empty_cuda_cache()
+            self.failed.emit(str(e))
+
+
+class BulkPosePredictWorker(QObject):
+    progress = Signal(int, int)
+    finished = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        weights_path: Path,
+        image_paths: List[Path],
+        num_kpts: int,
+        device: str = "auto",
+        imgsz: int = 640,
+        conf: float = 0.25,
+        batch: int = 16,
+    ):
+        super().__init__()
+        self.weights_path = Path(weights_path)
+        self.image_paths = list(image_paths)
+        self.num_kpts = int(num_kpts)
+        self.device = device
+        self.imgsz = int(imgsz)
+        self.conf = float(conf)
+        self.batch = int(batch)
+        self._cancel = False
+
+    def cancel(self):
+        self._cancel = True
+
+    def _extract_best_prediction(self, result):
+        if result is None or result.keypoints is None:
+            return None, None
+        kpts = result.keypoints
+        try:
+            xy = kpts.xy
+            conf = getattr(kpts, "conf", None)
+            xy = xy.cpu().numpy() if hasattr(xy, "cpu") else np.array(xy)
+            if conf is not None:
+                conf = conf.cpu().numpy() if hasattr(conf, "cpu") else np.array(conf)
+        except Exception:
+            return None, None
+
+        if xy.ndim == 2:
+            xy = xy[None, :, :]
+        if conf is not None and conf.ndim == 1:
+            conf = conf[None, :]
+
+        if xy.size == 0:
+            return None, None
+
+        if conf is not None:
+            scores = np.nanmean(conf, axis=1)
+        else:
+            scores = None
+            try:
+                if result.boxes is not None and hasattr(result.boxes, "conf"):
+                    scores = result.boxes.conf.cpu().numpy()
+            except Exception:
+                scores = None
+            if scores is None:
+                scores = np.zeros((xy.shape[0],), dtype=np.float32)
+
+        best = int(np.argmax(scores)) if len(scores) > 0 else 0
+        pred_xy = xy[best]
+        pred_conf = conf[best] if conf is not None else np.zeros((self.num_kpts,))
+
+        if pred_xy.shape[0] != self.num_kpts:
+            num = min(pred_xy.shape[0], self.num_kpts)
+            tmp_xy = np.zeros((self.num_kpts, 2), dtype=np.float32)
+            tmp_conf = np.zeros((self.num_kpts,), dtype=np.float32)
+            tmp_xy[:num] = pred_xy[:num]
+            tmp_conf[:num] = pred_conf[:num]
+            pred_xy = tmp_xy
+            pred_conf = tmp_conf
+
+        return pred_xy, pred_conf
+
+    def run(self):
+        try:
+            try:
+                from ultralytics import YOLO
+            except Exception as e:
+                self.failed.emit(
+                    f"Ultralytics not available. Install with: pip install ultralytics\n{e}"
+                )
+                return
+
+            if not self.weights_path.exists():
+                self.failed.emit(f"Weights not found: {self.weights_path}")
+                return
+
+            model = YOLO(str(self.weights_path))
+            pred_kwargs = {
+                "imgsz": self.imgsz,
+                "conf": self.conf,
+                "max_det": 1,
+                "stream": True,
+                "verbose": False,
+                "batch": max(1, int(self.batch)),
+            }
+            if self.device and self.device != "auto":
+                pred_kwargs["device"] = self.device
+            if _is_cuda_device(self.device):
+                _maybe_limit_cuda_memory()
+                pred_kwargs["half"] = True
+
+            total = len(self.image_paths)
+            preds: Dict[str, List[Tuple[float, float, float]]] = {}
+
+            batch = max(1, int(self.batch))
+            idx = 0
+            done = 0
+            while idx < total:
+                if self._cancel:
+                    self.failed.emit("Canceled.")
+                    return
+                chunk = self.image_paths[idx : idx + batch]
+                pred_kwargs_chunk = dict(pred_kwargs)
+                pred_kwargs_chunk["source"] = [str(p) for p in chunk]
+                pred_kwargs_chunk["batch"] = min(batch, len(chunk))
+
+                try:
+                    chunk_results = []
+                    for result in model.predict(**pred_kwargs_chunk):
+                        chunk_results.append(result)
+                except RuntimeError as e:
+                    if "out of memory" in str(e).lower() and batch > 1:
+                        batch = max(1, batch // 2)
+                        _maybe_empty_cuda_cache()
+                        continue
+                    raise
+
+                for result in chunk_results:
+                    if self._cancel:
+                        self.failed.emit("Canceled.")
+                        return
+                    pred_xy, pred_conf = self._extract_best_prediction(result)
+                    kpt_list: List[Tuple[float, float, float]] = []
+                    if pred_xy is None:
+                        for _ in range(self.num_kpts):
+                            kpt_list.append((0.0, 0.0, 0.0))
+                    else:
+                        for i in range(self.num_kpts):
+                            c = float(pred_conf[i]) if pred_conf is not None else 0.0
+                            kpt_list.append((float(pred_xy[i][0]), float(pred_xy[i][1]), c))
+                    preds[str(Path(result.path))] = kpt_list
+                    done += 1
+                    self.progress.emit(done, total)
+
+                idx += len(chunk)
+
+            self.finished.emit(preds)
+        except Exception as e:
+            _maybe_empty_cuda_cache()
+            self.failed.emit(str(e))
 
 
 # -----------------------------
 # Utils
 # -----------------------------
+def _relativize_path(path: Path, base: Path) -> Path:
+    try:
+        return Path(os.path.relpath(path, base))
+    except Exception:
+        return path
+
+
+def _resolve_project_path(path: Path, base: Path, data: dict) -> Path:
+    if path.is_absolute():
+        return path
+    if bool(data.get("paths_relative", False)):
+        return (base / path).resolve()
+    return (base / path).resolve()
 def list_images(images_dir: Path) -> List[Path]:
     paths: List[Path] = []
     for p in sorted(images_dir.rglob("*")):
@@ -408,6 +723,44 @@ def _choose_device(pref: str = "auto") -> str:
     except Exception:
         pass
     return "cpu"
+
+
+def _is_cuda_device(device: str) -> bool:
+    d = (device or "").strip().lower()
+    if d in {"cuda", "gpu"}:
+        return True
+    if d.startswith("cuda:"):
+        return True
+    return d.isdigit()
+
+
+def _maybe_limit_cuda_memory(fraction: float = 0.9):
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.set_per_process_memory_fraction(float(fraction))
+    except Exception:
+        pass
+
+
+def _maybe_empty_cuda_cache():
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
+def _weights_cache_key(weights_path: Path) -> str:
+    try:
+        stat = weights_path.stat()
+        token = f"{weights_path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
+    except Exception:
+        token = str(weights_path)
+    return hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
 
 
 def _read_image_pil(path: Path):
@@ -1789,6 +2142,11 @@ class MainWindow(QMainWindow):
         self._undo_max = 50
         self._frame_cache: Dict[int, FrameAnn] = {}
         self._suppress_list_rebuild = False
+        self._pred_thread: Optional[QThread] = None
+        self._pred_worker: Optional[PosePredictWorker] = None
+        self._bulk_pred_thread: Optional[QThread] = None
+        self._bulk_pred_worker: Optional[BulkPosePredictWorker] = None
+        self._pred_cache: Dict[str, Dict[str, List[Tuple[float, float, float]]]] = {}
 
         # Track which frames are in the labeling set (empty by default)
         self.labeling_frames: set = set()
@@ -2040,9 +2398,13 @@ class MainWindow(QMainWindow):
         self.btn_train = QPushButton("Train / Fine-tune…")
         self.btn_eval = QPushButton("Evaluate…")
         self.btn_active = QPushButton("Active Learning…")
+        self.btn_predict = QPushButton("Predict Keypoints…")
+        self.btn_predict_bulk = QPushButton("Predict Dataset…")
         right_layout.addWidget(self.btn_train)
         right_layout.addWidget(self.btn_eval)
         right_layout.addWidget(self.btn_active)
+        right_layout.addWidget(self.btn_predict)
+        right_layout.addWidget(self.btn_predict_bulk)
 
         self.controls_group = QGroupBox("Controls")
         self.controls_group.setCheckable(True)
@@ -2131,6 +2493,8 @@ class MainWindow(QMainWindow):
         self.btn_train.clicked.connect(self.open_training_runner)
         self.btn_eval.clicked.connect(self.open_evaluation_dashboard)
         self.btn_active.clicked.connect(self.open_active_learning)
+        self.btn_predict.clicked.connect(self.predict_current_frame)
+        self.btn_predict_bulk.clicked.connect(self.predict_dataset)
         self.btn_unlabeled_to_labeling.clicked.connect(self._move_unlabeled_to_labeling)
         self.btn_unlabeled_to_all.clicked.connect(self._move_unlabeled_to_all)
         self.btn_random_to_labeling.clicked.connect(self._add_random_to_labeling)
@@ -3092,7 +3456,7 @@ class MainWindow(QMainWindow):
             # In frame mode: if all labeled, advance to next frame
             # Otherwise, jump to first unlabeled keypoint
             if all_labeled:
-                self.next_frame()
+                self.next_frame(prefer_missing=True)
             else:
                 # Find first unlabeled keypoint
                 for i, kp in enumerate(self._ann.kpts):
@@ -3199,6 +3563,38 @@ class MainWindow(QMainWindow):
                 return False
 
         return True
+
+    def _frame_has_missing_labels(self, idx: int) -> bool:
+        """Return True if any keypoint is missing for the given frame."""
+        if idx in self._frame_cache:
+            ann = self._frame_cache[idx]
+        else:
+            try:
+                ann = self._load_ann_from_disk(idx)
+            except Exception:
+                # If we can't load, assume it needs labeling.
+                return True
+        return any(kp.v == 0 for kp in ann.kpts)
+
+    def _find_next_frame_with_missing_labels(self) -> Optional[int]:
+        """Find next frame in labeling set with any missing keypoints."""
+        labeling_indices = sorted(self.labeling_frames)
+        if not labeling_indices:
+            return None
+
+        try:
+            current_pos = labeling_indices.index(self.current_index)
+            search_order = (
+                labeling_indices[current_pos + 1 :]
+                + labeling_indices[: current_pos + 1]
+            )
+        except ValueError:
+            search_order = labeling_indices
+
+        for idx in search_order:
+            if self._frame_has_missing_labels(idx):
+                return idx
+        return None
 
     def on_move_kpt(self, kpt_idx: int, x: float, y: float):
         if self._ann is None:
@@ -3327,7 +3723,7 @@ class MainWindow(QMainWindow):
                     self.frame_list.setCurrentRow(i)
                     break
 
-    def next_frame(self):
+    def next_frame(self, prefer_missing: bool = False):
         # Find next frame in labeling set
         labeling_indices = sorted(self.labeling_frames)
         logger.debug(
@@ -3343,24 +3739,37 @@ class MainWindow(QMainWindow):
         # Refresh frame lists to show updated labeling status
         prev_idx = self.current_index
 
-        try:
-            current_pos = labeling_indices.index(self.current_index)
-            if current_pos < len(labeling_indices) - 1:
-                next_idx = labeling_indices[current_pos + 1]
-                self._select_frame_in_list(next_idx)
-                # Reset to first keypoint in frame mode
-                if self.mode == "frame":
-                    self.current_kpt = 0
-                    self.kpt_list.setCurrentRow(0)
-                    self.canvas.set_current_keypoint(0)
-        except ValueError:
-            # Current not in labeling set, go to first
-            if labeling_indices:
-                self._select_frame_in_list(labeling_indices[0])
-                if self.mode == "frame":
-                    self.current_kpt = 0
-                    self.kpt_list.setCurrentRow(0)
-                    self.canvas.set_current_keypoint(0)
+        if prefer_missing and self.mode == "frame":
+            next_missing = self._find_next_frame_with_missing_labels()
+            if next_missing is not None:
+                self._select_frame_in_list(next_missing)
+                self.current_kpt = 0
+                self.kpt_list.setCurrentRow(0)
+                self.canvas.set_current_keypoint(0)
+            else:
+                self.statusBar().showMessage(
+                    "All frames in labeling set are fully labeled.", 2000
+                )
+                return
+        else:
+            try:
+                current_pos = labeling_indices.index(self.current_index)
+                if current_pos < len(labeling_indices) - 1:
+                    next_idx = labeling_indices[current_pos + 1]
+                    self._select_frame_in_list(next_idx)
+                    # Reset to first keypoint in frame mode
+                    if self.mode == "frame":
+                        self.current_kpt = 0
+                        self.kpt_list.setCurrentRow(0)
+                        self.canvas.set_current_keypoint(0)
+            except ValueError:
+                # Current not in labeling set, go to first
+                if labeling_indices:
+                    self._select_frame_in_list(labeling_indices[0])
+                    if self.mode == "frame":
+                        self.current_kpt = 0
+                        self.kpt_list.setCurrentRow(0)
+                        self.canvas.set_current_keypoint(0)
 
         # Refresh lists after navigation to show updated status
         if prev_idx != self.current_index:
@@ -3837,6 +4246,224 @@ class MainWindow(QMainWindow):
             self, title, f"Added {len(indices)} frames to labeling set."
         )
 
+    def _pred_cache_dir(self) -> Path:
+        return self.project.out_root / PRED_CACHE_DIRNAME
+
+    def _load_pred_cache(self, weights_path: Path) -> Dict[str, List[Tuple[float, float, float]]]:
+        key = _weights_cache_key(weights_path)
+        if key in self._pred_cache:
+            return self._pred_cache[key]
+        cache_path = self._pred_cache_dir() / f"{key}.json"
+        if not cache_path.exists():
+            self._pred_cache[key] = {}
+            return self._pred_cache[key]
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+            preds = {}
+            for k, v in data.get("preds", {}).items():
+                preds[k] = [(float(x), float(y), float(c)) for x, y, c in v]
+            self._pred_cache[key] = preds
+            return preds
+        except Exception:
+            self._pred_cache[key] = {}
+            return self._pred_cache[key]
+
+    def _save_pred_cache(self, weights_path: Path, preds: Dict[str, List[Tuple[float, float, float]]]):
+        key = _weights_cache_key(weights_path)
+        cache_dir = self._pred_cache_dir()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = cache_dir / f"{key}.json"
+        payload = {"weights": str(weights_path), "preds": preds}
+        cache_path.write_text(json.dumps(payload), encoding="utf-8")
+        self._pred_cache[key] = preds
+
+    def _preds_to_keypoints(self, preds: List[Tuple[float, float, float]], conf_thr: float = 0.25) -> List[Keypoint]:
+        kpts = []
+        for x, y, c in preds:
+            if c >= conf_thr:
+                kpts.append(Keypoint(float(x), float(y), 2))
+            else:
+                kpts.append(Keypoint(0.0, 0.0, 0))
+        return kpts
+
+    def _get_pred_for_frame(self, weights: Path, img_path: Path) -> Optional[List[Tuple[float, float, float]]]:
+        preds = self._load_pred_cache(weights)
+        key = str(Path(img_path))
+        if key in preds:
+            return preds[key]
+        key = str(Path(img_path).resolve())
+        return preds.get(key)
+
+    def _current_frame_has_labels(self) -> bool:
+        if self._ann is not None and any(kp.v > 0 for kp in self._ann.kpts):
+            return True
+        img_path = self.image_paths[self.current_index]
+        if self._is_labeled(img_path):
+            try:
+                ann = self._load_ann_from_disk(self.current_index)
+                return any(kp.v > 0 for kp in ann.kpts)
+            except Exception:
+                return True
+        return False
+
+    def _get_latest_weights_or_prompt(self) -> Optional[Path]:
+        if (
+            hasattr(self.project, "latest_pose_weights")
+            and self.project.latest_pose_weights
+        ):
+            p = Path(self.project.latest_pose_weights)
+            if p.exists():
+                return p
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select pose weights", "", "*.pt"
+        )
+        if not path:
+            return None
+        weights = Path(path).resolve()
+        self.project.latest_pose_weights = weights
+        self.save_project()
+        return weights
+
+    def predict_current_frame(self):
+        if not self.image_paths or self._ann is None:
+            QMessageBox.information(self, "No frame", "Select a frame first.")
+            return
+
+        weights = self._get_latest_weights_or_prompt()
+        if not weights:
+            return
+
+        cached = self._get_pred_for_frame(weights, self.image_paths[self.current_index])
+        if cached is not None:
+            self._on_pred_finished(cached)
+            return
+
+        self.statusBar().showMessage("Predicting keypoints…")
+        self.btn_predict.setEnabled(False)
+
+        self._pred_thread = QThread()
+        self._pred_worker = PosePredictWorker(
+            weights_path=weights,
+            image_path=self.image_paths[self.current_index],
+            num_kpts=len(self.project.keypoint_names),
+            device="auto",
+            imgsz=640,
+            conf=0.25,
+        )
+        self._pred_worker.moveToThread(self._pred_thread)
+        self._pred_thread.started.connect(self._pred_worker.run)
+        self._pred_worker.finished.connect(self._on_pred_finished)
+        self._pred_worker.failed.connect(self._on_pred_failed)
+        self._pred_worker.finished.connect(self._pred_thread.quit)
+        self._pred_worker.failed.connect(self._pred_thread.quit)
+        self._pred_thread.finished.connect(self._pred_thread.deleteLater)
+        self._pred_thread.start()
+
+    def _on_pred_finished(self, preds: List[Tuple[float, float, float]]):
+        self.btn_predict.setEnabled(True)
+        self.statusBar().showMessage("Prediction loaded. Adjust and save.", 2000)
+        if self._ann is None:
+            return
+        if self._current_frame_has_labels():
+            res = QMessageBox.question(
+                self,
+                "Replace labels?",
+                "This frame already has labels. Replace them with predictions for editing?",
+            )
+            if res != QMessageBox.Yes:
+                return
+        if self.mode != "frame":
+            self.rb_frame.setChecked(True)
+        self._push_undo()
+        self._ann.kpts = self._preds_to_keypoints(preds)
+        self._mark_dirty()
+        self.canvas.rebuild_overlays(
+            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
+        )
+        self._update_info()
+        self.labeling_frames.add(self.current_index)
+        self._populate_frames()
+        self._select_frame_in_list(self.current_index)
+
+        weights = self.project.latest_pose_weights
+        if weights:
+            preds_cache = self._load_pred_cache(weights)
+            preds_cache[str(self.image_paths[self.current_index])] = preds
+            self._save_pred_cache(weights, preds_cache)
+
+    def _on_pred_failed(self, msg: str):
+        self.btn_predict.setEnabled(True)
+        self.statusBar().showMessage("Prediction failed.", 2000)
+        QMessageBox.warning(self, "Prediction failed", msg)
+
+    def predict_dataset(self):
+        if not self.image_paths:
+            QMessageBox.information(self, "No frames", "No images loaded.")
+            return
+        weights = self._get_latest_weights_or_prompt()
+        if not weights:
+            return
+
+        items = ["All frames", "Labeling set", "Unlabeled only"]
+        scope, ok = QInputDialog.getItem(
+            self, "Predict dataset", "Scope:", items, 0, False
+        )
+        if not ok:
+            return
+        if scope == "Labeling set":
+            indices = sorted(self.labeling_frames)
+        elif scope == "Unlabeled only":
+            indices = [i for i, p in enumerate(self.image_paths) if not self._is_labeled(p)]
+        else:
+            indices = list(range(len(self.image_paths)))
+
+        paths = [self.image_paths[i] for i in indices]
+        if not paths:
+            QMessageBox.information(self, "No frames", "No frames in selected scope.")
+            return
+
+        self.statusBar().showMessage("Predicting dataset…")
+        self.btn_predict_bulk.setEnabled(False)
+
+        self._bulk_pred_thread = QThread()
+        self._bulk_pred_worker = BulkPosePredictWorker(
+            weights_path=weights,
+            image_paths=paths,
+            num_kpts=len(self.project.keypoint_names),
+            device="auto",
+            imgsz=640,
+            conf=0.25,
+            batch=16,
+        )
+        self._bulk_pred_worker.moveToThread(self._bulk_pred_thread)
+        self._bulk_pred_thread.started.connect(self._bulk_pred_worker.run)
+        self._bulk_pred_worker.progress.connect(self._on_bulk_pred_progress)
+        self._bulk_pred_worker.finished.connect(self._on_bulk_pred_finished)
+        self._bulk_pred_worker.failed.connect(self._on_bulk_pred_failed)
+        self._bulk_pred_worker.finished.connect(self._bulk_pred_thread.quit)
+        self._bulk_pred_worker.failed.connect(self._bulk_pred_thread.quit)
+        self._bulk_pred_thread.finished.connect(self._bulk_pred_thread.deleteLater)
+        self._bulk_pred_thread.start()
+
+    def _on_bulk_pred_progress(self, done: int, total: int):
+        if total > 0:
+            self.statusBar().showMessage(f"Predicting dataset… {done}/{total}")
+
+    def _on_bulk_pred_finished(self, preds: Dict[str, List[Tuple[float, float, float]]]):
+        self.btn_predict_bulk.setEnabled(True)
+        self.statusBar().showMessage("Predictions cached.", 2000)
+        weights = self.project.latest_pose_weights
+        if weights:
+            cache = self._load_pred_cache(weights)
+            cache.update(preds)
+            self._save_pred_cache(weights, cache)
+
+    def _on_bulk_pred_failed(self, msg: str):
+        self.btn_predict_bulk.setEnabled(True)
+        self.statusBar().showMessage("Prediction failed.", 2000)
+        QMessageBox.warning(self, "Prediction failed", msg)
+
     def open_training_runner(self):
         dlg = TrainingRunnerDialog(self, self.project, self.image_paths)
         dlg.exec()
@@ -3846,6 +4473,9 @@ class MainWindow(QMainWindow):
             self,
             self.project,
             self.image_paths,
+            weights_path=str(self.project.latest_pose_weights)
+            if self.project.latest_pose_weights
+            else None,
             add_frames_callback=lambda idxs, reason="Evaluation": self._add_indices_to_labeling(
                 idxs, reason
             ),
@@ -3952,9 +4582,52 @@ def find_project(images_dir: Path, out_root: Optional[Path]) -> Optional[Path]:
                 proj_images_dir = Path(proj_data["images_dir"])
                 if proj_images_dir.resolve() == images_dir.resolve():
                     return p
+                # If the project file is colocated with images_dir/labels,
+                # allow opening and repair paths for portability.
+                if p.parent in {
+                    images_dir,
+                    images_dir / "labels",
+                    images_dir.parent / "labels",
+                }:
+                    return p
             except (json.JSONDecodeError, KeyError, OSError):
                 continue
     return None
+
+
+def _repair_project_paths(
+    proj: Project, project_path: Path, images_dir: Path
+) -> bool:
+    """Repair project paths when moved across machines. Returns True if changed."""
+    changed = False
+    if proj.images_dir.resolve() != images_dir.resolve():
+        proj.images_dir = images_dir
+        changed = True
+
+    labels_dir = project_path.parent
+    if proj.labels_dir.resolve() != labels_dir.resolve():
+        proj.labels_dir = labels_dir
+        changed = True
+
+    out_root = labels_dir.parent
+    if proj.out_root.resolve() != out_root.resolve():
+        proj.out_root = out_root
+        changed = True
+
+    if proj.project_path.resolve() != project_path.resolve():
+        proj.project_path = project_path
+        changed = True
+
+    return changed
+
+
+def load_project_with_repairs(project_path: Path, images_dir: Path) -> Project:
+    proj = Project.from_json(project_path)
+    if _repair_project_paths(proj, project_path, images_dir):
+        proj.project_path.write_text(
+            json.dumps(proj.to_json(), indent=2), encoding="utf-8"
+        )
+    return proj
 
 
 def create_project_via_wizard(
@@ -4030,12 +4703,12 @@ def main():
     if args.project:
         project_path = Path(args.project).expanduser().resolve()
         if project_path.exists() and not args.new:
-            proj = Project.from_json(project_path)
+            proj = load_project_with_repairs(project_path, images_dir)
 
     if proj is None and not args.new:
         found = find_project(images_dir, out_root)
         if found:
-            proj = Project.from_json(found)
+            proj = load_project_with_repairs(found, images_dir)
 
     if proj is None:
         proj = create_project_via_wizard(images_dir, out_root_hint=out_root)

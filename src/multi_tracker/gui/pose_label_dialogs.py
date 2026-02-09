@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 import logging
+import hashlib
 import numpy as np
 import yaml
 import gc
@@ -109,6 +110,7 @@ except ImportError:
 logger = logging.getLogger("pose_label.dialogs")
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+PRED_CACHE_DIRNAME = ".posekit/predictions"
 
 
 def get_available_devices():
@@ -119,6 +121,66 @@ def get_available_devices():
     if MPS_AVAILABLE:
         devices.append("mps")
     return devices
+
+
+def _weights_cache_key(weights_path: Path) -> str:
+    try:
+        stat = weights_path.stat()
+        token = f"{weights_path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
+    except Exception:
+        token = str(weights_path)
+    return hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
+
+
+def _load_pred_cache(out_root: Path, weights_path: Path):
+    key = _weights_cache_key(weights_path)
+    cache_path = out_root / PRED_CACHE_DIRNAME / f"{key}.json"
+    if not cache_path.exists():
+        return {}
+    try:
+        data = json.loads(cache_path.read_text(encoding="utf-8"))
+        preds = {}
+        for k, v in data.get("preds", {}).items():
+            preds[k] = [(float(x), float(y), float(c)) for x, y, c in v]
+        return preds
+    except Exception:
+        return {}
+
+
+def _is_cuda_device(device: str) -> bool:
+    d = (device or "").strip().lower()
+    if d in {"cuda", "gpu"}:
+        return True
+    if d.startswith("cuda:"):
+        return True
+    return d.isdigit()
+
+
+def _is_oom_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return "out of memory" in msg or "cuda error" in msg and "memory" in msg
+
+
+def _maybe_limit_cuda_memory(log_fn=None, fraction: float = 0.9):
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.set_per_process_memory_fraction(float(fraction))
+            if log_fn:
+                log_fn(f"CUDA memory cap set to {int(fraction * 100)}% of GPU.")
+    except Exception:
+        pass
+
+
+def _maybe_empty_cuda_cache():
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def _load_dialog_settings(key: str) -> Dict:
@@ -2634,6 +2696,7 @@ class TrainingRunnerDialog(QDialog):
 
         self._toggle_aug_widgets(self.cb_augment.isChecked())
         self._apply_settings()
+        self._apply_latest_weights_default()
 
     def _append_log(self, msg: str):
         self.log_view.appendPlainText(msg)
@@ -2761,6 +2824,14 @@ class TrainingRunnerDialog(QDialog):
         )
         self.seed_spin.setValue(int(settings.get("seed", self.seed_spin.value())))
         self._last_aux_path = settings.get("last_aux_path", self._last_aux_path)
+
+    def _apply_latest_weights_default(self):
+        if (
+            hasattr(self.project, "latest_pose_weights")
+            and self.project.latest_pose_weights
+            and Path(self.project.latest_pose_weights).exists()
+        ):
+            self.model_combo.setCurrentText(str(self.project.latest_pose_weights))
 
     def _save_settings(self):
         _save_dialog_settings(
@@ -2960,6 +3031,7 @@ class TrainingRunnerDialog(QDialog):
         if weights:
             self._append_log(f"Weights: {weights}")
             self.btn_open_eval.setEnabled(True)
+            self._set_latest_weights(weights)
         if self._last_run_dir:
             run_dir = Path(self._last_run_dir)
             if list(run_dir.glob("**/events.out.tfevents.*")):
@@ -2968,6 +3040,15 @@ class TrainingRunnerDialog(QDialog):
                 self._append_log(
                     "W&B run detected in wandb/ (check your W&B dashboard)."
                 )
+
+    def _set_latest_weights(self, weights: str):
+        try:
+            self.project.latest_pose_weights = Path(weights).resolve()
+            self.project.project_path.write_text(
+                json.dumps(self.project.to_json(), indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            self._append_log(f"Warning: failed to save latest weights: {e}")
 
     def _on_failed(self, msg: str):
         self._append_log(msg)
@@ -3006,6 +3087,7 @@ class EvaluationWorker(QObject):
         pck_thr: float,
         oks_sigma: float,
         batch: int,
+        pred_cache: Optional[Dict[str, List[Tuple[float, float, float]]]] = None,
     ):
         super().__init__()
         self.weights_path = Path(weights_path)
@@ -3019,6 +3101,7 @@ class EvaluationWorker(QObject):
         self.pck_thr = float(pck_thr)
         self.oks_sigma = float(oks_sigma)
         self.batch = int(batch)
+        self.pred_cache = pred_cache
         self._cancel = False
 
     def cancel(self):
@@ -3082,26 +3165,13 @@ class EvaluationWorker(QObject):
                 )
                 return
 
-            if not self.weights_path.exists():
+            if not self.weights_path.exists() and not self.pred_cache:
                 self.failed.emit(f"Weights not found: {self.weights_path}")
                 return
 
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"Eval run dir: {self.run_dir}")
             self.log.emit(f"Evaluating {len(self.eval_paths)} frames...")
-
-            model = YOLO(str(self.weights_path))
-            pred_kwargs = {
-                "source": [str(p) for p in self.eval_paths],
-                "imgsz": self.imgsz,
-                "conf": self.conf,
-                "max_det": 1,
-                "stream": True,
-                "verbose": False,
-                "batch": self.batch,
-            }
-            if self.device and self.device != "auto":
-                pred_kwargs["device"] = self.device
 
             total = len(self.eval_paths)
             num_kpts = len(self.keypoint_names)
@@ -3121,88 +3191,233 @@ class EvaluationWorker(QObject):
             total_err = 0.0
             total_conf = 0.0
 
-            results_iter = model.predict(**pred_kwargs)
-            for idx, result in enumerate(results_iter):
-                if self._cancel:
-                    self.failed.emit("Canceled.")
+            if self.pred_cache:
+                try:
+                    from PIL import Image
+                except Exception as e:
+                    self.failed.emit(f"PIL not available: {e}")
                     return
 
-                img_path = Path(result.path)
-                label_path = self.labels_dir / f"{img_path.stem}.txt"
-                gt = load_yolo_pose_label(label_path, num_kpts)
-                if not gt:
-                    self.progress.emit(idx + 1, total)
-                    continue
+                for idx, img_path in enumerate(self.eval_paths):
+                    if self._cancel:
+                        self.failed.emit("Canceled.")
+                        return
 
-                _, gt_kpts, bbox = gt
-                try:
-                    h, w = result.orig_shape[:2]
-                except Exception:
-                    h, w = (1, 1)
-                if bbox is not None:
-                    _, _, bw, bh = bbox
-                    scale = max(bw * w, bh * h)
-                else:
-                    scale = max(w, h)
-                if scale <= 0:
-                    scale = max(w, h, 1)
-
-                pred_xy, pred_conf = self._extract_best_prediction(result, num_kpts)
-
-                frame_errs = [None] * num_kpts
-                frame_confs = [None] * num_kpts
-                for k in range(num_kpts):
-                    if gt_kpts[k].v <= 0:
+                    label_path = self.labels_dir / f"{img_path.stem}.txt"
+                    gt = load_yolo_pose_label(label_path, num_kpts)
+                    if not gt:
+                        self.progress.emit(idx + 1, total)
                         continue
 
-                    if pred_xy is None:
-                        err = scale
-                        conf = 0.0
+                    _, gt_kpts, bbox = gt
+                    try:
+                        with Image.open(img_path) as im:
+                            w, h = im.size
+                    except Exception:
+                        w, h = (1, 1)
+                    if bbox is not None:
+                        _, _, bw, bh = bbox
+                        scale = max(bw * w, bh * h)
                     else:
-                        gx = gt_kpts[k].x * w
-                        gy = gt_kpts[k].y * h
+                        scale = max(w, h)
+                    if scale <= 0:
+                        scale = max(w, h, 1)
+
+                    pred_list = self.pred_cache.get(str(img_path))
+                    if pred_list is None:
+                        pred_list = self.pred_cache.get(str(img_path.resolve()))
+                    if pred_list is None:
+                        self.progress.emit(idx + 1, total)
+                        continue
+
+                    pred_xy = np.array([[p[0], p[1]] for p in pred_list], dtype=np.float32)
+                    pred_conf = np.array([p[2] for p in pred_list], dtype=np.float32)
+
+                    frame_errs = [None] * num_kpts
+                    frame_confs = [None] * num_kpts
+                    for k in range(num_kpts):
+                        if gt_kpts[k].v <= 0:
+                            continue
+
                         px, py = pred_xy[k]
-                        err = float(math.hypot(px - gx, py - gy))
+                        err = float(math.hypot(px - (gt_kpts[k].x * w), py - (gt_kpts[k].y * h)))
                         conf = float(pred_conf[k]) if pred_conf is not None else 0.0
 
-                    ok = err <= (self.pck_thr * scale)
-                    oks = math.exp(-((err**2) / (2 * (self.oks_sigma * scale) ** 2)))
+                        ok = err <= (self.pck_thr * scale)
+                        oks = math.exp(-((err**2) / (2 * (self.oks_sigma * scale) ** 2)))
 
-                    total_kpts += 1
-                    total_pck += 1 if ok else 0
-                    total_oks += oks
-                    total_err += err
-                    total_conf += conf
+                        total_kpts += 1
+                        total_pck += 1 if ok else 0
+                        total_oks += oks
+                        total_err += err
+                        total_conf += conf
 
-                    kpt_counts[k] += 1
-                    kpt_pck[k] += 1 if ok else 0
-                    kpt_oks[k] += oks
-                    kpt_err_sum[k] += err
-                    kpt_conf_sum[k] += conf
+                        kpt_counts[k] += 1
+                        kpt_pck[k] += 1 if ok else 0
+                        kpt_oks[k] += oks
+                        kpt_err_sum[k] += err
+                        kpt_conf_sum[k] += conf
 
-                    per_kpt_errors[k].append(err)
-                    per_kpt_confs[k].append(conf)
-                    frame_errs[k] = err
-                    frame_confs[k] = conf
+                        per_kpt_errors[k].append(err)
+                        per_kpt_confs[k].append(conf)
+                        frame_errs[k] = err
+                        frame_confs[k] = conf
 
-                valid_errs = [e for e in frame_errs if e is not None]
-                valid_confs = [c for c in frame_confs if c is not None]
-                if valid_errs:
-                    mean_err = float(np.mean(valid_errs))
-                    mean_conf = float(np.mean(valid_confs)) if valid_confs else 0.0
-                    mean_err_norm = mean_err / (scale + 1e-6)
-                    per_frame.append(
-                        {
-                            "image_path": str(img_path),
-                            "mean_error_px": mean_err,
-                            "mean_error_norm": mean_err_norm,
-                            "mean_conf": mean_conf,
-                            "kpt_errors": frame_errs,
-                            "kpt_confs": frame_confs,
-                        }
-                    )
+                    valid_errs = [e for e in frame_errs if e is not None]
+                    valid_confs = [c for c in frame_confs if c is not None]
+                    if valid_errs:
+                        mean_err = float(np.mean(valid_errs))
+                        mean_conf = float(np.mean(valid_confs)) if valid_confs else 0.0
+                        mean_err_norm = mean_err / (scale + 1e-6)
+                        per_frame.append(
+                            {
+                                "image_path": str(img_path),
+                                "mean_error_px": mean_err,
+                                "mean_error_norm": mean_err_norm,
+                                "mean_conf": mean_conf,
+                                "kpt_errors": frame_errs,
+                                "kpt_confs": frame_confs,
+                            }
+                        )
 
-                self.progress.emit(idx + 1, total)
+                    self.progress.emit(idx + 1, total)
+                # skip model path
+            else:
+                model = YOLO(str(self.weights_path))
+                pred_kwargs = {
+                    "imgsz": self.imgsz,
+                    "conf": self.conf,
+                    "max_det": 1,
+                    "stream": True,
+                    "verbose": False,
+                    "batch": self.batch,
+                }
+                if self.device and self.device != "auto":
+                    pred_kwargs["device"] = self.device
+                if _is_cuda_device(self.device):
+                    _maybe_limit_cuda_memory(self.log.emit)
+                    pred_kwargs["half"] = True
+
+                total_done = 0
+                batch = max(1, int(self.batch))
+                idx = 0
+                while idx < total:
+                    if self._cancel:
+                        self.failed.emit("Canceled.")
+                        return
+
+                    chunk = self.eval_paths[idx : idx + batch]
+                    pred_kwargs_chunk = dict(pred_kwargs)
+                    pred_kwargs_chunk["source"] = [str(p) for p in chunk]
+                    pred_kwargs_chunk["batch"] = min(batch, len(chunk))
+
+                    try:
+                        chunk_results = []
+                        for result in model.predict(**pred_kwargs_chunk):
+                            chunk_results.append(result)
+                    except RuntimeError as e:
+                        if _is_oom_error(e) and batch > 1:
+                            batch = max(1, batch // 2)
+                            self.log.emit(
+                                f"CUDA OOM detected. Reducing batch to {batch} and retrying."
+                            )
+                            _maybe_empty_cuda_cache()
+                            continue
+                        raise
+
+                    for result in chunk_results:
+                        if self._cancel:
+                            self.failed.emit("Canceled.")
+                            return
+
+                        img_path = Path(result.path)
+                        label_path = self.labels_dir / f"{img_path.stem}.txt"
+                        gt = load_yolo_pose_label(label_path, num_kpts)
+                        if not gt:
+                            total_done += 1
+                            self.progress.emit(total_done, total)
+                            continue
+
+                        _, gt_kpts, bbox = gt
+                        try:
+                            h, w = result.orig_shape[:2]
+                        except Exception:
+                            h, w = (1, 1)
+                        if bbox is not None:
+                            _, _, bw, bh = bbox
+                            scale = max(bw * w, bh * h)
+                        else:
+                            scale = max(w, h)
+                        if scale <= 0:
+                            scale = max(w, h, 1)
+
+                        pred_xy, pred_conf = self._extract_best_prediction(
+                            result, num_kpts
+                        )
+
+                        frame_errs = [None] * num_kpts
+                        frame_confs = [None] * num_kpts
+                        for k in range(num_kpts):
+                            if gt_kpts[k].v <= 0:
+                                continue
+
+                            if pred_xy is None:
+                                err = scale
+                                conf = 0.0
+                            else:
+                                gx = gt_kpts[k].x * w
+                                gy = gt_kpts[k].y * h
+                                px, py = pred_xy[k]
+                                err = float(math.hypot(px - gx, py - gy))
+                                conf = (
+                                    float(pred_conf[k]) if pred_conf is not None else 0.0
+                                )
+
+                            ok = err <= (self.pck_thr * scale)
+                            oks = math.exp(
+                                -((err**2) / (2 * (self.oks_sigma * scale) ** 2))
+                            )
+
+                            total_kpts += 1
+                            total_pck += 1 if ok else 0
+                            total_oks += oks
+                            total_err += err
+                            total_conf += conf
+
+                            kpt_counts[k] += 1
+                            kpt_pck[k] += 1 if ok else 0
+                            kpt_oks[k] += oks
+                            kpt_err_sum[k] += err
+                            kpt_conf_sum[k] += conf
+
+                            per_kpt_errors[k].append(err)
+                            per_kpt_confs[k].append(conf)
+                            frame_errs[k] = err
+                            frame_confs[k] = conf
+
+                        valid_errs = [e for e in frame_errs if e is not None]
+                        valid_confs = [c for c in frame_confs if c is not None]
+                        if valid_errs:
+                            mean_err = float(np.mean(valid_errs))
+                            mean_conf = (
+                                float(np.mean(valid_confs)) if valid_confs else 0.0
+                            )
+                            mean_err_norm = mean_err / (scale + 1e-6)
+                            per_frame.append(
+                                {
+                                    "image_path": str(img_path),
+                                    "mean_error_px": mean_err,
+                                    "mean_error_norm": mean_err_norm,
+                                    "mean_conf": mean_conf,
+                                    "kpt_errors": frame_errs,
+                                    "kpt_confs": frame_confs,
+                                }
+                            )
+
+                        total_done += 1
+                        self.progress.emit(total_done, total)
+
+                    idx += len(chunk)
 
             overall = {
                 "frames": len(per_frame),
@@ -3319,6 +3534,12 @@ class EvaluationDashboardDialog(QDialog):
         self._path_to_index = {str(p): i for i, p in enumerate(image_paths)}
 
         layout = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll, 1)
+        content = QWidget()
+        scroll.setWidget(content)
+        content_layout = QVBoxLayout(content)
 
         # Config
         cfg_group = QGroupBox("Config")
@@ -3363,6 +3584,10 @@ class EvaluationDashboardDialog(QDialog):
         self.oks_spin.setValue(0.1)
         cfg_layout.addRow("OKS sigma:", self.oks_spin)
 
+        self.cb_use_cache = QCheckBox("Use cached predictions (if available)")
+        self.cb_use_cache.setChecked(True)
+        cfg_layout.addRow("", self.cb_use_cache)
+
         self.val_list_edit = QLineEdit("")
         self.btn_val_browse = QPushButton("Browse…")
         val_row = QHBoxLayout()
@@ -3377,17 +3602,17 @@ class EvaluationDashboardDialog(QDialog):
         out_row.addWidget(self.btn_out_browse)
         cfg_layout.addRow("Output dir:", out_row)
 
-        layout.addWidget(cfg_group)
+        content_layout.addWidget(cfg_group)
 
         # Progress + logs
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        layout.addWidget(self.progress)
+        content_layout.addWidget(self.progress)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        layout.addWidget(self.log_view, 1)
+        content_layout.addWidget(self.log_view, 1)
 
         # Results
         results_group = QGroupBox("Results")
@@ -3422,7 +3647,7 @@ class EvaluationDashboardDialog(QDialog):
         worst_btns.addWidget(self.btn_add_top)
         results_layout.addLayout(worst_btns)
 
-        layout.addWidget(results_group, 2)
+        content_layout.addWidget(results_group, 2)
 
         # Buttons
         btns = QHBoxLayout()
@@ -3431,7 +3656,7 @@ class EvaluationDashboardDialog(QDialog):
         btns.addWidget(self.btn_run)
         btns.addStretch(1)
         btns.addWidget(self.btn_close)
-        layout.addLayout(btns)
+        content_layout.addLayout(btns)
 
         # Wiring
         self.btn_weights_browse.clicked.connect(self._browse_weights)
@@ -3444,6 +3669,7 @@ class EvaluationDashboardDialog(QDialog):
 
         self._update_default_out_dir()
         self._apply_settings()
+        self._apply_latest_weights_default()
 
     def _apply_settings(self):
         settings = _load_dialog_settings("evaluation_dashboard")
@@ -3458,6 +3684,16 @@ class EvaluationDashboardDialog(QDialog):
         self.oks_spin.setValue(float(settings.get("oks", self.oks_spin.value())))
         self.val_list_edit.setText(settings.get("val_list", self.val_list_edit.text()))
         self.out_dir_edit.setText(settings.get("out_dir", self.out_dir_edit.text()))
+
+    def _apply_latest_weights_default(self):
+        if (
+            hasattr(self.project, "latest_pose_weights")
+            and self.project.latest_pose_weights
+            and not self.weights_edit.text().strip()
+            and Path(self.project.latest_pose_weights).exists()
+        ):
+            self.weights_edit.setText(str(self.project.latest_pose_weights))
+            self._update_default_out_dir()
 
     def _save_settings(self):
         _save_dialog_settings(
@@ -3551,6 +3787,22 @@ class EvaluationDashboardDialog(QDialog):
         out_dir = Path(self.out_dir_edit.text().strip())
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        pred_cache = None
+        if self.cb_use_cache.isChecked():
+            cache = _load_pred_cache(self.project.out_root, weights)
+            if cache:
+                missing = [
+                    str(p)
+                    for p in eval_paths
+                    if str(p) not in cache and str(p.resolve()) not in cache
+                ]
+                if not missing:
+                    pred_cache = cache
+                else:
+                    self._append_log(
+                        f"Cached predictions incomplete ({len(missing)} missing). Using model."
+                    )
+
         self.log_view.clear()
         self.progress.setValue(0)
         self.worst_list.clear()
@@ -3572,6 +3824,7 @@ class EvaluationDashboardDialog(QDialog):
             pck_thr=self.pck_spin.value(),
             oks_sigma=self.oks_spin.value(),
             batch=self.batch_spin.value(),
+            pred_cache=pred_cache,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -3703,6 +3956,8 @@ class ActiveLearningWorker(QObject):
         conf: float,
         batch: int,
         eval_csv: Optional[str],
+        preds_cache_a: Optional[Dict[str, List[Tuple[float, float, float]]]] = None,
+        preds_cache_b: Optional[Dict[str, List[Tuple[float, float, float]]]] = None,
     ):
         super().__init__()
         self.strategy = strategy
@@ -3716,6 +3971,8 @@ class ActiveLearningWorker(QObject):
         self.conf = float(conf)
         self.batch = int(batch)
         self.eval_csv = eval_csv
+        self.preds_cache_a = preds_cache_a
+        self.preds_cache_b = preds_cache_b
         self._cancel = False
 
     def cancel(self):
@@ -3732,7 +3989,6 @@ class ActiveLearningWorker(QObject):
 
         model = YOLO(weights_path)
         pred_kwargs = {
-            "source": [str(p) for p in paths],
             "imgsz": self.imgsz,
             "conf": self.conf,
             "max_det": 1,
@@ -3742,17 +3998,47 @@ class ActiveLearningWorker(QObject):
         }
         if self.device and self.device != "auto":
             pred_kwargs["device"] = self.device
+        if _is_cuda_device(self.device):
+            _maybe_limit_cuda_memory(self.log.emit)
+            pred_kwargs["half"] = True
 
         preds = {}
-        results_iter = model.predict(**pred_kwargs)
         total = len(paths)
-        for i, result in enumerate(results_iter):
+        total_done = 0
+        batch = max(1, int(self.batch))
+        idx = 0
+        while idx < total:
             if self._cancel:
                 return None
-            path = str(Path(result.path))
-            pred_xy, pred_conf = self._extract_best_prediction(result)
-            preds[path] = (pred_xy, pred_conf)
-            self.progress.emit(i + 1, total)
+            chunk = paths[idx : idx + batch]
+            pred_kwargs_chunk = dict(pred_kwargs)
+            pred_kwargs_chunk["source"] = [str(p) for p in chunk]
+            pred_kwargs_chunk["batch"] = min(batch, len(chunk))
+
+            try:
+                chunk_results = []
+                for result in model.predict(**pred_kwargs_chunk):
+                    chunk_results.append(result)
+            except RuntimeError as e:
+                if _is_oom_error(e) and batch > 1:
+                    batch = max(1, batch // 2)
+                    self.log.emit(
+                        f"CUDA OOM detected. Reducing batch to {batch} and retrying."
+                    )
+                    _maybe_empty_cuda_cache()
+                    continue
+                raise
+
+            for result in chunk_results:
+                if self._cancel:
+                    return None
+                path = str(Path(result.path))
+                pred_xy, pred_conf = self._extract_best_prediction(result)
+                preds[path] = (pred_xy, pred_conf)
+                total_done += 1
+                self.progress.emit(total_done, total)
+
+            idx += len(chunk)
         return preds
 
     def _extract_best_prediction(self, result):
@@ -3833,13 +4119,29 @@ class ActiveLearningWorker(QObject):
                 return
 
             if self.strategy == "lowest_conf":
-                if not self.weights_a or not Path(self.weights_a).exists():
-                    self.failed.emit("Weights not found.")
+                if self.preds_cache_a:
+                    scores = []
+                    for p in paths:
+                        pred = self.preds_cache_a.get(str(p)) or self.preds_cache_a.get(
+                            str(p.resolve())
+                        )
+                        if not pred:
+                            score = 0.0
+                        else:
+                            confs = [c for _, _, c in pred]
+                            score = float(np.mean(confs)) if confs else 0.0
+                        scores.append((str(p), score))
+                    scores.sort(key=lambda x: x[1])
+                    self.finished.emit(scores)
                     return
-                preds = self._predict_keypoints(self.weights_a, paths)
-                if preds is None:
-                    self.failed.emit("Canceled.")
-                    return
+                else:
+                    if not self.weights_a or not Path(self.weights_a).exists():
+                        self.failed.emit("Weights not found.")
+                        return
+                    preds = self._predict_keypoints(self.weights_a, paths)
+                    if preds is None:
+                        self.failed.emit("Canceled.")
+                        return
                 scores = []
                 for p in paths:
                     key = str(p)
@@ -3855,20 +4157,42 @@ class ActiveLearningWorker(QObject):
                 return
 
             if self.strategy == "disagreement":
-                if not self.weights_a or not Path(self.weights_a).exists():
-                    self.failed.emit("Weights A not found.")
+                if self.preds_cache_a and self.preds_cache_b:
+                    scores = []
+                    for p in paths:
+                        a = self.preds_cache_a.get(str(p)) or self.preds_cache_a.get(
+                            str(p.resolve())
+                        )
+                        b = self.preds_cache_b.get(str(p)) or self.preds_cache_b.get(
+                            str(p.resolve())
+                        )
+                        if not a or not b:
+                            score = 1e9
+                        else:
+                            a_xy = np.array([[x, y] for x, y, _ in a], dtype=np.float32)
+                            b_xy = np.array([[x, y] for x, y, _ in b], dtype=np.float32)
+                            diff = a_xy - b_xy
+                            dists = np.linalg.norm(diff, axis=1)
+                            score = float(np.mean(dists)) if dists.size else 0.0
+                        scores.append((str(p), score))
+                    scores.sort(key=lambda x: x[1], reverse=True)
+                    self.finished.emit(scores)
                     return
-                if not self.weights_b or not Path(self.weights_b).exists():
-                    self.failed.emit("Weights B not found.")
-                    return
-                preds_a = self._predict_keypoints(self.weights_a, paths)
-                if preds_a is None:
-                    self.failed.emit("Canceled.")
-                    return
-                preds_b = self._predict_keypoints(self.weights_b, paths)
-                if preds_b is None:
-                    self.failed.emit("Canceled.")
-                    return
+                else:
+                    if not self.weights_a or not Path(self.weights_a).exists():
+                        self.failed.emit("Weights A not found.")
+                        return
+                    if not self.weights_b or not Path(self.weights_b).exists():
+                        self.failed.emit("Weights B not found.")
+                        return
+                    preds_a = self._predict_keypoints(self.weights_a, paths)
+                    if preds_a is None:
+                        self.failed.emit("Canceled.")
+                        return
+                    preds_b = self._predict_keypoints(self.weights_b, paths)
+                    if preds_b is None:
+                        self.failed.emit("Canceled.")
+                        return
 
                 scores = []
                 for p in paths:
@@ -3917,6 +4241,12 @@ class ActiveLearningDialog(QDialog):
         self._scores = []
 
         layout = QVBoxLayout(self)
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        layout.addWidget(scroll, 1)
+        content = QWidget()
+        scroll.setWidget(content)
+        content_layout = QVBoxLayout(content)
 
         # Strategy
         strat_group = QGroupBox("Strategy")
@@ -3930,7 +4260,7 @@ class ActiveLearningDialog(QDialog):
             ]
         )
         strat_layout.addRow("Strategy:", self.strategy_combo)
-        layout.addWidget(strat_group)
+        content_layout.addWidget(strat_group)
 
         # Common config
         common_group = QGroupBox("Selection")
@@ -3965,7 +4295,11 @@ class ActiveLearningDialog(QDialog):
         self.batch_spin.setValue(16)
         common_layout.addRow("Batch:", self.batch_spin)
 
-        layout.addWidget(common_group)
+        self.cb_use_cache = QCheckBox("Use cached predictions (if available)")
+        self.cb_use_cache.setChecked(True)
+        common_layout.addRow("", self.cb_use_cache)
+
+        content_layout.addWidget(common_group)
 
         # Strategy-specific controls
         self.stack = QStackedWidget()
@@ -4010,22 +4344,22 @@ class ActiveLearningDialog(QDialog):
         self.stack.addWidget(w1)
         self.stack.addWidget(w2)
         self.stack.addWidget(w3)
-        layout.addWidget(self.stack)
+        content_layout.addWidget(self.stack)
 
         # Progress + log
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
-        layout.addWidget(self.progress)
+        content_layout.addWidget(self.progress)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        layout.addWidget(self.log_view, 1)
+        content_layout.addWidget(self.log_view, 1)
 
         # Results
         self.results_list = QListWidget()
-        layout.addWidget(QLabel("Suggested frames"))
-        layout.addWidget(self.results_list, 2)
+        content_layout.addWidget(QLabel("Suggested frames"))
+        content_layout.addWidget(self.results_list, 2)
 
         # Buttons
         btns = QHBoxLayout()
@@ -4037,7 +4371,7 @@ class ActiveLearningDialog(QDialog):
         btns.addWidget(self.btn_add)
         btns.addStretch(1)
         btns.addWidget(self.btn_close)
-        layout.addLayout(btns)
+        content_layout.addLayout(btns)
 
         # Wiring
         self.strategy_combo.currentIndexChanged.connect(self._on_strategy_changed)
@@ -4057,6 +4391,7 @@ class ActiveLearningDialog(QDialog):
 
         self._on_strategy_changed(0)
         self._apply_settings()
+        self._apply_latest_weights_default()
 
     def _apply_settings(self):
         settings = _load_dialog_settings("active_learning")
@@ -4073,6 +4408,18 @@ class ActiveLearningDialog(QDialog):
         self.weights_b1_edit.setText(settings.get("weights_b1", self.weights_b1_edit.text()))
         self.weights_b2_edit.setText(settings.get("weights_b2", self.weights_b2_edit.text()))
         self.eval_csv_edit.setText(settings.get("eval_csv", self.eval_csv_edit.text()))
+
+    def _apply_latest_weights_default(self):
+        if (
+            hasattr(self.project, "latest_pose_weights")
+            and self.project.latest_pose_weights
+            and Path(self.project.latest_pose_weights).exists()
+        ):
+            latest = str(self.project.latest_pose_weights)
+            if not self.weights_a_edit.text().strip():
+                self.weights_a_edit.setText(latest)
+            if not self.weights_b1_edit.text().strip():
+                self.weights_b1_edit.setText(latest)
 
     def _save_settings(self):
         _save_dialog_settings(
@@ -4153,6 +4500,30 @@ class ActiveLearningDialog(QDialog):
             weights_b = None
             eval_csv = self.eval_csv_edit.text().strip()
 
+        preds_cache_a = None
+        preds_cache_b = None
+        if self.cb_use_cache.isChecked():
+            if weights_a:
+                cache_a = _load_pred_cache(self.project.out_root, Path(weights_a))
+                missing_a = [
+                    str(self.image_paths[i])
+                    for i in candidates
+                    if str(self.image_paths[i]) not in cache_a
+                    and str(self.image_paths[i].resolve()) not in cache_a
+                ]
+                if not missing_a:
+                    preds_cache_a = cache_a
+            if weights_b:
+                cache_b = _load_pred_cache(self.project.out_root, Path(weights_b))
+                missing_b = [
+                    str(self.image_paths[i])
+                    for i in candidates
+                    if str(self.image_paths[i]) not in cache_b
+                    and str(self.image_paths[i].resolve()) not in cache_b
+                ]
+                if not missing_b:
+                    preds_cache_b = cache_b
+
         self._thread = QThread()
         self._worker = ActiveLearningWorker(
             strategy=strategy,
@@ -4166,6 +4537,8 @@ class ActiveLearningDialog(QDialog):
             conf=self.conf_spin.value(),
             batch=self.batch_spin.value(),
             eval_csv=eval_csv,
+            preds_cache_a=preds_cache_a,
+            preds_cache_b=preds_cache_b,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
