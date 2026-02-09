@@ -35,7 +35,7 @@ import logging
 import os
 import random
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict
 import hashlib
@@ -188,6 +188,7 @@ class Project:
     bbox_pad_frac: float = 0.03
     autosave: bool = True
     last_index: int = 0
+    labeling_frames: List[int] = field(default_factory=list)
 
     # Display enhancement (CLAHE + unsharp mask)
     enhance_enabled: bool = False
@@ -216,6 +217,7 @@ class Project:
             "bbox_pad_frac": self.bbox_pad_frac,
             "autosave": self.autosave,
             "last_index": self.last_index,
+            "labeling_frames": sorted({int(i) for i in self.labeling_frames}),
             "enhance_enabled": self.enhance_enabled,
             "clahe_clip": self.clahe_clip,
             "clahe_grid": list(self.clahe_grid),
@@ -247,6 +249,7 @@ class Project:
             bbox_pad_frac=float(data.get("bbox_pad_frac", 0.03)),
             autosave=bool(data.get("autosave", True)),
             last_index=int(data.get("last_index", 0)),
+            labeling_frames=[int(i) for i in data.get("labeling_frames", [])],
             enhance_enabled=bool(data.get("enhance_enabled", False)),
             clahe_clip=float(data.get("clahe_clip", 2.0)),
             clahe_grid=(int(grid[0]), int(grid[1])),
@@ -1789,6 +1792,12 @@ class MainWindow(QMainWindow):
 
         # Track which frames are in the labeling set (empty by default)
         self.labeling_frames: set = set()
+        if getattr(project, "labeling_frames", None):
+            self.labeling_frames = {
+                int(i)
+                for i in project.labeling_frames
+                if 0 <= int(i) < len(image_paths)
+            }
         self.metadata_manager = MetadataManager(
             self.project.out_root / ".posekit" / "metadata.json"
         )
@@ -2150,6 +2159,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Save UI settings when window closes."""
         self._perform_autosave()
+        self.save_project()
         self._save_ui_settings()
         super().closeEvent(event)
 
@@ -2422,6 +2432,8 @@ class MainWindow(QMainWindow):
         return bool(lp.read_text(encoding="utf-8").strip())
 
     def save_project(self):
+        if hasattr(self.project, "labeling_frames"):
+            self.project.labeling_frames = sorted({int(i) for i in self.labeling_frames})
         self.project.last_index = self.current_index
         self.project.project_path.write_text(
             json.dumps(self.project.to_json(), indent=2), encoding="utf-8"

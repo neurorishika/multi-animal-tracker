@@ -283,9 +283,17 @@ class InterpolatedCropsWorker(QThread):
                 return
 
             df = pd.read_csv(self.csv_path)
+            if "FrameID" not in df.columns and "Frame" in df.columns:
+                df = df.rename(columns={"Frame": "FrameID"})
+            if "TrajectoryID" not in df.columns and "Trajectory" in df.columns:
+                df = df.rename(columns={"Trajectory": "TrajectoryID"})
             if df.empty or "FrameID" not in df.columns or "State" not in df.columns:
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
                 return
+            # Normalize numeric columns
+            for col in ("FrameID", "X", "Y", "Theta"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
 
             resize_factor = self.params.get("RESIZE_FACTOR", 1.0)
             position_scale = 1.0
@@ -327,13 +335,23 @@ class InterpolatedCropsWorker(QThread):
 
             interp_saved = 0
             interp_gaps = 0
+            occluded_rows = 0
+            interp_runs = 0
             interp_rows = []
             roi_rows = []
             roi_corners = []
             frame_tasks = defaultdict(list)
+            if "TrajectoryID" not in df.columns:
+                logger.warning("Interpolated crops skipped: CSV missing TrajectoryID.")
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+
             for traj_id, group in df.groupby("TrajectoryID"):
                 group = group.sort_values("FrameID").reset_index(drop=True)
-                states = group["State"].astype(str).str.lower()
+                states = group["State"].astype(str).str.strip().str.lower()
+                # Treat any value containing 'occluded' as occluded
+                states = states.where(~states.str.contains("occluded", na=False), "occluded")
+                occluded_rows += int((states == "occluded").sum())
 
                 last_valid_idx = None
                 i = 0
@@ -369,6 +387,7 @@ class InterpolatedCropsWorker(QThread):
                     if f1 - f0 <= 1:
                         i = j
                         continue
+                    interp_runs += 1
 
                     interp_total = max(0, f1 - f0 - 1)
                     interp_gaps += interp_total
@@ -430,6 +449,10 @@ class InterpolatedCropsWorker(QThread):
                     i = j
                     continue
 
+            logger.info(
+                f"Interpolated occlusion rows: {occluded_rows} "
+                f"(runs: {interp_runs}, gaps: {interp_gaps})"
+            )
             del df
             gc.collect()
 

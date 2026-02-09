@@ -508,7 +508,7 @@ class IndividualDatasetGenerator:
         metadata = {
             "frame_id": int(frame_id),
             "detection_idx": -1,
-            "track_id": None,
+            "track_id": -1,
             "trajectory_id": int(traj_id),
             "detection_id": None,
             "confidence": None,
@@ -527,7 +527,7 @@ class IndividualDatasetGenerator:
             crop,
             frame_id,
             0,
-            track_id,
+            -1,
             metadata,
             detection_id=None,
             name_prefix="interp_",
