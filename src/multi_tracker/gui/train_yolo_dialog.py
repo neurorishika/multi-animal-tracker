@@ -268,6 +268,18 @@ class TrainYoloDialog(QDialog):
         h_params2.addWidget(self.chk_cache)
         v_train.addLayout(h_params2)
 
+        h_aug = QHBoxLayout()
+        self.chk_default_aug = QCheckBox("Use default augmentations")
+        self.chk_default_aug.setChecked(True)
+        self.line_aug = QLineEdit()
+        self.line_aug.setPlaceholderText(
+            "Custom aug args e.g. degrees=10 translate=0.1 scale=0.5"
+        )
+        self.line_aug.setEnabled(False)
+        h_aug.addWidget(self.chk_default_aug)
+        h_aug.addWidget(self.line_aug, 1)
+        v_train.addLayout(h_aug)
+
         h_train_btn = QHBoxLayout()
         self.btn_start_train = QPushButton("Start Training")
         self.btn_stop_train = QPushButton("Stop Training")
@@ -296,6 +308,7 @@ class TrainYoloDialog(QDialog):
         self.btn_start_train.clicked.connect(self._start_training)
         self.btn_stop_train.clicked.connect(self._stop_training)
         self.combo_weights.currentIndexChanged.connect(self._on_weights_choice)
+        self.chk_default_aug.toggled.connect(self._on_aug_toggle)
 
         layout.addWidget(gb_sources)
         layout.addWidget(gb_conv)
@@ -305,6 +318,7 @@ class TrainYoloDialog(QDialog):
         scroll.setWidget(content)
         outer_layout.addWidget(scroll)
         self._on_weights_choice()
+        self._on_aug_toggle(self.chk_default_aug.isChecked())
 
     def _add_xany(self):
         for d in self._get_multiple_dirs("Select X-AnyLabeling Projects"):
@@ -437,6 +451,16 @@ class TrainYoloDialog(QDialog):
         )
         if self.chk_cache.isChecked():
             cmd.append("cache=True")
+        if not self.chk_default_aug.isChecked():
+            custom_aug = self.line_aug.text().strip()
+            if not custom_aug:
+                QMessageBox.warning(
+                    self,
+                    "Augmentations",
+                    "Custom augmentations enabled, but no args provided.",
+                )
+                return
+            cmd.extend(custom_aug.split())
 
         self.log_view.append("Running: " + " ".join(cmd))
 
@@ -493,6 +517,10 @@ class TrainYoloDialog(QDialog):
         is_custom = self.combo_weights.currentText().strip() == "Select weights file…"
         self.line_weights.setEnabled(is_custom)
         self.btn_weights.setEnabled(is_custom)
+
+    def _on_aug_toggle(self, checked):
+        # Checked = use defaults, disable custom input.
+        self.line_aug.setEnabled(not checked)
 
     def _build_model_options(self):
         options = [

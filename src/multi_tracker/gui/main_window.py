@@ -10,7 +10,7 @@ import hashlib
 import numpy as np
 import pandas as pd
 import cv2
-from collections import deque
+from collections import deque, defaultdict
 import gc
 import csv
 from pathlib import Path
@@ -200,6 +200,406 @@ class MergeWorker(QThread):
         except Exception as e:
             logger.exception("Error during trajectory merging")
             self.error_signal.emit(str(e))
+
+
+class InterpolatedCropsWorker(QThread):
+    """Worker thread for interpolating occluded crops without blocking the UI."""
+
+    progress_signal = Signal(int, str)
+    finished_signal = Signal(dict)
+
+    def __init__(self, csv_path, video_path, detection_cache_path, params):
+        super().__init__()
+        self.csv_path = csv_path
+        self.video_path = video_path
+        self.detection_cache_path = detection_cache_path
+        self.params = params
+
+    @staticmethod
+    def _interp_angle(theta_start, theta_end, t):
+        deg0 = math.degrees(theta_start)
+        deg1 = math.degrees(theta_end)
+        candidates = (deg1, deg1 + 180.0, deg1 - 180.0)
+        best_delta = None
+        for cand in candidates:
+            delta = wrap_angle_degs(cand - deg0)
+            if best_delta is None or abs(delta) < abs(best_delta):
+                best_delta = delta
+        return math.radians(deg0 + (best_delta or 0.0) * t)
+
+    @staticmethod
+    def _get_detection_size(detection_cache, frame_id, detection_id):
+        if detection_cache is None or detection_id is None or pd.isna(detection_id):
+            return None, None
+        try:
+            _, _, shapes, _, obb_corners, detection_ids = detection_cache.get_frame(
+                int(frame_id)
+            )
+        except Exception:
+            return None, None
+
+        idx = None
+        try:
+            for i, did in enumerate(detection_ids):
+                if int(did) == int(detection_id):
+                    idx = i
+                    break
+        except Exception:
+            idx = None
+
+        if idx is None:
+            return None, None
+
+        if obb_corners and idx < len(obb_corners):
+            c = np.asarray(obb_corners[idx], dtype=np.float32)
+            if c.shape[0] >= 4:
+                w = float(np.linalg.norm(c[1] - c[0]))
+                h = float(np.linalg.norm(c[2] - c[1]))
+                if w < h:
+                    w, h = h, w
+                return w, h
+
+        if shapes and idx < len(shapes):
+            area, aspect_ratio = shapes[idx][0], shapes[idx][1]
+            if aspect_ratio > 0 and area > 0:
+                ax2 = math.sqrt(4 * area / (math.pi * aspect_ratio))
+                ax1 = aspect_ratio * ax2
+                return ax1, ax2
+
+        return None, None
+
+    def run(self):
+        try:
+            if not self.csv_path or not os.path.exists(self.csv_path):
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+            if not self.video_path or not os.path.exists(self.video_path):
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+
+            output_dir = self.params.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
+            if not output_dir:
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+
+            df = pd.read_csv(self.csv_path)
+            if df.empty or "FrameID" not in df.columns or "State" not in df.columns:
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+
+            resize_factor = self.params.get("RESIZE_FACTOR", 1.0)
+            position_scale = 1.0
+            size_scale = 1.0 / resize_factor if resize_factor else 1.0
+
+            detection_cache = None
+            if self.detection_cache_path and os.path.exists(self.detection_cache_path):
+                detection_cache = DetectionCache(self.detection_cache_path, mode="r")
+
+            gen = IndividualDatasetGenerator(
+                self.params,
+                output_dir,
+                Path(self.video_path).stem,
+                self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
+            )
+            gen.enabled = True
+
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                if detection_cache:
+                    detection_cache.close()
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            try:
+                max_x = df["X"].dropna().max()
+                max_y = df["Y"].dropna().max()
+                if (
+                    resize_factor
+                    and resize_factor < 1.0
+                    and max_x <= frame_width * resize_factor * 1.05
+                    and max_y <= frame_height * resize_factor * 1.05
+                ):
+                    position_scale = 1.0 / resize_factor
+            except Exception:
+                position_scale = 1.0
+
+            interp_saved = 0
+            interp_gaps = 0
+            interp_rows = []
+            roi_rows = []
+            roi_corners = []
+            frame_tasks = defaultdict(list)
+            for traj_id, group in df.groupby("TrajectoryID"):
+                group = group.sort_values("FrameID").reset_index(drop=True)
+                states = group["State"].astype(str).str.lower()
+
+                last_valid_idx = None
+                i = 0
+                while i < len(group):
+                    if states[i] != "occluded":
+                        if not pd.isna(group.at[i, "X"]) and not pd.isna(
+                            group.at[i, "Y"]
+                        ):
+                            last_valid_idx = i
+                        i += 1
+                        continue
+
+                    if last_valid_idx is None:
+                        i += 1
+                        continue
+
+                    j = i
+                    while j < len(group) and states[j] == "occluded":
+                        j += 1
+                    if j >= len(group):
+                        break
+
+                    prev_row = group.iloc[last_valid_idx]
+                    next_row = group.iloc[j]
+                    if pd.isna(prev_row["X"]) or pd.isna(prev_row["Y"]) or pd.isna(
+                        next_row["X"]
+                    ) or pd.isna(next_row["Y"]):
+                        i = j
+                        continue
+
+                    f0 = int(prev_row["FrameID"])
+                    f1 = int(next_row["FrameID"])
+                    if f1 - f0 <= 1:
+                        i = j
+                        continue
+
+                    interp_total = max(0, f1 - f0 - 1)
+                    interp_gaps += interp_total
+
+                    det_id_prev = (
+                        prev_row["DetectionID"]
+                        if "DetectionID" in group.columns
+                        else None
+                    )
+                    det_id_next = (
+                        next_row["DetectionID"]
+                        if "DetectionID" in group.columns
+                        else None
+                    )
+
+                    w0, h0 = self._get_detection_size(detection_cache, f0, det_id_prev)
+                    w1, h1 = self._get_detection_size(detection_cache, f1, det_id_next)
+
+                    if w0 is None or h0 is None or w1 is None or h1 is None:
+                        ref_size = self.params.get("REFERENCE_BODY_SIZE", 20.0)
+                        w0 = w0 or ref_size * 2.2
+                        h0 = h0 or ref_size * 0.8
+                        w1 = w1 or ref_size * 2.2
+                        h1 = h1 or ref_size * 0.8
+
+                    for k in range(i, j):
+                        row = group.iloc[k]
+                        f = int(row["FrameID"])
+                        t = (f - f0) / (f1 - f0)
+                        cx = float(prev_row["X"]) + t * (
+                            float(next_row["X"]) - float(prev_row["X"])
+                        )
+                        cy = float(prev_row["Y"]) + t * (
+                            float(next_row["Y"]) - float(prev_row["Y"])
+                        )
+                        theta = self._interp_angle(
+                            float(prev_row["Theta"]), float(next_row["Theta"]), t
+                        )
+                        w = w0 + t * (w1 - w0)
+                        h = h0 + t * (h1 - h0)
+
+                        interp_index = max(1, f - f0)
+
+                        frame_tasks[f].append(
+                            {
+                                "frame_id": f,
+                                "cx": cx * position_scale,
+                                "cy": cy * position_scale,
+                                "w": w * size_scale,
+                                "h": h * size_scale,
+                                "theta": theta,
+                                "traj_id": traj_id,
+                                "interp_from": (f0, f1),
+                                "interp_index": interp_index,
+                                "interp_total": interp_total,
+                            }
+                        )
+
+                    i = j
+                    continue
+
+            del df
+            gc.collect()
+
+            if frame_tasks:
+                needed_frames = sorted(frame_tasks.keys())
+                total_frames = len(needed_frames)
+                current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                for idx, f in enumerate(needed_frames, start=1):
+                    if f != current_pos:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+                    ret, frame = cap.read()
+                    current_pos = f + 1
+                    if not ret or frame is None:
+                        continue
+                    for task in frame_tasks[f]:
+                        filename = gen.save_interpolated_crop(
+                            frame=frame,
+                            frame_id=task["frame_id"],
+                            cx=task["cx"],
+                            cy=task["cy"],
+                            w=task["w"],
+                            h=task["h"],
+                            theta=task["theta"],
+                            traj_id=task["traj_id"],
+                            interp_from=task["interp_from"],
+                            interp_index=task["interp_index"],
+                            interp_total=task["interp_total"],
+                        )
+                        if filename:
+                            interp_saved += 1
+                            corners = gen.ellipse_to_obb_corners(
+                                task["cx"],
+                                task["cy"],
+                                task["w"],
+                                task["h"],
+                                task["theta"],
+                            )
+                            interp_rows.append(
+                                {
+                                    "frame_id": int(task["frame_id"]),
+                                    "trajectory_id": int(task["traj_id"]),
+                                    "filename": filename,
+                                    "interp_from_start": int(task["interp_from"][0]),
+                                    "interp_from_end": int(task["interp_from"][1]),
+                                    "interp_index": int(task["interp_index"]),
+                                    "interp_total": int(task["interp_total"]),
+                                }
+                            )
+                            roi_rows.append(
+                                {
+                                    "frame_id": int(task["frame_id"]),
+                                    "trajectory_id": int(task["traj_id"]),
+                                    "filename": filename,
+                                    "cx": float(task["cx"]),
+                                    "cy": float(task["cy"]),
+                                    "w": float(task["w"]),
+                                    "h": float(task["h"]),
+                                    "theta": float(task["theta"]),
+                                    "interp_from_start": int(task["interp_from"][0]),
+                                    "interp_from_end": int(task["interp_from"][1]),
+                                    "interp_index": int(task["interp_index"]),
+                                    "interp_total": int(task["interp_total"]),
+                                }
+                            )
+                            roi_corners.append(corners)
+
+                    if idx % 25 == 0 or idx == total_frames:
+                        progress = int((idx / total_frames) * 100)
+                        self.progress_signal.emit(
+                            progress,
+                            f"Interpolating occlusions... {idx}/{total_frames}",
+                        )
+                        del frame
+                        gc.collect()
+
+            cap.release()
+            if detection_cache:
+                detection_cache.close()
+            mapping_path = None
+            roi_csv_path = None
+            roi_npz_path = None
+            if interp_rows and gen.crops_dir is not None:
+                mapping_path = gen.crops_dir.parent / "interpolated_mapping.csv"
+                try:
+                    with open(mapping_path, "w", newline="") as f:
+                        writer = csv.DictWriter(
+                            f,
+                            fieldnames=[
+                                "frame_id",
+                                "trajectory_id",
+                                "filename",
+                                "interp_from_start",
+                                "interp_from_end",
+                                "interp_index",
+                                "interp_total",
+                            ],
+                        )
+                        writer.writeheader()
+                        writer.writerows(interp_rows)
+                except Exception:
+                    pass
+            if roi_rows and gen.crops_dir is not None:
+                roi_csv_path = gen.crops_dir.parent / "interpolated_rois.csv"
+                try:
+                    with open(roi_csv_path, "w", newline="") as f:
+                        writer = csv.DictWriter(
+                            f,
+                            fieldnames=[
+                                "frame_id",
+                                "trajectory_id",
+                                "filename",
+                                "cx",
+                                "cy",
+                                "w",
+                                "h",
+                                "theta",
+                                "interp_from_start",
+                                "interp_from_end",
+                                "interp_index",
+                                "interp_total",
+                            ],
+                        )
+                        writer.writeheader()
+                        writer.writerows(roi_rows)
+                except Exception:
+                    pass
+                roi_npz_path = gen.crops_dir.parent / "interpolated_rois.npz"
+                try:
+                    np.savez_compressed(
+                        str(roi_npz_path),
+                        frame_id=np.array([r["frame_id"] for r in roi_rows], dtype=np.int64),
+                        trajectory_id=np.array(
+                            [r["trajectory_id"] for r in roi_rows], dtype=np.int64
+                        ),
+                        filename=np.array([r["filename"] for r in roi_rows], dtype=object),
+                        cx=np.array([r["cx"] for r in roi_rows], dtype=np.float32),
+                        cy=np.array([r["cy"] for r in roi_rows], dtype=np.float32),
+                        w=np.array([r["w"] for r in roi_rows], dtype=np.float32),
+                        h=np.array([r["h"] for r in roi_rows], dtype=np.float32),
+                        theta=np.array([r["theta"] for r in roi_rows], dtype=np.float32),
+                        interp_from_start=np.array(
+                            [r["interp_from_start"] for r in roi_rows], dtype=np.int64
+                        ),
+                        interp_from_end=np.array(
+                            [r["interp_from_end"] for r in roi_rows], dtype=np.int64
+                        ),
+                        interp_index=np.array(
+                            [r["interp_index"] for r in roi_rows], dtype=np.int64
+                        ),
+                        interp_total=np.array(
+                            [r["interp_total"] for r in roi_rows], dtype=np.int64
+                        ),
+                        obb_corners=np.stack(roi_corners).astype(np.float32)
+                        if roi_corners
+                        else np.zeros((0, 4, 2), dtype=np.float32),
+                    )
+                except Exception:
+                    pass
+            gen.finalize()
+            self.finished_signal.emit(
+                {
+                    "saved": interp_saved,
+                    "gaps": interp_gaps,
+                    "mapping_path": str(mapping_path) if mapping_path else None,
+                    "roi_csv_path": str(roi_csv_path) if roi_csv_path else None,
+                    "roi_npz_path": str(roi_npz_path) if roi_npz_path else None,
+                }
+            )
+        except Exception:
+            self.finished_signal.emit({"saved": 0, "gaps": 0})
 
 
 def get_video_config_path(video_path):
@@ -6851,6 +7251,32 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
 
+    def _on_interpolated_crops_finished(self, result):
+        saved = 0
+        gaps = 0
+        mapping_path = None
+        roi_csv_path = None
+        roi_npz_path = None
+        try:
+            saved = int(result.get("saved", 0))
+            gaps = int(result.get("gaps", 0))
+            mapping_path = result.get("mapping_path")
+            roi_csv_path = result.get("roi_csv_path")
+            roi_npz_path = result.get("roi_npz_path")
+        except Exception:
+            pass
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        logger.info(
+            f"Interpolated individual crops saved: {saved} (gaps: {gaps})"
+        )
+        if mapping_path:
+            logger.info(f"Interpolated mapping saved: {mapping_path}")
+        if roi_csv_path:
+            logger.info(f"Interpolated ROIs CSV saved: {roi_csv_path}")
+        if roi_npz_path:
+            logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
+
     def on_merge_error(self, error_message):
         """Handle merge errors."""
         self.progress_bar.setVisible(False)
@@ -7406,7 +7832,6 @@ class MainWindow(QMainWindow):
             if not self.chk_individual_interpolate.isChecked():
                 return
 
-            # Use post-processed CSV by default (occlusions recorded in State column)
             target_csv = None
             if csv_path and os.path.exists(csv_path):
                 target_csv = csv_path
@@ -7420,192 +7845,43 @@ class MainWindow(QMainWindow):
                 return
 
             params = self.get_parameters_dict()
-            output_dir = params.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
-            if not output_dir:
-                return
 
-            df = pd.read_csv(target_csv)
-            if df.empty or "FrameID" not in df.columns:
-                return
-            if "State" not in df.columns:
-                logger.warning("Interpolated crops skipped: CSV missing State column.")
-                return
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.progress_label.setText("Interpolating occluded crops...")
 
-            resize_factor = params.get("RESIZE_FACTOR", 1.0)
-            position_scale = 1.0
-            size_scale = 1.0 / resize_factor if resize_factor else 1.0
+            if hasattr(self, "interp_worker") and self.interp_worker is not None:
+                try:
+                    self.interp_worker.quit()
+                except Exception:
+                    pass
 
-            # Open detection cache if available
-            detection_cache = None
-            if self.current_detection_cache_path and os.path.exists(
-                self.current_detection_cache_path
-            ):
-                detection_cache = DetectionCache(
-                    self.current_detection_cache_path, mode="r"
-                )
-
-            # Initialize generator (append mode)
-            gen = IndividualDatasetGenerator(
+            self.interp_worker = InterpolatedCropsWorker(
+                target_csv,
+                video_path,
+                self.current_detection_cache_path,
                 params,
-                output_dir,
-                Path(video_path).stem,
-                params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
             )
-            gen.enabled = True
-
-            cap = cv2.VideoCapture(video_path)
-            if not cap.isOpened():
-                if detection_cache:
-                    detection_cache.close()
-                return
-            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-            # Determine if CSV coordinates are already in original space
-            try:
-                max_x = df["X"].dropna().max()
-                max_y = df["Y"].dropna().max()
-                if (
-                    resize_factor
-                    and resize_factor < 1.0
-                    and max_x <= frame_width * resize_factor * 1.05
-                    and max_y <= frame_height * resize_factor * 1.05
-                ):
-                    position_scale = 1.0 / resize_factor
-            except Exception:
-                position_scale = 1.0
-
-            # Build per-trajectory interpolation using occluded segments
-            interp_saved = 0
-            interp_gaps = 0
-            for traj_id, group in df.groupby("TrajectoryID"):
-                group = group.sort_values("FrameID").reset_index(drop=True)
-                states = group["State"].astype(str).str.lower()
-
-                last_valid_idx = None
-                i = 0
-                while i < len(group):
-                    if states[i] != "occluded":
-                        # Use only valid rows with numeric positions
-                        if not pd.isna(group.at[i, "X"]) and not pd.isna(
-                            group.at[i, "Y"]
-                        ):
-                            last_valid_idx = i
-                        i += 1
-                        continue
-
-                    # Start of occluded run
-                    if last_valid_idx is None:
-                        i += 1
-                        continue
-
-                    j = i
-                    while j < len(group) and states[j] == "occluded":
-                        j += 1
-                    if j >= len(group):
-                        break
-
-                    prev_row = group.iloc[last_valid_idx]
-                    next_row = group.iloc[j]
-                    if pd.isna(prev_row["X"]) or pd.isna(prev_row["Y"]) or pd.isna(
-                        next_row["X"]
-                    ) or pd.isna(next_row["Y"]):
-                        i = j
-                        continue
-
-                    f0 = int(prev_row["FrameID"])
-                    f1 = int(next_row["FrameID"])
-                    if f1 - f0 <= 1:
-                        i = j
-                        continue
-
-                    interp_gaps += max(0, f1 - f0 - 1)
-
-                    det_id_prev = (
-                        prev_row["DetectionID"]
-                        if "DetectionID" in group.columns
-                        else None
-                    )
-                    det_id_next = (
-                        next_row["DetectionID"]
-                        if "DetectionID" in group.columns
-                        else None
-                    )
-
-                    w0, h0 = self._get_detection_size(
-                        detection_cache, f0, det_id_prev, params
-                    )
-                    w1, h1 = self._get_detection_size(
-                        detection_cache, f1, det_id_next, params
-                    )
-
-                    if w0 is None or h0 is None or w1 is None or h1 is None:
-                        ref_size = params.get("REFERENCE_BODY_SIZE", 20.0)
-                        w0 = w0 or ref_size * 2.2
-                        h0 = h0 or ref_size * 0.8
-                        w1 = w1 or ref_size * 2.2
-                        h1 = h1 or ref_size * 0.8
-
-                    for k in range(i, j):
-                        row = group.iloc[k]
-                        f = int(row["FrameID"])
-                        t = (f - f0) / (f1 - f0)
-                        cx = float(prev_row["X"]) + t * (
-                            float(next_row["X"]) - float(prev_row["X"])
-                        )
-                        cy = float(prev_row["Y"]) + t * (
-                            float(next_row["Y"]) - float(prev_row["Y"])
-                        )
-                        theta = self._interp_angle(
-                            float(prev_row["Theta"]), float(next_row["Theta"]), t
-                        )
-                        w = w0 + t * (w1 - w0)
-                        h = h0 + t * (h1 - h0)
-
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, f)
-                        ret, frame = cap.read()
-                        if not ret or frame is None:
-                            continue
-
-                        track_id = (
-                            int(prev_row["TrackID"])
-                            if "TrackID" in group.columns
-                            and not pd.isna(prev_row["TrackID"])
-                            else -1
-                        )
-
-                        if gen.save_interpolated_crop(
-                            frame=frame,
-                            frame_id=f,
-                            cx=cx * position_scale,
-                            cy=cy * position_scale,
-                            w=w * size_scale,
-                            h=h * size_scale,
-                            theta=theta,
-                            track_id=track_id,
-                            traj_id=traj_id,
-                            interp_from=(f0, f1),
-                        ):
-                            interp_saved += 1
-
-                    i = j
-                    continue
-
-            cap.release()
-            if detection_cache:
-                detection_cache.close()
-            gen.finalize()
-            logger.info(
-                f"Interpolated individual crops saved: {interp_saved} (gaps: {interp_gaps})"
+            self.interp_worker.progress_signal.connect(self.on_progress_update)
+            self.interp_worker.finished_signal.connect(
+                self._on_interpolated_crops_finished
             )
+            self.interp_worker.start()
         except Exception as e:
             logger.warning(f"Interpolated individual crops failed: {e}")
 
     def _interp_angle(self, theta_start, theta_end, t):
         deg0 = math.degrees(theta_start)
         deg1 = math.degrees(theta_end)
-        delta = wrap_angle_degs(deg1 - deg0)
-        return math.radians(deg0 + delta * t)
+        # Treat OBB angles as 180-degree periodic; pick shortest path.
+        candidates = (deg1, deg1 + 180.0, deg1 - 180.0)
+        best_delta = None
+        for cand in candidates:
+            delta = wrap_angle_degs(cand - deg0)
+            if best_delta is None or abs(delta) < abs(best_delta):
+                best_delta = delta
+        return math.radians(deg0 + (best_delta or 0.0) * t)
 
     def _get_detection_size(self, detection_cache, frame_id, detection_id, params):
         if detection_cache is None or detection_id is None or pd.isna(detection_id):

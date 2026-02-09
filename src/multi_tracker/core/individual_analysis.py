@@ -483,24 +483,32 @@ class IndividualDatasetGenerator:
         w,
         h,
         theta,
-        track_id,
         traj_id,
         interp_from,
+        interp_index,
+        interp_total,
     ):
         if not self.enabled or self.crops_dir is None:
-            return False
+            return None
 
         corners = self.ellipse_to_obb_corners(cx, cy, w, h, theta)
         crop, crop_info = self._extract_obb_masked_crop(
             frame, corners, frame.shape[0], frame.shape[1]
         )
         if crop is None:
-            return False
+            return None
+
+        id_part = f"traj{int(traj_id):04d}"
+        filename = (
+            f"interp_f{int(frame_id):06d}_{id_part}_seg{int(interp_from[0]):06d}"
+            f"-{int(interp_from[1]):06d}_p{int(interp_index):03d}"
+            f"of{int(interp_total):03d}.{self.output_format}"
+        )
 
         metadata = {
             "frame_id": int(frame_id),
             "detection_idx": -1,
-            "track_id": int(track_id),
+            "track_id": None,
             "trajectory_id": int(traj_id),
             "detection_id": None,
             "confidence": None,
@@ -511,6 +519,8 @@ class IndividualDatasetGenerator:
             "source_type": "interpolated",
             "interpolated": True,
             "interp_from_frames": [int(interp_from[0]), int(interp_from[1])],
+            "interp_index": int(interp_index),
+            "interp_total": int(interp_total),
         }
 
         return self._save_crop(
@@ -521,6 +531,7 @@ class IndividualDatasetGenerator:
             metadata,
             detection_id=None,
             name_prefix="interp_",
+            filename_override=filename,
         )
 
     def _extract_obb_masked_crop(self, frame, corners, frame_h, frame_w):
@@ -606,6 +617,7 @@ class IndividualDatasetGenerator:
         metadata,
         detection_id=None,
         name_prefix="",
+        filename_override=None,
     ):
         """
         Save a crop to disk.
@@ -619,17 +631,25 @@ class IndividualDatasetGenerator:
             detection_id: Unique Detection ID (optional)
 
         Returns:
-            bool: True if saved successfully
+            str | None: filename if saved successfully
         """
         try:
             # Generate filename
-            if detection_id is not None:
+            if filename_override:
+                filename = filename_override
+            elif detection_id is not None:
                 # Use DetectionID if available (preferred/unique)
                 filename = f"{name_prefix}did{int(detection_id)}.{self.output_format}"
             elif track_id >= 0:
-                filename = f"{name_prefix}f{frame_id:06d}_t{track_id:04d}_d{det_idx:02d}.{self.output_format}"
+                filename = (
+                    f"{name_prefix}f{frame_id:06d}_t{track_id:04d}_d{det_idx:02d}."
+                    f"{self.output_format}"
+                )
             else:
-                filename = f"{name_prefix}f{frame_id:06d}_d{det_idx:02d}.{self.output_format}"
+                filename = (
+                    f"{name_prefix}f{frame_id:06d}_d{det_idx:02d}."
+                    f"{self.output_format}"
+                )
 
             filepath = self.crops_dir / filename
 
@@ -646,11 +666,11 @@ class IndividualDatasetGenerator:
             self.metadata.append(metadata)
             self.total_saved += 1
 
-            return True
+            return filename
 
         except Exception as e:
             logger.warning(f"Failed to save crop: {e}")
-            return False
+            return None
 
     def finalize(self):
         """
