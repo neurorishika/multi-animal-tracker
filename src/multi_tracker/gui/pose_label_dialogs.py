@@ -16,6 +16,7 @@ import sys
 import tempfile
 import os
 import shutil
+import re
 import numpy as np
 import yaml
 import gc
@@ -2513,6 +2514,7 @@ class TrainingWorker(QObject):
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"Training run dir: {self.run_dir}")
             self.log.emit("Starting training (subprocess)…")
+            self.progress.emit(0, max(1, int(self.epochs)))
 
             cli_args = [
                 "task=pose",
@@ -2601,10 +2603,24 @@ class TrainingWorker(QObject):
                 )
                 self._proc = _run_cmd([sys.executable, "-c", py_code])
             assert self._proc.stdout is not None
+            ansi_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
             for line in self._proc.stdout:
                 if self._cancel:
                     break
-                self.log.emit(line.rstrip())
+                msg = ansi_re.sub("", line).rstrip()
+                self.log.emit(msg)
+                # Parse epoch progress from Ultralytics logs (e.g., "Epoch 3/50")
+                m = re.search(r"Epoch\s+(\d+)\s*/\s*(\d+)", msg)
+                if not m:
+                    m = re.search(r"^\s*(\d+)\s*/\s*(\d+)\s", msg)
+                if m:
+                    try:
+                        cur = int(m.group(1))
+                        total = int(m.group(2))
+                        if total > 0:
+                            self.progress.emit(cur, total)
+                    except Exception:
+                        pass
 
             rc = self._proc.wait()
             if self._cancel:
@@ -3468,12 +3484,15 @@ class EvaluationWorker(QObject):
                     pred_list = self.pred_cache.get(str(img_path))
                     if pred_list is None:
                         pred_list = self.pred_cache.get(str(img_path.resolve()))
-                    if pred_list is None:
+                    if not pred_list:
                         self.progress.emit(idx + 1, total)
                         continue
 
                     pred_xy = np.array([[p[0], p[1]] for p in pred_list], dtype=np.float32)
                     pred_conf = np.array([p[2] for p in pred_list], dtype=np.float32)
+                    if pred_xy.size == 0:
+                        self.progress.emit(idx + 1, total)
+                        continue
 
                     frame_errs = [None] * num_kpts
                     frame_confs = [None] * num_kpts
