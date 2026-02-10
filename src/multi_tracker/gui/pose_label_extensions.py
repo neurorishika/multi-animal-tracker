@@ -708,7 +708,10 @@ def load_yolo_pose_label(
 
 
 def _clamp01(x: float) -> float:
-    """Clamp value to [0, 1]."""
+    """Clamp value to [0, 1] with NaN protection."""
+    if not np.isfinite(x):
+        logger.warning(f"Non-finite value clamped to 0: {x}")
+        return 0.0
     return max(0.0, min(1.0, x))
 
 
@@ -732,6 +735,8 @@ def save_yolo_pose_label(
     create_backup: bool = True,
 ) -> None:
     """Save YOLO pose label with crash-safe writing and optional backup."""
+    MIN_BBOX_DIM = 0.001  # Minimum normalized bbox dimension
+
     # Create backup of existing label before overwriting
     if create_backup and label_path.exists():
         try:
@@ -753,17 +758,38 @@ def save_yolo_pose_label(
         return
 
     x1, y1, x2, y2 = bbox_xyxy_px
+
+    # Validate bbox coordinates
+    if not all(np.isfinite(v) for v in (x1, y1, x2, y2)):
+        logger.error(f"Non-finite bbox coordinates for {label_path}: {bbox_xyxy_px}")
+        return
+
     cx, cy, bw, bh = _xyxy_to_cxcywh(x1, y1, x2, y2)
 
-    cxn = _clamp01(cx / img_w)
-    cyn = _clamp01(cy / img_h)
-    bwn = _clamp01(bw / img_w)
-    bhn = _clamp01(bh / img_h)
+    # Validate bbox dimensions before normalization
+    if not all(np.isfinite(v) for v in (cx, cy, bw, bh)):
+        logger.error(
+            f"Non-finite bbox after conversion for {label_path}: cx={cx}, cy={cy}, w={bw}, h={bh}"
+        )
+        return
+
+    cxn = _clamp01(cx / max(img_w, 1))
+    cyn = _clamp01(cy / max(img_h, 1))
+    bwn = _clamp01(bw / max(img_w, 1))
+    bhn = _clamp01(bh / max(img_h, 1))
+
+    # Ensure minimum bbox size to prevent NaN during training
+    if bwn < MIN_BBOX_DIM or bhn < MIN_BBOX_DIM:
+        logger.warning(
+            f"Bbox too small for {label_path}: w={bwn:.6f}, h={bhn:.6f}. Expanding to minimum."
+        )
+        bwn = max(bwn, MIN_BBOX_DIM)
+        bhn = max(bhn, MIN_BBOX_DIM)
 
     vals = [str(int(cls)), f"{cxn:.6f}", f"{cyn:.6f}", f"{bwn:.6f}", f"{bhn:.6f}"]
     for kp in kpts_px:
-        xn = _clamp01(kp.x / img_w)
-        yn = _clamp01(kp.y / img_h)
+        xn = _clamp01(kp.x / max(img_w, 1))
+        yn = _clamp01(kp.y / max(img_h, 1))
         vals.append(f"{xn:.6f}")
         vals.append(f"{yn:.6f}")
         vals.append(str(int(kp.v)))
@@ -960,6 +986,10 @@ def build_yolo_pose_dataset(
     k = len(keypoint_names)
 
     def _parse_label_parts(label_path: Path, kpt_count: int) -> Optional[List[str]]:
+        # Minimum bbox dimension to prevent NaN (1 pixel at 640px = ~0.0015625)
+        MIN_BBOX_DIM = 0.001
+        EPSILON = 1e-8
+
         try:
             text = label_path.read_text(encoding="utf-8").strip()
         except Exception:
@@ -977,13 +1007,32 @@ def build_yolo_pose_dataset(
             bh = float(parts[4])
         except Exception:
             return None
+
+        # Check for NaN or inf
         for v in (cx, cy, bw, bh):
             if not np.isfinite(v):
+                logger.warning(f"Non-finite bbox value in {label_path.name}: {v}")
                 return None
-        if bw <= 0 or bh <= 0:
+
+        # Check for minimum bbox size to prevent numerical instability
+        if bw < MIN_BBOX_DIM or bh < MIN_BBOX_DIM:
+            logger.warning(
+                f"Bbox too small in {label_path.name}: w={bw:.6f}, h={bh:.6f}"
+            )
             return None
-        if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0 and 0.0 <= bw <= 1.0 and 0.0 <= bh <= 1.0):
+
+        # Validate normalized coordinates with small tolerance
+        if not (-EPSILON <= cx <= 1.0 + EPSILON and -EPSILON <= cy <= 1.0 + EPSILON):
+            logger.warning(
+                f"Bbox center out of range in {label_path.name}: cx={cx:.6f}, cy={cy:.6f}"
+            )
             return None
+        if not (0.0 <= bw <= 1.0 + EPSILON and 0.0 <= bh <= 1.0 + EPSILON):
+            logger.warning(
+                f"Bbox dims out of range in {label_path.name}: w={bw:.6f}, h={bh:.6f}"
+            )
+            return None
+
         # Validate keypoints
         for i in range(5, 5 + 3 * kpt_count, 3):
             try:
@@ -991,13 +1040,33 @@ def build_yolo_pose_dataset(
                 y = float(parts[i + 1])
                 v = int(float(parts[i + 2]))
             except Exception:
+                logger.warning(
+                    f"Invalid keypoint format in {label_path.name} at index {(i-5)//3}"
+                )
                 return None
+
             if not np.isfinite(x) or not np.isfinite(y):
+                logger.warning(
+                    f"Non-finite keypoint in {label_path.name}: kpt={(i-5)//3}, x={x}, y={y}"
+                )
                 return None
+
             if v not in (0, 1, 2):
+                logger.warning(
+                    f"Invalid visibility {v} in {label_path.name} at keypoint {(i-5)//3}"
+                )
                 return None
-            if v > 0 and not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
-                return None
+
+            # Only validate coordinates for visible keypoints
+            if v > 0:
+                if not (
+                    -EPSILON <= x <= 1.0 + EPSILON and -EPSILON <= y <= 1.0 + EPSILON
+                ):
+                    logger.warning(
+                        f"Keypoint out of range in {label_path.name}: kpt={(i-5)//3}, x={x:.6f}, y={y:.6f}, vis={v}"
+                    )
+                    return None
+
         return parts
 
     def _has_any_visible_kpt_from_parts(
@@ -1288,7 +1357,9 @@ class IncrementalEmbeddingCache:
     def __init__(self, cache_root: Path, cache_key: str):
         self.cache_root = cache_root
         self.cache_key = cache_key
-        self.cache_dir = cache_root / "embeddings" / self._sanitize_model_name(cache_key)
+        self.cache_dir = (
+            cache_root / "embeddings" / self._sanitize_model_name(cache_key)
+        )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.embeddings_path = self.cache_dir / "embeddings.npy"

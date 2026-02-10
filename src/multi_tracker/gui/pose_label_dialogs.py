@@ -2409,7 +2409,6 @@ class TrainingWorker(QObject):
         degrees: float,
         translate: float,
         scale: float,
-        fliplr: float,
     ):
         super().__init__()
         self.model_weights = model_weights
@@ -2428,7 +2427,6 @@ class TrainingWorker(QObject):
         self.degrees = float(degrees)
         self.translate = float(translate)
         self.scale = float(scale)
-        self.fliplr = float(fliplr)
         self._cancel = False
         self._log_handler = None
         self._model = None
@@ -2521,7 +2519,6 @@ class TrainingWorker(QObject):
                         f"degrees={self.degrees}",
                         f"translate={self.translate}",
                         f"scale={self.scale}",
-                        f"fliplr={self.fliplr}",
                     ]
 
                 if yolo_bin:
@@ -2547,7 +2544,6 @@ class TrainingWorker(QObject):
                         "  degrees={degrees},\n"
                         "  translate={translate},\n"
                         "  scale={scale},\n"
-                        "  fliplr={fliplr},\n"
                         ")\n"
                     ).format(
                         model=self.model_weights,
@@ -2566,7 +2562,6 @@ class TrainingWorker(QObject):
                         degrees=self.degrees,
                         translate=self.translate,
                         scale=self.scale,
-                        fliplr=self.fliplr,
                     )
                     self._proc = _run_cmd([sys.executable, "-c", py_code])
 
@@ -2819,17 +2814,6 @@ class TrainingRunnerDialog(QDialog):
         )
         self.aug_widgets.append(self.scale_spin)
 
-        self.fliplr_spin = QDoubleSpinBox()
-        self.fliplr_spin.setRange(0.0, 1.0)
-        self.fliplr_spin.setSingleStep(0.05)
-        self.fliplr_spin.setValue(0.2)
-        add_row(
-            "fliplr:",
-            self.fliplr_spin,
-            "Horizontal flip probability.",
-        )
-        self.aug_widgets.append(self.fliplr_spin)
-
         content_layout.addWidget(aug_group)
 
         # Dataset
@@ -3046,7 +3030,6 @@ class TrainingRunnerDialog(QDialog):
         self.degrees_spin.setValue(float(settings.get("degrees", self.degrees_spin.value())))
         self.translate_spin.setValue(float(settings.get("translate", self.translate_spin.value())))
         self.scale_spin.setValue(float(settings.get("scale", self.scale_spin.value())))
-        self.fliplr_spin.setValue(float(settings.get("fliplr", self.fliplr_spin.value())))
         self.train_split_spin.setValue(
             float(settings.get("train_split", self.train_split_spin.value()))
         )
@@ -3083,7 +3066,6 @@ class TrainingRunnerDialog(QDialog):
                 "degrees": float(self.degrees_spin.value()),
                 "translate": float(self.translate_spin.value()),
                 "scale": float(self.scale_spin.value()),
-                "fliplr": float(self.fliplr_spin.value()),
                 "train_split": float(self.train_split_spin.value()),
                 "seed": int(self.seed_spin.value()),
                 "ignore_occluded": bool(self.cb_ignore_occluded.isChecked()),
@@ -3191,7 +3173,6 @@ class TrainingRunnerDialog(QDialog):
             "degrees": float(self.degrees_spin.value()),
             "translate": float(self.translate_spin.value()),
             "scale": float(self.scale_spin.value()),
-            "fliplr": float(self.fliplr_spin.value()),
             "dataset": {
                 "yaml": str(dataset_info["yaml_path"]),
                     "train": str(dataset_info["train_list"]),
@@ -3236,7 +3217,6 @@ class TrainingRunnerDialog(QDialog):
             degrees=self.degrees_spin.value(),
             translate=self.translate_spin.value(),
             scale=self.scale_spin.value(),
-            fliplr=self.fliplr_spin.value(),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -3827,7 +3807,13 @@ class EvaluationDashboardDialog(QDialog):
         self.add_frames_callback = add_frames_callback
         self._thread = None
         self._worker = None
-        self._path_to_index = {str(p): i for i, p in enumerate(image_paths)}
+        self._path_to_index = {}
+        for i, p in enumerate(image_paths):
+            self._path_to_index[str(p)] = i
+            try:
+                self._path_to_index[str(p.resolve())] = i
+            except Exception:
+                pass
         self.infer = _make_pose_infer(
             self.project.out_root, self.project.keypoint_names
         )
@@ -4184,6 +4170,7 @@ class ActiveLearningWorker(QObject):
         eval_csv: Optional[str],
         preds_cache_a: Optional[Dict[str, List[Tuple[float, float, float]]]] = None,
         preds_cache_b: Optional[Dict[str, List[Tuple[float, float, float]]]] = None,
+        keypoint_index: int = 0,
     ):
         super().__init__()
         self.strategy = strategy
@@ -4201,6 +4188,7 @@ class ActiveLearningWorker(QObject):
         self.eval_csv = eval_csv
         self.preds_cache_a = preds_cache_a
         self.preds_cache_b = preds_cache_b
+        self.keypoint_index = int(keypoint_index)
         self._cancel = False
 
     def cancel(self):
@@ -4356,6 +4344,44 @@ class ActiveLearningWorker(QObject):
                 self.finished.emit(scores)
                 return
 
+            if self.strategy == "lowest_conf_kpt":
+                ki = max(0, min(self.keypoint_index, self.num_kpts - 1))
+                if self.preds_cache_a:
+                    scores = []
+                    for p in paths:
+                        pred = self.preds_cache_a.get(str(p)) or self.preds_cache_a.get(
+                            str(p.resolve())
+                        )
+                        if not pred or ki >= len(pred):
+                            score = 0.0
+                        else:
+                            score = float(pred[ki][2])
+                        scores.append((str(p), score))
+                    scores.sort(key=lambda x: x[1])
+                    self.finished.emit(scores)
+                    return
+                else:
+                    if not self.weights_a or not Path(self.weights_a).exists():
+                        self.failed.emit("Weights not found.")
+                        return
+                    preds = self._predict_keypoints(self.weights_a, paths)
+                    if preds is None:
+                        self.failed.emit("Canceled.")
+                        return
+                scores = []
+                for p in paths:
+                    key = str(p)
+                    pred = preds.get(key)
+                    if pred is None or pred[1] is None:
+                        score = 0.0
+                    else:
+                        confs = pred[1]
+                        score = float(confs[ki]) if ki < len(confs) else 0.0
+                    scores.append((key, score))
+                scores.sort(key=lambda x: x[1])
+                self.finished.emit(scores)
+                return
+
             if self.strategy == "disagreement":
                 if self.preds_cache_a and self.preds_cache_b:
                     scores = []
@@ -4457,7 +4483,8 @@ class ActiveLearningDialog(QDialog):
         self.strategy_combo = QComboBox()
         self.strategy_combo.addItems(
             [
-                "Lowest keypoint confidence",
+                "Lowest keypoint confidence (mean)",
+                "Lowest confidence for keypoint",
                 "Largest model disagreement",
                 "Largest train/val error",
             ]
@@ -4516,6 +4543,9 @@ class ActiveLearningDialog(QDialog):
         row_a.addWidget(self.weights_a_edit, 1)
         row_a.addWidget(self.btn_weights_a)
         w1_layout.addRow("Weights:", row_a)
+        self.kpt_combo = QComboBox()
+        self.kpt_combo.addItems(self.project.keypoint_names)
+        w1_layout.addRow("Keypoint:", self.kpt_combo)
 
         # Disagreement
         w2 = QWidget()
@@ -4611,6 +4641,8 @@ class ActiveLearningDialog(QDialog):
         self.weights_b1_edit.setText(settings.get("weights_b1", self.weights_b1_edit.text()))
         self.weights_b2_edit.setText(settings.get("weights_b2", self.weights_b2_edit.text()))
         self.eval_csv_edit.setText(settings.get("eval_csv", self.eval_csv_edit.text()))
+        if "kpt_index" in settings:
+            self.kpt_combo.setCurrentIndex(int(settings.get("kpt_index", 0)))
 
     def _apply_latest_weights_default(self):
         if (
@@ -4639,6 +4671,7 @@ class ActiveLearningDialog(QDialog):
                 "weights_b1": self.weights_b1_edit.text().strip(),
                 "weights_b2": self.weights_b2_edit.text().strip(),
                 "eval_csv": self.eval_csv_edit.text().strip(),
+                "kpt_index": int(self.kpt_combo.currentIndex()),
             },
         )
 
@@ -4663,7 +4696,13 @@ class ActiveLearningDialog(QDialog):
             self.eval_csv_edit.setText(path)
 
     def _on_strategy_changed(self, idx: int):
-        self.stack.setCurrentIndex(idx)
+        if idx <= 1:
+            self.stack.setCurrentIndex(0)
+        elif idx == 2:
+            self.stack.setCurrentIndex(1)
+        else:
+            self.stack.setCurrentIndex(2)
+        self.kpt_combo.setEnabled(idx == 1)
 
     def _collect_candidates(self) -> List[int]:
         scope = self.scope_combo.currentText()
@@ -4693,6 +4732,11 @@ class ActiveLearningDialog(QDialog):
             weights_b = None
             eval_csv = None
         elif strat_idx == 1:
+            strategy = "lowest_conf_kpt"
+            weights_a = self.weights_a_edit.text().strip()
+            weights_b = None
+            eval_csv = None
+        elif strat_idx == 2:
             strategy = "disagreement"
             weights_a = self.weights_b1_edit.text().strip()
             weights_b = self.weights_b2_edit.text().strip()
@@ -4736,6 +4780,7 @@ class ActiveLearningDialog(QDialog):
             eval_csv=eval_csv,
             preds_cache_a=preds_cache_a,
             preds_cache_b=preds_cache_b,
+            keypoint_index=self.kpt_combo.currentIndex(),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)

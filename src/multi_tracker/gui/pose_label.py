@@ -467,6 +467,8 @@ def _resolve_project_path(path: Path, base: Path, data: dict) -> Path:
     if bool(data.get("paths_relative", False)):
         return (base / path).resolve()
     return (base / path).resolve()
+
+
 def list_images(images_dir: Path) -> List[Path]:
     paths: List[Path] = []
     for p in sorted(images_dir.rglob("*")):
@@ -552,7 +554,10 @@ def save_ui_settings(settings: Dict):
 
 
 def _clamp01(value: float) -> float:
-    """Clamp value to [0, 1] range."""
+    """Clamp value to [0, 1] range with NaN protection."""
+    if not np.isfinite(value):
+        logger.warning(f"Non-finite value clamped to 0: {value}")
+        return 0.0
     return max(0.0, min(1.0, value))
 
 
@@ -560,30 +565,69 @@ def _xyxy_to_cxcywh(
     x1: float, y1: float, x2: float, y2: float
 ) -> Tuple[float, float, float, float]:
     """Convert bounding box from (x1, y1, x2, y2) to (center_x, center_y, width, height)."""
+    # Validate inputs
+    if not all(np.isfinite(v) for v in (x1, y1, x2, y2)):
+        logger.error(f"Non-finite bbox coordinates: x1={x1}, y1={y1}, x2={x2}, y2={y2}")
+        return (0.5, 0.5, 0.1, 0.1)  # Return safe default
+
     cx = (x1 + x2) / 2.0
     cy = (y1 + y2) / 2.0
     bw = x2 - x1
     bh = y2 - y1
+
+    # Ensure positive dimensions
+    bw = max(bw, 0.001)
+    bh = max(bh, 0.001)
+
     return cx, cy, bw, bh
 
 
 def compute_bbox_from_kpts(
     kpts: List[Keypoint], pad_frac: float, w: int, h: int
 ) -> Optional[Tuple[float, float, float, float]]:
+    """Compute bounding box from visible keypoints with minimum size guarantee."""
+    MIN_BBOX_SIZE = 2.0  # Minimum bbox size in pixels
+
     pts = [(kp.x, kp.y) for kp in kpts if kp.v > 0]
     if not pts:
         return None
+
     xs = [p[0] for p in pts]
     ys = [p[1] for p in pts]
+
+    # Check for valid coordinates
+    if not all(np.isfinite(x) for x in xs) or not all(np.isfinite(y) for y in ys):
+        logger.error(f"Non-finite keypoint coordinates detected")
+        return None
+
     x1, x2 = min(xs), max(xs)
     y1, y2 = min(ys), max(ys)
+
+    # Add padding
     pad = pad_frac * max((x2 - x1), (y2 - y1), 1.0)
     x1 = max(0.0, x1 - pad)
     y1 = max(0.0, y1 - pad)
     x2 = min(float(w - 1), x2 + pad)
     y2 = min(float(h - 1), y2 + pad)
+
+    # Ensure minimum bbox size to prevent numerical issues
+    if x2 - x1 < MIN_BBOX_SIZE:
+        center_x = (x1 + x2) / 2.0
+        x1 = max(0.0, center_x - MIN_BBOX_SIZE / 2.0)
+        x2 = min(float(w - 1), center_x + MIN_BBOX_SIZE / 2.0)
+
+    if y2 - y1 < MIN_BBOX_SIZE:
+        center_y = (y1 + y2) / 2.0
+        y1 = max(0.0, center_y - MIN_BBOX_SIZE / 2.0)
+        y2 = min(float(h - 1), center_y + MIN_BBOX_SIZE / 2.0)
+
+    # Final validation
     if x2 <= x1 + 1 or y2 <= y1 + 1:
+        logger.warning(
+            f"Computed bbox too small: ({x1:.1f}, {y1:.1f}) to ({x2:.1f}, {y2:.1f})"
+        )
         return None
+
     return (x1, y1, x2, y2)
 
 
@@ -639,8 +683,6 @@ def _maybe_empty_cuda_cache():
             torch.cuda.empty_cache()
     except Exception:
         pass
-
-
 
 
 def _read_image_pil(path: Path):
@@ -1049,6 +1091,7 @@ class PoseCanvas(QGraphicsView):
         self.edge_items: List[QGraphicsLineItem] = []
         self.pred_items: List[Optional[QGraphicsEllipseItem]] = []
         self.pred_edge_items: List[Optional[QGraphicsLineItem]] = []
+        self.pred_labels: List[Optional[QGraphicsTextItem]] = []
 
         self._img_w = 1
         self._img_h = 1
@@ -1124,6 +1167,8 @@ class PoseCanvas(QGraphicsView):
         kpt_names: List[str],
         edges: List[Tuple[int, int]],
         pred_kpts: Optional[List[Keypoint]] = None,
+        pred_confs: Optional[List[float]] = None,
+        show_pred_conf: bool = False,
     ):
         for item in (
             self.kpt_items
@@ -1131,6 +1176,7 @@ class PoseCanvas(QGraphicsView):
             + self.edge_items
             + self.pred_items
             + self.pred_edge_items
+            + self.pred_labels
         ):
             if item is not None:
                 self.scene.removeItem(item)
@@ -1139,6 +1185,7 @@ class PoseCanvas(QGraphicsView):
         self.edge_items = [None] * len(edges)
         self.pred_items = [None] * (len(pred_kpts) if pred_kpts else 0)
         self.pred_edge_items = [None] * len(edges)
+        self.pred_labels = [None] * (len(pred_kpts) if pred_kpts else 0)
 
         # Create edges with opacity
         edge_alpha = int(255 * self._edge_opacity)
@@ -1250,6 +1297,16 @@ class PoseCanvas(QGraphicsView):
                 circ.setData(1, "pred")
                 self.scene.addItem(circ)
                 self.pred_items[i] = circ
+                if show_pred_conf and pred_confs and i < len(pred_confs):
+                    conf = pred_confs[i]
+                    lab = QGraphicsTextItem(f"{conf:.2f}")
+                    lab.setDefaultTextColor(QColor(0, 220, 255, 200))
+                    lab.setFont(QFont("Arial", max(6, int(self._label_font_size * 0.8))))
+                    lab.setPos(kp.x + r + 2, kp.y - r - 2)
+                    lab.setZValue(2)
+                    lab.setAcceptedMouseButtons(Qt.NoButton)
+                    self.scene.addItem(lab)
+                    self.pred_labels[i] = lab
 
         self._update_edges_from_points(edges)
 
@@ -2154,7 +2211,9 @@ class MainWindow(QMainWindow):
         self._bulk_pred_thread: Optional[QThread] = None
         self._bulk_pred_worker: Optional[BulkPosePredictWorker] = None
         self.show_predictions = True
-        self.infer = PoseInferenceService(self.project.out_root, self.project.keypoint_names)
+        self.infer = PoseInferenceService(
+            self.project.out_root, self.project.keypoint_names
+        )
 
         # Track which frames are in the labeling set (empty by default)
         self.labeling_frames: set = set()
@@ -2694,6 +2753,12 @@ class MainWindow(QMainWindow):
                 self.sp_pred_conf.setValue(float(settings["pred_conf"]))
             if "pred_weights" in settings:
                 self.pred_weights_edit.setText(str(settings["pred_weights"]))
+            if not self.pred_weights_edit.text().strip():
+                if (
+                    self.project.latest_pose_weights
+                    and Path(self.project.latest_pose_weights).exists()
+                ):
+                    self.pred_weights_edit.setText(str(self.project.latest_pose_weights))
 
     # ----- menus / shortcuts -----
     def _build_actions(self):
@@ -2843,7 +2908,9 @@ class MainWindow(QMainWindow):
 
     def save_project(self):
         if hasattr(self.project, "labeling_frames"):
-            self.project.labeling_frames = sorted({int(i) for i in self.labeling_frames})
+            self.project.labeling_frames = sorted(
+                {int(i) for i in self.labeling_frames}
+            )
         self.project.last_index = self.current_index
         self.project.project_path.write_text(
             json.dumps(self.project.to_json(), indent=2), encoding="utf-8"
@@ -4036,10 +4103,7 @@ class MainWindow(QMainWindow):
                 k = len(self.project.keypoint_names)
                 if len(self._ann.kpts) < k:
                     self._ann.kpts.extend(
-                        [
-                            Keypoint(0.0, 0.0, 0)
-                            for _ in range(k - len(self._ann.kpts))
-                        ]
+                        [Keypoint(0.0, 0.0, 0) for _ in range(k - len(self._ann.kpts))]
                     )
                 else:
                     self._ann.kpts = self._ann.kpts[:k]
@@ -4096,7 +4160,9 @@ class MainWindow(QMainWindow):
             )
 
         self.project.keypoint_names = new_kpts
-        self.infer = PoseInferenceService(self.project.out_root, self.project.keypoint_names)
+        self.infer = PoseInferenceService(
+            self.project.out_root, self.project.keypoint_names
+        )
         # clamp edges to new range
         k = len(new_kpts)
         self.project.skeleton_edges = [
@@ -4305,7 +4371,9 @@ class MainWindow(QMainWindow):
             self, title, f"Added {len(indices)} frames to labeling set."
         )
 
-    def _preds_to_keypoints(self, preds: List[Tuple[float, float, float]], conf_thr: float = 0.25) -> List[Keypoint]:
+    def _preds_to_keypoints(
+        self, preds: List[Tuple[float, float, float]], conf_thr: float = 0.25
+    ) -> List[Keypoint]:
         kpts = []
         for x, y, c in preds:
             if not np.isfinite(c):
@@ -4325,14 +4393,15 @@ class MainWindow(QMainWindow):
             return 0.25
 
     def _browse_pred_weights(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select pose weights", "", "*.pt"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Select pose weights", "", "*.pt")
         if path:
             self.pred_weights_edit.setText(path)
 
     def _use_latest_pred_weights(self):
-        if self.project.latest_pose_weights and Path(self.project.latest_pose_weights).exists():
+        if (
+            self.project.latest_pose_weights
+            and Path(self.project.latest_pose_weights).exists()
+        ):
             self.pred_weights_edit.setText(str(self.project.latest_pose_weights))
 
     def _get_pred_weights_or_prompt(self) -> Optional[Path]:
@@ -4341,9 +4410,14 @@ class MainWindow(QMainWindow):
             p = Path(txt).expanduser().resolve()
             if p.exists() and p.is_file() and p.suffix == ".pt":
                 return p
-            QMessageBox.warning(self, "Invalid weights", "Prediction weights not found.")
+            QMessageBox.warning(
+                self, "Invalid weights", "Prediction weights not found."
+            )
             return None
-        return self._get_latest_weights_or_prompt()
+        weights = self._get_latest_weights_or_prompt()
+        if weights:
+            self.pred_weights_edit.setText(str(weights))
+        return weights
 
     def _get_pred_weights_silent(self) -> Optional[Path]:
         txt = self.pred_weights_edit.text().strip()
@@ -4384,7 +4458,9 @@ class MainWindow(QMainWindow):
         self.show_predictions = bool(checked)
         self._rebuild_canvas()
 
-    def _get_pred_for_frame(self, weights: Path, img_path: Path) -> Optional[List[Tuple[float, float, float]]]:
+    def _get_pred_for_frame(
+        self, weights: Path, img_path: Path
+    ) -> Optional[List[Tuple[float, float, float]]]:
         return self.infer.get_cached_pred(weights, img_path)
 
     def _current_frame_has_labels(self) -> bool:
@@ -4408,9 +4484,7 @@ class MainWindow(QMainWindow):
             if p.exists() and p.is_file() and p.suffix == ".pt":
                 return p
 
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select pose weights", "", "*.pt"
-        )
+        path, _ = QFileDialog.getOpenFileName(self, "Select pose weights", "", "*.pt")
         if not path:
             return None
         weights = Path(path).resolve()
@@ -4434,7 +4508,7 @@ class MainWindow(QMainWindow):
             self._on_pred_finished(cached)
             return
 
-        self.statusBar().showMessage("Predicting keypoints…")
+        self.statusBar().showMessage(f"Predicting keypoints… ({weights.name})")
         self.btn_predict.setEnabled(False)
 
         self._pred_thread = QThread()
@@ -4473,7 +4547,9 @@ class MainWindow(QMainWindow):
             self.rb_frame.setChecked(True)
         weights = getattr(self, "_last_pred_weights", None)
         if weights:
-            self.infer.merge_cache(weights, {str(self.image_paths[self.current_index]): preds})
+            self.infer.merge_cache(
+                weights, {str(self.image_paths[self.current_index]): preds}
+            )
         self._rebuild_canvas()
 
     def _on_pred_failed(self, msg: str):
@@ -4539,7 +4615,9 @@ class MainWindow(QMainWindow):
         weights = self._get_pred_weights_or_prompt()
         if not weights:
             return
-        preds = self.infer.get_cached_pred(weights, self.image_paths[self.current_index])
+        preds = self.infer.get_cached_pred(
+            weights, self.image_paths[self.current_index]
+        )
         if not preds:
             QMessageBox.information(
                 self,
@@ -4581,7 +4659,9 @@ class MainWindow(QMainWindow):
         if scope == "Labeling set":
             indices = sorted(self.labeling_frames)
         elif scope == "Unlabeled only":
-            indices = [i for i, p in enumerate(self.image_paths) if not self._is_labeled(p)]
+            indices = [
+                i for i, p in enumerate(self.image_paths) if not self._is_labeled(p)
+            ]
         else:
             indices = list(range(len(self.image_paths)))
 
@@ -4590,7 +4670,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No frames", "No frames in selected scope.")
             return
 
-        self.statusBar().showMessage("Predicting dataset…")
+        self.statusBar().showMessage(f"Predicting dataset… ({weights.name})")
         self.btn_predict_bulk.setEnabled(False)
 
         self._last_pred_weights = weights
@@ -4622,7 +4702,9 @@ class MainWindow(QMainWindow):
             self.status_progress.setValue(min(100, max(0, pct)))
             self.statusBar().showMessage(f"Predicting dataset… {done}/{total}")
 
-    def _on_bulk_pred_finished(self, preds: Dict[str, List[Tuple[float, float, float]]]):
+    def _on_bulk_pred_finished(
+        self, preds: Dict[str, List[Tuple[float, float, float]]]
+    ):
         self.btn_predict_bulk.setEnabled(True)
         self.status_progress.setValue(0)
         self.status_progress.setVisible(False)
@@ -4648,9 +4730,11 @@ class MainWindow(QMainWindow):
             self,
             self.project,
             self.image_paths,
-            weights_path=str(self.project.latest_pose_weights)
-            if self.project.latest_pose_weights
-            else None,
+            weights_path=(
+                str(self.project.latest_pose_weights)
+                if self.project.latest_pose_weights
+                else None
+            ),
             add_frames_callback=lambda idxs, reason="Evaluation": self._add_indices_to_labeling(
                 idxs, reason
             ),
@@ -4773,9 +4857,7 @@ def find_project(images_dir: Path, out_root: Optional[Path]) -> Optional[Path]:
     return None
 
 
-def _repair_project_paths(
-    proj: Project, project_path: Path, images_dir: Path
-) -> bool:
+def _repair_project_paths(proj: Project, project_path: Path, images_dir: Path) -> bool:
     """Repair project paths when moved across machines. Returns True if changed."""
     changed = False
     if proj.images_dir.resolve() != images_dir.resolve():
