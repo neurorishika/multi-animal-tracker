@@ -4,6 +4,7 @@ Dialogs for PoseKit Labeler extensions.
 """
 
 import csv
+import time
 import json
 import math
 from datetime import datetime
@@ -142,13 +143,16 @@ def _make_loss_plot_image(
     painter = QPainter(img)
     painter.setRenderHint(QPainter.Antialiasing, True)
 
-    pad = 24
-    w = width - 2 * pad
-    h = height - 2 * pad
+    pad_left = 40
+    pad_right = 12
+    pad_top = 18
+    pad_bottom = 32
+    w = width - pad_left - pad_right
+    h = height - pad_top - pad_bottom
     painter.setPen(QPen(QColor(80, 80, 80), 1))
-    painter.drawRect(pad, pad, w, h)
+    painter.drawRect(pad_left, pad_top, w, h)
 
-    all_vals = [v for v in train_vals + val_vals if v is not None]
+    all_vals = [v for v in train_vals + val_vals if v is not None and np.isfinite(v)]
     if not all_vals:
         painter.end()
         return img
@@ -165,16 +169,48 @@ def _make_loss_plot_image(
         painter.setPen(pen)
         n = len(vals)
         for i in range(1, n):
-            if vals[i - 1] is None or vals[i] is None:
+            if (
+                vals[i - 1] is None
+                or vals[i] is None
+                or not np.isfinite(vals[i - 1])
+                or not np.isfinite(vals[i])
+            ):
                 continue
-            x0 = pad + (w * (i - 1) / (n - 1))
-            x1 = pad + (w * i / (n - 1))
-            y0 = pad + h * (1.0 - (vals[i - 1] - vmin) / (vmax - vmin))
-            y1 = pad + h * (1.0 - (vals[i] - vmin) / (vmax - vmin))
+            x0 = pad_left + (w * (i - 1) / (n - 1))
+            x1 = pad_left + (w * i / (n - 1))
+            y0 = pad_top + h * (1.0 - (vals[i - 1] - vmin) / (vmax - vmin))
+            y1 = pad_top + h * (1.0 - (vals[i] - vmin) / (vmax - vmin))
             painter.drawLine(int(x0), int(y0), int(x1), int(y1))
 
-    _plot_series(train_vals, QColor(80, 200, 120))
-    _plot_series(val_vals, QColor(255, 140, 80))
+    train_color = QColor(80, 200, 120)
+    val_color = QColor(255, 140, 80)
+    _plot_series(train_vals, train_color)
+    _plot_series(val_vals, val_color)
+
+    # Axis labels
+    painter.setPen(QPen(QColor(200, 200, 200), 1))
+    painter.drawText(
+        pad_left + w / 2 - 16,
+        height - 8,
+        "Epoch",
+    )
+    painter.save()
+    painter.translate(12, pad_top + h / 2 + 16)
+    painter.rotate(-90)
+    painter.drawText(0, 0, "Loss")
+    painter.restore()
+
+    # Legend
+    legend_x = pad_left + 6
+    legend_y = pad_top + 6
+    painter.setPen(QPen(train_color, 2))
+    painter.drawLine(legend_x, legend_y + 4, legend_x + 16, legend_y + 4)
+    painter.setPen(QPen(QColor(220, 220, 220), 1))
+    painter.drawText(legend_x + 22, legend_y + 8, "Train")
+    painter.setPen(QPen(val_color, 2))
+    painter.drawLine(legend_x + 70, legend_y + 4, legend_x + 86, legend_y + 4)
+    painter.setPen(QPen(QColor(220, 220, 220), 1))
+    painter.drawText(legend_x + 92, legend_y + 8, "Val")
 
     painter.end()
     return img
@@ -2578,9 +2614,8 @@ class TrainingRunnerDialog(QDialog):
         self._worker = None
         self._last_run_dir = None
         self._last_weights = None
-        self._loss_timer = QTimer(self)
-        self._loss_timer.setInterval(1000)
-        self._loss_timer.timeout.connect(self._update_loss_plot)
+        self._train_start_ts = None
+        self._loss_source_path = None
         self._loss_timer = QTimer(self)
         self._loss_timer.setInterval(1000)
         self._loss_timer.timeout.connect(self._update_loss_plot)
@@ -2789,6 +2824,10 @@ class TrainingRunnerDialog(QDialog):
         self.seed_spin.setValue(42)
         data_layout.addRow("Random seed:", self.seed_spin)
 
+        self.cb_ignore_occluded = QCheckBox("Ignore occluded keypoints in training")
+        self.cb_ignore_occluded.setChecked(True)
+        data_layout.addRow("", self.cb_ignore_occluded)
+
         self._aux_datasets: List[Dict[str, object]] = []
         self._aux_items: List[Tuple[Path, Path]] = []
         self._last_aux_path = ""
@@ -2985,6 +3024,9 @@ class TrainingRunnerDialog(QDialog):
             float(settings.get("train_split", self.train_split_spin.value()))
         )
         self.seed_spin.setValue(int(settings.get("seed", self.seed_spin.value())))
+        self.cb_ignore_occluded.setChecked(
+            bool(settings.get("ignore_occluded", self.cb_ignore_occluded.isChecked()))
+        )
         self._last_aux_path = settings.get("last_aux_path", self._last_aux_path)
 
     def _apply_latest_weights_default(self):
@@ -3018,6 +3060,7 @@ class TrainingRunnerDialog(QDialog):
                 "mixup": float(self.mixup_spin.value()),
                 "train_split": float(self.train_split_spin.value()),
                 "seed": int(self.seed_spin.value()),
+                "ignore_occluded": bool(self.cb_ignore_occluded.isChecked()),
                 "last_aux_path": self._last_aux_path,
             },
         )
@@ -3077,7 +3120,7 @@ class TrainingRunnerDialog(QDialog):
             )
             return
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         run_dir = self.project.out_root / "runs" / "yolo_pose" / timestamp
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3097,6 +3140,7 @@ class TrainingRunnerDialog(QDialog):
                     if "images" in d and "labels_dir" in d
                 ],
                 extra_items=list(self._aux_items),
+                ignore_occluded=self.cb_ignore_occluded.isChecked(),
             )
         except Exception as e:
             QMessageBox.critical(self, "Dataset error", str(e))
@@ -3111,6 +3155,7 @@ class TrainingRunnerDialog(QDialog):
             "imgsz": int(self.imgsz_spin.value()),
             "device": self.device_combo.currentText(),
             "augment": bool(self.cb_augment.isChecked()),
+            "ignore_occluded": bool(self.cb_ignore_occluded.isChecked()),
             "hsv_h": float(self.hsv_h_spin.value()),
             "hsv_s": float(self.hsv_s_spin.value()),
             "hsv_v": float(self.hsv_v_spin.value()),
@@ -3135,9 +3180,13 @@ class TrainingRunnerDialog(QDialog):
         )
 
         self._last_run_dir = run_dir
+        self._train_start_ts = time.time()
+        self._loss_source_path = None
         self.lbl_run_dir.setText(f"Run dir: {run_dir}")
         self.log_view.clear()
         self.progress.setValue(0)
+        self.lbl_loss_plot.clear()
+        self.lbl_loss_plot.setText("Waiting for loss...")
         self._update_loss_plot()
         self._loss_timer.start()
 
@@ -3208,6 +3257,21 @@ class TrainingRunnerDialog(QDialog):
         self._last_weights = weights if weights else None
         if self._last_run_dir:
             run_dir = Path(self._last_run_dir)
+            try:
+                candidates = list(run_dir.parent.rglob("results.csv"))
+                if self._train_start_ts:
+                    candidates = [
+                        p
+                        for p in candidates
+                        if p.exists() and p.stat().st_mtime >= (self._train_start_ts - 2)
+                    ]
+                if candidates:
+                    newest = max(candidates, key=lambda p: p.stat().st_mtime)
+                    run_dir = newest.parent
+                    self._last_run_dir = run_dir
+                    self.lbl_run_dir.setText(f"Run dir: {run_dir}")
+            except Exception:
+                pass
             best = run_dir / "weights" / "best.pt"
             last = run_dir / "weights" / "last.pt"
             if best.exists():
@@ -3279,9 +3343,33 @@ class TrainingRunnerDialog(QDialog):
     def _update_loss_plot(self):
         if not self._last_run_dir:
             return
-        results_path = Path(self._last_run_dir) / "results.csv"
+        run_dir = Path(self._last_run_dir)
+        results_path = run_dir / "results.csv"
+        if not results_path.exists():
+            # Ultralytics sometimes writes into a sibling or nested run folder.
+            candidates = list(run_dir.rglob("results.csv"))
+            if not candidates:
+                candidates = list(run_dir.parent.rglob("results.csv"))
+            if self._train_start_ts:
+                candidates = [
+                    p
+                    for p in candidates
+                    if p.exists() and p.stat().st_mtime >= (self._train_start_ts - 2)
+                ]
+            if candidates:
+                results_path = max(candidates, key=lambda p: p.stat().st_mtime)
         if not results_path.exists():
             return
+        if self._train_start_ts:
+            try:
+                if results_path.stat().st_mtime < (self._train_start_ts - 2):
+                    return
+            except Exception:
+                return
+        expected = run_dir / "results.csv"
+        if results_path != expected and results_path != self._loss_source_path:
+            self._loss_source_path = results_path
+            self.log_view.appendPlainText(f"[loss] using {results_path}")
         try:
             rows = list(
                 csv.reader(
@@ -3295,6 +3383,8 @@ class TrainingRunnerDialog(QDialog):
                 i for i, h in enumerate(header) if "train/" in h and "loss" in h
             ]
             val_cols = [i for i, h in enumerate(header) if "val/" in h and "loss" in h]
+            if not train_cols and not val_cols:
+                return
             train_vals = []
             val_vals = []
             for row in rows[1:]:
@@ -3306,12 +3396,22 @@ class TrainingRunnerDialog(QDialog):
                 vcount = 0
                 for i in train_cols:
                     if i < len(row) and row[i]:
-                        t += float(row[i])
-                        tcount += 1
+                        try:
+                            val = float(row[i])
+                        except Exception:
+                            val = float("nan")
+                        if np.isfinite(val):
+                            t += val
+                            tcount += 1
                 for i in val_cols:
                     if i < len(row) and row[i]:
-                        v += float(row[i])
-                        vcount += 1
+                        try:
+                            val = float(row[i])
+                        except Exception:
+                            val = float("nan")
+                        if np.isfinite(val):
+                            v += val
+                            vcount += 1
                 train_vals.append(t if tcount else None)
                 val_vals.append(v if vcount else None)
             img = _make_loss_plot_image(train_vals, val_vals)
@@ -3499,6 +3599,13 @@ class EvaluationWorker(QObject):
                     if not pred_list:
                         self.progress.emit(idx + 1, total)
                         continue
+                    if len(pred_list) != num_kpts:
+                        self.failed.emit(
+                            "Prediction keypoint count mismatch. "
+                            f"Model has {len(pred_list)} keypoints, project expects {num_kpts}. "
+                            "Please select a matching model."
+                        )
+                        return
 
                     pred_xy = np.array([[p[0], p[1]] for p in pred_list], dtype=np.float32)
                     pred_conf = np.array([p[2] for p in pred_list], dtype=np.float32)
@@ -4069,6 +4176,13 @@ class ActiveLearningWorker(QObject):
             if not pred:
                 preds[str(p)] = (None, None)
             else:
+                if len(pred) != self.num_kpts:
+                    self.failed.emit(
+                        "Prediction keypoint count mismatch. "
+                        f"Model has {len(pred)} keypoints, project expects {self.num_kpts}. "
+                        "Please select a matching model."
+                    )
+                    return None
                 pred_xy = np.array([[x, y] for x, y, _ in pred], dtype=np.float32)
                 pred_conf = np.array([c for _, _, c in pred], dtype=np.float32)
                 preds[str(p)] = (pred_xy, pred_conf)

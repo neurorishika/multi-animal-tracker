@@ -315,6 +315,7 @@ class PosePredictWorker(QObject):
         self.image_path = Path(image_path)
         self.out_root = Path(out_root)
         self.keypoint_names = list(keypoint_names)
+        self.num_kpts = len(self.keypoint_names)
         self.device = device
         self.imgsz = int(imgsz)
         self.conf = float(conf)
@@ -382,6 +383,7 @@ class PosePredictWorker(QObject):
                 conf=self.conf,
                 batch=1,
                 progress_cb=None,
+                cancel_cb=None,
             )
             if preds_map is None:
                 self.failed.emit(err or "Prediction failed.")
@@ -438,6 +440,7 @@ class BulkPosePredictWorker(QObject):
                 conf=self.conf,
                 batch=self.batch,
                 progress_cb=lambda d, t: self.progress.emit(d, t),
+                cancel_cb=lambda: self._cancel,
             )
             if preds is None:
                 self.failed.emit(err or "Prediction failed.")
@@ -4291,6 +4294,8 @@ class MainWindow(QMainWindow):
         for x, y, c in preds:
             if not np.isfinite(c):
                 c = 0.0
+            if not np.isfinite(x) or not np.isfinite(y):
+                x, y, c = 0.0, 0.0, 0.0
             if c >= conf_thr:
                 kpts.append(Keypoint(float(x), float(y), 2))
             else:

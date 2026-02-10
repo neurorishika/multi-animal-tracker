@@ -895,6 +895,7 @@ def build_yolo_pose_dataset(
     extra_items: Optional[List[Tuple[Path, Path]]] = None,
     train_items: Optional[List[Tuple[Path, Path]]] = None,
     val_items: Optional[List[Tuple[Path, Path]]] = None,
+    ignore_occluded: bool = True,
 ) -> Dict[str, object]:
     """
     Build a YOLO Pose dataset with copied images/labels under output_dir.
@@ -956,13 +957,40 @@ def build_yolo_pose_dataset(
     used_stems = set()
     manifest_rows = []
 
+    def _rewrite_label_for_training(src: Path, dst: Path):
+        try:
+            text = src.read_text(encoding="utf-8")
+        except Exception:
+            shutil.copy2(src, dst)
+            return
+        out_lines = []
+        for line in text.splitlines():
+            parts = line.strip().split()
+            if len(parts) < 5:
+                continue
+            # Replace occluded (v=1) with missing (v=0) for training
+            for i in range(5, len(parts), 3):
+                if i + 2 >= len(parts):
+                    break
+                try:
+                    v = int(float(parts[i + 2]))
+                except Exception:
+                    v = None
+                if v == 1:
+                    parts[i + 2] = "0"
+            out_lines.append(" ".join(parts))
+        dst.write_text(("\n".join(out_lines) + ("\n" if out_lines else "")), encoding="utf-8")
+
     def _copy_split(split_items: List[Tuple[Path, Path]], img_dir: Path, lbl_dir: Path):
         for img_path, label_path in split_items:
             stem = _unique_stem(img_path.stem, used_stems, str(img_path))
             img_dst = img_dir / f"{stem}{img_path.suffix.lower()}"
             lbl_dst = lbl_dir / f"{stem}.txt"
             shutil.copy2(img_path, img_dst)
-            shutil.copy2(label_path, lbl_dst)
+            if ignore_occluded:
+                _rewrite_label_for_training(label_path, lbl_dst)
+            else:
+                shutil.copy2(label_path, lbl_dst)
             manifest_rows.append(
                 {
                     "src_image": str(img_path),

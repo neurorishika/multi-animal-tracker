@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -125,6 +126,7 @@ class PoseInferenceService:
         conf: float,
         batch: int,
         progress_cb=None,
+        cancel_cb=None,
     ) -> Tuple[Optional[Dict[str, List[Tuple[float, float, float]]]], str]:
         if not weights_path.exists() or not weights_path.is_file():
             return None, f"Weights not found: {weights_path}"
@@ -132,10 +134,12 @@ class PoseInferenceService:
             return None, f"Invalid weights file: {weights_path}"
         if not image_paths:
             return {}, ""
+        if cancel_cb and cancel_cb():
+            return None, "Canceled."
 
         tmp_dir = self.out_root / ".posekit" / "tmp"
         tmp_dir.mkdir(parents=True, exist_ok=True)
-        out_json = tmp_dir / f"pose_pred_{os.getpid()}.json"
+        out_json = tmp_dir / f"pose_pred_{os.getpid()}_{uuid.uuid4().hex}.json"
 
         ok, preds, err = _run_pose_predict_subprocess(
             weights_path=weights_path,
@@ -146,6 +150,7 @@ class PoseInferenceService:
             conf=conf,
             batch=batch,
             progress_cb=progress_cb,
+            cancel_cb=cancel_cb,
         )
         if not ok:
             return None, err
@@ -163,6 +168,7 @@ def _run_pose_predict_subprocess(
     conf: float = 0.25,
     batch: int = 16,
     progress_cb=None,
+    cancel_cb=None,
 ) -> Tuple[bool, Dict[str, List[Tuple[float, float, float]]], str]:
     req = {
         "weights": str(weights_path),
@@ -173,7 +179,10 @@ def _run_pose_predict_subprocess(
         "batch": int(batch),
         "out_json": str(out_json),
     }
-    req_path = Path(tempfile.gettempdir()) / f"pose_pred_req_{os.getpid()}.json"
+    req_path = (
+        Path(tempfile.gettempdir())
+        / f"pose_pred_req_{os.getpid()}_{uuid.uuid4().hex}.json"
+    )
     req_path.write_text(json.dumps(req), encoding="utf-8")
 
     code = (
@@ -225,9 +234,18 @@ def _run_pose_predict_subprocess(
         "      b=max(1,b//2)\n"
         "      continue\n"
         "    raise\n"
-        "  for r in results:\n"
+        "  for ri, r in enumerate(results):\n"
+        "    path = None\n"
+        "    if r is not None and getattr(r, 'path', None):\n"
+        "      path = r.path\n"
+        "    elif ri < len(chunk):\n"
+        "      path = chunk[ri]\n"
+        "    if path is None:\n"
+        "      continue\n"
         "    if r is None or r.keypoints is None:\n"
-        "      preds[str(Path(r.path))]=[]\n"
+        "      preds[str(Path(path))]=[]\n"
+        "      done_total+=1\n"
+        "      print(f'PROGRESS {done_total} {total}', flush=True)\n"
         "      continue\n"
         "    k=r.keypoints\n"
         "    try:\n"
@@ -237,14 +255,18 @@ def _run_pose_predict_subprocess(
         "      if conf is not None:\n"
         "        conf=conf.cpu().numpy() if hasattr(conf,'cpu') else np.array(conf)\n"
         "    except Exception:\n"
-        "      preds[str(Path(r.path))]=[]\n"
+        "      preds[str(Path(path))]=[]\n"
+        "      done_total+=1\n"
+        "      print(f'PROGRESS {done_total} {total}', flush=True)\n"
         "      continue\n"
         "    if xy.ndim==2:\n"
         "      xy=xy[None,:,:]\n"
         "    if conf is not None and conf.ndim==1:\n"
         "      conf=conf[None,:]\n"
         "    if xy.size==0:\n"
-        "      preds[str(Path(r.path))]=[]\n"
+        "      preds[str(Path(path))]=[]\n"
+        "      done_total+=1\n"
+        "      print(f'PROGRESS {done_total} {total}', flush=True)\n"
         "      continue\n"
         "    if conf is not None:\n"
         "      scores=np.nanmean(conf,axis=1)\n"
@@ -264,7 +286,7 @@ def _run_pose_predict_subprocess(
         "    for j in range(pred_xy.shape[0]):\n"
         "      c=float(pred_conf[j]) if j < len(pred_conf) else 0.0\n"
         "      pts.append((float(pred_xy[j][0]),float(pred_xy[j][1]),c))\n"
-        "    preds[str(Path(r.path))]=pts\n"
+        "    preds[str(Path(path))]=pts\n"
         "    done_total+=1\n"
         "    print(f'PROGRESS {done_total} {total}', flush=True)\n"
         "  i+=len(chunk)\n"
@@ -282,6 +304,12 @@ def _run_pose_predict_subprocess(
     assert proc.stdout is not None
     last_msg = ""
     for line in proc.stdout:
+        if cancel_cb and cancel_cb():
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            return False, {}, "Canceled."
         line = line.strip()
         if line.startswith("PROGRESS "):
             try:
