@@ -4463,7 +4463,13 @@ class ActiveLearningDialog(QDialog):
         self.add_frames_callback = add_frames_callback
         self._thread = None
         self._worker = None
-        self._path_to_index = {str(p): i for i, p in enumerate(image_paths)}
+        self._path_to_index = {}
+        for i, p in enumerate(image_paths):
+            try:
+                self._path_to_index[str(p)] = i
+                self._path_to_index[str(p.resolve())] = i
+            except Exception:
+                self._path_to_index[str(p)] = i
         self._scores = []
         self.infer = _make_pose_infer(
             self.project.out_root, self.project.keypoint_names
@@ -4801,9 +4807,13 @@ class ActiveLearningDialog(QDialog):
         self._scores = scores
         n = min(self.n_spin.value(), len(scores))
         for path, score in scores[:n]:
+            try:
+                resolved = str(Path(path).resolve())
+            except Exception:
+                resolved = str(path)
             name = Path(path).name
             item = QListWidgetItem(f"{name} | score={_format_float(score)}")
-            item.setData(Qt.UserRole, path)
+            item.setData(Qt.UserRole, resolved)
             self.results_list.addItem(item)
         self.btn_add.setEnabled(True if n > 0 else False)
         self._append_log("Suggestions ready.")
@@ -4821,6 +4831,13 @@ class ActiveLearningDialog(QDialog):
             path = item.data(Qt.UserRole)
             if path in self._path_to_index:
                 indices.append(self._path_to_index[path])
+                continue
+            try:
+                resolved = str(Path(path).resolve())
+            except Exception:
+                resolved = None
+            if resolved and resolved in self._path_to_index:
+                indices.append(self._path_to_index[resolved])
         if not indices:
             return
         if self.add_frames_callback:

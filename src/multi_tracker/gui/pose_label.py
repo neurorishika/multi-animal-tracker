@@ -1132,10 +1132,10 @@ class PoseCanvas(QGraphicsView):
         self._click_vis = v
 
     def set_kpt_radius(self, r: float):
-        self._kpt_radius = max(1.0, float(r))
+        self._kpt_radius = max(0.5, float(r))
 
     def set_label_font_size(self, size: int):
-        self._label_font_size = max(6, int(size))
+        self._label_font_size = max(4, int(size))
 
     def set_kpt_opacity(self, opacity: float):
         self._kpt_opacity = max(0.0, min(1.0, float(opacity)))
@@ -1301,7 +1301,7 @@ class PoseCanvas(QGraphicsView):
                     conf = pred_confs[i]
                     lab = QGraphicsTextItem(f"{conf:.2f}")
                     lab.setDefaultTextColor(QColor(0, 220, 255, 200))
-                    lab.setFont(QFont("Arial", max(6, int(self._label_font_size * 0.8))))
+                    lab.setFont(QFont("Arial", max(4, int(self._label_font_size * 0.8))))
                     lab.setPos(kp.x + r + 2, kp.y - r - 2)
                     lab.setZValue(2)
                     lab.setAcceptedMouseButtons(Qt.NoButton)
@@ -2211,6 +2211,7 @@ class MainWindow(QMainWindow):
         self._bulk_pred_thread: Optional[QThread] = None
         self._bulk_pred_worker: Optional[BulkPosePredictWorker] = None
         self.show_predictions = True
+        self.show_pred_conf = False
         self.infer = PoseInferenceService(
             self.project.out_root, self.project.keypoint_names
         )
@@ -2392,6 +2393,9 @@ class MainWindow(QMainWindow):
         self.cb_show_preds = QCheckBox("Show predictions")
         self.cb_show_preds.setChecked(True)
         right_layout.addWidget(self.cb_show_preds)
+        self.cb_show_pred_conf = QCheckBox("Show pred confidence")
+        self.cb_show_pred_conf.setChecked(False)
+        right_layout.addWidget(self.cb_show_pred_conf)
 
         autosave_row = QHBoxLayout()
         autosave_row.addWidget(QLabel("Autosave delay (sec):"))
@@ -2424,11 +2428,11 @@ class MainWindow(QMainWindow):
         right_layout.addSpacing(8)
         size_row = QHBoxLayout()
         self.sp_kpt_size = QDoubleSpinBox()
-        self.sp_kpt_size.setRange(2.0, 20.0)
+        self.sp_kpt_size.setRange(0.5, 20.0)
         self.sp_kpt_size.setSingleStep(0.5)
         self.sp_kpt_size.setValue(float(self.project.kpt_radius))
         self.sp_label_size = QSpinBox()
-        self.sp_label_size.setRange(6, 20)
+        self.sp_label_size.setRange(4, 20)
         self.sp_label_size.setValue(int(self.project.label_font_size))
         size_row.addWidget(QLabel("Point"))
         size_row.addWidget(self.sp_kpt_size)
@@ -2593,6 +2597,7 @@ class MainWindow(QMainWindow):
         self.btn_predict.clicked.connect(self.predict_current_frame)
         self.btn_predict_bulk.clicked.connect(self.predict_dataset)
         self.cb_show_preds.toggled.connect(self._toggle_show_predictions)
+        self.cb_show_pred_conf.toggled.connect(self._toggle_show_pred_conf)
         self.btn_apply_preds.clicked.connect(self.apply_predictions_current)
         self.btn_pred_weights.clicked.connect(self._browse_pred_weights)
         self.btn_pred_weights_latest.clicked.connect(self._use_latest_pred_weights)
@@ -2722,6 +2727,8 @@ class MainWindow(QMainWindow):
             "autosave_delay_ms": int(self.autosave_delay_ms),
             "pred_conf": float(self.sp_pred_conf.value()),
             "pred_weights": self.pred_weights_edit.text().strip(),
+            "show_predictions": bool(self.cb_show_preds.isChecked()),
+            "show_pred_conf": bool(self.cb_show_pred_conf.isChecked()),
         }
         save_ui_settings(settings)
 
@@ -2753,6 +2760,12 @@ class MainWindow(QMainWindow):
                 self.sp_pred_conf.setValue(float(settings["pred_conf"]))
             if "pred_weights" in settings:
                 self.pred_weights_edit.setText(str(settings["pred_weights"]))
+            if "show_predictions" in settings:
+                self.cb_show_preds.setChecked(bool(settings["show_predictions"]))
+                self.show_predictions = bool(self.cb_show_preds.isChecked())
+            if "show_pred_conf" in settings:
+                self.cb_show_pred_conf.setChecked(bool(settings["show_pred_conf"]))
+                self.show_pred_conf = bool(self.cb_show_pred_conf.isChecked())
             if not self.pred_weights_edit.text().strip():
                 if (
                     self.project.latest_pose_weights
@@ -2841,6 +2854,11 @@ class MainWindow(QMainWindow):
         self.act_enhance_settings = QAction("Enhancement Settings…", self)
         self.act_enhance_settings.triggered.connect(self._open_enhancement_settings)
 
+        self.act_show_pred_conf = QAction("Show Prediction Confidence", self)
+        self.act_show_pred_conf.setCheckable(True)
+        self.act_show_pred_conf.setChecked(bool(self.show_pred_conf))
+        self.act_show_pred_conf.triggered.connect(self._toggle_show_pred_conf)
+
         act_train = QAction("Training Runner…", self)
         act_train.triggered.connect(self.open_training_runner)
 
@@ -2876,6 +2894,8 @@ class MainWindow(QMainWindow):
         m_tools.addSeparator()
         m_tools.addAction(self.act_enhance)
         m_tools.addAction(self.act_enhance_settings)
+        m_tools.addSeparator()
+        m_tools.addAction(self.act_show_pred_conf)
 
         m_model.addAction(act_train)
         m_model.addAction(act_eval)
@@ -4432,30 +4452,54 @@ class MainWindow(QMainWindow):
                 return p
         return None
 
-    def _get_pred_overlay_for_current(self) -> Optional[List[Keypoint]]:
+    def _get_pred_overlay_for_current(
+        self,
+    ) -> Tuple[Optional[List[Keypoint]], Optional[List[float]]]:
         if not self.show_predictions:
-            return None
+            return None, None
         weights = self._get_pred_weights_silent()
         if not weights:
-            return None
+            return None, None
         preds = self._get_pred_for_frame(weights, self.image_paths[self.current_index])
         if not preds:
-            return None
-        return self._preds_to_keypoints(preds, conf_thr=0.0)
+            return None, None
+        pred_kpts = self._preds_to_keypoints(preds, conf_thr=0.0)
+        pred_confs = []
+        for p in preds:
+            if len(p) >= 3 and np.isfinite(p[2]):
+                pred_confs.append(float(p[2]))
+            else:
+                pred_confs.append(0.0)
+        return pred_kpts, pred_confs
 
     def _rebuild_canvas(self):
         if self._ann is None:
             return
-        pred_kpts = self._get_pred_overlay_for_current()
+        pred_kpts, pred_confs = self._get_pred_overlay_for_current()
         self.canvas.rebuild_overlays(
             self._ann.kpts,
             self.project.keypoint_names,
             self.project.skeleton_edges,
             pred_kpts=pred_kpts,
+            pred_confs=pred_confs,
+            show_pred_conf=self.show_pred_conf,
         )
 
     def _toggle_show_predictions(self, checked: bool):
         self.show_predictions = bool(checked)
+        self._rebuild_canvas()
+
+    def _toggle_show_pred_conf(self, checked: bool):
+        checked = bool(checked)
+        self.show_pred_conf = checked
+        if hasattr(self, "cb_show_pred_conf") and self.cb_show_pred_conf.isChecked() != checked:
+            self.cb_show_pred_conf.blockSignals(True)
+            self.cb_show_pred_conf.setChecked(checked)
+            self.cb_show_pred_conf.blockSignals(False)
+        if hasattr(self, "act_show_pred_conf") and self.act_show_pred_conf.isChecked() != checked:
+            self.act_show_pred_conf.blockSignals(True)
+            self.act_show_pred_conf.setChecked(checked)
+            self.act_show_pred_conf.blockSignals(False)
         self._rebuild_canvas()
 
     def _get_pred_for_frame(
