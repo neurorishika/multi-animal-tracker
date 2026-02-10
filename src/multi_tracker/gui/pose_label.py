@@ -2331,6 +2331,15 @@ class MainWindow(QMainWindow):
         self.cb_show_preds.setChecked(True)
         right_layout.addWidget(self.cb_show_preds)
 
+        pred_conf_row = QHBoxLayout()
+        pred_conf_row.addWidget(QLabel("Pred conf:"))
+        self.sp_pred_conf = QDoubleSpinBox()
+        self.sp_pred_conf.setRange(0.0, 1.0)
+        self.sp_pred_conf.setSingleStep(0.05)
+        self.sp_pred_conf.setValue(0.25)
+        pred_conf_row.addWidget(self.sp_pred_conf)
+        right_layout.addLayout(pred_conf_row)
+
         autosave_row = QHBoxLayout()
         autosave_row.addWidget(QLabel("Autosave delay (sec):"))
         self.sp_autosave_delay = QDoubleSpinBox()
@@ -2638,6 +2647,7 @@ class MainWindow(QMainWindow):
             "controls_open": bool(self.controls_group.isChecked()),
             "frame_search": self.search_edit.text().strip(),
             "autosave_delay_ms": int(self.autosave_delay_ms),
+            "pred_conf": float(self.sp_pred_conf.value()),
         }
         save_ui_settings(settings)
 
@@ -2665,6 +2675,8 @@ class MainWindow(QMainWindow):
             if "autosave_delay_ms" in settings:
                 self.autosave_delay_ms = int(settings["autosave_delay_ms"])
                 self.sp_autosave_delay.setValue(self.autosave_delay_ms / 1000.0)
+            if "pred_conf" in settings:
+                self.sp_pred_conf.setValue(float(settings["pred_conf"]))
 
     # ----- menus / shortcuts -----
     def _build_actions(self):
@@ -4285,6 +4297,12 @@ class MainWindow(QMainWindow):
                 kpts.append(Keypoint(0.0, 0.0, 0))
         return kpts
 
+    def _pred_conf_default(self) -> float:
+        try:
+            return float(self.sp_pred_conf.value())
+        except Exception:
+            return 0.25
+
     def _get_pred_overlay_for_current(self) -> Optional[List[Keypoint]]:
         if not self.show_predictions:
             return None
@@ -4353,7 +4371,7 @@ class MainWindow(QMainWindow):
         weights = self._get_latest_weights_or_prompt()
         if not weights:
             return
-        self._last_pred_conf = 0.25
+        self._last_pred_conf = self._pred_conf_default()
 
         cached = self._get_pred_for_frame(weights, self.image_paths[self.current_index])
         if cached is not None:
@@ -4527,7 +4545,7 @@ class MainWindow(QMainWindow):
             keypoint_names=self.project.keypoint_names,
             device="auto",
             imgsz=640,
-            conf=0.25,
+            conf=self._pred_conf_default(),
             batch=16,
         )
         self._bulk_pred_worker.moveToThread(self._bulk_pred_thread)

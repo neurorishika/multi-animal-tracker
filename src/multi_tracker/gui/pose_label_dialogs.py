@@ -3133,7 +3133,7 @@ class TrainingRunnerDialog(QDialog):
         self.btn_stop.setEnabled(False)
         weights = info.get("weights") or ""
         self._last_weights = weights if weights else None
-        if not self._last_weights and self._last_run_dir:
+        if self._last_run_dir:
             run_dir = Path(self._last_run_dir)
             best = run_dir / "weights" / "best.pt"
             last = run_dir / "weights" / "last.pt"
@@ -3155,6 +3155,8 @@ class TrainingRunnerDialog(QDialog):
             and Path(self.project.latest_pose_weights).exists()
         ):
             self.btn_open_eval.setEnabled(True)
+        if self._last_weights:
+            self._set_latest_weights(self._last_weights)
         if self._last_run_dir:
             run_dir = Path(self._last_run_dir)
             if list(run_dir.glob("**/events.out.tfevents.*")):
@@ -3184,13 +3186,18 @@ class TrainingRunnerDialog(QDialog):
         self.btn_stop.setEnabled(False)
 
     def _open_eval(self):
-        if not self._last_weights:
+        weights = self._last_weights
+        if not weights and hasattr(self.project, "latest_pose_weights"):
+            if self.project.latest_pose_weights and Path(self.project.latest_pose_weights).exists():
+                weights = str(self.project.latest_pose_weights)
+        if not weights:
+            QMessageBox.information(self, "Missing weights", "No valid weights found to evaluate.")
             return
         dlg = EvaluationDashboardDialog(
             self,
             self.project,
             self.image_paths,
-            weights_path=self._last_weights,
+            weights_path=weights,
         )
         dlg.exec()
 
