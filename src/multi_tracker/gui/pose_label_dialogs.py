@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import os
+import shutil
 import numpy as np
 import yaml
 import gc
@@ -2513,10 +2514,7 @@ class TrainingWorker(QObject):
             self.log.emit(f"Training run dir: {self.run_dir}")
             self.log.emit("Starting training (subprocess)…")
 
-            args = [
-                sys.executable,
-                "-m",
-                "ultralytics.yolo",
+            cli_args = [
                 "task=pose",
                 "mode=train",
                 f"model={self.model_weights}",
@@ -2529,9 +2527,9 @@ class TrainingWorker(QObject):
                 "exist_ok=True",
             ]
             if self.device and self.device != "auto":
-                args.append(f"device={self.device}")
+                cli_args.append(f"device={self.device}")
             if self.augment:
-                args += [
+                cli_args += [
                     "augment=True",
                     f"hsv_h={self.hsv_h}",
                     f"hsv_s={self.hsv_s}",
@@ -2544,13 +2542,64 @@ class TrainingWorker(QObject):
                     f"mixup={self.mixup}",
                 ]
 
-            self._proc = subprocess.Popen(
-                args,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-            )
+            def _run_cmd(cmd):
+                return subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    bufsize=1,
+                )
+
+            yolo_bin = shutil.which("yolo")
+            if yolo_bin:
+                self._proc = _run_cmd([yolo_bin] + cli_args)
+            else:
+                # Fallback: run via python -c using ultralytics.YOLO API
+                py_code = (
+                    "from ultralytics import YOLO\n"
+                    "model=YOLO(r'''{model}''')\n"
+                    "model.train(\n"
+                    "  data=r'''{data}''',\n"
+                    "  epochs={epochs},\n"
+                    "  batch={batch},\n"
+                    "  imgsz={imgsz},\n"
+                    "  project=r'''{project}''',\n"
+                    "  name=r'''{name}''',\n"
+                    "  exist_ok=True,\n"
+                    "  device=r'''{device}''',\n"
+                    "  augment={augment},\n"
+                    "  hsv_h={hsv_h},\n"
+                    "  hsv_s={hsv_s},\n"
+                    "  hsv_v={hsv_v},\n"
+                    "  degrees={degrees},\n"
+                    "  translate={translate},\n"
+                    "  scale={scale},\n"
+                    "  fliplr={fliplr},\n"
+                    "  mosaic={mosaic},\n"
+                    "  mixup={mixup},\n"
+                    ")\n"
+                ).format(
+                    model=self.model_weights,
+                    data=str(self.dataset_yaml),
+                    epochs=self.epochs,
+                    batch=self.batch,
+                    imgsz=self.imgsz,
+                    project=str(self.run_dir.parent),
+                    name=self.run_dir.name,
+                    device=self.device if self.device else "auto",
+                    augment=bool(self.augment),
+                    hsv_h=self.hsv_h,
+                    hsv_s=self.hsv_s,
+                    hsv_v=self.hsv_v,
+                    degrees=self.degrees,
+                    translate=self.translate,
+                    scale=self.scale,
+                    fliplr=self.fliplr,
+                    mosaic=self.mosaic,
+                    mixup=self.mixup,
+                )
+                self._proc = _run_cmd([sys.executable, "-c", py_code])
             assert self._proc.stdout is not None
             for line in self._proc.stdout:
                 if self._cancel:
