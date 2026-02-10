@@ -4277,6 +4277,8 @@ class MainWindow(QMainWindow):
     def _preds_to_keypoints(self, preds: List[Tuple[float, float, float]], conf_thr: float = 0.25) -> List[Keypoint]:
         kpts = []
         for x, y, c in preds:
+            if not np.isfinite(c):
+                c = 0.0
             if c >= conf_thr:
                 kpts.append(Keypoint(float(x), float(y), 2))
             else:

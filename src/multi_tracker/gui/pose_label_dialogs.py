@@ -3149,6 +3149,12 @@ class TrainingRunnerDialog(QDialog):
             self._append_log(f"Weights: {self._last_weights}")
             self.btn_open_eval.setEnabled(True)
             self._set_latest_weights(self._last_weights)
+        elif (
+            hasattr(self.project, "latest_pose_weights")
+            and self.project.latest_pose_weights
+            and Path(self.project.latest_pose_weights).exists()
+        ):
+            self.btn_open_eval.setEnabled(True)
         if self._last_run_dir:
             run_dir = Path(self._last_run_dir)
             if list(run_dir.glob("**/events.out.tfevents.*")):
@@ -3597,13 +3603,6 @@ class EvaluationDashboardDialog(QDialog):
         self.cb_use_cache.setChecked(True)
         cfg_layout.addRow("", self.cb_use_cache)
 
-        self.val_list_edit = QLineEdit("")
-        self.btn_val_browse = QPushButton("Browse…")
-        val_row = QHBoxLayout()
-        val_row.addWidget(self.val_list_edit, 1)
-        val_row.addWidget(self.btn_val_browse)
-        cfg_layout.addRow("Val list (optional):", val_row)
-
         self.out_dir_edit = QLineEdit("")
         self.btn_out_browse = QPushButton("Browse…")
         out_row = QHBoxLayout()
@@ -3647,14 +3646,8 @@ class EvaluationDashboardDialog(QDialog):
         results_layout.addWidget(QLabel("Worst frames"))
         results_layout.addWidget(self.worst_list, 1)
 
-        worst_btns = QHBoxLayout()
-        self.btn_add_selected = QPushButton("Add Selected to Labeling")
-        self.btn_add_top = QPushButton("Add Top 50 to Labeling")
-        self.btn_add_selected.setEnabled(False)
-        self.btn_add_top.setEnabled(False)
-        worst_btns.addWidget(self.btn_add_selected)
-        worst_btns.addWidget(self.btn_add_top)
-        results_layout.addLayout(worst_btns)
+        self.btn_add_selected = None
+        self.btn_add_top = None
 
         content_layout.addWidget(results_group, 2)
 
@@ -3669,12 +3662,9 @@ class EvaluationDashboardDialog(QDialog):
 
         # Wiring
         self.btn_weights_browse.clicked.connect(self._browse_weights)
-        self.btn_val_browse.clicked.connect(self._browse_val)
         self.btn_out_browse.clicked.connect(self._browse_out)
         self.btn_run.clicked.connect(self._run_eval)
         self.btn_close.clicked.connect(self.reject)
-        self.btn_add_selected.clicked.connect(self._add_selected)
-        self.btn_add_top.clicked.connect(self._add_top)
 
         self._update_default_out_dir()
         self._apply_settings()
@@ -3691,7 +3681,6 @@ class EvaluationDashboardDialog(QDialog):
         self.conf_spin.setValue(float(settings.get("conf", self.conf_spin.value())))
         self.pck_spin.setValue(float(settings.get("pck", self.pck_spin.value())))
         self.oks_spin.setValue(float(settings.get("oks", self.oks_spin.value())))
-        self.val_list_edit.setText(settings.get("val_list", self.val_list_edit.text()))
         self.out_dir_edit.setText(settings.get("out_dir", self.out_dir_edit.text()))
 
     def _apply_latest_weights_default(self):
@@ -3715,7 +3704,6 @@ class EvaluationDashboardDialog(QDialog):
                 "conf": float(self.conf_spin.value()),
                 "pck": float(self.pck_spin.value()),
                 "oks": float(self.oks_spin.value()),
-                "val_list": self.val_list_edit.text().strip(),
                 "out_dir": self.out_dir_edit.text().strip(),
             },
         )
@@ -3736,11 +3724,6 @@ class EvaluationDashboardDialog(QDialog):
             self.weights_edit.setText(path)
             self._update_default_out_dir()
 
-    def _browse_val(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select val list", "", "*.txt")
-        if path:
-            self.val_list_edit.setText(path)
-
     def _browse_out(self):
         path = QFileDialog.getExistingDirectory(self, "Select output dir")
         if path:
@@ -3760,25 +3743,7 @@ class EvaluationDashboardDialog(QDialog):
         self.out_dir_edit.setText(str(out_dir))
 
     def _collect_eval_paths(self) -> List[Path]:
-        val_list = self.val_list_edit.text().strip()
-        if val_list and Path(val_list).exists():
-            try:
-                paths = []
-                for line in Path(val_list).read_text(encoding="utf-8").splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    p = Path(line)
-                    if not p.is_absolute():
-                        p = (Path(val_list).parent / p).resolve()
-                    if p.exists():
-                        paths.append(p)
-                if paths:
-                    return paths
-            except Exception:
-                pass
-
-        # fallback: all labeled frames
+        # all labeled frames
         labeled = list_labeled_indices(self.image_paths, self.project.labels_dir)
         return [self.image_paths[i] for i in labeled]
 
@@ -3809,8 +3774,7 @@ class EvaluationDashboardDialog(QDialog):
         self.worst_list.clear()
         self.kpt_table.setRowCount(0)
         self.lbl_overall.setText("Overall: --")
-        self.btn_add_selected.setEnabled(False)
-        self.btn_add_top.setEnabled(False)
+        # worst list is informational only for labeled frames
 
         self._thread = QThread()
         self._worker = EvaluationWorker(
@@ -3903,40 +3867,10 @@ class EvaluationDashboardDialog(QDialog):
             item.setData(Qt.UserRole, row.get("image_path"))
             self.worst_list.addItem(item)
 
-        enable_add = bool(worst) and self.add_frames_callback is not None
-        self.btn_add_selected.setEnabled(enable_add)
-        self.btn_add_top.setEnabled(enable_add)
         self._append_log("Evaluation complete.")
-
     def _on_failed(self, msg: str):
         self._append_log(msg)
         QMessageBox.critical(self, "Evaluation failed", msg)
-
-    def _add_selected(self):
-        if not self.add_frames_callback:
-            return
-        selected = self.worst_list.selectedItems()
-        if not selected:
-            return
-        indices = []
-        for item in selected:
-            path = item.data(Qt.UserRole)
-            if path in self._path_to_index:
-                indices.append(self._path_to_index[path])
-        if indices:
-            self.add_frames_callback(indices, "Worst frames")
-
-    def _add_top(self):
-        if not self.add_frames_callback:
-            return
-        indices = []
-        for i in range(self.worst_list.count()):
-            item = self.worst_list.item(i)
-            path = item.data(Qt.UserRole)
-            if path in self._path_to_index:
-                indices.append(self._path_to_index[path])
-        if indices:
-            self.add_frames_callback(indices, "Worst frames (top)")
 
 
 class ActiveLearningWorker(QObject):
