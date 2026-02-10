@@ -958,16 +958,59 @@ def build_yolo_pose_dataset(
     used_stems = set()
     manifest_rows = []
 
-    def _has_any_visible_kpt(label_path: Path, include_occluded: bool) -> bool:
+    def _parse_label_parts(label_path: Path, kpt_count: int) -> Optional[List[str]]:
         try:
             text = label_path.read_text(encoding="utf-8").strip()
         except Exception:
-            return True
+            return None
         if not text:
-            return False
+            return None
         parts = text.split()
-        if len(parts) < 5:
-            return False
+        if len(parts) < 5 + 3 * kpt_count:
+            return None
+        # Validate bbox numbers
+        try:
+            cx = float(parts[1])
+            cy = float(parts[2])
+            bw = float(parts[3])
+            bh = float(parts[4])
+        except Exception:
+            return None
+        for v in (cx, cy, bw, bh):
+            if not np.isfinite(v):
+                return None
+        if bw <= 0 or bh <= 0:
+            return None
+        if not (0.0 <= cx <= 1.0 and 0.0 <= cy <= 1.0 and 0.0 <= bw <= 1.0 and 0.0 <= bh <= 1.0):
+            return None
+        # Validate keypoints
+        for i in range(5, 5 + 3 * kpt_count, 3):
+            try:
+                x = float(parts[i])
+                y = float(parts[i + 1])
+                v = int(float(parts[i + 2]))
+            except Exception:
+                return None
+            if not np.isfinite(x) or not np.isfinite(y):
+                return None
+            if v not in (0, 1, 2):
+                return None
+            if v > 0 and not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+                return None
+        return parts
+
+    def _has_any_visible_kpt_from_parts(
+        parts: List[str], kpt_count: int, include_occluded: bool
+    ) -> bool:
+        for i in range(5, 5 + 3 * kpt_count, 3):
+            v = int(float(parts[i + 2]))
+            if include_occluded:
+                if v > 0:
+                    return True
+            else:
+                if v == 2:
+                    return True
+        return False
         for i in range(5, len(parts), 3):
             if i + 2 >= len(parts):
                 break
@@ -985,29 +1028,20 @@ def build_yolo_pose_dataset(
                 return True
         return False
 
-    def _rewrite_label_for_training(src: Path, dst: Path):
-        try:
-            text = src.read_text(encoding="utf-8")
-        except Exception:
-            shutil.copy2(src, dst)
-            return
-        out_lines = []
-        for line in text.splitlines():
-            parts = line.strip().split()
-            if len(parts) < 5:
+    def _rewrite_label_for_training(parts: List[str], dst: Path):
+        out = parts[:]
+        for i in range(5, len(out), 3):
+            if i + 2 >= len(out):
+                break
+            try:
+                v = int(float(out[i + 2]))
+            except Exception:
                 continue
-            # Replace occluded (v=1) with missing (v=0) for training
-            for i in range(5, len(parts), 3):
-                if i + 2 >= len(parts):
-                    break
-                try:
-                    v = int(float(parts[i + 2]))
-                except Exception:
-                    v = None
-                if v == 1:
-                    parts[i + 2] = "0"
-            out_lines.append(" ".join(parts))
-        dst.write_text(("\n".join(out_lines) + ("\n" if out_lines else "")), encoding="utf-8")
+            if v == 1:
+                out[i] = "0"
+                out[i + 1] = "0"
+                out[i + 2] = "0"
+        dst.write_text(" ".join(out) + "\n", encoding="utf-8")
 
     def _copy_split(
         split_items: List[Tuple[Path, Path]],
@@ -1019,7 +1053,13 @@ def build_yolo_pose_dataset(
         kept: List[Tuple[Path, Path]] = []
         include_occluded = not bool(ignore_occluded)
         for img_path, label_path in split_items:
-            if not _has_any_visible_kpt(label_path, include_occluded=include_occluded):
+            parts = _parse_label_parts(label_path, k)
+            if parts is None:
+                skipped += 1
+                continue
+            if not _has_any_visible_kpt_from_parts(
+                parts, k, include_occluded=include_occluded
+            ):
                 skipped += 1
                 continue
             stem = _unique_stem(img_path.stem, used_stems, str(img_path))
@@ -1027,7 +1067,7 @@ def build_yolo_pose_dataset(
             lbl_dst = lbl_dir / f"{stem}.txt"
             shutil.copy2(img_path, img_dst)
             if ignore_occluded:
-                _rewrite_label_for_training(label_path, lbl_dst)
+                _rewrite_label_for_training(parts, lbl_dst)
             else:
                 shutil.copy2(label_path, lbl_dst)
             manifest_rows.append(
@@ -1054,8 +1094,11 @@ def build_yolo_pose_dataset(
     if kept_val <= 0:
         # Ensure at least one validation sample to avoid NaN val losses.
         for img_path, label_path in train_items:
-            if not _has_any_visible_kpt(
-                label_path, include_occluded=not bool(ignore_occluded_val)
+            parts = _parse_label_parts(label_path, k)
+            if parts is None:
+                continue
+            if not _has_any_visible_kpt_from_parts(
+                parts, k, include_occluded=not bool(ignore_occluded_val)
             ):
                 continue
             stem = _unique_stem(img_path.stem, used_stems, str(img_path))

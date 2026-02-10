@@ -2406,8 +2406,6 @@ class TrainingWorker(QObject):
         translate: float,
         scale: float,
         fliplr: float,
-        mosaic: float,
-        mixup: float,
     ):
         super().__init__()
         self.model_weights = model_weights
@@ -2425,8 +2423,6 @@ class TrainingWorker(QObject):
         self.degrees = float(degrees)
         self.translate = float(translate)
         self.scale = float(scale)
-        self.mosaic = float(mosaic)
-        self.mixup = float(mixup)
         self.fliplr = float(fliplr)
         self._cancel = False
         self._log_handler = None
@@ -2508,8 +2504,6 @@ class TrainingWorker(QObject):
                     f"translate={self.translate}",
                     f"scale={self.scale}",
                     f"fliplr={self.fliplr}",
-                    f"mosaic={self.mosaic}",
-                    f"mixup={self.mixup}",
                 ]
 
             def _run_cmd(cmd):
@@ -2568,8 +2562,6 @@ class TrainingWorker(QObject):
                     translate=self.translate,
                     scale=self.scale,
                     fliplr=self.fliplr,
-                    mosaic=self.mosaic,
-                    mixup=self.mixup,
                 )
                 self._proc = _run_cmd([sys.executable, "-c", py_code])
             assert self._proc.stdout is not None
@@ -2806,28 +2798,6 @@ class TrainingRunnerDialog(QDialog):
         )
         self.aug_widgets.append(self.scale_spin)
 
-        self.mosaic_spin = QDoubleSpinBox()
-        self.mosaic_spin.setRange(0.0, 1.0)
-        self.mosaic_spin.setSingleStep(0.05)
-        self.mosaic_spin.setValue(0.1)
-        add_row(
-            "mosaic:",
-            self.mosaic_spin,
-            "Mosaic augmentation probability.",
-        )
-        self.aug_widgets.append(self.mosaic_spin)
-
-        self.mixup_spin = QDoubleSpinBox()
-        self.mixup_spin.setRange(0.0, 1.0)
-        self.mixup_spin.setSingleStep(0.05)
-        self.mixup_spin.setValue(0.0)
-        add_row(
-            "mixup:",
-            self.mixup_spin,
-            "MixUp probability.",
-        )
-        self.aug_widgets.append(self.mixup_spin)
-
         self.fliplr_spin = QDoubleSpinBox()
         self.fliplr_spin.setRange(0.0, 1.0)
         self.fliplr_spin.setSingleStep(0.05)
@@ -3056,8 +3026,6 @@ class TrainingRunnerDialog(QDialog):
         self.translate_spin.setValue(float(settings.get("translate", self.translate_spin.value())))
         self.scale_spin.setValue(float(settings.get("scale", self.scale_spin.value())))
         self.fliplr_spin.setValue(float(settings.get("fliplr", self.fliplr_spin.value())))
-        self.mosaic_spin.setValue(float(settings.get("mosaic", self.mosaic_spin.value())))
-        self.mixup_spin.setValue(float(settings.get("mixup", self.mixup_spin.value())))
         self.train_split_spin.setValue(
             float(settings.get("train_split", self.train_split_spin.value()))
         )
@@ -3094,8 +3062,6 @@ class TrainingRunnerDialog(QDialog):
                 "translate": float(self.translate_spin.value()),
                 "scale": float(self.scale_spin.value()),
                 "fliplr": float(self.fliplr_spin.value()),
-                "mosaic": float(self.mosaic_spin.value()),
-                "mixup": float(self.mixup_spin.value()),
                 "train_split": float(self.train_split_spin.value()),
                 "seed": int(self.seed_spin.value()),
                 "ignore_occluded": bool(self.cb_ignore_occluded.isChecked()),
@@ -3203,8 +3169,6 @@ class TrainingRunnerDialog(QDialog):
             "translate": float(self.translate_spin.value()),
             "scale": float(self.scale_spin.value()),
             "fliplr": float(self.fliplr_spin.value()),
-            "mosaic": float(self.mosaic_spin.value()),
-            "mixup": float(self.mixup_spin.value()),
             "dataset": {
                 "yaml": str(dataset_info["yaml_path"]),
                     "train": str(dataset_info["train_list"]),
@@ -3249,8 +3213,6 @@ class TrainingRunnerDialog(QDialog):
             translate=self.translate_spin.value(),
             scale=self.scale_spin.value(),
             fliplr=self.fliplr_spin.value(),
-            mosaic=self.mosaic_spin.value(),
-            mixup=self.mixup_spin.value(),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)

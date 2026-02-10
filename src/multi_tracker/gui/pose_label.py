@@ -2334,15 +2334,6 @@ class MainWindow(QMainWindow):
         self.cb_show_preds.setChecked(True)
         right_layout.addWidget(self.cb_show_preds)
 
-        pred_conf_row = QHBoxLayout()
-        pred_conf_row.addWidget(QLabel("Pred conf:"))
-        self.sp_pred_conf = QDoubleSpinBox()
-        self.sp_pred_conf.setRange(0.0, 1.0)
-        self.sp_pred_conf.setSingleStep(0.05)
-        self.sp_pred_conf.setValue(0.25)
-        pred_conf_row.addWidget(self.sp_pred_conf)
-        right_layout.addLayout(pred_conf_row)
-
         autosave_row = QHBoxLayout()
         autosave_row.addWidget(QLabel("Autosave delay (sec):"))
         self.sp_autosave_delay = QDoubleSpinBox()
@@ -2415,6 +2406,24 @@ class MainWindow(QMainWindow):
 
         right_layout.addSpacing(8)
         right_layout.addWidget(QLabel("Model"))
+        pred_weights_row = QHBoxLayout()
+        self.pred_weights_edit = QLineEdit("")
+        self.btn_pred_weights = QPushButton("Browse…")
+        self.btn_pred_weights_latest = QPushButton("Use Latest")
+        pred_weights_row.addWidget(self.pred_weights_edit, 1)
+        pred_weights_row.addWidget(self.btn_pred_weights)
+        pred_weights_row.addWidget(self.btn_pred_weights_latest)
+        right_layout.addLayout(pred_weights_row)
+
+        pred_conf_row = QHBoxLayout()
+        pred_conf_row.addWidget(QLabel("Pred conf:"))
+        self.sp_pred_conf = QDoubleSpinBox()
+        self.sp_pred_conf.setRange(0.0, 1.0)
+        self.sp_pred_conf.setSingleStep(0.05)
+        self.sp_pred_conf.setValue(0.25)
+        pred_conf_row.addWidget(self.sp_pred_conf)
+        right_layout.addLayout(pred_conf_row)
+
         self.btn_train = QPushButton("Train / Fine-tune…")
         self.btn_eval = QPushButton("Evaluate…")
         self.btn_active = QPushButton("Active Learning…")
@@ -2526,6 +2535,8 @@ class MainWindow(QMainWindow):
         self.btn_predict_bulk.clicked.connect(self.predict_dataset)
         self.cb_show_preds.toggled.connect(self._toggle_show_predictions)
         self.btn_apply_preds.clicked.connect(self.apply_predictions_current)
+        self.btn_pred_weights.clicked.connect(self._browse_pred_weights)
+        self.btn_pred_weights_latest.clicked.connect(self._use_latest_pred_weights)
         self.btn_unlabeled_to_labeling.clicked.connect(self._move_unlabeled_to_labeling)
         self.btn_unlabeled_to_all.clicked.connect(self._move_unlabeled_to_all)
         self.btn_random_to_labeling.clicked.connect(self._add_random_to_labeling)
@@ -2651,6 +2662,7 @@ class MainWindow(QMainWindow):
             "frame_search": self.search_edit.text().strip(),
             "autosave_delay_ms": int(self.autosave_delay_ms),
             "pred_conf": float(self.sp_pred_conf.value()),
+            "pred_weights": self.pred_weights_edit.text().strip(),
         }
         save_ui_settings(settings)
 
@@ -2680,6 +2692,8 @@ class MainWindow(QMainWindow):
                 self.sp_autosave_delay.setValue(self.autosave_delay_ms / 1000.0)
             if "pred_conf" in settings:
                 self.sp_pred_conf.setValue(float(settings["pred_conf"]))
+            if "pred_weights" in settings:
+                self.pred_weights_edit.setText(str(settings["pred_weights"]))
 
     # ----- menus / shortcuts -----
     def _build_actions(self):
@@ -4310,10 +4324,44 @@ class MainWindow(QMainWindow):
         except Exception:
             return 0.25
 
+    def _browse_pred_weights(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select pose weights", "", "*.pt"
+        )
+        if path:
+            self.pred_weights_edit.setText(path)
+
+    def _use_latest_pred_weights(self):
+        if self.project.latest_pose_weights and Path(self.project.latest_pose_weights).exists():
+            self.pred_weights_edit.setText(str(self.project.latest_pose_weights))
+
+    def _get_pred_weights_or_prompt(self) -> Optional[Path]:
+        txt = self.pred_weights_edit.text().strip()
+        if txt:
+            p = Path(txt).expanduser().resolve()
+            if p.exists() and p.is_file() and p.suffix == ".pt":
+                return p
+            QMessageBox.warning(self, "Invalid weights", "Prediction weights not found.")
+            return None
+        return self._get_latest_weights_or_prompt()
+
+    def _get_pred_weights_silent(self) -> Optional[Path]:
+        txt = self.pred_weights_edit.text().strip()
+        if txt:
+            p = Path(txt).expanduser().resolve()
+            if p.exists() and p.is_file() and p.suffix == ".pt":
+                return p
+            return None
+        if self.project.latest_pose_weights:
+            p = Path(self.project.latest_pose_weights)
+            if p.exists() and p.is_file() and p.suffix == ".pt":
+                return p
+        return None
+
     def _get_pred_overlay_for_current(self) -> Optional[List[Keypoint]]:
         if not self.show_predictions:
             return None
-        weights = self.project.latest_pose_weights
+        weights = self._get_pred_weights_silent()
         if not weights:
             return None
         preds = self._get_pred_for_frame(weights, self.image_paths[self.current_index])
@@ -4375,10 +4423,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No frame", "Select a frame first.")
             return
 
-        weights = self._get_latest_weights_or_prompt()
+        weights = self._get_pred_weights_or_prompt()
         if not weights:
             return
         self._last_pred_conf = self._pred_conf_default()
+        self._last_pred_weights = weights
 
         cached = self._get_pred_for_frame(weights, self.image_paths[self.current_index])
         if cached is not None:
@@ -4422,7 +4471,7 @@ class MainWindow(QMainWindow):
             return
         if self.mode != "frame":
             self.rb_frame.setChecked(True)
-        weights = self.project.latest_pose_weights
+        weights = getattr(self, "_last_pred_weights", None)
         if weights:
             self.infer.merge_cache(weights, {str(self.image_paths[self.current_index]): preds})
         self._rebuild_canvas()
@@ -4433,7 +4482,7 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "Prediction failed", msg)
 
     def _adopt_prediction_kpt(self, kpt_idx: int, x: float, y: float):
-        weights = self.project.latest_pose_weights
+        weights = self._get_pred_weights_or_prompt()
         preds = None
         if weights:
             preds = self.infer.get_cached_pred(
@@ -4487,7 +4536,7 @@ class MainWindow(QMainWindow):
         if self._ann is None:
             QMessageBox.information(self, "No frame", "Select a frame first.")
             return
-        weights = self._get_latest_weights_or_prompt()
+        weights = self._get_pred_weights_or_prompt()
         if not weights:
             return
         preds = self.infer.get_cached_pred(weights, self.image_paths[self.current_index])
@@ -4519,7 +4568,7 @@ class MainWindow(QMainWindow):
         if not self.image_paths:
             QMessageBox.information(self, "No frames", "No images loaded.")
             return
-        weights = self._get_latest_weights_or_prompt()
+        weights = self._get_pred_weights_or_prompt()
         if not weights:
             return
 
@@ -4544,6 +4593,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Predicting dataset…")
         self.btn_predict_bulk.setEnabled(False)
 
+        self._last_pred_weights = weights
         self._bulk_pred_thread = QThread()
         self._bulk_pred_worker = BulkPosePredictWorker(
             weights_path=weights,
@@ -4577,7 +4627,7 @@ class MainWindow(QMainWindow):
         self.status_progress.setValue(0)
         self.status_progress.setVisible(False)
         self.statusBar().showMessage("Predictions cached.", 2000)
-        weights = self.project.latest_pose_weights
+        weights = getattr(self, "_last_pred_weights", None)
         if weights:
             self.infer.merge_cache(weights, preds)
         self._rebuild_canvas()
