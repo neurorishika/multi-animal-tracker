@@ -1010,6 +1010,7 @@ def build_yolo_pose_dataset(
         ignore_occluded: bool,
     ):
         skipped = 0
+        kept: List[Tuple[Path, Path]] = []
         for img_path, label_path in split_items:
             if not _has_any_visible_kpt(label_path):
                 skipped += 1
@@ -1030,10 +1031,43 @@ def build_yolo_pose_dataset(
                     "dst_label": str(lbl_dst),
                 }
             )
-        return skipped
+            kept.append((img_path, label_path))
+        return len(kept), skipped, kept
 
-    skipped_train = _copy_split(train_items, images_train, labels_train, ignore_occluded_train)
-    skipped_val = _copy_split(val_items, images_val, labels_val, ignore_occluded_val)
+    kept_train, skipped_train, kept_train_items = _copy_split(
+        train_items, images_train, labels_train, ignore_occluded_train
+    )
+    kept_val, skipped_val, kept_val_items = _copy_split(
+        val_items, images_val, labels_val, ignore_occluded_val
+    )
+
+    if kept_train <= 0:
+        raise ValueError("No training labels with visible keypoints after filtering.")
+
+    if kept_val <= 0:
+        # Ensure at least one validation sample to avoid NaN val losses.
+        for img_path, label_path in train_items:
+            if not _has_any_visible_kpt(label_path):
+                continue
+            stem = _unique_stem(img_path.stem, used_stems, str(img_path))
+            img_dst = images_val / f"{stem}{img_path.suffix.lower()}"
+            lbl_dst = labels_val / f"{stem}.txt"
+            shutil.copy2(img_path, img_dst)
+            # Keep original occluded labels for validation
+            shutil.copy2(label_path, lbl_dst)
+            manifest_rows.append(
+                {
+                    "src_image": str(img_path),
+                    "src_label": str(label_path),
+                    "dst_image": str(img_dst),
+                    "dst_label": str(lbl_dst),
+                }
+            )
+            kept_val = 1
+            logger.warning(
+                "Validation set was empty after filtering; duplicated one train sample for validation."
+            )
+            break
 
     train_txt = output_dir / "train.txt"
     val_txt = output_dir / "val.txt"
@@ -1061,8 +1095,8 @@ def build_yolo_pose_dataset(
         "yaml_path": yaml_path,
         "train_list": train_txt,
         "val_list": val_txt,
-        "train_count": len(train_items) - skipped_train,
-        "val_count": len(val_items) - skipped_val,
+        "train_count": kept_train,
+        "val_count": kept_val,
         "labeled_count": len(items),
         "manifest": output_dir / "manifest.json",
     }
