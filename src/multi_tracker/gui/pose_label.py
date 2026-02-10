@@ -35,7 +35,7 @@ import logging
 import os
 import random
 import sys
-import subprocess
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict
@@ -65,6 +65,7 @@ try:
         migrate_labels_keypoints,
         build_yolo_pose_dataset,
     )
+    from .pose_inference import PoseInferenceService
 
     from .pose_label_dialogs import (
         DatasetSplitDialog,
@@ -90,6 +91,7 @@ except ImportError:
         migrate_labels_keypoints,
         build_yolo_pose_dataset,
     )
+    from pose_inference import PoseInferenceService
 
     from pose_label_dialogs import (
         DatasetSplitDialog,
@@ -148,6 +150,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QInputDialog,
+    QProgressBar,
 )
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -156,7 +159,6 @@ DEFAULT_SKELETON_DIRNAME = "configs"
 DEFAULT_KPT_RADIUS = 5.0
 DEFAULT_LABEL_FONT_SIZE = 10
 DEFAULT_AUTOSAVE_DELAY_MS = 3000
-PRED_CACHE_DIRNAME = ".posekit/predictions"
 
 
 # -----------------------------
@@ -264,6 +266,8 @@ class Project:
         latest_pose_weights = (
             _resolve_project_path(latest_raw, base, data) if str(latest_raw) else None
         )
+        if latest_pose_weights and latest_pose_weights.suffix != ".pt":
+            latest_pose_weights = None
         return Project(
             images_dir=images_dir,
             out_root=out_root,
@@ -300,7 +304,8 @@ class PosePredictWorker(QObject):
         self,
         weights_path: Path,
         image_path: Path,
-        num_kpts: int,
+        out_root: Path,
+        keypoint_names: List[str],
         device: str = "auto",
         imgsz: int = 640,
         conf: float = 0.25,
@@ -308,7 +313,8 @@ class PosePredictWorker(QObject):
         super().__init__()
         self.weights_path = Path(weights_path)
         self.image_path = Path(image_path)
-        self.num_kpts = int(num_kpts)
+        self.out_root = Path(out_root)
+        self.keypoint_names = list(keypoint_names)
         self.device = device
         self.imgsz = int(imgsz)
         self.conf = float(conf)
@@ -363,29 +369,28 @@ class PosePredictWorker(QObject):
 
     def run(self):
         try:
-            if not self.weights_path.exists():
-                self.failed.emit(f"Weights not found: {self.weights_path}")
+            infer = PoseInferenceService(self.out_root, self.keypoint_names)
+            cached = infer.get_cached_pred(self.weights_path, self.image_path)
+            if cached is not None:
+                self.finished.emit(cached)
                 return
-
-            out_json = self.image_path.with_suffix(".pred_tmp.json")
-            ok, preds_map, err = _run_pose_predict_subprocess(
+            preds_map, err = infer.predict(
                 self.weights_path,
                 [self.image_path],
-                out_json,
                 device=self.device,
                 imgsz=self.imgsz,
                 conf=self.conf,
                 batch=1,
+                progress_cb=None,
             )
-            if not ok:
+            if preds_map is None:
                 self.failed.emit(err or "Prediction failed.")
                 return
-
             preds = preds_map.get(str(self.image_path)) or preds_map.get(
                 str(self.image_path.resolve())
             )
             if preds is None:
-                preds = [(0.0, 0.0, 0.0) for _ in range(self.num_kpts)]
+                preds = [(0.0, 0.0, 0.0) for _ in range(len(self.keypoint_names))]
             self.finished.emit(preds)
         except Exception as e:
             _maybe_empty_cuda_cache()
@@ -401,7 +406,8 @@ class BulkPosePredictWorker(QObject):
         self,
         weights_path: Path,
         image_paths: List[Path],
-        num_kpts: int,
+        out_root: Path,
+        keypoint_names: List[str],
         device: str = "auto",
         imgsz: int = 640,
         conf: float = 0.25,
@@ -410,7 +416,8 @@ class BulkPosePredictWorker(QObject):
         super().__init__()
         self.weights_path = Path(weights_path)
         self.image_paths = list(image_paths)
-        self.num_kpts = int(num_kpts)
+        self.out_root = Path(out_root)
+        self.keypoint_names = list(keypoint_names)
         self.device = device
         self.imgsz = int(imgsz)
         self.conf = float(conf)
@@ -420,72 +427,19 @@ class BulkPosePredictWorker(QObject):
     def cancel(self):
         self._cancel = True
 
-    def _extract_best_prediction(self, result):
-        if result is None or result.keypoints is None:
-            return None, None
-        kpts = result.keypoints
-        try:
-            xy = kpts.xy
-            conf = getattr(kpts, "conf", None)
-            xy = xy.cpu().numpy() if hasattr(xy, "cpu") else np.array(xy)
-            if conf is not None:
-                conf = conf.cpu().numpy() if hasattr(conf, "cpu") else np.array(conf)
-        except Exception:
-            return None, None
-
-        if xy.ndim == 2:
-            xy = xy[None, :, :]
-        if conf is not None and conf.ndim == 1:
-            conf = conf[None, :]
-
-        if xy.size == 0:
-            return None, None
-
-        if conf is not None:
-            scores = np.nanmean(conf, axis=1)
-        else:
-            scores = None
-            try:
-                if result.boxes is not None and hasattr(result.boxes, "conf"):
-                    scores = result.boxes.conf.cpu().numpy()
-            except Exception:
-                scores = None
-            if scores is None:
-                scores = np.zeros((xy.shape[0],), dtype=np.float32)
-
-        best = int(np.argmax(scores)) if len(scores) > 0 else 0
-        pred_xy = xy[best]
-        pred_conf = conf[best] if conf is not None else np.zeros((self.num_kpts,))
-
-        if pred_xy.shape[0] != self.num_kpts:
-            num = min(pred_xy.shape[0], self.num_kpts)
-            tmp_xy = np.zeros((self.num_kpts, 2), dtype=np.float32)
-            tmp_conf = np.zeros((self.num_kpts,), dtype=np.float32)
-            tmp_xy[:num] = pred_xy[:num]
-            tmp_conf[:num] = pred_conf[:num]
-            pred_xy = tmp_xy
-            pred_conf = tmp_conf
-
-        return pred_xy, pred_conf
-
     def run(self):
         try:
-            if not self.weights_path.exists():
-                self.failed.emit(f"Weights not found: {self.weights_path}")
-                return
-
-            out_json = self.weights_path.parent / f".pred_cache_{os.getpid()}.json"
-            ok, preds, err = _run_pose_predict_subprocess(
+            infer = PoseInferenceService(self.out_root, self.keypoint_names)
+            preds, err = infer.predict(
                 self.weights_path,
                 self.image_paths,
-                out_json,
                 device=self.device,
                 imgsz=self.imgsz,
                 conf=self.conf,
                 batch=self.batch,
                 progress_cb=lambda d, t: self.progress.emit(d, t),
             )
-            if not ok:
+            if preds is None:
                 self.failed.emit(err or "Prediction failed.")
                 return
             self.finished.emit(preds)
@@ -684,158 +638,6 @@ def _maybe_empty_cuda_cache():
         pass
 
 
-def _weights_cache_key(weights_path: Path) -> str:
-    try:
-        stat = weights_path.stat()
-        token = f"{weights_path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
-    except Exception:
-        token = str(weights_path)
-    return hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
-
-
-def _run_pose_predict_subprocess(
-    weights_path: Path,
-    image_paths: List[Path],
-    out_json: Path,
-    device: str = "auto",
-    imgsz: int = 640,
-    conf: float = 0.25,
-    batch: int = 16,
-    progress_cb=None,
-) -> Tuple[bool, Dict[str, List[Tuple[float, float, float]]], str]:
-    req = {
-        "weights": str(weights_path),
-        "images": [str(p) for p in image_paths],
-        "device": device,
-        "imgsz": int(imgsz),
-        "conf": float(conf),
-        "batch": int(batch),
-        "out_json": str(out_json),
-    }
-    req_path = out_json.with_suffix(".req.json")
-    req_path.write_text(json.dumps(req), encoding="utf-8")
-
-    code = (
-        "import json,sys\n"
-        "from pathlib import Path\n"
-        "import numpy as np\n"
-        "def _is_cuda_device(d):\n"
-        "    d=(d or '').strip().lower()\n"
-        "    return d in {'cuda','gpu'} or d.startswith('cuda:') or d.isdigit()\n"
-        "def _maybe_limit_cuda_memory():\n"
-        "    try:\n"
-        "        import torch\n"
-        "        if torch.cuda.is_available():\n"
-        "            torch.cuda.set_per_process_memory_fraction(0.9)\n"
-        "    except Exception:\n"
-        "        pass\n"
-        "req=Path(sys.argv[1])\n"
-        "cfg=json.loads(req.read_text(encoding='utf-8'))\n"
-        "from ultralytics import YOLO\n"
-        "model=YOLO(cfg['weights'])\n"
-        "pred_kwargs={\n"
-        "  'imgsz': int(cfg['imgsz']),\n"
-        "  'conf': float(cfg['conf']),\n"
-        "  'max_det': 1,\n"
-        "  'stream': True,\n"
-        "  'verbose': False,\n"
-        "  'batch': int(cfg['batch']),\n"
-        "}\n"
-        "if cfg.get('device') and cfg.get('device')!='auto':\n"
-        "  pred_kwargs['device']=cfg['device']\n"
-        "if _is_cuda_device(cfg.get('device')):\n"
-        "  _maybe_limit_cuda_memory()\n"
-        "  pred_kwargs['half']=True\n"
-        "images=cfg['images']\n"
-        "preds={}\n"
-        "b=max(1,int(cfg.get('batch',1)))\n"
-        "i=0\n"
-        "while i < len(images):\n"
-        "  chunk=images[i:i+b]\n"
-        "  kw=dict(pred_kwargs)\n"
-        "  kw['source']=chunk\n"
-        "  kw['batch']=min(b,len(chunk))\n"
-        "  try:\n"
-        "    results=list(model.predict(**kw))\n"
-        "  except RuntimeError as e:\n"
-        "    if 'out of memory' in str(e).lower() and b>1:\n"
-        "      b=max(1,b//2)\n"
-        "      continue\n"
-        "    raise\n"
-        "  total=len(images)\n"
-        "  done=0\n"
-        "  for r in results:\n"
-        "    if r is None or r.keypoints is None:\n"
-        "      preds[str(Path(r.path))]=[]\n"
-        "      continue\n"
-        "    k=r.keypoints\n"
-        "    try:\n"
-        "      xy=k.xy\n"
-        "      conf=getattr(k,'conf',None)\n"
-        "      xy=xy.cpu().numpy() if hasattr(xy,'cpu') else np.array(xy)\n"
-        "      if conf is not None:\n"
-        "        conf=conf.cpu().numpy() if hasattr(conf,'cpu') else np.array(conf)\n"
-        "    except Exception:\n"
-        "      preds[str(Path(r.path))]=[]\n"
-        "      continue\n"
-        "    if xy.ndim==2:\n"
-        "      xy=xy[None,:,:]\n"
-        "    if conf is not None and conf.ndim==1:\n"
-        "      conf=conf[None,:]\n"
-        "    if xy.size==0:\n"
-        "      preds[str(Path(r.path))]=[]\n"
-        "      continue\n"
-        "    if conf is not None:\n"
-        "      scores=np.nanmean(conf,axis=1)\n"
-        "    else:\n"
-        "      scores=None\n"
-        "      try:\n"
-        "        if r.boxes is not None and hasattr(r.boxes,'conf'):\n"
-        "          scores=r.boxes.conf.cpu().numpy()\n"
-        "      except Exception:\n"
-        "        scores=None\n"
-        "      if scores is None:\n"
-        "        scores=np.zeros((xy.shape[0],),dtype=np.float32)\n"
-        "    best=int(np.argmax(scores)) if len(scores)>0 else 0\n"
-        "    pred_xy=xy[best]\n"
-        "    pred_conf=conf[best] if conf is not None else np.zeros((pred_xy.shape[0],),dtype=np.float32)\n"
-        "    pts=[]\n"
-        "    for j in range(pred_xy.shape[0]):\n"
-        "      c=float(pred_conf[j]) if j < len(pred_conf) else 0.0\n"
-        "      pts.append((float(pred_xy[j][0]),float(pred_xy[j][1]),c))\n"
-        "    preds[str(Path(r.path))]=pts\n"
-        "    done+=1\n"
-        "    print(f'PROGRESS {done} {total}', flush=True)\n"
-        "  i+=len(chunk)\n"
-        "out={'preds':preds}\n"
-        "Path(cfg['out_json']).write_text(json.dumps(out),encoding='utf-8')\n"
-    )
-
-    proc = subprocess.Popen(
-        [sys.executable, "-c", code, str(req_path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        line = line.strip()
-        if line.startswith("PROGRESS "):
-            try:
-                _, done_s, total_s = line.split()
-                if progress_cb:
-                    progress_cb(int(done_s), int(total_s))
-            except Exception:
-                pass
-    stdout, stderr = proc.communicate()
-    if proc.returncode != 0:
-        return False, {}, (stderr.strip() or stdout.strip() or "Subprocess failed.")
-    try:
-        data = json.loads(out_json.read_text(encoding="utf-8"))
-        return True, data.get("preds", {}), ""
-    except Exception as e:
-        return False, {}, str(e)
 
 
 def _read_image_pil(path: Path):
@@ -1231,7 +1033,7 @@ class PoseCanvas(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing, True)
-        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setDragMode(QGraphicsView.NoDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
@@ -1242,6 +1044,8 @@ class PoseCanvas(QGraphicsView):
         self.kpt_items: List[Optional[QGraphicsEllipseItem]] = []
         self.kpt_labels: List[Optional[QGraphicsTextItem]] = []
         self.edge_items: List[QGraphicsLineItem] = []
+        self.pred_items: List[Optional[QGraphicsEllipseItem]] = []
+        self.pred_edge_items: List[Optional[QGraphicsLineItem]] = []
 
         self._img_w = 1
         self._img_h = 1
@@ -1261,6 +1065,8 @@ class PoseCanvas(QGraphicsView):
         self._on_select = None
         self._dragging_kpt = None
         self._drag_start_pos = None
+        self._dragging_pred = None
+        self._pred_edges: List[Tuple[int, int]] = []
 
     def set_callbacks(self, on_place, on_move, on_select=None):
         self._on_place = on_place
@@ -1304,14 +1110,26 @@ class PoseCanvas(QGraphicsView):
         self.fitInView(self.scene.sceneRect(), Qt.KeepAspectRatio)
 
     def rebuild_overlays(
-        self, kpts: List[Keypoint], kpt_names: List[str], edges: List[Tuple[int, int]]
+        self,
+        kpts: List[Keypoint],
+        kpt_names: List[str],
+        edges: List[Tuple[int, int]],
+        pred_kpts: Optional[List[Keypoint]] = None,
     ):
-        for item in self.kpt_items + self.kpt_labels + self.edge_items:
+        for item in (
+            self.kpt_items
+            + self.kpt_labels
+            + self.edge_items
+            + self.pred_items
+            + self.pred_edge_items
+        ):
             if item is not None:
                 self.scene.removeItem(item)
         self.kpt_items = [None] * len(kpts)
         self.kpt_labels = [None] * len(kpts)
         self.edge_items = [None] * len(edges)
+        self.pred_items = [None] * (len(pred_kpts) if pred_kpts else 0)
+        self.pred_edge_items = [None] * len(edges)
 
         # Create edges with opacity
         edge_alpha = int(255 * self._edge_opacity)
@@ -1319,6 +1137,7 @@ class PoseCanvas(QGraphicsView):
             pen = QPen(QColor(100, 100, 100, edge_alpha), 2)
             edge = QGraphicsLineItem()
             edge.setPen(pen)
+            edge.setZValue(3)
             self.scene.addItem(edge)
             self.edge_items[ei] = edge
 
@@ -1353,8 +1172,8 @@ class PoseCanvas(QGraphicsView):
 
             circ.setPen(pen)
             circ.setBrush(color)
-            circ.setFlag(QGraphicsEllipseItem.ItemIsMovable, True)
-            circ.setFlag(QGraphicsEllipseItem.ItemSendsGeometryChanges, True)
+            circ.setZValue(4)
+            # Movement is handled manually to keep edges/labels in sync.
             circ.setData(0, i)
             self.scene.addItem(circ)
             self.kpt_items[i] = circ
@@ -1366,10 +1185,13 @@ class PoseCanvas(QGraphicsView):
                 QColor(base.red(), base.green(), base.blue(), label_alpha)
             )
             lab.setFont(QFont("Arial", self._label_font_size))
+            lab.setAcceptedMouseButtons(Qt.NoButton)
+            lab.setFlag(QGraphicsTextItem.ItemIsSelectable, False)
 
             # Smart label positioning with collision avoidance
             dx, dy = self._find_best_label_offset(kp.x, kp.y, label_positions)
             lab.setPos(kp.x + dx, kp.y + dy)
+            lab.setZValue(5)
 
             # Track this label's bounding box
             label_rect = lab.boundingRect()
@@ -1379,6 +1201,46 @@ class PoseCanvas(QGraphicsView):
 
             self.scene.addItem(lab)
             self.kpt_labels[i] = lab
+
+        # Prediction overlays (distinct style)
+        self._pred_edges = list(edges)
+        if pred_kpts:
+            pred_edge_alpha = int(160 * self._edge_opacity)
+            for ei, (a, b) in enumerate(edges):
+                if (
+                    a < len(pred_kpts)
+                    and b < len(pred_kpts)
+                    and pred_kpts[a].v > 0
+                    and pred_kpts[b].v > 0
+                ):
+                    pen = QPen(QColor(0, 220, 255, pred_edge_alpha), 1.5)
+                    pen.setStyle(Qt.DashLine)
+                    edge = QGraphicsLineItem(
+                        pred_kpts[a].x,
+                        pred_kpts[a].y,
+                        pred_kpts[b].x,
+                        pred_kpts[b].y,
+                    )
+                    edge.setPen(pen)
+                    edge.setZValue(1)
+                    self.scene.addItem(edge)
+                    self.pred_edge_items[ei] = edge
+
+            pred_alpha = int(140 * self._kpt_opacity)
+            for i, kp in enumerate(pred_kpts):
+                if kp.v == 0:
+                    continue
+                r = max(2.0, self._kpt_radius - 1.5)
+                circ = QGraphicsEllipseItem(kp.x - r, kp.y - r, 2 * r, 2 * r)
+                pen = QPen(QColor(0, 220, 255, pred_alpha), 1.5)
+                pen.setStyle(Qt.DashLine)
+                circ.setPen(pen)
+                circ.setBrush(Qt.NoBrush)
+                circ.setZValue(2)
+                circ.setData(0, i)
+                circ.setData(1, "pred")
+                self.scene.addItem(circ)
+                self.pred_items[i] = circ
 
         self._update_edges_from_points(edges)
 
@@ -1466,6 +1328,17 @@ class PoseCanvas(QGraphicsView):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
+            item = self.itemAt(event.position().toPoint())
+            if item is not None and isinstance(item, QGraphicsEllipseItem):
+                idx = int(item.data(0))
+                is_pred = item.data(1) == "pred"
+                if not is_pred:
+                    parent = self.parent()
+                    if parent and not hasattr(parent, "mode"):
+                        parent = self.window()
+                    if parent and hasattr(parent, "_toggle_kpt_visibility"):
+                        parent._toggle_kpt_visibility(idx)
+                        return
             if self._on_place:
                 pos = self.mapToScene(event.position().toPoint())
                 # Right-click marks keypoint as occluded (v=1)
@@ -1476,6 +1349,7 @@ class PoseCanvas(QGraphicsView):
         if item is not None and isinstance(item, QGraphicsEllipseItem):
             # Clicked on existing keypoint
             idx = int(item.data(0))
+            is_pred = item.data(1) == "pred"
 
             # Get parent's mode
             parent = self.parent()
@@ -1484,6 +1358,12 @@ class PoseCanvas(QGraphicsView):
                 parent = self.window()
 
             mode = getattr(parent, "mode", "frame") if parent else "frame"
+
+            if is_pred:
+                # Start dragging prediction (adopt on release)
+                self._dragging_pred = idx
+                self._drag_start_pos = self.mapToScene(event.position().toPoint())
+                return super().mousePressEvent(event)
 
             if mode == "keypoint":
                 # In keypoint mode: NEVER allow dragging - treat click as placing next unlabeled keypoint
@@ -1588,6 +1468,19 @@ class PoseCanvas(QGraphicsView):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        if self._dragging_pred is not None:
+            pos = self.mapToScene(event.position().toPoint())
+            pred_item = (
+                self.pred_items[self._dragging_pred]
+                if self._dragging_pred < len(self.pred_items)
+                else None
+            )
+            if pred_item is not None:
+                r = pred_item.rect().width() / 2.0
+                pred_item.setRect(pos.x() - r, pos.y() - r, 2 * r, 2 * r)
+                self._update_pred_edges_from_items()
+            super().mouseMoveEvent(event)
+            return
         if self._dragging_kpt is not None and self._drag_start_pos is not None:
             # Never allow drag in keypoint mode
             parent = self.parent()
@@ -1607,11 +1500,41 @@ class PoseCanvas(QGraphicsView):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._dragging_pred is not None:
+            idx = self._dragging_pred
+            self._dragging_pred = None
+            pos = self.mapToScene(event.position().toPoint())
+            parent = self.parent()
+            if parent and not hasattr(parent, "mode"):
+                parent = self.window()
+            if parent and hasattr(parent, "_adopt_prediction_kpt"):
+                parent._adopt_prediction_kpt(idx, float(pos.x()), float(pos.y()))
+            super().mouseReleaseEvent(event)
+            return
         if self._dragging_kpt is not None:
             # Complete drag operation
             self._dragging_kpt = None
             self._drag_start_pos = None
         super().mouseReleaseEvent(event)
+
+    def _update_pred_edges_from_items(self):
+        if not self.pred_edge_items or not self.pred_items:
+            return
+        for ei, edge in enumerate(self.pred_edge_items):
+            if edge is None:
+                continue
+            if ei >= len(self._pred_edges):
+                continue
+            a, b = self._pred_edges[ei]
+            if a >= len(self.pred_items) or b >= len(self.pred_items):
+                continue
+            a_item = self.pred_items[a]
+            b_item = self.pred_items[b]
+            if a_item is None or b_item is None:
+                continue
+            a_pos = a_item.rect().center()
+            b_pos = b_item.rect().center()
+            edge.setLine(a_pos.x(), a_pos.y(), b_pos.x(), b_pos.y())
 
 
 # -----------------------------
@@ -2221,7 +2144,8 @@ class MainWindow(QMainWindow):
         self._pred_worker: Optional[PosePredictWorker] = None
         self._bulk_pred_thread: Optional[QThread] = None
         self._bulk_pred_worker: Optional[BulkPosePredictWorker] = None
-        self._pred_cache: Dict[str, Dict[str, List[Tuple[float, float, float]]]] = {}
+        self.show_predictions = True
+        self.infer = PoseInferenceService(self.project.out_root, self.project.keypoint_names)
 
         # Track which frames are in the labeling set (empty by default)
         self.labeling_frames: set = set()
@@ -2397,6 +2321,9 @@ class MainWindow(QMainWindow):
         self.btn_enhance_settings = QPushButton("Enhancement settings…")
         right_layout.addWidget(self.cb_enhance)
         right_layout.addWidget(self.btn_enhance_settings)
+        self.cb_show_preds = QCheckBox("Show predictions")
+        self.cb_show_preds.setChecked(True)
+        right_layout.addWidget(self.cb_show_preds)
 
         autosave_row = QHBoxLayout()
         autosave_row.addWidget(QLabel("Autosave delay (sec):"))
@@ -2475,19 +2402,19 @@ class MainWindow(QMainWindow):
         self.btn_active = QPushButton("Active Learning…")
         self.btn_predict = QPushButton("Predict Keypoints…")
         self.btn_predict_bulk = QPushButton("Predict Dataset…")
+        self.btn_apply_preds = QPushButton("Apply Predictions")
         right_layout.addWidget(self.btn_train)
         right_layout.addWidget(self.btn_eval)
         right_layout.addWidget(self.btn_active)
         right_layout.addWidget(self.btn_predict)
         right_layout.addWidget(self.btn_predict_bulk)
+        right_layout.addWidget(self.btn_apply_preds)
 
         self.controls_group = QGroupBox("Controls")
-        self.controls_group.setCheckable(True)
-        self.controls_group.setChecked(False)
         controls_layout = QVBoxLayout(self.controls_group)
         self.controls_label = QLabel(
             "Left click: place/move keypoint\n"
-            "Right click: pan\n"
+            "Right click: toggle vis (on keypoint)\n"
             "Wheel: zoom\n"
             "A/D: prev/next frame\n"
             "Q/E: prev/next keypoint\n"
@@ -2537,6 +2464,15 @@ class MainWindow(QMainWindow):
         splitter.setCollapsible(2, True)
 
         self.setStatusBar(QStatusBar())
+        self.status_progress = QProgressBar()
+        self.status_progress.setRange(0, 100)
+        self.status_progress.setValue(0)
+        self.status_progress.setFixedWidth(160)
+        self.status_progress.setVisible(False)
+        self.statusBar().addPermanentWidget(self.status_progress)
+        self._last_saved_at = None
+        self.status_autosave = QLabel("Saved")
+        self.statusBar().addPermanentWidget(self.status_autosave)
 
         self._build_actions()
 
@@ -2570,6 +2506,8 @@ class MainWindow(QMainWindow):
         self.btn_active.clicked.connect(self.open_active_learning)
         self.btn_predict.clicked.connect(self.predict_current_frame)
         self.btn_predict_bulk.clicked.connect(self.predict_dataset)
+        self.cb_show_preds.toggled.connect(self._toggle_show_predictions)
+        self.btn_apply_preds.clicked.connect(self.apply_predictions_current)
         self.btn_unlabeled_to_labeling.clicked.connect(self._move_unlabeled_to_labeling)
         self.btn_unlabeled_to_all.clicked.connect(self._move_unlabeled_to_all)
         self.btn_random_to_labeling.clicked.connect(self._add_random_to_labeling)
@@ -2666,12 +2604,10 @@ class MainWindow(QMainWindow):
 
         # Update keypoint
         self._ann.kpts[self.current_kpt] = Keypoint(x, y, v)
-        self._dirty = True
+        self._set_dirty()
 
         # Rebuild overlays
-        self.canvas.rebuild_overlays(
-            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
-        )
+        self._rebuild_canvas()
 
         # Save/cache based on mode
         if self.mode == "frame":
@@ -3148,9 +3084,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_current_keypoint(self.current_kpt)
         self.canvas.set_click_visibility(self.click_vis)
         self._refresh_canvas_image()
-        self.canvas.rebuild_overlays(
-            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
-        )
+        self._rebuild_canvas()
         self._update_info()
         self._load_metadata_ui()
 
@@ -3303,44 +3237,28 @@ class MainWindow(QMainWindow):
         self.project.kpt_radius = float(value)
         self.canvas.set_kpt_radius(self.project.kpt_radius)
         if self._ann is not None:
-            self.canvas.rebuild_overlays(
-                self._ann.kpts,
-                self.project.keypoint_names,
-                self.project.skeleton_edges,
-            )
+            self._rebuild_canvas()
         self.save_project()
 
     def _update_label_size(self, value: int):
         self.project.label_font_size = int(value)
         self.canvas.set_label_font_size(self.project.label_font_size)
         if self._ann is not None:
-            self.canvas.rebuild_overlays(
-                self._ann.kpts,
-                self.project.keypoint_names,
-                self.project.skeleton_edges,
-            )
+            self._rebuild_canvas()
         self.save_project()
 
     def _update_kpt_opacity(self, value: float):
         self.project.kpt_opacity = float(value)
         self.canvas.set_kpt_opacity(self.project.kpt_opacity)
         if self._ann is not None:
-            self.canvas.rebuild_overlays(
-                self._ann.kpts,
-                self.project.keypoint_names,
-                self.project.skeleton_edges,
-            )
+            self._rebuild_canvas()
         self.save_project()
 
     def _update_edge_opacity(self, value: float):
         self.project.edge_opacity = float(value)
         self.canvas.set_edge_opacity(self.project.edge_opacity)
         if self._ann is not None:
-            self.canvas.rebuild_overlays(
-                self._ann.kpts,
-                self.project.keypoint_names,
-                self.project.skeleton_edges,
-            )
+            self._rebuild_canvas()
         self.save_project()
 
     def fit_to_view(self):
@@ -3443,8 +3361,21 @@ class MainWindow(QMainWindow):
         else:
             self.rb_miss.setChecked(True)
 
-    def _mark_dirty(self, *_):
+    def _set_autosave_status(self, text: str):
+        if hasattr(self, "status_autosave") and self.status_autosave is not None:
+            self.status_autosave.setText(text)
+
+    def _set_saved_status(self):
+        ts = datetime.now().strftime("%H:%M:%S")
+        self._last_saved_at = ts
+        self._set_autosave_status(f"Saved {ts}")
+
+    def _set_dirty(self):
         self._dirty = True
+        self._set_autosave_status("Unsaved changes…")
+
+    def _mark_dirty(self, *_):
+        self._set_dirty()
         self._schedule_autosave()
 
     # ----- undo -----
@@ -3465,10 +3396,8 @@ class MainWindow(QMainWindow):
         if not self._undo_stack or self._ann is None:
             return
         self._ann.kpts = self._undo_stack.pop()
-        self._dirty = True
-        self.canvas.rebuild_overlays(
-            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
-        )
+        self._set_dirty()
+        self._rebuild_canvas()
         self._update_info()
 
     # ----- edits -----
@@ -3508,10 +3437,8 @@ class MainWindow(QMainWindow):
                 y=max(0.0, min(float(h - 1), y)),
                 v=int(v),
             )
-        self._dirty = True
-        self.canvas.rebuild_overlays(
-            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
-        )
+        self._set_dirty()
+        self._rebuild_canvas()
         self._update_info()
 
         if self.mode == "keypoint":
@@ -3689,10 +3616,8 @@ class MainWindow(QMainWindow):
             kp.v = 2
         kp.x = max(0.0, min(float(w - 1), x))
         kp.y = max(0.0, min(float(h - 1), y))
-        self._dirty = True
-        self.canvas.rebuild_overlays(
-            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
-        )
+        self._mark_dirty()
+        self._rebuild_canvas()
         self._update_info()
         if self.mode == "keypoint":
             self._cache_current_frame()
@@ -3714,10 +3639,8 @@ class MainWindow(QMainWindow):
         self._push_undo()
         for i in range(len(self._ann.kpts)):
             self._ann.kpts[i] = Keypoint(0.0, 0.0, 0)
-        self._dirty = True
-        self.canvas.rebuild_overlays(
-            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
-        )
+        self._set_dirty()
+        self._rebuild_canvas()
         self._update_info()
         if self.mode == "keypoint":
             self._cache_current_frame()
@@ -3743,6 +3666,7 @@ class MainWindow(QMainWindow):
 
     def _perform_autosave(self):
         if self.project.autosave and self._dirty:
+            self._set_autosave_status("Autosaving…")
             self.save_current()
 
     def _update_autosave_delay(self, seconds: float):
@@ -3792,6 +3716,29 @@ class MainWindow(QMainWindow):
                 if item.data(Qt.UserRole) == self.current_index:
                     self.labeling_list.setCurrentRow(i)
                     break
+
+    def _toggle_kpt_visibility(self, kpt_idx: int):
+        if self._ann is None:
+            return
+        if kpt_idx < 0 or kpt_idx >= len(self._ann.kpts):
+            return
+        kp = self._ann.kpts[kpt_idx]
+        if kp.v <= 0:
+            return
+        self._push_undo()
+        if kp.v == 2:
+            kp.v = 1
+        elif kp.v == 1:
+            kp.v = 0
+            kp.x = 0.0
+            kp.y = 0.0
+        else:
+            kp.v = 2
+        self._set_dirty()
+        self._rebuild_canvas()
+        self._update_info()
+        if self.mode == "keypoint":
+            self._cache_current_frame()
             for i in range(self.frame_list.count()):
                 item = self.frame_list.item(i)
                 if item.data(Qt.UserRole) == self.current_index:
@@ -3958,6 +3905,7 @@ class MainWindow(QMainWindow):
             self._select_frame_in_list(self.current_index)
 
         self.statusBar().showMessage(f"Saved: {label_path.name}", 2000)
+        self._set_saved_status()
         self.save_project()
 
     def save_all_labeling_frames(self):
@@ -4012,6 +3960,7 @@ class MainWindow(QMainWindow):
         self._populate_frames()
         self._select_frame_in_list(current_idx)
         self.statusBar().showMessage(f"Saved {saved_count} labeling frames", 2000)
+        self._set_saved_status()
         self.save_project()
 
     def open_skeleton_editor(self):
@@ -4042,31 +3991,30 @@ class MainWindow(QMainWindow):
                         f"Migrated {modified} / {total} label files.",
                     )
 
-                self.project.keypoint_names = names
-                self._rebuild_kpt_list()
+            self.project.keypoint_names = names
+            self.infer = PoseInferenceService(
+                self.project.out_root, self.project.keypoint_names
+            )
+            self._rebuild_kpt_list()
 
-                if self._ann is not None:
-                    k = len(self.project.keypoint_names)
-                    if len(self._ann.kpts) < k:
-                        self._ann.kpts.extend(
-                            [
-                                Keypoint(0.0, 0.0, 0)
-                                for _ in range(k - len(self._ann.kpts))
-                            ]
-                        )
-                    else:
-                        self._ann.kpts = self._ann.kpts[:k]
+            if self._ann is not None:
+                k = len(self.project.keypoint_names)
+                if len(self._ann.kpts) < k:
+                    self._ann.kpts.extend(
+                        [
+                            Keypoint(0.0, 0.0, 0)
+                            for _ in range(k - len(self._ann.kpts))
+                        ]
+                    )
+                else:
+                    self._ann.kpts = self._ann.kpts[:k]
 
             k = len(self.project.keypoint_names)
             self.project.skeleton_edges = [
                 (a, b) for (a, b) in edges if 0 <= a < k and 0 <= b < k and a != b
             ]
             if self._ann is not None:
-                self.canvas.rebuild_overlays(
-                    self._ann.kpts,
-                    self.project.keypoint_names,
-                    self.project.skeleton_edges,
-                )
+                self._rebuild_canvas()
             self._populate_frames()
             self._update_info()
             self.save_project()
@@ -4113,6 +4061,7 @@ class MainWindow(QMainWindow):
             )
 
         self.project.keypoint_names = new_kpts
+        self.infer = PoseInferenceService(self.project.out_root, self.project.keypoint_names)
         # clamp edges to new range
         k = len(new_kpts)
         self.project.skeleton_edges = [
@@ -4135,9 +4084,7 @@ class MainWindow(QMainWindow):
             else:
                 self._ann.kpts = self._ann.kpts[:k]
 
-        self.canvas.rebuild_overlays(
-            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
-        )
+        self._rebuild_canvas()
         self._populate_frames()
         self.save_project()
         self._update_info()
@@ -4321,37 +4268,6 @@ class MainWindow(QMainWindow):
             self, title, f"Added {len(indices)} frames to labeling set."
         )
 
-    def _pred_cache_dir(self) -> Path:
-        return self.project.out_root / PRED_CACHE_DIRNAME
-
-    def _load_pred_cache(self, weights_path: Path) -> Dict[str, List[Tuple[float, float, float]]]:
-        key = _weights_cache_key(weights_path)
-        if key in self._pred_cache:
-            return self._pred_cache[key]
-        cache_path = self._pred_cache_dir() / f"{key}.json"
-        if not cache_path.exists():
-            self._pred_cache[key] = {}
-            return self._pred_cache[key]
-        try:
-            data = json.loads(cache_path.read_text(encoding="utf-8"))
-            preds = {}
-            for k, v in data.get("preds", {}).items():
-                preds[k] = [(float(x), float(y), float(c)) for x, y, c in v]
-            self._pred_cache[key] = preds
-            return preds
-        except Exception:
-            self._pred_cache[key] = {}
-            return self._pred_cache[key]
-
-    def _save_pred_cache(self, weights_path: Path, preds: Dict[str, List[Tuple[float, float, float]]]):
-        key = _weights_cache_key(weights_path)
-        cache_dir = self._pred_cache_dir()
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        cache_path = cache_dir / f"{key}.json"
-        payload = {"weights": str(weights_path), "preds": preds}
-        cache_path.write_text(json.dumps(payload), encoding="utf-8")
-        self._pred_cache[key] = preds
-
     def _preds_to_keypoints(self, preds: List[Tuple[float, float, float]], conf_thr: float = 0.25) -> List[Keypoint]:
         kpts = []
         for x, y, c in preds:
@@ -4361,13 +4277,34 @@ class MainWindow(QMainWindow):
                 kpts.append(Keypoint(0.0, 0.0, 0))
         return kpts
 
+    def _get_pred_overlay_for_current(self) -> Optional[List[Keypoint]]:
+        if not self.show_predictions:
+            return None
+        weights = self.project.latest_pose_weights
+        if not weights:
+            return None
+        preds = self._get_pred_for_frame(weights, self.image_paths[self.current_index])
+        if not preds:
+            return None
+        return self._preds_to_keypoints(preds, conf_thr=0.0)
+
+    def _rebuild_canvas(self):
+        if self._ann is None:
+            return
+        pred_kpts = self._get_pred_overlay_for_current()
+        self.canvas.rebuild_overlays(
+            self._ann.kpts,
+            self.project.keypoint_names,
+            self.project.skeleton_edges,
+            pred_kpts=pred_kpts,
+        )
+
+    def _toggle_show_predictions(self, checked: bool):
+        self.show_predictions = bool(checked)
+        self._rebuild_canvas()
+
     def _get_pred_for_frame(self, weights: Path, img_path: Path) -> Optional[List[Tuple[float, float, float]]]:
-        preds = self._load_pred_cache(weights)
-        key = str(Path(img_path))
-        if key in preds:
-            return preds[key]
-        key = str(Path(img_path).resolve())
-        return preds.get(key)
+        return self.infer.get_cached_pred(weights, img_path)
 
     def _current_frame_has_labels(self) -> bool:
         if self._ann is not None and any(kp.v > 0 for kp in self._ann.kpts):
@@ -4387,7 +4324,7 @@ class MainWindow(QMainWindow):
             and self.project.latest_pose_weights
         ):
             p = Path(self.project.latest_pose_weights)
-            if p.exists():
+            if p.exists() and p.is_file() and p.suffix == ".pt":
                 return p
 
         path, _ = QFileDialog.getOpenFileName(
@@ -4421,7 +4358,8 @@ class MainWindow(QMainWindow):
         self._pred_worker = PosePredictWorker(
             weights_path=weights,
             image_path=self.image_paths[self.current_index],
-            num_kpts=len(self.project.keypoint_names),
+            out_root=self.project.out_root,
+            keypoint_names=self.project.keypoint_names,
             device="auto",
             imgsz=640,
             conf=0.25,
@@ -4440,37 +4378,100 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Prediction loaded. Adjust and save.", 2000)
         if self._ann is None:
             return
-        if self._current_frame_has_labels():
-            res = QMessageBox.question(
-                self,
-                "Replace labels?",
-                "This frame already has labels. Replace them with predictions for editing?",
-            )
-            if res != QMessageBox.Yes:
-                return
         if self.mode != "frame":
             self.rb_frame.setChecked(True)
-        self._push_undo()
-        self._ann.kpts = self._preds_to_keypoints(preds)
-        self._mark_dirty()
-        self.canvas.rebuild_overlays(
-            self._ann.kpts, self.project.keypoint_names, self.project.skeleton_edges
-        )
-        self._update_info()
-        self.labeling_frames.add(self.current_index)
-        self._populate_frames()
-        self._select_frame_in_list(self.current_index)
-
         weights = self.project.latest_pose_weights
         if weights:
-            preds_cache = self._load_pred_cache(weights)
-            preds_cache[str(self.image_paths[self.current_index])] = preds
-            self._save_pred_cache(weights, preds_cache)
+            self.infer.merge_cache(weights, {str(self.image_paths[self.current_index]): preds})
+        self._rebuild_canvas()
 
     def _on_pred_failed(self, msg: str):
         self.btn_predict.setEnabled(True)
         self.statusBar().showMessage("Prediction failed.", 2000)
         QMessageBox.warning(self, "Prediction failed", msg)
+
+    def _adopt_prediction_kpt(self, kpt_idx: int, x: float, y: float):
+        weights = self.project.latest_pose_weights
+        preds = None
+        if weights:
+            preds = self.infer.get_cached_pred(
+                weights, self.image_paths[self.current_index]
+            )
+
+        if not self._current_frame_has_labels():
+            if not preds:
+                return
+            # Update dragged keypoint in predictions before adopting all.
+            if kpt_idx < len(preds):
+                conf = preds[kpt_idx][2] if len(preds[kpt_idx]) >= 3 else 1.0
+                preds[kpt_idx] = (float(x), float(y), float(conf))
+            self._push_undo()
+            self._ann.kpts = self._preds_to_keypoints(preds, conf_thr=0.0)
+            self._set_dirty()
+            self._rebuild_canvas()
+            self._update_info()
+            self.labeling_frames.add(self.current_index)
+            self._populate_frames()
+            self._select_frame_in_list(self.current_index)
+            if weights:
+                self.infer.merge_cache(
+                    weights, {str(self.image_paths[self.current_index]): preds}
+                )
+            return
+
+        # Prompt only when user tries to drag a prediction and GT exists
+        res = QMessageBox.question(
+            self,
+            "Replace keypoint?",
+            "This frame already has labels. Replace this keypoint with the prediction you adjusted?",
+        )
+        if res != QMessageBox.Yes:
+            self._rebuild_canvas()
+            return
+
+        self.on_place_kpt(kpt_idx, x, y, 2)
+        self.labeling_frames.add(self.current_index)
+        self._populate_frames()
+        self._select_frame_in_list(self.current_index)
+
+        # Update prediction cache with adjusted point
+        if weights and preds and kpt_idx < len(preds):
+            preds[kpt_idx] = (float(x), float(y), 1.0)
+            self.infer.merge_cache(
+                weights, {str(self.image_paths[self.current_index]): preds}
+            )
+
+    def apply_predictions_current(self):
+        if self._ann is None:
+            QMessageBox.information(self, "No frame", "Select a frame first.")
+            return
+        weights = self._get_latest_weights_or_prompt()
+        if not weights:
+            return
+        preds = self.infer.get_cached_pred(weights, self.image_paths[self.current_index])
+        if not preds:
+            QMessageBox.information(
+                self,
+                "No predictions",
+                "No cached predictions for this frame. Run Predict Keypoints first.",
+            )
+            return
+        if self._current_frame_has_labels():
+            res = QMessageBox.question(
+                self,
+                "Replace labels?",
+                "This frame already has labels. Replace all keypoints with predictions?",
+            )
+            if res != QMessageBox.Yes:
+                return
+        self._push_undo()
+        self._ann.kpts = self._preds_to_keypoints(preds, conf_thr=0.0)
+        self._mark_dirty()
+        self._rebuild_canvas()
+        self._update_info()
+        self.labeling_frames.add(self.current_index)
+        self._populate_frames()
+        self._select_frame_in_list(self.current_index)
 
     def predict_dataset(self):
         if not self.image_paths:
@@ -4505,7 +4506,8 @@ class MainWindow(QMainWindow):
         self._bulk_pred_worker = BulkPosePredictWorker(
             weights_path=weights,
             image_paths=paths,
-            num_kpts=len(self.project.keypoint_names),
+            out_root=self.project.out_root,
+            keypoint_names=self.project.keypoint_names,
             device="auto",
             imgsz=640,
             conf=0.25,
@@ -4523,19 +4525,25 @@ class MainWindow(QMainWindow):
 
     def _on_bulk_pred_progress(self, done: int, total: int):
         if total > 0:
+            pct = int((done / total) * 100)
+            self.status_progress.setVisible(True)
+            self.status_progress.setValue(min(100, max(0, pct)))
             self.statusBar().showMessage(f"Predicting dataset… {done}/{total}")
 
     def _on_bulk_pred_finished(self, preds: Dict[str, List[Tuple[float, float, float]]]):
         self.btn_predict_bulk.setEnabled(True)
+        self.status_progress.setValue(0)
+        self.status_progress.setVisible(False)
         self.statusBar().showMessage("Predictions cached.", 2000)
         weights = self.project.latest_pose_weights
         if weights:
-            cache = self._load_pred_cache(weights)
-            cache.update(preds)
-            self._save_pred_cache(weights, cache)
+            self.infer.merge_cache(weights, preds)
+        self._rebuild_canvas()
 
     def _on_bulk_pred_failed(self, msg: str):
         self.btn_predict_bulk.setEnabled(True)
+        self.status_progress.setValue(0)
+        self.status_progress.setVisible(False)
         self.statusBar().showMessage("Prediction failed.", 2000)
         QMessageBox.warning(self, "Prediction failed", msg)
 
@@ -4654,7 +4662,10 @@ def find_project(images_dir: Path, out_root: Optional[Path]) -> Optional[Path]:
             # Verify this project actually matches our images_dir
             try:
                 proj_data = json.loads(p.read_text(encoding="utf-8"))
-                proj_images_dir = Path(proj_data["images_dir"])
+                base = p.parent
+                proj_images_dir = _resolve_project_path(
+                    Path(proj_data["images_dir"]), base, proj_data
+                )
                 if proj_images_dir.resolve() == images_dir.resolve():
                     return p
                 # If the project file is colocated with images_dir/labels,

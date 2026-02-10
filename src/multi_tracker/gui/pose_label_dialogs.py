@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 import logging
-import hashlib
 import subprocess
 import sys
 import tempfile
@@ -53,6 +52,14 @@ from PySide6.QtWidgets import (
 )
 
 # Settings helpers
+try:
+    from .pose_inference import PoseInferenceService
+except ImportError:
+    try:
+        from pose_inference import PoseInferenceService
+    except Exception:
+        PoseInferenceService = None
+
 try:
     from .pose_label import load_ui_settings, save_ui_settings
 except ImportError:
@@ -116,7 +123,12 @@ except ImportError:
 logger = logging.getLogger("pose_label.dialogs")
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-PRED_CACHE_DIRNAME = ".posekit/predictions"
+
+
+def _make_pose_infer(out_root: Path, keypoint_names: List[str]):
+    if PoseInferenceService is None:
+        raise RuntimeError("PoseInferenceService not available. Check imports.")
+    return PoseInferenceService(out_root, keypoint_names)
 
 
 def get_available_devices():
@@ -129,170 +141,6 @@ def get_available_devices():
     return devices
 
 
-def _weights_cache_key(weights_path: Path) -> str:
-    try:
-        stat = weights_path.stat()
-        token = f"{weights_path.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
-    except Exception:
-        token = str(weights_path)
-    return hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
-
-
-def _load_pred_cache(out_root: Path, weights_path: Path):
-    key = _weights_cache_key(weights_path)
-    cache_path = out_root / PRED_CACHE_DIRNAME / f"{key}.json"
-    if not cache_path.exists():
-        return {}
-    try:
-        data = json.loads(cache_path.read_text(encoding="utf-8"))
-        preds = {}
-        for k, v in data.get("preds", {}).items():
-            preds[k] = [(float(x), float(y), float(c)) for x, y, c in v]
-        return preds
-    except Exception:
-        return {}
-
-
-def _run_pose_predict_subprocess(
-    weights_path: Path,
-    image_paths: List[Path],
-    device: str,
-    imgsz: int,
-    conf: float,
-    batch: int,
-    progress_cb=None,
-):
-    req = {
-        "weights": str(weights_path),
-        "images": [str(p) for p in image_paths],
-        "device": device,
-        "imgsz": int(imgsz),
-        "conf": float(conf),
-        "batch": int(batch),
-    }
-    cache_dir = Path(tempfile.gettempdir())
-    req_path = cache_dir / f"pose_pred_req_{os.getpid()}.json"
-    out_path = cache_dir / f"pose_pred_out_{os.getpid()}.json"
-    req_path.write_text(json.dumps(req), encoding="utf-8")
-
-    code = (
-        "import json,sys\n"
-        "from pathlib import Path\n"
-        "import numpy as np\n"
-        "def _is_cuda_device(d):\n"
-        "    d=(d or '').strip().lower()\n"
-        "    return d in {'cuda','gpu'} or d.startswith('cuda:') or d.isdigit()\n"
-        "def _maybe_limit_cuda_memory():\n"
-        "    try:\n"
-        "        import torch\n"
-        "        if torch.cuda.is_available():\n"
-        "            torch.cuda.set_per_process_memory_fraction(0.9)\n"
-        "    except Exception:\n"
-        "        pass\n"
-        "req=Path(sys.argv[1])\n"
-        "out=Path(sys.argv[2])\n"
-        "cfg=json.loads(req.read_text(encoding='utf-8'))\n"
-        "from ultralytics import YOLO\n"
-        "model=YOLO(cfg['weights'])\n"
-        "pred_kwargs={\n"
-        "  'imgsz': int(cfg['imgsz']),\n"
-        "  'conf': float(cfg['conf']),\n"
-        "  'max_det': 1,\n"
-        "  'stream': True,\n"
-        "  'verbose': False,\n"
-        "  'batch': int(cfg['batch']),\n"
-        "}\n"
-        "if cfg.get('device') and cfg.get('device')!='auto':\n"
-        "  pred_kwargs['device']=cfg['device']\n"
-        "if _is_cuda_device(cfg.get('device')):\n"
-        "  _maybe_limit_cuda_memory()\n"
-        "  pred_kwargs['half']=True\n"
-        "images=cfg['images']\n"
-        "preds={}\n"
-        "b=max(1,int(cfg.get('batch',1)))\n"
-        "i=0\n"
-        "while i < len(images):\n"
-        "  chunk=images[i:i+b]\n"
-        "  kw=dict(pred_kwargs)\n"
-        "  kw['source']=chunk\n"
-        "  kw['batch']=min(b,len(chunk))\n"
-        "  try:\n"
-        "    results=list(model.predict(**kw))\n"
-        "  except RuntimeError as e:\n"
-        "    if 'out of memory' in str(e).lower() and b>1:\n"
-        "      b=max(1,b//2)\n"
-        "      continue\n"
-        "    raise\n"
-        "  total=len(images)\n"
-        "  done=0\n"
-        "  for r in results:\n"
-        "    if r is None or r.keypoints is None:\n"
-        "      preds[str(Path(r.path))]=[]\n"
-        "      continue\n"
-        "    k=r.keypoints\n"
-        "    try:\n"
-        "      xy=k.xy\n"
-        "      conf=getattr(k,'conf',None)\n"
-        "      xy=xy.cpu().numpy() if hasattr(xy,'cpu') else np.array(xy)\n"
-        "      if conf is not None:\n"
-        "        conf=conf.cpu().numpy() if hasattr(conf,'cpu') else np.array(conf)\n"
-        "    except Exception:\n"
-        "      preds[str(Path(r.path))]=[]\n"
-        "      continue\n"
-        "    if xy.ndim==2:\n"
-        "      xy=xy[None,:,:]\n"
-        "    if conf is not None and conf.ndim==1:\n"
-        "      conf=conf[None,:]\n"
-        "    if xy.size==0:\n"
-        "      preds[str(Path(r.path))]=[]\n"
-        "      continue\n"
-        "    if conf is not None:\n"
-        "      scores=np.nanmean(conf,axis=1)\n"
-        "    else:\n"
-        "      scores=None\n"
-        "      try:\n"
-        "        if r.boxes is not None and hasattr(r.boxes,'conf'):\n"
-        "          scores=r.boxes.conf.cpu().numpy()\n"
-        "      except Exception:\n"
-        "        scores=None\n"
-        "      if scores is None:\n"
-        "        scores=np.zeros((xy.shape[0],),dtype=np.float32)\n"
-        "    best=int(np.argmax(scores)) if len(scores)>0 else 0\n"
-        "    pred_xy=xy[best]\n"
-        "    pred_conf=conf[best] if conf is not None else np.zeros((pred_xy.shape[0],),dtype=np.float32)\n"
-        "    pts=[]\n"
-        "    for j in range(pred_xy.shape[0]):\n"
-        "      c=float(pred_conf[j]) if j < len(pred_conf) else 0.0\n"
-        "      pts.append((float(pred_xy[j][0]),float(pred_xy[j][1]),c))\n"
-        "    preds[str(Path(r.path))]=pts\n"
-        "    done+=1\n"
-        "    print(f'PROGRESS {done} {total}', flush=True)\n"
-        "  i+=len(chunk)\n"
-        "out.write_text(json.dumps({'preds':preds}),encoding='utf-8')\n"
-    )
-
-    proc = subprocess.Popen(
-        [sys.executable, "-c", code, str(req_path), str(out_path)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        bufsize=1,
-    )
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        line = line.strip()
-        if line.startswith("PROGRESS "):
-            try:
-                _, done_s, total_s = line.split()
-                if progress_cb:
-                    progress_cb(int(done_s), int(total_s))
-            except Exception:
-                pass
-    stdout, stderr = proc.communicate()
-    if proc.returncode != 0:
-        return False, {}, (stderr.strip() or stdout.strip() or "Subprocess failed.")
-    data = json.loads(out_path.read_text(encoding="utf-8"))
-    return True, data.get("preds", {}), ""
 
 
 def _is_cuda_device(device: str) -> bool:
@@ -2429,6 +2277,7 @@ class TrainingWorker(QObject):
         dataset_yaml: Path,
         run_dir: Path,
         epochs: int,
+        patience: int,
         batch: int,
         imgsz: int,
         device: str,
@@ -2448,6 +2297,7 @@ class TrainingWorker(QObject):
         self.dataset_yaml = Path(dataset_yaml)
         self.run_dir = Path(run_dir)
         self.epochs = int(epochs)
+        self.patience = int(patience)
         self.batch = int(batch)
         self.imgsz = int(imgsz)
         self.device = device
@@ -2522,6 +2372,7 @@ class TrainingWorker(QObject):
                 f"model={self.model_weights}",
                 f"data={str(self.dataset_yaml)}",
                 f"epochs={self.epochs}",
+                f"patience={int(getattr(self, 'patience', 10))}",
                 f"batch={self.batch}",
                 f"imgsz={self.imgsz}",
                 f"project={str(self.run_dir.parent)}",
@@ -2564,6 +2415,7 @@ class TrainingWorker(QObject):
                     "model.train(\n"
                     "  data=r'''{data}''',\n"
                     "  epochs={epochs},\n"
+                    "  patience={patience},\n"
                     "  batch={batch},\n"
                     "  imgsz={imgsz},\n"
                     "  project=r'''{project}''',\n"
@@ -2585,6 +2437,7 @@ class TrainingWorker(QObject):
                     model=self.model_weights,
                     data=str(self.dataset_yaml),
                     epochs=self.epochs,
+                    patience=self.patience,
                     batch=self.batch,
                     imgsz=self.imgsz,
                     project=str(self.run_dir.parent),
@@ -2720,6 +2573,11 @@ class TrainingRunnerDialog(QDialog):
         self.epochs_spin.setRange(1, 10000)
         self.epochs_spin.setValue(50)
         cfg_layout.addRow("Epochs:", self.epochs_spin)
+
+        self.patience_spin = QSpinBox()
+        self.patience_spin.setRange(0, 1000)
+        self.patience_spin.setValue(10)
+        cfg_layout.addRow("Early stopping (patience):", self.patience_spin)
 
         self.imgsz_spin = QSpinBox()
         self.imgsz_spin.setRange(64, 4096)
@@ -3051,6 +2909,7 @@ class TrainingRunnerDialog(QDialog):
         self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
         self.epochs_spin.setValue(int(settings.get("epochs", self.epochs_spin.value())))
         self.imgsz_spin.setValue(int(settings.get("imgsz", self.imgsz_spin.value())))
+        self.patience_spin.setValue(int(settings.get("patience", self.patience_spin.value())))
         self.device_combo.setCurrentText(settings.get("device", self.device_combo.currentText()))
         self.cb_augment.setChecked(bool(settings.get("augment", self.cb_augment.isChecked())))
         self.hsv_h_spin.setValue(float(settings.get("hsv_h", self.hsv_h_spin.value())))
@@ -3084,6 +2943,7 @@ class TrainingRunnerDialog(QDialog):
                 "model": self.model_combo.currentText().strip(),
                 "batch": int(self.batch_spin.value()),
                 "epochs": int(self.epochs_spin.value()),
+                "patience": int(self.patience_spin.value()),
                 "imgsz": int(self.imgsz_spin.value()),
                 "device": self.device_combo.currentText(),
                 "augment": bool(self.cb_augment.isChecked()),
@@ -3186,6 +3046,7 @@ class TrainingRunnerDialog(QDialog):
             "backend": "yolo_pose",
             "model_weights": self.model_combo.currentText().strip(),
             "epochs": int(self.epochs_spin.value()),
+            "patience": int(self.patience_spin.value()),
             "batch": int(self.batch_spin.value()),
             "imgsz": int(self.imgsz_spin.value()),
             "device": self.device_combo.currentText(),
@@ -3201,12 +3062,12 @@ class TrainingRunnerDialog(QDialog):
             "mixup": float(self.mixup_spin.value()),
             "dataset": {
                 "yaml": str(dataset_info["yaml_path"]),
-                "train": str(dataset_info["train_list"]),
-                "val": str(dataset_info["val_list"]),
-                "train_count": dataset_info["train_count"],
-                "val_count": dataset_info["val_count"],
-                "manifest": str(dataset_info.get("manifest", "")),
-            },
+                    "train": str(dataset_info["train_list"]),
+                    "val": str(dataset_info["val_list"]),
+                    "train_count": dataset_info["train_count"],
+                    "val_count": dataset_info["val_count"],
+                    "manifest": str(dataset_info.get("manifest", "")),
+                },
             "aux_datasets": [d["project_path"] for d in self._aux_datasets],
         }
         (run_dir / "config.json").write_text(
@@ -3225,6 +3086,7 @@ class TrainingRunnerDialog(QDialog):
             dataset_yaml=Path(dataset_info["yaml_path"]),
             run_dir=run_dir,
             epochs=self.epochs_spin.value(),
+            patience=self.patience_spin.value(),
             batch=self.batch_spin.value(),
             imgsz=self.imgsz_spin.value(),
             device=self.device_combo.currentText(),
@@ -3271,10 +3133,22 @@ class TrainingRunnerDialog(QDialog):
         self.btn_stop.setEnabled(False)
         weights = info.get("weights") or ""
         self._last_weights = weights if weights else None
+        if not self._last_weights and self._last_run_dir:
+            run_dir = Path(self._last_run_dir)
+            best = run_dir / "weights" / "best.pt"
+            last = run_dir / "weights" / "last.pt"
+            if best.exists():
+                self._last_weights = str(best)
+            elif last.exists():
+                self._last_weights = str(last)
         if weights:
             self._append_log(f"Weights: {weights}")
             self.btn_open_eval.setEnabled(True)
             self._set_latest_weights(weights)
+        elif self._last_weights:
+            self._append_log(f"Weights: {self._last_weights}")
+            self.btn_open_eval.setEnabled(True)
+            self._set_latest_weights(self._last_weights)
         if self._last_run_dir:
             run_dir = Path(self._last_run_dir)
             if list(run_dir.glob("**/events.out.tfevents.*")):
@@ -3286,7 +3160,11 @@ class TrainingRunnerDialog(QDialog):
 
     def _set_latest_weights(self, weights: str):
         try:
-            self.project.latest_pose_weights = Path(weights).resolve()
+            w = Path(weights).resolve()
+            if not w.is_file() or w.suffix != ".pt":
+                self._append_log(f"Warning: ignoring non-.pt weights: {w}")
+                return
+            self.project.latest_pose_weights = w
             self.project.project_path.write_text(
                 json.dumps(self.project.to_json(), indent=2), encoding="utf-8"
             )
@@ -3324,6 +3202,7 @@ class EvaluationWorker(QObject):
         labels_dir: Path,
         keypoint_names: List[str],
         run_dir: Path,
+        out_root: Path,
         device: str,
         imgsz: int,
         conf: float,
@@ -3338,6 +3217,7 @@ class EvaluationWorker(QObject):
         self.labels_dir = Path(labels_dir)
         self.keypoint_names = list(keypoint_names)
         self.run_dir = Path(run_dir)
+        self.out_root = Path(out_root)
         self.device = device
         self.imgsz = int(imgsz)
         self.conf = float(conf)
@@ -3435,7 +3315,8 @@ class EvaluationWorker(QObject):
             total_conf = 0.0
 
             if self.pred_cache is None:
-                ok, preds, err = _run_pose_predict_subprocess(
+                infer = _make_pose_infer(self.out_root, self.keypoint_names)
+                preds, err = infer.predict(
                     self.weights_path,
                     self.eval_paths,
                     device=self.device,
@@ -3444,7 +3325,7 @@ class EvaluationWorker(QObject):
                     batch=self.batch,
                     progress_cb=self.progress.emit,
                 )
-                if not ok:
+                if preds is None:
                     self.failed.emit(err or "Prediction failed.")
                     return
                 self.pred_cache = preds
@@ -3657,6 +3538,9 @@ class EvaluationDashboardDialog(QDialog):
         self._thread = None
         self._worker = None
         self._path_to_index = {str(p): i for i, p in enumerate(image_paths)}
+        self.infer = _make_pose_infer(
+            self.project.out_root, self.project.keypoint_names
+        )
 
         layout = QVBoxLayout(self)
         scroll = QScrollArea(self)
@@ -3914,19 +3798,11 @@ class EvaluationDashboardDialog(QDialog):
 
         pred_cache = None
         if self.cb_use_cache.isChecked():
-            cache = _load_pred_cache(self.project.out_root, weights)
-            if cache:
-                missing = [
-                    str(p)
-                    for p in eval_paths
-                    if str(p) not in cache and str(p.resolve()) not in cache
-                ]
-                if not missing:
-                    pred_cache = cache
-                else:
-                    self._append_log(
-                        f"Cached predictions incomplete ({len(missing)} missing). Using model."
-                    )
+            cache = self.infer.get_cache_for_paths(weights, eval_paths)
+            if cache is not None:
+                pred_cache = cache
+            else:
+                self._append_log("Cached predictions incomplete. Using model.")
 
         self.log_view.clear()
         self.progress.setValue(0)
@@ -3943,6 +3819,7 @@ class EvaluationDashboardDialog(QDialog):
             labels_dir=self.project.labels_dir,
             keypoint_names=self.project.keypoint_names,
             run_dir=out_dir,
+            out_root=self.project.out_root,
             device=self.device_combo.currentText(),
             imgsz=self.imgsz_spin.value(),
             conf=self.conf_spin.value(),
@@ -4074,6 +3951,8 @@ class ActiveLearningWorker(QObject):
         image_paths: List[Path],
         candidate_indices: List[int],
         num_kpts: int,
+        keypoint_names: List[str],
+        out_root: Path,
         weights_a: Optional[str],
         weights_b: Optional[str],
         device: str,
@@ -4089,6 +3968,8 @@ class ActiveLearningWorker(QObject):
         self.image_paths = image_paths
         self.candidate_indices = candidate_indices
         self.num_kpts = int(num_kpts)
+        self.keypoint_names = list(keypoint_names)
+        self.out_root = Path(out_root)
         self.weights_a = weights_a
         self.weights_b = weights_b
         self.device = device
@@ -4104,7 +3985,8 @@ class ActiveLearningWorker(QObject):
         self._cancel = True
 
     def _predict_keypoints(self, weights_path: str, paths: List[Path]):
-        ok, preds_list, err = _run_pose_predict_subprocess(
+        infer = _make_pose_infer(self.out_root, self.keypoint_names)
+        preds_list, err = infer.predict(
             Path(weights_path),
             paths,
             device=self.device,
@@ -4113,7 +3995,7 @@ class ActiveLearningWorker(QObject):
             batch=self.batch,
             progress_cb=self.progress.emit,
         )
-        if not ok:
+        if preds_list is None:
             self.failed.emit(err or "Prediction failed.")
             return None
 
@@ -4328,6 +4210,9 @@ class ActiveLearningDialog(QDialog):
         self._worker = None
         self._path_to_index = {str(p): i for i, p in enumerate(image_paths)}
         self._scores = []
+        self.infer = _make_pose_infer(
+            self.project.out_root, self.project.keypoint_names
+        )
 
         layout = QVBoxLayout(self)
         scroll = QScrollArea(self)
@@ -4593,24 +4478,16 @@ class ActiveLearningDialog(QDialog):
         preds_cache_b = None
         if self.cb_use_cache.isChecked():
             if weights_a:
-                cache_a = _load_pred_cache(self.project.out_root, Path(weights_a))
-                missing_a = [
-                    str(self.image_paths[i])
-                    for i in candidates
-                    if str(self.image_paths[i]) not in cache_a
-                    and str(self.image_paths[i].resolve()) not in cache_a
-                ]
-                if not missing_a:
+                cache_a = self.infer.get_cache_for_paths(
+                    Path(weights_a), [self.image_paths[i] for i in candidates]
+                )
+                if cache_a is not None:
                     preds_cache_a = cache_a
             if weights_b:
-                cache_b = _load_pred_cache(self.project.out_root, Path(weights_b))
-                missing_b = [
-                    str(self.image_paths[i])
-                    for i in candidates
-                    if str(self.image_paths[i]) not in cache_b
-                    and str(self.image_paths[i].resolve()) not in cache_b
-                ]
-                if not missing_b:
+                cache_b = self.infer.get_cache_for_paths(
+                    Path(weights_b), [self.image_paths[i] for i in candidates]
+                )
+                if cache_b is not None:
                     preds_cache_b = cache_b
 
         self._thread = QThread()
@@ -4619,6 +4496,8 @@ class ActiveLearningDialog(QDialog):
             image_paths=self.image_paths,
             candidate_indices=candidates,
             num_kpts=len(self.project.keypoint_names),
+            keypoint_names=self.project.keypoint_names,
+            out_root=self.project.out_root,
             weights_a=weights_a,
             weights_b=weights_b,
             device=self.device_combo.currentText(),
