@@ -98,6 +98,37 @@ class PoseInferenceService:
         cache.update(new_preds)
         self._write_cache(weights_path, cache)
 
+    def clear_cache(self, weights_path: Optional[Path] = None) -> int:
+        removed = 0
+        if weights_path is not None:
+            key = self._cache_key(weights_path)
+            if key in self._cache_mem:
+                del self._cache_mem[key]
+            try:
+                path = self._cache_path(weights_path)
+                if path.exists():
+                    path.unlink()
+                    removed += 1
+            except Exception:
+                pass
+            return removed
+
+        # Clear all caches
+        self._cache_mem.clear()
+        cache_dir = self._cache_dir()
+        if not cache_dir.exists():
+            return removed
+        try:
+            for p in cache_dir.glob("*.json"):
+                try:
+                    p.unlink()
+                    removed += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return removed
+
     def get_cached_pred(
         self, weights_path: Path, image_path: Path
     ) -> Optional[List[Tuple[float, float, float]]]:

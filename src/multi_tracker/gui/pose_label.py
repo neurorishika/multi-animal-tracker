@@ -1299,7 +1299,7 @@ class PoseCanvas(QGraphicsView):
                 self.pred_items[i] = circ
                 if show_pred_conf and pred_confs and i < len(pred_confs):
                     conf = pred_confs[i]
-                    lab = QGraphicsTextItem(f"{conf:.2f}")
+                    lab = QGraphicsTextItem(f"{conf:.3f}")
                     lab.setDefaultTextColor(QColor(0, 220, 255, 200))
                     lab.setFont(QFont("Arial", max(4, int(self._label_font_size * 0.8))))
                     lab.setPos(kp.x + r + 2, kp.y - r - 2)
@@ -2302,8 +2302,9 @@ class MainWindow(QMainWindow):
         self.canvas.set_kpt_opacity(self.project.kpt_opacity)
         self.canvas.set_edge_opacity(self.project.edge_opacity)
         self.canvas_hint = QLabel(
-            "Left click: place/move  •  Right click: pan  •  Wheel: zoom  •  "
-            "A/D: prev/next  •  Q/E: prev/next keypoint  •  Space: advance  •  Ctrl+S: save"
+            "Left click: place/move  •  Right click: toggle vis / place occluded  •  "
+            "Wheel: zoom  •  A/D: prev/next  •  Q/E: prev/next keypoint  •  "
+            "Space: advance  •  Ctrl+S: save"
         )
         self.canvas_hint.setWordWrap(True)
         self.canvas_hint.setAlignment(Qt.AlignCenter)
@@ -2349,28 +2350,29 @@ class MainWindow(QMainWindow):
         # Tools
         right = QWidget()
         right_layout = QVBoxLayout(right)
+        right_layout.setSpacing(10)
 
-        right_layout.addWidget(QLabel("Class"))
+        # Annotation
+        ann_group = QGroupBox("Annotation")
+        ann_layout = QVBoxLayout(ann_group)
+        ann_layout.addWidget(QLabel("Class"))
         self.class_combo = QComboBox()
         self.class_combo.addItems(self.project.class_names)
-        right_layout.addWidget(self.class_combo)
-
-        right_layout.addSpacing(8)
-        right_layout.addWidget(QLabel("Keypoints"))
+        ann_layout.addWidget(self.class_combo)
+        ann_layout.addSpacing(4)
+        ann_layout.addWidget(QLabel("Keypoints"))
         self.kpt_list = QListWidget()
         self._rebuild_kpt_list()
-        right_layout.addWidget(self.kpt_list, 1)
-
-        right_layout.addSpacing(8)
-        right_layout.addWidget(QLabel("Workflow"))
+        ann_layout.addWidget(self.kpt_list, 1)
+        ann_layout.addSpacing(4)
+        ann_layout.addWidget(QLabel("Mode"))
         self.rb_frame = QRadioButton("Frame-by-frame")
         self.rb_kpt = QRadioButton("Keypoint-by-keypoint")
         self.rb_frame.setChecked(True)
-        right_layout.addWidget(self.rb_frame)
-        right_layout.addWidget(self.rb_kpt)
-
-        right_layout.addSpacing(8)
-        right_layout.addWidget(QLabel("Click sets visibility"))
+        ann_layout.addWidget(self.rb_frame)
+        ann_layout.addWidget(self.rb_kpt)
+        ann_layout.addSpacing(4)
+        ann_layout.addWidget(QLabel("Click visibility"))
         self.vis_group = QButtonGroup(self)
         self.rb_vis = QRadioButton("Visible (2)")
         self.rb_occ = QRadioButton("Occluded (1)")
@@ -2379,53 +2381,53 @@ class MainWindow(QMainWindow):
         self.vis_group.addButton(self.rb_vis, 2)
         self.vis_group.addButton(self.rb_occ, 1)
         self.vis_group.addButton(self.rb_miss, 0)
-        right_layout.addWidget(self.rb_vis)
-        right_layout.addWidget(self.rb_occ)
-        right_layout.addWidget(self.rb_miss)
+        ann_layout.addWidget(self.rb_vis)
+        ann_layout.addWidget(self.rb_occ)
+        ann_layout.addWidget(self.rb_miss)
+        right_layout.addWidget(ann_group)
 
-        right_layout.addSpacing(8)
-        right_layout.addWidget(QLabel("Display"))
+        # Display
+        disp_group = QGroupBox("Display")
+        disp_layout = QVBoxLayout(disp_group)
         self.cb_enhance = QCheckBox("Enhance contrast (CLAHE)")
         self.cb_enhance.setChecked(bool(self.project.enhance_enabled))
         self.btn_enhance_settings = QPushButton("Enhancement settings…")
-        right_layout.addWidget(self.cb_enhance)
-        right_layout.addWidget(self.btn_enhance_settings)
+        disp_layout.addWidget(self.cb_enhance)
+        disp_layout.addWidget(self.btn_enhance_settings)
         self.cb_show_preds = QCheckBox("Show predictions")
         self.cb_show_preds.setChecked(True)
-        right_layout.addWidget(self.cb_show_preds)
+        disp_layout.addWidget(self.cb_show_preds)
         self.cb_show_pred_conf = QCheckBox("Show pred confidence")
         self.cb_show_pred_conf.setChecked(False)
-        right_layout.addWidget(self.cb_show_pred_conf)
+        disp_layout.addWidget(self.cb_show_pred_conf)
 
         autosave_row = QHBoxLayout()
-        autosave_row.addWidget(QLabel("Autosave delay (sec):"))
+        autosave_row.addWidget(QLabel("Autosave (sec)"))
         self.sp_autosave_delay = QDoubleSpinBox()
         self.sp_autosave_delay.setRange(0.5, 30.0)
         self.sp_autosave_delay.setSingleStep(0.5)
         self.sp_autosave_delay.setValue(self.autosave_delay_ms / 1000.0)
         autosave_row.addWidget(self.sp_autosave_delay)
-        right_layout.addLayout(autosave_row)
+        disp_layout.addLayout(autosave_row)
 
-        # Opacity controls
         opacity_row1 = QHBoxLayout()
-        opacity_row1.addWidget(QLabel("Keypoint opacity:"))
+        opacity_row1.addWidget(QLabel("Keypoint opacity"))
         self.sp_kpt_opacity = QDoubleSpinBox()
         self.sp_kpt_opacity.setRange(0.0, 1.0)
         self.sp_kpt_opacity.setSingleStep(0.05)
         self.sp_kpt_opacity.setValue(self.project.kpt_opacity)
         opacity_row1.addWidget(self.sp_kpt_opacity)
-        right_layout.addLayout(opacity_row1)
+        disp_layout.addLayout(opacity_row1)
 
         opacity_row2 = QHBoxLayout()
-        opacity_row2.addWidget(QLabel("Edge opacity:"))
+        opacity_row2.addWidget(QLabel("Edge opacity"))
         self.sp_edge_opacity = QDoubleSpinBox()
         self.sp_edge_opacity.setRange(0.0, 1.0)
         self.sp_edge_opacity.setSingleStep(0.05)
         self.sp_edge_opacity.setValue(self.project.edge_opacity)
         opacity_row2.addWidget(self.sp_edge_opacity)
-        right_layout.addLayout(opacity_row2)
+        disp_layout.addLayout(opacity_row2)
 
-        right_layout.addSpacing(8)
         size_row = QHBoxLayout()
         self.sp_kpt_size = QDoubleSpinBox()
         self.sp_kpt_size.setRange(0.5, 20.0)
@@ -2439,53 +2441,52 @@ class MainWindow(QMainWindow):
         size_row.addSpacing(6)
         size_row.addWidget(QLabel("Text"))
         size_row.addWidget(self.sp_label_size)
-        right_layout.addLayout(size_row)
+        disp_layout.addLayout(size_row)
 
-        # Fit to view button
         self.btn_fit_view = QPushButton("Fit to View (Ctrl+0)")
-        right_layout.addWidget(self.btn_fit_view)
+        disp_layout.addWidget(self.btn_fit_view)
+        right_layout.addWidget(disp_group)
 
-        right_layout.addSpacing(10)
+        # Navigation
+        nav_group = QGroupBox("Navigation")
+        nav_layout = QVBoxLayout(nav_group)
         row1 = QHBoxLayout()
         self.btn_prev = QPushButton("◀ Prev (A)")
         self.btn_next = QPushButton("Next (D) ▶")
         row1.addWidget(self.btn_prev)
         row1.addWidget(self.btn_next)
-        right_layout.addLayout(row1)
+        nav_layout.addLayout(row1)
 
         row2 = QHBoxLayout()
         self.btn_save = QPushButton("Save (Ctrl+S)")
         self.btn_next_unl = QPushButton("Next Unlabeled (Ctrl+F)")
         row2.addWidget(self.btn_save)
         row2.addWidget(self.btn_next_unl)
-        right_layout.addLayout(row2)
+        nav_layout.addLayout(row2)
+        right_layout.addWidget(nav_group)
 
-        self.btn_skel = QPushButton("Skeleton Editor (Ctrl+G)")
-        self.btn_proj = QPushButton("Project Settings (Ctrl+P)")
-        self.btn_export = QPushButton("Export dataset.yaml + splits…")
-        right_layout.addWidget(self.btn_skel)
-        right_layout.addWidget(self.btn_proj)
-        right_layout.addWidget(self.btn_export)
-
-        right_layout.addSpacing(8)
-        right_layout.addWidget(QLabel("Model"))
+        # Model
+        model_group = QGroupBox("Model")
+        model_layout = QVBoxLayout(model_group)
+        model_layout.addWidget(QLabel("Pose weights (.pt)"))
         pred_weights_row = QHBoxLayout()
         self.pred_weights_edit = QLineEdit("")
+        self.pred_weights_edit.setPlaceholderText("Select weights (.pt)")
         self.btn_pred_weights = QPushButton("Browse…")
         self.btn_pred_weights_latest = QPushButton("Use Latest")
         pred_weights_row.addWidget(self.pred_weights_edit, 1)
         pred_weights_row.addWidget(self.btn_pred_weights)
         pred_weights_row.addWidget(self.btn_pred_weights_latest)
-        right_layout.addLayout(pred_weights_row)
+        model_layout.addLayout(pred_weights_row)
 
         pred_conf_row = QHBoxLayout()
-        pred_conf_row.addWidget(QLabel("Pred conf:"))
+        pred_conf_row.addWidget(QLabel("Min pred conf"))
         self.sp_pred_conf = QDoubleSpinBox()
         self.sp_pred_conf.setRange(0.0, 1.0)
         self.sp_pred_conf.setSingleStep(0.05)
         self.sp_pred_conf.setValue(0.25)
         pred_conf_row.addWidget(self.sp_pred_conf)
-        right_layout.addLayout(pred_conf_row)
+        model_layout.addLayout(pred_conf_row)
 
         self.btn_train = QPushButton("Train / Fine-tune…")
         self.btn_eval = QPushButton("Evaluate…")
@@ -2493,14 +2494,29 @@ class MainWindow(QMainWindow):
         self.btn_predict = QPushButton("Predict Keypoints…")
         self.btn_predict_bulk = QPushButton("Predict Dataset…")
         self.btn_apply_preds = QPushButton("Apply Predictions")
-        right_layout.addWidget(self.btn_train)
-        right_layout.addWidget(self.btn_eval)
-        right_layout.addWidget(self.btn_active)
-        right_layout.addWidget(self.btn_predict)
-        right_layout.addWidget(self.btn_predict_bulk)
-        right_layout.addWidget(self.btn_apply_preds)
+        self.btn_clear_pred_cache = QPushButton("Clear Prediction Cache")
+        model_layout.addWidget(self.btn_train)
+        model_layout.addWidget(self.btn_eval)
+        model_layout.addWidget(self.btn_active)
+        model_layout.addWidget(self.btn_predict)
+        model_layout.addWidget(self.btn_predict_bulk)
+        model_layout.addWidget(self.btn_apply_preds)
+        model_layout.addWidget(self.btn_clear_pred_cache)
+        right_layout.addWidget(model_group)
 
-        self.controls_group = QGroupBox("Controls")
+        # Project
+        proj_group = QGroupBox("Project")
+        proj_layout = QVBoxLayout(proj_group)
+        self.btn_skel = QPushButton("Skeleton Editor (Ctrl+G)")
+        self.btn_proj = QPushButton("Project Settings (Ctrl+P)")
+        self.btn_export = QPushButton("Export dataset.yaml + splits…")
+        proj_layout.addWidget(self.btn_skel)
+        proj_layout.addWidget(self.btn_proj)
+        proj_layout.addWidget(self.btn_export)
+        right_layout.addWidget(proj_group)
+
+        # Shortcuts
+        self.controls_group = QGroupBox("Shortcuts")
         controls_layout = QVBoxLayout(self.controls_group)
         self.controls_label = QLabel(
             "Left click: place/move keypoint\n"
@@ -2515,12 +2531,10 @@ class MainWindow(QMainWindow):
         )
         self.controls_label.setWordWrap(True)
         controls_layout.addWidget(self.controls_label)
-        right_layout.addSpacing(6)
         right_layout.addWidget(self.controls_group)
 
         self.lbl_info = QLabel("")
         self.lbl_info.setWordWrap(True)
-        right_layout.addSpacing(8)
         right_layout.addWidget(self.lbl_info)
         right_layout.addStretch(1)
 
@@ -2599,6 +2613,7 @@ class MainWindow(QMainWindow):
         self.cb_show_preds.toggled.connect(self._toggle_show_predictions)
         self.cb_show_pred_conf.toggled.connect(self._toggle_show_pred_conf)
         self.btn_apply_preds.clicked.connect(self.apply_predictions_current)
+        self.btn_clear_pred_cache.clicked.connect(self._clear_prediction_cache)
         self.btn_pred_weights.clicked.connect(self._browse_pred_weights)
         self.btn_pred_weights_latest.clicked.connect(self._use_latest_pred_weights)
         self.btn_unlabeled_to_labeling.clicked.connect(self._move_unlabeled_to_labeling)
@@ -4601,6 +4616,31 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Prediction failed.", 2000)
         QMessageBox.warning(self, "Prediction failed", msg)
 
+    def _clear_prediction_cache(self):
+        weights = self._get_pred_weights_silent()
+        if weights:
+            removed = self.infer.clear_cache(weights)
+            self.statusBar().showMessage(
+                f"Cleared prediction cache ({removed} file(s)).", 3000
+            )
+            self._rebuild_canvas()
+            return
+
+        resp = QMessageBox.question(
+            self,
+            "Clear prediction cache",
+            "No prediction weights selected. Clear all cached predictions?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if resp != QMessageBox.Yes:
+            return
+        removed = self.infer.clear_cache(None)
+        self.statusBar().showMessage(
+            f"Cleared all prediction caches ({removed} file(s)).", 3000
+        )
+        self._rebuild_canvas()
+
     def _adopt_prediction_kpt(self, kpt_idx: int, x: float, y: float):
         weights = self._get_pred_weights_or_prompt()
         preds = None
@@ -4645,9 +4685,10 @@ class MainWindow(QMainWindow):
         self._populate_frames()
         self._select_frame_in_list(self.current_index)
 
-        # Update prediction cache with adjusted point
+        # Update prediction cache with adjusted point (preserve existing conf if present)
         if weights and preds and kpt_idx < len(preds):
-            preds[kpt_idx] = (float(x), float(y), 1.0)
+            conf = preds[kpt_idx][2] if len(preds[kpt_idx]) >= 3 else 1.0
+            preds[kpt_idx] = (float(x), float(y), float(conf))
             self.infer.merge_cache(
                 weights, {str(self.image_paths[self.current_index]): preds}
             )
