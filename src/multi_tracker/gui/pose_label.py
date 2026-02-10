@@ -4250,6 +4250,8 @@ class MainWindow(QMainWindow):
                 self.project.keypoint_names,
                 train_items=train_items,
                 val_items=val_items,
+                ignore_occluded_train=False,
+                ignore_occluded_val=False,
             )
         except Exception as e:
             QMessageBox.critical(self, "Export failed", str(e))

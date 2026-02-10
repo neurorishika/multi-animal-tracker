@@ -958,7 +958,7 @@ def build_yolo_pose_dataset(
     used_stems = set()
     manifest_rows = []
 
-    def _has_any_visible_kpt(label_path: Path) -> bool:
+    def _has_any_visible_kpt(label_path: Path, include_occluded: bool) -> bool:
         try:
             text = label_path.read_text(encoding="utf-8").strip()
         except Exception:
@@ -975,7 +975,13 @@ def build_yolo_pose_dataset(
                 v = int(float(parts[i + 2]))
             except Exception:
                 continue
-            if v > 0:
+            if include_occluded:
+                if v > 0:
+                    return True
+            else:
+                if v == 2:
+                    return True
+        return False
                 return True
         return False
 
@@ -1011,8 +1017,9 @@ def build_yolo_pose_dataset(
     ):
         skipped = 0
         kept: List[Tuple[Path, Path]] = []
+        include_occluded = not bool(ignore_occluded)
         for img_path, label_path in split_items:
-            if not _has_any_visible_kpt(label_path):
+            if not _has_any_visible_kpt(label_path, include_occluded=include_occluded):
                 skipped += 1
                 continue
             stem = _unique_stem(img_path.stem, used_stems, str(img_path))
@@ -1047,7 +1054,9 @@ def build_yolo_pose_dataset(
     if kept_val <= 0:
         # Ensure at least one validation sample to avoid NaN val losses.
         for img_path, label_path in train_items:
-            if not _has_any_visible_kpt(label_path):
+            if not _has_any_visible_kpt(
+                label_path, include_occluded=not bool(ignore_occluded_val)
+            ):
                 continue
             stem = _unique_stem(img_path.stem, used_stems, str(img_path))
             img_dst = images_val / f"{stem}{img_path.suffix.lower()}"
