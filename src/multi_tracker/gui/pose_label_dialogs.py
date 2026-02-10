@@ -2823,6 +2823,7 @@ class TrainingRunnerDialog(QDialog):
 
         self.lbl_loss_plot = QLabel()
         self.lbl_loss_plot.setMinimumHeight(220)
+        self.lbl_loss_plot.setScaledContents(True)
         content_layout.addWidget(self.lbl_loss_plot)
 
         self.log_view = QPlainTextEdit()
@@ -3202,6 +3203,7 @@ class TrainingRunnerDialog(QDialog):
                 pass
         if self._loss_timer.isActive():
             self._loss_timer.stop()
+        self._update_loss_plot()
         weights = info.get("weights") or ""
         self._last_weights = weights if weights else None
         if self._last_run_dir:
