@@ -1068,6 +1068,12 @@ class PoseCanvas(QGraphicsView):
         self._dragging_pred = None
         self._pred_edges: List[Tuple[int, int]] = []
 
+    def _ellipse_item_at(self, scene_pos):
+        for it in self.scene.items(scene_pos):
+            if isinstance(it, QGraphicsEllipseItem):
+                return it
+        return None
+
     def set_callbacks(self, on_place, on_move, on_select=None):
         self._on_place = on_place
         self._on_move = on_move
@@ -1328,8 +1334,9 @@ class PoseCanvas(QGraphicsView):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
-            item = self.itemAt(event.position().toPoint())
-            if item is not None and isinstance(item, QGraphicsEllipseItem):
+            pos = self.mapToScene(event.position().toPoint())
+            item = self._ellipse_item_at(pos)
+            if item is not None:
                 idx = int(item.data(0))
                 is_pred = item.data(1) == "pred"
                 if not is_pred:
@@ -1340,13 +1347,13 @@ class PoseCanvas(QGraphicsView):
                         parent._toggle_kpt_visibility(idx)
                         return
             if self._on_place:
-                pos = self.mapToScene(event.position().toPoint())
                 # Right-click marks keypoint as occluded (v=1)
                 self._on_place(self._current_kpt, float(pos.x()), float(pos.y()), 1)
             return
 
-        item = self.itemAt(event.position().toPoint())
-        if item is not None and isinstance(item, QGraphicsEllipseItem):
+        pos = self.mapToScene(event.position().toPoint())
+        item = self._ellipse_item_at(pos)
+        if item is not None:
             # Clicked on existing keypoint
             idx = int(item.data(0))
             is_pred = item.data(1) == "pred"
@@ -1417,7 +1424,6 @@ class PoseCanvas(QGraphicsView):
             if parent and not hasattr(parent, "mode"):
                 parent = self.window()
 
-            pos = self.mapToScene(event.position().toPoint())
             ann = getattr(parent, "_ann", None) if parent else None
 
             if ann and hasattr(ann, "kpts"):

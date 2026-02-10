@@ -21,7 +21,7 @@ import yaml
 import gc
 
 from PySide6.QtCore import Qt, QSize, QThread, QObject, Signal, Slot
-from PySide6.QtGui import QPixmap, QPainter, QColor
+from PySide6.QtGui import QPixmap, QPainter, QColor, QImage
 
 from PySide6.QtWidgets import (
     QDialog,
