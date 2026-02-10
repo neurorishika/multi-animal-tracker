@@ -4353,6 +4353,7 @@ class MainWindow(QMainWindow):
         weights = self._get_latest_weights_or_prompt()
         if not weights:
             return
+        self._last_pred_conf = 0.25
 
         cached = self._get_pred_for_frame(weights, self.image_paths[self.current_index])
         if cached is not None:
@@ -4370,7 +4371,7 @@ class MainWindow(QMainWindow):
             keypoint_names=self.project.keypoint_names,
             device="auto",
             imgsz=640,
-            conf=0.25,
+            conf=self._last_pred_conf,
         )
         self._pred_worker.moveToThread(self._pred_thread)
         self._pred_thread.started.connect(self._pred_worker.run)
@@ -4383,6 +4384,14 @@ class MainWindow(QMainWindow):
 
     def _on_pred_finished(self, preds: List[Tuple[float, float, float]]):
         self.btn_predict.setEnabled(True)
+        if not preds:
+            conf = getattr(self, "_last_pred_conf", None)
+            if conf is not None:
+                msg = f"No predictions above conf={conf:.2f}. Try a lower conf."
+            else:
+                msg = "No predictions above confidence threshold. Try a lower conf."
+            self.statusBar().showMessage(msg, 3000)
+            return
         self.statusBar().showMessage("Prediction loaded. Adjust and save.", 2000)
         if self._ann is None:
             return
