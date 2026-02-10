@@ -20,8 +20,8 @@ import numpy as np
 import yaml
 import gc
 
-from PySide6.QtCore import Qt, QSize, QThread, QObject, Signal, Slot
-from PySide6.QtGui import QPixmap, QPainter, QColor, QImage
+from PySide6.QtCore import Qt, QSize, QThread, QObject, Signal, Slot, QTimer
+from PySide6.QtGui import QPixmap, QPainter, QColor, QImage, QPen
 
 from PySide6.QtWidgets import (
     QDialog,
@@ -129,6 +129,55 @@ def _make_pose_infer(out_root: Path, keypoint_names: List[str]):
     if PoseInferenceService is None:
         raise RuntimeError("PoseInferenceService not available. Check imports.")
     return PoseInferenceService(out_root, keypoint_names)
+
+
+def _make_loss_plot_image(
+    train_vals: List[float],
+    val_vals: List[float],
+    width: int = 520,
+    height: int = 220,
+) -> QImage:
+    img = QImage(width, height, QImage.Format_ARGB32)
+    img.fill(QColor(30, 30, 30))
+    painter = QPainter(img)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+
+    pad = 24
+    w = width - 2 * pad
+    h = height - 2 * pad
+    painter.setPen(QPen(QColor(80, 80, 80), 1))
+    painter.drawRect(pad, pad, w, h)
+
+    all_vals = [v for v in train_vals + val_vals if v is not None]
+    if not all_vals:
+        painter.end()
+        return img
+
+    vmin = min(all_vals)
+    vmax = max(all_vals)
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
+
+    def _plot_series(vals: List[float], color: QColor):
+        if len(vals) < 2:
+            return
+        pen = QPen(color, 2)
+        painter.setPen(pen)
+        n = len(vals)
+        for i in range(1, n):
+            if vals[i - 1] is None or vals[i] is None:
+                continue
+            x0 = pad + (w * (i - 1) / (n - 1))
+            x1 = pad + (w * i / (n - 1))
+            y0 = pad + h * (1.0 - (vals[i - 1] - vmin) / (vmax - vmin))
+            y1 = pad + h * (1.0 - (vals[i] - vmin) / (vmax - vmin))
+            painter.drawLine(int(x0), int(y0), int(x1), int(y1))
+
+    _plot_series(train_vals, QColor(80, 200, 120))
+    _plot_series(val_vals, QColor(255, 140, 80))
+
+    painter.end()
+    return img
 
 
 def get_available_devices():
@@ -2529,6 +2578,12 @@ class TrainingRunnerDialog(QDialog):
         self._worker = None
         self._last_run_dir = None
         self._last_weights = None
+        self._loss_timer = QTimer(self)
+        self._loss_timer.setInterval(1000)
+        self._loss_timer.timeout.connect(self._update_loss_plot)
+        self._loss_timer = QTimer(self)
+        self._loss_timer.setInterval(1000)
+        self._loss_timer.timeout.connect(self._update_loss_plot)
 
         layout = QVBoxLayout(self)
 
@@ -2765,6 +2820,10 @@ class TrainingRunnerDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         content_layout.addWidget(self.progress)
+
+        self.lbl_loss_plot = QLabel()
+        self.lbl_loss_plot.setMinimumHeight(220)
+        content_layout.addWidget(self.lbl_loss_plot)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -3078,6 +3137,8 @@ class TrainingRunnerDialog(QDialog):
         self.lbl_run_dir.setText(f"Run dir: {run_dir}")
         self.log_view.clear()
         self.progress.setValue(0)
+        self._update_loss_plot()
+        self._loss_timer.start()
 
         # Start worker
         self._thread = QThread()
@@ -3121,6 +3182,8 @@ class TrainingRunnerDialog(QDialog):
             self._worker.cancel()
             self._append_log("Stop requested. Waiting for trainer to stop...")
         self.btn_stop.setEnabled(False)
+        if self._loss_timer.isActive():
+            self._loss_timer.stop()
 
     def _on_progress(self, epoch: int, epochs: int):
         if epochs > 0:
@@ -3131,6 +3194,14 @@ class TrainingRunnerDialog(QDialog):
         self._append_log("Training complete.")
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        run_dir_info = info.get("run_dir")
+        if run_dir_info:
+            try:
+                self._last_run_dir = Path(run_dir_info)
+            except Exception:
+                pass
+        if self._loss_timer.isActive():
+            self._loss_timer.stop()
         weights = info.get("weights") or ""
         self._last_weights = weights if weights else None
         if self._last_run_dir:
@@ -3184,6 +3255,8 @@ class TrainingRunnerDialog(QDialog):
         QMessageBox.critical(self, "Training failed", msg)
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
+        if self._loss_timer.isActive():
+            self._loss_timer.stop()
 
     def _open_eval(self):
         weights = self._last_weights
@@ -3200,6 +3273,49 @@ class TrainingRunnerDialog(QDialog):
             weights_path=weights,
         )
         dlg.exec()
+
+    def _update_loss_plot(self):
+        if not self._last_run_dir:
+            return
+        results_path = Path(self._last_run_dir) / "results.csv"
+        if not results_path.exists():
+            return
+        try:
+            rows = list(
+                csv.reader(
+                    results_path.read_text(encoding="utf-8").splitlines()
+                )
+            )
+            if len(rows) < 2:
+                return
+            header = rows[0]
+            train_cols = [
+                i for i, h in enumerate(header) if "train/" in h and "loss" in h
+            ]
+            val_cols = [i for i, h in enumerate(header) if "val/" in h and "loss" in h]
+            train_vals = []
+            val_vals = []
+            for row in rows[1:]:
+                if not row:
+                    continue
+                t = 0.0
+                v = 0.0
+                tcount = 0
+                vcount = 0
+                for i in train_cols:
+                    if i < len(row) and row[i]:
+                        t += float(row[i])
+                        tcount += 1
+                for i in val_cols:
+                    if i < len(row) and row[i]:
+                        v += float(row[i])
+                        vcount += 1
+                train_vals.append(t if tcount else None)
+                val_vals.append(v if vcount else None)
+            img = _make_loss_plot_image(train_vals, val_vals)
+            self.lbl_loss_plot.setPixmap(QPixmap.fromImage(img))
+        except Exception:
+            return
 
 
 class EvaluationWorker(QObject):
@@ -3624,6 +3740,10 @@ class EvaluationDashboardDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         content_layout.addWidget(self.progress)
+
+        self.lbl_loss_plot = QLabel()
+        self.lbl_loss_plot.setMinimumHeight(220)
+        content_layout.addWidget(self.lbl_loss_plot)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
