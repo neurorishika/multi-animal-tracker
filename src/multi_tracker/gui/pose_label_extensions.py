@@ -1011,22 +1011,6 @@ def build_yolo_pose_dataset(
                 if v == 2:
                     return True
         return False
-        for i in range(5, len(parts), 3):
-            if i + 2 >= len(parts):
-                break
-            try:
-                v = int(float(parts[i + 2]))
-            except Exception:
-                continue
-            if include_occluded:
-                if v > 0:
-                    return True
-            else:
-                if v == 2:
-                    return True
-        return False
-                return True
-        return False
 
     def _rewrite_label_for_training(parts: List[str], dst: Path):
         out = parts[:]
