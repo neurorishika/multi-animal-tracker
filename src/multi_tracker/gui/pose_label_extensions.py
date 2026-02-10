@@ -895,7 +895,8 @@ def build_yolo_pose_dataset(
     extra_items: Optional[List[Tuple[Path, Path]]] = None,
     train_items: Optional[List[Tuple[Path, Path]]] = None,
     val_items: Optional[List[Tuple[Path, Path]]] = None,
-    ignore_occluded: bool = True,
+    ignore_occluded_train: bool = True,
+    ignore_occluded_val: bool = False,
 ) -> Dict[str, object]:
     """
     Build a YOLO Pose dataset with copied images/labels under output_dir.
@@ -957,6 +958,27 @@ def build_yolo_pose_dataset(
     used_stems = set()
     manifest_rows = []
 
+    def _has_any_visible_kpt(label_path: Path) -> bool:
+        try:
+            text = label_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return True
+        if not text:
+            return False
+        parts = text.split()
+        if len(parts) < 5:
+            return False
+        for i in range(5, len(parts), 3):
+            if i + 2 >= len(parts):
+                break
+            try:
+                v = int(float(parts[i + 2]))
+            except Exception:
+                continue
+            if v > 0:
+                return True
+        return False
+
     def _rewrite_label_for_training(src: Path, dst: Path):
         try:
             text = src.read_text(encoding="utf-8")
@@ -981,8 +1003,17 @@ def build_yolo_pose_dataset(
             out_lines.append(" ".join(parts))
         dst.write_text(("\n".join(out_lines) + ("\n" if out_lines else "")), encoding="utf-8")
 
-    def _copy_split(split_items: List[Tuple[Path, Path]], img_dir: Path, lbl_dir: Path):
+    def _copy_split(
+        split_items: List[Tuple[Path, Path]],
+        img_dir: Path,
+        lbl_dir: Path,
+        ignore_occluded: bool,
+    ):
+        skipped = 0
         for img_path, label_path in split_items:
+            if not _has_any_visible_kpt(label_path):
+                skipped += 1
+                continue
             stem = _unique_stem(img_path.stem, used_stems, str(img_path))
             img_dst = img_dir / f"{stem}{img_path.suffix.lower()}"
             lbl_dst = lbl_dir / f"{stem}.txt"
@@ -999,9 +1030,10 @@ def build_yolo_pose_dataset(
                     "dst_label": str(lbl_dst),
                 }
             )
+        return skipped
 
-    _copy_split(train_items, images_train, labels_train)
-    _copy_split(val_items, images_val, labels_val)
+    skipped_train = _copy_split(train_items, images_train, labels_train, ignore_occluded_train)
+    skipped_val = _copy_split(val_items, images_val, labels_val, ignore_occluded_val)
 
     train_txt = output_dir / "train.txt"
     val_txt = output_dir / "val.txt"
@@ -1029,8 +1061,8 @@ def build_yolo_pose_dataset(
         "yaml_path": yaml_path,
         "train_list": train_txt,
         "val_list": val_txt,
-        "train_count": len(train_items),
-        "val_count": len(val_items),
+        "train_count": len(train_items) - skipped_train,
+        "val_count": len(val_items) - skipped_val,
         "labeled_count": len(items),
         "manifest": output_dir / "manifest.json",
     }

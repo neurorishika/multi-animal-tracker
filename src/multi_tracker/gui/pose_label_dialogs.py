@@ -133,8 +133,8 @@ def _make_pose_infer(out_root: Path, keypoint_names: List[str]):
 
 
 def _make_loss_plot_image(
-    train_vals: List[float],
-    val_vals: List[float],
+    train_vals: Dict[str, List[float]],
+    val_vals: Dict[str, List[float]],
     width: int = 520,
     height: int = 220,
 ) -> QImage:
@@ -152,7 +152,9 @@ def _make_loss_plot_image(
     painter.setPen(QPen(QColor(80, 80, 80), 1))
     painter.drawRect(pad_left, pad_top, w, h)
 
-    all_vals = [v for v in train_vals + val_vals if v is not None and np.isfinite(v)]
+    all_vals = []
+    for series in list(train_vals.values()) + list(val_vals.values()):
+        all_vals.extend([v for v in series if v is not None and np.isfinite(v)])
     if not all_vals:
         painter.end()
         return img
@@ -182,10 +184,38 @@ def _make_loss_plot_image(
             y1 = pad_top + h * (1.0 - (vals[i] - vmin) / (vmax - vmin))
             painter.drawLine(int(x0), int(y0), int(x1), int(y1))
 
-    train_color = QColor(80, 200, 120)
-    val_color = QColor(255, 140, 80)
-    _plot_series(train_vals, train_color)
-    _plot_series(val_vals, val_color)
+    palette = [
+        QColor(80, 200, 120),
+        QColor(255, 140, 80),
+        QColor(120, 180, 255),
+        QColor(255, 200, 80),
+        QColor(200, 120, 255),
+        QColor(120, 220, 220),
+    ]
+
+    # Plot train (solid) and val (dashed) per component
+    keys = list(train_vals.keys())
+    for idx, key in enumerate(keys):
+        color = palette[idx % len(palette)]
+        _plot_series(train_vals.get(key, []), color)
+        # val in dashed style
+        painter.setPen(QPen(color, 2, Qt.DashLine))
+        vals = val_vals.get(key, [])
+        if len(vals) >= 2:
+            n = len(vals)
+            for i in range(1, n):
+                if (
+                    vals[i - 1] is None
+                    or vals[i] is None
+                    or not np.isfinite(vals[i - 1])
+                    or not np.isfinite(vals[i])
+                ):
+                    continue
+                x0 = pad_left + (w * (i - 1) / (n - 1))
+                x1 = pad_left + (w * i / (n - 1))
+                y0 = pad_top + h * (1.0 - (vals[i - 1] - vmin) / (vmax - vmin))
+                y1 = pad_top + h * (1.0 - (vals[i] - vmin) / (vmax - vmin))
+                painter.drawLine(int(x0), int(y0), int(x1), int(y1))
 
     # Axis labels
     painter.setPen(QPen(QColor(200, 200, 200), 1))
@@ -200,17 +230,19 @@ def _make_loss_plot_image(
     painter.drawText(0, 0, "Loss")
     painter.restore()
 
-    # Legend
+    # Legend (train solid / val dashed)
     legend_x = pad_left + 6
     legend_y = pad_top + 6
-    painter.setPen(QPen(train_color, 2))
-    painter.drawLine(legend_x, legend_y + 4, legend_x + 16, legend_y + 4)
     painter.setPen(QPen(QColor(220, 220, 220), 1))
-    painter.drawText(legend_x + 22, legend_y + 8, "Train")
-    painter.setPen(QPen(val_color, 2))
-    painter.drawLine(legend_x + 70, legend_y + 4, legend_x + 86, legend_y + 4)
-    painter.setPen(QPen(QColor(220, 220, 220), 1))
-    painter.drawText(legend_x + 92, legend_y + 8, "Val")
+    painter.drawText(legend_x, legend_y + 8, "Train (solid) / Val (dashed)")
+    legend_y += 16
+    for idx, key in enumerate(keys):
+        color = palette[idx % len(palette)]
+        painter.setPen(QPen(color, 2))
+        painter.drawLine(legend_x, legend_y + 4, legend_x + 16, legend_y + 4)
+        painter.setPen(QPen(QColor(220, 220, 220), 1))
+        painter.drawText(legend_x + 22, legend_y + 8, key)
+        legend_y += 14
 
     painter.end()
     return img
@@ -2862,8 +2894,14 @@ class TrainingRunnerDialog(QDialog):
 
         self.lbl_loss_plot = QLabel()
         self.lbl_loss_plot.setMinimumHeight(220)
-        self.lbl_loss_plot.setScaledContents(True)
+        self.lbl_loss_plot.setAlignment(Qt.AlignCenter)
         content_layout.addWidget(self.lbl_loss_plot)
+
+        # Loss components selector
+        self.loss_components_box = QGroupBox("Loss components")
+        self.loss_components_layout = QHBoxLayout(self.loss_components_box)
+        self.loss_component_checks: Dict[str, QCheckBox] = {}
+        content_layout.addWidget(self.loss_components_box)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -3140,7 +3178,8 @@ class TrainingRunnerDialog(QDialog):
                     if "images" in d and "labels_dir" in d
                 ],
                 extra_items=list(self._aux_items),
-                ignore_occluded=self.cb_ignore_occluded.isChecked(),
+                ignore_occluded_train=self.cb_ignore_occluded.isChecked(),
+                ignore_occluded_val=False,
             )
         except Exception as e:
             QMessageBox.critical(self, "Dataset error", str(e))
@@ -3155,7 +3194,8 @@ class TrainingRunnerDialog(QDialog):
             "imgsz": int(self.imgsz_spin.value()),
             "device": self.device_combo.currentText(),
             "augment": bool(self.cb_augment.isChecked()),
-            "ignore_occluded": bool(self.cb_ignore_occluded.isChecked()),
+            "ignore_occluded_train": bool(self.cb_ignore_occluded.isChecked()),
+            "ignore_occluded_val": False,
             "hsv_h": float(self.hsv_h_spin.value()),
             "hsv_s": float(self.hsv_s_spin.value()),
             "hsv_v": float(self.hsv_v_spin.value()),
@@ -3380,42 +3420,68 @@ class TrainingRunnerDialog(QDialog):
                 return
             header = rows[0]
             train_cols = [
-                i for i, h in enumerate(header) if "train/" in h and "loss" in h
+                (i, h.replace("train/", ""))
+                for i, h in enumerate(header)
+                if "train/" in h and "loss" in h
             ]
-            val_cols = [i for i, h in enumerate(header) if "val/" in h and "loss" in h]
+            val_cols = [
+                (i, h.replace("val/", ""))
+                for i, h in enumerate(header)
+                if "val/" in h and "loss" in h
+            ]
             if not train_cols and not val_cols:
                 return
-            train_vals = []
-            val_vals = []
+            keys = sorted({name for _, name in train_cols + val_cols})
+
+            # Build/refresh component checkboxes
+            if not self.loss_component_checks or set(self.loss_component_checks.keys()) != set(keys):
+                for cb in self.loss_component_checks.values():
+                    cb.deleteLater()
+                self.loss_component_checks = {}
+                for name in keys:
+                    cb = QCheckBox(name)
+                    cb.setChecked(True)
+                    cb.toggled.connect(self._update_loss_plot)
+                    self.loss_components_layout.addWidget(cb)
+                    self.loss_component_checks[name] = cb
+
+            train_vals = {k: [] for k in keys}
+            val_vals = {k: [] for k in keys}
             for row in rows[1:]:
                 if not row:
                     continue
-                t = 0.0
-                v = 0.0
-                tcount = 0
-                vcount = 0
-                for i in train_cols:
+                train_row = {k: None for k in keys}
+                val_row = {k: None for k in keys}
+                for i, name in train_cols:
                     if i < len(row) and row[i]:
                         try:
                             val = float(row[i])
                         except Exception:
                             val = float("nan")
-                        if np.isfinite(val):
-                            t += val
-                            tcount += 1
-                for i in val_cols:
+                        train_row[name] = val if np.isfinite(val) else None
+                for i, name in val_cols:
                     if i < len(row) and row[i]:
                         try:
                             val = float(row[i])
                         except Exception:
                             val = float("nan")
-                        if np.isfinite(val):
-                            v += val
-                            vcount += 1
-                train_vals.append(t if tcount else None)
-                val_vals.append(v if vcount else None)
+                        val_row[name] = val if np.isfinite(val) else None
+                for k in keys:
+                    train_vals[k].append(train_row.get(k))
+                    val_vals[k].append(val_row.get(k))
+            selected = [
+                k for k, cb in self.loss_component_checks.items() if cb.isChecked()
+            ]
+            train_vals = {k: train_vals[k] for k in selected}
+            val_vals = {k: val_vals[k] for k in selected}
             img = _make_loss_plot_image(train_vals, val_vals)
-            self.lbl_loss_plot.setPixmap(QPixmap.fromImage(img))
+            pix = QPixmap.fromImage(img)
+            target = self.lbl_loss_plot.size()
+            if target.width() > 0 and target.height() > 0:
+                pix = pix.scaled(
+                    target, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+            self.lbl_loss_plot.setPixmap(pix)
         except Exception:
             return
 
