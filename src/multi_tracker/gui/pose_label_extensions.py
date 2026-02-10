@@ -957,6 +957,7 @@ def build_yolo_pose_dataset(
 
     used_stems = set()
     manifest_rows = []
+    k = len(keypoint_names)
 
     def _parse_label_parts(label_path: Path, kpt_count: int) -> Optional[List[str]]:
         try:
@@ -1110,7 +1111,6 @@ def build_yolo_pose_dataset(
     train_txt.write_text("images/train\n", encoding="utf-8")
     val_txt.write_text("images/val\n", encoding="utf-8")
 
-    k = len(keypoint_names)
     data = {
         "path": str(output_dir),
         "train": "images/train",
