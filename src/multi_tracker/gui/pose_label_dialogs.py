@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import List, Optional, Dict, Tuple
 import logging
 import hashlib
+import subprocess
+import sys
+import tempfile
+import os
 import numpy as np
 import yaml
 import gc
@@ -145,6 +149,148 @@ def _load_pred_cache(out_root: Path, weights_path: Path):
         return preds
     except Exception:
         return {}
+
+
+def _run_pose_predict_subprocess(
+    weights_path: Path,
+    image_paths: List[Path],
+    device: str,
+    imgsz: int,
+    conf: float,
+    batch: int,
+    progress_cb=None,
+):
+    req = {
+        "weights": str(weights_path),
+        "images": [str(p) for p in image_paths],
+        "device": device,
+        "imgsz": int(imgsz),
+        "conf": float(conf),
+        "batch": int(batch),
+    }
+    cache_dir = Path(tempfile.gettempdir())
+    req_path = cache_dir / f"pose_pred_req_{os.getpid()}.json"
+    out_path = cache_dir / f"pose_pred_out_{os.getpid()}.json"
+    req_path.write_text(json.dumps(req), encoding="utf-8")
+
+    code = (
+        "import json,sys\n"
+        "from pathlib import Path\n"
+        "import numpy as np\n"
+        "def _is_cuda_device(d):\n"
+        "    d=(d or '').strip().lower()\n"
+        "    return d in {'cuda','gpu'} or d.startswith('cuda:') or d.isdigit()\n"
+        "def _maybe_limit_cuda_memory():\n"
+        "    try:\n"
+        "        import torch\n"
+        "        if torch.cuda.is_available():\n"
+        "            torch.cuda.set_per_process_memory_fraction(0.9)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "req=Path(sys.argv[1])\n"
+        "out=Path(sys.argv[2])\n"
+        "cfg=json.loads(req.read_text(encoding='utf-8'))\n"
+        "from ultralytics import YOLO\n"
+        "model=YOLO(cfg['weights'])\n"
+        "pred_kwargs={\n"
+        "  'imgsz': int(cfg['imgsz']),\n"
+        "  'conf': float(cfg['conf']),\n"
+        "  'max_det': 1,\n"
+        "  'stream': True,\n"
+        "  'verbose': False,\n"
+        "  'batch': int(cfg['batch']),\n"
+        "}\n"
+        "if cfg.get('device') and cfg.get('device')!='auto':\n"
+        "  pred_kwargs['device']=cfg['device']\n"
+        "if _is_cuda_device(cfg.get('device')):\n"
+        "  _maybe_limit_cuda_memory()\n"
+        "  pred_kwargs['half']=True\n"
+        "images=cfg['images']\n"
+        "preds={}\n"
+        "b=max(1,int(cfg.get('batch',1)))\n"
+        "i=0\n"
+        "while i < len(images):\n"
+        "  chunk=images[i:i+b]\n"
+        "  kw=dict(pred_kwargs)\n"
+        "  kw['source']=chunk\n"
+        "  kw['batch']=min(b,len(chunk))\n"
+        "  try:\n"
+        "    results=list(model.predict(**kw))\n"
+        "  except RuntimeError as e:\n"
+        "    if 'out of memory' in str(e).lower() and b>1:\n"
+        "      b=max(1,b//2)\n"
+        "      continue\n"
+        "    raise\n"
+        "  total=len(images)\n"
+        "  done=0\n"
+        "  for r in results:\n"
+        "    if r is None or r.keypoints is None:\n"
+        "      preds[str(Path(r.path))]=[]\n"
+        "      continue\n"
+        "    k=r.keypoints\n"
+        "    try:\n"
+        "      xy=k.xy\n"
+        "      conf=getattr(k,'conf',None)\n"
+        "      xy=xy.cpu().numpy() if hasattr(xy,'cpu') else np.array(xy)\n"
+        "      if conf is not None:\n"
+        "        conf=conf.cpu().numpy() if hasattr(conf,'cpu') else np.array(conf)\n"
+        "    except Exception:\n"
+        "      preds[str(Path(r.path))]=[]\n"
+        "      continue\n"
+        "    if xy.ndim==2:\n"
+        "      xy=xy[None,:,:]\n"
+        "    if conf is not None and conf.ndim==1:\n"
+        "      conf=conf[None,:]\n"
+        "    if xy.size==0:\n"
+        "      preds[str(Path(r.path))]=[]\n"
+        "      continue\n"
+        "    if conf is not None:\n"
+        "      scores=np.nanmean(conf,axis=1)\n"
+        "    else:\n"
+        "      scores=None\n"
+        "      try:\n"
+        "        if r.boxes is not None and hasattr(r.boxes,'conf'):\n"
+        "          scores=r.boxes.conf.cpu().numpy()\n"
+        "      except Exception:\n"
+        "        scores=None\n"
+        "      if scores is None:\n"
+        "        scores=np.zeros((xy.shape[0],),dtype=np.float32)\n"
+        "    best=int(np.argmax(scores)) if len(scores)>0 else 0\n"
+        "    pred_xy=xy[best]\n"
+        "    pred_conf=conf[best] if conf is not None else np.zeros((pred_xy.shape[0],),dtype=np.float32)\n"
+        "    pts=[]\n"
+        "    for j in range(pred_xy.shape[0]):\n"
+        "      c=float(pred_conf[j]) if j < len(pred_conf) else 0.0\n"
+        "      pts.append((float(pred_xy[j][0]),float(pred_xy[j][1]),c))\n"
+        "    preds[str(Path(r.path))]=pts\n"
+        "    done+=1\n"
+        "    print(f'PROGRESS {done} {total}', flush=True)\n"
+        "  i+=len(chunk)\n"
+        "out.write_text(json.dumps({'preds':preds}),encoding='utf-8')\n"
+    )
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code, str(req_path), str(out_path)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    for line in proc.stdout:
+        line = line.strip()
+        if line.startswith("PROGRESS "):
+            try:
+                _, done_s, total_s = line.split()
+                if progress_cb:
+                    progress_cb(int(done_s), int(total_s))
+            except Exception:
+                pass
+    stdout, stderr = proc.communicate()
+    if proc.returncode != 0:
+        return False, {}, (stderr.strip() or stdout.strip() or "Subprocess failed.")
+    data = json.loads(out_path.read_text(encoding="utf-8"))
+    return True, data.get("preds", {}), ""
 
 
 def _is_cuda_device(device: str) -> bool:
@@ -2315,9 +2461,16 @@ class TrainingWorker(QObject):
         self.fliplr = float(fliplr)
         self._cancel = False
         self._log_handler = None
+        self._model = None
+        self._proc = None
 
     def cancel(self):
         self._cancel = True
+        try:
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+        except Exception:
+            pass
 
     def _on_epoch_end(self, trainer):
         try:
@@ -2356,52 +2509,62 @@ class TrainingWorker(QObject):
 
     def run(self):
         try:
-            try:
-                from ultralytics import YOLO
-            except Exception as e:
-                self.failed.emit(
-                    f"Ultralytics not available. Install with: pip install ultralytics\n{e}"
-                )
-                return
-
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"Training run dir: {self.run_dir}")
-            self._attach_logger()
+            self.log.emit("Starting training (subprocess)…")
 
-            model = YOLO(self.model_weights)
-            if hasattr(model, "add_callback"):
-                model.add_callback("on_train_epoch_end", self._on_epoch_end)
-                model.add_callback("on_train_batch_end", self._on_batch_end)
-
-            train_kwargs = {
-                "data": str(self.dataset_yaml),
-                "epochs": self.epochs,
-                "batch": self.batch,
-                "imgsz": self.imgsz,
-                "project": str(self.run_dir.parent),
-                "name": self.run_dir.name,
-                "exist_ok": True,
-            }
+            args = [
+                sys.executable,
+                "-m",
+                "ultralytics",
+                "yolo",
+                "task=pose",
+                "mode=train",
+                f"model={self.model_weights}",
+                f"data={str(self.dataset_yaml)}",
+                f"epochs={self.epochs}",
+                f"batch={self.batch}",
+                f"imgsz={self.imgsz}",
+                f"project={str(self.run_dir.parent)}",
+                f"name={self.run_dir.name}",
+                "exist_ok=True",
+            ]
             if self.device and self.device != "auto":
-                train_kwargs["device"] = self.device
+                args.append(f"device={self.device}")
             if self.augment:
-                train_kwargs["augment"] = True
-                train_kwargs.update(
-                    {
-                        "hsv_h": self.hsv_h,
-                        "hsv_s": self.hsv_s,
-                        "hsv_v": self.hsv_v,
-                        "degrees": self.degrees,
-                        "translate": self.translate,
-                        "scale": self.scale,
-                        "fliplr": self.fliplr,
-                        "mosaic": self.mosaic,
-                        "mixup": self.mixup,
-                    }
-                )
+                args += [
+                    "augment=True",
+                    f"hsv_h={self.hsv_h}",
+                    f"hsv_s={self.hsv_s}",
+                    f"hsv_v={self.hsv_v}",
+                    f"degrees={self.degrees}",
+                    f"translate={self.translate}",
+                    f"scale={self.scale}",
+                    f"fliplr={self.fliplr}",
+                    f"mosaic={self.mosaic}",
+                    f"mixup={self.mixup}",
+                ]
 
-            self.log.emit("Starting training...")
-            model.train(**train_kwargs)
+            self._proc = subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+            assert self._proc.stdout is not None
+            for line in self._proc.stdout:
+                if self._cancel:
+                    break
+                self.log.emit(line.rstrip())
+
+            rc = self._proc.wait()
+            if self._cancel:
+                self.failed.emit("Canceled.")
+                return
+            if rc != 0:
+                self.failed.emit(f"Training failed (exit code {rc}).")
+                return
 
             weights_dir = self.run_dir / "weights"
             best = weights_dir / "best.pt"
@@ -2418,7 +2581,23 @@ class TrainingWorker(QObject):
         except Exception as e:
             self.failed.emit(str(e))
         finally:
-            self._detach_logger()
+            self._cleanup_gpu()
+
+    def _cleanup_gpu(self):
+        try:
+            # Best-effort free of ultralytics/torch GPU memory between runs
+            self._model = None
+            gc.collect()
+            try:
+                import torch
+
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 class TrainingRunnerDialog(QDialog):
@@ -3191,6 +3370,21 @@ class EvaluationWorker(QObject):
             total_err = 0.0
             total_conf = 0.0
 
+            if self.pred_cache is None:
+                ok, preds, err = _run_pose_predict_subprocess(
+                    self.weights_path,
+                    self.eval_paths,
+                    device=self.device,
+                    imgsz=self.imgsz,
+                    conf=self.conf,
+                    batch=self.batch,
+                    progress_cb=self.progress.emit,
+                )
+                if not ok:
+                    self.failed.emit(err or "Prediction failed.")
+                    return
+                self.pred_cache = preds
+
             if self.pred_cache:
                 try:
                     from PIL import Image
@@ -3281,143 +3475,7 @@ class EvaluationWorker(QObject):
                         )
 
                     self.progress.emit(idx + 1, total)
-                # skip model path
-            else:
-                model = YOLO(str(self.weights_path))
-                pred_kwargs = {
-                    "imgsz": self.imgsz,
-                    "conf": self.conf,
-                    "max_det": 1,
-                    "stream": True,
-                    "verbose": False,
-                    "batch": self.batch,
-                }
-                if self.device and self.device != "auto":
-                    pred_kwargs["device"] = self.device
-                if _is_cuda_device(self.device):
-                    _maybe_limit_cuda_memory(self.log.emit)
-                    pred_kwargs["half"] = True
-
-                total_done = 0
-                batch = max(1, int(self.batch))
-                idx = 0
-                while idx < total:
-                    if self._cancel:
-                        self.failed.emit("Canceled.")
-                        return
-
-                    chunk = self.eval_paths[idx : idx + batch]
-                    pred_kwargs_chunk = dict(pred_kwargs)
-                    pred_kwargs_chunk["source"] = [str(p) for p in chunk]
-                    pred_kwargs_chunk["batch"] = min(batch, len(chunk))
-
-                    try:
-                        chunk_results = []
-                        for result in model.predict(**pred_kwargs_chunk):
-                            chunk_results.append(result)
-                    except RuntimeError as e:
-                        if _is_oom_error(e) and batch > 1:
-                            batch = max(1, batch // 2)
-                            self.log.emit(
-                                f"CUDA OOM detected. Reducing batch to {batch} and retrying."
-                            )
-                            _maybe_empty_cuda_cache()
-                            continue
-                        raise
-
-                    for result in chunk_results:
-                        if self._cancel:
-                            self.failed.emit("Canceled.")
-                            return
-
-                        img_path = Path(result.path)
-                        label_path = self.labels_dir / f"{img_path.stem}.txt"
-                        gt = load_yolo_pose_label(label_path, num_kpts)
-                        if not gt:
-                            total_done += 1
-                            self.progress.emit(total_done, total)
-                            continue
-
-                        _, gt_kpts, bbox = gt
-                        try:
-                            h, w = result.orig_shape[:2]
-                        except Exception:
-                            h, w = (1, 1)
-                        if bbox is not None:
-                            _, _, bw, bh = bbox
-                            scale = max(bw * w, bh * h)
-                        else:
-                            scale = max(w, h)
-                        if scale <= 0:
-                            scale = max(w, h, 1)
-
-                        pred_xy, pred_conf = self._extract_best_prediction(
-                            result, num_kpts
-                        )
-
-                        frame_errs = [None] * num_kpts
-                        frame_confs = [None] * num_kpts
-                        for k in range(num_kpts):
-                            if gt_kpts[k].v <= 0:
-                                continue
-
-                            if pred_xy is None:
-                                err = scale
-                                conf = 0.0
-                            else:
-                                gx = gt_kpts[k].x * w
-                                gy = gt_kpts[k].y * h
-                                px, py = pred_xy[k]
-                                err = float(math.hypot(px - gx, py - gy))
-                                conf = (
-                                    float(pred_conf[k]) if pred_conf is not None else 0.0
-                                )
-
-                            ok = err <= (self.pck_thr * scale)
-                            oks = math.exp(
-                                -((err**2) / (2 * (self.oks_sigma * scale) ** 2))
-                            )
-
-                            total_kpts += 1
-                            total_pck += 1 if ok else 0
-                            total_oks += oks
-                            total_err += err
-                            total_conf += conf
-
-                            kpt_counts[k] += 1
-                            kpt_pck[k] += 1 if ok else 0
-                            kpt_oks[k] += oks
-                            kpt_err_sum[k] += err
-                            kpt_conf_sum[k] += conf
-
-                            per_kpt_errors[k].append(err)
-                            per_kpt_confs[k].append(conf)
-                            frame_errs[k] = err
-                            frame_confs[k] = conf
-
-                        valid_errs = [e for e in frame_errs if e is not None]
-                        valid_confs = [c for c in frame_confs if c is not None]
-                        if valid_errs:
-                            mean_err = float(np.mean(valid_errs))
-                            mean_conf = (
-                                float(np.mean(valid_confs)) if valid_confs else 0.0
-                            )
-                            mean_err_norm = mean_err / (scale + 1e-6)
-                            per_frame.append(
-                                {
-                                    "image_path": str(img_path),
-                                    "mean_error_px": mean_err,
-                                    "mean_error_norm": mean_err_norm,
-                                    "mean_conf": mean_conf,
-                                    "kpt_errors": frame_errs,
-                                    "kpt_confs": frame_confs,
-                                }
-                            )
-
-                        total_done += 1
-                        self.progress.emit(total_done, total)
-
-                    idx += len(chunk)
+                # prediction handled via subprocess + cache only
 
             overall = {
                 "frames": len(per_frame),
@@ -3979,66 +4037,30 @@ class ActiveLearningWorker(QObject):
         self._cancel = True
 
     def _predict_keypoints(self, weights_path: str, paths: List[Path]):
-        try:
-            from ultralytics import YOLO
-        except Exception as e:
-            self.failed.emit(
-                f"Ultralytics not available. Install with: pip install ultralytics\n{e}"
-            )
+        ok, preds_list, err = _run_pose_predict_subprocess(
+            Path(weights_path),
+            paths,
+            device=self.device,
+            imgsz=self.imgsz,
+            conf=self.conf,
+            batch=self.batch,
+            progress_cb=self.progress.emit,
+        )
+        if not ok:
+            self.failed.emit(err or "Prediction failed.")
             return None
-
-        model = YOLO(weights_path)
-        pred_kwargs = {
-            "imgsz": self.imgsz,
-            "conf": self.conf,
-            "max_det": 1,
-            "stream": True,
-            "verbose": False,
-            "batch": self.batch,
-        }
-        if self.device and self.device != "auto":
-            pred_kwargs["device"] = self.device
-        if _is_cuda_device(self.device):
-            _maybe_limit_cuda_memory(self.log.emit)
-            pred_kwargs["half"] = True
 
         preds = {}
         total = len(paths)
-        total_done = 0
-        batch = max(1, int(self.batch))
-        idx = 0
-        while idx < total:
-            if self._cancel:
-                return None
-            chunk = paths[idx : idx + batch]
-            pred_kwargs_chunk = dict(pred_kwargs)
-            pred_kwargs_chunk["source"] = [str(p) for p in chunk]
-            pred_kwargs_chunk["batch"] = min(batch, len(chunk))
-
-            try:
-                chunk_results = []
-                for result in model.predict(**pred_kwargs_chunk):
-                    chunk_results.append(result)
-            except RuntimeError as e:
-                if _is_oom_error(e) and batch > 1:
-                    batch = max(1, batch // 2)
-                    self.log.emit(
-                        f"CUDA OOM detected. Reducing batch to {batch} and retrying."
-                    )
-                    _maybe_empty_cuda_cache()
-                    continue
-                raise
-
-            for result in chunk_results:
-                if self._cancel:
-                    return None
-                path = str(Path(result.path))
-                pred_xy, pred_conf = self._extract_best_prediction(result)
-                preds[path] = (pred_xy, pred_conf)
-                total_done += 1
-                self.progress.emit(total_done, total)
-
-            idx += len(chunk)
+        for i, p in enumerate(paths):
+            pred = preds_list.get(str(p)) or preds_list.get(str(p.resolve()))
+            if not pred:
+                preds[str(p)] = (None, None)
+            else:
+                pred_xy = np.array([[x, y] for x, y, _ in pred], dtype=np.float32)
+                pred_conf = np.array([c for _, _, c in pred], dtype=np.float32)
+                preds[str(p)] = (pred_xy, pred_conf)
+            self.progress.emit(i + 1, total)
         return preds
 
     def _extract_best_prediction(self, result):
