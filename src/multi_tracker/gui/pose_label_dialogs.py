@@ -1000,6 +1000,9 @@ class SmartSelectDialog(QDialog):
         self.model_combo.setCurrentText(settings.get("model", self.model_combo.currentText()))
         self.dev_combo.setCurrentText(settings.get("device", self.dev_combo.currentText()))
         self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
+        self.cb_auto_batch.setChecked(
+            bool(settings.get("auto_batch", self.cb_auto_batch.isChecked()))
+        )
         self.max_side_spin.setValue(int(settings.get("max_side", self.max_side_spin.value())))
         self.cb_use_enhance.setChecked(
             bool(settings.get("use_enhance", self.cb_use_enhance.isChecked()))
@@ -2399,6 +2402,7 @@ class TrainingWorker(QObject):
         imgsz: int,
         device: str,
         augment: bool,
+        auto_batch: bool,
         hsv_h: float,
         hsv_s: float,
         hsv_v: float,
@@ -2417,6 +2421,7 @@ class TrainingWorker(QObject):
         self.imgsz = int(imgsz)
         self.device = device
         self.augment = bool(augment)
+        self.auto_batch = bool(auto_batch)
         self.hsv_h = float(hsv_h)
         self.hsv_s = float(hsv_s)
         self.hsv_v = float(hsv_v)
@@ -2476,35 +2481,7 @@ class TrainingWorker(QObject):
         try:
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"Training run dir: {self.run_dir}")
-            self.log.emit("Starting training (subprocess)…")
             self.progress.emit(0, max(1, int(self.epochs)))
-
-            cli_args = [
-                "task=pose",
-                "mode=train",
-                f"model={self.model_weights}",
-                f"data={str(self.dataset_yaml)}",
-                f"epochs={self.epochs}",
-                f"patience={int(getattr(self, 'patience', 10))}",
-                f"batch={self.batch}",
-                f"imgsz={self.imgsz}",
-                f"project={str(self.run_dir.parent)}",
-                f"name={self.run_dir.name}",
-                "exist_ok=True",
-            ]
-            if self.device and self.device != "auto":
-                cli_args.append(f"device={self.device}")
-            if self.augment:
-                cli_args += [
-                    "augment=True",
-                    f"hsv_h={self.hsv_h}",
-                    f"hsv_s={self.hsv_s}",
-                    f"hsv_v={self.hsv_v}",
-                    f"degrees={self.degrees}",
-                    f"translate={self.translate}",
-                    f"scale={self.scale}",
-                    f"fliplr={self.fliplr}",
-                ]
 
             def _run_cmd(cmd):
                 return subprocess.Popen(
@@ -2516,79 +2493,119 @@ class TrainingWorker(QObject):
                 )
 
             yolo_bin = shutil.which("yolo")
-            if yolo_bin:
-                self._proc = _run_cmd([yolo_bin] + cli_args)
-            else:
-                # Fallback: run via python -c using ultralytics.YOLO API
-                py_code = (
-                    "from ultralytics import YOLO\n"
-                    "model=YOLO(r'''{model}''')\n"
-                    "model.train(\n"
-                    "  data=r'''{data}''',\n"
-                    "  epochs={epochs},\n"
-                    "  patience={patience},\n"
-                    "  batch={batch},\n"
-                    "  imgsz={imgsz},\n"
-                    "  project=r'''{project}''',\n"
-                    "  name=r'''{name}''',\n"
-                    "  exist_ok=True,\n"
-                    "  device=r'''{device}''',\n"
-                    "  augment={augment},\n"
-                    "  hsv_h={hsv_h},\n"
-                    "  hsv_s={hsv_s},\n"
-                    "  hsv_v={hsv_v},\n"
-                    "  degrees={degrees},\n"
-                    "  translate={translate},\n"
-                    "  scale={scale},\n"
-                    "  fliplr={fliplr},\n"
-                    "  mosaic={mosaic},\n"
-                    "  mixup={mixup},\n"
-                    ")\n"
-                ).format(
-                    model=self.model_weights,
-                    data=str(self.dataset_yaml),
-                    epochs=self.epochs,
-                    patience=self.patience,
-                    batch=self.batch,
-                    imgsz=self.imgsz,
-                    project=str(self.run_dir.parent),
-                    name=self.run_dir.name,
-                    device=self.device if self.device else "auto",
-                    augment=bool(self.augment),
-                    hsv_h=self.hsv_h,
-                    hsv_s=self.hsv_s,
-                    hsv_v=self.hsv_v,
-                    degrees=self.degrees,
-                    translate=self.translate,
-                    scale=self.scale,
-                    fliplr=self.fliplr,
-                )
-                self._proc = _run_cmd([sys.executable, "-c", py_code])
-            assert self._proc.stdout is not None
-            ansi_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-            for line in self._proc.stdout:
-                if self._cancel:
-                    break
-                msg = ansi_re.sub("", line).rstrip()
-                self.log.emit(msg)
-                # Parse epoch progress from Ultralytics logs (e.g., "Epoch 3/50")
-                m = re.search(r"Epoch\s+(\d+)\s*/\s*(\d+)", msg)
-                if not m:
-                    m = re.search(r"^\s*(\d+)\s*/\s*(\d+)\s", msg)
-                if m:
-                    try:
-                        cur = int(m.group(1))
-                        total = int(m.group(2))
-                        if total > 0:
-                            self.progress.emit(cur, total)
-                    except Exception:
-                        pass
+            batch = int(self.batch)
 
-            rc = self._proc.wait()
-            if self._cancel:
-                self.failed.emit("Canceled.")
-                return
-            if rc != 0:
+            while True:
+                self.log.emit(f"Starting training (subprocess)… batch={batch}")
+                cli_args = [
+                    "task=pose",
+                    "mode=train",
+                    f"model={self.model_weights}",
+                    f"data={str(self.dataset_yaml)}",
+                    f"epochs={self.epochs}",
+                    f"patience={int(getattr(self, 'patience', 10))}",
+                    f"batch={batch}",
+                    f"imgsz={self.imgsz}",
+                    f"project={str(self.run_dir.parent)}",
+                    f"name={self.run_dir.name}",
+                    "exist_ok=True",
+                ]
+                if self.device and self.device != "auto":
+                    cli_args.append(f"device={self.device}")
+                if self.augment:
+                    cli_args += [
+                        "augment=True",
+                        f"hsv_h={self.hsv_h}",
+                        f"hsv_s={self.hsv_s}",
+                        f"hsv_v={self.hsv_v}",
+                        f"degrees={self.degrees}",
+                        f"translate={self.translate}",
+                        f"scale={self.scale}",
+                        f"fliplr={self.fliplr}",
+                    ]
+
+                if yolo_bin:
+                    self._proc = _run_cmd([yolo_bin] + cli_args)
+                else:
+                    py_code = (
+                        "from ultralytics import YOLO\n"
+                        "model=YOLO(r'''{model}''')\n"
+                        "model.train(\n"
+                        "  data=r'''{data}''',\n"
+                        "  epochs={epochs},\n"
+                        "  patience={patience},\n"
+                        "  batch={batch},\n"
+                        "  imgsz={imgsz},\n"
+                        "  project=r'''{project}''',\n"
+                        "  name=r'''{name}''',\n"
+                        "  exist_ok=True,\n"
+                        "  device=r'''{device}''',\n"
+                        "  augment={augment},\n"
+                        "  hsv_h={hsv_h},\n"
+                        "  hsv_s={hsv_s},\n"
+                        "  hsv_v={hsv_v},\n"
+                        "  degrees={degrees},\n"
+                        "  translate={translate},\n"
+                        "  scale={scale},\n"
+                        "  fliplr={fliplr},\n"
+                        ")\n"
+                    ).format(
+                        model=self.model_weights,
+                        data=str(self.dataset_yaml),
+                        epochs=self.epochs,
+                        patience=self.patience,
+                        batch=batch,
+                        imgsz=self.imgsz,
+                        project=str(self.run_dir.parent),
+                        name=self.run_dir.name,
+                        device=self.device if self.device else "auto",
+                        augment=bool(self.augment),
+                        hsv_h=self.hsv_h,
+                        hsv_s=self.hsv_s,
+                        hsv_v=self.hsv_v,
+                        degrees=self.degrees,
+                        translate=self.translate,
+                        scale=self.scale,
+                        fliplr=self.fliplr,
+                    )
+                    self._proc = _run_cmd([sys.executable, "-c", py_code])
+
+                assert self._proc.stdout is not None
+                ansi_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+                saw_oom = False
+                for line in self._proc.stdout:
+                    if self._cancel:
+                        break
+                    msg = ansi_re.sub("", line).rstrip()
+                    self.log.emit(msg)
+                    if "out of memory" in msg.lower():
+                        saw_oom = True
+                    m = re.search(r"Epoch\s+(\d+)\s*/\s*(\d+)", msg)
+                    if not m:
+                        m = re.search(r"^\s*(\d+)\s*/\s*(\d+)\s", msg)
+                    if m:
+                        try:
+                            cur = int(m.group(1))
+                            total = int(m.group(2))
+                            if total > 0:
+                                self.progress.emit(cur, total)
+                        except Exception:
+                            pass
+
+                rc = self._proc.wait()
+                if self._cancel:
+                    self.failed.emit("Canceled.")
+                    return
+                if rc == 0:
+                    break
+                if saw_oom and self.auto_batch and batch > 1:
+                    new_batch = max(1, batch // 2)
+                    if new_batch == batch:
+                        self.failed.emit("Training failed (OOM).")
+                        return
+                    self.log.emit(f"OOM detected. Retrying with batch={new_batch}")
+                    batch = new_batch
+                    continue
                 self.failed.emit(f"Training failed (exit code {rc}).")
                 return
 
@@ -2682,6 +2699,10 @@ class TrainingRunnerDialog(QDialog):
         self.batch_spin.setRange(1, 1024)
         self.batch_spin.setValue(16)
         cfg_layout.addRow("Batch size:", self.batch_spin)
+
+        self.cb_auto_batch = QCheckBox("Auto-reduce batch on OOM")
+        self.cb_auto_batch.setChecked(True)
+        cfg_layout.addRow("", self.cb_auto_batch)
 
         self.epochs_spin = QSpinBox()
         self.epochs_spin.setRange(1, 10000)
@@ -3050,6 +3071,7 @@ class TrainingRunnerDialog(QDialog):
                 "backend": self.backend_combo.currentText(),
                 "model": self.model_combo.currentText().strip(),
                 "batch": int(self.batch_spin.value()),
+                "auto_batch": bool(self.cb_auto_batch.isChecked()),
                 "epochs": int(self.epochs_spin.value()),
                 "patience": int(self.patience_spin.value()),
                 "imgsz": int(self.imgsz_spin.value()),
@@ -3157,6 +3179,7 @@ class TrainingRunnerDialog(QDialog):
             "epochs": int(self.epochs_spin.value()),
             "patience": int(self.patience_spin.value()),
             "batch": int(self.batch_spin.value()),
+            "auto_batch": bool(self.cb_auto_batch.isChecked()),
             "imgsz": int(self.imgsz_spin.value()),
             "device": self.device_combo.currentText(),
             "augment": bool(self.cb_augment.isChecked()),
@@ -3206,6 +3229,7 @@ class TrainingRunnerDialog(QDialog):
             imgsz=self.imgsz_spin.value(),
             device=self.device_combo.currentText(),
             augment=self.cb_augment.isChecked(),
+            auto_batch=self.cb_auto_batch.isChecked(),
             hsv_h=self.hsv_h_spin.value(),
             hsv_s=self.hsv_s_spin.value(),
             hsv_v=self.hsv_v_spin.value(),
