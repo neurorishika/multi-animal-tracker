@@ -2516,8 +2516,7 @@ class TrainingWorker(QObject):
             args = [
                 sys.executable,
                 "-m",
-                "ultralytics",
-                "yolo",
+                "ultralytics.yolo",
                 "task=pose",
                 "mode=train",
                 f"model={self.model_weights}",
