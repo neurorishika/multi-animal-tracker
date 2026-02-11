@@ -17,6 +17,7 @@ import tempfile
 import os
 import shutil
 import re
+import uuid
 import numpy as np
 import yaml
 import gc
@@ -85,6 +86,8 @@ try:
         pick_frames_stratified,
         list_labeled_indices,
         build_yolo_pose_dataset,
+        build_coco_keypoints_dataset,
+        build_ultralytics_flat_dataset,
         load_yolo_pose_label,
     )
     from ..utils.gpu_utils import (
@@ -104,6 +107,8 @@ except ImportError:
         pick_frames_stratified,
         list_labeled_indices,
         build_yolo_pose_dataset,
+        build_coco_keypoints_dataset,
+        build_ultralytics_flat_dataset,
         load_yolo_pose_label,
     )
 
@@ -2638,6 +2643,131 @@ class TrainingWorker(QObject):
             pass
 
 
+class SleapExportWorker(QObject):
+    log = Signal(str)
+    finished = Signal(str)
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        env_name: str,
+        image_paths: List[Path],
+        labels_dir: Path,
+        out_root: Path,
+        class_names: List[str],
+        keypoint_names: List[str],
+        skeleton_edges: List[Tuple[int, int]],
+        slp_path: Path,
+        include_aux: bool,
+        embed: bool,
+        aux_datasets: Optional[List[Tuple[List[Path], Path]]] = None,
+        aux_items: Optional[List[Tuple[Path, Path]]] = None,
+    ):
+        super().__init__()
+        self.env_name = env_name
+        self.image_paths = list(image_paths)
+        self.labels_dir = Path(labels_dir)
+        self.out_root = Path(out_root)
+        self.class_names = list(class_names)
+        self.keypoint_names = list(keypoint_names)
+        self.skeleton_edges = list(skeleton_edges)
+        self.slp_path = Path(slp_path)
+        self.include_aux = bool(include_aux)
+        self.embed = bool(embed)
+        self.aux_datasets = aux_datasets or []
+        self.aux_items = aux_items or []
+
+    def run(self):
+        try:
+            if not self.env_name:
+                self.failed.emit("No SLEAP conda environment selected.")
+                return
+
+            export_dir = self.slp_path.parent / f"{self.slp_path.stem}_data"
+            if export_dir.exists():
+                shutil.rmtree(export_dir, ignore_errors=True)
+            export_dir.mkdir(parents=True, exist_ok=True)
+
+            extra_datasets = self.aux_datasets if self.include_aux else []
+            extra_items = self.aux_items if self.include_aux else []
+
+            self.log.emit("Building COCO export dataset...")
+            info = build_coco_keypoints_dataset(
+                self.image_paths,
+                self.labels_dir,
+                export_dir,
+                self.class_names,
+                self.keypoint_names,
+                self.skeleton_edges,
+                extra_datasets=extra_datasets,
+                extra_items=extra_items,
+            )
+            self.log.emit(
+                f"Export dataset ready: {info.get('labeled_count', 0)} frames."
+            )
+
+            dataset_dir = info["dataset_dir"]
+            coco_path = info["coco_path"]
+
+            # Convert via sleap-io (ensures labels are preserved).
+            req = {
+                "coco_path": str(coco_path),
+                "out_slp": str(self.slp_path),
+                "embed": "all" if self.embed else "",
+            }
+            req_path = (
+                Path(tempfile.gettempdir())
+                / f"sleap_export_{os.getpid()}_{uuid.uuid4().hex}.json"
+            )
+            req_path.write_text(json.dumps(req), encoding="utf-8")
+
+            code = (
+                "import json,sys\n"
+                "from pathlib import Path\n"
+                "import sleap_io as sio\n"
+                "cfg=json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))\n"
+                "coco_path=cfg['coco_path']\n"
+                "labels=sio.load_file(coco_path, format='coco')\n"
+                "embed=cfg.get('embed') or None\n"
+                "if embed in ('all','True','true'):\n"
+                "  embed='all'\n"
+                "if hasattr(sio,'save_file'):\n"
+                "  sio.save_file(labels, cfg['out_slp'], format='slp', embed=embed)\n"
+                "else:\n"
+                "  sio.save_slp(labels, cfg['out_slp'], embed=embed)\n"
+                "print('OK')\n"
+            )
+
+            cmd = [
+                "conda",
+                "run",
+                "-n",
+                self.env_name,
+                "python",
+                "-c",
+                code,
+                str(req_path),
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            if proc.returncode != 0:
+                err = (
+                    proc.stderr.strip()
+                    or proc.stdout.strip()
+                    or "SLEAP export failed."
+                )
+                if "No module named" in err and "sleap_io" in err:
+                    err = (
+                        "sleap-io is not installed in the selected conda env. "
+                        "Install it in that env (e.g., `conda install -c conda-forge sleap-io`)."
+                    )
+                self.failed.emit(err)
+                return
+
+            self.finished.emit(str(self.slp_path))
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class TrainingRunnerDialog(QDialog):
     def __init__(self, parent, project, image_paths: List[Path]):
         super().__init__(parent)
@@ -2652,6 +2782,13 @@ class TrainingRunnerDialog(QDialog):
         self._last_weights = None
         self._train_start_ts = None
         self._loss_source_path = None
+        self._sleap_thread = None
+        self._sleap_worker = None
+        self._sleap_open_after_export = False
+        self._sleap_env_pref = ""
+        self._aux_datasets: List[Dict[str, object]] = []
+        self._aux_items: List[Tuple[Path, Path]] = []
+        self._last_aux_path = ""
         self._loss_timer = QTimer(self)
         self._loss_timer.setInterval(1000)
         self._loss_timer.timeout.connect(self._update_loss_plot)
@@ -2667,12 +2804,18 @@ class TrainingRunnerDialog(QDialog):
         content_layout = QVBoxLayout(content)
 
         # Backend
-        backend_group = QGroupBox("Backend")
-        backend_layout = QFormLayout(backend_group)
+        self.backend_group = QGroupBox("Backend")
+        backend_layout = QFormLayout(self.backend_group)
 
         self.backend_combo = QComboBox()
-        self.backend_combo.addItems(["YOLO Pose", "ViTPose (soon)", "SLEAP (soon)"])
+        self.backend_combo.addItems(["YOLO Pose", "ViTPose (soon)", "SLEAP"])
         backend_layout.addRow("Backend:", self.backend_combo)
+
+        content_layout.addWidget(self.backend_group)
+
+        # Config
+        self.cfg_group = QGroupBox("Config")
+        cfg_layout = QFormLayout(self.cfg_group)
 
         self.model_combo = QComboBox()
         self.model_combo.setEditable(True)
@@ -2682,13 +2825,7 @@ class TrainingRunnerDialog(QDialog):
         model_row = QHBoxLayout()
         model_row.addWidget(self.model_combo, 1)
         model_row.addWidget(self.btn_model_browse)
-        backend_layout.addRow("Base weights:", model_row)
-
-        content_layout.addWidget(backend_group)
-
-        # Config
-        cfg_group = QGroupBox("Config")
-        cfg_layout = QFormLayout(cfg_group)
+        cfg_layout.addRow("Base weights:", model_row)
 
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1, 1024)
@@ -2718,11 +2855,31 @@ class TrainingRunnerDialog(QDialog):
         self.device_combo.addItems(get_available_devices())
         cfg_layout.addRow("Device:", self.device_combo)
 
-        content_layout.addWidget(cfg_group)
+        # Dataset options (moved here, YOLO-only)
+        self.train_split_spin = QDoubleSpinBox()
+        self.train_split_spin.setRange(0.05, 0.95)
+        self.train_split_spin.setSingleStep(0.05)
+        self.train_split_spin.setValue(0.8)
+        cfg_layout.addRow("Train fraction:", self.train_split_spin)
+
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(0, 999999)
+        self.seed_spin.setValue(42)
+        cfg_layout.addRow("Random seed:", self.seed_spin)
+
+        self.cb_ignore_occluded = QCheckBox("Ignore occluded keypoints in training")
+        self.cb_ignore_occluded.setChecked(True)
+        cfg_layout.addRow("", self.cb_ignore_occluded)
+
+        self.lbl_labeled = QLabel("")
+        self._refresh_labeled_count()
+        cfg_layout.addRow("Status:", self.lbl_labeled)
+
+        content_layout.addWidget(self.cfg_group)
 
         # Augmentations
-        aug_group = QGroupBox("Augmentations")
-        aug_layout = QVBoxLayout(aug_group)
+        self.aug_group = QGroupBox("Augmentations")
+        aug_layout = QVBoxLayout(self.aug_group)
         self.cb_augment = QCheckBox("Enable augmentations")
         self.cb_augment.setChecked(True)
         aug_layout.addWidget(self.cb_augment)
@@ -2814,34 +2971,11 @@ class TrainingRunnerDialog(QDialog):
         )
         self.aug_widgets.append(self.scale_spin)
 
-        content_layout.addWidget(aug_group)
+        content_layout.addWidget(self.aug_group)
 
         # Dataset
-        data_group = QGroupBox("Dataset")
-        data_layout = QFormLayout(data_group)
-
-        self.train_split_spin = QDoubleSpinBox()
-        self.train_split_spin.setRange(0.05, 0.95)
-        self.train_split_spin.setSingleStep(0.05)
-        self.train_split_spin.setValue(0.8)
-        data_layout.addRow("Train fraction:", self.train_split_spin)
-
-        self.seed_spin = QSpinBox()
-        self.seed_spin.setRange(0, 999999)
-        self.seed_spin.setValue(42)
-        data_layout.addRow("Random seed:", self.seed_spin)
-
-        self.cb_ignore_occluded = QCheckBox("Ignore occluded keypoints in training")
-        self.cb_ignore_occluded.setChecked(True)
-        data_layout.addRow("", self.cb_ignore_occluded)
-
-        self._aux_datasets: List[Dict[str, object]] = []
-        self._aux_items: List[Tuple[Path, Path]] = []
-        self._last_aux_path = ""
-
-        self.lbl_labeled = QLabel("")
-        self._refresh_labeled_count()
-        data_layout.addRow("Status:", self.lbl_labeled)
+        self.data_group = QGroupBox("Dataset")
+        data_layout = QFormLayout(self.data_group)
 
         self.aux_list = QListWidget()
         self.btn_add_aux = QPushButton("Add auxiliary project…")
@@ -2852,14 +2986,69 @@ class TrainingRunnerDialog(QDialog):
         data_layout.addRow("Auxiliary datasets:", self.aux_list)
         data_layout.addRow("", aux_row)
 
-        content_layout.addWidget(data_group)
+        content_layout.addWidget(self.data_group)
+
+        # SLEAP Export
+        self.sleap_group = QGroupBox("SLEAP Export")
+        sleap_layout = QFormLayout(self.sleap_group)
+
+        # Conda env selection
+        env_row = QHBoxLayout()
+        self.combo_sleap_env = QComboBox()
+        self.combo_sleap_env.setToolTip(
+            "Select a conda environment with SLEAP installed.\n"
+            "Environment name must start with 'sleap'."
+        )
+        self.btn_sleap_refresh = QPushButton("↻")
+        self.btn_sleap_refresh.setMaximumWidth(40)
+        self.btn_sleap_refresh.setToolTip("Refresh conda environments list")
+        env_row.addWidget(self.combo_sleap_env, 1)
+        env_row.addWidget(self.btn_sleap_refresh)
+        sleap_layout.addRow("Conda env:", env_row)
+
+        self.lbl_sleap_env_status = QLabel("")
+        self.lbl_sleap_env_status.setStyleSheet("QLabel { color: #b00; }")
+        sleap_layout.addRow("", self.lbl_sleap_env_status)
+
+        # Output path
+        out_row = QHBoxLayout()
+        self.sleap_out_edit = QLineEdit("")
+        self.btn_sleap_browse = QPushButton("Browse…")
+        out_row.addWidget(self.sleap_out_edit, 1)
+        out_row.addWidget(self.btn_sleap_browse)
+        sleap_layout.addRow("Output .slp:", out_row)
+
+        # Options
+        self.cb_sleap_include_aux = QCheckBox("Include auxiliary datasets")
+        self.cb_sleap_include_aux.setChecked(True)
+        sleap_layout.addRow("", self.cb_sleap_include_aux)
+
+        self.cb_sleap_embed = QCheckBox("Embed frames in .slp")
+        self.cb_sleap_embed.setChecked(False)
+        sleap_layout.addRow("", self.cb_sleap_embed)
+
+        self.lbl_sleap_format = QLabel(
+            "Format: COCO keypoints (occluded treated as missing for SLEAP)"
+        )
+        self.lbl_sleap_format.setStyleSheet("QLabel { color: #555; }")
+        sleap_layout.addRow("", self.lbl_sleap_format)
+
+        # Actions
+        sleap_btns = QHBoxLayout()
+        self.btn_sleap_export = QPushButton("Export SLEAP Labels")
+        self.btn_sleap_open = QPushButton("Open in SLEAP")
+        sleap_btns.addWidget(self.btn_sleap_export)
+        sleap_btns.addWidget(self.btn_sleap_open)
+        sleap_layout.addRow("", sleap_btns)
+
+        content_layout.addWidget(self.sleap_group)
 
         # Run info
-        info_group = QGroupBox("Run")
-        info_layout = QFormLayout(info_group)
+        self.info_group = QGroupBox("Run")
+        info_layout = QFormLayout(self.info_group)
         self.lbl_run_dir = QLabel("Run dir: (not started)")
         info_layout.addRow(self.lbl_run_dir)
-        content_layout.addWidget(info_group)
+        content_layout.addWidget(self.info_group)
 
         # Logs + progress
         self.progress = QProgressBar()
@@ -2906,10 +3095,19 @@ class TrainingRunnerDialog(QDialog):
         self.btn_add_aux.clicked.connect(self._add_aux_project)
         self.btn_remove_aux.clicked.connect(self._remove_aux_project)
         self.cb_augment.toggled.connect(self._toggle_aug_widgets)
+        self.btn_sleap_refresh.clicked.connect(self._refresh_sleap_envs)
+        self.btn_sleap_browse.clicked.connect(self._browse_sleap_out)
+        self.btn_sleap_export.clicked.connect(self._export_sleap_labels)
+        self.btn_sleap_open.clicked.connect(self._open_sleap)
+        self.backend_combo.currentIndexChanged.connect(self._update_backend_ui)
 
         self._toggle_aug_widgets(self.cb_augment.isChecked())
         self._apply_settings()
+        self._refresh_sleap_envs()
         self._apply_latest_weights_default()
+        if not self.sleap_out_edit.text().strip():
+            self.sleap_out_edit.setText(str(self._default_sleap_out_path()))
+        self._update_backend_ui()
 
     def _append_log(self, msg: str):
         self.log_view.appendPlainText(msg)
@@ -3038,6 +3236,18 @@ class TrainingRunnerDialog(QDialog):
             bool(settings.get("ignore_occluded", self.cb_ignore_occluded.isChecked()))
         )
         self._last_aux_path = settings.get("last_aux_path", self._last_aux_path)
+        self.cb_sleap_include_aux.setChecked(
+            bool(settings.get("sleap_include_aux", self.cb_sleap_include_aux.isChecked()))
+        )
+        self.cb_sleap_embed.setChecked(
+            bool(settings.get("sleap_embed", self.cb_sleap_embed.isChecked()))
+        )
+        self._sleap_env_pref = settings.get("sleap_env_name", self._sleap_env_pref)
+        sleap_out = settings.get("sleap_out_path", "").strip()
+        if sleap_out:
+            self.sleap_out_edit.setText(sleap_out)
+        elif not self.sleap_out_edit.text().strip():
+            self.sleap_out_edit.setText(str(self._default_sleap_out_path()))
 
     def _apply_latest_weights_default(self):
         if (
@@ -3046,6 +3256,206 @@ class TrainingRunnerDialog(QDialog):
             and Path(self.project.latest_pose_weights).exists()
         ):
             self.model_combo.setCurrentText(str(self.project.latest_pose_weights))
+
+    def _update_backend_ui(self):
+        backend = self.backend_combo.currentText()
+        is_yolo = backend == "YOLO Pose"
+        is_sleap = backend.startswith("SLEAP")
+
+        self.cfg_group.setVisible(is_yolo)
+        self.aug_group.setVisible(is_yolo)
+        self.info_group.setVisible(is_yolo)
+        self.progress.setVisible(is_yolo)
+        self.lbl_loss_plot.setVisible(is_yolo)
+        self.loss_components_box.setVisible(is_yolo)
+        self.log_view.setVisible(is_yolo)
+        self.btn_start.setVisible(is_yolo)
+        self.btn_stop.setVisible(is_yolo)
+        self.btn_open_eval.setVisible(is_yolo)
+
+        self.sleap_group.setVisible(is_sleap)
+
+        # Dataset (aux only) is always visible.
+
+    def _default_sleap_out_path(self) -> Path:
+        base = self.project.out_root / ".posekit" / "sleap"
+        ts = datetime.now().strftime("%Y%m%d%H%M%S")
+        proj_name = self.project.project_path.stem or "pose_project"
+        return base / f"{proj_name}_{ts}.slp"
+
+    def _refresh_sleap_envs(self):
+        self.combo_sleap_env.clear()
+        self.combo_sleap_env.setEnabled(True)
+        envs: List[str] = []
+        try:
+            res = subprocess.run(
+                ["conda", "env", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    name = parts[0]
+                    if name.lower().startswith("sleap"):
+                        envs.append(name)
+            else:
+                self.lbl_sleap_env_status.setText("Unable to list conda environments.")
+        except FileNotFoundError:
+            self.lbl_sleap_env_status.setText("Conda not found on PATH.")
+            envs = []
+        except Exception as e:
+            self.lbl_sleap_env_status.setText(f"Env scan failed: {e}")
+            envs = []
+
+        if not envs:
+            self.combo_sleap_env.addItem("No sleap envs found")
+            self.combo_sleap_env.setEnabled(False)
+            self.btn_sleap_open.setEnabled(False)
+            self.btn_sleap_export.setEnabled(False)
+            if not self.lbl_sleap_env_status.text():
+                self.lbl_sleap_env_status.setText(
+                    "No conda envs starting with 'sleap' found."
+                )
+        else:
+            self.combo_sleap_env.addItems(envs)
+            if self._sleap_env_pref and self._sleap_env_pref in envs:
+                self.combo_sleap_env.setCurrentText(self._sleap_env_pref)
+            self.lbl_sleap_env_status.setText("")
+            self.btn_sleap_open.setEnabled(True)
+            self.btn_sleap_export.setEnabled(True)
+
+    def _browse_sleap_out(self):
+        start = self.sleap_out_edit.text().strip() or str(
+            self._default_sleap_out_path()
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Select SLEAP output (.slp)", start, "*.slp"
+        )
+        if path:
+            if not path.lower().endswith(".slp"):
+                path = f"{path}.slp"
+            self.sleap_out_edit.setText(path)
+
+    def _get_sleap_env(self) -> Optional[str]:
+        env = self.combo_sleap_env.currentText().strip()
+        if not env or env.lower().startswith("no "):
+            return None
+        return env
+
+    def _sleap_out_path(self) -> Optional[Path]:
+        txt = self.sleap_out_edit.text().strip()
+        if not txt:
+            txt = str(self._default_sleap_out_path())
+            self.sleap_out_edit.setText(txt)
+        if not txt.lower().endswith(".slp"):
+            txt = f"{txt}.slp"
+            self.sleap_out_edit.setText(txt)
+        return Path(txt).expanduser().resolve()
+
+    def _export_sleap_labels(self, open_after: bool = False):
+        env = self._get_sleap_env()
+        if not env:
+            QMessageBox.warning(
+                self, "No SLEAP env", "Select a conda env starting with 'sleap'."
+            )
+            return
+        slp_path = self._sleap_out_path()
+        if slp_path is None:
+            return
+
+        self._sleap_open_after_export = bool(open_after)
+        self.btn_sleap_export.setEnabled(False)
+        self.btn_sleap_open.setEnabled(False)
+        self._append_log(f"[SLEAP] Exporting to {slp_path} ...")
+
+        self._sleap_thread = QThread()
+        self._sleap_worker = SleapExportWorker(
+            env_name=env,
+            image_paths=self.image_paths,
+            labels_dir=self.project.labels_dir,
+            out_root=self.project.out_root,
+            class_names=self.project.class_names,
+            keypoint_names=self.project.keypoint_names,
+            skeleton_edges=self.project.skeleton_edges,
+            slp_path=slp_path,
+            include_aux=self.cb_sleap_include_aux.isChecked(),
+            embed=self.cb_sleap_embed.isChecked(),
+            aux_datasets=[
+                (d["images"], d["labels_dir"])
+                for d in self._aux_datasets
+                if "images" in d and "labels_dir" in d
+            ],
+            aux_items=list(self._aux_items),
+        )
+        self._sleap_worker.moveToThread(self._sleap_thread)
+        self._sleap_thread.started.connect(self._sleap_worker.run)
+        self._sleap_worker.log.connect(self._append_log)
+        self._sleap_worker.finished.connect(self._on_sleap_export_finished)
+        self._sleap_worker.failed.connect(self._on_sleap_export_failed)
+        self._sleap_worker.finished.connect(self._sleap_thread.quit)
+        self._sleap_worker.failed.connect(self._sleap_thread.quit)
+        self._sleap_thread.finished.connect(self._sleap_thread.deleteLater)
+        self._sleap_thread.start()
+
+    def _on_sleap_export_finished(self, slp_path: str):
+        self.btn_sleap_export.setEnabled(True)
+        self.btn_sleap_open.setEnabled(True)
+        self._append_log(f"[SLEAP] Exported: {slp_path}")
+        if self._sleap_open_after_export:
+            self._sleap_open_after_export = False
+            self._launch_sleap(Path(slp_path))
+
+    def _on_sleap_export_failed(self, msg: str):
+        self.btn_sleap_export.setEnabled(True)
+        self.btn_sleap_open.setEnabled(True)
+        self._append_log(f"[SLEAP] Export failed: {msg}")
+        QMessageBox.warning(self, "SLEAP export failed", msg)
+
+    def _open_sleap(self):
+        slp_path = self._sleap_out_path()
+        if slp_path is None:
+            return
+        if not slp_path.exists():
+            self._export_sleap_labels(open_after=True)
+            return
+        self._launch_sleap(slp_path)
+
+    def _launch_sleap(self, slp_path: Path):
+        env = self._get_sleap_env()
+        if not env:
+            QMessageBox.warning(
+                self, "No SLEAP env", "Select a conda env starting with 'sleap'."
+            )
+            return
+
+        def _supports_cmd(args: List[str]) -> bool:
+            try:
+                res = subprocess.run(
+                    ["conda", "run", "-n", env] + args,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                return res.returncode == 0
+            except Exception:
+                return False
+
+        if _supports_cmd(["sleap", "label", "--help"]):
+            cmd = ["conda", "run", "-n", env, "sleap", "label", str(slp_path)]
+        else:
+            cmd = ["conda", "run", "-n", env, "sleap-label", str(slp_path)]
+
+        try:
+            subprocess.Popen(cmd)
+            self._append_log(f"[SLEAP] Launching: {' '.join(cmd)}")
+        except Exception as e:
+            QMessageBox.warning(self, "SLEAP launch failed", str(e))
 
     def _save_settings(self):
         _save_dialog_settings(
@@ -3070,6 +3480,10 @@ class TrainingRunnerDialog(QDialog):
                 "seed": int(self.seed_spin.value()),
                 "ignore_occluded": bool(self.cb_ignore_occluded.isChecked()),
                 "last_aux_path": self._last_aux_path,
+                "sleap_env_name": self.combo_sleap_env.currentText().strip(),
+                "sleap_out_path": self.sleap_out_edit.text().strip(),
+                "sleap_embed": bool(self.cb_sleap_embed.isChecked()),
+                "sleap_include_aux": bool(self.cb_sleap_include_aux.isChecked()),
             },
         )
 

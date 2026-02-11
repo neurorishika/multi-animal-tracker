@@ -35,6 +35,7 @@ import logging
 import os
 import random
 import sys
+import subprocess
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -302,23 +303,35 @@ class PosePredictWorker(QObject):
 
     def __init__(
         self,
-        weights_path: Path,
+        model_path: Path,
         image_path: Path,
         out_root: Path,
         keypoint_names: List[str],
+        skeleton_edges: Optional[List[Tuple[int, int]]] = None,
+        backend: str = "yolo",
         device: str = "auto",
         imgsz: int = 640,
         conf: float = 0.25,
+        sleap_env: Optional[str] = None,
+        sleap_device: str = "auto",
+        sleap_batch: int = 4,
+        sleap_max_instances: int = 1,
     ):
         super().__init__()
-        self.weights_path = Path(weights_path)
+        self.model_path = Path(model_path)
         self.image_path = Path(image_path)
         self.out_root = Path(out_root)
         self.keypoint_names = list(keypoint_names)
+        self.skeleton_edges = list(skeleton_edges or [])
         self.num_kpts = len(self.keypoint_names)
+        self.backend = (backend or "yolo").lower()
         self.device = device
         self.imgsz = int(imgsz)
         self.conf = float(conf)
+        self.sleap_env = sleap_env
+        self.sleap_device = sleap_device
+        self.sleap_batch = int(sleap_batch)
+        self.sleap_max_instances = int(sleap_max_instances)
 
     def _extract_best_prediction(self, result):
         if result is None or result.keypoints is None:
@@ -370,13 +383,17 @@ class PosePredictWorker(QObject):
 
     def run(self):
         try:
-            infer = PoseInferenceService(self.out_root, self.keypoint_names)
-            cached = infer.get_cached_pred(self.weights_path, self.image_path)
+            infer = PoseInferenceService(
+                self.out_root, self.keypoint_names, self.skeleton_edges
+            )
+            cached = infer.get_cached_pred(
+                self.model_path, self.image_path, backend=self.backend
+            )
             if cached is not None:
                 self.finished.emit(cached)
                 return
             preds_map, err = infer.predict(
-                self.weights_path,
+                self.model_path,
                 [self.image_path],
                 device=self.device,
                 imgsz=self.imgsz,
@@ -384,6 +401,11 @@ class PosePredictWorker(QObject):
                 batch=1,
                 progress_cb=None,
                 cancel_cb=None,
+                backend=self.backend,
+                sleap_env=self.sleap_env,
+                sleap_device=self.sleap_device,
+                sleap_batch=self.sleap_batch,
+                sleap_max_instances=self.sleap_max_instances,
             )
             if preds_map is None:
                 self.failed.emit(err or "Prediction failed.")
@@ -406,24 +428,36 @@ class BulkPosePredictWorker(QObject):
 
     def __init__(
         self,
-        weights_path: Path,
+        model_path: Path,
         image_paths: List[Path],
         out_root: Path,
         keypoint_names: List[str],
+        skeleton_edges: Optional[List[Tuple[int, int]]] = None,
+        backend: str = "yolo",
         device: str = "auto",
         imgsz: int = 640,
         conf: float = 0.25,
         batch: int = 16,
+        sleap_env: Optional[str] = None,
+        sleap_device: str = "auto",
+        sleap_batch: int = 4,
+        sleap_max_instances: int = 1,
     ):
         super().__init__()
-        self.weights_path = Path(weights_path)
+        self.model_path = Path(model_path)
         self.image_paths = list(image_paths)
         self.out_root = Path(out_root)
         self.keypoint_names = list(keypoint_names)
+        self.skeleton_edges = list(skeleton_edges or [])
+        self.backend = (backend or "yolo").lower()
         self.device = device
         self.imgsz = int(imgsz)
         self.conf = float(conf)
         self.batch = int(batch)
+        self.sleap_env = sleap_env
+        self.sleap_device = sleap_device
+        self.sleap_batch = int(sleap_batch)
+        self.sleap_max_instances = int(sleap_max_instances)
         self._cancel = False
 
     def cancel(self):
@@ -431,9 +465,11 @@ class BulkPosePredictWorker(QObject):
 
     def run(self):
         try:
-            infer = PoseInferenceService(self.out_root, self.keypoint_names)
+            infer = PoseInferenceService(
+                self.out_root, self.keypoint_names, self.skeleton_edges
+            )
             preds, err = infer.predict(
-                self.weights_path,
+                self.model_path,
                 self.image_paths,
                 device=self.device,
                 imgsz=self.imgsz,
@@ -441,6 +477,11 @@ class BulkPosePredictWorker(QObject):
                 batch=self.batch,
                 progress_cb=lambda d, t: self.progress.emit(d, t),
                 cancel_cb=lambda: self._cancel,
+                backend=self.backend,
+                sleap_env=self.sleap_env,
+                sleap_device=self.sleap_device,
+                sleap_batch=self.sleap_batch,
+                sleap_max_instances=self.sleap_max_instances,
             )
             if preds is None:
                 self.failed.emit(err or "Prediction failed.")
@@ -449,6 +490,24 @@ class BulkPosePredictWorker(QObject):
         except Exception as e:
             _maybe_empty_cuda_cache()
             self.failed.emit(str(e))
+
+
+class SleapServiceWorker(QObject):
+    finished = Signal(bool, str, str)
+
+    def __init__(self, env_name: str, out_root: Path):
+        super().__init__()
+        self.env_name = env_name
+        self.out_root = Path(out_root)
+
+    def run(self):
+        try:
+            ok, err, log_path = PoseInferenceService.start_sleap_service(
+                self.env_name, self.out_root
+            )
+            self.finished.emit(bool(ok), str(err or ""), str(log_path or ""))
+        except Exception as e:
+            self.finished.emit(False, str(e), "")
 
 
 # -----------------------------
@@ -2210,10 +2269,15 @@ class MainWindow(QMainWindow):
         self._pred_worker: Optional[PosePredictWorker] = None
         self._bulk_pred_thread: Optional[QThread] = None
         self._bulk_pred_worker: Optional[BulkPosePredictWorker] = None
+        self._sleap_service_thread: Optional[QThread] = None
+        self._sleap_service_worker: Optional[SleapServiceWorker] = None
         self.show_predictions = True
         self.show_pred_conf = False
+        self._sleap_env_pref = ""
         self.infer = PoseInferenceService(
-            self.project.out_root, self.project.keypoint_names
+            self.project.out_root,
+            self.project.keypoint_names,
+            self.project.skeleton_edges,
         )
 
         # Track which frames are in the labeling set (empty by default)
@@ -2468,7 +2532,19 @@ class MainWindow(QMainWindow):
         # Model
         model_group = QGroupBox("Model")
         model_layout = QVBoxLayout(model_group)
-        model_layout.addWidget(QLabel("Pose weights (.pt)"))
+
+        backend_row = QHBoxLayout()
+        backend_row.addWidget(QLabel("Inference backend"))
+        self.combo_pred_backend = QComboBox()
+        self.combo_pred_backend.addItems(["YOLO", "SLEAP"])
+        backend_row.addWidget(self.combo_pred_backend, 1)
+        model_layout.addLayout(backend_row)
+
+        # YOLO settings
+        self.yolo_pred_widget = QWidget()
+        yolo_layout = QVBoxLayout(self.yolo_pred_widget)
+        yolo_layout.setContentsMargins(0, 0, 0, 0)
+        yolo_layout.addWidget(QLabel("Pose weights (.pt)"))
         pred_weights_row = QHBoxLayout()
         self.pred_weights_edit = QLineEdit("")
         self.pred_weights_edit.setPlaceholderText("Select weights (.pt)")
@@ -2477,7 +2553,7 @@ class MainWindow(QMainWindow):
         pred_weights_row.addWidget(self.pred_weights_edit, 1)
         pred_weights_row.addWidget(self.btn_pred_weights)
         pred_weights_row.addWidget(self.btn_pred_weights_latest)
-        model_layout.addLayout(pred_weights_row)
+        yolo_layout.addLayout(pred_weights_row)
 
         pred_conf_row = QHBoxLayout()
         pred_conf_row.addWidget(QLabel("Min pred conf"))
@@ -2486,7 +2562,56 @@ class MainWindow(QMainWindow):
         self.sp_pred_conf.setSingleStep(0.05)
         self.sp_pred_conf.setValue(0.25)
         pred_conf_row.addWidget(self.sp_pred_conf)
-        model_layout.addLayout(pred_conf_row)
+        yolo_layout.addLayout(pred_conf_row)
+        model_layout.addWidget(self.yolo_pred_widget)
+
+        # SLEAP settings
+        self.sleap_pred_widget = QWidget()
+        sleap_layout = QFormLayout(self.sleap_pred_widget)
+        sleap_layout.setContentsMargins(0, 0, 0, 0)
+        env_row = QHBoxLayout()
+        self.combo_sleap_env = QComboBox()
+        self.combo_sleap_env.setToolTip("Environment name must start with 'sleap'.")
+        self.btn_sleap_refresh = QPushButton("↻")
+        self.btn_sleap_refresh.setMaximumWidth(40)
+        self.btn_sleap_refresh.setToolTip("Refresh conda environments list")
+        env_row.addWidget(self.combo_sleap_env, 1)
+        env_row.addWidget(self.btn_sleap_refresh)
+        sleap_layout.addRow("Conda env:", env_row)
+        self.lbl_sleap_env_status = QLabel("")
+        self.lbl_sleap_env_status.setStyleSheet("QLabel { color: #b00; }")
+        sleap_layout.addRow("", self.lbl_sleap_env_status)
+
+        model_row = QHBoxLayout()
+        self.sleap_model_edit = QLineEdit("")
+        self.sleap_model_edit.setPlaceholderText("Select SLEAP model directory")
+        self.btn_sleap_model = QPushButton("Browse…")
+        model_row.addWidget(self.sleap_model_edit, 1)
+        model_row.addWidget(self.btn_sleap_model)
+        sleap_layout.addRow("Model dir:", model_row)
+
+        self.combo_sleap_device = QComboBox()
+        self.combo_sleap_device.addItems(["auto", "cuda", "cpu", "mps"])
+        sleap_layout.addRow("Device:", self.combo_sleap_device)
+
+        self.sp_sleap_batch = QSpinBox()
+        self.sp_sleap_batch.setRange(1, 128)
+        self.sp_sleap_batch.setValue(4)
+        sleap_layout.addRow("Batch size:", self.sp_sleap_batch)
+
+        self.sp_sleap_max_instances = QSpinBox()
+        self.sp_sleap_max_instances.setRange(1, 32)
+        self.sp_sleap_max_instances.setValue(1)
+        sleap_layout.addRow("Max instances:", self.sp_sleap_max_instances)
+
+        sleap_btns = QHBoxLayout()
+        self.btn_sleap_start = QPushButton("Start SLEAP Service")
+        self.btn_sleap_stop = QPushButton("Stop SLEAP Service")
+        sleap_btns.addWidget(self.btn_sleap_start)
+        sleap_btns.addWidget(self.btn_sleap_stop)
+        sleap_layout.addRow("", sleap_btns)
+
+        model_layout.addWidget(self.sleap_pred_widget)
 
         self.btn_train = QPushButton("Train / Fine-tune…")
         self.btn_eval = QPushButton("Evaluate…")
@@ -2574,6 +2699,9 @@ class MainWindow(QMainWindow):
         self.status_progress.setFixedWidth(160)
         self.status_progress.setVisible(False)
         self.statusBar().addPermanentWidget(self.status_progress)
+        self.status_sleap = QLabel("SLEAP: off")
+        self.status_sleap.setVisible(False)
+        self.statusBar().addPermanentWidget(self.status_sleap)
         self._last_saved_at = None
         self.status_autosave = QLabel("Saved")
         self.statusBar().addPermanentWidget(self.status_autosave)
@@ -2616,6 +2744,13 @@ class MainWindow(QMainWindow):
         self.btn_clear_pred_cache.clicked.connect(self._clear_prediction_cache)
         self.btn_pred_weights.clicked.connect(self._browse_pred_weights)
         self.btn_pred_weights_latest.clicked.connect(self._use_latest_pred_weights)
+        self.combo_pred_backend.currentTextChanged.connect(
+            self._update_pred_backend_ui
+        )
+        self.btn_sleap_refresh.clicked.connect(self._refresh_sleap_envs)
+        self.btn_sleap_model.clicked.connect(self._browse_sleap_model_dir)
+        self.btn_sleap_start.clicked.connect(self._start_sleap_service)
+        self.btn_sleap_stop.clicked.connect(self._stop_sleap_service)
         self.btn_unlabeled_to_labeling.clicked.connect(self._move_unlabeled_to_labeling)
         self.btn_unlabeled_to_all.clicked.connect(self._move_unlabeled_to_all)
         self.btn_random_to_labeling.clicked.connect(self._add_random_to_labeling)
@@ -2632,7 +2767,9 @@ class MainWindow(QMainWindow):
         self.btn_fit_view.clicked.connect(self.fit_to_view)
 
         # Load UI settings now that all widgets are created
+        self._refresh_sleap_envs()
         self._load_ui_settings()
+        self._update_pred_backend_ui()
 
         # Populate list + load
         self._populate_frames()
@@ -2646,6 +2783,10 @@ class MainWindow(QMainWindow):
         self._perform_autosave()
         self.save_project()
         self._save_ui_settings()
+        try:
+            PoseInferenceService.shutdown_sleap_service()
+        except Exception:
+            pass
         super().closeEvent(event)
 
     def keyPressEvent(self, event):
@@ -2742,6 +2883,12 @@ class MainWindow(QMainWindow):
             "autosave_delay_ms": int(self.autosave_delay_ms),
             "pred_conf": float(self.sp_pred_conf.value()),
             "pred_weights": self.pred_weights_edit.text().strip(),
+            "pred_backend": self.combo_pred_backend.currentText().strip(),
+            "sleap_env": self.combo_sleap_env.currentText().strip(),
+            "sleap_model_dir": self.sleap_model_edit.text().strip(),
+            "sleap_device": self.combo_sleap_device.currentText().strip(),
+            "sleap_batch": int(self.sp_sleap_batch.value()),
+            "sleap_max_instances": int(self.sp_sleap_max_instances.value()),
             "show_predictions": bool(self.cb_show_preds.isChecked()),
             "show_pred_conf": bool(self.cb_show_pred_conf.isChecked()),
         }
@@ -2775,6 +2922,30 @@ class MainWindow(QMainWindow):
                 self.sp_pred_conf.setValue(float(settings["pred_conf"]))
             if "pred_weights" in settings:
                 self.pred_weights_edit.setText(str(settings["pred_weights"]))
+            if "pred_backend" in settings:
+                backend = str(settings["pred_backend"])
+                if backend:
+                    self.combo_pred_backend.setCurrentText(backend)
+            if "sleap_env" in settings:
+                self._sleap_env_pref = str(settings["sleap_env"]).strip()
+                if self._sleap_env_pref:
+                    if self._sleap_env_pref in [
+                        self.combo_sleap_env.itemText(i)
+                        for i in range(self.combo_sleap_env.count())
+                    ]:
+                        self.combo_sleap_env.setCurrentText(self._sleap_env_pref)
+            if "sleap_model_dir" in settings:
+                self.sleap_model_edit.setText(str(settings["sleap_model_dir"]))
+            if "sleap_device" in settings:
+                self.combo_sleap_device.setCurrentText(
+                    str(settings["sleap_device"])
+                )
+            if "sleap_batch" in settings:
+                self.sp_sleap_batch.setValue(int(settings["sleap_batch"]))
+            if "sleap_max_instances" in settings:
+                self.sp_sleap_max_instances.setValue(
+                    int(settings["sleap_max_instances"])
+                )
             if "show_predictions" in settings:
                 self.cb_show_preds.setChecked(bool(settings["show_predictions"]))
                 self.show_predictions = bool(self.cb_show_preds.isChecked())
@@ -4129,9 +4300,6 @@ class MainWindow(QMainWindow):
                     )
 
             self.project.keypoint_names = names
-            self.infer = PoseInferenceService(
-                self.project.out_root, self.project.keypoint_names
-            )
             self._rebuild_kpt_list()
 
             if self._ann is not None:
@@ -4147,6 +4315,11 @@ class MainWindow(QMainWindow):
             self.project.skeleton_edges = [
                 (a, b) for (a, b) in edges if 0 <= a < k and 0 <= b < k and a != b
             ]
+            self.infer = PoseInferenceService(
+                self.project.out_root,
+                self.project.keypoint_names,
+                self.project.skeleton_edges,
+            )
             if self._ann is not None:
                 self._rebuild_canvas()
             self._populate_frames()
@@ -4195,14 +4368,16 @@ class MainWindow(QMainWindow):
             )
 
         self.project.keypoint_names = new_kpts
-        self.infer = PoseInferenceService(
-            self.project.out_root, self.project.keypoint_names
-        )
         # clamp edges to new range
         k = len(new_kpts)
         self.project.skeleton_edges = [
             (a, b) for (a, b) in new_edges if 0 <= a < k and 0 <= b < k and a != b
         ]
+        self.infer = PoseInferenceService(
+            self.project.out_root,
+            self.project.keypoint_names,
+            self.project.skeleton_edges,
+        )
         self.project.autosave = autosave
         self.project.bbox_pad_frac = pad
 
@@ -4427,6 +4602,214 @@ class MainWindow(QMainWindow):
         except Exception:
             return 0.25
 
+    def _pred_backend(self) -> str:
+        try:
+            txt = self.combo_pred_backend.currentText().strip().lower()
+            return "sleap" if txt.startswith("sleap") else "yolo"
+        except Exception:
+            return "yolo"
+
+    def _set_sleap_status(self, text: str, visible: Optional[bool] = None):
+        if not hasattr(self, "status_sleap"):
+            return
+        if visible is not None:
+            self.status_sleap.setVisible(bool(visible))
+        self.status_sleap.setText(text)
+
+    def _set_busy_progress(self, msg: Optional[str] = None):
+        self.status_progress.setRange(0, 0)
+        self.status_progress.setVisible(True)
+        if msg:
+            self.statusBar().showMessage(msg)
+
+    def _clear_progress(self):
+        self.status_progress.setRange(0, 100)
+        self.status_progress.setValue(0)
+        self.status_progress.setVisible(False)
+
+    def _update_pred_backend_ui(self):
+        backend = self._pred_backend()
+        is_sleap = backend == "sleap"
+        if hasattr(self, "yolo_pred_widget"):
+            self.yolo_pred_widget.setVisible(not is_sleap)
+        if hasattr(self, "sleap_pred_widget"):
+            self.sleap_pred_widget.setVisible(is_sleap)
+        if is_sleap:
+            running = PoseInferenceService.sleap_service_running()
+            self._set_sleap_status(
+                "SLEAP: running" if running else "SLEAP: idle", visible=True
+            )
+            if hasattr(self, "btn_sleap_start") and hasattr(self, "btn_sleap_stop"):
+                self.btn_sleap_start.setEnabled(not running)
+                self.btn_sleap_stop.setEnabled(running)
+        else:
+            self._set_sleap_status("SLEAP: off", visible=False)
+        if not is_sleap:
+            try:
+                PoseInferenceService.shutdown_sleap_service()
+            except Exception:
+                pass
+
+    def _refresh_sleap_envs(self):
+        if not hasattr(self, "combo_sleap_env"):
+            return
+        self.combo_sleap_env.clear()
+        self.combo_sleap_env.setEnabled(True)
+        envs: List[str] = []
+        try:
+            res = subprocess.run(
+                ["conda", "env", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    name = parts[0]
+                    if name.lower().startswith("sleap"):
+                        envs.append(name)
+            else:
+                self.lbl_sleap_env_status.setText("Unable to list conda environments.")
+        except FileNotFoundError:
+            self.lbl_sleap_env_status.setText("Conda not found on PATH.")
+            envs = []
+        except Exception as e:
+            self.lbl_sleap_env_status.setText(f"Env scan failed: {e}")
+            envs = []
+
+        if not envs:
+            self.combo_sleap_env.addItem("No sleap envs found")
+            self.combo_sleap_env.setEnabled(False)
+            if not self.lbl_sleap_env_status.text():
+                self.lbl_sleap_env_status.setText(
+                    "No conda envs starting with 'sleap' found."
+                )
+        else:
+            self.combo_sleap_env.addItems(envs)
+            if self._sleap_env_pref and self._sleap_env_pref in envs:
+                self.combo_sleap_env.setCurrentText(self._sleap_env_pref)
+            self.lbl_sleap_env_status.setText("")
+
+    def _browse_sleap_model_dir(self):
+        start = self.sleap_model_edit.text().strip() or str(self.project.out_root)
+        path = QFileDialog.getExistingDirectory(
+            self, "Select SLEAP model directory", start
+        )
+        if path:
+            self.sleap_model_edit.setText(path)
+
+    def _get_sleap_env(self) -> Optional[str]:
+        env = self.combo_sleap_env.currentText().strip()
+        if not env or env.lower().startswith("no sleap"):
+            return None
+        return env
+
+    def _get_sleap_model_or_prompt(self) -> Optional[Path]:
+        txt = self.sleap_model_edit.text().strip()
+        if txt:
+            p = Path(txt).expanduser().resolve()
+            if p.exists() and p.is_dir():
+                return p
+            QMessageBox.warning(
+                self, "Invalid model", "SLEAP model directory not found."
+            )
+            return None
+        self._browse_sleap_model_dir()
+        txt = self.sleap_model_edit.text().strip()
+        if not txt:
+            return None
+        p = Path(txt).expanduser().resolve()
+        if p.exists() and p.is_dir():
+            return p
+        QMessageBox.warning(self, "Invalid model", "SLEAP model directory not found.")
+        return None
+
+    def _get_sleap_model_silent(self) -> Optional[Path]:
+        txt = self.sleap_model_edit.text().strip()
+        if not txt:
+            return None
+        p = Path(txt).expanduser().resolve()
+        if p.exists() and p.is_dir():
+            return p
+        return None
+
+    def _start_sleap_service(self):
+        env = self._get_sleap_env()
+        if not env:
+            QMessageBox.warning(
+                self,
+                "No SLEAP env",
+                "Select a conda env starting with 'sleap' for SLEAP inference.",
+            )
+            return
+        if PoseInferenceService.sleap_service_running():
+            self._set_sleap_status("SLEAP: running", visible=True)
+            if hasattr(self, "btn_sleap_start") and hasattr(self, "btn_sleap_stop"):
+                self.btn_sleap_start.setEnabled(False)
+                self.btn_sleap_stop.setEnabled(True)
+            return
+        if self._sleap_service_thread and self._sleap_service_thread.isRunning():
+            return
+        self._set_sleap_status("SLEAP: starting", visible=True)
+        self._set_busy_progress("Starting SLEAP service…")
+        self.btn_sleap_start.setEnabled(False)
+        self.btn_sleap_stop.setEnabled(False)
+        self._sleap_service_thread = QThread()
+        self._sleap_service_worker = SleapServiceWorker(env, self.project.out_root)
+        self._sleap_service_worker.moveToThread(self._sleap_service_thread)
+        self._sleap_service_thread.started.connect(self._sleap_service_worker.run)
+        self._sleap_service_worker.finished.connect(self._on_sleap_service_started)
+        self._sleap_service_worker.finished.connect(
+            self._sleap_service_thread.quit
+        )
+        self._sleap_service_thread.finished.connect(
+            self._sleap_service_thread.deleteLater
+        )
+        self._sleap_service_thread.start()
+
+    def _stop_sleap_service(self):
+        if self._sleap_service_thread and self._sleap_service_thread.isRunning():
+            return
+        try:
+            PoseInferenceService.shutdown_sleap_service()
+        except Exception:
+            pass
+        self._set_sleap_status("SLEAP: idle", visible=True)
+        if hasattr(self, "btn_sleap_start") and hasattr(self, "btn_sleap_stop"):
+            self.btn_sleap_start.setEnabled(True)
+            self.btn_sleap_stop.setEnabled(False)
+
+    def _on_sleap_service_started(self, ok: bool, err: str, log_path: str):
+        self._clear_progress()
+        self.btn_sleap_start.setEnabled(True)
+        self.btn_sleap_stop.setEnabled(True)
+        if not ok:
+            self._set_sleap_status("SLEAP: error", visible=True)
+            QMessageBox.warning(self, "SLEAP service failed", err)
+            return
+        self._set_sleap_status("SLEAP: running", visible=True)
+        self.btn_sleap_start.setEnabled(False)
+        self.btn_sleap_stop.setEnabled(True)
+        if log_path:
+            self.statusBar().showMessage(
+                f"SLEAP service running. Log: {log_path}", 4000
+            )
+
+    def _get_pred_model_or_prompt(self) -> Optional[Path]:
+        if self._pred_backend() == "sleap":
+            return self._get_sleap_model_or_prompt()
+        return self._get_pred_weights_or_prompt()
+
+    def _get_pred_model_silent(self) -> Optional[Path]:
+        if self._pred_backend() == "sleap":
+            return self._get_sleap_model_silent()
+        return self._get_pred_weights_silent()
+
     def _browse_pred_weights(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select pose weights", "", "*.pt")
         if path:
@@ -4472,10 +4855,12 @@ class MainWindow(QMainWindow):
     ) -> Tuple[Optional[List[Keypoint]], Optional[List[float]]]:
         if not self.show_predictions:
             return None, None
-        weights = self._get_pred_weights_silent()
-        if not weights:
+        model = self._get_pred_model_silent()
+        if not model:
             return None, None
-        preds = self._get_pred_for_frame(weights, self.image_paths[self.current_index])
+        preds = self._get_pred_for_frame(
+            model, self.image_paths[self.current_index], backend=self._pred_backend()
+        )
         if not preds:
             return None, None
         pred_kpts = self._preds_to_keypoints(preds, conf_thr=0.0)
@@ -4518,9 +4903,9 @@ class MainWindow(QMainWindow):
         self._rebuild_canvas()
 
     def _get_pred_for_frame(
-        self, weights: Path, img_path: Path
+        self, model: Path, img_path: Path, backend: str = "yolo"
     ) -> Optional[List[Tuple[float, float, float]]]:
-        return self.infer.get_cached_pred(weights, img_path)
+        return self.infer.get_cached_pred(model, img_path, backend=backend)
 
     def _current_frame_has_labels(self) -> bool:
         if self._ann is not None and any(kp.v > 0 for kp in self._ann.kpts):
@@ -4556,29 +4941,63 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No frame", "Select a frame first.")
             return
 
-        weights = self._get_pred_weights_or_prompt()
-        if not weights:
+        backend = self._pred_backend()
+        model = self._get_pred_model_or_prompt()
+        if not model:
             return
-        self._last_pred_conf = self._pred_conf_default()
-        self._last_pred_weights = weights
+        sleap_env = None
+        if backend == "sleap":
+            sleap_env = self._get_sleap_env()
+            if not sleap_env:
+                QMessageBox.warning(
+                    self,
+                    "No SLEAP env",
+                    "Select a conda env starting with 'sleap' for SLEAP inference.",
+                )
+                return
+            if not PoseInferenceService.sleap_service_running():
+                self._set_sleap_status("SLEAP: starting", visible=True)
+                self._set_busy_progress("Starting SLEAP service…")
+            else:
+                self._set_sleap_status("SLEAP: running", visible=True)
+            if hasattr(self, "btn_sleap_start") and hasattr(self, "btn_sleap_stop"):
+                self.btn_sleap_start.setEnabled(False)
+                self.btn_sleap_stop.setEnabled(True)
+            self._last_pred_conf = None
+        else:
+            self._last_pred_conf = self._pred_conf_default()
+        self._last_pred_model = model
+        self._last_pred_backend = backend
 
-        cached = self._get_pred_for_frame(weights, self.image_paths[self.current_index])
+        cached = self._get_pred_for_frame(
+            model, self.image_paths[self.current_index], backend=backend
+        )
         if cached is not None:
             self._on_pred_finished(cached)
             return
 
-        self.statusBar().showMessage(f"Predicting keypoints… ({weights.name})")
+        if backend != "sleap":
+            self.statusBar().showMessage(f"Predicting keypoints… ({model.name})")
         self.btn_predict.setEnabled(False)
+        if backend == "sleap":
+            if PoseInferenceService.sleap_service_running():
+                self._set_sleap_status("SLEAP: running", visible=True)
 
         self._pred_thread = QThread()
         self._pred_worker = PosePredictWorker(
-            weights_path=weights,
+            model_path=model,
             image_path=self.image_paths[self.current_index],
             out_root=self.project.out_root,
             keypoint_names=self.project.keypoint_names,
+            skeleton_edges=self.project.skeleton_edges,
+            backend=backend,
             device="auto",
             imgsz=640,
-            conf=self._last_pred_conf,
+            conf=self._last_pred_conf or 0.0,
+            sleap_env=sleap_env,
+            sleap_device=self.combo_sleap_device.currentText().strip(),
+            sleap_batch=int(self.sp_sleap_batch.value()),
+            sleap_max_instances=int(self.sp_sleap_max_instances.value()),
         )
         self._pred_worker.moveToThread(self._pred_thread)
         self._pred_thread.started.connect(self._pred_worker.run)
@@ -4592,34 +5011,48 @@ class MainWindow(QMainWindow):
     def _on_pred_finished(self, preds: List[Tuple[float, float, float]]):
         self.btn_predict.setEnabled(True)
         if not preds:
+            backend = getattr(self, "_last_pred_backend", "yolo")
             conf = getattr(self, "_last_pred_conf", None)
-            if conf is not None:
+            if backend == "sleap":
+                msg = "No predictions found."
+            elif conf is not None:
                 msg = f"No predictions above conf={conf:.2f}. Try a lower conf."
             else:
                 msg = "No predictions above confidence threshold. Try a lower conf."
             self.statusBar().showMessage(msg, 3000)
+            if backend == "sleap":
+                self._set_sleap_status("SLEAP: idle", visible=True)
+                self._clear_progress()
             return
         self.statusBar().showMessage("Prediction loaded. Adjust and save.", 2000)
+        if getattr(self, "_last_pred_backend", "yolo") == "sleap":
+            self._set_sleap_status("SLEAP: idle", visible=True)
+            self._clear_progress()
         if self._ann is None:
             return
         if self.mode != "frame":
             self.rb_frame.setChecked(True)
-        weights = getattr(self, "_last_pred_weights", None)
-        if weights:
+        model = getattr(self, "_last_pred_model", None)
+        backend = getattr(self, "_last_pred_backend", "yolo")
+        if model:
             self.infer.merge_cache(
-                weights, {str(self.image_paths[self.current_index]): preds}
+                model, {str(self.image_paths[self.current_index]): preds}, backend=backend
             )
         self._rebuild_canvas()
 
     def _on_pred_failed(self, msg: str):
         self.btn_predict.setEnabled(True)
         self.statusBar().showMessage("Prediction failed.", 2000)
+        if getattr(self, "_last_pred_backend", "yolo") == "sleap":
+            self._set_sleap_status("SLEAP: idle", visible=True)
+            self._clear_progress()
         QMessageBox.warning(self, "Prediction failed", msg)
 
     def _clear_prediction_cache(self):
-        weights = self._get_pred_weights_silent()
-        if weights:
-            removed = self.infer.clear_cache(weights)
+        backend = self._pred_backend()
+        model = self._get_pred_model_silent()
+        if model:
+            removed = self.infer.clear_cache(model, backend=backend)
             self.statusBar().showMessage(
                 f"Cleared prediction cache ({removed} file(s)).", 3000
             )
@@ -4629,7 +5062,7 @@ class MainWindow(QMainWindow):
         resp = QMessageBox.question(
             self,
             "Clear prediction cache",
-            "No prediction weights selected. Clear all cached predictions?",
+            "No prediction model selected. Clear all cached predictions?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -4642,11 +5075,12 @@ class MainWindow(QMainWindow):
         self._rebuild_canvas()
 
     def _adopt_prediction_kpt(self, kpt_idx: int, x: float, y: float):
-        weights = self._get_pred_weights_or_prompt()
+        backend = self._pred_backend()
+        model = self._get_pred_model_or_prompt()
         preds = None
-        if weights:
+        if model:
             preds = self.infer.get_cached_pred(
-                weights, self.image_paths[self.current_index]
+                model, self.image_paths[self.current_index], backend=backend
             )
 
         if not self._current_frame_has_labels():
@@ -4664,9 +5098,11 @@ class MainWindow(QMainWindow):
             self.labeling_frames.add(self.current_index)
             self._populate_frames()
             self._select_frame_in_list(self.current_index)
-            if weights:
+            if model:
                 self.infer.merge_cache(
-                    weights, {str(self.image_paths[self.current_index]): preds}
+                    model,
+                    {str(self.image_paths[self.current_index]): preds},
+                    backend=backend,
                 )
             return
 
@@ -4686,22 +5122,25 @@ class MainWindow(QMainWindow):
         self._select_frame_in_list(self.current_index)
 
         # Update prediction cache with adjusted point (preserve existing conf if present)
-        if weights and preds and kpt_idx < len(preds):
+        if model and preds and kpt_idx < len(preds):
             conf = preds[kpt_idx][2] if len(preds[kpt_idx]) >= 3 else 1.0
             preds[kpt_idx] = (float(x), float(y), float(conf))
             self.infer.merge_cache(
-                weights, {str(self.image_paths[self.current_index]): preds}
+                model,
+                {str(self.image_paths[self.current_index]): preds},
+                backend=backend,
             )
 
     def apply_predictions_current(self):
         if self._ann is None:
             QMessageBox.information(self, "No frame", "Select a frame first.")
             return
-        weights = self._get_pred_weights_or_prompt()
-        if not weights:
+        backend = self._pred_backend()
+        model = self._get_pred_model_or_prompt()
+        if not model:
             return
         preds = self.infer.get_cached_pred(
-            weights, self.image_paths[self.current_index]
+            model, self.image_paths[self.current_index], backend=backend
         )
         if not preds:
             QMessageBox.information(
@@ -4731,9 +5170,28 @@ class MainWindow(QMainWindow):
         if not self.image_paths:
             QMessageBox.information(self, "No frames", "No images loaded.")
             return
-        weights = self._get_pred_weights_or_prompt()
-        if not weights:
+        backend = self._pred_backend()
+        model = self._get_pred_model_or_prompt()
+        if not model:
             return
+        sleap_env = None
+        if backend == "sleap":
+            sleap_env = self._get_sleap_env()
+            if not sleap_env:
+                QMessageBox.warning(
+                    self,
+                    "No SLEAP env",
+                    "Select a conda env starting with 'sleap' for SLEAP inference.",
+                )
+                return
+            if not PoseInferenceService.sleap_service_running():
+                self._set_sleap_status("SLEAP: starting", visible=True)
+                self._set_busy_progress("Starting SLEAP service…")
+            else:
+                self._set_sleap_status("SLEAP: running", visible=True)
+            if hasattr(self, "btn_sleap_start") and hasattr(self, "btn_sleap_stop"):
+                self.btn_sleap_start.setEnabled(False)
+                self.btn_sleap_stop.setEnabled(True)
 
         items = ["All frames", "Labeling set", "Unlabeled only"]
         scope, ok = QInputDialog.getItem(
@@ -4755,20 +5213,31 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No frames", "No frames in selected scope.")
             return
 
-        self.statusBar().showMessage(f"Predicting dataset… ({weights.name})")
+        if backend != "sleap":
+            self.statusBar().showMessage(f"Predicting dataset… ({model.name})")
         self.btn_predict_bulk.setEnabled(False)
+        if backend == "sleap":
+            if PoseInferenceService.sleap_service_running():
+                self._set_sleap_status("SLEAP: running", visible=True)
 
-        self._last_pred_weights = weights
+        self._last_pred_model = model
+        self._last_pred_backend = backend
         self._bulk_pred_thread = QThread()
         self._bulk_pred_worker = BulkPosePredictWorker(
-            weights_path=weights,
+            model_path=model,
             image_paths=paths,
             out_root=self.project.out_root,
             keypoint_names=self.project.keypoint_names,
+            skeleton_edges=self.project.skeleton_edges,
+            backend=backend,
             device="auto",
             imgsz=640,
-            conf=self._pred_conf_default(),
+            conf=self._pred_conf_default() if backend == "yolo" else 0.0,
             batch=16,
+            sleap_env=sleap_env,
+            sleap_device=self.combo_sleap_device.currentText().strip(),
+            sleap_batch=int(self.sp_sleap_batch.value()),
+            sleap_max_instances=int(self.sp_sleap_max_instances.value()),
         )
         self._bulk_pred_worker.moveToThread(self._bulk_pred_thread)
         self._bulk_pred_thread.started.connect(self._bulk_pred_worker.run)
@@ -4782,28 +5251,35 @@ class MainWindow(QMainWindow):
 
     def _on_bulk_pred_progress(self, done: int, total: int):
         if total > 0:
+            if self.status_progress.maximum() == 0:
+                self.status_progress.setRange(0, 100)
             pct = int((done / total) * 100)
             self.status_progress.setVisible(True)
             self.status_progress.setValue(min(100, max(0, pct)))
             self.statusBar().showMessage(f"Predicting dataset… {done}/{total}")
+            if getattr(self, "_last_pred_backend", "yolo") == "sleap":
+                self._set_sleap_status("SLEAP: running", visible=True)
 
     def _on_bulk_pred_finished(
         self, preds: Dict[str, List[Tuple[float, float, float]]]
     ):
         self.btn_predict_bulk.setEnabled(True)
-        self.status_progress.setValue(0)
-        self.status_progress.setVisible(False)
+        self._clear_progress()
         self.statusBar().showMessage("Predictions cached.", 2000)
-        weights = getattr(self, "_last_pred_weights", None)
-        if weights:
-            self.infer.merge_cache(weights, preds)
+        if getattr(self, "_last_pred_backend", "yolo") == "sleap":
+            self._set_sleap_status("SLEAP: idle", visible=True)
+        model = getattr(self, "_last_pred_model", None)
+        backend = getattr(self, "_last_pred_backend", "yolo")
+        if model:
+            self.infer.merge_cache(model, preds, backend=backend)
         self._rebuild_canvas()
 
     def _on_bulk_pred_failed(self, msg: str):
         self.btn_predict_bulk.setEnabled(True)
-        self.status_progress.setValue(0)
-        self.status_progress.setVisible(False)
+        self._clear_progress()
         self.statusBar().showMessage("Prediction failed.", 2000)
+        if getattr(self, "_last_pred_backend", "yolo") == "sleap":
+            self._set_sleap_status("SLEAP: idle", visible=True)
         QMessageBox.warning(self, "Prediction failed", msg)
 
     def open_training_runner(self):

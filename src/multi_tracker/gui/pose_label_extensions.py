@@ -1207,6 +1207,350 @@ def build_yolo_pose_dataset(
     }
 
 
+def build_ultralytics_flat_dataset(
+    image_paths: List[Path],
+    labels_dir: Path,
+    output_dir: Path,
+    class_names: List[str],
+    keypoint_names: List[str],
+    extra_datasets: Optional[List[Tuple[List[Path], Path]]] = None,
+    extra_items: Optional[List[Tuple[Path, Path]]] = None,
+) -> Dict[str, object]:
+    """
+    Build a flat Ultralytics dataset (single split) under output_dir.
+
+    Copies all labeled frames into:
+      - output_dir/images/
+      - output_dir/labels/
+
+    Writes data.yaml and manifest.json. Returns dict with paths and counts.
+    """
+
+    def _unique_stem(stem: str, used: set, salt: str) -> str:
+        if stem not in used:
+            used.add(stem)
+            return stem
+        h = hashlib.sha1(salt.encode("utf-8")).hexdigest()[:8]
+        cand = f"{stem}_{h}"
+        used.add(cand)
+        return cand
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    images_out = output_dir / "images"
+    labels_out = output_dir / "labels"
+    images_out.mkdir(parents=True, exist_ok=True)
+    labels_out.mkdir(parents=True, exist_ok=True)
+
+    datasets = [(image_paths, labels_dir)]
+    if extra_datasets:
+        datasets.extend(extra_datasets)
+
+    items: List[Tuple[Path, Path]] = []
+    for imgs, lbl_dir in datasets:
+        labeled_indices = list_labeled_indices(imgs, lbl_dir)
+        for idx in labeled_indices:
+            img_path = imgs[idx]
+            label_path = lbl_dir / f"{img_path.stem}.txt"
+            if label_path.exists():
+                items.append((img_path, label_path))
+
+    if extra_items:
+        for img_path, label_path in extra_items:
+            if img_path.exists() and label_path.exists():
+                items.append((img_path, label_path))
+
+    if not items:
+        raise ValueError("No labeled frames found for SLEAP export.")
+
+    k = len(keypoint_names)
+
+    def _parse_label_parts(label_path: Path, kpt_count: int) -> Optional[List[str]]:
+        try:
+            text = label_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return None
+        if not text:
+            return None
+        parts = text.split()
+        if len(parts) < 5 + 3 * kpt_count:
+            return None
+        # Validate numeric values
+        try:
+            # bbox
+            vals = [float(parts[i]) for i in range(1, 5)]
+        except Exception:
+            return None
+        for v in vals:
+            if not np.isfinite(v):
+                return None
+        # keypoints
+        for i in range(5, 5 + 3 * kpt_count, 3):
+            try:
+                x = float(parts[i])
+                y = float(parts[i + 1])
+                v = int(float(parts[i + 2]))
+            except Exception:
+                return None
+            if not np.isfinite(x) or not np.isfinite(y):
+                return None
+            if v not in (0, 1, 2):
+                return None
+        return parts
+
+    used_stems = set()
+    manifest_rows = []
+    kept = 0
+    skipped = 0
+
+    for img_path, label_path in items:
+        parts = _parse_label_parts(label_path, k)
+        if parts is None:
+            skipped += 1
+            continue
+        stem = _unique_stem(img_path.stem, used_stems, str(img_path))
+        img_dst = images_out / f"{stem}{img_path.suffix.lower()}"
+        lbl_dst = labels_out / f"{stem}.txt"
+        shutil.copy2(img_path, img_dst)
+        shutil.copy2(label_path, lbl_dst)
+        manifest_rows.append(
+            {
+                "src_image": str(img_path),
+                "src_label": str(label_path),
+                "dst_image": str(img_dst),
+                "dst_label": str(lbl_dst),
+            }
+        )
+        kept += 1
+
+    if kept <= 0:
+        raise ValueError("No valid labeled frames found after validation.")
+
+    data = {
+        "path": str(output_dir),
+        "train": "images",
+        "kpt_shape": [k, 3],
+        "names": {i: n for i, n in enumerate(class_names)},
+        "kpt_names": {0: keypoint_names},
+    }
+    import yaml
+
+    yaml_path = output_dir / "data.yaml"
+    yaml_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest_rows, indent=2), encoding="utf-8"
+    )
+
+    return {
+        "dataset_dir": output_dir,
+        "yaml_path": yaml_path,
+        "labeled_count": kept,
+        "skipped": skipped,
+        "manifest": output_dir / "manifest.json",
+    }
+
+
+def build_coco_keypoints_dataset(
+    image_paths: List[Path],
+    labels_dir: Path,
+    output_dir: Path,
+    class_names: List[str],
+    keypoint_names: List[str],
+    skeleton_edges: List[Tuple[int, int]],
+    extra_datasets: Optional[List[Tuple[List[Path], Path]]] = None,
+    extra_items: Optional[List[Tuple[Path, Path]]] = None,
+) -> Dict[str, object]:
+    """
+    Build a COCO keypoints dataset under output_dir.
+
+    Copies labeled frames into output_dir/images and writes annotations.json.
+    """
+
+    def _unique_stem(stem: str, used: set, salt: str) -> str:
+        if stem not in used:
+            used.add(stem)
+            return stem
+        h = hashlib.sha1(salt.encode("utf-8")).hexdigest()[:8]
+        cand = f"{stem}_{h}"
+        used.add(cand)
+        return cand
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    images_out = output_dir / "images"
+    images_out.mkdir(parents=True, exist_ok=True)
+
+    datasets = [(image_paths, labels_dir)]
+    if extra_datasets:
+        datasets.extend(extra_datasets)
+
+    items: List[Tuple[Path, Path]] = []
+    for imgs, lbl_dir in datasets:
+        labeled_indices = list_labeled_indices(imgs, lbl_dir)
+        for idx in labeled_indices:
+            img_path = imgs[idx]
+            label_path = lbl_dir / f"{img_path.stem}.txt"
+            if label_path.exists():
+                items.append((img_path, label_path))
+
+    if extra_items:
+        for img_path, label_path in extra_items:
+            if img_path.exists() and label_path.exists():
+                items.append((img_path, label_path))
+
+    if not items:
+        raise ValueError("No labeled frames found for SLEAP export.")
+
+    k = len(keypoint_names)
+    used_stems = set()
+    manifest_rows = []
+
+    images = []
+    annotations = []
+    image_map: Dict[str, Dict[str, object]] = {}
+    img_id = 1
+    ann_id = 1
+
+    def _parse_label_lines(label_path: Path) -> List[List[float]]:
+        try:
+            text = label_path.read_text(encoding="utf-8").strip()
+        except Exception:
+            return []
+        if not text:
+            return []
+        lines = []
+        for line in text.splitlines():
+            parts = line.strip().split()
+            if len(parts) < 5 + 3 * k:
+                continue
+            try:
+                vals = [float(p) for p in parts]
+            except Exception:
+                continue
+            lines.append(vals)
+        return lines
+
+    for img_path, label_path in items:
+        key = str(img_path)
+        if key not in image_map:
+            img = cv2.imread(str(img_path))
+            if img is None:
+                continue
+            h, w = img.shape[:2]
+            stem = _unique_stem(img_path.stem, used_stems, str(img_path))
+            img_dst = images_out / f"{stem}{img_path.suffix.lower()}"
+            shutil.copy2(img_path, img_dst)
+            image_map[key] = {
+                "id": img_id,
+                "file_name": str(Path("images") / img_dst.name),
+                "width": int(w),
+                "height": int(h),
+                "dst_image": str(img_dst),
+            }
+            images.append(
+                {
+                    "id": img_id,
+                    "file_name": str(Path("images") / img_dst.name),
+                    "width": int(w),
+                    "height": int(h),
+                }
+            )
+            manifest_rows.append(
+                {
+                    "src_image": str(img_path),
+                    "src_label": str(label_path),
+                    "dst_image": str(img_dst),
+                }
+            )
+            img_id += 1
+
+        entry = image_map[key]
+        w = entry["width"]
+        h = entry["height"]
+
+        lines = _parse_label_lines(label_path)
+        if not lines:
+            continue
+
+        for vals in lines:
+            cls = int(vals[0])
+            cx, cy, bw, bh = vals[1:5]
+            if cls < 0 or cls >= len(class_names):
+                continue
+            # bbox in pixels (x,y,w,h)
+            x = (cx - bw / 2.0) * w
+            y = (cy - bh / 2.0) * h
+            bw_px = bw * w
+            bh_px = bh * h
+            x = max(0.0, min(float(w - 1), x))
+            y = max(0.0, min(float(h - 1), y))
+            bw_px = max(0.0, min(float(w), bw_px))
+            bh_px = max(0.0, min(float(h), bh_px))
+
+            keypoints = []
+            num_kpts = 0
+            for i in range(5, 5 + 3 * k, 3):
+                xk = vals[i]
+                yk = vals[i + 1]
+                v = int(vals[i + 2])
+                # SLEAP COCO import treats v=1 as visible, so map occluded to missing.
+                if v == 2:
+                    num_kpts += 1
+                    xk = max(0.0, min(float(w - 1), xk * w))
+                    yk = max(0.0, min(float(h - 1), yk * h))
+                    v_out = 2
+                else:
+                    xk, yk = 0.0, 0.0
+                    v_out = 0
+                keypoints.extend([float(xk), float(yk), int(v_out)])
+
+            annotations.append(
+                {
+                    "id": ann_id,
+                    "image_id": int(entry["id"]),
+                    "category_id": int(cls + 1),
+                    "bbox": [float(x), float(y), float(bw_px), float(bh_px)],
+                    "area": float(bw_px * bh_px),
+                    "iscrowd": 0,
+                    "num_keypoints": int(num_kpts),
+                    "keypoints": keypoints,
+                }
+            )
+            ann_id += 1
+
+    if not annotations:
+        raise ValueError("No valid annotations found for COCO export.")
+
+    categories = []
+    skeleton = [[int(a + 1), int(b + 1)] for a, b in skeleton_edges]
+    for i, name in enumerate(class_names):
+        categories.append(
+            {
+                "id": int(i + 1),
+                "name": name,
+                "supercategory": "animal",
+                "keypoints": list(keypoint_names),
+                "skeleton": skeleton,
+            }
+        )
+
+    coco = {
+        "images": images,
+        "annotations": annotations,
+        "categories": categories,
+    }
+    coco_path = output_dir / "annotations.json"
+    coco_path.write_text(json.dumps(coco, indent=2), encoding="utf-8")
+    (output_dir / "manifest.json").write_text(
+        json.dumps(manifest_rows, indent=2), encoding="utf-8"
+    )
+
+    return {
+        "dataset_dir": output_dir,
+        "coco_path": coco_path,
+        "labeled_count": len(annotations),
+        "manifest": output_dir / "manifest.json",
+    }
+
+
 # -----------------------------
 # Embedding Worker Thread
 # -----------------------------
