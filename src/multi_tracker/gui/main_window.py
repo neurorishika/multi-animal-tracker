@@ -3725,19 +3725,29 @@ class MainWindow(QMainWindow):
         )
         f_selection.addRow("Max Frames to Export:", self.spin_dataset_max_frames)
 
-        # Confidence threshold
+        # Frame quality scoring threshold (used DURING TRACKING to identify problematic frames)
         self.spin_dataset_conf_threshold = QDoubleSpinBox()
         self.spin_dataset_conf_threshold.setRange(0.0, 1.0)
         self.spin_dataset_conf_threshold.setSingleStep(0.05)
         self.spin_dataset_conf_threshold.setDecimals(2)
         self.spin_dataset_conf_threshold.setValue(0.5)
         self.spin_dataset_conf_threshold.setToolTip(
-            "Flag frames where YOLO detection confidence is below this threshold (0.0-1.0).\n"
-            "Lower = only export very uncertain detections.\n"
-            "Higher = include moderately uncertain detections.\n"
-            "Recommended: 0.4-0.6"
+            "[FRAME SELECTION] Confidence threshold for identifying problematic frames DURING TRACKING.\n\n"
+            "Frames with detections below this confidence are scored as 'challenging'\n"
+            "and prioritized for export to improve training data.\n\n"
+            "• Lower (0.3-0.4): Only flag very uncertain detections\n"
+            "• Higher (0.5-0.7): Flag moderately uncertain detections too\n\n"
+            "Recommended: 0.5 (default) - captures frames that need model improvement"
         )
-        f_selection.addRow("Confidence Threshold:", self.spin_dataset_conf_threshold)
+        f_selection.addRow("Frame Quality Threshold:", self.spin_dataset_conf_threshold)
+
+        # Add help label explaining advanced options
+        advanced_help = self._create_help_label(
+            "Note: YOLO detection sensitivity for export (confidence=0.05, IOU=0.5) can be "
+            "customized in advanced_config.json. These are separate from tracking parameters and "
+            "optimized for annotation (detect everything, manual review corrects errors)."
+        )
+        f_selection.addRow(advanced_help)
 
         # Visual diversity window
         self.spin_dataset_diversity_window = QSpinBox()
@@ -5841,6 +5851,10 @@ class MainWindow(QMainWindow):
 
                 # Create detector and run detection on FULL frame (no masking)
                 # This preserves natural image context for better YOLO confidence
+                logger.info(
+                    f"Running YOLO detection (conf={yolo_params['YOLO_CONFIDENCE_THRESHOLD']:.2f}, "
+                    f"iou={yolo_params['YOLO_IOU_THRESHOLD']:.2f})"
+                )
                 detector = YOLOOBBDetector(yolo_params)
                 meas, sizes, shapes, yolo_results, detection_confidences = (
                     detector.detect_objects(frame_to_process, 0)
@@ -5950,13 +5964,13 @@ class MainWindow(QMainWindow):
                     ey = int(cy + 30 * math.sin(angle_rad))
                     cv2.line(test_frame, (int(cx), int(cy)), (ex, ey), (0, 255, 0), 2)
 
-                # Add detection count
+                # Add detection count and parameters
                 cv2.putText(
                     test_frame,
-                    f"Detections: {len(meas)}",
+                    f"Detections: {len(meas)} (IOU={yolo_params['YOLO_IOU_THRESHOLD']:.2f})",
                     (10, test_frame.shape[0] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
+                    0.6,
                     (0, 255, 255),
                     2,
                 )
@@ -8573,6 +8587,13 @@ class MainWindow(QMainWindow):
             "DATASET_OUTPUT_DIR": self.line_dataset_output.text(),
             "DATASET_MAX_FRAMES": self.spin_dataset_max_frames.value(),
             "DATASET_CONF_THRESHOLD": self.spin_dataset_conf_threshold.value(),
+            # Dataset-specific YOLO parameters from advanced config (for export, not tracking)
+            "DATASET_YOLO_CONFIDENCE_THRESHOLD": self.advanced_config.get(
+                "dataset_yolo_confidence_threshold", 0.05
+            ),
+            "DATASET_YOLO_IOU_THRESHOLD": self.advanced_config.get(
+                "dataset_yolo_iou_threshold", 0.5
+            ),
             "DATASET_DIVERSITY_WINDOW": self.spin_dataset_diversity_window.value(),
             "DATASET_INCLUDE_CONTEXT": self.chk_dataset_include_context.isChecked(),
             "DATASET_PROBABILISTIC_SAMPLING": self.chk_dataset_probabilistic.isChecked(),
@@ -9092,6 +9113,7 @@ class MainWindow(QMainWindow):
                     default=0.5,
                 )
             )
+            # Note: dataset YOLO conf/IOU now in advanced_config.json, not per-video config
             self.spin_dataset_diversity_window.setValue(
                 get_cfg("dataset_diversity_window", default=30)
             )
@@ -9481,6 +9503,7 @@ class MainWindow(QMainWindow):
         cfg.update(
             {
                 "dataset_confidence_threshold": self.spin_dataset_conf_threshold.value(),
+                # Note: dataset YOLO conf/IOU now in advanced_config.json, not per-video config
                 "dataset_diversity_window": self.spin_dataset_diversity_window.value(),
                 "dataset_include_context": self.chk_dataset_include_context.isChecked(),
                 "dataset_probabilistic_sampling": self.chk_dataset_probabilistic.isChecked(),
@@ -10183,6 +10206,9 @@ class MainWindow(QMainWindow):
             # YOLO Batching - Memory Fractions (device-specific optimization)
             "mps_memory_fraction": 0.3,  # Conservative 30% of unified memory for MPS (Apple Silicon)
             "cuda_memory_fraction": 0.7,  # 70% of VRAM for CUDA (NVIDIA GPUs)
+            # Dataset Generation - YOLO Detection Parameters (separate from tracking)
+            "dataset_yolo_confidence_threshold": 0.05,  # Very low - detect all animals including uncertain ones for annotation
+            "dataset_yolo_iou_threshold": 0.5,  # Moderate - remove obvious duplicates but keep borderline cases for manual review
         }
 
         if os.path.exists(config_path):
@@ -10193,6 +10219,17 @@ class MainWindow(QMainWindow):
                 logger.info(f"Loaded advanced config from {config_path}")
             except Exception as e:
                 logger.warning(f"Could not load advanced config: {e}")
+        else:
+            # Auto-create advanced_config.json with defaults on first run
+            # This makes the file discoverable for power users who want to customize
+            try:
+                config_dir = os.path.dirname(config_path)
+                os.makedirs(config_dir, exist_ok=True)
+                with open(config_path, "w") as f:
+                    json.dump(default_config, f, indent=2)
+                logger.info(f"Created default advanced config at {config_path}")
+            except Exception as e:
+                logger.warning(f"Could not create advanced config file: {e}")
 
         return default_config
 

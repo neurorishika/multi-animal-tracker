@@ -27,7 +27,8 @@ dependencies:
   - opencv
   - scikit-image
   - pillow
-  
+  - shapely
+
   # Efficiency - CPU and GPU (ROCm)
   - numba
 

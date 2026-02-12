@@ -410,55 +410,66 @@ def export_dataset(
 
         if detector is not None and batch_frames:
             try:
-                iou_threshold = params.get("YOLO_IOU_THRESHOLD", 0.7)
-                target_classes = params.get("YOLO_TARGET_CLASSES", None)
-                max_det = params.get("MAX_TARGETS", 8) * params.get(
-                    "MAX_CONTOUR_MULTIPLIER", 20
-                )
+                # Use detector's batched method for proper IOU filtering
+                # Temporarily override YOLO parameters for dataset generation
+                # Use dedicated dataset parameters (different from tracking)
+                original_conf = params.get("YOLO_CONFIDENCE_THRESHOLD", 0.25)
+                original_iou = params.get("YOLO_IOU_THRESHOLD", 0.7)
+                dataset_conf = params.get("DATASET_YOLO_CONFIDENCE_THRESHOLD", 0.05)
+                dataset_iou = params.get("DATASET_YOLO_IOU_THRESHOLD", 0.5)
+
+                params["YOLO_CONFIDENCE_THRESHOLD"] = dataset_conf
+                params["YOLO_IOU_THRESHOLD"] = dataset_iou
 
                 try:
-                    # Run batched prediction using detector method (handles TensorRT properly)
-                    # Pass frames as list, not stacked array - YOLO handles preprocessing
-                    results = detector.model.predict(
-                        batch_frames,  # List of frames, not stacked array
-                        conf=0.1,  # Lower confidence for dataset generation
-                        iou=iou_threshold,
-                        classes=target_classes,
-                        max_det=max_det,
-                        device=detector.device,
-                        verbose=False,
-                    )
+                    # Check if detector supports batched processing
+                    if hasattr(detector, "detect_objects_batched"):
+                        # Use batched detection (includes IOU filtering)
+                        batch_results = detector.detect_objects_batched(
+                            batch_frames,
+                            start_frame_idx=(
+                                batch_frame_ids[0] if batch_frame_ids else 0
+                            ),
+                        )
 
-                    # Process results for each frame in the batch
-                    for result_idx in range(len(batch_frames)):
-                        yolo_results = results[result_idx]
-                        yolo_detections = {}
+                        # Convert results to yolo_detections format
+                        for result_idx, (
+                            meas,
+                            sizes,
+                            shapes,
+                            confidences,
+                            obb_corners,
+                        ) in enumerate(batch_results):
+                            yolo_detections = {}
+                            resize_factor = params.get("RESIZE_FACTOR", 1.0)
+                            scale_back = 1.0 / resize_factor
 
-                        # Extract actual dimensions from YOLO results
-                        if (
-                            yolo_results is not None
-                            and hasattr(yolo_results, "obb")
-                            and yolo_results.obb is not None
-                        ):
-                            obb_data = yolo_results.obb
-                            for i in range(len(obb_data)):
-                                # Get center and dimensions from YOLO
-                                xywhr = obb_data.xywhr[i].cpu().numpy()
-                                cx_det, cy_det, w_det, h_det, angle_rad = xywhr
+                            for det_idx, measurement in enumerate(meas):
+                                cx_det, cy_det, angle_rad = measurement
+
+                                # Get dimensions from shapes (ellipse area and aspect ratio)
+                                area, aspect_ratio = shapes[det_idx]
+                                # Approximate width and height from ellipse area and aspect ratio
+                                # area = π * (w/2) * (h/2), aspect_ratio = w/h
+                                # Solving: w = sqrt(area * aspect_ratio / π), h = w / aspect_ratio
+                                if aspect_ratio > 0:
+                                    w_det = np.sqrt(area * aspect_ratio / np.pi) * 2
+                                    h_det = w_det / aspect_ratio
+                                else:
+                                    # Fallback to using OBB corners if available
+                                    if det_idx < len(obb_corners):
+                                        corners = obb_corners[det_idx]
+                                        # Compute width and height from corners
+                                        w_det = np.linalg.norm(corners[1] - corners[0])
+                                        h_det = np.linalg.norm(corners[2] - corners[1])
+                                    else:
+                                        w_det = h_det = np.sqrt(area / np.pi) * 2
 
                                 # Scale back to original frame coordinates
-                                resize_factor = params.get("RESIZE_FACTOR", 1.0)
-                                scale_back = 1.0 / resize_factor
                                 cx_det = cx_det * scale_back
                                 cy_det = cy_det * scale_back
                                 w_det = w_det * scale_back
                                 h_det = h_det * scale_back
-
-                                # Ensure major axis is first (matching detection.py logic)
-                                if w_det < h_det:
-                                    w_det, h_det = h_det, w_det
-                                    angle_rad = (np.rad2deg(angle_rad) + 90) % 180
-                                    angle_rad = np.deg2rad(angle_rad)
 
                                 # Store detection keyed by position
                                 yolo_detections[(cx_det, cy_det)] = (
@@ -467,61 +478,65 @@ def export_dataset(
                                     angle_rad,
                                 )
 
-                        batch_yolo_detections[result_idx] = yolo_detections
+                            batch_yolo_detections[result_idx] = yolo_detections
+                    else:
+                        # Fallback to processing each frame individually
+                        raise AttributeError("Batched detection not available")
 
-                except Exception as e:
-                    logger.warning(
-                        f"Batched YOLO prediction failed: {e}, falling back to single-frame processing"
-                    )
+                except (AttributeError, Exception) as e:
+                    if not isinstance(e, AttributeError):
+                        logger.warning(
+                            f"Batched detection failed: {e}, falling back to single-frame processing"
+                        )
+
                     # Fallback to single-frame processing for this batch
                     for frame_idx, frame_for_detection in enumerate(batch_frames):
                         try:
-                            original_conf = params.get(
-                                "YOLO_CONFIDENCE_THRESHOLD", 0.25
-                            )
-                            params["YOLO_CONFIDENCE_THRESHOLD"] = 0.1
-                            try:
-                                meas, sizes, shapes, yolo_results, confidences = (
-                                    detector.detect_objects(
-                                        frame_for_detection,
-                                        batch_frame_ids[valid_batch_indices[frame_idx]],
-                                    )
+                            meas, sizes, shapes, yolo_results, confidences = (
+                                detector.detect_objects(
+                                    frame_for_detection,
+                                    batch_frame_ids[valid_batch_indices[frame_idx]],
                                 )
-                            finally:
-                                params["YOLO_CONFIDENCE_THRESHOLD"] = original_conf
+                            )
 
-                            # Extract detections from results
+                            # Extract detections from measurements (IOU filtering already applied)
                             yolo_detections = {}
-                            if (
-                                yolo_results is not None
-                                and hasattr(yolo_results, "obb")
-                                and yolo_results.obb is not None
-                            ):
-                                obb_data = yolo_results.obb
-                                for i in range(len(obb_data)):
-                                    xywhr = obb_data.xywhr[i].cpu().numpy()
-                                    cx_det, cy_det, w_det, h_det, angle_rad = xywhr
-                                    resize_factor = params.get("RESIZE_FACTOR", 1.0)
-                                    scale_back = 1.0 / resize_factor
-                                    cx_det = cx_det * scale_back
-                                    cy_det = cy_det * scale_back
-                                    w_det = w_det * scale_back
-                                    h_det = h_det * scale_back
-                                    if w_det < h_det:
-                                        w_det, h_det = h_det, w_det
-                                        angle_rad = (np.rad2deg(angle_rad) + 90) % 180
-                                        angle_rad = np.deg2rad(angle_rad)
-                                    yolo_detections[(cx_det, cy_det)] = (
-                                        w_det,
-                                        h_det,
-                                        angle_rad,
-                                    )
+                            resize_factor = params.get("RESIZE_FACTOR", 1.0)
+                            scale_back = 1.0 / resize_factor
+
+                            for det_idx, measurement in enumerate(meas):
+                                cx_det, cy_det, angle_rad = measurement
+
+                                # Get dimensions from shapes
+                                area, aspect_ratio = shapes[det_idx]
+                                if aspect_ratio > 0:
+                                    w_det = np.sqrt(area * aspect_ratio / np.pi) * 2
+                                    h_det = w_det / aspect_ratio
+                                else:
+                                    w_det = h_det = np.sqrt(area / np.pi) * 2
+
+                                # Scale back to original frame coordinates
+                                cx_det = cx_det * scale_back
+                                cy_det = cy_det * scale_back
+                                w_det = w_det * scale_back
+                                h_det = h_det * scale_back
+
+                                yolo_detections[(cx_det, cy_det)] = (
+                                    w_det,
+                                    h_det,
+                                    angle_rad,
+                                )
+
                             batch_yolo_detections[frame_idx] = yolo_detections
                         except Exception as inner_e:
                             logger.warning(
-                                f"Single-frame fallback also failed for frame {batch_frame_ids[valid_batch_indices[frame_idx]]}: {inner_e}"
+                                f"Single-frame detection also failed for frame {batch_frame_ids[valid_batch_indices[frame_idx]]}: {inner_e}"
                             )
                             batch_yolo_detections[frame_idx] = {}
+                finally:
+                    # Restore original YOLO parameters
+                    params["YOLO_CONFIDENCE_THRESHOLD"] = original_conf
+                    params["YOLO_IOU_THRESHOLD"] = original_iou
 
             except Exception as e:
                 logger.error(f"YOLO detection failed for batch {batch_idx}: {e}")
@@ -531,8 +546,11 @@ def export_dataset(
         for frame_idx, (frame_id, frame) in enumerate(batch_frames_original):
             yolo_detections = batch_yolo_detections[frame_idx]
 
+            dataset_conf = params.get("DATASET_YOLO_CONFIDENCE_THRESHOLD", 0.05)
+            dataset_iou = params.get("DATASET_YOLO_IOU_THRESHOLD", 0.5)
             logger.debug(
-                f"Frame {frame_id}: Found {len(yolo_detections)} YOLO detections at conf=0.1"
+                f"Frame {frame_id}: Found {len(yolo_detections)} YOLO detections "
+                f"(conf={dataset_conf:.2f}, iou={dataset_iou:.2f})"
             )
 
             # Save image

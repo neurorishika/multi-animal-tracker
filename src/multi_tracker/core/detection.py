@@ -136,6 +136,7 @@ class YOLOOBBDetector:
         self.device = self._detect_device()
         self.use_tensorrt = False
         self.tensorrt_model_path = None
+        self._shapely_warning_shown = False  # Track if we've warned about shapely
         self._load_model()
 
     def _try_load_tensorrt_model(self, model_path_str):
@@ -336,6 +337,261 @@ class YOLOOBBDetector:
             logger.error(f"Failed to load YOLO model from '{model_path}': {e}")
             raise
 
+    def _compute_obb_iou_batch(self, corners1, corners_list, indices):
+        """
+        Batch compute IOU between one OBB and multiple OBBs efficiently.
+
+        Args:
+            corners1: (4, 2) array for reference OBB
+            corners_list: List of all corner arrays
+            indices: List of indices to compute IOU for
+
+        Returns:
+            Array of IOU values
+        """
+        if len(indices) == 0:
+            return np.array([])
+
+        try:
+            from shapely.geometry import Polygon
+            from shapely.validation import make_valid
+            from shapely import prepare
+
+            # Create and prepare reference polygon once
+            poly1 = Polygon(corners1)
+            if not poly1.is_valid:
+                poly1 = make_valid(poly1)
+            prepare(poly1)  # Optimize for multiple intersection checks
+
+            area1 = poly1.area
+            ious = np.zeros(len(indices))
+
+            # Batch process all comparisons
+            for i, idx in enumerate(indices):
+                poly2 = Polygon(corners_list[idx])
+                if not poly2.is_valid:
+                    poly2 = make_valid(poly2)
+
+                if not poly1.intersects(poly2):
+                    ious[i] = 0.0
+                    continue
+
+                intersection = poly1.intersection(poly2).area
+                union = area1 + poly2.area - intersection
+
+                if union > 0:
+                    ious[i] = intersection / union
+
+            return ious
+
+        except ImportError:
+            # Fallback to individual calls
+            return np.array(
+                [self._compute_obb_iou(corners1, corners_list[idx]) for idx in indices]
+            )
+
+    def _compute_obb_iou(self, corners1, corners2):
+        """
+        Compute IOU between two oriented bounding boxes efficiently.
+
+        Args:
+            corners1: (4, 2) array of corner points for first OBB
+            corners2: (4, 2) array of corner points for second OBB
+
+        Returns:
+            IOU value (0-1)
+        """
+        try:
+            from shapely.geometry import Polygon
+            from shapely.validation import make_valid
+
+            # Create polygons from corners
+            poly1 = Polygon(corners1)
+            poly2 = Polygon(corners2)
+
+            # Validate polygons (handle self-intersecting cases)
+            if not poly1.is_valid:
+                poly1 = make_valid(poly1)
+            if not poly2.is_valid:
+                poly2 = make_valid(poly2)
+
+            # Quick rejection test
+            if not poly1.intersects(poly2):
+                return 0.0
+
+            # Calculate intersection and union
+            intersection = poly1.intersection(poly2).area
+            union = poly1.area + poly2.area - intersection
+
+            if union <= 0:
+                return 0.0
+
+            return intersection / union
+
+        except ImportError:
+            # Show warning once about using approximate IOU
+            if not self._shapely_warning_shown:
+                logger.info(
+                    "Shapely not available - using axis-aligned bounding box IOU approximation. "
+                    "For more accurate OBB filtering, install shapely: pip install shapely"
+                )
+                self._shapely_warning_shown = True
+
+            # Fallback to axis-aligned bounding box IOU (less accurate but fast)
+            # This is an approximation when shapely is not available
+            x1_min, y1_min = corners1.min(axis=0)
+            x1_max, y1_max = corners1.max(axis=0)
+            x2_min, y2_min = corners2.min(axis=0)
+            x2_max, y2_max = corners2.max(axis=0)
+
+            # Calculate intersection of axis-aligned boxes
+            inter_x_min = max(x1_min, x2_min)
+            inter_y_min = max(y1_min, y2_min)
+            inter_x_max = min(x1_max, x2_max)
+            inter_y_max = min(y1_max, y2_max)
+
+            if inter_x_max <= inter_x_min or inter_y_max <= inter_y_min:
+                return 0.0
+
+            inter_area = (inter_x_max - inter_x_min) * (inter_y_max - inter_y_min)
+            area1 = (x1_max - x1_min) * (y1_max - y1_min)
+            area2 = (x2_max - x2_min) * (y2_max - y2_min)
+            union_area = area1 + area2 - inter_area
+
+            if union_area <= 0:
+                return 0.0
+
+            return inter_area / union_area
+
+    def _filter_overlapping_detections(
+        self, meas, sizes, shapes, confidences, obb_corners_list, iou_threshold
+    ):
+        """
+        Filter overlapping detections using spatially-optimized IOU-based NMS for OBB.
+        Keeps highest confidence detections and removes overlapping ones.
+        Optimized for high detection counts (25-200 animals).
+
+        Args:
+            meas: List of measurements [cx, cy, angle]
+            sizes: List of detection areas
+            shapes: List of (area, aspect_ratio) tuples
+            confidences: List of confidence scores (0-1)
+            obb_corners_list: List of corner arrays (4, 2) for each detection
+            iou_threshold: IOU threshold for considering detections as overlapping
+
+        Returns:
+            Filtered versions of all input lists
+        """
+        if len(meas) <= 1:
+            return meas, sizes, shapes, confidences, obb_corners_list
+
+        n_detections = len(meas)
+
+        # Convert inputs to numpy arrays for vectorized operations
+        confidences_arr = np.array(confidences)
+        sizes_arr = np.array(sizes)
+
+        # Pre-compute axis-aligned bounding boxes (fully vectorized)
+        corners_array = np.array(obb_corners_list)  # (n, 4, 2)
+        bbox_mins = corners_array.min(axis=1)  # (n, 2)
+        bbox_maxs = corners_array.max(axis=1)  # (n, 2)
+        bbox_areas = (bbox_maxs[:, 0] - bbox_mins[:, 0]) * (
+            bbox_maxs[:, 1] - bbox_mins[:, 1]
+        )
+
+        # Sort indices by confidence (highest first)
+        sorted_indices = np.argsort(confidences_arr)[::-1]
+
+        keep_mask = np.zeros(n_detections, dtype=bool)
+
+        idx = 0
+        while idx < len(sorted_indices):
+            # Keep the detection with highest remaining confidence
+            current_idx = sorted_indices[idx]
+            keep_mask[current_idx] = True
+
+            if idx == len(sorted_indices) - 1:
+                break
+
+            # Get current box bounding box
+            curr_min = bbox_mins[current_idx]
+            curr_max = bbox_maxs[current_idx]
+            curr_area = bbox_areas[current_idx]
+
+            # Get remaining candidates
+            remaining_indices = sorted_indices[idx + 1 :]
+            rem_mins = bbox_mins[remaining_indices]
+            rem_maxs = bbox_maxs[remaining_indices]
+            rem_areas = bbox_areas[remaining_indices]
+
+            # Vectorized axis-aligned bbox overlap check
+            inter_mins = np.maximum(curr_min, rem_mins)
+            inter_maxs = np.minimum(curr_max, rem_maxs)
+
+            # Check if boxes overlap (width and height both positive)
+            inter_wh = inter_maxs - inter_mins
+            overlaps = (inter_wh[:, 0] > 0) & (inter_wh[:, 1] > 0)
+
+            # For non-overlapping boxes, skip IOU calculation
+            keep_remaining = ~overlaps
+
+            # For overlapping boxes, compute IOU
+            if overlaps.any():
+                # Calculate axis-aligned IOU (fast approximation)
+                inter_areas = inter_wh[overlaps, 0] * inter_wh[overlaps, 1]
+                union_areas = curr_area + rem_areas[overlaps] - inter_areas
+                approx_ious = inter_areas / np.maximum(union_areas, 1e-6)
+
+                # Identify which need precise polygon IOU check
+                # Only check if approx IOU is within 0.2 of threshold
+                need_precise = approx_ious >= (iou_threshold - 0.2)
+
+                if need_precise.any():
+                    # Batch compute precise IOUs for candidates
+                    overlapping_local = np.where(overlaps)[0]
+                    precise_check_local = overlapping_local[need_precise]
+                    precise_check_global = remaining_indices[precise_check_local]
+
+                    # Batch IOU computation
+                    precise_ious = self._compute_obb_iou_batch(
+                        obb_corners_list[current_idx],
+                        obb_corners_list,
+                        precise_check_global,
+                    )
+
+                    # Mark overlapping detections for removal
+                    suppress = precise_ious >= iou_threshold
+                    keep_remaining[precise_check_local] = ~suppress
+
+                # For boxes where approx IOU already exceeds threshold, remove them
+                low_precision_suppress = (~need_precise) & (
+                    approx_ious >= iou_threshold
+                )
+                if low_precision_suppress.any():
+                    low_precision_indices = np.where(overlaps)[0][~need_precise][
+                        low_precision_suppress
+                    ]
+                    keep_remaining[low_precision_indices] = False
+
+            # Update sorted indices to keep only non-suppressed detections
+            sorted_indices = np.concatenate(
+                [sorted_indices[: idx + 1], remaining_indices[keep_remaining]]
+            )
+
+            idx += 1
+
+        # Use numpy indexing for final filtering (much faster than list comprehension)
+        keep_indices = np.where(keep_mask)[0]
+
+        # Convert back to lists with proper indexing
+        meas = [meas[i] for i in keep_indices]
+        sizes = [sizes[i] for i in keep_indices]
+        shapes = [shapes[i] for i in keep_indices]
+        confidences = [confidences[i] for i in keep_indices]
+        obb_corners_list = [obb_corners_list[i] for i in keep_indices]
+
+        return meas, sizes, shapes, confidences, obb_corners_list
+
     def detect_objects(self, frame, frame_count):
         """
         Detects objects in a frame using YOLO OBB.
@@ -362,11 +618,13 @@ class YOLOOBBDetector:
         max_det = p.get("MAX_TARGETS", 8) * p.get("MAX_CONTOUR_MULTIPLIER", 20)
 
         # Run inference on the configured device
+        # Disable YOLO's built-in NMS (iou=1.0) - we use our custom polygon-based IOU filtering instead
+        # YOLO's NMS doesn't work well for OBB, so we rely on _filter_overlapping_detections
         try:
             results = self.model.predict(
                 frame,
                 conf=conf_threshold,
-                iou=iou_threshold,
+                iou=1.0,  # Disable YOLO NMS - use custom filtering with actual iou_threshold
                 classes=target_classes,
                 max_det=max_det,
                 device=self.device,
@@ -421,6 +679,21 @@ class YOLOOBBDetector:
             confidences.append(float(conf_scores[i]))  # Store YOLO confidence
             # Store OBB corners for this detection (4 points, shape: (4, 2))
             obb_corners_list.append(obb_data.xyxyxyxy[i].cpu().numpy())
+
+        # Apply additional IOU-based filtering to remove overlapping detections
+        # YOLO's built-in NMS doesn't always work well for OBB
+        if len(meas) > 1:
+            original_count = len(meas)
+            meas, sizes, shapes, confidences, obb_corners_list = (
+                self._filter_overlapping_detections(
+                    meas, sizes, shapes, confidences, obb_corners_list, iou_threshold
+                )
+            )
+            if len(meas) < original_count:
+                logger.info(
+                    f"Frame {frame_count}: IOU-based post-filtering removed {original_count - len(meas)} "
+                    f"overlapping detections (kept {len(meas)}/{original_count}, IOU threshold={iou_threshold:.2f})"
+                )
 
         # Keep only top N detections by size
         N = p["MAX_TARGETS"]
@@ -491,11 +764,12 @@ class YOLOOBBDetector:
                     )
 
                 # Run inference on this chunk
+                # Disable YOLO's built-in NMS - we use custom polygon-based IOU filtering
                 try:
                     chunk_results = self.model.predict(
                         chunk_frames,
                         conf=conf_threshold,
-                        iou=iou_threshold,
+                        iou=1.0,  # Disable YOLO NMS - use custom filtering
                         classes=target_classes,
                         max_det=max_det,
                         device=self.device,
@@ -511,11 +785,12 @@ class YOLOOBBDetector:
             results_batch = all_results
         else:
             # Standard PyTorch inference - no chunking needed
+            # Disable YOLO's built-in NMS - we use custom polygon-based IOU filtering
             try:
                 results_batch = self.model.predict(
                     frames,
                     conf=conf_threshold,
-                    iou=iou_threshold,
+                    iou=1.0,  # Disable YOLO NMS - use custom filtering
                     classes=target_classes,
                     max_det=max_det,
                     device=self.device,
@@ -572,6 +847,24 @@ class YOLOOBBDetector:
                 shapes.append((np.pi * (w / 2) * (h / 2), aspect_ratio))
                 confidences.append(float(conf_scores[i]))
                 obb_corners_list.append(obb_data.xyxyxyxy[i].cpu().numpy())
+
+            # Apply additional IOU-based filtering to remove overlapping detections
+            if len(meas) > 1:
+                original_count = len(meas)
+                meas, sizes, shapes, confidences, obb_corners_list = (
+                    self._filter_overlapping_detections(
+                        meas,
+                        sizes,
+                        shapes,
+                        confidences,
+                        obb_corners_list,
+                        iou_threshold,
+                    )
+                )
+                if len(meas) < original_count:
+                    logger.debug(
+                        f"Batch frame {frame_count}: Post-NMS filtering removed {original_count - len(meas)} overlapping detections"
+                    )
 
             # Keep only top N by size
             if len(meas) > N:

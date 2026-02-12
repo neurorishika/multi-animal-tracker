@@ -17,6 +17,7 @@ dependencies:
   - opencv
   - scikit-image
   - pillow
+  - shapely
   
   # GUI framework (Qt6 - modern, better Apple Silicon support)
   - pyside6>=6.6
