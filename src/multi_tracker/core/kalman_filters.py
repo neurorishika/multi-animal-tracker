@@ -8,22 +8,10 @@ Features:
 """
 
 import numpy as np
+from ..utils.gpu_utils import NUMBA_AVAILABLE, njit
+
 
 # --- Numba Kernels (Optimized for Large N) ---
-try:
-    from numba import njit
-
-    NUMBA_AVAILABLE = True
-except ImportError:
-    NUMBA_AVAILABLE = False
-
-    def njit(*args, **kwargs):
-        def decorator(func):
-            return func
-
-        return decorator
-
-
 @njit(cache=True, fastmath=True)
 def _predict_kernel(X, P, F, Q_base, q_long, q_lat):
     """

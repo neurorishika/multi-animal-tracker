@@ -9,14 +9,18 @@ from pathlib import Path
 import numpy as np
 import cv2
 from collections import deque
-from PySide2.QtCore import QThread, Signal, QMutex, Slot
+from PySide6.QtCore import QThread, Signal, QMutex, Slot
 
 from ..utils.image_processing import apply_image_adjustments, stabilize_lighting
 from ..utils.geometry import wrap_angle_degs
+from ..utils.detection_cache import DetectionCache
+from ..utils.batch_optimizer import BatchOptimizer
+from ..utils.frame_prefetcher import FramePrefetcher
 from .kalman_filters import KalmanFilterManager
 from .background_models import BackgroundModel
 from .detection import create_detector
 from .assignment import TrackAssigner
+from .individual_analysis import IndividualDatasetGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,7 @@ class TrackingWorker(QThread):
     progress_signal = Signal(int, str)
     histogram_data_signal = Signal(dict)
     stats_signal = Signal(dict)  # Real-time FPS/ETA stats
+    warning_signal = Signal(str, str)  # (title, message) for UI warnings
 
     def __init__(
         self,
@@ -39,6 +44,9 @@ class TrackingWorker(QThread):
         csv_writer_thread=None,
         video_output_path=None,
         backward_mode=False,
+        detection_cache_path=None,
+        preview_mode=False,
+        use_cached_detections=False,
         parent=None,
     ):
         super().__init__(parent)
@@ -46,6 +54,9 @@ class TrackingWorker(QThread):
         self.csv_writer_thread = csv_writer_thread
         self.video_output_path = video_output_path
         self.backward_mode = backward_mode
+        self.detection_cache_path = detection_cache_path
+        self.preview_mode = preview_mode
+        self.use_cached_detections = use_cached_detections
         self.video_writer = None
         self.params_mutex = QMutex()
         self.parameters = {}
@@ -58,6 +69,10 @@ class TrackingWorker(QThread):
         # Internal state variables that helper methods depend on
         self.frame_count = 0
         self.trajectories_full = []
+
+        # Frame prefetcher for async I/O
+        self.frame_prefetcher = None
+        self.frame_prefetcher = None
 
     def set_parameters(self, p: dict):
         self.params_mutex.lock()
@@ -81,18 +96,249 @@ class TrackingWorker(QThread):
     def stop(self):
         self._stop_requested = True
 
-    def _forward_frame_iterator(self, cap):
+    def _forward_frame_iterator(self, cap, use_prefetcher=False):
+        """Iterate through frames in forward direction.
+
+        Args:
+            cap: OpenCV VideoCapture object
+            use_prefetcher (bool): Use frame prefetching for better I/O performance
+        """
         frame_num = 0
-        while not self._stop_requested:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame_num += 1
-            yield frame, frame_num
+
+        if use_prefetcher:
+            # Use async frame prefetching for better performance
+            self.frame_prefetcher = FramePrefetcher(cap, buffer_size=2)
+            self.frame_prefetcher.start()
+
+            while not self._stop_requested:
+                ret, frame = self.frame_prefetcher.read()
+                if not ret:
+                    break
+                frame_num += 1
+                yield frame, frame_num
+
+            self.frame_prefetcher.stop()
+            self.frame_prefetcher = None
+        else:
+            # Standard synchronous frame reading
+            while not self._stop_requested:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                frame_num += 1
+                yield frame, frame_num
+
+    def _cached_detection_iterator(
+        self, total_frames, start_frame=0, end_frame=None, backward=False
+    ):
+        """Iterate through frame indices for cached detection mode (no actual frames needed).
+
+        Args:
+            total_frames: Total number of frames to process
+            start_frame: Starting frame index (0-based, actual video frame)
+            end_frame: Ending frame index (0-based, actual video frame)
+            backward: If True, iterate in reverse order (for backward tracking)
+        """
+        if end_frame is None:
+            end_frame = start_frame + total_frames - 1
+
+        if backward:
+            # Backward mode: iterate from end_frame down to start_frame
+            # This matches the cache keys which are actual video frame indices
+            for relative_idx in range(total_frames):
+                if self._stop_requested:
+                    break
+                yield None, relative_idx + 1  # Return None for frame, 1-indexed count
+        else:
+            # Forward cached mode: iterate from start_frame to end_frame
+            for relative_idx in range(total_frames):
+                if self._stop_requested:
+                    break
+                yield None, relative_idx + 1  # Return None for frame, 1-indexed count
 
     def emit_frame(self, bgr):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.frame_signal.emit(rgb)
+
+    def _run_batched_detection_phase(
+        self, cap, detection_cache, detector, params, start_frame, end_frame
+    ):
+        """
+        Phase 1: Run batched YOLO detection on specified frame range and cache results.
+
+        Args:
+            cap: OpenCV VideoCapture object
+            detection_cache: DetectionCache instance for writing
+            detector: YOLOOBBDetector instance
+            params: Configuration parameters
+            start_frame: Starting frame index (0-based)
+            end_frame: Ending frame index (0-based)
+
+        Returns:
+            int: Total frames processed
+        """
+        logger.info("=" * 80)
+        logger.info("PHASE 1: Batched YOLO Detection")
+        logger.info("=" * 80)
+
+        # Get batch size using advanced config
+        # Include TensorRT settings from top-level params
+        advanced_config = params.get("ADVANCED_CONFIG", {}).copy()
+        advanced_config["enable_tensorrt"] = params.get("ENABLE_TENSORRT", False)
+        advanced_config["tensorrt_max_batch_size"] = params.get(
+            "TENSORRT_MAX_BATCH_SIZE", 16
+        )
+        batch_optimizer = BatchOptimizer(advanced_config)
+
+        # Get video properties
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = end_frame - start_frame + 1  # Process only the specified range
+
+        logger.info(
+            f"Processing frame range: {start_frame} to {end_frame} ({total_frames} frames)"
+        )
+
+        # Seek to start frame
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        # Account for resize factor in batch size estimation
+        resize_factor = params.get("RESIZE_FACTOR", 1.0)
+        effective_width = int(frame_width * resize_factor)
+        effective_height = int(frame_height * resize_factor)
+
+        # Estimate optimal batch size using effective (resized) dimensions
+        model_name = params.get("YOLO_MODEL_PATH", "yolo26s-obb.pt")
+        batch_size = batch_optimizer.estimate_batch_size(
+            effective_width, effective_height, model_name
+        )
+
+        logger.info(f"Video: {frame_width}x{frame_height}, {total_frames} frames")
+        if resize_factor < 1.0:
+            logger.info(
+                f"Resize factor: {resize_factor} → Effective: {effective_width}x{effective_height}"
+            )
+        logger.info(f"Batch size: {batch_size}")
+
+        # Initialize timing stats for detection phase
+        detection_start_time = time.time()
+        batch_times = deque(maxlen=30)  # Track last 30 batch times for FPS calculation
+
+        # Process video in batches
+        frame_idx = 0
+        batch_count = 0
+        total_batches = (total_frames + batch_size - 1) // batch_size
+
+        # Note: resize_factor already retrieved above
+
+        while not self._stop_requested:
+            batch_start_time = time.time()
+
+            # Read a batch of frames
+            batch_frames = []
+            batch_start_idx = frame_idx
+
+            for _ in range(batch_size):
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                # Check if we've exceeded end_frame
+                current_frame_index = start_frame + frame_idx
+                if current_frame_index > end_frame:
+                    break
+
+                # Apply resize if needed (same as single-frame mode)
+                if resize_factor < 1.0:
+                    frame = cv2.resize(
+                        frame,
+                        (0, 0),
+                        fx=resize_factor,
+                        fy=resize_factor,
+                        interpolation=cv2.INTER_AREA,
+                    )
+
+                batch_frames.append(frame)
+                frame_idx += 1
+
+            if not batch_frames:
+                break  # No more frames
+
+            # Run batched detection
+            batch_count += 1
+            logger.info(
+                f"Processing batch {batch_count}/{total_batches} ({len(batch_frames)} frames)"
+            )
+
+            # Progress callback for within-batch updates
+            def progress_cb(current, total, msg):
+                pass  # Could add finer-grained progress here if needed
+
+            batch_results = detector.detect_objects_batched(
+                batch_frames, batch_start_idx, progress_cb
+            )
+
+            # Cache each frame's detections
+            for local_idx, (meas, sizes, shapes, confidences, obb_corners) in enumerate(
+                batch_results
+            ):
+                relative_idx = batch_start_idx + local_idx
+                actual_frame_idx = (
+                    start_frame + relative_idx
+                )  # Convert to actual video frame
+                # Calculate DetectionID for each detection using actual frame index
+                detection_ids = [actual_frame_idx * 10000 + i for i in range(len(meas))]
+                detection_cache.add_frame(
+                    actual_frame_idx,  # Use actual frame index for cache key
+                    meas,
+                    sizes,
+                    shapes,
+                    confidences,
+                    obb_corners,
+                    detection_ids,
+                )
+
+            # Track batch timing
+            batch_time = time.time() - batch_start_time
+            batch_times.append(batch_time)
+
+            # Calculate stats
+            elapsed = time.time() - detection_start_time
+
+            # Calculate FPS based on recent batch times
+            if len(batch_times) > 0:
+                avg_batch_time = sum(batch_times) / len(batch_times)
+                frames_per_batch = (
+                    batch_size if len(batch_frames) == batch_size else len(batch_frames)
+                )
+                current_fps = (
+                    frames_per_batch / avg_batch_time if avg_batch_time > 0 else 0
+                )
+            else:
+                current_fps = 0
+
+            # Calculate ETA
+            if current_fps > 0:
+                remaining_frames = total_frames - frame_idx
+                eta = remaining_frames / current_fps
+            else:
+                eta = 0
+
+            # Emit progress and stats
+            percentage = (
+                int((frame_idx / total_frames) * 100) if total_frames > 0 else 0
+            )
+            status_text = f"Detecting objects: batch {batch_count}/{total_batches} ({percentage}%)"
+            self.progress_signal.emit(percentage, status_text)
+
+            # Emit stats signal for FPS/elapsed/ETA display
+            self.stats_signal.emit({"fps": current_fps, "elapsed": elapsed, "eta": eta})
+
+        logger.info(
+            f"Detection phase complete: {frame_idx} frames processed in {batch_count} batches"
+        )
+        return frame_idx
 
     def run(self):
         # === 1. INITIALIZATION (Identical to Original) ===
@@ -106,9 +352,28 @@ class TrackingWorker(QThread):
             self.finished_signal.emit(True, [], [])
             return
 
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames <= 0:
-            total_frames = None
+        total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_video_frames <= 0:
+            total_video_frames = None
+
+        # Get frame range parameters early (before video writer init)
+        start_frame = p.get("START_FRAME", 0)
+        end_frame = p.get("END_FRAME", None)
+        if end_frame is None:
+            end_frame = total_video_frames - 1 if total_video_frames else 0
+
+        # Validate frame range
+        if total_video_frames:
+            start_frame = max(0, min(start_frame, total_video_frames - 1))
+            end_frame = max(start_frame, min(end_frame, total_video_frames - 1))
+
+        # Set total_frames to the range we'll actually process
+        total_frames = end_frame - start_frame + 1
+
+        logger.info(f"Video has {total_video_frames} frames total")
+        logger.info(
+            f"Processing frame range: {start_frame} to {end_frame} ({total_frames} frames)"
+        )
 
         if self.video_output_path:
             fps, resize_f = cap.get(cv2.CAP_PROP_FPS), p.get("RESIZE_FACTOR", 1.0)
@@ -124,17 +389,65 @@ class TrackingWorker(QThread):
             )
 
         # Initialize detector using factory function
+        # Disable TensorRT in preview mode - TensorRT uses fixed batch sizes
+        # which is wasteful for single-frame processing
+        if self.preview_mode and p.get("ENABLE_TENSORRT", False):
+            logger.debug("TensorRT disabled for preview mode (single-frame processing)")
+            p = p.copy()
+            p["ENABLE_TENSORRT"] = False
         detector = create_detector(p)
+
+        # Determine if we should use batched detection
+        # Batching is only used for YOLO in full tracking mode (not preview, not backward)
+        detection_method = p.get("DETECTION_METHOD", "background_subtraction")
+        advanced_config = p.get("ADVANCED_CONFIG", {})
+        use_batched_detection = (
+            not self.preview_mode  # Not preview mode
+            and not self.backward_mode  # Not backward mode (uses cache)
+            and detection_method == "yolo_obb"  # Only YOLO benefits from batching
+            and advanced_config.get(
+                "enable_yolo_batching", True
+            )  # Batching enabled in config
+            and self.detection_cache_path
+            is not None  # Need cache path for two-phase approach
+        )
+
+        if use_batched_detection:
+            logger.info("Using batched YOLO detection (two-phase approach)")
+        elif detection_method == "yolo_obb" and not self.preview_mode:
+            logger.info("Using frame-by-frame YOLO detection")
 
         # Initialize background model only if using background subtraction
         bg_model = None
-        detection_method = p.get("DETECTION_METHOD", "background_subtraction")
         if detection_method == "background_subtraction":
             bg_model = BackgroundModel(p)
             bg_model.prime_background(cap)
 
+        # Seek to start frame if not at beginning
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            logger.info(f"Seeking to start frame {start_frame}")
+
+        # Initialize individual dataset generator (supports both YOLO OBB and BG subtraction)
+        individual_generator = None
+        if (
+            p.get("ENABLE_INDIVIDUAL_DATASET", False)
+            and not self.backward_mode  # Only generate dataset in forward pass
+            and not self.preview_mode  # Never generate in preview
+        ):
+            output_dir = p.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
+            video_name = Path(self.video_path).stem
+            dataset_name = p.get("INDIVIDUAL_DATASET_NAME", "individual_dataset")
+            if output_dir:
+                individual_generator = IndividualDatasetGenerator(
+                    p, output_dir, video_name, dataset_name
+                )
+                logger.info(
+                    f"Individual dataset generator enabled for {detection_method}, output: {output_dir}"
+                )
+
         self.kf_manager = KalmanFilterManager(p["MAX_TARGETS"], p)
-        assigner = TrackAssigner(p)
+        assigner = TrackAssigner(p, worker=self)
 
         N = p["MAX_TARGETS"]
         track_states, missed_frames = ["active"] * N, [0] * N
@@ -150,7 +463,7 @@ class TrackingWorker(QThread):
 
         start_time, self.frame_count, fps_list = time.time(), 0, []
         local_counts, intensity_history, lighting_state = [0] * N, deque(maxlen=50), {}
-        roi_fill_color = None  # Average color outside ROI for YOLO masking
+        roi_fill_color = None  # Average color outside ROI for visualization overlay
 
         # Profiling accumulators
         profile_times = {
@@ -166,24 +479,199 @@ class TrackingWorker(QThread):
         profile_counts = 0
         PROFILE_INTERVAL = 100  # Log every 100 frames
 
-        # === 2. FRAME PROCESSING LOOP (Identical Flow to Original) ===
-        for frame, _ in self._forward_frame_iterator(cap):
+        # Initialize detection cache
+        detection_cache = None
+        use_cached_detections = False
+        cached_frame_indices = set()
+        if self.detection_cache_path:
+            # Check if we should load existing cache
+            cache_exists = os.path.exists(self.detection_cache_path)
+            should_load_cache = self.backward_mode or (
+                self.use_cached_detections and cache_exists
+            )
+
+            if should_load_cache and cache_exists:
+                # Load cached detections and validate frame range
+                detection_cache = DetectionCache(self.detection_cache_path, mode="r")
+                cached_start, cached_end = detection_cache.get_frame_range()
+
+                # Check if cache fully covers requested frame range
+                if detection_cache.covers_frame_range(start_frame, end_frame):
+                    total_frames = detection_cache.get_total_frames()
+                    use_cached_detections = True
+                    if self.backward_mode:
+                        logger.info(
+                            f"Backward pass using cached detections ({total_frames} frames, range: {start_frame}-{end_frame})"
+                        )
+                    else:
+                        logger.info(
+                            f"Reusing cached detections from previous run ({total_frames} frames, range: {start_frame}-{end_frame})"
+                        )
+                else:
+                    # Frame range mismatch - invalidate cache
+                    missing = detection_cache.get_missing_frames(start_frame, end_frame)
+                    if missing:
+                        logger.warning(
+                            f"Cache missing {len(missing)}+ frame(s) in requested range (sample: {missing[:5]})"
+                        )
+                    logger.warning(
+                        f"Cache frame range mismatch! Cache: {cached_start}-{cached_end}, Requested: {start_frame}-{end_frame}"
+                    )
+                    logger.warning("Deleting old cache and regenerating detections...")
+                    detection_cache.close()
+                    detection_cache = None
+                    os.remove(self.detection_cache_path)
+                    cache_exists = False
+
+            # Create new cache for writing if needed
+            if not use_cached_detections:
+                detection_cache = DetectionCache(
+                    self.detection_cache_path,
+                    mode="w",
+                    start_frame=start_frame,
+                    end_frame=end_frame,
+                )
+                logger.info(
+                    f"Forward pass caching detections for range {start_frame}-{end_frame}"
+                )
+
+        # === RUN BATCHED DETECTION PHASE (if applicable) ===
+        # Only run batched detection if we don't already have cached detections
+        if use_batched_detection and not use_cached_detections:
+            # Phase 1: Batched YOLO detection
+            frames_processed = self._run_batched_detection_phase(
+                cap, detection_cache, detector, p, start_frame, end_frame
+            )
+
+            # Save detection cache after phase 1
+            detection_cache.save()
+            logger.info("Detection cache saved after batched phase")
+
+            # Reopen cache in read mode for phase 2
+            detection_cache.close()
+            detection_cache = DetectionCache(self.detection_cache_path, mode="r")
+            total_frames = frames_processed
+            use_cached_detections = True  # Phase 2 uses cached detections
+
+            # Reset video capture to start frame for phase 2 (tracking + visualization)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            logger.info(f"Reset video to start frame {start_frame} for phase 2")
+
+            logger.info("=" * 80)
+            logger.info("PHASE 2: Tracking and Visualization")
+            logger.info("=" * 80)
+
+        # === 2. FRAME PROCESSING LOOP ===
+        # Determine whether to use frame prefetcher
+        # Enable for forward passes where we're not batching detection (to avoid double buffering)
+        # Prefetching is most beneficial when frame I/O competes with processing time
+        use_prefetcher = (
+            not use_batched_detection  # Not in batched detection phase 1
+            and not self.backward_mode  # Not backward mode (uses cache iterator)
+            and not self.preview_mode  # Not preview (latency-sensitive)
+            and p.get("ENABLE_FRAME_PREFETCH", True)  # User hasn't disabled it
+        )
+
+        # Choose appropriate frame iterator
+        if use_cached_detections:
+            # Check if we are in forward mode (either Reuse or Batched Phase 2) or backward mode
+            # If forward mode, we might need frames for visualization/video/dataset
+            if not self.backward_mode:
+                # Phase 2 of batched detection OR Cached Reuse: only read frames if we need visualization OR individual analysis
+                # Update condition: Check for NOT visualization_free_mode (since ENABLE_VISUALIZATION isn't used)
+                # Also check self.video_output_path (since ENABLE_VIDEO_OUTPUT isn't reliably in params)
+                needs_frames = (
+                    not p.get("VISUALIZATION_FREE_MODE", False)
+                    or (self.video_output_path is not None)
+                    or individual_generator
+                    is not None  # Need frames for cropping individuals
+                )
+
+                if needs_frames:
+                    frame_iterator = self._forward_frame_iterator(
+                        cap, use_prefetcher=use_prefetcher
+                    )
+                    skip_visualization = False
+                    logger.info(
+                        "Forward Cached: Using cached detections with frame reading"
+                    )
+                else:
+                    # No visualization or individual analysis - skip frame reading entirely
+                    frame_iterator = self._cached_detection_iterator(
+                        total_frames, start_frame, end_frame, backward=False
+                    )
+                    skip_visualization = True
+                    use_prefetcher = False
+                    logger.info(
+                        "Forward Cached: Skipping frame reading (no visualization/analysis needed, using cached detections)"
+                    )
+            else:
+                # Backward pass: no frames needed, skip visualization
+                frame_iterator = self._cached_detection_iterator(
+                    total_frames, start_frame, end_frame, backward=True
+                )
+                skip_visualization = True
+                use_prefetcher = False  # No frames to prefetch
+                logger.info(
+                    "Backward pass: Skipping frame reading and visualization for maximum speed"
+                )
+        else:
+            # Standard frame-by-frame with detection
+            frame_iterator = self._forward_frame_iterator(
+                cap, use_prefetcher=use_prefetcher
+            )
+            skip_visualization = False
+
+        if use_prefetcher:
+            logger.info("Frame prefetching ENABLED (background I/O buffering)")
+        else:
+            logger.info("Frame prefetching disabled")
+
+        for frame, _ in frame_iterator:
             loop_start = time.time()
 
             params = self.get_current_params()
             self.frame_count += 1
 
+            # Calculate actual frame index (0-based) accounting for start_frame offset
+            # In backward mode, go from end_frame backward to start_frame
+            if self.backward_mode:
+                actual_frame_index = end_frame - (self.frame_count - 1)
+            else:
+                actual_frame_index = start_frame + (self.frame_count - 1)
+
+            # Check if we've reached the boundary
+            if self.backward_mode:
+                if actual_frame_index < start_frame:
+                    logger.info(
+                        f"Reached start frame {start_frame}, stopping backward tracking"
+                    )
+                    break
+            else:
+                if actual_frame_index > end_frame:
+                    logger.info(f"Reached end frame {end_frame}, stopping tracking")
+                    break
+
             # --- Preprocessing & Detection ---
             prep_start = time.time()
             resize_f = params["RESIZE_FACTOR"]
-            if resize_f < 1.0:
-                frame = cv2.resize(
-                    frame,
-                    (0, 0),
-                    fx=resize_f,
-                    fy=resize_f,
-                    interpolation=cv2.INTER_AREA,
-                )
+
+            # Skip preprocessing if no frame (cached detection mode)
+            if frame is not None:
+                # Keep original frame for individual dataset generation (high resolution)
+                original_frame = frame.copy() if individual_generator else None
+
+                if resize_f < 1.0:
+                    frame = cv2.resize(
+                        frame,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
+                    )
+            else:
+                original_frame = None
+
             profile_times["preprocessing"] += time.time() - prep_start
 
             detection_method = params.get("DETECTION_METHOD", "background_subtraction")
@@ -194,7 +682,7 @@ class TrackingWorker(QThread):
             ROI_mask_3ch = None
             mask_inv_3ch = None
 
-            if ROI_mask is not None:
+            if ROI_mask is not None and frame is not None:
                 ROI_mask_current = (
                     cv2.resize(
                         ROI_mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST
@@ -218,11 +706,39 @@ class TrackingWorker(QThread):
                 mask_inv_3ch = cv2.bitwise_not(ROI_mask_3ch)
 
             detect_start = time.time()
-            if detection_method == "background_subtraction":
+
+            # Initialize detection-related variables (in case no detection occurs)
+            detection_ids = []
+            filtered_obb_corners = []
+            detection_confidences = []
+
+            # Get detections either from cache or by detection
+            if use_cached_detections:
+                # Load cached detections using actual frame index
+                # The cache keys are actual video frame indices, so we use actual_frame_index directly
+                (
+                    meas,
+                    sizes,
+                    shapes,
+                    detection_confidences,
+                    filtered_obb_corners,
+                    detection_ids,
+                ) = detection_cache.get_frame(actual_frame_index)
+                # No yolo_results object in cached mode
+                yolo_results = None
+                fg_mask = None
+                bg_u8 = None
+
+            elif detection_method == "background_subtraction" and frame is not None:
                 # Background subtraction detection pipeline
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                use_gpu = params.get("ENABLE_GPU_BACKGROUND", False)
                 gray = apply_image_adjustments(
-                    gray, params["BRIGHTNESS"], params["CONTRAST"], params["GAMMA"]
+                    gray,
+                    params["BRIGHTNESS"],
+                    params["CONTRAST"],
+                    params["GAMMA"],
+                    use_gpu,
                 )
 
                 if params.get("ENABLE_LIGHTING_STABILIZATION", True):
@@ -234,13 +750,15 @@ class TrackingWorker(QThread):
                         ROI_mask_current,
                         params.get("LIGHTING_MEDIAN_WINDOW", 5),
                         lighting_state,
+                        use_gpu,
                     )
 
                 bg_u8 = bg_model.update_and_get_background(
                     gray, ROI_mask_current, tracking_stabilized
                 )
                 if bg_u8 is None:
-                    self.emit_frame(frame)
+                    if frame is not None:
+                        self.emit_frame(frame)
                     continue
 
                 fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
@@ -253,18 +771,21 @@ class TrackingWorker(QThread):
                 ):
                     fg_mask = detector.apply_conservative_split(fg_mask)
                 meas, sizes, shapes, yolo_results, detection_confidences = (
-                    detector.detect_objects(fg_mask, self.frame_count)
+                    detector.detect_objects(fg_mask, actual_frame_index)
                 )
+                # No OBB corners for background subtraction
+                filtered_obb_corners = []
+                # Calculate DetectionID for each detection using actual frame index
+                detection_ids = [
+                    actual_frame_index * 10000 + i for i in range(len(meas))
+                ]
 
-            else:  # YOLO OBB detection
-                # YOLO uses the original BGR frame directly
+            elif (
+                detection_method == "yolo_obb" and frame is not None
+            ):  # YOLO OBB detection
+                # YOLO uses the original BGR frame directly without masking
+                # This preserves natural image context for better confidence estimates
                 yolo_frame = frame.copy()
-                if ROI_mask_current is not None:
-                    # Reuse pre-computed masks
-                    yolo_frame = cv2.bitwise_and(yolo_frame, ROI_mask_3ch)
-                    background = np.full_like(frame, roi_fill_color)
-                    background = cv2.bitwise_and(background, mask_inv_3ch)
-                    yolo_frame = cv2.add(yolo_frame, background)
 
                 # No foreground mask or background for YOLO
                 fg_mask = None
@@ -272,6 +793,76 @@ class TrackingWorker(QThread):
                 meas, sizes, shapes, yolo_results, detection_confidences = (
                     detector.detect_objects(yolo_frame, self.frame_count)
                 )
+
+                # Get filtered OBB corners from detector (already filtered by size)
+                filtered_obb_corners = (
+                    getattr(yolo_results, "_filtered_obb_corners", [])
+                    if yolo_results
+                    else []
+                )
+
+                # Filter detections by ROI mask AFTER detection (vectorized)
+                # This is better than masking the image which reduces YOLO confidence
+                if ROI_mask_current is not None and len(meas) > 0:
+                    # Vectorized filtering using NumPy for efficiency with large n
+                    meas_arr = np.array(meas)
+                    cx_arr = meas_arr[:, 0].astype(np.int32)
+                    cy_arr = meas_arr[:, 1].astype(np.int32)
+
+                    # Bounds check
+                    h, w = ROI_mask_current.shape[:2]
+                    in_bounds = (
+                        (cy_arr >= 0) & (cy_arr < h) & (cx_arr >= 0) & (cx_arr < w)
+                    )
+
+                    # ROI check (clip to bounds for safe indexing, then apply bounds mask)
+                    cy_safe = np.clip(cy_arr, 0, h - 1)
+                    cx_safe = np.clip(cx_arr, 0, w - 1)
+                    in_roi = ROI_mask_current[cy_safe, cx_safe] > 0
+
+                    # Combined mask
+                    keep_mask = in_bounds & in_roi
+                    keep_indices = np.where(keep_mask)[0]
+
+                    # Apply filter using boolean indexing
+                    # Keep meas as list of numpy arrays (required by Kalman filter)
+                    meas = [meas_arr[i] for i in keep_indices]
+                    sizes = np.array(sizes)[keep_mask].tolist()
+                    shapes = np.array(shapes)[keep_mask].tolist()
+                    detection_confidences = np.array(detection_confidences)[
+                        keep_mask
+                    ].tolist()
+                    # Also filter OBB corners
+                    filtered_obb_corners = [
+                        filtered_obb_corners[i] for i in keep_indices
+                    ]
+                    # Calculate DetectionID for each kept detection using actual frame index
+                    detection_ids = [
+                        actual_frame_index * 10000 + i for i in range(len(meas))
+                    ]
+
+            else:
+                # No frame and no cached detections - skip this iteration
+                if not use_cached_detections:
+                    logger.warning(
+                        f"Frame {self.frame_count}: No frame available and no cached detections"
+                    )
+                    continue
+
+            # Cache detections during forward pass (only when actively detecting, not when loading from cache)
+            if detection_cache and not self.backward_mode and not use_cached_detections:
+                # detection_ids should already be calculated in detection blocks above
+                # Use actual frame index for cache key
+                detection_cache.add_frame(
+                    actual_frame_index,
+                    meas,
+                    sizes,
+                    shapes,
+                    detection_confidences,
+                    filtered_obb_corners if filtered_obb_corners else None,
+                    detection_ids,
+                )
+                cached_frame_indices.add(actual_frame_index)
 
             profile_times["detection"] += time.time() - detect_start
 
@@ -286,17 +877,22 @@ class TrackingWorker(QThread):
                 detection_initialized = True
                 logger.info(f"Tracking initialized with {len(meas)} detections.")
 
-            overlay = frame.copy()
+            # === VISUALIZATION (Skip in cached detection mode) ===
+            if not skip_visualization and frame is not None:
+                overlay = frame.copy()
 
-            # Apply ROI mask to base overlay - reuse pre-computed masks
-            if ROI_mask_current is not None and roi_fill_color is not None:
-                overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
-                background = np.full_like(overlay, roi_fill_color)
-                background = cv2.bitwise_and(background, mask_inv_3ch)
-                overlay = cv2.add(overlay, background)
-            elif ROI_mask_current is not None:
-                # Fallback to black if color not yet calculated
-                overlay = cv2.bitwise_and(overlay, ROI_mask_3ch)
+                # Apply ROI visualization - draw cyan boundary for all detection methods
+                # The actual masking for background subtraction happens earlier in the pipeline
+                if ROI_mask_current is not None:
+                    # Draw cyan dashed boundary around ROI using contours from the mask
+                    contours, _ = cv2.findContours(
+                        ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    if contours:
+                        # Draw cyan boundary (BGR: 255, 255, 0)
+                        cv2.drawContours(overlay, contours, -1, (255, 255, 0), 2)
+            else:
+                overlay = None
 
             hist_velocities = []
             hist_sizes = []
@@ -380,12 +976,13 @@ class TrackingWorker(QThread):
                     )
                     last_shape_info[r] = shapes[c]
 
-                    pt = (int(x), int(y), orientation_last[r], self.frame_count)
+                    # Update trajectory with actual frame index
+                    pt = (int(x), int(y), orientation_last[r], actual_frame_index)
                     self.trajectories_full[r].append(pt)
                     trajectories_pruned[r].append(pt)
 
                     if self.csv_writer_thread:
-                        # Build base data row
+                        # Build base data row with actual frame index
                         row_data = [
                             r,
                             trajectory_ids[r],
@@ -412,6 +1009,12 @@ class TrackingWorker(QThread):
                             )
                             row_data.extend([det_conf, assign_conf, pos_uncertainty])
 
+                        # Add DetectionID (can be NaN for unmatched)
+                        det_id = (
+                            detection_ids[c] if c < len(detection_ids) else float("nan")
+                        )
+                        row_data.append(det_id)
+
                         self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1
                     current_cost = cost[r, c]
@@ -431,7 +1034,7 @@ class TrackingWorker(QThread):
                             if self.trajectories_full[r]
                             else (float("nan"),) * 4
                         )
-                        # Build base data row
+                        # Build base data row with actual frame index
                         row_data = [
                             r,
                             trajectory_ids[r],
@@ -439,7 +1042,7 @@ class TrackingWorker(QThread):
                             last_pos[0],
                             last_pos[1],
                             last_pos[2],
-                            self.frame_count,
+                            actual_frame_index,
                             track_states[r],
                         ]
 
@@ -453,6 +1056,9 @@ class TrackingWorker(QThread):
                                 else 0.0
                             )
                             row_data.extend([det_conf, assign_conf, pos_uncertainty])
+
+                        # Add DetectionID (NaN for unmatched tracks)
+                        row_data.append(float("nan"))
 
                         self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1
@@ -497,6 +1103,88 @@ class TrackingWorker(QThread):
                 time.time() - assign_start if detection_initialized and meas else 0
             )
 
+            # --- Individual Dataset Generation (supports YOLO OBB and BG subtraction) ---
+            if individual_generator is not None and meas:
+                # Get track and trajectory IDs for matched detections
+                # cols contains the detection indices that were matched to tracks (rows)
+                matched_track_ids = []
+                matched_traj_ids = []
+
+                if (
+                    detection_initialized
+                    and meas
+                    and "cols" in dir()
+                    and "rows" in dir()
+                ):
+                    # Create mapping from detection index to track info
+                    det_to_track = {}
+                    for r, c in zip(rows, cols):
+                        det_to_track[c] = (r, trajectory_ids[r])
+
+                    # Build lists in detection order
+                    for det_idx in range(len(meas)):
+                        if det_idx in det_to_track:
+                            track_id, traj_id = det_to_track[det_idx]
+                            matched_track_ids.append(track_id)
+                            matched_traj_ids.append(traj_id)
+                        else:
+                            matched_track_ids.append(-1)
+                            matched_traj_ids.append(-1)
+
+                # Determine which data source to use
+                # Use original_frame (full resolution) and coord_scale_factor (1/resize_f)
+                coord_scale_factor = 1.0 / resize_f
+
+                if filtered_obb_corners:
+                    # YOLO OBB detection - use OBB corners directly
+                    individual_generator.process_frame(
+                        frame=original_frame,
+                        frame_id=actual_frame_index,
+                        meas=meas,
+                        obb_corners=filtered_obb_corners,
+                        ellipse_params=None,
+                        confidences=(
+                            detection_confidences if detection_confidences else None
+                        ),
+                        track_ids=matched_track_ids if matched_track_ids else None,
+                        trajectory_ids=matched_traj_ids if matched_traj_ids else None,
+                        coord_scale_factor=coord_scale_factor,
+                        detection_ids=detection_ids,
+                    )
+                elif shapes:
+                    # Background subtraction - compute ellipse params from shapes
+                    # shapes contains (area, aspect_ratio) tuples
+                    # From: area = π * ax1 * ax2 / 4, aspect_ratio = ax1 / ax2
+                    # Solve: ax2 = sqrt(4 * area / (π * aspect_ratio))
+                    #        ax1 = aspect_ratio * ax2
+                    ellipse_params = []
+                    for shape in shapes:
+                        area, aspect_ratio = shape[0], shape[1]
+                        if aspect_ratio > 0 and area > 0:
+                            ax2 = np.sqrt(4 * area / (np.pi * aspect_ratio))
+                            ax1 = aspect_ratio * ax2
+                            ellipse_params.append(
+                                [ax1, ax2]
+                            )  # [major_axis, minor_axis]
+                        else:
+                            # Fallback to small circle if invalid
+                            ellipse_params.append([10.0, 10.0])
+
+                    individual_generator.process_frame(
+                        frame=original_frame,
+                        frame_id=actual_frame_index,
+                        meas=meas,
+                        obb_corners=None,
+                        ellipse_params=ellipse_params,
+                        confidences=(
+                            detection_confidences if detection_confidences else None
+                        ),
+                        track_ids=matched_track_ids if matched_track_ids else None,
+                        trajectory_ids=matched_traj_ids if matched_traj_ids else None,
+                        coord_scale_factor=coord_scale_factor,
+                        detection_ids=detection_ids,
+                    )
+
             # --- Tracking State Updates ---
             track_start = time.time()
             # (All the tracking state updates happen here - already in code)
@@ -515,18 +1203,26 @@ class TrackingWorker(QThread):
             # Emit progress signal periodically to avoid overwhelming the GUI thread
             # We also check that total_frames is valid
             if total_frames and total_frames > 0:
-                # Emit every 100 frames or so to keep GUI responsive
-                if self.frame_count % 100 == 0:
+                # Emit more frequently (every 10 frames) to show better progress feedback
+                # Especially important for batched detection where users need ETA
+                if self.frame_count % 10 == 0:
                     percentage = int((self.frame_count * 100) / total_frames)
-                    status_text = (
-                        f"Processing Frame {self.frame_count} / {total_frames}"
-                    )
+
+                    # Add mode information to status text
+                    if use_cached_detections:
+                        if use_batched_detection:
+                            status_text = f"Tracking (batched): Frame {actual_frame_index} ({self.frame_count} / {total_frames})"
+                        else:
+                            status_text = f"Tracking (cached): Frame {actual_frame_index} ({self.frame_count} / {total_frames})"
+                    else:
+                        status_text = f"Processing: Frame {actual_frame_index} ({self.frame_count} / {total_frames})"
+
                     self.progress_signal.emit(percentage, status_text)
 
             # --- Visualization, Output & Loop Maintenance ---
             viz_free_mode = params.get("VISUALIZATION_FREE_MODE", False)
 
-            if not viz_free_mode:
+            if not viz_free_mode and overlay is not None:
                 viz_start = time.time()
                 trajectories_pruned = [
                     [
@@ -548,6 +1244,7 @@ class TrackingWorker(QThread):
                     fg_mask,
                     bg_u8,
                     yolo_results,
+                    filtered_obb_corners,  # Pass OBB corners for visualization
                 )
                 profile_times["visualization"] += time.time() - viz_start
 
@@ -557,6 +1254,18 @@ class TrackingWorker(QThread):
                 profile_times["video_write"] += time.time() - write_start
 
                 emit_start = time.time()
+                # For YOLO with ROI, draw boundary overlay before emitting
+                if (
+                    detection_method != "background_subtraction"
+                    and ROI_mask_current is not None
+                ):
+                    # Find contours of ROI mask
+                    contours, _ = cv2.findContours(
+                        ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    # Draw cyan boundary
+                    cv2.drawContours(overlay, contours, -1, (0, 255, 255), 2)
+
                 self.emit_frame(overlay)
                 profile_times["gui_emit"] += time.time() - emit_start
 
@@ -625,10 +1334,46 @@ class TrackingWorker(QThread):
             if elapsed > 0:
                 fps_list.append(self.frame_count / elapsed)
 
+        # Ensure cache has entries for all frames in the requested range (forward pass)
+        if detection_cache and not self.backward_mode and not use_cached_detections:
+            for frame_idx in range(start_frame, end_frame + 1):
+                if frame_idx not in cached_frame_indices:
+                    detection_cache.add_frame(
+                        frame_idx,
+                        [],
+                        [],
+                        [],
+                        [],
+                        None,
+                        [],
+                    )
+
         # === 3. CLEANUP (Identical to Original) ===
+        # Stop frame prefetcher if still running
+        if self.frame_prefetcher is not None:
+            self.frame_prefetcher.stop()
+            self.frame_prefetcher = None
+
         cap.release()
         if self.video_writer:
             self.video_writer.release()
+
+        # Save or close detection cache
+        if detection_cache:
+            if not self.backward_mode and not use_cached_detections:
+                # Forward pass Phase 1 (detection phase): save cache to disk
+                # Note: In batched detection, cache is already saved after Phase 1
+                detection_cache.save()
+                logger.info("Detection cache saved successfully")
+            else:
+                # Backward pass or Phase 2: just close cache (read-only mode)
+                detection_cache.close()
+
+        # Finalize individual dataset if enabled
+        if individual_generator is not None:
+            dataset_path = individual_generator.finalize()
+            if dataset_path:
+                logger.info(f"Individual dataset saved to: {dataset_path}")
 
         logger.info("Tracking worker finished. Emitting raw trajectory data.")
 
@@ -714,42 +1459,58 @@ class TrackingWorker(QThread):
         continuity,
         fg,
         bg,
-        yolo_results=None,
+        yolo_results=None,  # YOLO results object (direct detection)
+        obb_corners=None,  # OBB corners list (cached detections)
     ):
         # Draw YOLO OBB boxes if enabled and available
-        if p.get("SHOW_YOLO_OBB", False) and yolo_results is not None:
-            if (
-                hasattr(yolo_results, "obb")
-                and yolo_results.obb is not None
-                and len(yolo_results.obb) > 0
-            ):
-                obb_data = yolo_results.obb
-                for i in range(len(obb_data)):
-                    # Get the 4 corner points of the OBB
-                    corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
-                    # Draw the OBB as a polygon
-                    cv2.polylines(
-                        overlay,
-                        [corners],
-                        isClosed=True,
-                        color=(0, 255, 255),
-                        thickness=2,
-                    )
-
-                    # Optionally draw confidence score
-                    if hasattr(obb_data, "conf"):
-                        conf = obb_data.conf[i].cpu().item()
-                        cx = int(corners[:, 0].mean())
-                        cy = int(corners[:, 1].mean())
-                        cv2.putText(
+        if p.get("SHOW_YOLO_OBB", False):
+            # First try to use filtered OBB corners (works with cached detections)
+            if obb_corners is not None and len(obb_corners) > 0:
+                for corners in obb_corners:
+                    if corners is not None:
+                        # corners is already a numpy array of shape (4, 2)
+                        corners_int = corners.astype(np.int32)
+                        cv2.polylines(
                             overlay,
-                            f"{conf:.2f}",
-                            (cx - 15, cy - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.4,
-                            (0, 255, 255),
-                            1,
+                            [corners_int],
+                            isClosed=True,
+                            color=(0, 255, 255),  # Yellow
+                            thickness=2,
                         )
+            # Fall back to yolo_results object (direct detection mode)
+            elif yolo_results is not None:
+                if (
+                    hasattr(yolo_results, "obb")
+                    and yolo_results.obb is not None
+                    and len(yolo_results.obb) > 0
+                ):
+                    obb_data = yolo_results.obb
+                    for i in range(len(obb_data)):
+                        # Get the 4 corner points of the OBB
+                        corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
+                        # Draw the OBB as a polygon
+                        cv2.polylines(
+                            overlay,
+                            [corners],
+                            isClosed=True,
+                            color=(0, 255, 255),
+                            thickness=2,
+                        )
+
+                        # Optionally draw confidence score
+                        if hasattr(obb_data, "conf"):
+                            conf = obb_data.conf[i].cpu().item()
+                            cx = int(corners[:, 0].mean())
+                            cy = int(corners[:, 1].mean())
+                            cv2.putText(
+                                overlay,
+                                f"{conf:.2f}",
+                                (cx - 15, cy - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.4,
+                                (0, 255, 255),
+                                1,
+                            )
 
         # Draw Kalman uncertainty ellipses if enabled (for debugging)
         if p.get("SHOW_KALMAN_UNCERTAINTY", False):

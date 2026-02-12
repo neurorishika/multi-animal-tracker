@@ -5,17 +5,28 @@ Main application window for the Multi-Animal Tracker.
 Refactored for improved UX with Tabbed interface and logical grouping.
 """
 
-import sys, os, json, math, logging
+import sys, os, json, math, logging, tempfile
+import hashlib
 import numpy as np
 import pandas as pd
 import cv2
-from collections import deque
+from collections import deque, defaultdict
 import gc
 import csv
+from pathlib import Path
 
-from PySide2.QtCore import Qt, Slot, Signal, QThread, QMutex
-from PySide2.QtGui import QImage, QPixmap, QPainter, QPen, QIcon, QColor
-from PySide2.QtWidgets import (
+from PySide6.QtCore import (
+    Qt,
+    Slot,
+    Signal,
+    QThread,
+    QMutex,
+    QPropertyAnimation,
+    QEasingCurve,
+    QTimer,
+)
+from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QIcon, QColor, QAction
+from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
     QLabel,
@@ -41,18 +52,703 @@ from PySide2.QtWidgets import (
     QSizePolicy,
     QFrame,
     QSlider,
+    QToolButton,
+    QAbstractButton,
 )
 import matplotlib.pyplot as plt
 
 from ..core.tracking_worker import TrackingWorker
-from ..core.post_processing import process_trajectories, resolve_trajectories
+from ..core.post_processing import (
+    process_trajectories,
+    resolve_trajectories,
+    interpolate_trajectories,
+)
 from ..utils.csv_writer import CSVWriterThread
 from ..utils.geometry import fit_circle_to_points
-from ..utils.video_io import VideoReversalWorker
+from ..utils.geometry import wrap_angle_degs
+from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
+from ..utils.detection_cache import DetectionCache
 from .histogram_widgets import HistogramPanel
+from ..core.individual_analysis import IndividualDatasetGenerator
+from .train_yolo_dialog import TrainYoloDialog
 
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
+
+
+class MergeWorker(QThread):
+    """Worker thread for merging trajectories without blocking the UI."""
+
+    progress_signal = Signal(int, str)  # progress value, status message
+    finished_signal = Signal(object)  # merged trajectories
+    error_signal = Signal(str)  # error message
+
+    def __init__(
+        self,
+        forward_trajs,
+        backward_trajs,
+        total_frames,
+        params,
+        resize_factor,
+        interp_method,
+        max_gap,
+    ):
+        super().__init__()
+        self.forward_trajs = forward_trajs
+        self.backward_trajs = backward_trajs
+        self.total_frames = total_frames
+        self.params = params
+        self.resize_factor = resize_factor
+        self.interp_method = interp_method
+        self.max_gap = max_gap
+
+    def run(self):
+        try:
+            self.progress_signal.emit(10, "Preparing trajectories...")
+
+            # Convert DataFrames to list of DataFrames (one per trajectory)
+            def prepare_trajs_for_merge(trajs):
+                if isinstance(trajs, pd.DataFrame):
+                    return [group for _, group in trajs.groupby("TrajectoryID")]
+                else:
+                    return trajs
+
+            forward_prepared = prepare_trajs_for_merge(self.forward_trajs)
+            backward_prepared = prepare_trajs_for_merge(self.backward_trajs)
+
+            self.progress_signal.emit(30, "Resolving trajectory conflicts...")
+
+            resolved_trajectories = resolve_trajectories(
+                forward_prepared,
+                backward_prepared,
+                params=self.params,
+            )
+
+            self.progress_signal.emit(60, "Converting to DataFrame...")
+
+            # Convert resolved trajectories to DataFrame
+            if resolved_trajectories and isinstance(resolved_trajectories, list):
+                if isinstance(resolved_trajectories[0], pd.DataFrame):
+                    # Reassign TrajectoryID to ensure unique IDs
+                    for new_id, traj_df in enumerate(resolved_trajectories):
+                        traj_df["TrajectoryID"] = new_id
+                    resolved_trajectories = pd.concat(
+                        resolved_trajectories, ignore_index=True
+                    )
+                else:
+                    # Fallback for old tuple format
+                    logger.warning(
+                        "Received tuple format from resolve_trajectories, converting..."
+                    )
+                    all_data = []
+                    for traj_id, traj in enumerate(resolved_trajectories):
+                        for x, y, theta, frame in traj:
+                            all_data.append(
+                                {
+                                    "TrajectoryID": traj_id,
+                                    "X": x,
+                                    "Y": y,
+                                    "Theta": theta,
+                                    "FrameID": frame,
+                                }
+                            )
+                    if all_data:
+                        resolved_trajectories = pd.DataFrame(all_data)
+                    else:
+                        resolved_trajectories = []
+
+            self.progress_signal.emit(75, "Applying interpolation...")
+
+            # Apply interpolation if enabled
+            if isinstance(resolved_trajectories, pd.DataFrame):
+                if self.interp_method != "none":
+                    resolved_trajectories = interpolate_trajectories(
+                        resolved_trajectories,
+                        method=self.interp_method,
+                        max_gap=self.max_gap,
+                    )
+
+            self.progress_signal.emit(90, "Scaling to original space...")
+
+            # Scale coordinates back to original video space
+            if isinstance(resolved_trajectories, pd.DataFrame):
+                # Log pre-scaling ranges for debugging
+                logger.info(
+                    f"Pre-scaling (resize_factor={self.resize_factor:.3f}): "
+                    f"X range [{resolved_trajectories['X'].min():.1f}, {resolved_trajectories['X'].max():.1f}], "
+                    f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
+                )
+
+                resolved_trajectories[["X", "Y"]] = (
+                    resolved_trajectories[["X", "Y"]] / self.resize_factor
+                )
+                if "Width" in resolved_trajectories.columns:
+                    resolved_trajectories["Width"] /= self.resize_factor
+                if "Height" in resolved_trajectories.columns:
+                    resolved_trajectories["Height"] /= self.resize_factor
+
+                # Log post-scaling ranges for debugging
+                logger.info(
+                    f"Post-scaling: "
+                    f"X range [{resolved_trajectories['X'].min():.1f}, {resolved_trajectories['X'].max():.1f}], "
+                    f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
+                )
+
+            self.progress_signal.emit(100, "Merge complete!")
+            self.finished_signal.emit(resolved_trajectories)
+
+        except Exception as e:
+            logger.exception("Error during trajectory merging")
+            self.error_signal.emit(str(e))
+
+
+class InterpolatedCropsWorker(QThread):
+    """Worker thread for interpolating occluded crops without blocking the UI."""
+
+    progress_signal = Signal(int, str)
+    finished_signal = Signal(dict)
+
+    def __init__(self, csv_path, video_path, detection_cache_path, params):
+        super().__init__()
+        self.csv_path = csv_path
+        self.video_path = video_path
+        self.detection_cache_path = detection_cache_path
+        self.params = params
+
+    @staticmethod
+    def _interp_angle(theta_start, theta_end, t):
+        deg0 = math.degrees(theta_start)
+        deg1 = math.degrees(theta_end)
+        candidates = (deg1, deg1 + 180.0, deg1 - 180.0)
+        best_delta = None
+        for cand in candidates:
+            delta = wrap_angle_degs(cand - deg0)
+            if best_delta is None or abs(delta) < abs(best_delta):
+                best_delta = delta
+        return math.radians(deg0 + (best_delta or 0.0) * t)
+
+    @staticmethod
+    def _get_detection_size(detection_cache, frame_id, detection_id):
+        if detection_cache is None or detection_id is None or pd.isna(detection_id):
+            return None, None
+        try:
+            _, _, shapes, _, obb_corners, detection_ids = detection_cache.get_frame(
+                int(frame_id)
+            )
+        except Exception:
+            return None, None
+
+        idx = None
+        try:
+            for i, did in enumerate(detection_ids):
+                if int(did) == int(detection_id):
+                    idx = i
+                    break
+        except Exception:
+            idx = None
+
+        if idx is None:
+            return None, None
+
+        if obb_corners and idx < len(obb_corners):
+            c = np.asarray(obb_corners[idx], dtype=np.float32)
+            if c.shape[0] >= 4:
+                w = float(np.linalg.norm(c[1] - c[0]))
+                h = float(np.linalg.norm(c[2] - c[1]))
+                if w < h:
+                    w, h = h, w
+                return w, h
+
+        if shapes and idx < len(shapes):
+            area, aspect_ratio = shapes[idx][0], shapes[idx][1]
+            if aspect_ratio > 0 and area > 0:
+                ax2 = math.sqrt(4 * area / (math.pi * aspect_ratio))
+                ax1 = aspect_ratio * ax2
+                return ax1, ax2
+
+        return None, None
+
+    def run(self):
+        try:
+            if not self.csv_path or not os.path.exists(self.csv_path):
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+            if not self.video_path or not os.path.exists(self.video_path):
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+
+            output_dir = self.params.get("INDIVIDUAL_DATASET_OUTPUT_DIR")
+            if not output_dir:
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+
+            df = pd.read_csv(self.csv_path)
+            if "FrameID" not in df.columns and "Frame" in df.columns:
+                df = df.rename(columns={"Frame": "FrameID"})
+            if "TrajectoryID" not in df.columns and "Trajectory" in df.columns:
+                df = df.rename(columns={"Trajectory": "TrajectoryID"})
+            if df.empty or "FrameID" not in df.columns or "State" not in df.columns:
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+            # Normalize numeric columns
+            for col in ("FrameID", "X", "Y", "Theta"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+
+            resize_factor = self.params.get("RESIZE_FACTOR", 1.0)
+            position_scale = 1.0
+            size_scale = 1.0 / resize_factor if resize_factor else 1.0
+
+            detection_cache = None
+            if self.detection_cache_path and os.path.exists(self.detection_cache_path):
+                detection_cache = DetectionCache(self.detection_cache_path, mode="r")
+
+            gen = IndividualDatasetGenerator(
+                self.params,
+                output_dir,
+                Path(self.video_path).stem,
+                self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
+            )
+            gen.enabled = True
+
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                if detection_cache:
+                    detection_cache.close()
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+
+            frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            try:
+                max_x = df["X"].dropna().max()
+                max_y = df["Y"].dropna().max()
+                if (
+                    resize_factor
+                    and resize_factor < 1.0
+                    and max_x <= frame_width * resize_factor * 1.05
+                    and max_y <= frame_height * resize_factor * 1.05
+                ):
+                    position_scale = 1.0 / resize_factor
+            except Exception:
+                position_scale = 1.0
+
+            interp_saved = 0
+            interp_gaps = 0
+            occluded_rows = 0
+            interp_runs = 0
+            interp_rows = []
+            roi_rows = []
+            roi_corners = []
+            frame_tasks = defaultdict(list)
+            if "TrajectoryID" not in df.columns:
+                logger.warning("Interpolated crops skipped: CSV missing TrajectoryID.")
+                self.finished_signal.emit({"saved": 0, "gaps": 0})
+                return
+
+            for traj_id, group in df.groupby("TrajectoryID"):
+                group = group.sort_values("FrameID").reset_index(drop=True)
+                states = group["State"].astype(str).str.strip().str.lower()
+                # Treat any value containing 'occluded' as occluded
+                states = states.where(
+                    ~states.str.contains("occluded", na=False), "occluded"
+                )
+                occluded_rows += int((states == "occluded").sum())
+
+                last_valid_idx = None
+                i = 0
+                while i < len(group):
+                    if states[i] != "occluded":
+                        if not pd.isna(group.at[i, "X"]) and not pd.isna(
+                            group.at[i, "Y"]
+                        ):
+                            last_valid_idx = i
+                        i += 1
+                        continue
+
+                    if last_valid_idx is None:
+                        i += 1
+                        continue
+
+                    j = i
+                    while j < len(group) and states[j] == "occluded":
+                        j += 1
+                    if j >= len(group):
+                        break
+
+                    prev_row = group.iloc[last_valid_idx]
+                    next_row = group.iloc[j]
+                    if (
+                        pd.isna(prev_row["X"])
+                        or pd.isna(prev_row["Y"])
+                        or pd.isna(next_row["X"])
+                        or pd.isna(next_row["Y"])
+                    ):
+                        i = j
+                        continue
+
+                    f0 = int(prev_row["FrameID"])
+                    f1 = int(next_row["FrameID"])
+                    if f1 - f0 <= 1:
+                        i = j
+                        continue
+                    interp_runs += 1
+
+                    interp_total = max(0, f1 - f0 - 1)
+                    interp_gaps += interp_total
+
+                    det_id_prev = (
+                        prev_row["DetectionID"]
+                        if "DetectionID" in group.columns
+                        else None
+                    )
+                    det_id_next = (
+                        next_row["DetectionID"]
+                        if "DetectionID" in group.columns
+                        else None
+                    )
+
+                    w0, h0 = self._get_detection_size(detection_cache, f0, det_id_prev)
+                    w1, h1 = self._get_detection_size(detection_cache, f1, det_id_next)
+
+                    if w0 is None or h0 is None or w1 is None or h1 is None:
+                        ref_size = self.params.get("REFERENCE_BODY_SIZE", 20.0)
+                        w0 = w0 or ref_size * 2.2
+                        h0 = h0 or ref_size * 0.8
+                        w1 = w1 or ref_size * 2.2
+                        h1 = h1 or ref_size * 0.8
+
+                    for k in range(i, j):
+                        row = group.iloc[k]
+                        f = int(row["FrameID"])
+                        t = (f - f0) / (f1 - f0)
+                        cx = float(prev_row["X"]) + t * (
+                            float(next_row["X"]) - float(prev_row["X"])
+                        )
+                        cy = float(prev_row["Y"]) + t * (
+                            float(next_row["Y"]) - float(prev_row["Y"])
+                        )
+                        theta = self._interp_angle(
+                            float(prev_row["Theta"]), float(next_row["Theta"]), t
+                        )
+                        w = w0 + t * (w1 - w0)
+                        h = h0 + t * (h1 - h0)
+
+                        interp_index = max(1, f - f0)
+
+                        frame_tasks[f].append(
+                            {
+                                "frame_id": f,
+                                "cx": cx * position_scale,
+                                "cy": cy * position_scale,
+                                "w": w * size_scale,
+                                "h": h * size_scale,
+                                "theta": theta,
+                                "traj_id": traj_id,
+                                "interp_from": (f0, f1),
+                                "interp_index": interp_index,
+                                "interp_total": interp_total,
+                            }
+                        )
+
+                    i = j
+                    continue
+
+            logger.info(
+                f"Interpolated occlusion rows: {occluded_rows} "
+                f"(runs: {interp_runs}, gaps: {interp_gaps})"
+            )
+            del df
+            gc.collect()
+
+            if frame_tasks:
+                needed_frames = sorted(frame_tasks.keys())
+                total_frames = len(needed_frames)
+                current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                for idx, f in enumerate(needed_frames, start=1):
+                    if f != current_pos:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+                    ret, frame = cap.read()
+                    current_pos = f + 1
+                    if not ret or frame is None:
+                        continue
+                    for task in frame_tasks[f]:
+                        filename = gen.save_interpolated_crop(
+                            frame=frame,
+                            frame_id=task["frame_id"],
+                            cx=task["cx"],
+                            cy=task["cy"],
+                            w=task["w"],
+                            h=task["h"],
+                            theta=task["theta"],
+                            traj_id=task["traj_id"],
+                            interp_from=task["interp_from"],
+                            interp_index=task["interp_index"],
+                            interp_total=task["interp_total"],
+                        )
+                        if filename:
+                            interp_saved += 1
+                            corners = gen.ellipse_to_obb_corners(
+                                task["cx"],
+                                task["cy"],
+                                task["w"],
+                                task["h"],
+                                task["theta"],
+                            )
+                            interp_rows.append(
+                                {
+                                    "frame_id": int(task["frame_id"]),
+                                    "trajectory_id": int(task["traj_id"]),
+                                    "filename": filename,
+                                    "interp_from_start": int(task["interp_from"][0]),
+                                    "interp_from_end": int(task["interp_from"][1]),
+                                    "interp_index": int(task["interp_index"]),
+                                    "interp_total": int(task["interp_total"]),
+                                }
+                            )
+                            roi_rows.append(
+                                {
+                                    "frame_id": int(task["frame_id"]),
+                                    "trajectory_id": int(task["traj_id"]),
+                                    "filename": filename,
+                                    "cx": float(task["cx"]),
+                                    "cy": float(task["cy"]),
+                                    "w": float(task["w"]),
+                                    "h": float(task["h"]),
+                                    "theta": float(task["theta"]),
+                                    "interp_from_start": int(task["interp_from"][0]),
+                                    "interp_from_end": int(task["interp_from"][1]),
+                                    "interp_index": int(task["interp_index"]),
+                                    "interp_total": int(task["interp_total"]),
+                                }
+                            )
+                            roi_corners.append(corners)
+
+                    if idx % 25 == 0 or idx == total_frames:
+                        progress = int((idx / total_frames) * 100)
+                        self.progress_signal.emit(
+                            progress,
+                            f"Interpolating occlusions... {idx}/{total_frames}",
+                        )
+                        del frame
+                        gc.collect()
+
+            cap.release()
+            if detection_cache:
+                detection_cache.close()
+            mapping_path = None
+            roi_csv_path = None
+            roi_npz_path = None
+            if interp_rows and gen.crops_dir is not None:
+                mapping_path = gen.crops_dir.parent / "interpolated_mapping.csv"
+                try:
+                    with open(mapping_path, "w", newline="") as f:
+                        writer = csv.DictWriter(
+                            f,
+                            fieldnames=[
+                                "frame_id",
+                                "trajectory_id",
+                                "filename",
+                                "interp_from_start",
+                                "interp_from_end",
+                                "interp_index",
+                                "interp_total",
+                            ],
+                        )
+                        writer.writeheader()
+                        writer.writerows(interp_rows)
+                except Exception:
+                    pass
+            if roi_rows and gen.crops_dir is not None:
+                roi_csv_path = gen.crops_dir.parent / "interpolated_rois.csv"
+                try:
+                    with open(roi_csv_path, "w", newline="") as f:
+                        writer = csv.DictWriter(
+                            f,
+                            fieldnames=[
+                                "frame_id",
+                                "trajectory_id",
+                                "filename",
+                                "cx",
+                                "cy",
+                                "w",
+                                "h",
+                                "theta",
+                                "interp_from_start",
+                                "interp_from_end",
+                                "interp_index",
+                                "interp_total",
+                            ],
+                        )
+                        writer.writeheader()
+                        writer.writerows(roi_rows)
+                except Exception:
+                    pass
+                roi_npz_path = gen.crops_dir.parent / "interpolated_rois.npz"
+                try:
+                    np.savez_compressed(
+                        str(roi_npz_path),
+                        frame_id=np.array(
+                            [r["frame_id"] for r in roi_rows], dtype=np.int64
+                        ),
+                        trajectory_id=np.array(
+                            [r["trajectory_id"] for r in roi_rows], dtype=np.int64
+                        ),
+                        filename=np.array(
+                            [r["filename"] for r in roi_rows], dtype=object
+                        ),
+                        cx=np.array([r["cx"] for r in roi_rows], dtype=np.float32),
+                        cy=np.array([r["cy"] for r in roi_rows], dtype=np.float32),
+                        w=np.array([r["w"] for r in roi_rows], dtype=np.float32),
+                        h=np.array([r["h"] for r in roi_rows], dtype=np.float32),
+                        theta=np.array(
+                            [r["theta"] for r in roi_rows], dtype=np.float32
+                        ),
+                        interp_from_start=np.array(
+                            [r["interp_from_start"] for r in roi_rows], dtype=np.int64
+                        ),
+                        interp_from_end=np.array(
+                            [r["interp_from_end"] for r in roi_rows], dtype=np.int64
+                        ),
+                        interp_index=np.array(
+                            [r["interp_index"] for r in roi_rows], dtype=np.int64
+                        ),
+                        interp_total=np.array(
+                            [r["interp_total"] for r in roi_rows], dtype=np.int64
+                        ),
+                        obb_corners=(
+                            np.stack(roi_corners).astype(np.float32)
+                            if roi_corners
+                            else np.zeros((0, 4, 2), dtype=np.float32)
+                        ),
+                    )
+                except Exception:
+                    pass
+            gen.finalize()
+            self.finished_signal.emit(
+                {
+                    "saved": interp_saved,
+                    "gaps": interp_gaps,
+                    "mapping_path": str(mapping_path) if mapping_path else None,
+                    "roi_csv_path": str(roi_csv_path) if roi_csv_path else None,
+                    "roi_npz_path": str(roi_npz_path) if roi_npz_path else None,
+                }
+            )
+        except Exception:
+            self.finished_signal.emit({"saved": 0, "gaps": 0})
+
+
+class DatasetGenerationWorker(QThread):
+    """Worker thread for generating training datasets without blocking the UI."""
+
+    progress_signal = Signal(int, str)  # progress value, status message
+    finished_signal = Signal(str, int)  # dataset_dir, num_frames
+    error_signal = Signal(str)  # error message
+
+    def __init__(
+        self,
+        video_path,
+        csv_path,
+        output_dir,
+        dataset_name,
+        class_name,
+        params,
+        max_frames,
+        diversity_window,
+        include_context,
+        probabilistic,
+    ):
+        super().__init__()
+        self.video_path = video_path
+        self.csv_path = csv_path
+        self.output_dir = output_dir
+        self.dataset_name = dataset_name
+        self.class_name = class_name
+        self.params = params
+        self.max_frames = max_frames
+        self.diversity_window = diversity_window
+        self.include_context = include_context
+        self.probabilistic = probabilistic
+
+    def run(self):
+        try:
+            from ..utils.dataset_generation import export_dataset, FrameQualityScorer
+
+            self.progress_signal.emit(5, "Initializing dataset generation...")
+
+            # Load tracking CSV to compute quality scores
+            self.progress_signal.emit(10, "Loading tracking data...")
+            df = pd.read_csv(self.csv_path)
+
+            # Initialize quality scorer
+            self.progress_signal.emit(15, "Initializing quality scorer...")
+            scorer = FrameQualityScorer(self.params)
+
+            # Score each frame
+            self.progress_signal.emit(20, "Scoring frames...")
+            unique_frames = df["FrameID"].unique()
+            total_unique = len(unique_frames)
+
+            for idx, frame_id in enumerate(unique_frames):
+                if idx % 100 == 0:  # Update progress every 100 frames
+                    progress = 20 + int((idx / total_unique) * 30)
+                    self.progress_signal.emit(
+                        progress, f"Scoring frames ({idx}/{total_unique})..."
+                    )
+
+                frame_data = df[df["FrameID"] == frame_id]
+
+                # Detection data
+                detection_data = {
+                    "confidences": (
+                        frame_data["DetectionConfidence"].tolist()
+                        if "DetectionConfidence" in frame_data.columns
+                        else []
+                    ),
+                    "count": len(frame_data),
+                }
+
+                # Tracking data
+                tracking_data = {
+                    "lost_tracks": int((frame_data["State"] == "lost").sum()),
+                    "uncertainties": (
+                        frame_data["PositionUncertainty"].tolist()
+                        if "PositionUncertainty" in frame_data.columns
+                        else []
+                    ),
+                }
+
+                scorer.score_frame(frame_id, detection_data, tracking_data)
+
+            # Select worst frames with diversity
+            self.progress_signal.emit(50, "Selecting challenging frames...")
+            selected_frames = scorer.get_worst_frames(
+                self.max_frames, self.diversity_window, probabilistic=self.probabilistic
+            )
+
+            if not selected_frames:
+                self.error_signal.emit("No frames met the quality criteria for export.")
+                return
+
+            # Export dataset
+            self.progress_signal.emit(60, f"Exporting {len(selected_frames)} frames...")
+            dataset_dir = export_dataset(
+                video_path=self.video_path,
+                csv_path=self.csv_path,
+                frame_ids=selected_frames,
+                output_dir=self.output_dir,
+                dataset_name=self.dataset_name,
+                class_name=self.class_name,
+                params=self.params,
+                include_context=self.include_context,
+            )
+
+            self.progress_signal.emit(100, "Dataset generation complete!")
+            self.finished_signal.emit(dataset_dir, len(selected_frames))
+
+        except Exception as e:
+            logger.exception("Error during dataset generation")
+            self.error_signal.emit(str(e))
 
 
 def get_video_config_path(video_path):
@@ -64,7 +760,238 @@ def get_video_config_path(video_path):
     return os.path.join(video_dir, f"{video_name}_config.json")
 
 
+def get_models_directory():
+    """
+    Get the path to the local models directory.
+
+    Returns the models/YOLO-obb directory for OBB detection models.
+    Creates the directory if it doesn't exist.
+    """
+    # Get project root directory (multi-animal-tracker/)
+    # __file__ is: .../multi-animal-tracker/src/multi_tracker/gui/main_window.py
+    # Need to go up 4 levels: gui -> multi_tracker -> src -> multi-animal-tracker
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
+    models_dir = os.path.join(project_root, "models", "YOLO-obb")
+
+    # Create directory if it doesn't exist
+    os.makedirs(models_dir, exist_ok=True)
+
+    return models_dir
+
+
+def resolve_model_path(model_path):
+    """
+    Resolve a model path to an absolute path.
+
+    If the path is relative, look for it in the models directory.
+    If absolute and exists, return as-is.
+
+    Args:
+        model_path: Relative or absolute model path
+
+    Returns:
+        Absolute path to the model file, or original path if not found
+    """
+    if not model_path:
+        return model_path
+
+    # If already absolute and exists, return it
+    if os.path.isabs(model_path) and os.path.exists(model_path):
+        return model_path
+
+    # Try to resolve relative to models directory
+    models_dir = get_models_directory()
+    resolved_path = os.path.join(models_dir, model_path)
+
+    if os.path.exists(resolved_path):
+        return resolved_path
+
+    # If relative path doesn't exist in models dir, try as-is
+    if os.path.exists(model_path):
+        return os.path.abspath(model_path)
+
+    # Return original if nothing works (will fail later with clear error)
+    return model_path
+
+
+def make_model_path_relative(model_path):
+    """
+    Convert an absolute model path to relative if it's in the models directory.
+
+    This allows presets to be portable across devices.
+
+    Args:
+        model_path: Absolute or relative model path
+
+    Returns:
+        Relative path if model is in archive, otherwise absolute path
+    """
+    if not model_path or not os.path.isabs(model_path):
+        return model_path
+
+    models_dir = get_models_directory()
+
+    # Check if model is inside the models directory
+    try:
+        rel_path = os.path.relpath(model_path, models_dir)
+        # If relpath doesn't start with .., it's inside models_dir
+        if not rel_path.startswith(".."):
+            return rel_path
+    except (ValueError, TypeError):
+        pass
+
+    # Return absolute path if not in models directory
+    return model_path
+
+
 logger = logging.getLogger(__name__)
+
+
+class CollapsibleGroupBox(QWidget):
+    """
+    A collapsible group box widget that can expand/collapse its content.
+    Used for advanced settings that don't need to be visible all the time.
+    """
+
+    toggled = Signal(bool)  # Emitted when expanded/collapsed
+
+    def __init__(self, title: str, parent=None, initially_expanded: bool = False):
+        super().__init__(parent)
+        self._is_expanded = initially_expanded
+        self._title = title
+        self._content_widget = None
+        self._accordion_group = None  # Reference to accordion container
+
+        # Main layout
+        self._main_layout = QVBoxLayout(self)
+        self._main_layout.setContentsMargins(0, 0, 0, 0)
+        self._main_layout.setSpacing(0)
+
+        # Header button (acts as toggle)
+        self._header_button = QToolButton()
+        self._header_button.setStyleSheet(
+            """
+            QToolButton {
+                background-color: #3a3a3a;
+                border: 1px solid #555;
+                border-radius: 4px;
+                padding: 8px 12px;
+                font-weight: bold;
+                font-size: 12px;
+                color: #4a9eff;
+                text-align: left;
+            }
+            QToolButton:hover {
+                background-color: #454545;
+                border-color: #666;
+            }
+            QToolButton:checked {
+                background-color: #404040;
+                border-color: #4a9eff;
+            }
+        """
+        )
+        self._header_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self._header_button.setArrowType(
+            Qt.RightArrow if not initially_expanded else Qt.DownArrow
+        )
+        self._header_button.setText(title)
+        self._header_button.setCheckable(True)
+        self._header_button.setChecked(initially_expanded)
+        self._header_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._header_button.clicked.connect(self._on_header_clicked)
+
+        self._main_layout.addWidget(self._header_button)
+
+        # Content container
+        self._content_container = QWidget()
+        self._content_layout = QVBoxLayout(self._content_container)
+        self._content_layout.setContentsMargins(0, 5, 0, 5)
+        self._content_container.setVisible(initially_expanded)
+
+        self._main_layout.addWidget(self._content_container)
+
+    def setContentLayout(self, layout):
+        """Set the content layout for the collapsible section."""
+        # Clear existing layout
+        while self._content_layout.count():
+            item = self._content_layout.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
+
+        # Add new content as a widget
+        content_widget = QWidget()
+        content_widget.setLayout(layout)
+        self._content_layout.addWidget(content_widget)
+        self._content_widget = content_widget
+
+    def addWidget(self, widget):
+        """Add a widget to the content area."""
+        self._content_layout.addWidget(widget)
+
+    def addLayout(self, layout):
+        """Add a layout to the content area."""
+        self._content_layout.addLayout(layout)
+
+    def setAccordionGroup(self, accordion):
+        """Set the accordion group this collapsible belongs to."""
+        self._accordion_group = accordion
+
+    def _on_header_clicked(self, checked):
+        """Handle header button click."""
+        if checked:
+            # Notify accordion to collapse others
+            if self._accordion_group:
+                self._accordion_group.collapseAllExcept(self)
+        self.setExpanded(checked)
+
+    def setExpanded(self, expanded: bool):
+        """Set the expanded state of the collapsible."""
+        self._is_expanded = expanded
+        self._header_button.setChecked(expanded)
+        self._header_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self._content_container.setVisible(expanded)
+        self.toggled.emit(expanded)
+
+    def isExpanded(self) -> bool:
+        """Check if the collapsible is expanded."""
+        return self._is_expanded
+
+    def title(self) -> str:
+        """Get the title of the collapsible."""
+        return self._title
+
+
+class AccordionContainer:
+    """
+    Manages a group of CollapsibleGroupBox widgets to ensure only one is expanded at a time.
+    """
+
+    def __init__(self):
+        self._collapsibles = []
+
+    def addCollapsible(self, collapsible: CollapsibleGroupBox):
+        """Add a collapsible to this accordion group."""
+        collapsible.setAccordionGroup(self)
+        self._collapsibles.append(collapsible)
+
+    def collapseAllExcept(self, keep_expanded: CollapsibleGroupBox):
+        """Collapse all collapsibles except the specified one."""
+        for collapsible in self._collapsibles:
+            if collapsible is not keep_expanded and collapsible.isExpanded():
+                collapsible.setExpanded(False)
+
+    def collapseAll(self):
+        """Collapse all collapsibles."""
+        for collapsible in self._collapsibles:
+            collapsible.setExpanded(False)
+
+    def expandFirst(self):
+        """Expand the first collapsible (if any)."""
+        if self._collapsibles:
+            self._collapsibles[0].setExpanded(True)
 
 
 class MainWindow(QMainWindow):
@@ -236,16 +1163,59 @@ class MainWindow(QMainWindow):
 
         self.tracking_worker = None
         self.csv_writer_thread = None
+        self.dataset_worker = None
         self.reversal_worker = None
         self.final_full_trajs = []
         self.temporary_files = []  # Track temporary files for cleanup
         self.session_log_handler = None  # Track current session log file handler
+        self._individual_dataset_run_id = None
+        self.current_detection_cache_path = None
 
         # Preview frame for live image adjustments
         self.preview_frame_original = None  # Original frame without adjustments
         self.detection_test_result = None  # Store detection test result
         self.current_video_path = None
         self.detected_sizes = None  # Store detected object sizes for statistics
+
+        # ROI optimization tracking
+        self.roi_crop_warning_shown = (
+            False  # Track if we've warned about cropping this session
+        )
+
+        # ROI display caching (for performance)
+        self._roi_masked_cache = {}  # Cache: {(frame_id, roi_hash): masked_image}
+        self._roi_hash = None  # Hash of current ROI configuration
+
+        # Interactive pan/zoom state
+        self._is_panning = False
+        self._pan_start_pos = None
+        self._scroll_start_h = 0
+        self._scroll_start_v = 0
+        self._pan_start_pos = None
+        self._scroll_start_h = 0
+        self._scroll_start_v = 0
+
+        # Track first frame for auto-fit during tracking
+        self._tracking_first_frame = True
+        self._tracking_frame_size = None  # (width, height) of resized tracking frames
+
+        # UI interaction state
+        self._video_interactions_enabled = True
+        self._ui_state = "idle"
+        self._saved_widget_enabled_states = {}
+
+        # Advanced configuration (for power users)
+        self.advanced_config = self._load_advanced_config()
+
+        # Video player state
+        self.video_cap = None  # cv2.VideoCapture for video playback
+        self.video_total_frames = 0
+        self.video_current_frame_idx = 0
+        self.last_read_frame_idx = (
+            -1
+        )  # Track last frame read for sequential optimization
+        self.is_playing = False
+        self.playback_timer = None  # QTimer for playback
 
         # === UI CONSTRUCTION ===
         self.init_ui()
@@ -257,6 +1227,12 @@ class MainWindow(QMainWindow):
         # Config is now loaded automatically when a video is selected
         # instead of at startup
         self._connect_parameter_signals()
+
+        # Cache preview-related controls for UI state transitions
+        self._preview_controls = self._collect_preview_controls()
+
+        # Default to "no video loaded" state
+        self._apply_ui_state("no_video")
 
     def init_ui(self):
         """Build the structured UI using Splitter and Tabs."""
@@ -285,7 +1261,19 @@ class MainWindow(QMainWindow):
         self.video_label.setStyleSheet("color: #666; font-size: 16px;")
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll.setWidget(self.video_label)
-        self.video_label.mousePressEvent = self.record_roi_click
+
+        # Enable mouse tracking and events for interactive pan/zoom
+        self.video_label.setMouseTracking(True)
+        self.video_label.mousePressEvent = self._handle_video_mouse_press
+        self.video_label.mouseMoveEvent = self._handle_video_mouse_move
+        self.video_label.mouseReleaseEvent = self._handle_video_mouse_release
+        self.video_label.mouseDoubleClickEvent = self._handle_video_double_click
+        self.video_label.wheelEvent = self._handle_video_wheel
+
+        # Enable pinch-to-zoom gesture
+        self.video_label.setAttribute(Qt.WA_AcceptTouchEvents, True)
+        self.video_label.grabGesture(Qt.PinchGesture)
+        self.video_label.event = self._handle_video_event
 
         # ROI Toolbar (Contextual to video)
         roi_frame = QFrame()
@@ -334,6 +1322,19 @@ class MainWindow(QMainWindow):
         self.btn_clear_roi.setShortcut("Ctrl+C")
         self.btn_clear_roi.setToolTip("Clear all ROI shapes (Ctrl+C)")
 
+        self.btn_crop_video = QPushButton("Crop Video to ROI")
+        self.btn_crop_video.clicked.connect(self.crop_video_to_roi)
+        self.btn_crop_video.setEnabled(False)
+        self.btn_crop_video.setToolTip(
+            "Generate a cropped video containing only the ROI area\n"
+            "This can significantly improve tracking performance"
+        )
+        self.btn_crop_video.setStyleSheet(
+            "QPushButton { background-color: #2d7a3e; }"
+            "QPushButton:hover { background-color: #3a9150; }"
+            "QPushButton:disabled { background-color: #333; color: #666; }"
+        )
+
         self.roi_status_label = QLabel("No ROI")
         self.roi_status_label.setStyleSheet("color: #888; margin-left: 10px;")
 
@@ -344,21 +1345,43 @@ class MainWindow(QMainWindow):
         roi_layout.addWidget(self.btn_finish_roi)
         roi_layout.addWidget(self.btn_undo_roi)
         roi_layout.addWidget(self.btn_clear_roi)
+        roi_layout.addWidget(self.btn_crop_video)
         roi_layout.addStretch()
 
         roi_main_layout.addLayout(roi_layout)
 
-        # Second row: status
+        # Second row: status and optimization info
         roi_status_layout = QHBoxLayout()
         roi_status_layout.addWidget(self.roi_status_label)
+        self.roi_optimization_label = QLabel("")
+        self.roi_optimization_label.setStyleSheet(
+            "color: #f0ad4e; margin-left: 10px; font-weight: bold;"
+        )
+        roi_status_layout.addWidget(self.roi_optimization_label)
         roi_main_layout.addLayout(roi_status_layout)
 
         # Instructions (Hidden unless active)
         self.roi_instructions = QLabel("")
-        self.roi_instructions.setStyleSheet("color: #4a9eff; font-size: 11px;")
+        self.roi_instructions.setWordWrap(True)
+        self.roi_instructions.setStyleSheet(
+            "color: #4a9eff; font-size: 11px; font-weight: bold; "
+            "padding: 6px; background-color: #1a3a5a; border-radius: 4px;"
+        )
         roi_main_layout.addWidget(self.roi_instructions)
 
         left_layout.addWidget(self.scroll, stretch=1)
+
+        # Interactive instructions
+        self.interaction_help = QLabel(
+            "Double-click: Fit to screen  •  Drag: Pan  •  Ctrl+Scroll/Pinch: Zoom"
+        )
+        self.interaction_help.setAlignment(Qt.AlignCenter)
+        self.interaction_help.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic; "
+            "padding: 4px; background-color: #1a1a1a; border-radius: 3px;"
+        )
+        left_layout.addWidget(self.interaction_help)
+
         left_layout.addWidget(roi_frame)
 
         # Zoom control under video
@@ -388,23 +1411,11 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(zoom_frame)
 
-        # Preview refresh button
+        # Preview detection button (uses current player frame)
         preview_frame = QFrame()
         preview_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
         preview_layout = QHBoxLayout(preview_frame)
         preview_layout.setContentsMargins(10, 5, 10, 5)
-
-        self.btn_refresh_preview = QPushButton("Load Random Frame for Preview")
-        self.btn_refresh_preview.clicked.connect(self._load_preview_frame)
-        self.btn_refresh_preview.setEnabled(False)
-        self.btn_refresh_preview.setToolTip(
-            "Load a random frame from your video.\n\n"
-            "For size estimation: Choose a frame with:\n"
-            "• Many animals visible\n"
-            "• Animals well-separated (not overlapping)\n"
-            "• Representative of typical body sizes"
-        )
-        preview_layout.addWidget(self.btn_refresh_preview)
 
         self.btn_test_detection = QPushButton("Test Detection on Preview")
         self.btn_test_detection.clicked.connect(self._test_detection_on_preview)
@@ -424,10 +1435,14 @@ class MainWindow(QMainWindow):
         # Tab Widget
         self.tabs = QTabWidget()
         self.tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.tabs.setUsesScrollButtons(
+            True
+        )  # Enable scroll buttons when tabs don't fit
+        self.tabs.setElideMode(Qt.ElideNone)  # Don't truncate tab text
 
         # Tab 1: Setup (Files & Performance)
         self.tab_setup = QWidget()
-        self.setup_tab_ui()
+        self.setup_setup_ui()
         self.tabs.addTab(self.tab_setup, "Setup")
 
         # Tab 2: Detection (Image, Method, Params)
@@ -445,15 +1460,15 @@ class MainWindow(QMainWindow):
         self.setup_data_ui()
         self.tabs.addTab(self.tab_data, "Processing")
 
-        # Tab 5: Visuals (Overlays, Debug)
-        self.tab_viz = QWidget()
-        self.setup_viz_ui()
-        self.tabs.addTab(self.tab_viz, "Visuals")
-
-        # Tab 6: Dataset Generation (Active Learning)
+        # Tab 5: Dataset Generation (Active Learning)
         self.tab_dataset = QWidget()
         self.setup_dataset_ui()
         self.tabs.addTab(self.tab_dataset, "Dataset Generation")
+
+        # Tab 6: Individual Analysis (Identity)
+        self.tab_individual = QWidget()
+        self.setup_individual_analysis_ui()
+        self.tabs.addTab(self.tab_individual, "Individual Analysis")
 
         right_layout.addWidget(self.tabs, stretch=1)
 
@@ -506,18 +1521,12 @@ class MainWindow(QMainWindow):
 
         self.btn_start = QPushButton("Start Full Tracking")
         self.btn_start.setObjectName("ActionBtn")
-        self.btn_start.clicked.connect(self.start_full)
+        self.btn_start.setCheckable(True)
+        self.btn_start.clicked.connect(lambda ch: self.toggle_tracking(ch))
         self.btn_start.setMinimumHeight(40)
-
-        self.btn_stop = QPushButton("STOP")
-        self.btn_stop.setObjectName("StopBtn")
-        self.btn_stop.clicked.connect(self.stop_tracking)
-        self.btn_stop.setMinimumHeight(40)
-        self.btn_stop.setEnabled(False)  # Start disabled
 
         btn_layout.addWidget(self.btn_preview)
         btn_layout.addWidget(self.btn_start)
-        btn_layout.addWidget(self.btn_stop)
 
         action_layout.addLayout(prog_layout)
         action_layout.addLayout(stats_layout)
@@ -539,12 +1548,21 @@ class MainWindow(QMainWindow):
 
         main_layout.addWidget(self.splitter)
 
+        # =====================================================================
+        # INITIALIZE PRESETS
+        # =====================================================================
+        # Populate preset combo box with available presets
+        self._populate_preset_combo()
+
+        # Load default preset (custom if available, otherwise default.json)
+        self._load_default_preset_on_startup()
+
     # =========================================================================
     # TAB UI BUILDERS
     # =========================================================================
 
-    def setup_tab_ui(self):
-        """Tab 1: Setup - Files & Basic Config."""
+    def setup_setup_ui(self):
+        """Tab 1: Setup - Files, Video, Display & Debug."""
         layout = QVBoxLayout(self.tab_setup)
         layout.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
@@ -554,8 +1572,70 @@ class MainWindow(QMainWindow):
         content = QWidget()
         form = QVBoxLayout(content)
 
-        # File Inputs
-        g_files = QGroupBox("File Management")
+        # ============================================================
+        # Preset Selector
+        # ============================================================
+        g_presets = QGroupBox("Default Presets")
+        vl_presets = QVBoxLayout(g_presets)
+        vl_presets.addWidget(
+            self._create_help_label(
+                "Load optimized default values for different model organisms. Video-specific configs override presets."
+            )
+        )
+
+        preset_layout = QHBoxLayout()
+        preset_label = QLabel("Organism Preset:")
+        preset_label.setStyleSheet("font-weight: bold;")
+
+        self.combo_presets = QComboBox()
+        self.combo_presets.setToolTip(
+            "Select preset optimized for your organism.\n"
+            "Custom: Your personal saved defaults (if exists)"
+        )
+        self._populate_preset_combo()
+
+        self.btn_load_preset = QPushButton("Load Preset")
+        self.btn_load_preset.clicked.connect(self._load_selected_preset)
+        self.btn_load_preset.setToolTip("Apply selected preset to all parameters")
+
+        self.btn_save_custom = QPushButton("Save as Custom")
+        self.btn_save_custom.clicked.connect(self._save_custom_preset)
+        self.btn_save_custom.setToolTip("Save current settings as your custom defaults")
+
+        self.preset_status_label = QLabel("")
+        self.preset_status_label.setStyleSheet(
+            "color: #888; font-style: italic; font-size: 10px;"
+        )
+
+        preset_layout.addWidget(preset_label)
+        preset_layout.addWidget(self.combo_presets, stretch=1)
+        preset_layout.addWidget(self.btn_load_preset)
+        preset_layout.addWidget(self.btn_save_custom)
+        preset_layout.addWidget(self.preset_status_label, stretch=1)
+
+        vl_presets.addLayout(preset_layout)
+
+        # Description display
+        self.preset_description_label = QLabel("")
+        self.preset_description_label.setWordWrap(True)
+        self.preset_description_label.setStyleSheet(
+            "color: #bbb; font-style: italic; font-size: 10px; padding: 5px; "
+            "background-color: #1a1a1a; border-radius: 3px;"
+        )
+        self.preset_description_label.setVisible(False)
+        vl_presets.addWidget(self.preset_description_label)
+
+        # Connect combo box to show description
+        self.combo_presets.currentIndexChanged.connect(
+            self._on_preset_selection_changed
+        )
+
+        form.addWidget(g_presets)
+
+        # ============================================================
+        # Video Setup (File Management + Frame Rate)
+        # ============================================================
+        g_files = QGroupBox("Video Setup")
         vl_files = QVBoxLayout(g_files)
         vl_files.addWidget(
             self._create_help_label(
@@ -563,7 +1643,7 @@ class MainWindow(QMainWindow):
                 "next time you load the same video, your settings will be restored automatically."
             )
         )
-        fl = QFormLayout()
+        fl = QFormLayout(None)
         fl.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.btn_file = QPushButton("Select Input Video...")
@@ -573,26 +1653,204 @@ class MainWindow(QMainWindow):
         self.file_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         fl.addRow(self.btn_file, self.file_line)
 
+        # FPS with detect button (moved here from Reference Parameters)
+        fps_layout = QHBoxLayout()
+        self.spin_fps = QDoubleSpinBox()
+        self.spin_fps.setRange(1.0, 240.0)
+        self.spin_fps.setSingleStep(1.0)
+        self.spin_fps.setValue(30.0)
+        self.spin_fps.setDecimals(2)
+        self.spin_fps.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.spin_fps.setToolTip(
+            "Acquisition frame rate (frames per second) at which the video was recorded.\n"
+            "NOTE: This may differ from the video file's playback framerate.\n"
+            "Use 'Detect from Video' to read from file metadata as a starting point.\n"
+            "Time-dependent parameters (velocity, durations) scale with this.\n"
+            "Affects: motion prediction, track lifecycle, velocity thresholds."
+        )
+        self.spin_fps.valueChanged.connect(self._update_fps_info)
+        fps_layout.addWidget(self.spin_fps)
+
+        self.btn_detect_fps = QPushButton("Detect from Video")
+        self.btn_detect_fps.clicked.connect(self._detect_fps_from_current_video)
+        self.btn_detect_fps.setEnabled(False)
+        self.btn_detect_fps.setToolTip(
+            "Auto-detect frame rate from video metadata (may differ from actual acquisition rate)"
+        )
+        fps_layout.addWidget(self.btn_detect_fps)
+        fl.addRow("Acquisition Frame Rate (FPS):", fps_layout)
+
+        # FPS info label
+        self.label_fps_info = QLabel()
+        self.label_fps_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic;"
+        )
+        fl.addRow("", self.label_fps_info)
+
+        vl_files.addLayout(fl)
+        form.addWidget(g_files)
+
+        # ============================================================
+        # Video Player & Frame Range
+        # ============================================================
+        self.g_video_player = QGroupBox("Video Player & Frame Range")
+        vl_player = QVBoxLayout(self.g_video_player)
+        vl_player.addWidget(
+            self._create_help_label(
+                "Preview video and select frame range for tracking. Use the slider to seek through the video."
+            )
+        )
+
+        # Video info label
+        self.lbl_video_info = QLabel("No video loaded")
+        self.lbl_video_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic; padding: 5px;"
+        )
+        vl_player.addWidget(self.lbl_video_info)
+
+        # Timeline slider
+        timeline_layout = QVBoxLayout()
+        self.lbl_current_frame = QLabel("Frame: -")
+        self.lbl_current_frame.setStyleSheet("font-size: 10px; color: #aaa;")
+        timeline_layout.addWidget(self.lbl_current_frame)
+
+        self.slider_timeline = QSlider(Qt.Horizontal)
+        self.slider_timeline.setMinimum(0)
+        self.slider_timeline.setMaximum(0)
+        self.slider_timeline.setValue(0)
+        self.slider_timeline.setEnabled(False)
+        self.slider_timeline.setToolTip("Seek through video frames")
+        self.slider_timeline.valueChanged.connect(self._on_timeline_changed)
+        timeline_layout.addWidget(self.slider_timeline)
+        vl_player.addLayout(timeline_layout)
+
+        # Playback controls
+        controls_layout = QHBoxLayout()
+
+        self.btn_first_frame = QPushButton("⏮ First")
+        self.btn_first_frame.setEnabled(False)
+        self.btn_first_frame.clicked.connect(self._goto_first_frame)
+        self.btn_first_frame.setToolTip("Go to first frame")
+        controls_layout.addWidget(self.btn_first_frame)
+
+        self.btn_prev_frame = QPushButton("◀ Prev")
+        self.btn_prev_frame.setEnabled(False)
+        self.btn_prev_frame.clicked.connect(self._goto_prev_frame)
+        self.btn_prev_frame.setToolTip("Previous frame")
+        controls_layout.addWidget(self.btn_prev_frame)
+
+        self.btn_play_pause = QPushButton("▶ Play")
+        self.btn_play_pause.setEnabled(False)
+        self.btn_play_pause.clicked.connect(self._toggle_playback)
+        self.btn_play_pause.setToolTip("Play/pause video")
+        controls_layout.addWidget(self.btn_play_pause)
+
+        self.btn_next_frame = QPushButton("Next ▶")
+        self.btn_next_frame.setEnabled(False)
+        self.btn_next_frame.clicked.connect(self._goto_next_frame)
+        self.btn_next_frame.setToolTip("Next frame")
+        controls_layout.addWidget(self.btn_next_frame)
+
+        self.btn_last_frame = QPushButton("Last ⏭")
+        self.btn_last_frame.setEnabled(False)
+        self.btn_last_frame.clicked.connect(self._goto_last_frame)
+        self.btn_last_frame.setToolTip("Go to last frame")
+        controls_layout.addWidget(self.btn_last_frame)
+
+        self.btn_random_seek = QPushButton("🎲 Random")
+        self.btn_random_seek.setEnabled(False)
+        self.btn_random_seek.clicked.connect(self._goto_random_frame)
+        self.btn_random_seek.setToolTip("Jump to a random frame")
+        controls_layout.addWidget(self.btn_random_seek)
+
+        controls_layout.addStretch()
+
+        # Playback speed control
+        controls_layout.addWidget(QLabel("Speed:"))
+        self.combo_playback_speed = QComboBox()
+        self.combo_playback_speed.addItems(["0.25x", "0.5x", "1x", "2x", "4x"])
+        self.combo_playback_speed.setCurrentText("1x")
+        self.combo_playback_speed.setEnabled(False)
+        self.combo_playback_speed.setToolTip("Playback speed")
+        controls_layout.addWidget(self.combo_playback_speed)
+
+        vl_player.addLayout(controls_layout)
+
+        # Frame range selection
+        range_group = QGroupBox("Tracking Frame Range")
+        range_layout = QFormLayout(range_group)
+        range_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # Start frame
+        start_layout = QHBoxLayout()
+        self.spin_start_frame = QSpinBox()
+        self.spin_start_frame.setMinimum(0)
+        self.spin_start_frame.setMaximum(0)
+        self.spin_start_frame.setValue(0)
+        self.spin_start_frame.setEnabled(False)
+        self.spin_start_frame.setToolTip("First frame to track (0-based index)")
+        self.spin_start_frame.valueChanged.connect(self._on_frame_range_changed)
+        start_layout.addWidget(self.spin_start_frame)
+
+        self.btn_set_start_current = QPushButton("Set to Current")
+        self.btn_set_start_current.setEnabled(False)
+        self.btn_set_start_current.clicked.connect(self._set_start_to_current)
+        self.btn_set_start_current.setToolTip("Set start frame to current frame")
+        start_layout.addWidget(self.btn_set_start_current)
+        range_layout.addRow("Start Frame:", start_layout)
+
+        # End frame
+        end_layout = QHBoxLayout()
+        self.spin_end_frame = QSpinBox()
+        self.spin_end_frame.setMinimum(0)
+        self.spin_end_frame.setMaximum(0)
+        self.spin_end_frame.setValue(0)
+        self.spin_end_frame.setEnabled(False)
+        self.spin_end_frame.setToolTip("Last frame to track (0-based index, inclusive)")
+        self.spin_end_frame.valueChanged.connect(self._on_frame_range_changed)
+        end_layout.addWidget(self.spin_end_frame)
+
+        self.btn_set_end_current = QPushButton("Set to Current")
+        self.btn_set_end_current.setEnabled(False)
+        self.btn_set_end_current.clicked.connect(self._set_end_to_current)
+        self.btn_set_end_current.setToolTip("Set end frame to current frame")
+        end_layout.addWidget(self.btn_set_end_current)
+        range_layout.addRow("End Frame:", end_layout)
+
+        # Range info
+        self.lbl_range_info = QLabel()
+        self.lbl_range_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic; padding: 5px;"
+        )
+        range_layout.addRow("", self.lbl_range_info)
+
+        # Reset to full range button
+        self.btn_reset_range = QPushButton("Reset to Full Video")
+        self.btn_reset_range.setEnabled(False)
+        self.btn_reset_range.clicked.connect(self._reset_frame_range)
+        self.btn_reset_range.setToolTip("Reset to track entire video")
+        range_layout.addRow("", self.btn_reset_range)
+
+        vl_player.addWidget(range_group)
+        form.addWidget(self.g_video_player)
+
+        # Initially hide video player (shown when video is loaded)
+        self.g_video_player.setVisible(False)
+
+        # ============================================================
+        # Output Files
+        # ============================================================
+        g_output = QGroupBox("Output Files")
+        vl_output = QVBoxLayout(g_output)
+        fl_output = QFormLayout(None)
+        fl_output.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
         self.btn_csv = QPushButton("Select CSV Output...")
         self.btn_csv.clicked.connect(self.select_csv)
         self.csv_line = QLineEdit()
         self.csv_line.setPlaceholderText("path/to/output.csv")
         self.csv_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        fl.addRow(self.btn_csv, self.csv_line)
-
-        self.check_video_output = QCheckBox("Enable Video Output")
-        self.check_video_output.setChecked(False)
-        self.check_video_output.toggled.connect(self._on_video_output_toggled)
-        fl.addRow("", self.check_video_output)
-
-        self.btn_video_out = QPushButton("Select Video Output...")
-        self.btn_video_out.clicked.connect(self.select_video_output)
-        self.btn_video_out.setEnabled(False)
-        self.video_out_line = QLineEdit()
-        self.video_out_line.setPlaceholderText("Optional visualization export")
-        self.video_out_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.video_out_line.setEnabled(False)
-        fl.addRow(self.btn_video_out, self.video_out_line)
+        fl_output.addRow(self.btn_csv, self.csv_line)
 
         # Config Management
         config_layout = QHBoxLayout()
@@ -606,90 +1864,29 @@ class MainWindow(QMainWindow):
         self.btn_save_config.setToolTip("Save current settings to a JSON file")
         config_layout.addWidget(self.btn_save_config)
 
+        self.btn_show_gpu_info = QPushButton("GPU Info")
+        self.btn_show_gpu_info.clicked.connect(self.show_gpu_info)
+        self.btn_show_gpu_info.setToolTip(
+            "Show available GPU and acceleration information"
+        )
+        config_layout.addWidget(self.btn_show_gpu_info)
+
         config_layout.addStretch()
-        fl.addRow("Configuration:", config_layout)
+        fl_output.addRow("Configuration:", config_layout)
 
         # Config status label
         self.config_status_label = QLabel("No config loaded (using defaults)")
         self.config_status_label.setStyleSheet(
             "color: #888; font-style: italic; font-size: 10px;"
         )
-        fl.addRow("", self.config_status_label)
-        vl_files.addLayout(fl)
+        fl_output.addRow("", self.config_status_label)
+        vl_output.addLayout(fl_output)
 
-        form.addWidget(g_files)
+        form.addWidget(g_output)
 
-        # Reference Parameters
-        g_ref = QGroupBox("Reference Parameters")
-        vl_ref = QVBoxLayout(g_ref)
-        vl_ref.addWidget(
-            self._create_help_label(
-                "These parameters define the time and spatial scale for tracking. "
-                "Frame rate controls time-dependent parameters (velocities, durations). "
-                "Body size makes all distance/size parameters portable across videos."
-            )
-        )
-        fl_ref = QFormLayout()
-        fl_ref.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        # FPS with detect button
-        fps_layout = QHBoxLayout()
-        self.spin_fps = QDoubleSpinBox()
-        self.spin_fps.setRange(1.0, 240.0)
-        self.spin_fps.setSingleStep(1.0)
-        self.spin_fps.setValue(30.0)
-        self.spin_fps.setDecimals(2)
-        self.spin_fps.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.spin_fps.setToolTip(
-            "Video frame rate (frames per second).\n"
-            "Use 'Detect from Video' to read from file metadata.\n"
-            "Time-dependent parameters (velocity, durations) scale with this.\n"
-            "Affects: motion prediction, track lifecycle, velocity thresholds."
-        )
-        self.spin_fps.valueChanged.connect(self._update_fps_info)
-        fps_layout.addWidget(self.spin_fps)
-
-        self.btn_detect_fps = QPushButton("Detect from Video")
-        self.btn_detect_fps.clicked.connect(self._detect_fps_from_current_video)
-        self.btn_detect_fps.setEnabled(False)
-        self.btn_detect_fps.setToolTip(
-            "Auto-detect frame rate from the currently loaded video's metadata"
-        )
-        fps_layout.addWidget(self.btn_detect_fps)
-        fl_ref.addRow("Video Frame Rate (FPS):", fps_layout)
-
-        # FPS info label
-        self.label_fps_info = QLabel()
-        self.label_fps_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
-        )
-        fl_ref.addRow("", self.label_fps_info)
-
-        self.spin_reference_body_size = QDoubleSpinBox()
-        self.spin_reference_body_size.setRange(1.0, 500.0)
-        self.spin_reference_body_size.setSingleStep(1.0)
-        self.spin_reference_body_size.setValue(20.0)
-        self.spin_reference_body_size.setDecimals(2)
-        self.spin_reference_body_size.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Fixed
-        )
-        self.spin_reference_body_size.setToolTip(
-            "Reference animal body diameter in pixels (at resize=1.0).\n"
-            "All distance/size parameters are scaled relative to this value."
-        )
-        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
-        fl_ref.addRow("Reference Body Size (px):", self.spin_reference_body_size)
-
-        # Info label showing calculated area
-        self.label_body_size_info = QLabel()
-        self.label_body_size_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
-        )
-        fl_ref.addRow("", self.label_body_size_info)
-        vl_ref.addLayout(fl_ref)
-        form.addWidget(g_ref)
-
+        # ============================================================
         # System Performance
+        # ============================================================
         g_sys = QGroupBox("System Performance")
         vl_sys = QVBoxLayout(g_sys)
         vl_sys.addWidget(
@@ -698,7 +1895,7 @@ class MainWindow(QMainWindow):
                 "Lower values speed up processing but reduce spatial accuracy."
             )
         )
-        fl_sys = QFormLayout()
+        fl_sys = QFormLayout(None)
         fl_sys.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.spin_resize = QDoubleSpinBox()
@@ -722,6 +1919,19 @@ class MainWindow(QMainWindow):
         )
         fl_sys.addRow("", self.check_save_confidence)
 
+        # Use Cached Detections
+        self.chk_use_cached_detections = QCheckBox(
+            "Reuse Cached Detections When Available"
+        )
+        self.chk_use_cached_detections.setChecked(True)
+        self.chk_use_cached_detections.setToolTip(
+            "Automatically reuse detections from previous runs if available.\n"
+            "Cache is model-specific: only reused if detection method/model hasn't changed.\n"
+            "Massive speedup for re-processing with different tracking parameters.\n"
+            "Disable to force fresh detection on every run."
+        )
+        fl_sys.addRow("", self.chk_use_cached_detections)
+
         # Visualization-Free Mode
         self.chk_visualization_free = QCheckBox(
             "Enable Visualization-Free Mode (Maximum Speed)"
@@ -741,46 +1951,87 @@ class MainWindow(QMainWindow):
         vl_sys.addLayout(fl_sys)
         form.addWidget(g_sys)
 
-        # Detection size statistics panel
-        g_detect_stats = QGroupBox("Detection Size Statistics")
-        vl_stats = QVBoxLayout(g_detect_stats)
-        vl_stats.addWidget(
+        # ============================================================
+        # Display Settings (moved from Visuals tab)
+        # ============================================================
+        self.g_display = QGroupBox("Display Settings")
+        vl_display = QVBoxLayout(self.g_display)
+        vl_display.addWidget(
             self._create_help_label(
-                "Workflow for accurate size estimation:\n"
-                "1. Go to 'Detection' tab and configure your detection method\n"
-                "2. IMPORTANT: Disable 'Enable Size Filtering' (it biases estimates)\n"
-                "3. Return here and click 'Load Random Frame for Preview'\n"
-                "4. Choose a frame with many animals well-separated\n"
-                "5. Click 'Test Detection' to analyze sizes\n"
-                "6. Use 'Auto-Set' to apply the recommended body size"
+                "Configure visual overlays shown during tracking. These settings affect "
+                "both the live preview and exported video output."
             )
         )
 
-        self.label_detection_stats = QLabel(
-            "No detection data yet.\nRun 'Test Detection' to estimate sizes."
-        )
-        self.label_detection_stats.setStyleSheet(
-            "color: #aaa; font-size: 11px; padding: 8px; "
-            "background-color: #2a2a2a; border-radius: 4px;"
-        )
-        self.label_detection_stats.setWordWrap(True)
-        vl_stats.addWidget(self.label_detection_stats)
+        # Common overlays
+        self.chk_show_circles = QCheckBox("Show Track Markers (Circles)")
+        self.chk_show_circles.setChecked(True)
+        self.chk_show_circles.setToolTip("Draw circles around tracked animals.")
+        vl_display.addWidget(self.chk_show_circles)
 
-        # Auto-set button
-        btn_layout = QHBoxLayout()
-        self.btn_auto_set_body_size = QPushButton("Auto-Set from Median")
-        self.btn_auto_set_body_size.clicked.connect(
-            self._auto_set_body_size_from_detection
-        )
-        self.btn_auto_set_body_size.setEnabled(False)
-        self.btn_auto_set_body_size.setToolTip(
-            "Automatically set reference body size to the median detected diameter"
-        )
-        btn_layout.addWidget(self.btn_auto_set_body_size)
-        btn_layout.addStretch()
-        vl_stats.addLayout(btn_layout)
+        self.chk_show_orientation = QCheckBox("Show Orientation Lines")
+        self.chk_show_orientation.setChecked(True)
+        self.chk_show_orientation.setToolTip("Draw lines showing heading direction.")
+        vl_display.addWidget(self.chk_show_orientation)
 
-        form.addWidget(g_detect_stats)
+        self.chk_show_trajectories = QCheckBox("Show Trajectory Trails")
+        self.chk_show_trajectories.setChecked(True)
+        self.chk_show_trajectories.setToolTip(
+            "Draw recent path history for each track."
+        )
+        vl_display.addWidget(self.chk_show_trajectories)
+
+        self.chk_show_labels = QCheckBox("Show ID Labels")
+        self.chk_show_labels.setChecked(True)
+        self.chk_show_labels.setToolTip("Display unique track IDs on each animal.")
+        vl_display.addWidget(self.chk_show_labels)
+
+        self.chk_show_state = QCheckBox("Show State Text")
+        self.chk_show_state.setChecked(True)
+        self.chk_show_state.setToolTip(
+            "Display tracking state (ACTIVE, PREDICTED, etc.)."
+        )
+        vl_display.addWidget(self.chk_show_state)
+
+        self.chk_show_kalman_uncertainty = QCheckBox("Show Kalman Uncertainty")
+        self.chk_show_kalman_uncertainty.setChecked(False)
+        self.chk_show_kalman_uncertainty.setToolTip(
+            "Draw ellipses showing Kalman filter position uncertainty.\n"
+            "Larger ellipse = more uncertainty in predicted position.\n"
+            "Useful for debugging tracking quality and filter convergence."
+        )
+        vl_display.addWidget(self.chk_show_kalman_uncertainty)
+
+        # Trail length
+        f_trail = QFormLayout(None)
+        self.spin_traj_hist = QSpinBox()
+        self.spin_traj_hist.setRange(1, 60)
+        self.spin_traj_hist.setValue(5)
+        self.spin_traj_hist.setToolTip(
+            "Length of trajectory trails to display (1-60 seconds).\n"
+            "Longer = more visible path history but more cluttered.\n"
+            "Recommended: 3-10 seconds."
+        )
+        f_trail.addRow("Trail History (sec):", self.spin_traj_hist)
+        vl_display.addLayout(f_trail)
+
+        form.addWidget(self.g_display)
+
+        # ============================================================
+        # Advanced / Debug (moved from Visuals tab)
+        # ============================================================
+        g_debug = QGroupBox("Advanced / Debug")
+        v_dbg = QVBoxLayout(g_debug)
+        v_dbg.addWidget(
+            self._create_help_label(
+                "Enable verbose logging to see detailed tracking decisions. Useful for troubleshooting "
+                "but generates large log files. Disable for production runs."
+            )
+        )
+        self.chk_debug_logging = QCheckBox("Enable Verbose Debug Logging")
+        self.chk_debug_logging.stateChanged.connect(self.toggle_debug_logging)
+        v_dbg.addWidget(self.chk_debug_logging)
+        form.addWidget(g_debug)
 
         form.addStretch()
         scroll.setWidget(content)
@@ -797,7 +2048,9 @@ class MainWindow(QMainWindow):
         content = QWidget()
         vbox = QVBoxLayout(content)
 
+        # ============================================================
         # 1. Detection Method Selector
+        # ============================================================
         g_method = QGroupBox("Detection Strategy")
         l_method_outer = QVBoxLayout(g_method)
         l_method_outer.addWidget(
@@ -806,68 +2059,67 @@ class MainWindow(QMainWindow):
                 "the static background and finding moving objects. YOLO uses deep learning to detect animals directly."
             )
         )
-        l_method = QHBoxLayout()
+        f_method = QFormLayout(None)
         self.combo_detection_method = QComboBox()
         self.combo_detection_method.addItems(["Background Subtraction", "YOLO OBB"])
         self.combo_detection_method.currentIndexChanged.connect(
             self._on_detection_method_changed_ui
         )
-        l_method.addWidget(QLabel("Method:"))
-        l_method.addWidget(self.combo_detection_method)
-        l_method.addStretch()
-        l_method_outer.addLayout(l_method)
+        f_method.addRow("Method:", self.combo_detection_method)
+
+        # Device selection (shared between both detection methods)
+        self.combo_device = QComboBox()
+        device_options = ["auto", "cpu"]
+        device_tooltip_parts = [
+            "Select compute device for detection:",
+            "  • auto - Automatically select best available device",
+            "  • cpu - CPU-only mode",
+        ]
+
+        if TORCH_CUDA_AVAILABLE:
+            device_options.append("cuda:0")
+            device_tooltip_parts.append("  • cuda:0 - NVIDIA GPU ✓ Available")
+        else:
+            device_tooltip_parts.append("  • cuda:0 - NVIDIA GPU (not available)")
+
+        if MPS_AVAILABLE:
+            device_options.append("mps")
+            device_tooltip_parts.append("  • mps - Apple Silicon GPU ✓ Available")
+        else:
+            device_tooltip_parts.append("  • mps - Apple Silicon GPU (not available)")
+
+        device_tooltip_parts.append(
+            "\nApplies to both YOLO and Background Subtraction GPU acceleration."
+        )
+
+        self.combo_device.addItems(device_options)
+        self.combo_device.setToolTip("\n".join(device_tooltip_parts))
+        f_method.addRow("Compute Device:", self.combo_device)
+
+        l_method_outer.addLayout(f_method)
         vbox.addWidget(g_method)
 
-        # 2. Common Size Filtering (Applies to both methods)
-        g_size = QGroupBox("Size Filtering")
-        vl_size = QVBoxLayout(g_size)
-        vl_size.addWidget(
+        # Stacked Widget for Method Specific Params
+        self.stack_detection = QStackedWidget()
+
+        # --- Page 0: Background Subtraction Params ---
+        page_bg = QWidget()
+        l_bg = QVBoxLayout(page_bg)
+        l_bg.setContentsMargins(0, 0, 0, 0)
+        l_bg.addWidget(
             self._create_help_label(
-                "Filter detections by size relative to your reference body size. This removes noise (too small) "
-                "and erroneous clusters (too large). Most effective when animals are similar size."
+                "Background subtraction identifies moving animals by comparing each frame to a learned background model. "
+                "Start with defaults and increase threshold if you see too much noise, decrease if animals are missed."
             )
         )
-        f_size = QFormLayout()
-        self.chk_size_filtering = QCheckBox("Enable Size Constraints")
-        self.chk_size_filtering.setToolTip(
-            "Filter detected objects by area to remove noise and artifacts.\n"
-            "Recommended: Enable for cleaner tracking."
-        )
-        f_size.addRow(self.chk_size_filtering)
 
-        h_sf = QHBoxLayout()
-        self.spin_min_object_size = QDoubleSpinBox()
-        self.spin_min_object_size.setRange(0.1, 5.0)
-        self.spin_min_object_size.setSingleStep(0.1)
-        self.spin_min_object_size.setDecimals(2)
-        self.spin_min_object_size.setValue(0.3)
-        self.spin_min_object_size.setToolTip(
-            "Minimum object area as multiple of reference body area.\n"
-            "Filters out small noise/artifacts.\n"
-            "Recommended: 0.2-0.5× (allows partial occlusion)"
-        )
-        self.spin_max_object_size = QDoubleSpinBox()
-        self.spin_max_object_size.setRange(0.5, 10.0)
-        self.spin_max_object_size.setSingleStep(0.1)
-        self.spin_max_object_size.setDecimals(2)
-        self.spin_max_object_size.setValue(3.0)
-        self.spin_max_object_size.setToolTip(
-            "Maximum object area as multiple of reference body area.\n"
-            "Filters out large clusters or artifacts.\n"
-            "Recommended: 2-4× (handles overlapping animals)"
-        )
-        h_sf.addWidget(QLabel("Min (×body):"))
-        h_sf.addWidget(self.spin_min_object_size)
-        h_sf.addWidget(QLabel("Max (×body):"))
-        h_sf.addWidget(self.spin_max_object_size)
-        f_size.addRow(h_sf)
-        vl_size.addLayout(f_size)
-        vbox.addWidget(g_size)
+        # Create accordion for BG subtraction settings
+        self.bg_accordion = AccordionContainer()
 
-        # 3. Image Pre-processing (Common) with Live Preview
-        # Only shown for Background Subtraction, not YOLO
-        self.g_img = QGroupBox("Image Enhancement (Pre-processing)")
-        vl_img = QVBoxLayout(self.g_img)
+        # Image Enhancement (Pre-processing)
+        self.g_img = CollapsibleGroupBox("Brightness / Contrast / Gamma")
+        self.bg_accordion.addCollapsible(self.g_img)
+        vl_img = QVBoxLayout()
         vl_img.addWidget(
             self._create_help_label(
                 "Adjust image properties before detection to improve contrast between animals and background. "
@@ -956,33 +2208,20 @@ class MainWindow(QMainWindow):
             "This inverts the foreground detection."
         )
         vl_img.addWidget(self.chk_dark_on_light)
-
-        vbox.addWidget(self.g_img)
-
-        # 3. Stacked Widget for Method Specific Params
-        self.stack_detection = QStackedWidget()
-
-        # --- Page 0: Background Subtraction Params ---
-        page_bg = QWidget()
-        l_bg = QVBoxLayout(page_bg)
-        l_bg.setContentsMargins(0, 0, 0, 0)
-        l_bg.addWidget(
-            self._create_help_label(
-                "Background subtraction identifies moving animals by comparing each frame to a learned background model. "
-                "Start with defaults and increase threshold if you see too much noise, decrease if animals are missed."
-            )
-        )
+        self.g_img.setContentLayout(vl_img)
+        l_bg.addWidget(self.g_img)
 
         # Background Model
-        g_bg_model = QGroupBox("Background Model")
-        vl_bg_model = QVBoxLayout(g_bg_model)
+        g_bg_model = CollapsibleGroupBox("Background Estimation")
+        self.bg_accordion.addCollapsible(g_bg_model)
+        vl_bg_model = QVBoxLayout()
         vl_bg_model.addWidget(
             self._create_help_label(
                 "Build a model of the static background. Priming frames establish initial model, learning rate "
                 "controls adaptation speed, threshold sets sensitivity. Lower threshold = more sensitive detection."
             )
         )
-        f_bg = QFormLayout()
+        f_bg = QFormLayout(None)
         f_bg.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_bg_prime = QSpinBox()
         self.spin_bg_prime.setRange(0, 5000)
@@ -1025,18 +2264,20 @@ class MainWindow(QMainWindow):
         )
         f_bg.addRow("Subtraction Threshold:", self.spin_threshold)
         vl_bg_model.addLayout(f_bg)
+        g_bg_model.setContentLayout(vl_bg_model)
         l_bg.addWidget(g_bg_model)
 
         # Lighting Stab
-        g_light = QGroupBox("Lighting Stabilization")
-        vl_light = QVBoxLayout(g_light)
+        g_light = CollapsibleGroupBox("Scene Lighting Stabilization")
+        self.bg_accordion.addCollapsible(g_light)
+        vl_light = QVBoxLayout()
         vl_light.addWidget(
             self._create_help_label(
                 "Compensate for gradual lighting changes (clouds, time of day). Smoothing factor controls "
                 "adaptation speed - higher = slower/more stable. Enable for outdoor or variable-light videos."
             )
         )
-        f_light = QFormLayout()
+        f_light = QFormLayout(None)
         f_light.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.chk_lighting_stab = QCheckBox("Enable Stabilization")
         self.chk_lighting_stab.setChecked(True)
@@ -1070,18 +2311,20 @@ class MainWindow(QMainWindow):
         )
         f_light.addRow("Median Window:", self.spin_lighting_median)
         vl_light.addLayout(f_light)
+        g_light.setContentLayout(vl_light)
         l_bg.addWidget(g_light)
 
         # Morphology (Standard)
-        g_morph = QGroupBox("Morphology & Noise")
-        vl_morph = QVBoxLayout(g_morph)
+        g_morph = CollapsibleGroupBox("Noise Removal and Morphology")
+        self.bg_accordion.addCollapsible(g_morph)
+        vl_morph = QVBoxLayout()
         vl_morph.addWidget(
             self._create_help_label(
                 "Clean up detected blobs using morphological operations. Closing fills small holes, opening removes "
                 "small noise. Larger kernels = stronger effect but may distort shape. Use odd numbers only."
             )
         )
-        f_morph = QFormLayout()
+        f_morph = QFormLayout(None)
         f_morph.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_morph_size = QSpinBox()
         self.spin_morph_size.setRange(1, 25)
@@ -1117,18 +2360,20 @@ class MainWindow(QMainWindow):
         )
         f_morph.addRow("Max Contour Multiplier:", self.spin_max_contour_multiplier)
         vl_morph.addLayout(f_morph)
+        g_morph.setContentLayout(vl_morph)
         l_bg.addWidget(g_morph)
 
         # Morphology (Advanced/Splitting)
-        g_split = QGroupBox("Advanced Separation")
-        vl_split = QVBoxLayout(g_split)
+        g_split = CollapsibleGroupBox("Split Touching Animals")
+        self.bg_accordion.addCollapsible(g_split)
+        vl_split = QVBoxLayout()
         vl_split.addWidget(
             self._create_help_label(
                 "Split touching animals using erosion/dilation. Conservative split uses watershed, aggressive uses "
                 "multi-stage erosion/dilation. Enable only if animals frequently touch."
             )
         )
-        f_split = QFormLayout()
+        f_split = QFormLayout(None)
         self.chk_conservative_split = QCheckBox("Conservative Splitting (Erosion)")
         self.chk_conservative_split.setChecked(True)
         self.chk_conservative_split.setToolTip(
@@ -1205,6 +2450,7 @@ class MainWindow(QMainWindow):
         h_dil.addWidget(self.spin_dilation_iterations)
         f_split.addRow(h_dil)
         vl_split.addLayout(f_split)
+        g_split.setContentLayout(vl_split)
 
         l_bg.addWidget(g_split)
 
@@ -1220,6 +2466,7 @@ class MainWindow(QMainWindow):
         )
 
         self.yolo_group = QGroupBox("YOLO Configuration")
+        self.yolo_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         f_yolo = QFormLayout(self.yolo_group)
 
         self.combo_yolo_model = QComboBox()
@@ -1282,24 +2529,296 @@ class MainWindow(QMainWindow):
         )
         f_yolo.addRow("Target Classes:", self.line_yolo_classes)
 
-        self.combo_yolo_device = QComboBox()
-        self.combo_yolo_device.addItems(["auto", "cpu", "cuda:0", "mps"])
-        self.combo_yolo_device.setToolTip(
-            "Hardware device for YOLO inference.\n"
-            "auto = automatic selection, cpu = CPU only.\n"
-            "cuda:0 = NVIDIA GPU, mps = Apple Silicon GPU.\n"
-            "GPU dramatically improves YOLO speed."
-        )
-        f_yolo.addRow("Device:", self.combo_yolo_device)
-
         l_yolo.addWidget(self.yolo_group)
-        l_yolo.addStretch()
+
+        # ============================================================
+        # GPU Acceleration Settings (TensorRT + Batching)
+        # ============================================================
+        self.g_gpu_accel = QGroupBox("GPU Acceleration")
+        vl_gpu = QVBoxLayout(self.g_gpu_accel)
+        vl_gpu.addWidget(
+            self._create_help_label(
+                "Optimize YOLO inference speed using GPU acceleration. Only applies to YOLO detection on GPU devices."
+            )
+        )
+
+        f_gpu = QFormLayout(None)
+        f_gpu.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # TensorRT Optimization
+        from ..utils.gpu_utils import TENSORRT_AVAILABLE
+
+        self.chk_enable_tensorrt = QCheckBox("Enable TensorRT (NVIDIA Only)")
+        self.chk_enable_tensorrt.setChecked(False)
+        self.chk_enable_tensorrt.setEnabled(TENSORRT_AVAILABLE)
+
+        tensorrt_tooltip = (
+            "Enable NVIDIA TensorRT for 2-5× faster YOLO inference.\n"
+            "Requires NVIDIA GPU with CUDA.\n"
+            "First run will export model (1-5 min), then cached for future use.\n"
+            "Uses FP16 precision for maximum speed.\n"
+        )
+        if TENSORRT_AVAILABLE:
+            tensorrt_tooltip += "\n✓ TensorRT is available on this system"
+        else:
+            tensorrt_tooltip += (
+                "\n✗ TensorRT not available (requires NVIDIA GPU + tensorrt package)"
+            )
+
+        self.chk_enable_tensorrt.setToolTip(tensorrt_tooltip)
+        self.chk_enable_tensorrt.stateChanged.connect(self._on_tensorrt_toggled)
+        f_gpu.addRow("", self.chk_enable_tensorrt)
+
+        self.spin_tensorrt_batch = QSpinBox()
+        self.spin_tensorrt_batch.setRange(1, 64)
+        self.spin_tensorrt_batch.setValue(
+            self.advanced_config.get("tensorrt_max_batch_size", 16)
+        )
+        self.spin_tensorrt_batch.setToolTip(
+            "Maximum batch size for TensorRT engine.\n"
+            "Higher = potentially faster, Lower = more stable.\n"
+            "Reduce if build fails (try 8, 4, or 1).\n"
+            "Typical: 16-32 (high-end), 8-16 (mid-range), 1-8 (low VRAM)"
+        )
+        self.lbl_tensorrt_batch = QLabel("  Max Batch Size:")
+        f_gpu.addRow(self.lbl_tensorrt_batch, self.spin_tensorrt_batch)
+
+        # GPU Batching
+        f_gpu.addRow(QLabel(""))  # Spacer
+
+        self.chk_enable_yolo_batching = QCheckBox(
+            "Enable Batched Detection (Full Tracking Only)"
+        )
+        self.chk_enable_yolo_batching.setChecked(
+            self.advanced_config.get("enable_yolo_batching", True)
+        )
+        self.chk_enable_yolo_batching.setToolTip(
+            "Process frames in batches on GPU for 2-5× faster detection.\n"
+            "Only works in full tracking mode (not preview)."
+        )
+        self.chk_enable_yolo_batching.stateChanged.connect(
+            self._on_yolo_batching_toggled
+        )
+        f_gpu.addRow("", self.chk_enable_yolo_batching)
+
+        self.combo_yolo_batch_mode = QComboBox()
+        self.combo_yolo_batch_mode.addItems(["Auto", "Manual"])
+        self.combo_yolo_batch_mode.setToolTip(
+            "Auto: Automatically estimate batch size based on GPU memory.\n"
+            "Manual: Specify a fixed batch size."
+        )
+        self.combo_yolo_batch_mode.currentIndexChanged.connect(
+            self._on_yolo_batch_mode_changed
+        )
+        self.lbl_yolo_batch_mode = QLabel("  Batch Size Mode:")
+        f_gpu.addRow(self.lbl_yolo_batch_mode, self.combo_yolo_batch_mode)
+
+        self.spin_yolo_batch_size = QSpinBox()
+        self.spin_yolo_batch_size.setRange(1, 64)
+        self.spin_yolo_batch_size.setValue(
+            self.advanced_config.get("yolo_manual_batch_size", 16)
+        )
+        self.spin_yolo_batch_size.setToolTip(
+            "Manual batch size (only used when mode is Manual).\n"
+            "Larger = faster but uses more GPU memory.\n"
+            "Typical values: 8-32 depending on GPU."
+        )
+        self.lbl_yolo_batch_size = QLabel("  Manual Batch Size:")
+        f_gpu.addRow(self.lbl_yolo_batch_size, self.spin_yolo_batch_size)
+
+        vl_gpu.addLayout(f_gpu)
+        l_yolo.addWidget(self.g_gpu_accel)
+
+        # Set initial visibility for TensorRT widgets
+        self.spin_tensorrt_batch.setVisible(False)
+        self.lbl_tensorrt_batch.setVisible(False)
+
+        # Set initial visibility for batching widgets
+        initial_batching_enabled = self.chk_enable_yolo_batching.isChecked()
+        self.combo_yolo_batch_mode.setVisible(initial_batching_enabled)
+        self.lbl_yolo_batch_mode.setVisible(initial_batching_enabled)
+        self.spin_yolo_batch_size.setVisible(initial_batching_enabled)
+        self.lbl_yolo_batch_size.setVisible(initial_batching_enabled)
+        self.combo_yolo_batch_mode.setEnabled(initial_batching_enabled)
+        self.spin_yolo_batch_size.setEnabled(False)  # Auto mode by default
+        l_yolo.addStretch()  # Push YOLO config to top
 
         # Add pages to stack
         self.stack_detection.addWidget(page_bg)
         self.stack_detection.addWidget(page_yolo)
 
         vbox.addWidget(self.stack_detection)
+
+        # ============================================================
+        # Detection Overlays (moved from Visuals tab)
+        # ============================================================
+        # Background Subtraction specific overlays
+        self.g_overlays_bg = QGroupBox("Background Subtraction Debug Overlays")
+        v_ov_bg = QVBoxLayout(self.g_overlays_bg)
+        v_ov_bg.addWidget(
+            self._create_help_label(
+                "Debug background subtraction by viewing the foreground mask (detected movement) "
+                "and background model (learned static image)."
+            )
+        )
+
+        self.chk_show_fg = QCheckBox("Show Foreground Mask")
+        self.chk_show_fg.setChecked(True)
+        v_ov_bg.addWidget(self.chk_show_fg)
+
+        self.chk_show_bg = QCheckBox("Show Background Model")
+        self.chk_show_bg.setChecked(True)
+        v_ov_bg.addWidget(self.chk_show_bg)
+
+        vbox.addWidget(self.g_overlays_bg)
+
+        # YOLO specific overlays
+        self.g_overlays_yolo = QGroupBox("YOLO Debug Overlays")
+        v_ov_yolo = QVBoxLayout(self.g_overlays_yolo)
+        v_ov_yolo.addWidget(
+            self._create_help_label(
+                "Show oriented bounding boxes from YOLO detection. Useful for debugging detection quality "
+                "and verifying model performance."
+            )
+        )
+
+        self.chk_show_yolo_obb = QCheckBox("Show YOLO OBB Detection Boxes")
+        self.chk_show_yolo_obb.setChecked(False)
+        v_ov_yolo.addWidget(self.chk_show_yolo_obb)
+
+        vbox.addWidget(self.g_overlays_yolo)
+
+        # Initially show/hide based on detection method (will be set properly by combo)
+        self.g_overlays_bg.setVisible(True)
+        self.g_overlays_yolo.setVisible(False)
+
+        # ============================================================
+        # Reference Body Size (Spatial Scale)
+        # ============================================================
+        g_body_size = QGroupBox("Reference Body Size")
+        vl_body_size = QVBoxLayout(g_body_size)
+        vl_body_size.addWidget(
+            self._create_help_label(
+                "Define the spatial scale for tracking. This reference size makes all distance/size "
+                "parameters portable across videos. Set this BEFORE configuring tracking parameters."
+            )
+        )
+        fl_body = QFormLayout(None)
+        fl_body.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.spin_reference_body_size = QDoubleSpinBox()
+        self.spin_reference_body_size.setRange(1.0, 500.0)
+        self.spin_reference_body_size.setSingleStep(1.0)
+        self.spin_reference_body_size.setValue(20.0)
+        self.spin_reference_body_size.setDecimals(2)
+        self.spin_reference_body_size.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Fixed
+        )
+        self.spin_reference_body_size.setToolTip(
+            "Reference animal body diameter in pixels (at resize=1.0).\n"
+            "All distance/size parameters are scaled relative to this value."
+        )
+        self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
+        fl_body.addRow("Reference Body Size (px):", self.spin_reference_body_size)
+
+        # Info label showing calculated area
+        self.label_body_size_info = QLabel()
+        self.label_body_size_info.setStyleSheet(
+            "color: #888; font-size: 10px; font-style: italic;"
+        )
+        fl_body.addRow("", self.label_body_size_info)
+        vl_body_size.addLayout(fl_body)
+        vbox.addWidget(g_body_size)
+
+        # ============================================================
+        # Detection size statistics panel
+        # ============================================================
+        g_detect_stats = QGroupBox("Auto-Configure Body Size from Detection")
+        vl_stats = QVBoxLayout(g_detect_stats)
+        vl_stats.addWidget(
+            self._create_help_label(
+                "Workflow for accurate size estimation:\n"
+                "1. Configure your detection method above\n"
+                "2. Click 'Load Random Frame for Preview' (bottom of page)\n"
+                "3. Choose a frame with many animals well-separated\n"
+                "4. Click 'Test Detection' to analyze sizes\n"
+                "5. Use 'Auto-Set' to apply the recommended body size"
+            )
+        )
+
+        self.label_detection_stats = QLabel(
+            "No detection data yet.\nRun 'Test Detection' to estimate sizes."
+        )
+        self.label_detection_stats.setStyleSheet(
+            "color: #aaa; font-size: 11px; padding: 8px; "
+            "background-color: #2a2a2a; border-radius: 4px;"
+        )
+        self.label_detection_stats.setWordWrap(True)
+        vl_stats.addWidget(self.label_detection_stats)
+
+        # Auto-set button
+        btn_layout = QHBoxLayout()
+        self.btn_auto_set_body_size = QPushButton("Auto-Set Body Size from Median")
+        self.btn_auto_set_body_size.clicked.connect(
+            self._auto_set_body_size_from_detection
+        )
+        self.btn_auto_set_body_size.setEnabled(False)
+        self.btn_auto_set_body_size.setToolTip(
+            "Automatically set reference body size to the median detected diameter"
+        )
+        btn_layout.addWidget(self.btn_auto_set_body_size)
+        btn_layout.addStretch()
+        vl_stats.addLayout(btn_layout)
+
+        vbox.addWidget(g_detect_stats)
+
+        # ============================================================
+        # Size Filtering
+        # ============================================================
+        g_size = QGroupBox("Size Filtering")
+        vl_size = QVBoxLayout(g_size)
+        vl_size.addWidget(
+            self._create_help_label(
+                "Filter detections by size relative to your reference body size. This removes noise (too small) "
+                "and erroneous clusters (too large). Most effective when animals are similar size."
+            )
+        )
+        f_size = QFormLayout(None)
+        self.chk_size_filtering = QCheckBox("Enable Size Constraints")
+        self.chk_size_filtering.setToolTip(
+            "Filter detected objects by area to remove noise and artifacts.\n"
+            "Recommended: Enable for cleaner tracking."
+        )
+        f_size.addRow(self.chk_size_filtering)
+
+        h_sf = QHBoxLayout()
+        self.spin_min_object_size = QDoubleSpinBox()
+        self.spin_min_object_size.setRange(0.1, 5.0)
+        self.spin_min_object_size.setSingleStep(0.1)
+        self.spin_min_object_size.setDecimals(2)
+        self.spin_min_object_size.setValue(0.3)
+        self.spin_min_object_size.setToolTip(
+            "Minimum object area as multiple of reference body area.\n"
+            "Filters out small noise/artifacts.\n"
+            "Recommended: 0.2-0.5× (allows partial occlusion)"
+        )
+        self.spin_max_object_size = QDoubleSpinBox()
+        self.spin_max_object_size.setRange(0.5, 10.0)
+        self.spin_max_object_size.setSingleStep(0.1)
+        self.spin_max_object_size.setDecimals(2)
+        self.spin_max_object_size.setValue(3.0)
+        self.spin_max_object_size.setToolTip(
+            "Maximum object area as multiple of reference body area.\n"
+            "Filters out large clusters or artifacts.\n"
+            "Recommended: 2-4× (handles overlapping animals)"
+        )
+        h_sf.addWidget(QLabel("Min (×body):"))
+        h_sf.addWidget(self.spin_min_object_size)
+        h_sf.addWidget(QLabel("Max (×body):"))
+        h_sf.addWidget(self.spin_max_object_size)
+        f_size.addRow(h_sf)
+        vl_size.addLayout(f_size)
+        vbox.addWidget(g_size)
 
         vbox.addStretch()
         scroll.setWidget(content)
@@ -1325,7 +2844,7 @@ class MainWindow(QMainWindow):
                 "move between frames. Recovery search distance helps reconnect lost tracks."
             )
         )
-        f_core = QFormLayout()
+        f_core = QFormLayout(None)
         f_core.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.spin_max_targets = QSpinBox()
         self.spin_max_targets.setRange(1, 200)
@@ -1366,24 +2885,30 @@ class MainWindow(QMainWindow):
         self.chk_enable_backward = QCheckBox("Run Backward Tracking after Forward")
         self.chk_enable_backward.setChecked(True)
         self.chk_enable_backward.setToolTip(
-            "Run tracking in reverse after forward pass to improve accuracy.\n"
-            "Recommended: Enable for best results (takes 2× time).\n"
+            "Run tracking in reverse (using cached detections) after forward pass to improve accuracy.\n"
+            "Forward detections are cached (~10MB/10k frames), then tracking runs backward.\n"
+            "No video reversal needed - RAM efficient and faster.\n"
+            "Recommended: Enable for best results (takes ~2× time).\n"
             "Disable for faster processing if accuracy is sufficient."
         )
         f_core.addRow("", self.chk_enable_backward)
         vl_core.addLayout(f_core)
         vbox.addWidget(g_core)
 
+        # Create accordion for advanced tracking settings
+        self.tracking_accordion = AccordionContainer()
+
         # Kalman
-        g_kf = QGroupBox("Kalman Filter (Motion Model)")
-        vl_kf = QVBoxLayout(g_kf)
+        g_kf = CollapsibleGroupBox("Kalman Filter (Motion Model)")
+        self.tracking_accordion.addCollapsible(g_kf)
+        vl_kf = QVBoxLayout()
         vl_kf.addWidget(
             self._create_help_label(
                 "Kalman filter predicts animal positions using motion history. Process noise controls smoothing, "
                 "measurement noise controls responsiveness. Age-dependent damping helps stabilize newly initialized tracks."
             )
         )
-        f_kf = QFormLayout()
+        f_kf = QFormLayout(None)
         f_kf.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.spin_kalman_noise = QDoubleSpinBox()
@@ -1505,11 +3030,13 @@ class MainWindow(QMainWindow):
         f_kf.addRow("  Lateral Multiplier:", self.spin_kalman_lateral_noise)
 
         vl_kf.addLayout(f_kf)
+        g_kf.setContentLayout(vl_kf)
         vbox.addWidget(g_kf)
 
         # Weights
-        g_weights = QGroupBox("Cost Function Weights")
-        l_weights = QVBoxLayout(g_weights)
+        g_weights = CollapsibleGroupBox("Cost Function Weights")
+        self.tracking_accordion.addCollapsible(g_weights)
+        l_weights = QVBoxLayout()
         l_weights.addWidget(
             self._create_help_label(
                 "Control how different factors influence track-to-detection matching. Position is primary; orientation, "
@@ -1575,18 +3102,20 @@ class MainWindow(QMainWindow):
             "Recommended: Enable for better handling of motion variability."
         )
         l_weights.addWidget(self.chk_use_mahal)
+        g_weights.setContentLayout(l_weights)
         vbox.addWidget(g_weights)
 
         # Assignment Algorithm (for large N optimization)
-        g_assign = QGroupBox("Assignment Algorithm (for Large N)")
-        vl_assign = QVBoxLayout(g_assign)
+        g_assign = CollapsibleGroupBox("Assignment Algorithm (for Large N)")
+        self.tracking_accordion.addCollapsible(g_assign)
+        vl_assign = QVBoxLayout()
         vl_assign.addWidget(
             self._create_help_label(
                 "Choose matching algorithm. Hungarian is optimal but slow for many animals (N>100). "
                 "Greedy approximation is faster but may produce suboptimal assignments."
             )
         )
-        f_assign = QFormLayout()
+        f_assign = QFormLayout(None)
 
         self.combo_assignment_method = QComboBox()
         self.combo_assignment_method.addItems(
@@ -1610,18 +3139,20 @@ class MainWindow(QMainWindow):
         f_assign.addRow(self.chk_spatial_optimization)
 
         vl_assign.addLayout(f_assign)
+        g_assign.setContentLayout(vl_assign)
         vbox.addWidget(g_assign)
 
         # Orientation & Lifecycle
-        g_misc = QGroupBox("Orientation & Lifecycle")
-        vl_misc = QVBoxLayout(g_misc)
+        g_misc = CollapsibleGroupBox("Orientation & Lifecycle")
+        self.tracking_accordion.addCollapsible(g_misc)
+        vl_misc = QVBoxLayout()
         vl_misc.addWidget(
             self._create_help_label(
                 "Control how orientation is calculated based on movement. Moving animals can flip orientation instantly, "
                 "stationary animals change orientation gradually within max angle limit."
             )
         )
-        f_misc = QFormLayout()
+        f_misc = QFormLayout(None)
 
         self.spin_velocity = QDoubleSpinBox()
         self.spin_velocity.setRange(0.1, 100.0)
@@ -1656,18 +3187,20 @@ class MainWindow(QMainWindow):
         )
         f_misc.addRow("Max Orient Δ (Stopped):", self.spin_max_orient)
         vl_misc.addLayout(f_misc)
+        g_misc.setContentLayout(vl_misc)
         vbox.addWidget(g_misc)
 
         # Track Lifecycle
-        g_lifecycle = QGroupBox("Track Lifecycle")
-        vl_lifecycle = QVBoxLayout(g_lifecycle)
+        g_lifecycle = CollapsibleGroupBox("Track Lifecycle")
+        self.tracking_accordion.addCollapsible(g_lifecycle)
+        vl_lifecycle = QVBoxLayout()
         vl_lifecycle.addWidget(
             self._create_help_label(
                 "Control when tracks start and end. Lost frames determines how long to wait before terminating a track. "
                 "Min respawn distance prevents creating duplicate IDs near existing animals."
             )
         )
-        f_lifecycle = QFormLayout()
+        f_lifecycle = QFormLayout(None)
 
         self.spin_lost_thresh = QSpinBox()
         self.spin_lost_thresh.setRange(1, 100)
@@ -1692,18 +3225,20 @@ class MainWindow(QMainWindow):
         )
         f_lifecycle.addRow("Min Respawn Dist (×body):", self.spin_min_respawn_distance)
         vl_lifecycle.addLayout(f_lifecycle)
+        g_lifecycle.setContentLayout(vl_lifecycle)
         vbox.addWidget(g_lifecycle)
 
         # Stability
-        g_stab = QGroupBox("Initialization Stability")
-        vl_stab = QVBoxLayout(g_stab)
+        g_stab = CollapsibleGroupBox("Initialization Stability")
+        self.tracking_accordion.addCollapsible(g_stab)
+        vl_stab = QVBoxLayout()
         vl_stab.addWidget(
             self._create_help_label(
                 "Filter out unreliable tracks. Min detections to start prevents creating tracks from noise. "
                 "Min detect/tracking frames removes short-lived false tracks in post-processing."
             )
         )
-        f_stab = QFormLayout()
+        f_stab = QFormLayout(None)
         self.spin_min_detections_to_start = QSpinBox()
         self.spin_min_detections_to_start.setRange(1, 50)
         self.spin_min_detections_to_start.setValue(1)
@@ -1735,6 +3270,7 @@ class MainWindow(QMainWindow):
         )
         f_stab.addRow("Min Tracking Frames:", self.spin_min_track)
         vl_stab.addLayout(f_stab)
+        g_stab.setContentLayout(vl_stab)
         vbox.addWidget(g_stab)
 
         vbox.addStretch()
@@ -1761,7 +3297,7 @@ class MainWindow(QMainWindow):
                 "Velocity/distance breaks detect unrealistic jumps that indicate ID switching."
             )
         )
-        f_pp = QFormLayout()
+        f_pp = QFormLayout(None)
         f_pp.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.enable_postprocessing = QCheckBox("Enable Automatic Cleaning")
         self.enable_postprocessing.setChecked(True)
@@ -1770,6 +3306,7 @@ class MainWindow(QMainWindow):
             "Uses velocity and distance thresholds to detect anomalies.\n"
             "Recommended: Enable for cleaner data output."
         )
+        self.enable_postprocessing.stateChanged.connect(self._on_cleaning_toggled)
         f_pp.addRow(self.enable_postprocessing)
 
         self.spin_min_trajectory_length = QSpinBox()
@@ -1780,7 +3317,8 @@ class MainWindow(QMainWindow):
             "Filters out brief false detections and transient tracks.\n"
             "Recommended: 5-30 frames depending on video length."
         )
-        f_pp.addRow("Min Length (frames):", self.spin_min_trajectory_length)
+        self.lbl_min_trajectory_length = QLabel("Min Length (frames):")
+        f_pp.addRow(self.lbl_min_trajectory_length, self.spin_min_trajectory_length)
 
         self.spin_max_velocity_break = QDoubleSpinBox()
         self.spin_max_velocity_break.setRange(1.0, 500.0)
@@ -1793,19 +3331,8 @@ class MainWindow(QMainWindow):
             "Independent of frame rate - automatically scaled by FPS.\n"
             "Recommended: 30-100 body-sizes/s for typical animal motion."
         )
-        f_pp.addRow("Max Velocity Break (body/s):", self.spin_max_velocity_break)
-
-        self.spin_max_distance_break = QDoubleSpinBox()
-        self.spin_max_distance_break.setRange(1.0, 50.0)
-        self.spin_max_distance_break.setSingleStep(0.5)
-        self.spin_max_distance_break.setDecimals(2)
-        self.spin_max_distance_break.setValue(15.0)
-        self.spin_max_distance_break.setToolTip(
-            "Maximum distance jump before breaking trajectory (×body size, 1-50).\n"
-            "Splits tracks at unrealistic position jumps (likely identity swaps).\n"
-            "Recommended: 10-20× body size."
-        )
-        f_pp.addRow("Max Distance Break (×body):", self.spin_max_distance_break)
+        self.lbl_max_velocity_break = QLabel("Max Velocity Break (body/s):")
+        f_pp.addRow(self.lbl_max_velocity_break, self.spin_max_velocity_break)
 
         self.spin_max_occlusion_gap = QSpinBox()
         self.spin_max_occlusion_gap.setRange(0, 200)
@@ -1816,7 +3343,54 @@ class MainWindow(QMainWindow):
             "Set to 0 to disable occlusion-based splitting.\n"
             "Recommended: 20-50 frames for typical tracking scenarios."
         )
-        f_pp.addRow("Max Occlusion Gap (frames):", self.spin_max_occlusion_gap)
+        self.lbl_max_occlusion_gap = QLabel("Max Occlusion Gap (frames):")
+        f_pp.addRow(self.lbl_max_occlusion_gap, self.spin_max_occlusion_gap)
+
+        # Z-score based velocity breaking
+        self.spin_max_velocity_zscore = QDoubleSpinBox()
+        self.spin_max_velocity_zscore.setRange(0.0, 10.0)
+        self.spin_max_velocity_zscore.setSingleStep(0.5)
+        self.spin_max_velocity_zscore.setDecimals(1)
+        self.spin_max_velocity_zscore.setValue(0.0)  # 0 = disabled
+        self.spin_max_velocity_zscore.setToolTip(
+            "Z-score threshold for velocity-based trajectory breaking (0 = disabled).\n"
+            "Detects sudden, statistically anomalous velocity changes that often\n"
+            "indicate identity swaps or tracking errors.\n\n"
+            "Safeguards prevent false breaks when animals transition from rest to movement:\n"
+            "• Only triggers on substantial velocities (>2 px/frame)\n"
+            "• Uses regularized statistics to handle low-variability periods\n"
+            "• Filters out stationary noise from baseline calculations\n\n"
+            "Recommended: 3.0-5.0 for sensitive detection, 0 to disable."
+        )
+        self.lbl_max_velocity_zscore = QLabel("Velocity Z-score Threshold:")
+        f_pp.addRow(self.lbl_max_velocity_zscore, self.spin_max_velocity_zscore)
+
+        self.spin_velocity_zscore_window = QSpinBox()
+        self.spin_velocity_zscore_window.setRange(5, 50)
+        self.spin_velocity_zscore_window.setValue(10)
+        self.spin_velocity_zscore_window.setToolTip(
+            "Number of past velocities to use for z-score calculation (5-50 frames).\n"
+            "Larger windows = more stable statistics but less responsive to changes.\n"
+            "Smaller windows = more sensitive but may be noisy.\n"
+            "Recommended: 10-20 frames."
+        )
+        self.lbl_velocity_zscore_window = QLabel("Z-score Window (frames):")
+        f_pp.addRow(self.lbl_velocity_zscore_window, self.spin_velocity_zscore_window)
+
+        self.spin_velocity_zscore_min_vel = QDoubleSpinBox()
+        self.spin_velocity_zscore_min_vel.setRange(0.1, 50.0)
+        self.spin_velocity_zscore_min_vel.setSingleStep(0.5)
+        self.spin_velocity_zscore_min_vel.setDecimals(1)
+        self.spin_velocity_zscore_min_vel.setValue(2.0)
+        self.spin_velocity_zscore_min_vel.setToolTip(
+            "Minimum velocity for z-score breaking (body-sizes/second).\n"
+            "Prevents false breaks when animal starts moving from stationary state.\n"
+            "Z-score analysis only triggers when velocity exceeds this threshold.\n"
+            "Automatically scaled by body size and frame rate.\n"
+            "Recommended: 1.0-3.0 body-sizes/s depending on animal locomotion speed."
+        )
+        self.lbl_velocity_zscore_min_vel = QLabel("Z-score Min Velocity (body/s):")
+        f_pp.addRow(self.lbl_velocity_zscore_min_vel, self.spin_velocity_zscore_min_vel)
 
         # Interpolation settings
         self.combo_interpolation_method = QComboBox()
@@ -1830,7 +3404,8 @@ class MainWindow(QMainWindow):
             "• Spline: Smoothing spline with automatic smoothing\n"
             "Applied to X, Y positions and heading (circular interpolation)."
         )
-        f_pp.addRow("Interpolation Method:", self.combo_interpolation_method)
+        self.lbl_interpolation_method = QLabel("Interpolation Method:")
+        f_pp.addRow(self.lbl_interpolation_method, self.combo_interpolation_method)
 
         self.spin_interpolation_max_gap = QSpinBox()
         self.spin_interpolation_max_gap.setRange(1, 100)
@@ -1841,14 +3416,43 @@ class MainWindow(QMainWindow):
             "Prevents interpolation across large occlusions.\n"
             "Recommended: 5-15 frames."
         )
-        f_pp.addRow("Max Interpolation Gap:", self.spin_interpolation_max_gap)
+        self.lbl_interpolation_max_gap = QLabel("Max Interpolation Gap:")
+        f_pp.addRow(self.lbl_interpolation_max_gap, self.spin_interpolation_max_gap)
+
+        # Trajectory Merging Settings (Conservative Strategy)
+        self.spin_merge_overlap_multiplier = QDoubleSpinBox()
+        self.spin_merge_overlap_multiplier.setRange(0.1, 10.0)
+        self.spin_merge_overlap_multiplier.setSingleStep(0.1)
+        self.spin_merge_overlap_multiplier.setDecimals(2)
+        self.spin_merge_overlap_multiplier.setValue(0.5)
+        self.spin_merge_overlap_multiplier.setToolTip(
+            "Agreement distance for merging forward/backward trajectories (×body size).\n"
+            "Frames where both trajectories are within this distance are considered 'agreeing'.\n"
+            "Disagreeing frames cause trajectory splits for conservative identity handling.\n"
+            "Recommended: 0.3-0.7× body size."
+        )
+        self.lbl_merge_overlap_multiplier = QLabel("Agreement Distance (×body):")
+        f_pp.addRow(
+            self.lbl_merge_overlap_multiplier, self.spin_merge_overlap_multiplier
+        )
+
+        self.spin_min_overlap_frames = QSpinBox()
+        self.spin_min_overlap_frames.setRange(1, 100)
+        self.spin_min_overlap_frames.setValue(5)
+        self.spin_min_overlap_frames.setToolTip(
+            "Minimum agreeing frames required to consider trajectories as merge candidates.\n"
+            "Forward/backward trajectory pairs need at least this many frames within\n"
+            "the agreement distance to be merged. Higher = more conservative.\n"
+            "Recommended: 5-15 frames."
+        )
+        self.lbl_min_overlap_frames = QLabel("Min Overlap Frames:")
+        f_pp.addRow(self.lbl_min_overlap_frames, self.spin_min_overlap_frames)
 
         # Cleanup option
         self.chk_cleanup_temp_files = QCheckBox("Auto-cleanup temporary files")
         self.chk_cleanup_temp_files.setChecked(True)
         self.chk_cleanup_temp_files.setToolTip(
             "Automatically delete temporary files after successful tracking:\n"
-            "• Reversed video files (*_reversed.mp4)\n"
             "• Intermediate CSV files (*_forward.csv, *_backward.csv)\n"
             "Keeps only final merged/processed output files."
         )
@@ -1856,6 +3460,135 @@ class MainWindow(QMainWindow):
 
         vl_pp.addLayout(f_pp)
         vbox.addWidget(g_pp)
+
+        # Video Export (from post-processed trajectories)
+        g_video = QGroupBox("Video Export")
+        vl_video = QVBoxLayout(g_video)
+        vl_video.addWidget(
+            self._create_help_label(
+                "Generate annotated video from final post-processed trajectories. "
+                "Video is created AFTER merging and interpolation, showing clean tracks with stable IDs. "
+                "This is recommended over real-time video output during tracking."
+            )
+        )
+        f_video = QFormLayout(None)
+        f_video.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.check_video_output = QCheckBox("Generate Video from Final Trajectories")
+        self.check_video_output.setChecked(False)
+        self.check_video_output.toggled.connect(self._on_video_output_toggled)
+        self.check_video_output.setToolTip(
+            "Generate annotated video showing post-processed trajectories.\n"
+            "Video is created from merged/interpolated tracks, not raw tracking.\n"
+            "Shows clean, stable trajectories with final IDs.\n"
+            "Recommended for publication and visualization."
+        )
+        f_video.addRow("", self.check_video_output)
+
+        self.btn_video_out = QPushButton("Select Video Output...")
+        self.btn_video_out.clicked.connect(self.select_video_output)
+        self.btn_video_out.setEnabled(False)
+        self.video_out_line = QLineEdit()
+        self.video_out_line.setPlaceholderText("Path for annotated video output")
+        self.video_out_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.video_out_line.setEnabled(False)
+        self.lbl_video_path = QLabel("")
+        f_video.addRow(self.lbl_video_path, self.btn_video_out)
+        f_video.addRow("", self.video_out_line)
+
+        # Video Visualization Settings
+        f_video.addRow(QLabel(""))  # Spacer
+        self.lbl_video_viz_settings = QLabel("<b>Visualization Settings</b>")
+        f_video.addRow(self.lbl_video_viz_settings)
+
+        self.check_show_labels = QCheckBox("Show Track IDs")
+        self.check_show_labels.setChecked(True)
+        self.check_show_labels.setToolTip(
+            "Display trajectory ID labels next to each tracked animal."
+        )
+        f_video.addRow("", self.check_show_labels)
+
+        self.check_show_orientation = QCheckBox("Show Orientation Arrows")
+        self.check_show_orientation.setChecked(True)
+        self.check_show_orientation.setToolTip(
+            "Display arrows indicating heading direction."
+        )
+        f_video.addRow("", self.check_show_orientation)
+
+        self.check_show_trails = QCheckBox("Show Trajectory Trails")
+        self.check_show_trails.setChecked(False)
+        self.check_show_trails.setToolTip(
+            "Display past trajectory path as a fading trail."
+        )
+        f_video.addRow("", self.check_show_trails)
+
+        self.spin_trail_duration = QDoubleSpinBox()
+        self.spin_trail_duration.setRange(0.1, 10.0)
+        self.spin_trail_duration.setSingleStep(0.5)
+        self.spin_trail_duration.setDecimals(1)
+        self.spin_trail_duration.setValue(1.0)
+        self.spin_trail_duration.setToolTip(
+            "Duration of trail history in seconds (0.1-10.0).\n"
+            "Longer trails show more movement history.\n"
+            "Automatically converted to frames using video FPS."
+        )
+        self.lbl_trail_duration = QLabel("Trail Duration (seconds):")
+        f_video.addRow(self.lbl_trail_duration, self.spin_trail_duration)
+
+        self.spin_marker_size = QDoubleSpinBox()
+        self.spin_marker_size.setRange(0.1, 300.0)
+        self.spin_marker_size.setSingleStep(0.1)
+        self.spin_marker_size.setDecimals(1)
+        self.spin_marker_size.setValue(0.3)
+        self.spin_marker_size.setToolTip(
+            "Size of position marker (0.1-5.0 × body size).\n"
+            "Scaled by reference body size for consistency."
+        )
+        self.lbl_marker_size = QLabel("Marker Size (×body):")
+        f_video.addRow(self.lbl_marker_size, self.spin_marker_size)
+
+        self.spin_text_scale = QDoubleSpinBox()
+        self.spin_text_scale.setRange(0.3, 3.0)
+        self.spin_text_scale.setSingleStep(0.1)
+        self.spin_text_scale.setDecimals(1)
+        self.spin_text_scale.setValue(0.5)
+        self.spin_text_scale.setToolTip(
+            "Scale factor for ID labels (0.3-3.0).\n" "Larger values = bigger text."
+        )
+        self.lbl_text_scale = QLabel("Text Scale:")
+        f_video.addRow(self.lbl_text_scale, self.spin_text_scale)
+
+        self.spin_arrow_length = QDoubleSpinBox()
+        self.spin_arrow_length.setRange(0.5, 10.0)
+        self.spin_arrow_length.setSingleStep(0.5)
+        self.spin_arrow_length.setDecimals(1)
+        self.spin_arrow_length.setValue(0.7)
+        self.spin_arrow_length.setToolTip(
+            "Length of orientation arrow (0.5-10.0 × body size).\n"
+            "Scaled by reference body size."
+        )
+        self.lbl_arrow_length = QLabel("Arrow Length (×body):")
+        f_video.addRow(self.lbl_arrow_length, self.spin_arrow_length)
+
+        vl_video.addLayout(f_video)
+        vbox.addWidget(g_video)
+
+        # Set initial visibility for video export widgets (hidden since checkbox starts unchecked)
+        self.btn_video_out.setVisible(False)
+        self.video_out_line.setVisible(False)
+        self.lbl_video_path.setVisible(False)
+        self.lbl_video_viz_settings.setVisible(False)
+        self.check_show_labels.setVisible(False)
+        self.check_show_orientation.setVisible(False)
+        self.check_show_trails.setVisible(False)
+        self.spin_trail_duration.setVisible(False)
+        self.lbl_trail_duration.setVisible(False)
+        self.spin_marker_size.setVisible(False)
+        self.lbl_marker_size.setVisible(False)
+        self.spin_text_scale.setVisible(False)
+        self.lbl_text_scale.setVisible(False)
+        self.spin_arrow_length.setVisible(False)
+        self.lbl_arrow_length.setVisible(False)
 
         # Histograms
         g_hist = QGroupBox("Real-Time Analytics")
@@ -1866,7 +3599,7 @@ class MainWindow(QMainWindow):
                 "History window controls how many recent frames to include in the analysis."
             )
         )
-        f_hist = QFormLayout()
+        f_hist = QFormLayout(None)
         self.enable_histograms = QCheckBox("Collect Histogram Data")
         self.enable_histograms.setToolTip(
             "Collect real-time statistics during tracking.\n"
@@ -1896,167 +3629,46 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_viz_ui(self):
-        """Tab 5: Visualization & Debug."""
-        layout = QVBoxLayout(self.tab_viz)
-        layout.setContentsMargins(10, 10, 10, 10)
-
-        g_overlays = QGroupBox("Video Overlays - Common")
-        v_ov = QVBoxLayout(g_overlays)
-        v_ov.addWidget(
-            self._create_help_label(
-                "Choose which tracking information to display on the video. Toggle these on/off to reduce clutter "
-                "or focus on specific aspects like trajectories or orientation."
-            )
-        )
-
-        self.chk_show_circles = QCheckBox("Show Track Markers (Circles)")
-        self.chk_show_circles.setChecked(True)
-        self.chk_show_circles.setToolTip("Draw circles around tracked animals.")
-        v_ov.addWidget(self.chk_show_circles)
-
-        self.chk_show_orientation = QCheckBox("Show Orientation Lines")
-        self.chk_show_orientation.setChecked(True)
-        self.chk_show_orientation.setToolTip("Draw lines showing heading direction.")
-        v_ov.addWidget(self.chk_show_orientation)
-
-        self.chk_show_trajectories = QCheckBox("Show Trajectory Trails")
-        self.chk_show_trajectories.setChecked(True)
-        self.chk_show_trajectories.setToolTip(
-            "Draw recent path history for each track."
-        )
-        v_ov.addWidget(self.chk_show_trajectories)
-
-        self.chk_show_labels = QCheckBox("Show ID Labels")
-        self.chk_show_labels.setChecked(True)
-        self.chk_show_labels.setToolTip("Display unique track IDs on each animal.")
-        v_ov.addWidget(self.chk_show_labels)
-
-        self.chk_show_state = QCheckBox("Show State Text")
-        self.chk_show_state.setChecked(True)
-        self.chk_show_state.setToolTip(
-            "Display tracking state (ACTIVE, PREDICTED, etc.)."
-        )
-        v_ov.addWidget(self.chk_show_state)
-
-        self.chk_show_kalman_uncertainty = QCheckBox("Show Kalman Uncertainty")
-        self.chk_show_kalman_uncertainty.setChecked(False)
-        self.chk_show_kalman_uncertainty.setToolTip(
-            "Draw ellipses showing Kalman filter position uncertainty.\n"
-            "Larger ellipse = more uncertainty in predicted position.\n"
-            "Useful for debugging tracking quality and filter convergence."
-        )
-        v_ov.addWidget(self.chk_show_kalman_uncertainty)
-
-        layout.addWidget(g_overlays)
-
-        # Background Subtraction specific overlays
-        self.g_overlays_bg = QGroupBox("Video Overlays - Background Subtraction")
-        v_ov_bg = QVBoxLayout(self.g_overlays_bg)
-        v_ov_bg.addWidget(
-            self._create_help_label(
-                "Debug background subtraction by viewing the foreground mask (detected movement) "
-                "and background model (learned static image)."
-            )
-        )
-
-        self.chk_show_fg = QCheckBox("Show Foreground Mask")
-        self.chk_show_fg.setChecked(True)
-        v_ov_bg.addWidget(self.chk_show_fg)
-
-        self.chk_show_bg = QCheckBox("Show Background Model")
-        self.chk_show_bg.setChecked(True)
-        v_ov_bg.addWidget(self.chk_show_bg)
-
-        layout.addWidget(self.g_overlays_bg)
-
-        # YOLO specific overlays
-        self.g_overlays_yolo = QGroupBox("Video Overlays - YOLO")
-        v_ov_yolo = QVBoxLayout(self.g_overlays_yolo)
-        v_ov_yolo.addWidget(
-            self._create_help_label(
-                "Show oriented bounding boxes from YOLO detection. Useful for debugging detection quality "
-                "and verifying model performance."
-            )
-        )
-
-        self.chk_show_yolo_obb = QCheckBox("Show YOLO OBB Detection Boxes")
-        self.chk_show_yolo_obb.setChecked(False)
-        v_ov_yolo.addWidget(self.chk_show_yolo_obb)
-
-        layout.addWidget(self.g_overlays_yolo)
-
-        g_settings = QGroupBox("Display Settings")
-        vl_settings = QVBoxLayout(g_settings)
-        vl_settings.addWidget(
-            self._create_help_label(
-                "Control how much trajectory history to display. Longer trails show more path context "
-                "but can clutter the view when many animals are tracked."
-            )
-        )
-        f_disp = QFormLayout()
-        self.spin_traj_hist = QSpinBox()
-        self.spin_traj_hist.setRange(1, 60)
-        self.spin_traj_hist.setValue(5)
-        self.spin_traj_hist.setToolTip(
-            "Length of trajectory trails to display (1-60 seconds).\n"
-            "Longer = more visible path history but more cluttered.\n"
-            "Recommended: 3-10 seconds."
-        )
-        f_disp.addRow("Trail History (sec):", self.spin_traj_hist)
-        vl_settings.addLayout(f_disp)
-        layout.addWidget(g_settings)
-
-        g_debug = QGroupBox("Advanced / Debug")
-        v_dbg = QVBoxLayout(g_debug)
-        v_dbg.addWidget(
-            self._create_help_label(
-                "Enable verbose logging to see detailed tracking decisions. Useful for troubleshooting "
-                "but generates large log files. Disable for production runs."
-            )
-        )
-        self.chk_debug_logging = QCheckBox("Enable Verbose Debug Logging")
-        self.chk_debug_logging.stateChanged.connect(self.toggle_debug_logging)
-        v_dbg.addWidget(self.chk_debug_logging)
-        layout.addWidget(g_debug)
-
-        layout.addStretch()
-
     def setup_dataset_ui(self):
         """Tab 6: Dataset Generation for Active Learning."""
         layout = QVBoxLayout(self.tab_dataset)
-        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        # Info box
-        info_box = QGroupBox("Active Learning - Training Dataset Generation")
-        info_layout = QVBoxLayout(info_box)
-        info_layout.addWidget(
+        # Add scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content = QWidget()
+        form = QVBoxLayout(content)
+        form.setContentsMargins(10, 10, 10, 10)
+
+        # ============================================================
+        # Active Learning Dataset Section
+        # ============================================================
+        self.g_active_learning = QGroupBox("Generate Animal Detection Dataset...")
+        vl_active = QVBoxLayout(self.g_active_learning)
+        vl_active.addWidget(
             self._create_help_label(
-                "Automatically identify challenging frames during tracking and export them "
-                "for annotation. This helps improve YOLO model performance through active learning.\n\n"
-                "The system will:\n"
-                "• Identify frames with low detection confidence, assignment issues, or tracking failures\n"
-                "• Select the worst N frames while ensuring visual diversity\n"
-                "• Export frames with YOLO-format annotations for initial labeling\n"
-                "• Package everything in a zip file ready for x-AnyLabeling\n\n"
-                "Recommended workflow:\n"
-                "1. Run tracking with dataset generation enabled\n"
-                "2. Use x-AnyLabeling to correct/refine the exported annotations\n"
-                "3. Train an improved YOLO model with the new labeled data"
+                "Automatically identify challenging frames during tracking and export them for annotation.\n\n"
+                "Workflow: Run tracking → Review/correct in X-AnyLabeling → Train improved YOLO model"
             )
         )
-        layout.addWidget(info_box)
 
-        # Enable dataset generation
-        self.chk_enable_dataset_gen = QCheckBox("Enable Dataset Generation")
+        # Enable checkbox
+        self.chk_enable_dataset_gen = QCheckBox(
+            "Enable Dataset Generation for Active Learning"
+        )
+        self.chk_enable_dataset_gen.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+        )
         self.chk_enable_dataset_gen.setChecked(False)
-        self.chk_enable_dataset_gen.setToolTip(
-            "Enable automatic generation of training dataset from difficult frames."
-        )
-        self.chk_enable_dataset_gen.stateChanged.connect(
-            self._on_dataset_generation_toggled
-        )
-        layout.addWidget(self.chk_enable_dataset_gen)
+        self.chk_enable_dataset_gen.toggled.connect(self._on_dataset_generation_toggled)
+        vl_active.addWidget(self.chk_enable_dataset_gen)
+
+        # Content container for all configuration options
+        self.active_learning_content = QWidget()
+        vl_content = QVBoxLayout(self.active_learning_content)
 
         # Dataset configuration
         self.g_dataset_config = QGroupBox("Dataset Configuration")
@@ -2089,13 +3701,13 @@ class MainWindow(QMainWindow):
         self.line_dataset_output.setToolTip(
             "Directory where the dataset will be saved."
         )
-        btn_browse_output = QPushButton("Browse...")
-        btn_browse_output.clicked.connect(self._select_dataset_output_dir)
+        self.btn_browse_output = QPushButton("Browse...")
+        self.btn_browse_output.clicked.connect(self._select_dataset_output_dir)
         h_output.addWidget(self.line_dataset_output)
-        h_output.addWidget(btn_browse_output)
+        h_output.addWidget(self.btn_browse_output)
         f_config.addRow("Output Directory:", h_output)
 
-        layout.addWidget(self.g_dataset_config)
+        vl_content.addWidget(self.g_dataset_config)
 
         # Frame selection parameters
         self.g_frame_selection = QGroupBox("Frame Selection Criteria")
@@ -2113,19 +3725,29 @@ class MainWindow(QMainWindow):
         )
         f_selection.addRow("Max Frames to Export:", self.spin_dataset_max_frames)
 
-        # Confidence threshold
+        # Frame quality scoring threshold (used DURING TRACKING to identify problematic frames)
         self.spin_dataset_conf_threshold = QDoubleSpinBox()
         self.spin_dataset_conf_threshold.setRange(0.0, 1.0)
         self.spin_dataset_conf_threshold.setSingleStep(0.05)
         self.spin_dataset_conf_threshold.setDecimals(2)
         self.spin_dataset_conf_threshold.setValue(0.5)
         self.spin_dataset_conf_threshold.setToolTip(
-            "Flag frames where YOLO detection confidence is below this threshold (0.0-1.0).\n"
-            "Lower = only export very uncertain detections.\n"
-            "Higher = include moderately uncertain detections.\n"
-            "Recommended: 0.4-0.6"
+            "[FRAME SELECTION] Confidence threshold for identifying problematic frames DURING TRACKING.\n\n"
+            "Frames with detections below this confidence are scored as 'challenging'\n"
+            "and prioritized for export to improve training data.\n\n"
+            "• Lower (0.3-0.4): Only flag very uncertain detections\n"
+            "• Higher (0.5-0.7): Flag moderately uncertain detections too\n\n"
+            "Recommended: 0.5 (default) - captures frames that need model improvement"
         )
-        f_selection.addRow("Confidence Threshold:", self.spin_dataset_conf_threshold)
+        f_selection.addRow("Frame Quality Threshold:", self.spin_dataset_conf_threshold)
+
+        # Add help label explaining advanced options
+        advanced_help = self._create_help_label(
+            "Note: YOLO detection sensitivity for export (confidence=0.05, IOU=0.5) can be "
+            "customized in advanced_config.json. These are separate from tracking parameters and "
+            "optimized for annotation (detect everything, manual review corrects errors)."
+        )
+        f_selection.addRow(advanced_help)
 
         # Visual diversity window
         self.spin_dataset_diversity_window = QSpinBox()
@@ -2161,16 +3783,11 @@ class MainWindow(QMainWindow):
         )
         f_selection.addRow("Sampling Strategy:", self.chk_dataset_probabilistic)
 
-        layout.addWidget(self.g_frame_selection)
+        vl_content.addWidget(self.g_frame_selection)
 
         # Quality metrics
-        self.g_quality_metrics = QGroupBox("Quality Metrics (Frame Scoring)")
+        self.g_quality_metrics = QGroupBox("Quality Metrics")
         v_metrics = QVBoxLayout(self.g_quality_metrics)
-        v_metrics.addWidget(
-            self._create_help_label(
-                "Select which quality metrics to use for identifying problematic frames:"
-            )
-        )
 
         self.chk_metric_low_confidence = QCheckBox("Low Detection Confidence")
         self.chk_metric_low_confidence.setChecked(True)
@@ -2207,21 +3824,435 @@ class MainWindow(QMainWindow):
         )
         v_metrics.addWidget(self.chk_metric_high_uncertainty)
 
-        layout.addWidget(self.g_quality_metrics)
+        vl_content.addWidget(self.g_quality_metrics)
 
-        # Initially disable all config widgets
-        self.g_dataset_config.setEnabled(False)
-        self.g_frame_selection.setEnabled(False)
-        self.g_quality_metrics.setEnabled(False)
+        # X-AnyLabeling Integration
+        self.g_xanylabeling = QGroupBox("X-AnyLabeling Integration")
+        vl_xany = QVBoxLayout(self.g_xanylabeling)
 
-        layout.addStretch()
+        # Conda environment selection
+        h_env = QHBoxLayout()
+        h_env.addWidget(QLabel("Conda Environment:"))
+        self.combo_xanylabeling_env = QComboBox()
+        self.combo_xanylabeling_env.setToolTip(
+            "Select a conda environment with X-AnyLabeling installed.\n"
+            "Environment names should start with 'x-anylabeling-' to be detected."
+        )
+        h_env.addWidget(self.combo_xanylabeling_env, 1)
+        self.btn_refresh_envs = QPushButton("🔄")
+        self.btn_refresh_envs.setMaximumWidth(40)
+        self.btn_refresh_envs.setToolTip("Refresh conda environments list")
+        self.btn_refresh_envs.clicked.connect(self._refresh_xanylabeling_envs)
+        h_env.addWidget(self.btn_refresh_envs)
+        vl_xany.addLayout(h_env)
 
-    def _on_dataset_generation_toggled(self, state):
+        # Open in X-AnyLabeling button
+        self.btn_open_xanylabeling = QPushButton(
+            "Open Active Learning Dataset in X-AnyLabeling"
+        )
+        self.btn_open_xanylabeling.setToolTip(
+            "Browse for a dataset directory and open it in X-AnyLabeling.\n"
+            "Directory must contain: classes.txt, images/, and labels/"
+        )
+        self.btn_open_xanylabeling.clicked.connect(self._open_in_xanylabeling)
+        self.btn_open_xanylabeling.setEnabled(False)
+        vl_xany.addWidget(self.btn_open_xanylabeling)
+
+        # X-AnyLabeling integration is now separate from Active Learning content
+
+        # Add content to main group box
+        vl_active.addWidget(self.active_learning_content)
+
+        # Add main group box to form
+        form.addWidget(self.g_active_learning)
+
+        # ============================================================
+        # X-AnyLabeling Integration (separate section)
+        # ============================================================
+        form.addWidget(self.g_xanylabeling)
+
+        # ============================================================
+        # YOLO-OBB Training (separate section)
+        # ============================================================
+        self.g_yolo_training = QGroupBox("YOLO-OBB Training")
+        vl_yolo_train = QVBoxLayout(self.g_yolo_training)
+        self.btn_open_training_dialog = QPushButton("Train YOLO-OBB Model...")
+        self.btn_open_training_dialog.setToolTip(
+            "Open training dialog to merge datasets and train a YOLO-OBB model."
+        )
+        self.btn_open_training_dialog.clicked.connect(self._open_training_dialog)
+        vl_yolo_train.addWidget(self.btn_open_training_dialog)
+        form.addWidget(self.g_yolo_training)
+
+        # Populate conda environments on startup
+        self._refresh_xanylabeling_envs()
+
+        # Initially hide content (checkbox starts unchecked)
+        self.active_learning_content.setVisible(False)
+
+        # ============================================================
+        # Individual Dataset Generator Section (Real-time OBB crops)
+        # ============================================================
+        self.g_individual_dataset = QGroupBox("Real-time Individual Dataset (YOLO OBB)")
+        vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
+        vl_ind_dataset.addWidget(
+            self._create_help_label(
+                "Generate a clean dataset of isolated individuals during tracking.\n\n"
+                "• Extracts OBB-masked crops in real-time as tracking runs\n"
+                "• Only the detected animal (within OBB) is visible, rest is masked\n"
+                "• Perfect for training identity classifiers or pose models\n\n"
+                "Note: Only available when using YOLO OBB detection."
+            )
+        )
+
+        self.chk_enable_individual_dataset = QCheckBox(
+            "Enable Real-time Individual Dataset Generation"
+        )
+        self.chk_enable_individual_dataset.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+        )
+        self.chk_enable_individual_dataset.toggled.connect(
+            self._on_individual_dataset_toggled
+        )
+        vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
+
+        # Output Configuration
+        self.ind_output_group = QGroupBox("Output Configuration")
+        ind_output_layout = QFormLayout(self.ind_output_group)
+        ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # Dataset name
+        self.line_individual_dataset_name = QLineEdit()
+        self.line_individual_dataset_name.setPlaceholderText("individual_dataset")
+        self.line_individual_dataset_name.setToolTip(
+            "Name for this dataset. Timestamp will be appended automatically."
+        )
+        ind_output_layout.addRow("Dataset Name:", self.line_individual_dataset_name)
+
+        # Output directory
+        h_ind_output = QHBoxLayout()
+        self.line_individual_output = QLineEdit()
+        self.line_individual_output.setPlaceholderText("Select output directory...")
+        self.line_individual_output.setToolTip(
+            "Directory where individual crops will be saved."
+        )
+        self.btn_browse_ind_output = QPushButton("Browse...")
+        self.btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
+        h_ind_output.addWidget(self.line_individual_output)
+        h_ind_output.addWidget(self.btn_browse_ind_output)
+        ind_output_layout.addRow("Output Directory:", h_ind_output)
+
+        # Output format
+        self.combo_individual_format = QComboBox()
+        self.combo_individual_format.addItems(["PNG", "JPEG"])
+        self.combo_individual_format.setCurrentText("PNG")
+        self.combo_individual_format.setToolTip(
+            "PNG: Lossless, larger files\nJPEG: Smaller files, slight quality loss"
+        )
+        ind_output_layout.addRow("Image Format:", self.combo_individual_format)
+
+        # Save interval
+        self.spin_individual_interval = QSpinBox()
+        self.spin_individual_interval.setRange(1, 100)
+        self.spin_individual_interval.setValue(1)
+        self.spin_individual_interval.setSingleStep(1)
+        self.spin_individual_interval.setToolTip(
+            "Save crops every N frames.\n"
+            "1 = every frame, 10 = every 10th frame, etc."
+        )
+        ind_output_layout.addRow("Save Every N Frames:", self.spin_individual_interval)
+
+        self.chk_individual_interpolate = QCheckBox(
+            "Interpolate Occluded Frames After Tracking"
+        )
+        self.chk_individual_interpolate.setChecked(True)
+        self.chk_individual_interpolate.setToolTip(
+            "After tracking completes, fill occluded gaps by interpolating center/size/angle\n"
+            "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
+        )
+        ind_output_layout.addRow(
+            "Occlusion Interpolation:", self.chk_individual_interpolate
+        )
+
+        # Padding fraction (only crop parameter needed - size is determined by OBB)
+        self.spin_individual_padding = QDoubleSpinBox()
+        self.spin_individual_padding.setRange(0.0, 0.5)
+        self.spin_individual_padding.setValue(0.1)
+        self.spin_individual_padding.setSingleStep(0.05)
+        self.spin_individual_padding.setDecimals(2)
+        self.spin_individual_padding.setToolTip(
+            "Padding around OBB bounding box as fraction of size.\n"
+            "0.1 = 10% padding on each side."
+        )
+        ind_output_layout.addRow("Padding Fraction:", self.spin_individual_padding)
+
+        # Background color for masked regions
+        bg_color_layout = QHBoxLayout()
+
+        # Color display and picker button
+        self.btn_background_color = QPushButton()
+        self.btn_background_color.setMaximumWidth(60)
+        self.btn_background_color.setMinimumHeight(30)
+        self.btn_background_color.setToolTip("Click to choose background color")
+        self.btn_background_color.clicked.connect(
+            self._select_individual_background_color
+        )
+        self._background_color = (0, 0, 0)  # BGR: black
+
+        bg_color_layout.addWidget(self.btn_background_color)
+
+        # Compute median color button
+        self.btn_median_color = QPushButton("Use Median from Frame")
+        self.btn_median_color.setToolTip(
+            "Compute median color from the preview frame and use as background"
+        )
+        self.btn_median_color.clicked.connect(self._compute_median_background_color)
+        bg_color_layout.addWidget(self.btn_median_color)
+
+        bg_color_layout.addStretch()
+
+        # Color value display
+        self.lbl_background_color = QLabel("(0, 0, 0)")
+        self.lbl_background_color.setToolTip("Current background color in BGR format")
+        bg_color_layout.addWidget(self.lbl_background_color)
+
+        # Now update the button display with all widgets created
+        self._update_background_color_button()
+
+        ind_output_layout.addRow("Background Color:", bg_color_layout)
+
+        vl_ind_dataset.addWidget(self.ind_output_group)
+
+        # Info label about filtering
+        self.lbl_individual_info = self._create_help_label(
+            "Note: Crops use detections already filtered by ROI and size settings.\n"
+            "No additional filtering parameters needed."
+        )
+        vl_ind_dataset.addWidget(self.lbl_individual_info)
+
+        form.addWidget(self.g_individual_dataset)
+
+        # ============================================================
+        # Pose Label UI Integration (Top-level section)
+        # ============================================================
+        self.g_pose_label = QGroupBox("Pose Labelling")
+        vl_pose = QVBoxLayout(self.g_pose_label)
+        vl_pose.addWidget(
+            self._create_help_label(
+                "Open any image folder with the PoseKit Labeler UI for keypoint annotation.\n"
+                "Supports YOLO Pose format labels (.txt) with normalized bbox + keypoints + visibility."
+            )
+        )
+
+        # Folder selection
+        h_pose_folder = QHBoxLayout()
+        h_pose_folder.addWidget(QLabel("Folder to Label:"))
+        self.line_pose_folder = QLineEdit()
+        self.line_pose_folder.setPlaceholderText("Select images folder...")
+        self.line_pose_folder.setToolTip(
+            "Folder containing images to label with keypoints.\n"
+            "Labels will be saved as .txt files in the same directory."
+        )
+        h_pose_folder.addWidget(self.line_pose_folder, 1)
+        self.btn_browse_pose_folder = QPushButton("Browse...")
+        self.btn_browse_pose_folder.clicked.connect(self._select_pose_folder)
+        h_pose_folder.addWidget(self.btn_browse_pose_folder)
+        vl_pose.addLayout(h_pose_folder)
+
+        # Open in Pose Label button
+        self.btn_open_pose_label = QPushButton("Open PoseKit Labeler")
+        self.btn_open_pose_label.setToolTip(
+            "Launch the PoseKit Labeler for keypoint annotation.\n"
+            "You can create/edit project settings, import skeleton definitions, etc.\n"
+            "Labels are auto-saved and compatible with YOLO training."
+        )
+        self.btn_open_pose_label.clicked.connect(self._open_pose_label_ui)
+        self.btn_open_pose_label.setEnabled(False)
+        vl_pose.addWidget(self.btn_open_pose_label)
+
+        form.addWidget(self.g_pose_label)
+
+        # Initially hide individual dataset widgets (checkbox starts unchecked)
+        self.ind_output_group.setVisible(False)
+        self.lbl_individual_info.setVisible(False)
+
+        form.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+
+    def setup_individual_analysis_ui(self):
+        """Tab 7: Individual Analysis - Real-time Identity & Post-hoc Pose Analysis."""
+        layout = QVBoxLayout(self.tab_individual)
+        layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        content = QWidget()
+        form = QVBoxLayout(content)
+
+        # Info box
+        info_box = QGroupBox("Individual-Level Processing")
+        info_layout = QVBoxLayout(info_box)
+        info_layout.addWidget(
+            self._create_help_label(
+                "Process individual animals for identity classification and dataset generation.\n\n"
+                "• Real-time Identity: Classify individual animals during tracking (color tags, AprilTags)\n"
+                "• Real-time Dataset: Generate OBB-masked crops during YOLO tracking for pose/identity training"
+            )
+        )
+        form.addWidget(info_box)
+
+        # Main Enable Checkbox
+        self.chk_enable_individual_analysis = QCheckBox(
+            "Enable Real-time Identity Classification"
+        )
+        self.chk_enable_individual_analysis.setStyleSheet(
+            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+        )
+        self.chk_enable_individual_analysis.toggled.connect(
+            self._on_individual_analysis_toggled
+        )
+        form.addWidget(self.chk_enable_individual_analysis)
+
+        # Identity Classification Section
+        self.g_identity = QGroupBox("Identity Classification (Real-time)")
+        vl_identity = QVBoxLayout(self.g_identity)
+        vl_identity.addWidget(
+            self._create_help_label(
+                "Classify individual identity during tracking. Extracts crops around each detection "
+                "and processes them with the selected method."
+            )
+        )
+
+        fl_identity = QFormLayout(None)
+        fl_identity.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        # Identity Method
+        self.combo_identity_method = QComboBox()
+        self.combo_identity_method.addItems(
+            ["None (Disabled)", "Color Tags (YOLO)", "AprilTags", "Custom"]
+        )
+        self.combo_identity_method.setToolTip(
+            "Select method for identifying individual animals:\n"
+            "• Color Tags: Detect color markers using YOLO model\n"
+            "• AprilTags: Detect fiducial markers\n"
+            "• Custom: Implement your own classifier"
+        )
+        self.combo_identity_method.currentIndexChanged.connect(
+            self._on_identity_method_changed
+        )
+        fl_identity.addRow("Identity Method:", self.combo_identity_method)
+
+        # Model/Config for identity (stacked widget for different methods)
+        self.identity_config_stack = QStackedWidget()
+
+        # Page 0: None
+        none_widget = QWidget()
+        none_layout = QVBoxLayout(none_widget)
+        none_layout.addWidget(
+            self._create_help_label("Identity classification is disabled.")
+        )
+        self.identity_config_stack.addWidget(none_widget)
+
+        # Page 1: Color Tags (YOLO)
+        color_widget = QWidget()
+        color_layout = QFormLayout(color_widget)
+        self.line_color_tag_model = QLineEdit()
+        self.line_color_tag_model.setPlaceholderText("path/to/color_tag_model.pt")
+        btn_select_color_model = QPushButton("Browse...")
+        btn_select_color_model.clicked.connect(self._select_color_tag_model)
+        color_model_layout = QHBoxLayout()
+        color_model_layout.addWidget(self.line_color_tag_model)
+        color_model_layout.addWidget(btn_select_color_model)
+        color_layout.addRow("Model File:", color_model_layout)
+        self.spin_color_tag_conf = QDoubleSpinBox()
+        self.spin_color_tag_conf.setRange(0.01, 1.0)
+        self.spin_color_tag_conf.setValue(0.5)
+        self.spin_color_tag_conf.setSingleStep(0.05)
+        self.spin_color_tag_conf.setToolTip(
+            "Minimum confidence for color tag detection"
+        )
+        color_layout.addRow("Confidence:", self.spin_color_tag_conf)
+        self.identity_config_stack.addWidget(color_widget)
+
+        # Page 2: AprilTags
+        apriltag_widget = QWidget()
+        apriltag_layout = QFormLayout(apriltag_widget)
+        self.combo_apriltag_family = QComboBox()
+        self.combo_apriltag_family.addItems(
+            ["tag36h11", "tag25h9", "tag16h5", "tagCircle21h7", "tagStandard41h12"]
+        )
+        self.combo_apriltag_family.setToolTip("AprilTag family to detect")
+        apriltag_layout.addRow("Tag Family:", self.combo_apriltag_family)
+        self.spin_apriltag_decimate = QDoubleSpinBox()
+        self.spin_apriltag_decimate.setRange(1.0, 4.0)
+        self.spin_apriltag_decimate.setValue(1.0)
+        self.spin_apriltag_decimate.setSingleStep(0.5)
+        self.spin_apriltag_decimate.setToolTip(
+            "Decimation factor for faster detection (higher = faster but less accurate)"
+        )
+        apriltag_layout.addRow("Decimate:", self.spin_apriltag_decimate)
+        self.identity_config_stack.addWidget(apriltag_widget)
+
+        # Page 3: Custom
+        custom_widget = QWidget()
+        custom_layout = QVBoxLayout(custom_widget)
+        custom_layout.addWidget(
+            self._create_help_label(
+                "Implement custom identity classifier in:\n"
+                "src/multi_tracker/core/individual_analysis.py"
+            )
+        )
+        self.identity_config_stack.addWidget(custom_widget)
+
+        vl_identity.addLayout(fl_identity)
+        vl_identity.addWidget(self.identity_config_stack)
+
+        # Crop Parameters
+        crop_group = QGroupBox("Crop Parameters")
+        crop_layout = QFormLayout(crop_group)
+
+        self.spin_identity_crop_multiplier = QDoubleSpinBox()
+        self.spin_identity_crop_multiplier.setRange(1.0, 10.0)
+        self.spin_identity_crop_multiplier.setValue(3.0)
+        self.spin_identity_crop_multiplier.setSingleStep(0.5)
+        self.spin_identity_crop_multiplier.setDecimals(1)
+        self.spin_identity_crop_multiplier.setToolTip(
+            "Crop size = body_size × multiplier\n"
+            "Larger values include more context, smaller values focus on the animal"
+        )
+        crop_layout.addRow("Size Multiplier:", self.spin_identity_crop_multiplier)
+
+        self.spin_identity_crop_min = QSpinBox()
+        self.spin_identity_crop_min.setRange(32, 512)
+        self.spin_identity_crop_min.setValue(64)
+        self.spin_identity_crop_min.setSingleStep(16)
+        self.spin_identity_crop_min.setToolTip("Minimum crop size in pixels")
+        crop_layout.addRow("Min Size (px):", self.spin_identity_crop_min)
+
+        self.spin_identity_crop_max = QSpinBox()
+        self.spin_identity_crop_max.setRange(64, 1024)
+        self.spin_identity_crop_max.setValue(256)
+        self.spin_identity_crop_max.setSingleStep(16)
+        self.spin_identity_crop_max.setToolTip("Maximum crop size in pixels")
+        crop_layout.addRow("Max Size (px):", self.spin_identity_crop_max)
+
+        vl_identity.addWidget(crop_group)
+
+        form.addWidget(self.g_identity)
+
+        form.addStretch()
+        scroll.setWidget(content)
+        layout.addWidget(scroll)
+
+        # Initially disable all controls
+        self.g_identity.setEnabled(False)
+
+    def _on_dataset_generation_toggled(self, enabled):
         """Enable/disable dataset generation controls."""
-        enabled = state == Qt.Checked
-        self.g_dataset_config.setEnabled(enabled)
-        self.g_frame_selection.setEnabled(enabled)
-        self.g_quality_metrics.setEnabled(enabled)
+        # Hide/show entire content container
+        self.active_learning_content.setVisible(enabled)
 
     def _select_dataset_output_dir(self):
         """Browse for dataset output directory."""
@@ -2230,6 +4261,541 @@ class MainWindow(QMainWindow):
         )
         if directory:
             self.line_dataset_output.setText(directory)
+
+    def _open_training_dialog(self):
+        class_name = self.line_dataset_class_name.text().strip() or "object"
+        envs = []
+        for i in range(self.combo_xanylabeling_env.count()):
+            name = self.combo_xanylabeling_env.itemText(i)
+            if "No X-AnyLabeling" in name or "Conda not available" in name:
+                continue
+            envs.append(name)
+        dialog = TrainYoloDialog(self, class_name=class_name, conda_envs=envs)
+        dialog.exec()
+
+    def _refresh_xanylabeling_envs(self):
+        """Scan for conda environments starting with 'x-anylabeling-'."""
+        self.combo_xanylabeling_env.clear()
+
+        try:
+            import subprocess
+
+            # Get list of conda environments
+            result = subprocess.run(
+                ["conda", "env", "list"], capture_output=True, text=True, timeout=10
+            )
+
+            if result.returncode == 0:
+                envs = []
+                for line in result.stdout.split("\n"):
+                    # Skip comments and empty lines
+                    if line.strip() and not line.startswith("#"):
+                        # Parse environment name (first column)
+                        parts = line.split()
+                        if parts:
+                            env_name = parts[0]
+                            # Check if it starts with 'x-anylabeling-'
+                            if env_name.startswith("x-anylabeling-"):
+                                envs.append(env_name)
+
+                if envs:
+                    self.combo_xanylabeling_env.addItems(envs)
+                    self.btn_open_xanylabeling.setEnabled(True)
+                    logger.info(f"Found {len(envs)} X-AnyLabeling conda environment(s)")
+                else:
+                    self.combo_xanylabeling_env.addItem("No X-AnyLabeling envs found")
+                    self.btn_open_xanylabeling.setEnabled(False)
+                    logger.warning(
+                        "No conda environments starting with 'x-anylabeling-' found. "
+                        "Create one with: conda create -n x-anylabeling-env python=3.10 && "
+                        "conda activate x-anylabeling-env && pip install x-anylabeling"
+                    )
+            else:
+                self.combo_xanylabeling_env.addItem("Conda not available")
+                self.btn_open_xanylabeling.setEnabled(False)
+                logger.warning("Could not detect conda environments")
+
+        except FileNotFoundError:
+            self.combo_xanylabeling_env.addItem("Conda not installed")
+            self.btn_open_xanylabeling.setEnabled(False)
+            logger.warning("Conda not found in PATH")
+        except Exception as e:
+            self.combo_xanylabeling_env.addItem("Error detecting envs")
+            self.btn_open_xanylabeling.setEnabled(False)
+            logger.error(f"Error detecting conda environments: {e}")
+
+    def _open_in_xanylabeling(self):
+        """Open a dataset directory in X-AnyLabeling."""
+        # Get selected conda environment
+        env_name = self.combo_xanylabeling_env.currentText()
+        if (
+            not env_name
+            or env_name.startswith("No ")
+            or env_name.startswith("Conda ")
+            or env_name.startswith("Error")
+        ):
+            QMessageBox.warning(
+                self,
+                "No Environment",
+                "Please select a valid conda environment with X-AnyLabeling installed.",
+            )
+            return
+
+        # Browse for dataset directory
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Dataset Directory",
+            self.line_dataset_output.text() if self.line_dataset_output.text() else "",
+        )
+
+        if not directory:
+            return
+
+        dataset_path = Path(directory)
+
+        # Validate directory structure
+        classes_file = dataset_path / "classes.txt"
+        images_dir = dataset_path / "images"
+        labels_dir = dataset_path / "labels"
+
+        missing = []
+        if not classes_file.exists():
+            missing.append("classes.txt")
+        if not images_dir.exists() or not images_dir.is_dir():
+            missing.append("images/")
+        if not labels_dir.exists() or not labels_dir.is_dir():
+            missing.append("labels/")
+
+        if missing:
+            QMessageBox.warning(
+                self,
+                "Invalid Dataset",
+                f"Dataset directory is missing required items:\n{', '.join(missing)}\n\n"
+                f"A valid dataset must contain:\n"
+                f"- classes.txt\n"
+                f"- images/ (directory)\n"
+                f"- labels/ (directory)",
+            )
+            return
+
+        # Determine shell command based on OS
+        import platform
+        import subprocess
+
+        system = platform.system()
+
+        try:
+            if system == "Darwin":  # macOS
+                # Create an AppleScript to open Terminal and run commands
+                # Source conda.sh directly to initialize conda in the session
+                script = f"""
+                tell application "Terminal"
+                    activate
+                    do script "source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"
+                end tell
+                """
+                subprocess.Popen(["osascript", "-e", script])
+
+            elif system == "Windows":
+                # Use cmd.exe with conda activation
+                cmd = f'start cmd /k "conda activate {env_name} && cd /d {dataset_path} && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images"'
+                subprocess.Popen(cmd, shell=True)
+
+            else:  # Linux
+                # Try common terminal emulators
+                terminals = ["gnome-terminal", "konsole", "xterm"]
+                terminal_found = False
+
+                for terminal in terminals:
+                    try:
+                        if terminal == "gnome-terminal":
+                            subprocess.Popen(
+                                [
+                                    terminal,
+                                    "--",
+                                    "bash",
+                                    "-c",
+                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                ]
+                            )
+                        elif terminal == "konsole":
+                            subprocess.Popen(
+                                [
+                                    terminal,
+                                    "-e",
+                                    "bash",
+                                    "-c",
+                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                ]
+                            )
+                        else:  # xterm
+                            subprocess.Popen(
+                                [
+                                    terminal,
+                                    "-e",
+                                    "bash",
+                                    "-c",
+                                    f"source $(conda info --base)/etc/profile.d/conda.sh && conda activate {env_name} && cd '{dataset_path}' && xanylabeling convert --task yolo2xlabel --mode obb --images ./images --labels ./labels --output ./images --classes classes.txt && xanylabeling --filename ./images; exec bash",
+                                ]
+                            )
+                        terminal_found = True
+                        break
+                    except FileNotFoundError:
+                        continue
+
+                if not terminal_found:
+                    QMessageBox.warning(
+                        self,
+                        "No Terminal Found",
+                        "Could not find a supported terminal emulator (gnome-terminal, konsole, or xterm).",
+                    )
+                    return
+
+            logger.info(f"Opened X-AnyLabeling for dataset: {dataset_path}")
+            QMessageBox.information(
+                self,
+                "X-AnyLabeling Launched",
+                f"X-AnyLabeling is starting in environment: {env_name}\n\n"
+                f"Commands being executed:\n"
+                f"1. Convert YOLO to X-Label format\n"
+                f"2. Open X-AnyLabeling with images\n\n"
+                f"Dataset: {dataset_path}",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to open X-AnyLabeling: {e}", exc_info=True)
+            QMessageBox.critical(
+                self, "Launch Error", f"Failed to open X-AnyLabeling:\n{str(e)}"
+            )
+
+    def _select_pose_folder(self):
+        """Browse for a folder to label with Pose Label UI."""
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select Folder with Images to Label",
+            (
+                self.line_pose_folder.text()
+                if self.line_pose_folder.text()
+                else str(Path.home())
+            ),
+        )
+
+        if directory:
+            self.line_pose_folder.setText(directory)
+            self.btn_open_pose_label.setEnabled(True)
+
+    def _open_pose_label_ui(self):
+        """Open a folder in the Pose Label UI using the current environment."""
+        folder_path = self.line_pose_folder.text()
+
+        if not folder_path or not Path(folder_path).exists():
+            QMessageBox.warning(
+                self,
+                "Invalid Folder",
+                "Please select a valid folder with images to label.",
+            )
+            return
+
+        folder = Path(folder_path)
+
+        # Check if folder has any images
+        image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+        has_images = any(
+            f.suffix.lower() in image_extensions
+            for f in folder.iterdir()
+            if f.is_file()
+        )
+
+        if not has_images:
+            QMessageBox.warning(
+                self,
+                "No Images Found",
+                f"No image files found in:\n{folder_path}\n\n"
+                f"Supported formats: {', '.join(image_extensions)}",
+            )
+            return
+
+        # Launch pose_label.py using the current Python interpreter
+        import subprocess
+        import sys
+
+        try:
+            # Find the pose_label.py script in the same directory as main_window.py
+            gui_dir = Path(__file__).parent
+            pose_label_script = gui_dir / "pose_label.py"
+
+            if not pose_label_script.exists():
+                QMessageBox.critical(
+                    self,
+                    "Script Not Found",
+                    f"Could not find pose_label.py at:\n{pose_label_script}",
+                )
+                return
+
+            # Use the current Python executable (same environment as mat)
+            # This avoids conda activation and terminal detection complexity
+            subprocess.Popen(
+                [sys.executable, str(pose_label_script), str(folder)],
+                cwd=str(gui_dir),
+            )
+
+            logger.info(f"Opened Pose Label UI for folder: {folder}")
+            QMessageBox.information(
+                self,
+                "Pose Label UI Launched",
+                f"Pose Label UI is starting...\n\n"
+                f"Folder: {folder}\n\n"
+                f"You can now create/edit project settings, define skeletons,\n"
+                f"and annotate keypoints. Labels will be auto-saved.",
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to open Pose Label UI: {e}", exc_info=True)
+            QMessageBox.critical(
+                self, "Launch Error", f"Failed to open Pose Label UI:\n{str(e)}"
+            )
+
+    def _on_individual_analysis_toggled(self, state):
+        """Enable/disable individual analysis controls."""
+        # Directly check checkbox state for reliability
+        enabled = self.chk_enable_individual_analysis.isChecked()
+        self.g_identity.setEnabled(enabled)
+
+    def _on_identity_method_changed(self, index):
+        """Update identity configuration stack when method changes."""
+        self.identity_config_stack.setCurrentIndex(index)
+
+    def _select_color_tag_model(self):
+        """Browse for color tag YOLO model."""
+        # Default to models directory
+        start_dir = get_models_directory()
+        if self.line_color_tag_model.text():
+            current_path = resolve_model_path(self.line_color_tag_model.text())
+            if os.path.exists(current_path):
+                start_dir = os.path.dirname(current_path)
+
+        filepath, _ = QFileDialog.getOpenFileName(
+            self, "Select Color Tag YOLO Model", start_dir, "YOLO Models (*.pt *.onnx)"
+        )
+        if filepath:
+            # Check if model is outside the archive
+            models_dir = get_models_directory()
+            try:
+                rel_path = os.path.relpath(filepath, models_dir)
+                is_in_archive = not rel_path.startswith("..")
+            except (ValueError, TypeError):
+                is_in_archive = False
+
+            if not is_in_archive:
+                # Ask user if they want to copy to archive
+                reply = QMessageBox.question(
+                    self,
+                    "Copy Model to Archive?",
+                    f"The selected model is outside the local model archive.\n\n"
+                    f"Would you like to copy it to the archive at:\n{models_dir}\n\n"
+                    f"This makes presets portable across devices.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+
+                if reply == QMessageBox.Yes:
+                    import shutil
+
+                    filename = os.path.basename(filepath)
+                    dest_path = os.path.join(models_dir, filename)
+
+                    # Handle duplicate filenames
+                    if os.path.exists(dest_path):
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        while os.path.exists(dest_path):
+                            dest_path = os.path.join(
+                                models_dir, f"{base}_{counter}{ext}"
+                            )
+                            counter += 1
+
+                    try:
+                        shutil.copy2(filepath, dest_path)
+                        filepath = dest_path
+                        logger.info(f"Copied color tag model to archive: {dest_path}")
+                        QMessageBox.information(
+                            self,
+                            "Model Copied",
+                            f"Model copied to archive as:\n{os.path.basename(dest_path)}",
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to copy model: {e}")
+                        QMessageBox.warning(
+                            self,
+                            "Copy Failed",
+                            f"Could not copy model to archive:\n{e}\n\nUsing original path.",
+                        )
+
+            self.line_color_tag_model.setText(filepath)
+
+    def _on_individual_dataset_toggled(self, enabled):
+        """Enable/disable individual dataset generation controls."""
+        # Hide/show individual dataset configuration group and info label
+        self.ind_output_group.setVisible(enabled)
+        self.lbl_individual_info.setVisible(enabled)
+
+        # Also control enable state
+        self.ind_output_group.setEnabled(enabled)
+
+    def _select_individual_background_color(self):
+        """Open color picker for individual dataset background color."""
+        from PySide6.QtWidgets import QColorDialog
+        from PySide6.QtGui import QColor
+
+        # Convert current BGR to RGB for QColorDialog
+        b, g, r = self._background_color
+        initial_color = QColor(r, g, b)
+
+        color = QColorDialog.getColor(initial_color, self, "Choose Background Color")
+        if color.isValid():
+            # Convert RGB back to BGR for OpenCV
+            self._background_color = (color.blue(), color.green(), color.red())
+            self._update_background_color_button()
+
+    def _update_background_color_button(self):
+        """Update the color button display and label."""
+        b, g, r = self._background_color
+        # Set button color
+        self.btn_background_color.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); "
+            f"border: 1px solid #333; border-radius: 2px;"
+        )
+        # Update label with BGR values
+        self.lbl_background_color.setText(f"{self._background_color}")
+
+    def _compute_median_background_color(self):
+        """Compute median color from current preview frame or load from video."""
+        frame = None
+
+        # Try to use preview frame first
+        if (
+            hasattr(self, "preview_frame_original")
+            and self.preview_frame_original is not None
+        ):
+            # preview_frame_original is in RGB, convert to BGR for processing
+            frame = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2BGR)
+        # Otherwise, try to load from video if available
+        elif self.current_video_path:
+            cap = cv2.VideoCapture(self.current_video_path)
+            if cap.isOpened():
+                ret, frame_bgr = cap.read()
+                cap.release()
+                if ret:
+                    frame = frame_bgr
+
+        if frame is None:
+            QMessageBox.warning(
+                self, "No Frame", "Please load a video first to compute median color."
+            )
+            return
+
+        try:
+            from ..utils.image_processing import compute_median_color_from_frame
+
+            # Compute median color
+            median_color = compute_median_color_from_frame(frame)
+            # Convert numpy.uint8 to regular int for JSON serialization
+            self._background_color = tuple(int(c) for c in median_color)
+            self._update_background_color_button()
+
+            QMessageBox.information(
+                self,
+                "Median Color Computed",
+                f"Background color set to median:\nBGR: {median_color}",
+            )
+        except Exception as e:
+            logger.error(f"Failed to compute median color: {e}")
+            QMessageBox.warning(self, "Error", f"Failed to compute median color:\n{e}")
+
+    def _select_individual_output_dir(self):
+        """Browse for individual dataset output directory."""
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Individual Dataset Output Directory"
+        )
+        if directory:
+            self.line_individual_output.setText(directory)
+
+    def _on_yolo_batching_toggled(self, state):
+        """Enable/disable YOLO batching controls based on checkbox."""
+        # Directly check checkbox state for reliability
+        enabled = self.chk_enable_yolo_batching.isChecked()
+
+        # Hide/show batching widgets
+        self.combo_yolo_batch_mode.setVisible(enabled)
+        self.lbl_yolo_batch_mode.setVisible(enabled)
+        self.spin_yolo_batch_size.setVisible(enabled)
+        self.lbl_yolo_batch_size.setVisible(enabled)
+
+        # Also control enable state
+        self.combo_yolo_batch_mode.setEnabled(enabled)
+        # Manual batch size only enabled if batching is on AND mode is Manual
+        manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
+        self.spin_yolo_batch_size.setEnabled(enabled and manual_mode)
+
+    def _on_yolo_batch_mode_changed(self, index):
+        """Show/hide manual batch size based on selected mode."""
+        # index 0 = Auto, index 1 = Manual
+        is_manual = index == 1
+        batching_enabled = self.chk_enable_yolo_batching.isChecked()
+        self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
+
+    def _on_tensorrt_toggled(self, state):
+        """Enable/disable TensorRT batch size control based on checkbox."""
+        # Directly check checkbox state for reliability
+        enabled = self.chk_enable_tensorrt.isChecked()
+
+        # Hide/show TensorRT batch size widgets
+        self.spin_tensorrt_batch.setVisible(enabled)
+        self.lbl_tensorrt_batch.setVisible(enabled)
+
+        # Also control enable state
+        self.spin_tensorrt_batch.setEnabled(enabled)
+        self.lbl_tensorrt_batch.setEnabled(enabled)
+
+    def _on_cleaning_toggled(self, state):
+        """Enable/disable trajectory cleaning controls based on checkbox."""
+        enabled = self.enable_postprocessing.isChecked()
+
+        # Hide/show all cleaning parameter widgets
+        self.spin_min_trajectory_length.setVisible(enabled)
+        self.lbl_min_trajectory_length.setVisible(enabled)
+        self.spin_max_velocity_break.setVisible(enabled)
+        self.lbl_max_velocity_break.setVisible(enabled)
+        self.spin_max_occlusion_gap.setVisible(enabled)
+        self.lbl_max_occlusion_gap.setVisible(enabled)
+        self.spin_max_velocity_zscore.setVisible(enabled)
+        self.lbl_max_velocity_zscore.setVisible(enabled)
+        self.spin_velocity_zscore_window.setVisible(enabled)
+        self.lbl_velocity_zscore_window.setVisible(enabled)
+        self.spin_velocity_zscore_min_vel.setVisible(enabled)
+        self.lbl_velocity_zscore_min_vel.setVisible(enabled)
+        self.combo_interpolation_method.setVisible(enabled)
+        self.lbl_interpolation_method.setVisible(enabled)
+        self.spin_interpolation_max_gap.setVisible(enabled)
+        self.lbl_interpolation_max_gap.setVisible(enabled)
+        self.spin_merge_overlap_multiplier.setVisible(enabled)
+        self.lbl_merge_overlap_multiplier.setVisible(enabled)
+        self.spin_min_overlap_frames.setVisible(enabled)
+        self.lbl_min_overlap_frames.setVisible(enabled)
+        self.chk_cleanup_temp_files.setVisible(enabled)
+
+        # Also control enable state
+        self.spin_min_trajectory_length.setEnabled(enabled)
+        self.spin_max_velocity_break.setEnabled(enabled)
+        self.spin_max_occlusion_gap.setEnabled(enabled)
+        self.spin_max_velocity_zscore.setEnabled(enabled)
+        self.spin_velocity_zscore_window.setEnabled(enabled)
+        self.spin_velocity_zscore_min_vel.setEnabled(enabled)
+        self.combo_interpolation_method.setEnabled(enabled)
+        self.spin_interpolation_max_gap.setEnabled(enabled)
+        self.spin_merge_overlap_multiplier.setEnabled(enabled)
+        self.spin_min_overlap_frames.setEnabled(enabled)
+        self.chk_cleanup_temp_files.setEnabled(enabled)
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -2249,36 +4815,48 @@ class MainWindow(QMainWindow):
         self.on_detection_method_changed(index)
 
     def select_file(self):
+        """Select video file via file dialog."""
         fp, _ = QFileDialog.getOpenFileName(
             self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
         )
         if fp:
-            self.file_line.setText(fp)
-            self.current_video_path = fp
-            if self.roi_selection_active:
-                self.clear_roi()
+            self._setup_video_file(fp)
 
-            # Auto-generate output paths based on video name
-            video_dir = os.path.dirname(fp)
-            video_name = os.path.splitext(os.path.basename(fp))[0]
+    def _setup_video_file(self, fp, skip_config_load=False):
+        """
+        Setup a video file for tracking.
 
-            # Auto-populate CSV output
-            csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
-            self.csv_line.setText(csv_path)
+        Args:
+            fp: Path to the video file
+            skip_config_load: If True, skip auto-loading config (used when loading config itself)
+        """
+        self.file_line.setText(fp)
+        self.current_video_path = fp
+        if self.roi_selection_active:
+            self.clear_roi()
 
-            # Auto-populate video output and enable it
-            video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
-            self.video_out_line.setText(video_out_path)
-            self.check_video_output.setChecked(True)
+        # Auto-generate output paths based on video name
+        video_dir = os.path.dirname(fp)
+        video_name = os.path.splitext(os.path.basename(fp))[0]
 
-            # Enable preview refresh button and load a random frame
-            self.btn_refresh_preview.setEnabled(True)
-            self.btn_test_detection.setEnabled(True)
-            self.btn_detect_fps.setEnabled(True)
+        # Auto-populate CSV output
+        csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
+        self.csv_line.setText(csv_path)
 
-            self._load_preview_frame()
+        # Auto-populate video output and enable it
+        video_out_path = os.path.join(video_dir, f"{video_name}_tracking.mp4")
+        self.video_out_line.setText(video_out_path)
+        self.check_video_output.setChecked(True)
 
-            # Auto-load config if it exists for this video
+        # Enable preview detection button
+        self.btn_test_detection.setEnabled(True)
+        self.btn_detect_fps.setEnabled(True)
+
+        # Initialize video player
+        self._init_video_player(fp)
+
+        # Auto-load config if it exists for this video (unless explicitly skipped)
+        if not skip_config_load:
             config_path = get_video_config_path(fp)
             if config_path and os.path.isfile(config_path):
                 self._load_config_from_file(config_path)
@@ -2301,6 +4879,9 @@ class MainWindow(QMainWindow):
                 logger.info(
                     f"Video selected: {fp} (no config found, using current settings)"
                 )
+
+        # Enable full UI now that a video is loaded
+        self._apply_ui_state("idle")
 
     def select_csv(self):
         fp, _ = QFileDialog.getSaveFileName(self, "Select CSV", "", "CSV Files (*.csv)")
@@ -2339,9 +4920,275 @@ class MainWindow(QMainWindow):
             # Clear any previous detection test result
             self.detection_test_result = None
             self._update_preview_display()
+            # Auto-fit to screen - use QTimer to ensure display is updated first
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(10, self._fit_image_to_screen)
             logger.info(f"Loaded preview frame {random_frame_idx}/{total_frames}")
         else:
             logger.warning("Failed to read preview frame")
+
+    # =========================================================================
+    # VIDEO PLAYER FUNCTIONS
+    # =========================================================================
+
+    def _init_video_player(self, video_path):
+        """Initialize video player with the loaded video."""
+        # Release any existing video capture
+        if self.video_cap is not None:
+            self.video_cap.release()
+
+        # Stop any active playback
+        if self.playback_timer:
+            self.playback_timer.stop()
+            self.playback_timer = None
+        self.is_playing = False
+
+        # Open video
+        self.video_cap = cv2.VideoCapture(video_path)
+        if not self.video_cap.isOpened():
+            logger.error(f"Failed to open video: {video_path}")
+            return
+
+        # Get video properties
+        self.video_total_frames = int(self.video_cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+        width = int(self.video_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(self.video_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        # Update UI
+        self.lbl_video_info.setText(
+            f"Video: {self.video_total_frames} frames, {width}x{height}, {fps:.2f} FPS"
+        )
+
+        # Enable controls
+        self.slider_timeline.setMaximum(self.video_total_frames - 1)
+        self.slider_timeline.setEnabled(True)
+        self.btn_first_frame.setEnabled(True)
+        self.btn_prev_frame.setEnabled(True)
+        self.btn_play_pause.setEnabled(True)
+        self.btn_next_frame.setEnabled(True)
+        self.btn_last_frame.setEnabled(True)
+        self.btn_random_seek.setEnabled(True)
+        self.combo_playback_speed.setEnabled(True)
+
+        # Enable frame range controls
+        self.spin_start_frame.setMaximum(self.video_total_frames - 1)
+        self.spin_start_frame.setEnabled(True)
+        self.spin_end_frame.setMaximum(self.video_total_frames - 1)
+        self.spin_end_frame.setValue(self.video_total_frames - 1)
+        self.spin_end_frame.setEnabled(True)
+        self.btn_set_start_current.setEnabled(True)
+        self.btn_set_end_current.setEnabled(True)
+        self.btn_reset_range.setEnabled(True)
+
+        # Show video player group
+        self.g_video_player.setVisible(True)
+
+        # Go to first frame
+        self.video_current_frame_idx = 0
+        self._display_current_frame()
+        self._update_range_info()
+
+        logger.info(f"Video player initialized: {self.video_total_frames} frames")
+
+    def _display_current_frame(self):
+        """Display the current frame in the video label."""
+        if self.video_cap is None:
+            return
+
+        # Only seek if not reading sequentially (seeking is slow)
+        if self.last_read_frame_idx != self.video_current_frame_idx - 1:
+            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, self.video_current_frame_idx)
+
+        ret, frame = self.video_cap.read()
+
+        if not ret:
+            return
+
+        self.last_read_frame_idx = self.video_current_frame_idx
+
+        # Convert to RGB and update preview
+        self.preview_frame_original = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        self.detection_test_result = None  # Clear any detection overlay
+        self._update_preview_display()
+
+        # Update UI
+        self.lbl_current_frame.setText(
+            f"Frame: {self.video_current_frame_idx}/{self.video_total_frames-1}"
+        )
+        self.slider_timeline.blockSignals(True)
+        self.slider_timeline.setValue(self.video_current_frame_idx)
+        self.slider_timeline.blockSignals(False)
+
+    def _on_timeline_changed(self, value):
+        """Handle timeline slider change."""
+        # Only stop playback if this is a manual user change (not from playback itself)
+        if self.is_playing and not self.slider_timeline.signalsBlocked():
+            self._stop_playback()
+
+        self.video_current_frame_idx = value
+        self._display_current_frame()
+
+    def _goto_first_frame(self):
+        """Go to the first frame."""
+        if self.is_playing:
+            self._stop_playback()
+        self.video_current_frame_idx = 0
+        self.slider_timeline.setValue(0)
+        self._display_current_frame()
+
+    def _goto_prev_frame(self):
+        """Go to the previous frame."""
+        if self.is_playing:
+            self._stop_playback()
+        if self.video_current_frame_idx > 0:
+            self.video_current_frame_idx -= 1
+            self.slider_timeline.setValue(self.video_current_frame_idx)
+            self._display_current_frame()
+
+    def _goto_next_frame(self):
+        """Go to the next frame."""
+        if self.is_playing:
+            self._stop_playback()
+        if self.video_current_frame_idx < self.video_total_frames - 1:
+            self.video_current_frame_idx += 1
+            self.slider_timeline.setValue(self.video_current_frame_idx)
+            self._display_current_frame()
+
+    def _goto_last_frame(self):
+        """Go to the last frame."""
+        if self.is_playing:
+            self._stop_playback()
+        self.video_current_frame_idx = self.video_total_frames - 1
+        self.slider_timeline.setValue(self.video_current_frame_idx)
+        self._display_current_frame()
+
+    def _goto_random_frame(self):
+        """Jump to a random frame."""
+        if self.is_playing:
+            self._stop_playback()
+        if self.video_total_frames <= 0:
+            return
+        self.video_current_frame_idx = np.random.randint(0, self.video_total_frames)
+        self.slider_timeline.setValue(self.video_current_frame_idx)
+        self._display_current_frame()
+
+    def _toggle_playback(self):
+        """Toggle play/pause."""
+        if self.is_playing:
+            self._stop_playback()
+        else:
+            self._start_playback()
+
+    def _start_playback(self):
+        """Start video playback."""
+        if self.video_cap is None or self.is_playing:
+            return
+
+        self.is_playing = True
+        self.btn_play_pause.setText("⏸ Pause")
+
+        # Get playback speed
+        speed_text = self.combo_playback_speed.currentText()
+        speed = float(speed_text.replace("x", ""))
+
+        # Calculate interval based on FPS and speed
+        fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            fps = 30  # Default
+
+        interval_ms = max(1, int((1000.0 / fps) / speed))
+
+        # Create timer if needed (use as single-shot timer)
+        if self.playback_timer is None:
+            self.playback_timer = QTimer(self)
+
+        # Start first frame with single-shot
+        self.playback_timer.singleShot(interval_ms, self._playback_step)
+        logger.debug(f"Started playback at {speed}x speed ({interval_ms}ms interval)")
+
+    def _stop_playback(self):
+        """Stop video playback."""
+        if not self.is_playing:
+            return
+
+        self.is_playing = False
+        self.btn_play_pause.setText("▶ Play")
+
+        if self.playback_timer and self.playback_timer.isActive():
+            self.playback_timer.stop()
+
+        logger.debug("Stopped playback")
+
+    def _playback_step(self):
+        """Advance one frame during playback."""
+        # Stop timer first to prevent event queueing
+        if self.playback_timer and self.playback_timer.isActive():
+            self.playback_timer.stop()
+
+        # Check if still playing (user might have stopped it)
+        if not self.is_playing:
+            return
+
+        if self.video_current_frame_idx < self.video_total_frames - 1:
+            self.video_current_frame_idx += 1
+            self._display_current_frame()
+
+            # Process events to keep UI responsive
+            from PySide6.QtWidgets import QApplication
+
+            QApplication.processEvents()
+
+            # Re-check if still playing after processing events
+            if self.is_playing and self.playback_timer:
+                # Calculate next interval
+                speed_text = self.combo_playback_speed.currentText()
+                speed = float(speed_text.replace("x", ""))
+                fps = self.video_cap.get(cv2.CAP_PROP_FPS)
+                if fps <= 0:
+                    fps = 30
+                interval_ms = max(1, int((1000.0 / fps) / speed))
+
+                # Schedule next frame
+                self.playback_timer.singleShot(interval_ms, self._playback_step)
+        else:
+            # Reached end of video
+            self._stop_playback()
+
+    def _on_frame_range_changed(self):
+        """Handle frame range spinbox changes."""
+        # Ensure start <= end
+        if self.spin_start_frame.value() > self.spin_end_frame.value():
+            self.spin_end_frame.setValue(self.spin_start_frame.value())
+
+        self._update_range_info()
+
+    def _update_range_info(self):
+        """Update the frame range info label."""
+        start = self.spin_start_frame.value()
+        end = self.spin_end_frame.value()
+        num_frames = end - start + 1
+
+        fps = self.spin_fps.value()
+        duration_sec = num_frames / fps if fps > 0 else 0
+
+        self.lbl_range_info.setText(
+            f"Tracking {num_frames} frames ({duration_sec:.2f} seconds)"
+        )
+
+    def _set_start_to_current(self):
+        """Set start frame to current frame."""
+        self.spin_start_frame.setValue(self.video_current_frame_idx)
+
+    def _set_end_to_current(self):
+        """Set end frame to current frame."""
+        self.spin_end_frame.setValue(self.video_current_frame_idx)
+
+    def _reset_frame_range(self):
+        """Reset frame range to full video."""
+        self.spin_start_frame.setValue(0)
+        self.spin_end_frame.setValue(self.video_total_frames - 1)
 
     def _on_brightness_changed(self, value):
         """Handle brightness slider change."""
@@ -2370,6 +5217,9 @@ class MainWindow(QMainWindow):
         # If detection test result exists, redisplay it; otherwise show preview
         if self.detection_test_result is not None:
             self._redisplay_detection_test()
+        elif self.roi_base_frame is not None and self.roi_shapes:
+            # If ROI is active but no preview frame, show ROI base frame with mask
+            self._display_roi_with_zoom()
         else:
             self._update_preview_display()
 
@@ -2541,6 +5391,24 @@ class MainWindow(QMainWindow):
 
     def _on_video_output_toggled(self, checked):
         """Enable/disable video output controls."""
+        # Hide/show all video output widgets
+        self.btn_video_out.setVisible(checked)
+        self.video_out_line.setVisible(checked)
+        self.lbl_video_path.setVisible(checked)
+        self.lbl_video_viz_settings.setVisible(checked)
+        self.check_show_labels.setVisible(checked)
+        self.check_show_orientation.setVisible(checked)
+        self.check_show_trails.setVisible(checked)
+        self.spin_trail_duration.setVisible(checked)
+        self.lbl_trail_duration.setVisible(checked)
+        self.spin_marker_size.setVisible(checked)
+        self.lbl_marker_size.setVisible(checked)
+        self.spin_text_scale.setVisible(checked)
+        self.lbl_text_scale.setVisible(checked)
+        self.spin_arrow_length.setVisible(checked)
+        self.lbl_arrow_length.setVisible(checked)
+
+        # Also control enable state
         self.btn_video_out.setEnabled(checked)
         self.video_out_line.setEnabled(checked)
 
@@ -2569,13 +5437,15 @@ class MainWindow(QMainWindow):
         if is_background_subtraction:
             # Background subtraction uses grayscale with adjustments
             gray = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2GRAY)
-            adjusted = apply_image_adjustments(gray, brightness, contrast, gamma)
+            # GPU not needed for preview - single frame
+            adjusted = apply_image_adjustments(
+                gray, brightness, contrast, gamma, use_gpu=False
+            )
             # Convert back to RGB for display
             adjusted_rgb = cv2.cvtColor(adjusted, cv2.COLOR_GRAY2RGB)
         else:
             # YOLO uses color frames directly without brightness/contrast/gamma adjustments
-            # Just show the original color frame
-            adjusted_rgb = self.preview_frame_original.copy()
+            adjusted_rgb = self.preview_frame_original
 
         # Display the adjusted frame
         h, w, ch = adjusted_rgb.shape
@@ -2586,13 +5456,13 @@ class MainWindow(QMainWindow):
         if self.roi_mask is not None:
             qimg = self._apply_roi_mask_to_image(qimg)
 
-        # Apply zoom
+        # Apply zoom (always use fast transformation for responsive UI)
         zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
         if zoom_val != 1.0:
             scaled_w = int(w * zoom_val)
             scaled_h = int(h * zoom_val)
             qimg = qimg.scaled(
-                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation
             )
 
         pixmap = QPixmap.fromImage(qimg)
@@ -2608,7 +5478,7 @@ class MainWindow(QMainWindow):
         bytes_per_line = ch * w
         qimg = QImage(test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
 
-        # Apply zoom
+        # Apply zoom (always use fast transformation for responsive UI)
         zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
         effective_scale = zoom_val * resize_f
 
@@ -2617,7 +5487,7 @@ class MainWindow(QMainWindow):
             scaled_w = int(orig_w * effective_scale)
             scaled_h = int(orig_h * effective_scale)
             qimg = qimg.scaled(
-                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.FastTransformation
             )
 
         pixmap = QPixmap.fromImage(qimg)
@@ -2629,22 +5499,40 @@ class MainWindow(QMainWindow):
             logger.warning("No preview frame loaded")
             return
 
-        # Warn if size filtering is enabled (biases size estimation)
+        # If size filtering is enabled, ask user whether to use it for the test
+        use_size_filtering = False
         if self.chk_size_filtering.isChecked():
-            reply = QMessageBox.warning(
-                self,
-                "Size Filtering Enabled",
-                "⚠️ Size filtering is currently enabled!\n\n"
-                "This will exclude detections outside your size range and bias the \n"
-                "size statistics, making them unreliable for estimating body size.\n\n"
-                "Recommendation: Disable 'Enable Size Filtering' in the Detection tab \n"
-                "before running size estimation.\n\n"
-                "Do you want to continue anyway?",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Question)
+            msg.setWindowTitle("Size Filtering Options")
+            msg.setText("Size filtering is currently enabled!")
+            msg.setInformativeText(
+                "For accurate size estimation, it's recommended to run detection\n"
+                "WITHOUT size constraints. However, you can test with constraints\n"
+                "if you want to see how filtering affects the results.\n\n"
+                "How would you like to proceed?"
             )
-            if reply == QMessageBox.No:
+
+            btn_without = msg.addButton(
+                "NO Size Filtering (Recommended)", QMessageBox.AcceptRole
+            )
+            btn_with = msg.addButton("WITH Size Filtering", QMessageBox.ActionRole)
+            btn_cancel = msg.addButton("Cancel", QMessageBox.RejectRole)
+            msg.setDefaultButton(btn_without)
+
+            msg.exec()
+            clicked = msg.clickedButton()
+
+            if clicked == btn_cancel:
                 return
+            elif clicked == btn_with:
+                use_size_filtering = True
+                logger.info("Running detection test WITH size filtering enabled")
+            else:  # btn_without
+                use_size_filtering = False
+                logger.info(
+                    "Running detection test WITHOUT size filtering (recommended for size estimation)"
+                )
 
         from ..utils.image_processing import apply_image_adjustments
         from ..core.background_models import BackgroundModel
@@ -2719,11 +5607,13 @@ class MainWindow(QMainWindow):
                     )
 
                 gray = cv2.cvtColor(frame_to_process, cv2.COLOR_BGR2GRAY)
+                # GPU not needed for single-frame test
                 gray = apply_image_adjustments(
                     gray,
                     bg_params["BRIGHTNESS"],
                     bg_params["CONTRAST"],
                     bg_params["GAMMA"],
+                    use_gpu=False,
                 )
 
                 # Apply ROI mask if exists (resize it too if needed)
@@ -2754,16 +5644,54 @@ class MainWindow(QMainWindow):
                     []
                 )  # Collect (major, minor) axis pairs for statistics
 
+                # Size filtering is based on body area multipliers, not mm²
+                # Calculate pixel areas from reference body size
+                reference_body_size = self.spin_reference_body_size.value()
+                reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+                scaled_body_area = reference_body_area * (resize_f**2)
+
+                if use_size_filtering:
+                    min_size_multiplier = self.spin_min_object_size.value()
+                    max_size_multiplier = self.spin_max_object_size.value()
+                    min_size_px2 = min_size_multiplier * scaled_body_area
+                    max_size_px2 = max_size_multiplier * scaled_body_area
+                    logger.info(f"Background subtraction size filtering ENABLED:")
+                    logger.info(f"  Resize factor: {resize_f:.2f}")
+                    logger.info(f"  Reference body size: {reference_body_size:.1f} px")
+                    logger.info(
+                        f"  Reference body area (original): {reference_body_area:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Reference body area (resized): {scaled_body_area:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Min size multiplier: {min_size_multiplier:.2f}× → {min_size_px2:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Max size multiplier: {max_size_multiplier:.2f}× → {max_size_px2:.1f} px²"
+                    )
+
+                filtered_count = 0
+                detection_num = 0
                 for c in cnts:
                     area = cv2.contourArea(c)
                     if area < min_contour or len(c) < 5:
                         continue
 
-                    # Apply size filtering if enabled
-                    if self.chk_size_filtering.isChecked():
-                        min_size = self.spin_min_object_size.value()
-                        max_size = self.spin_max_object_size.value()
-                        if not (min_size <= area <= max_size):
+                    # Apply size filtering based on user choice
+                    if use_size_filtering:
+                        # Compare pixel area to size thresholds (already in pixels)
+                        passes_filter = min_size_px2 <= area <= max_size_px2
+
+                        if detection_num < 5:  # Log first 5 detections for debugging
+                            logger.info(
+                                f"  Detection {detection_num+1}: {area:.1f} px² (range: {min_size_px2:.1f}-{max_size_px2:.1f}) - {'PASS' if passes_filter else 'FILTERED OUT'}"
+                            )
+
+                        detection_num += 1
+
+                        if not passes_filter:
+                            filtered_count += 1
                             continue
 
                     # Fit ellipse
@@ -2806,9 +5734,15 @@ class MainWindow(QMainWindow):
                 )
 
                 cap.release()
-                logger.info(
-                    f"Background subtraction test complete: {len(detections)} detections"
-                )
+
+                if use_size_filtering:
+                    logger.info(
+                        f"Background subtraction test complete: {len(detections)} detections passed size filter, {filtered_count} filtered out"
+                    )
+                else:
+                    logger.info(
+                        f"Background subtraction test complete: {len(detections)} detections"
+                    )
 
                 # Update detection statistics (scale dimensions back to original resolution)
                 self._update_detection_stats(detected_dimensions, resize_f)
@@ -2835,6 +5769,22 @@ class MainWindow(QMainWindow):
                     )
 
                 # Build parameters for YOLO
+                # Convert size multipliers to pixel areas for detector (same as full tracking run)
+                reference_body_size = self.spin_reference_body_size.value()
+                reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+                scaled_body_area = reference_body_area * (resize_f**2)
+
+                if use_size_filtering:
+                    min_size_px2 = int(
+                        self.spin_min_object_size.value() * scaled_body_area
+                    )
+                    max_size_px2 = int(
+                        self.spin_max_object_size.value() * scaled_body_area
+                    )
+                else:
+                    min_size_px2 = 0
+                    max_size_px2 = float("inf")
+
                 yolo_params = {
                     "YOLO_MODEL_PATH": (
                         self.yolo_custom_model_line.text()
@@ -2851,34 +5801,117 @@ class MainWindow(QMainWindow):
                         if self.line_yolo_classes.text().strip()
                         else None
                     ),
-                    "YOLO_DEVICE": self.combo_yolo_device.currentText().split(" ")[0],
+                    "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
+                    "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[
+                        0
+                    ]
+                    != "cpu",
+                    # Disable TensorRT for preview - it's optimized for batch processing
+                    # Preview processes one frame at a time, so TensorRT overhead isn't worth it
+                    "ENABLE_TENSORRT": False,
+                    "TENSORRT_MAX_BATCH_SIZE": self.spin_tensorrt_batch.value(),
                     "MAX_TARGETS": self.spin_max_targets.value(),
                     "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
-                    "ENABLE_SIZE_FILTERING": self.chk_size_filtering.isChecked(),
-                    "MIN_OBJECT_SIZE": self.spin_min_object_size.value(),
-                    "MAX_OBJECT_SIZE": self.spin_max_object_size.value(),
+                    "ENABLE_SIZE_FILTERING": use_size_filtering,  # Use the user's choice
+                    "MIN_OBJECT_SIZE": min_size_px2,  # Already converted to pixels
+                    "MAX_OBJECT_SIZE": max_size_px2,  # Already converted to pixels
                 }
 
-                # Apply ROI mask if exists (resize it too if needed)
-                yolo_frame = frame_to_process.copy()
+                # Prepare ROI mask for filtering (resize if needed)
+                roi_for_yolo = None
                 if self.roi_mask is not None:
                     roi_for_yolo = self.roi_mask
                     if resize_f < 1.0:
                         roi_for_yolo = cv2.resize(
                             self.roi_mask,
-                            (yolo_frame.shape[1], yolo_frame.shape[0]),
+                            (frame_to_process.shape[1], frame_to_process.shape[0]),
                             interpolation=cv2.INTER_NEAREST,
                         )
-                    ROI_mask_3ch = cv2.cvtColor(roi_for_yolo, cv2.COLOR_GRAY2BGR)
-                    yolo_frame = cv2.bitwise_and(yolo_frame, ROI_mask_3ch)
 
-                # Create detector and run detection
+                # Log size filtering parameters if enabled
+                if use_size_filtering:
+                    # Logging parameters (already calculated above when building yolo_params)
+                    min_size_multiplier = self.spin_min_object_size.value()
+                    max_size_multiplier = self.spin_max_object_size.value()
+                    logger.info(f"YOLO size filtering ENABLED:")
+                    logger.info(f"  Resize factor: {resize_f:.2f}")
+                    logger.info(f"  Reference body size: {reference_body_size:.1f} px")
+                    logger.info(
+                        f"  Reference body area (original): {reference_body_area:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Reference body area (resized): {scaled_body_area:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Min size multiplier: {min_size_multiplier:.2f}× → {min_size_px2:.1f} px²"
+                    )
+                    logger.info(
+                        f"  Max size multiplier: {max_size_multiplier:.2f}× → {max_size_px2:.1f} px²"
+                    )
+
+                # Create detector and run detection on FULL frame (no masking)
+                # This preserves natural image context for better YOLO confidence
+                logger.info(
+                    f"Running YOLO detection (conf={yolo_params['YOLO_CONFIDENCE_THRESHOLD']:.2f}, "
+                    f"iou={yolo_params['YOLO_IOU_THRESHOLD']:.2f})"
+                )
                 detector = YOLOOBBDetector(yolo_params)
                 meas, sizes, shapes, yolo_results, detection_confidences = (
-                    detector.detect_objects(yolo_frame, 0)
+                    detector.detect_objects(frame_to_process, 0)
                 )
 
-                # Collect detected dimensions for statistics
+                if use_size_filtering:
+                    logger.info(
+                        f"YOLO detected {len(meas)} objects before ROI filtering"
+                    )
+                    if len(sizes) > 0:
+                        logger.info(
+                            f"  Size range: {min(sizes):.1f} - {max(sizes):.1f} px²"
+                        )
+                        logger.info(
+                            f"  Filtering range: {min_size_px2:.1f} - {max_size_px2:.1f} px²"
+                        )
+                        # Show first few detections
+                        for i in range(min(5, len(sizes))):
+                            passes_filter = min_size_px2 <= sizes[i] <= max_size_px2
+                            logger.info(
+                                f"  Detection {i+1}: {sizes[i]:.1f} px² - {'PASS' if passes_filter else 'FILTERED OUT'}"
+                            )
+
+                # Filter detections by ROI AFTER detection (vectorized)
+                if roi_for_yolo is not None and len(meas) > 0:
+                    # Vectorized filtering using NumPy for efficiency with large n
+                    meas_arr = np.array(meas)
+                    cx_arr = meas_arr[:, 0].astype(np.int32)
+                    cy_arr = meas_arr[:, 1].astype(np.int32)
+
+                    # Bounds check
+                    h, w = roi_for_yolo.shape[:2]
+                    in_bounds = (
+                        (cy_arr >= 0) & (cy_arr < h) & (cx_arr >= 0) & (cx_arr < w)
+                    )
+
+                    # ROI check (clip to bounds for safe indexing, then apply bounds mask)
+                    cy_safe = np.clip(cy_arr, 0, h - 1)
+                    cx_safe = np.clip(cx_arr, 0, w - 1)
+                    in_roi = roi_for_yolo[cy_safe, cx_safe] > 0
+
+                    # Combined mask
+                    keep_mask = in_bounds & in_roi
+                    filtered_indices = np.where(keep_mask)[0].tolist()
+
+                    # Apply filter using boolean indexing
+                    # Keep meas as list of numpy arrays for consistency
+                    meas = [meas_arr[i] for i in filtered_indices]
+                    sizes = np.array(sizes)[keep_mask].tolist()
+                    shapes = np.array(shapes)[keep_mask].tolist()
+                    detection_confidences = np.array(detection_confidences)[
+                        keep_mask
+                    ].tolist()
+                else:
+                    filtered_indices = list(range(len(meas)))  # Keep all
+
+                # Collect detected dimensions for statistics (only for filtered detections)
                 # Extract actual width/height from YOLO OBB results
                 detected_dimensions = []
                 if (
@@ -2887,7 +5920,7 @@ class MainWindow(QMainWindow):
                     and len(yolo_results.obb) > 0
                 ):
                     obb_data = yolo_results.obb
-                    for i in range(len(obb_data)):
+                    for i in filtered_indices:
                         # xywhr gives [center_x, center_y, width, height, rotation]
                         xywhr = obb_data.xywhr[i].cpu().numpy()
                         _, _, w, h, _ = xywhr
@@ -2895,10 +5928,10 @@ class MainWindow(QMainWindow):
                         minor_axis = min(w, h)
                         detected_dimensions.append((major_axis, minor_axis))
 
-                # Visualize YOLO detections
+                # Visualize YOLO detections (only filtered ones)
                 if yolo_results and hasattr(yolo_results, "obb"):
                     obb_data = yolo_results.obb
-                    for i in range(len(obb_data)):
+                    for i in filtered_indices:
                         corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
                         cv2.polylines(
                             test_frame,
@@ -2927,19 +5960,17 @@ class MainWindow(QMainWindow):
                     cx, cy, angle_rad = m
                     cv2.circle(test_frame, (int(cx), int(cy)), 5, (0, 255, 0), -1)
                     # Draw orientation
-                    import math
-
                     ex = int(cx + 30 * math.cos(angle_rad))
                     ey = int(cy + 30 * math.sin(angle_rad))
                     cv2.line(test_frame, (int(cx), int(cy)), (ex, ey), (0, 255, 0), 2)
 
-                # Add detection count
+                # Add detection count and parameters
                 cv2.putText(
                     test_frame,
-                    f"Detections: {len(meas)}",
+                    f"Detections: {len(meas)} (IOU={yolo_params['YOLO_IOU_THRESHOLD']:.2f})",
                     (10, test_frame.shape[0] - 10),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
+                    0.6,
                     (0, 255, 255),
                     2,
                 )
@@ -2977,6 +6008,9 @@ class MainWindow(QMainWindow):
             pixmap = QPixmap.fromImage(qimg)
             self.video_label.setPixmap(pixmap)
 
+            # Auto-fit to screen after detection
+            self._fit_image_to_screen()
+
             logger.info("Detection test completed on preview frame")
 
         except Exception as e:
@@ -2992,21 +6026,253 @@ class MainWindow(QMainWindow):
             # If actively selecting, update instructions
             if self.roi_current_mode == "circle":
                 self.roi_instructions.setText(
-                    "Circle: Click 3+ points on boundary. ESC to cancel."
+                    "Circle: Left-click 3+ points on boundary  •  Right-click to undo  •  ESC to cancel"
                 )
             else:
                 self.roi_instructions.setText(
-                    "Polygon: Click vertices. Double-click or press Confirm to close. ESC to cancel."
+                    "Polygon: Left-click vertices  •  Right-click to undo  •  Double-click to finish  •  ESC to cancel"
                 )
 
     def _on_roi_zone_changed(self, index):
         """Handle ROI zone type selection change."""
         self.roi_current_zone_type = "include" if index == 0 else "exclude"
 
+    def _handle_video_mouse_press(self, evt):
+        """Handle mouse press on video - either ROI selection or pan/zoom."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
+        # ROI selection takes priority
+        if self.roi_selection_active:
+            self.record_roi_click(evt)
+            return
+
+        # Pan mode: Left button or Middle button
+        from PySide6.QtCore import Qt
+
+        if evt.button() == Qt.LeftButton or evt.button() == Qt.MiddleButton:
+            self._is_panning = True
+            self._pan_start_pos = evt.globalPosition().toPoint()
+            self._scroll_start_h = self.scroll.horizontalScrollBar().value()
+            self._scroll_start_v = self.scroll.verticalScrollBar().value()
+            self.video_label.setCursor(Qt.ClosedHandCursor)
+            evt.accept()
+
+    def _handle_video_mouse_move(self, evt):
+        """Handle mouse move - update pan if active."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
+        if self._is_panning and self._pan_start_pos:
+            from PySide6.QtCore import Qt
+
+            delta = evt.globalPosition().toPoint() - self._pan_start_pos
+            self.scroll.horizontalScrollBar().setValue(self._scroll_start_h - delta.x())
+            self.scroll.verticalScrollBar().setValue(self._scroll_start_v - delta.y())
+            evt.accept()
+        elif not self.roi_selection_active:
+            # Show open hand cursor to indicate draggable
+            from PySide6.QtCore import Qt
+
+            self.video_label.setCursor(Qt.OpenHandCursor)
+
+    def _handle_video_mouse_release(self, evt):
+        """Handle mouse release - end pan."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
+        from PySide6.QtCore import Qt
+
+        if self._is_panning:
+            self._is_panning = False
+            self._pan_start_pos = None
+            # Return to open hand (still draggable) if not in ROI mode
+            if not self.roi_selection_active:
+                self.video_label.setCursor(Qt.OpenHandCursor)
+            else:
+                self.video_label.setCursor(Qt.ArrowCursor)
+            evt.accept()
+
+    def _handle_video_double_click(self, evt):
+        """Handle double-click on video to fit to screen."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
+        if evt.button() == Qt.LeftButton:
+            self._fit_image_to_screen()
+
+    def _handle_video_wheel(self, evt):
+        """Handle mouse wheel - zoom in/out."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return
+        from PySide6.QtCore import Qt
+
+        # Block zoom during ROI selection
+        if self.roi_selection_active:
+            evt.ignore()
+            return
+
+        # Ctrl+Wheel for zoom
+        if evt.modifiers() == Qt.ControlModifier:
+            delta = evt.angleDelta().y()
+
+            # Get current zoom
+            current_zoom = self.slider_zoom.value()
+
+            # Calculate new zoom (10% per wheel step)
+            zoom_change = 10 if delta > 0 else -10
+            new_zoom = max(10, min(400, current_zoom + zoom_change))
+
+            # Update zoom slider (will trigger zoom change)
+            self.slider_zoom.setValue(new_zoom)
+            evt.accept()
+        else:
+            # Normal scroll - pass to scroll area
+            evt.ignore()
+
+    def _handle_video_event(self, evt):
+        """Handle video events including pinch gestures."""
+        if not self._video_interactions_enabled:
+            evt.ignore()
+            return False
+        from PySide6.QtCore import QEvent, Qt
+
+        if evt.type() == QEvent.Gesture:
+            return self._handle_gesture_event(evt)
+
+        # Pass other events to default handler
+        return QLabel.event(self.video_label, evt)
+
+    def _handle_gesture_event(self, evt):
+        """Handle pinch-to-zoom gesture."""
+        if not self._video_interactions_enabled:
+            return False
+        from PySide6.QtCore import Qt
+
+        # Block gestures during ROI selection
+        if self.roi_selection_active:
+            return False
+
+        gesture = evt.gesture(Qt.PinchGesture)
+        if gesture:
+            from PySide6.QtWidgets import QGesture
+
+            if gesture.state() == Qt.GestureUpdated:
+                # Get scale factor
+                scale_factor = gesture.scaleFactor()
+
+                # Get current zoom
+                current_zoom = self.slider_zoom.value()
+
+                # Calculate new zoom based on pinch scale
+                # Scale factor > 1 = zoom in, < 1 = zoom out
+                zoom_delta = int((scale_factor - 1.0) * 50)  # Sensitivity adjustment
+                new_zoom = max(10, min(400, current_zoom + zoom_delta))
+
+                # Update zoom slider
+                self.slider_zoom.setValue(new_zoom)
+
+            return True
+
+        return False
+
+    def _display_roi_with_zoom(self):
+        """Display the ROI base frame with mask and current zoom applied."""
+        if self.roi_base_frame is None or not self.roi_shapes:
+            return
+
+        # Apply ROI mask to base frame
+        qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
+
+        # Apply zoom
+        zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
+        if zoom_val != 1.0:
+            w = qimg_masked.width()
+            h = qimg_masked.height()
+            scaled_w = int(w * zoom_val)
+            scaled_h = int(h * zoom_val)
+            qimg_masked = qimg_masked.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+
+        pixmap = QPixmap.fromImage(qimg_masked)
+        self.video_label.setPixmap(pixmap)
+
+    def _fit_image_to_screen(self):
+        """Fit the image to the available screen space."""
+        # Determine which frame to use for sizing and whether resize factor applies
+        # Resize factor applies differently depending on display mode:
+        # - ROI selection / preview display: full resolution, resize factor NOT yet applied
+        # - Detection test / tracking preview: resize factor already applied to displayed frame
+
+        # Check if tracking worker is running (frames are already resized)
+        tracking_active = (
+            self.tracking_worker is not None and self.tracking_worker.isRunning()
+        )
+
+        if tracking_active and self._tracking_frame_size is not None:
+            # During tracking/preview, use the actual frame size from the worker
+            # These frames are already resized, so use dimensions directly
+            effective_width, effective_height = self._tracking_frame_size
+        elif self.detection_test_result is not None:
+            # Detection test shows resized content
+            if self.preview_frame_original is not None:
+                h, w = self.preview_frame_original.shape[:2]
+                resize_factor = self.spin_resize.value()
+                effective_width = int(w * resize_factor)
+                effective_height = int(h * resize_factor)
+            else:
+                return
+        elif self.preview_frame_original is not None:
+            # Preview frame at original resolution (pre-test detection)
+            h, w = self.preview_frame_original.shape[:2]
+            effective_width = w
+            effective_height = h
+        elif self.roi_base_frame is not None:
+            # ROI base frame is always full resolution
+            effective_width = self.roi_base_frame.width()
+            effective_height = self.roi_base_frame.height()
+        else:
+            return
+
+        # Get the scroll area viewport size
+        viewport_width = self.scroll.viewport().width()
+        viewport_height = self.scroll.viewport().height()
+
+        # Calculate zoom to fit the effective dimensions
+        zoom_w = viewport_width / effective_width
+        zoom_h = viewport_height / effective_height
+        zoom_fit = min(zoom_w, zoom_h) * 0.95  # 95% to leave some margin
+
+        # Clamp to valid range
+        zoom_fit = max(0.1, min(5.0, zoom_fit))
+
+        # Set the zoom slider
+        self.slider_zoom.setValue(int(zoom_fit * 100))
+
+        # Reset scroll position to center
+        self.scroll.horizontalScrollBar().setValue(0)
+        self.scroll.verticalScrollBar().setValue(0)
+
     def record_roi_click(self, evt):
         if not self.roi_selection_active or self.roi_base_frame is None:
             return
-        x, y = evt.pos().x(), evt.pos().y()
+
+        # Right-click to undo last point
+        if evt.button() == Qt.RightButton:
+            if len(self.roi_points) > 0:
+                removed = self.roi_points.pop()
+                logger.info(f"Undid last ROI point: ({removed[0]}, {removed[1]})")
+                self.update_roi_preview()
+            return
+
+        # Left-click to add point
+        if evt.button() != Qt.LeftButton:
+            return
+
+        pos = evt.position().toPoint()
+        x, y = pos.x(), pos.y()
 
         # Double-click detection for polygon closing
         if self.roi_current_mode == "polygon" and len(self.roi_points) >= 3:
@@ -3050,7 +6316,7 @@ class MainWindow(QMainWindow):
                     int(cx - radius), int(cy - radius), int(2 * radius), int(2 * radius)
                 )
             elif shape["type"] == "polygon":
-                from PySide2.QtCore import QPoint
+                from PySide6.QtCore import QPoint
 
                 points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
                 painter.setPen(QPen(color, 2))
@@ -3094,7 +6360,7 @@ class MainWindow(QMainWindow):
                 self.roi_status_label.setText("Invalid circle fit")
         elif self.roi_current_mode == "polygon" and len(self.roi_points) >= 3:
             # Draw preview polygon
-            from PySide2.QtCore import QPoint
+            from PySide6.QtCore import QPoint
 
             points = [QPoint(int(x), int(y)) for x, y in self.roi_points]
             painter.setPen(QPen(preview_color, 3))
@@ -3146,6 +6412,12 @@ class MainWindow(QMainWindow):
         self.combo_roi_mode.setEnabled(False)
         self.combo_roi_zone.setEnabled(False)
 
+        # Disable zoom slider during ROI selection
+        self.slider_zoom.setEnabled(False)
+
+        # Set crosshair cursor for precise ROI selection
+        self.video_label.setCursor(Qt.CrossCursor)
+
         zone_type = (
             "INCLUSION" if self.roi_current_zone_type == "include" else "EXCLUSION"
         )
@@ -3154,12 +6426,12 @@ class MainWindow(QMainWindow):
                 f"Click points on {zone_type.lower()} circle boundary"
             )
             self.roi_instructions.setText(
-                f"{zone_type} Circle: Click 3+ points on boundary. Press ESC to cancel."
+                f"{zone_type} Circle: Left-click 3+ points on boundary  •  Right-click to undo  •  ESC to cancel"
             )
         else:
             self.roi_status_label.setText(f"Click {zone_type.lower()} polygon vertices")
             self.roi_instructions.setText(
-                f"{zone_type} Polygon: Click vertices. Double-click or press Confirm to close. ESC to cancel."
+                f"{zone_type} Polygon: Left-click vertices  •  Right-click to undo  •  Double-click to finish  •  ESC to cancel"
             )
 
         self.update_roi_preview()
@@ -3223,6 +6495,15 @@ class MainWindow(QMainWindow):
         self.combo_roi_zone.setEnabled(True)
         self.roi_instructions.setText("")
 
+        # Re-enable zoom slider
+        self.slider_zoom.setEnabled(True)
+
+        # Restore open hand cursor (for pan/zoom)
+        if hasattr(Qt, "OpenHandCursor"):
+            self.video_label.setCursor(Qt.OpenHandCursor)
+        else:
+            self.video_label.unsetCursor()
+
         # Update status to show inclusion/exclusion counts
         include_count = sum(
             1 for s in self.roi_shapes if s.get("mode", "include") == "include"
@@ -3234,10 +6515,18 @@ class MainWindow(QMainWindow):
             f"Active ROI: {include_count} inclusion, {exclude_count} exclusion zone(s)"
         )
 
-        # Show the masked result - what detector will see
+        # Enable crop button and show optimization info
+        self.btn_crop_video.setEnabled(True)
+        self._update_roi_optimization_info()
+
+        # Auto-fit to screen after ROI change - use QTimer to ensure proper sequencing
         if self.roi_base_frame:
-            qimg_masked = self._apply_roi_mask_to_image(self.roi_base_frame)
-            self.video_label.setPixmap(QPixmap.fromImage(qimg_masked))
+            from PySide6.QtCore import QTimer
+
+            # First fit the screen (sets zoom slider value)
+            QTimer.singleShot(10, self._fit_image_to_screen)
+            # Then display with the new zoom applied
+            QTimer.singleShot(50, self._display_roi_with_zoom)
 
     def _generate_combined_roi_mask(self, height, width):
         """Generate a combined mask from all ROI shapes with inclusion/exclusion support."""
@@ -3270,6 +6559,9 @@ class MainWindow(QMainWindow):
 
         self.roi_mask = combined_mask
         logger.info(f"Generated combined ROI mask from {len(self.roi_shapes)} shape(s)")
+
+        # Invalidate cache when ROI changes
+        self._invalidate_roi_cache()
 
     def undo_last_roi_shape(self):
         """Remove the last added ROI shape."""
@@ -3319,6 +6611,16 @@ class MainWindow(QMainWindow):
         self.roi_status_label.setText("No ROI")
         self.roi_instructions.setText("")
         self.video_label.setText("ROI Cleared.")
+
+        # Re-enable zoom slider
+        self.slider_zoom.setEnabled(True)
+
+        # Restore open hand cursor
+        if hasattr(Qt, "OpenHandCursor"):
+            self.video_label.setCursor(Qt.OpenHandCursor)
+        else:
+            self.video_label.unsetCursor()
+
         logger.info("All ROI shapes cleared")
 
     def keyPressEvent(self, event):
@@ -3337,11 +6639,13 @@ class MainWindow(QMainWindow):
         self.yolo_custom_model_widget.setVisible(is_custom)
 
     def select_yolo_custom_model(self):
-        start_dir = (
-            os.path.dirname(self.yolo_custom_model_line.text())
-            if self.yolo_custom_model_line.text()
-            else os.path.expanduser("~")
-        )
+        # Default to models directory, or current model location if set
+        start_dir = get_models_directory()
+        if self.yolo_custom_model_line.text():
+            current_path = resolve_model_path(self.yolo_custom_model_line.text())
+            if os.path.exists(current_path):
+                start_dir = os.path.dirname(current_path)
+
         fp, _ = QFileDialog.getOpenFileName(
             self,
             "Select YOLO Model",
@@ -3349,7 +6653,61 @@ class MainWindow(QMainWindow):
             "PyTorch Model Files (*.pt *.pth);;All Files (*)",
         )
         if fp:
-            self.yolo_custom_model_line.setText(fp)
+            # Check if model is outside the archive
+            models_dir = get_models_directory()
+            try:
+                rel_path = os.path.relpath(fp, models_dir)
+                is_in_archive = not rel_path.startswith("..")
+            except (ValueError, TypeError):
+                is_in_archive = False
+
+            if not is_in_archive:
+                # Ask user if they want to copy to archive
+                reply = QMessageBox.question(
+                    self,
+                    "Copy Model to Archive?",
+                    f"The selected model is outside the local model archive.\n\n"
+                    f"Would you like to copy it to the archive at:\n{models_dir}\n\n"
+                    f"This makes presets portable across devices.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+
+                if reply == QMessageBox.Yes:
+                    import shutil
+
+                    filename = os.path.basename(fp)
+                    dest_path = os.path.join(models_dir, filename)
+
+                    # Handle duplicate filenames
+                    if os.path.exists(dest_path):
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        while os.path.exists(dest_path):
+                            dest_path = os.path.join(
+                                models_dir, f"{base}_{counter}{ext}"
+                            )
+                            counter += 1
+
+                    try:
+                        shutil.copy2(fp, dest_path)
+                        fp = dest_path
+                        logger.info(f"Copied model to archive: {dest_path}")
+                        QMessageBox.information(
+                            self,
+                            "Model Copied",
+                            f"Model copied to archive as:\n{os.path.basename(dest_path)}",
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to copy model: {e}")
+                        QMessageBox.warning(
+                            self,
+                            "Copy Failed",
+                            f"Could not copy model to archive:\n{e}\n\nUsing original path.",
+                        )
+
+            # Store relative path if model is in archive (portable across devices)
+            self.yolo_custom_model_line.setText(make_model_path_relative(fp))
 
     def toggle_histogram_window(self):
         if self.histogram_window is None:
@@ -3381,13 +6739,55 @@ class MainWindow(QMainWindow):
 
     def toggle_preview(self, checked):
         if checked:
-            self.start_tracking(preview_mode=True)
-            self.btn_preview.setText("Stop Preview")
-            self.btn_start.setEnabled(False)
+            # Warn user that preview doesn't save config
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("Preview Mode")
+            msg.setText(
+                "Preview mode will run forward tracking only without saving configuration."
+            )
+            msg.setInformativeText(
+                "Preview features:\n"
+                "• Forward pass only (no backward tracking)\n"
+                "• Configuration is NOT saved\n"
+                "• No CSV output\n\n"
+                "Use 'Run Full Tracking' to save results and config."
+            )
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            msg.setDefaultButton(QMessageBox.Ok)
+
+            if msg.exec() == QMessageBox.Ok:
+                self.start_tracking(preview_mode=True)
+                self.btn_preview.setText("Stop Preview")
+                self.btn_start.setEnabled(False)
+            else:
+                self.btn_preview.setChecked(False)
         else:
             self.stop_tracking()
             self.btn_preview.setText("Preview Mode")
             self.btn_start.setEnabled(True)
+
+    def toggle_tracking(self, checked):
+        if checked:
+            # If preview is active, stop it first
+            if self.btn_preview.isChecked():
+                self.btn_preview.setChecked(False)
+                self.btn_preview.setText("Preview Mode")
+                self.stop_tracking()
+
+            self.btn_start.setText("Stop Tracking")
+            self.btn_preview.setEnabled(False)
+            self.start_full()
+
+            if not (self.tracking_worker and self.tracking_worker.isRunning()):
+                # Tracking did not start (e.g., no video or config save cancelled)
+                self.btn_start.blockSignals(True)
+                self.btn_start.setChecked(False)
+                self.btn_start.blockSignals(False)
+                self.btn_start.setText("Start Full Tracking")
+                self.btn_preview.setEnabled(True)
+        else:
+            self.stop_tracking()
 
     def toggle_debug_logging(self, checked):
         if checked:
@@ -3400,20 +6800,25 @@ class MainWindow(QMainWindow):
     def _on_visualization_mode_changed(self, state):
         """Handle visualization-free mode toggle."""
         is_viz_free = self.chk_visualization_free.isChecked()
+        is_preview_active = self.btn_preview.isChecked()
+        is_tracking_active = self.tracking_worker and self.tracking_worker.isRunning()
 
-        # Disable all visualization options when in viz-free mode
-        self.chk_show_circles.setEnabled(not is_viz_free)
-        self.chk_show_orientation.setEnabled(not is_viz_free)
-        self.chk_show_trajectories.setEnabled(not is_viz_free)
-        self.chk_show_labels.setEnabled(not is_viz_free)
-        self.chk_show_state.setEnabled(not is_viz_free)
-        self.chk_show_kalman_uncertainty.setEnabled(not is_viz_free)
-        self.chk_show_fg.setEnabled(not is_viz_free)
-        self.chk_show_bg.setEnabled(not is_viz_free)
-        self.chk_show_yolo_obb.setEnabled(not is_viz_free)
+        # Keep display settings visible; only gate their effect at runtime
+        self.g_display.setVisible(True)
 
-        # Show/hide video preview
-        if is_viz_free:
+        # Keep individual checkboxes enabled for pre-configuration
+        self.chk_show_circles.setEnabled(True)
+        self.chk_show_orientation.setEnabled(True)
+        self.chk_show_trajectories.setEnabled(True)
+        self.chk_show_labels.setEnabled(True)
+        self.chk_show_state.setEnabled(True)
+        self.chk_show_kalman_uncertainty.setEnabled(True)
+        self.chk_show_fg.setEnabled(True)
+        self.chk_show_bg.setEnabled(True)
+        self.chk_show_yolo_obb.setEnabled(True)
+
+        # Only affect display during active tracking (not setup/preview)
+        if is_tracking_active and is_viz_free and not is_preview_active:
             # Store current preview if any, then show placeholder
             self._stored_preview_text = (
                 self.video_label.text() if not self.video_label.pixmap() else None
@@ -3426,7 +6831,7 @@ class MainWindow(QMainWindow):
             )
             self.video_label.setStyleSheet("color: #888; font-size: 14px;")
             logger.info("Visualization-Free Mode enabled - Maximum speed processing")
-        else:
+        elif is_tracking_active and not is_viz_free:
             # Restore previous state or default message
             if hasattr(self, "_stored_preview_text") and self._stored_preview_text:
                 self.video_label.setText(self._stored_preview_text)
@@ -3444,6 +6849,10 @@ class MainWindow(QMainWindow):
         video_path = self.file_line.text()
         if video_path:
             self._setup_session_logging(video_path, backward_mode=False)
+            from datetime import datetime
+
+            self._individual_dataset_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.current_detection_cache_path = None
 
         self.start_tracking(preview_mode=False)
 
@@ -3453,39 +6862,205 @@ class MainWindow(QMainWindow):
             self.progress_bar.setVisible(False)
             self.progress_label.setVisible(False)
         self._set_ui_controls_enabled(True)
+        # Ensure UI state is restored after stopping
+        if self.current_video_path:
+            self._apply_ui_state("idle")
+        else:
+            self._apply_ui_state("no_video")
         self.btn_preview.setChecked(False)
         self.btn_preview.setText("Preview Mode")
+        self.btn_start.blockSignals(True)
+        self.btn_start.setChecked(False)
+        self.btn_start.blockSignals(False)
+        self.btn_start.setText("Start Full Tracking")
         self.btn_start.setEnabled(True)
+        self.btn_preview.setEnabled(True)
+        self._individual_dataset_run_id = None
+        self.current_detection_cache_path = None
 
         # Hide stats labels when tracking stops
         self.label_current_fps.setVisible(False)
         self.label_elapsed_time.setVisible(False)
         self.label_eta.setVisible(False)
 
+        # Reset tracking frame size
+        self._tracking_frame_size = None
+
     def _set_ui_controls_enabled(self, enabled: bool):
-        # Disable Main setup
-        self.btn_file.setEnabled(enabled)
-        self.btn_csv.setEnabled(enabled)
-        self.btn_video_out.setEnabled(enabled)
-        self.spin_resize.setEnabled(enabled)
+        if enabled:
+            if self.current_video_path:
+                self._apply_ui_state("idle")
+            else:
+                self._apply_ui_state("no_video")
+            return
 
-        # Disable tabs except for Visualization and maybe some display settings
-        self.tab_detection.setEnabled(enabled)
-        self.tab_tracking.setEnabled(enabled)
-        self.tab_data.setEnabled(enabled)
+        # Disabled state - choose mode based on tracking/preview status
+        if self.tracking_worker and self.tracking_worker.isRunning():
+            if self.btn_preview.isChecked():
+                self._apply_ui_state("preview")
+            else:
+                self._apply_ui_state("tracking")
+        else:
+            self._apply_ui_state("locked")
 
+    def _collect_preview_controls(self):
+        return [
+            self.btn_test_detection,
+            self.slider_timeline,
+            self.btn_first_frame,
+            self.btn_prev_frame,
+            self.btn_play_pause,
+            self.btn_next_frame,
+            self.btn_last_frame,
+            self.btn_random_seek,
+            self.combo_playback_speed,
+            self.spin_start_frame,
+            self.spin_end_frame,
+            self.btn_set_start_current,
+            self.btn_set_end_current,
+            self.btn_reset_range,
+        ]
+
+    def _set_interactive_widgets_enabled(
+        self,
+        enabled: bool,
+        allowlist=None,
+        blocklist=None,
+        remember_state: bool = True,
+    ):
+        allow = set(allowlist or [])
+        block = set(blocklist or [])
+        interactive_types = (
+            QAbstractButton,
+            QLineEdit,
+            QComboBox,
+            QSpinBox,
+            QDoubleSpinBox,
+            QSlider,
+        )
+        widgets = []
+        for widget_type in interactive_types:
+            widgets.extend(self.findChildren(widget_type))
+
+        if enabled and remember_state and self._saved_widget_enabled_states:
+            for widget in widgets:
+                if widget in block:
+                    widget.setEnabled(False)
+                elif widget in allow:
+                    widget.setEnabled(True)
+                elif widget in self._saved_widget_enabled_states:
+                    widget.setEnabled(self._saved_widget_enabled_states[widget])
+            self._saved_widget_enabled_states = {}
+            return
+
+        if not enabled and remember_state:
+            for widget in widgets:
+                if widget in block or widget in allow:
+                    continue
+                self._saved_widget_enabled_states[widget] = widget.isEnabled()
+
+        for widget in widgets:
+            if widget in block:
+                widget.setEnabled(False)
+            elif widget in allow:
+                widget.setEnabled(True)
+            else:
+                widget.setEnabled(enabled)
+
+    def _set_video_interaction_enabled(self, enabled: bool):
+        self._video_interactions_enabled = enabled
+        self.slider_zoom.setEnabled(enabled)
+        self.scroll.setEnabled(enabled)
+        if not enabled:
+            self.video_label.unsetCursor()
+
+    def _prepare_tracking_display(self):
+        """Clear any stale frame before tracking starts."""
+        self.video_label.clear()
+        if self._is_visualization_enabled():
+            self.video_label.setText("")
+            self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+        else:
+            self.video_label.setText(
+                "Visualization Disabled\n\n"
+                "Maximum speed processing mode active.\n"
+                "Real-time stats displayed below."
+            )
+            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+
+    def _is_visualization_enabled(self) -> bool:
+        # Preview should always render frames regardless of visualization-free toggle
+        return (
+            not self.chk_visualization_free.isChecked() or self.btn_preview.isChecked()
+        )
+
+    def _sync_contextual_controls(self):
         # ROI
-        self.btn_start_roi.setEnabled(enabled)
-        self.btn_finish_roi.setEnabled(enabled and self.roi_selection_active)
-        self.btn_clear_roi.setEnabled(enabled)
+        self.btn_finish_roi.setEnabled(self.roi_selection_active)
+        self.btn_undo_roi.setEnabled(len(self.roi_shapes) > 0)
+        self.btn_clear_roi.setEnabled(
+            len(self.roi_shapes) > 0 or self.roi_selection_active
+        )
 
-        # Buttons
-        self.btn_preview.setEnabled(enabled)
-        self.btn_start.setEnabled(enabled)
-        self.btn_stop.setEnabled(not enabled)
+        # Crop video only if ROI exists and video loaded
+        if hasattr(self, "btn_crop_video"):
+            self.btn_crop_video.setEnabled(
+                bool(self.roi_shapes) and bool(self.current_video_path)
+            )
 
-        # Zoom is always enabled
-        self.slider_zoom.setEnabled(True)
+    def _apply_ui_state(self, state: str):
+        self._ui_state = state
+
+        if state == "no_video":
+            extra_allowed = [
+                self.combo_xanylabeling_env,
+                self.btn_refresh_envs,
+                self.btn_open_xanylabeling,
+                self.btn_open_training_dialog,
+                self.line_pose_folder,
+                self.btn_browse_pose_folder,
+                self.btn_open_pose_label,
+            ]
+            self._set_interactive_widgets_enabled(
+                False,
+                allowlist=[self.btn_file, self.btn_load_config] + extra_allowed,
+                remember_state=False,
+            )
+            self.btn_start.setEnabled(False)
+            self._set_video_interaction_enabled(False)
+            self.g_video_player.setVisible(False)
+            return
+
+        if state == "idle":
+            self._set_interactive_widgets_enabled(True)
+            self.btn_start.setEnabled(True)
+            self._set_video_interaction_enabled(True)
+            self._sync_contextual_controls()
+            return
+
+        if state == "tracking":
+            allow = [self.btn_start]
+            if self._is_visualization_enabled():
+                allow.append(self.slider_zoom)
+            self._set_interactive_widgets_enabled(False, allowlist=allow)
+            self.btn_start.setEnabled(True)
+            self._set_video_interaction_enabled(self._is_visualization_enabled())
+            return
+
+        if state == "preview":
+            allow = [self.btn_preview] + list(self._preview_controls)
+            if self._is_visualization_enabled():
+                allow.append(self.slider_zoom)
+            self._set_interactive_widgets_enabled(False, allowlist=allow)
+            self.btn_preview.setEnabled(True)
+            self._set_video_interaction_enabled(self._is_visualization_enabled())
+            return
+
+        # Locked (non-tracking) state: disable all interactive widgets
+        if state == "locked":
+            self._set_interactive_widgets_enabled(False)
+            self._set_video_interaction_enabled(False)
+            return
 
     def _draw_roi_overlay(self, qimage):
         """Draw ROI shapes overlay on a QImage."""
@@ -3508,7 +7083,7 @@ class MainWindow(QMainWindow):
                 painter.setPen(QPen(Qt.cyan, 6))
                 painter.drawPoint(int(cx), int(cy))
             elif shape["type"] == "polygon":
-                from PySide2.QtCore import QPoint
+                from PySide6.QtCore import QPoint
 
                 points = [QPoint(int(x), int(y)) for x, y in shape["params"]]
                 painter.setPen(QPen(Qt.cyan, 2, Qt.DashLine))
@@ -3518,9 +7093,32 @@ class MainWindow(QMainWindow):
         return pix.toImage()
 
     def _apply_roi_mask_to_image(self, qimage):
-        """Apply ROI mask to darken areas outside the ROI."""
+        """Apply ROI visualization - draw boundary overlay for all detection methods.
+
+        Both YOLO and Background Subtraction now show the same cyan boundary overlay
+        for consistent UI experience. The actual masking happens in the tracking pipeline.
+        """
         if self.roi_mask is None or not self.roi_shapes:
             return qimage
+
+        # Use boundary overlay for all detection methods
+        return self._draw_roi_overlay(qimage)
+
+    def _apply_roi_mask_darkening(self, qimage):
+        """Apply ROI mask to darken areas outside the ROI (with caching).
+        Used for background subtraction where the image is actually masked.
+        """
+        if self.roi_mask is None or not self.roi_shapes:
+            return qimage
+
+        # Generate cache key from image pointer and ROI hash
+        frame_id = id(qimage)
+        roi_hash = self._get_roi_hash()
+        cache_key = (frame_id, roi_hash)
+
+        # Return cached result if available
+        if cache_key in self._roi_masked_cache:
+            return self._roi_masked_cache[cache_key]
 
         # Convert QImage to numpy array
         width = qimage.width()
@@ -3533,11 +7131,11 @@ class MainWindow(QMainWindow):
         # Convert to numpy array using buffer protocol
         ptr = qimage.bits()
         if hasattr(ptr, "setsize"):
-            # Older PySide2 versions (sip.voidptr)
+            # Older PySide versions (sip.voidptr)
             ptr.setsize(height * width * 3)
             arr = np.array(ptr).reshape(height, width, 3)
         else:
-            # Newer PySide2 versions (memoryview)
+            # PySide6 and newer versions (memoryview)
             arr = np.frombuffer(ptr, dtype=np.uint8).reshape(height, width, 3)
 
         # Create a copy to modify
@@ -3558,12 +7156,85 @@ class MainWindow(QMainWindow):
         # Create new QImage from modified array
         result = QImage(arr_copy.data, width, height, width * 3, QImage.Format_RGB888)
         # Make a copy to ensure data persistence
-        return result.copy()
+        result_copy = result.copy()
+
+        # Cache the result (limit cache size to prevent memory bloat)
+        if len(self._roi_masked_cache) > 50:
+            # Remove oldest entries
+            self._roi_masked_cache.clear()
+        self._roi_masked_cache[cache_key] = result_copy
+
+        return result_copy
 
     @Slot(int, str)
     def on_progress_update(self, percentage, status_text):
         self.progress_bar.setValue(percentage)
         self.progress_label.setText(status_text)
+
+    @Slot(str, str)
+    def on_tracking_warning(self, title, message):
+        """Display tracking warnings in the UI."""
+        QMessageBox.information(self, title, message)
+
+    def show_gpu_info(self):
+        """Display GPU and acceleration information dialog."""
+        from ..utils.gpu_utils import get_device_info
+
+        info = get_device_info()
+
+        # Build formatted message
+        lines = ["<b>GPU & Acceleration Status</b><br>"]
+
+        # CUDA
+        cuda_status = "✓ Available" if info["cuda_available"] else "✗ Not Available"
+        lines.append(f"<br><b>NVIDIA CUDA:</b> {cuda_status}")
+        if info["cuda_available"] and info.get("cuda_device_count", 0) > 0:
+            lines.append(f"&nbsp;&nbsp;• Devices: {info['cuda_device_count']}")
+            if "cupy_version" in info:
+                lines.append(f"&nbsp;&nbsp;• CuPy: {info['cupy_version']}")
+
+        # TensorRT
+        tensorrt_status = (
+            "✓ Available"
+            if info.get("tensorrt_available", False)
+            else "✗ Not Available"
+        )
+        lines.append(f"<br><b>NVIDIA TensorRT:</b> {tensorrt_status}")
+        if info.get("tensorrt_available", False):
+            lines.append("&nbsp;&nbsp;• 2-5× faster YOLO inference")
+
+        # MPS (Apple Silicon)
+        mps_status = "✓ Available" if info["mps_available"] else "✗ Not Available"
+        lines.append(f"<br><b>Apple MPS:</b> {mps_status}")
+        if info.get("torch_available", False) and "torch_version" in info:
+            lines.append(f"&nbsp;&nbsp;• PyTorch: {info['torch_version']}")
+
+        # CPU Acceleration
+        numba_status = "✓ Available" if info["numba_available"] else "✗ Not Available"
+        lines.append(f"<br><b>CPU JIT (Numba):</b> {numba_status}")
+        if info["numba_available"] and "numba_version" in info:
+            lines.append(f"&nbsp;&nbsp;• Version: {info['numba_version']}")
+
+        # Overall status
+        lines.append("<br><b>Overall Status:</b>")
+        if info["cuda_available"]:
+            lines.append("&nbsp;&nbsp;• Using NVIDIA GPU acceleration")
+        elif info["mps_available"]:
+            lines.append("&nbsp;&nbsp;• Using Apple Silicon GPU acceleration")
+        elif info["numba_available"]:
+            lines.append("&nbsp;&nbsp;• Using CPU JIT compilation")
+        else:
+            lines.append("&nbsp;&nbsp;• Using NumPy (no acceleration)")
+
+        message = "<br>".join(lines)
+
+        # Create message box with rich text
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("GPU & Acceleration Info")
+        msg_box.setTextFormat(Qt.RichText)
+        msg_box.setText(message)
+        msg_box.setIcon(QMessageBox.Information)
+        msg_box.exec()
 
     @Slot(dict)
     def on_stats_update(self, stats):
@@ -3606,6 +7277,10 @@ class MainWindow(QMainWindow):
     def on_new_frame(self, rgb):
         z = max(self.slider_zoom.value() / 100.0, 0.1)
         h, w, _ = rgb.shape
+
+        # Store tracking frame size for fit-to-screen calculation
+        self._tracking_frame_size = (w, h)
+
         qimg = QImage(rgb.data, w, h, w * 3, QImage.Format_RGB888)
 
         # ROI masking is now done in tracking worker - no need to duplicate here
@@ -3613,6 +7288,43 @@ class MainWindow(QMainWindow):
             int(w * z), int(h * z), Qt.KeepAspectRatio, Qt.SmoothTransformation
         )
         self.video_label.setPixmap(QPixmap.fromImage(scaled))
+
+        # Auto-fit to screen on first frame of tracking
+        if self._tracking_first_frame:
+            self._tracking_first_frame = False
+            # Use QTimer to ensure frame is displayed first
+            from PySide6.QtCore import QTimer
+
+            QTimer.singleShot(50, self._fit_image_to_screen)
+
+    def _scale_trajectories_to_original_space(self, trajectories_df, resize_factor):
+        """Scale trajectory coordinates from resized space back to original video space."""
+        if trajectories_df is None or trajectories_df.empty:
+            return trajectories_df
+
+        if resize_factor == 1.0:
+            return trajectories_df  # No scaling needed
+
+        # Scale factor to go from resized -> original is 1/resize_factor
+        scale_factor = 1.0 / resize_factor
+
+        logger.info(
+            f"Scaling trajectories to original video space (resize_factor={resize_factor:.3f}, scale_factor={scale_factor:.3f})"
+        )
+
+        result_df = trajectories_df.copy()
+
+        # Scale X, Y coordinates
+        result_df["X"] = result_df["X"] * scale_factor
+        result_df["Y"] = result_df["Y"] * scale_factor
+
+        # Theta doesn't need scaling (it's an angle)
+        # FrameID doesn't need scaling
+
+        logger.info(
+            f"Scaled {len(result_df)} trajectory points to original video coordinates"
+        )
+        return result_df
 
     def save_trajectories_to_csv(self, trajectories, output_path):
         """Save processed trajectories to CSV.
@@ -3730,85 +7442,328 @@ class MainWindow(QMainWindow):
         cap.release()
 
         current_params = self.get_parameters_dict()
+        resize_factor = self.spin_resize.value()
+        interp_method = self.combo_interpolation_method.currentText().lower()
+        max_gap = self.spin_interpolation_max_gap.value()
 
-        # Convert DataFrames to list of DataFrames (one per trajectory) for resolve_trajectories
-        def prepare_trajs_for_merge(trajs):
-            """Convert trajectories to format expected by resolve_trajectories."""
-            if isinstance(trajs, pd.DataFrame):
-                # Split DataFrame by TrajectoryID into list of DataFrames
-                return [group for _, group in trajs.groupby("TrajectoryID")]
-            else:
-                # Already in list format
-                return trajs
+        # Show progress bar
+        self.progress_bar.setVisible(True)
+        self.progress_label.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Merging trajectories...")
 
-        forward_prepared = prepare_trajs_for_merge(forward_trajs)
-        backward_prepared = prepare_trajs_for_merge(backward_trajs)
-
-        resolved_trajectories = resolve_trajectories(
-            forward_prepared,
-            backward_prepared,
-            video_length=total_frames,
-            params=current_params,
+        # Create and start merge worker thread
+        self.merge_worker = MergeWorker(
+            forward_trajs,
+            backward_trajs,
+            total_frames,
+            current_params,
+            resize_factor,
+            interp_method,
+            max_gap,
         )
+        self.merge_worker.progress_signal.connect(self.on_merge_progress)
+        self.merge_worker.finished_signal.connect(self.on_merge_finished)
+        self.merge_worker.error_signal.connect(self.on_merge_error)
+        self.merge_worker.start()
 
-        # Convert resolved trajectories to DataFrame for interpolation
-        # resolve_trajectories now returns list of DataFrames, concatenate them
-        from ..core.post_processing import interpolate_trajectories
+    def on_merge_progress(self, value, message):
+        """Update progress bar during merge."""
+        self.progress_bar.setValue(value)
+        self.progress_label.setText(message)
 
-        # Convert list of DataFrames to single DataFrame
-        if resolved_trajectories and isinstance(resolved_trajectories, list):
-            if isinstance(resolved_trajectories[0], pd.DataFrame):
-                # Concatenate all trajectory DataFrames
-                # Reassign TrajectoryID to ensure unique IDs
-                for new_id, traj_df in enumerate(resolved_trajectories):
-                    traj_df["TrajectoryID"] = new_id
-                resolved_trajectories = pd.concat(
-                    resolved_trajectories, ignore_index=True
-                )
-            else:
-                # Fallback for old tuple format (shouldn't happen)
-                logger.warning(
-                    "Received tuple format from resolve_trajectories, converting..."
-                )
-                all_data = []
-                for traj_id, traj in enumerate(resolved_trajectories):
-                    for x, y, theta, frame in traj:
-                        all_data.append(
-                            {
-                                "TrajectoryID": traj_id,
-                                "X": x,
-                                "Y": y,
-                                "Theta": theta,
-                                "FrameID": frame,
-                            }
-                        )
-                if all_data:
-                    resolved_trajectories = pd.DataFrame(all_data)
-                else:
-                    resolved_trajectories = []
+    def _on_interpolated_crops_finished(self, result):
+        saved = 0
+        gaps = 0
+        mapping_path = None
+        roi_csv_path = None
+        roi_npz_path = None
+        try:
+            saved = int(result.get("saved", 0))
+            gaps = int(result.get("gaps", 0))
+            mapping_path = result.get("mapping_path")
+            roi_csv_path = result.get("roi_csv_path")
+            roi_npz_path = result.get("roi_npz_path")
+        except Exception:
+            pass
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        logger.info(f"Interpolated individual crops saved: {saved} (gaps: {gaps})")
+        if mapping_path:
+            logger.info(f"Interpolated mapping saved: {mapping_path}")
+        if roi_csv_path:
+            logger.info(f"Interpolated ROIs CSV saved: {roi_csv_path}")
+        if roi_npz_path:
+            logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
 
-        # Apply interpolation if enabled
-        if isinstance(resolved_trajectories, pd.DataFrame):
-            interp_method = self.combo_interpolation_method.currentText().lower()
-            if interp_method != "none":
-                max_gap = self.spin_interpolation_max_gap.value()
-                resolved_trajectories = interpolate_trajectories(
-                    resolved_trajectories, method=interp_method, max_gap=max_gap
-                )
+    def on_merge_error(self, error_message):
+        """Handle merge errors."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        QMessageBox.critical(
+            self, "Merge Error", f"Error during trajectory merging:\n{error_message}"
+        )
+        logger.error(f"Trajectory merge error: {error_message}")
+
+    def on_merge_finished(self, resolved_trajectories):
+        """Handle completion of trajectory merging."""
+        self.progress_label.setText("Saving merged trajectories...")
 
         raw_csv_path = self.csv_line.text()
+        merged_csv_path = None
         if raw_csv_path:
             base, ext = os.path.splitext(raw_csv_path)
-            merged_csv_path = f"{base}_merged.csv"
+            merged_csv_path = f"{base}_final.csv"
             if self.save_trajectories_to_csv(resolved_trajectories, merged_csv_path):
-                # Track initial tracking CSV as temporary (will be replaced by merged version)
-                if raw_csv_path not in self.temporary_files:
+                # Track initial tracking CSV as temporary (only if cleanup enabled)
+                if (
+                    self.chk_cleanup_temp_files.isChecked()
+                    and raw_csv_path not in self.temporary_files
+                ):
                     self.temporary_files.append(raw_csv_path)
-                QMessageBox.information(
-                    self,
-                    "Merged Data Saved",
-                    f"Merged trajectory data has been saved to:\n{merged_csv_path}",
-                )
+                logger.info(f"✓ Merged trajectory data saved to: {merged_csv_path}")
+
+        # Generate video from post-processed trajectories if enabled
+        if self.check_video_output.isChecked() and self.video_out_line.text():
+            self._generate_video_from_trajectories(
+                resolved_trajectories, merged_csv_path
+            )
+        else:
+            # Complete the tracking session without video generation
+            self._finish_tracking_session(final_csv_path=merged_csv_path)
+
+    def _generate_video_from_trajectories(self, trajectories_df, csv_path=None):
+        """
+        Generate annotated video from post-processed trajectories.
+
+        Args:
+            trajectories_df: DataFrame with merged/interpolated trajectories
+            csv_path: Path to the CSV file (optional, for logging)
+        """
+        logger.info("=" * 80)
+        logger.info("Generating video from post-processed trajectories...")
+        logger.info("=" * 80)
+
+        # Ensure progress UI is visible for video generation
+        self.progress_bar.setVisible(True)
+        self.progress_label.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Generating video...")
+        QApplication.processEvents()
+
+        video_path = self.file_line.text()
+        output_path = self.video_out_line.text()
+
+        if not video_path or not output_path:
+            logger.error("Video input or output path not specified")
+            self._finish_tracking_session()
+            return
+
+        # Open video
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            logger.error(f"Failed to open video: {video_path}")
+            self._finish_tracking_session()
+            return
+
+        # Get video properties
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        # Create video writer
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        out = cv2.VideoWriter(output_path, fourcc, fps, (frame_width, frame_height))
+
+        if not out.isOpened():
+            logger.error(f"Failed to create output video: {output_path}")
+            cap.release()
+            self._finish_tracking_session()
+            return
+
+        logger.info(f"Writing video: {frame_width}x{frame_height} @ {fps} FPS")
+        logger.info(f"Total frames: {total_frames}")
+
+        # Get visualization parameters
+        params = self.get_parameters_dict()
+        colors = params.get("TRAJECTORY_COLORS", [])
+        reference_body_size = params.get("REFERENCE_BODY_SIZE", 30.0)
+        resize_factor = params.get("RESIZE_FACTOR", 1.0)
+
+        # Get video visualization settings
+        show_labels = self.check_show_labels.isChecked()
+        show_orientation = self.check_show_orientation.isChecked()
+        show_trails = self.check_show_trails.isChecked()
+        trail_duration_sec = self.spin_trail_duration.value()
+        trail_duration_frames = int(
+            trail_duration_sec * fps
+        )  # Convert seconds to frames
+        marker_size = self.spin_marker_size.value()
+        text_scale = self.spin_text_scale.value()
+        arrow_length = self.spin_arrow_length.value()
+
+        # NOTE: Trajectories in merged CSV are already scaled to original coordinates
+        # (see MergeWorker line ~173: coordinates divided by resize_factor)
+        # So we use them directly without additional scaling
+
+        # Scale drawing parameters by body size
+        # reference_body_size is in original (unresized) coordinates
+        # Video is at original resolution, so use body size directly
+        marker_radius = int(marker_size * reference_body_size)
+        arrow_len = int(arrow_length * reference_body_size)
+        text_size = 0.5 * text_scale
+        marker_thickness = max(2, int(0.15 * reference_body_size))
+
+        # Build lookup for trajectories by frame and track
+        traj_by_frame = {}
+        traj_by_track = {}  # For trails
+        for _, row in trajectories_df.iterrows():
+            frame_num = int(row["FrameID"])
+            track_id = int(row["TrajectoryID"])
+
+            if frame_num not in traj_by_frame:
+                traj_by_frame[frame_num] = []
+            traj_by_frame[frame_num].append(row)
+
+            if track_id not in traj_by_track:
+                traj_by_track[track_id] = []
+            traj_by_track[track_id].append(row)
+
+        # Process video frame by frame
+        for frame_idx in range(total_frames):
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Get trajectories for this frame
+            frame_trajs = traj_by_frame.get(frame_idx, [])
+
+            # Draw trails first (underneath current positions)
+            if show_trails:
+                for traj in frame_trajs:
+                    track_id = int(traj["TrajectoryID"])
+
+                    # Get color for this track
+                    if colors and track_id < len(colors):
+                        color = colors[track_id]
+                    else:
+                        default_colors = [
+                            (0, 255, 0),
+                            (255, 0, 0),
+                            (0, 0, 255),
+                            (255, 255, 0),
+                        ]
+                        color = default_colors[track_id % len(default_colors)]
+
+                    # Get trail points (past N frames based on duration in seconds)
+                    trail_points = []
+                    if track_id in traj_by_track:
+                        for past_row in traj_by_track[track_id]:
+                            past_frame = int(past_row["FrameID"])
+                            if (
+                                frame_idx - trail_duration_frames
+                                <= past_frame
+                                < frame_idx
+                            ):
+                                px, py = past_row["X"], past_row["Y"]
+                                if not pd.isna(px) and not pd.isna(py):
+                                    # Coordinates already in original space from merged CSV
+                                    trail_points.append((int(px), int(py), past_frame))
+
+                    # Draw trail as fading line segments
+                    if len(trail_points) > 1:
+                        trail_points.sort(key=lambda p: p[2])  # Sort by frame
+                        for i in range(len(trail_points) - 1):
+                            pt1 = (trail_points[i][0], trail_points[i][1])
+                            pt2 = (trail_points[i + 1][0], trail_points[i + 1][1])
+
+                            # Calculate opacity based on age
+                            age = frame_idx - trail_points[i][2]
+                            alpha = 1.0 - (age / trail_duration_frames)
+                            faded_color = tuple(int(c * alpha) for c in color)
+
+                            cv2.line(
+                                frame,
+                                pt1,
+                                pt2,
+                                faded_color,
+                                max(1, marker_thickness // 2),
+                            )
+
+            # Draw current positions
+            for traj in frame_trajs:
+                track_id = int(traj["TrajectoryID"])
+                cx, cy = traj["X"], traj["Y"]
+
+                # Skip if NaN
+                if pd.isna(cx) or pd.isna(cy):
+                    continue
+
+                # Coordinates already in original space from merged CSV
+                cx, cy = int(cx), int(cy)
+
+                # Get color for this track
+                if colors and track_id < len(colors):
+                    color = colors[track_id]
+                else:
+                    default_colors = [
+                        (0, 255, 0),
+                        (255, 0, 0),
+                        (0, 0, 255),
+                        (255, 255, 0),
+                    ]
+                    color = default_colors[track_id % len(default_colors)]
+
+                # Draw circle at position
+                cv2.circle(frame, (cx, cy), marker_radius, color, marker_thickness)
+
+                # Draw label
+                if show_labels:
+                    label = f"ID{track_id}"
+                    label_offset = int(marker_radius + 5)
+                    cv2.putText(
+                        frame,
+                        label,
+                        (cx + label_offset, cy - label_offset),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        text_size,
+                        color,
+                        max(1, int(text_scale * 2)),
+                    )
+
+                # Draw orientation if available
+                if show_orientation and "Theta" in traj and not pd.isna(traj["Theta"]):
+                    heading = traj["Theta"]
+                    end_x = int(cx + arrow_len * np.cos(heading))
+                    end_y = int(cy + arrow_len * np.sin(heading))
+                    cv2.arrowedLine(
+                        frame,
+                        (cx, cy),
+                        (end_x, end_y),
+                        color,
+                        marker_thickness,
+                        tipLength=0.3,
+                    )
+
+            # Write frame
+            out.write(frame)
+
+            # Update progress every 30 frames
+            if frame_idx % 30 == 0:
+                progress = int((frame_idx / total_frames) * 100)
+                self.progress_bar.setValue(progress)
+                QApplication.processEvents()
+
+        # Cleanup
+        cap.release()
+        out.release()
+
+        logger.info(f"✓ Video saved to: {output_path}")
+        logger.info("=" * 80)
+
+        # Now finish tracking session
+        self._finish_tracking_session(final_csv_path=csv_path)
 
     @Slot(bool, list, list)
     def on_tracking_finished(self, finished_normally, fps_list, full_traj):
@@ -3819,11 +7774,34 @@ class MainWindow(QMainWindow):
             self.csv_writer_thread.stop()
             self.csv_writer_thread.join()
 
-        if self.btn_preview.isChecked():
+        # Check if this was preview mode
+        was_preview_mode = self.btn_preview.isChecked()
+
+        if was_preview_mode:
             self.btn_preview.setChecked(False)
             self.btn_preview.setText("Preview Mode")
+            # Hide stats labels and re-enable UI for preview mode
+            self.label_current_fps.setVisible(False)
+            self.label_elapsed_time.setVisible(False)
+            self.label_eta.setVisible(False)
+            self._set_ui_controls_enabled(True)
+            self.btn_start.blockSignals(True)
+            self.btn_start.setChecked(False)
+            self.btn_start.blockSignals(False)
+            self.btn_start.setText("Start Full Tracking")
+            self._apply_ui_state("idle" if self.current_video_path else "no_video")
+            if finished_normally:
+                logger.info("Preview completed.")
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Preview Interrupted",
+                    "Preview was stopped or encountered an error.",
+                )
+            gc.collect()
+            return  # Exit early - no post-processing, no backward tracking for preview
 
-        if finished_normally and not self.btn_preview.isChecked():
+        if finished_normally:
             logger.info("Tracking completed successfully.")
             is_backward_mode = (
                 hasattr(self.tracking_worker, "backward_mode")
@@ -3840,7 +7818,13 @@ class MainWindow(QMainWindow):
                     # Use backward CSV for processing
                     base, ext = os.path.splitext(raw_csv_path)
                     csv_to_process = f"{base}_backward{ext}"
+                elif is_backward_enabled and raw_csv_path:
+                    # Forward mode with backward enabled: use _forward.csv
+                    # (tracking writes to _forward.csv when backward is enabled)
+                    base, ext = os.path.splitext(raw_csv_path)
+                    csv_to_process = f"{base}_forward{ext}"
                 else:
+                    # Forward-only mode: use base path
                     csv_to_process = raw_csv_path
 
                 if csv_to_process and os.path.exists(csv_to_process):
@@ -3855,17 +7839,13 @@ class MainWindow(QMainWindow):
                     )
                     logger.info(f"Post-processing stats: {stats}")
 
-                    # Apply interpolation if enabled
-                    interp_method = (
-                        self.combo_interpolation_method.currentText().lower()
-                    )
-                    if interp_method != "none":
-                        max_gap = self.spin_interpolation_max_gap.value()
-                        processed_trajectories = interpolate_trajectories(
-                            processed_trajectories,
-                            method=interp_method,
-                            max_gap=max_gap,
-                        )
+                    # NOTE: Do NOT apply interpolation here if backward tracking will follow
+                    # Interpolation should only be applied AFTER merging (in MergeWorker)
+                    # or in forward-only mode (below). Pre-merge interpolation can affect
+                    # merge candidate detection by filling gaps that should remain as gaps.
+
+                    # NOTE: Do NOT scale to original space yet if backward tracking will happen
+                    # Scaling will be done after merging or in forward-only mode
                 else:
                     # Fallback to old method if CSV not available
                     processed_trajectories, stats = process_trajectories(
@@ -3877,26 +7857,97 @@ class MainWindow(QMainWindow):
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
                     base, ext = os.path.splitext(raw_csv_path)
-                    # Track intermediate forward CSV as temporary
+                    # Track intermediate forward CSV as temporary (only if cleanup enabled)
                     forward_csv = f"{base}_forward{ext}"
-                    if forward_csv not in self.temporary_files:
+                    if (
+                        self.chk_cleanup_temp_files.isChecked()
+                        and forward_csv not in self.temporary_files
+                    ):
                         self.temporary_files.append(forward_csv)
 
                     processed_csv_path = f"{base}_forward_processed{ext}"
-                    # Track processed CSV as temporary
-                    if processed_csv_path not in self.temporary_files:
+                    # Only track processed CSV as temporary if backward tracking will run
+                    # and cleanup is enabled (it will be merged into final file).
+                    # Otherwise, this IS the final file.
+                    if (
+                        is_backward_enabled
+                        and self.chk_cleanup_temp_files.isChecked()
+                        and processed_csv_path not in self.temporary_files
+                    ):
                         self.temporary_files.append(processed_csv_path)
+
                     self.save_trajectories_to_csv(
                         processed_trajectories, processed_csv_path
                     )
 
                 if is_backward_enabled:
                     self.forward_processed_trajs = processed_trajectories
+                    # Log coordinate ranges for debugging
+                    if (
+                        isinstance(processed_trajectories, pd.DataFrame)
+                        and not processed_trajectories.empty
+                    ):
+                        logger.info(
+                            f"Forward trajectories stored for merge: "
+                            f"X range [{processed_trajectories['X'].min():.1f}, {processed_trajectories['X'].max():.1f}], "
+                            f"Y range [{processed_trajectories['Y'].min():.1f}, {processed_trajectories['Y'].max():.1f}]"
+                        )
                     self.start_backward_tracking()
                 else:
+                    # Forward-only mode: Apply interpolation here (no merge step)
+                    from ..core.post_processing import interpolate_trajectories
+
+                    interp_method = (
+                        self.combo_interpolation_method.currentText().lower()
+                    )
+                    if interp_method != "none":
+                        max_gap = self.spin_interpolation_max_gap.value()
+                        processed_trajectories = interpolate_trajectories(
+                            processed_trajectories,
+                            method=interp_method,
+                            max_gap=max_gap,
+                        )
+
+                    # Scale coordinates to original video space (forward-only mode)
+                    resize_factor = self.spin_resize.value()
+                    processed_trajectories = self._scale_trajectories_to_original_space(
+                        processed_trajectories, resize_factor
+                    )
+
+                    # Re-save the scaled trajectories
+                    final_csv_path = None
+                    if raw_csv_path:
+                        base, ext = os.path.splitext(raw_csv_path)
+                        # In forward-only mode, the final output is _forward_processed.csv
+                        final_csv_path = f"{base}_forward_processed{ext}"
+                        self.save_trajectories_to_csv(
+                            processed_trajectories, final_csv_path
+                        )
+                        # Track initial tracking CSV as temporary (only if cleanup enabled)
+                        if (
+                            self.chk_cleanup_temp_files.isChecked()
+                            and raw_csv_path not in self.temporary_files
+                        ):
+                            self.temporary_files.append(raw_csv_path)
+
+                    # Generate video from post-processed trajectories if enabled
+                    if (
+                        self.check_video_output.isChecked()
+                        and self.video_out_line.text()
+                    ):
+                        self._generate_video_from_trajectories(
+                            processed_trajectories, final_csv_path
+                        )
+
                     # Generate dataset if enabled (BEFORE cleanup so files are still available)
                     if self.chk_enable_dataset_gen.isChecked():
-                        self._generate_training_dataset()
+                        self._generate_training_dataset(
+                            override_csv_path=final_csv_path
+                        )
+
+                    # Interpolate occlusions for individual dataset (post-pass)
+                    if self.chk_enable_individual_dataset.isChecked():
+                        self._generate_interpolated_individual_crops(final_csv_path)
 
                     # Clean up session logging - forward-only tracking complete
                     self._cleanup_session_logging()
@@ -3907,24 +7958,40 @@ class MainWindow(QMainWindow):
                     self.label_elapsed_time.setVisible(False)
                     self.label_eta.setVisible(False)
                     self._set_ui_controls_enabled(True)
-                    QMessageBox.information(self, "Done", "Tracking complete.")
+                    logger.info("✓ Tracking complete.")
             else:
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
                     base, ext = os.path.splitext(raw_csv_path)
-                    # Track intermediate backward CSV as temporary
+                    # Track intermediate backward CSV as temporary (only if cleanup enabled)
                     backward_csv = f"{base}_backward{ext}"
-                    if backward_csv not in self.temporary_files:
+                    if (
+                        self.chk_cleanup_temp_files.isChecked()
+                        and backward_csv not in self.temporary_files
+                    ):
                         self.temporary_files.append(backward_csv)
 
                     processed_csv_path = f"{base}_backward_processed{ext}"
-                    # Track processed CSV as temporary
-                    if processed_csv_path not in self.temporary_files:
+                    # Track processed CSV as temporary (only if cleanup enabled)
+                    if (
+                        self.chk_cleanup_temp_files.isChecked()
+                        and processed_csv_path not in self.temporary_files
+                    ):
                         self.temporary_files.append(processed_csv_path)
                     self.save_trajectories_to_csv(
                         processed_trajectories, processed_csv_path
                     )
                 self.backward_processed_trajs = processed_trajectories
+                # Log coordinate ranges for debugging
+                if (
+                    isinstance(processed_trajectories, pd.DataFrame)
+                    and not processed_trajectories.empty
+                ):
+                    logger.info(
+                        f"Backward trajectories stored for merge: "
+                        f"X range [{processed_trajectories['X'].min():.1f}, {processed_trajectories['X'].max():.1f}], "
+                        f"Y range [{processed_trajectories['Y'].min():.1f}, {processed_trajectories['Y'].max():.1f}]"
+                    )
 
                 # Check if both forward and backward trajectories exist for merging
                 has_forward = self.forward_processed_trajs is not None and (
@@ -3941,37 +8008,141 @@ class MainWindow(QMainWindow):
                 )
 
                 if has_forward and has_backward:
+                    # Start merge in background thread (will handle cleanup when done)
                     self.merge_and_save_trajectories()
+                else:
+                    # No merge needed, do cleanup now
+                    # Pass the correct CSV path based on what we processed
+                    self._finish_tracking_session(final_csv_path=processed_csv_path)
 
-                # Generate dataset if enabled (BEFORE cleanup so files are still available)
-                if self.chk_enable_dataset_gen.isChecked():
-                    self._generate_training_dataset()
+    def _finish_tracking_session(self, final_csv_path=None):
+        """Complete tracking session cleanup and UI updates."""
+        # Hide progress elements
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
 
-                # Clean up session logging - backward tracking and merging complete
-                self._cleanup_session_logging()
-                self._cleanup_temporary_files()
+        # Generate dataset if enabled (BEFORE cleanup so files are still available)
+        if self.chk_enable_dataset_gen.isChecked():
+            self._generate_training_dataset(override_csv_path=final_csv_path)
 
-                # Hide stats labels
-                self.label_current_fps.setVisible(False)
-                self.label_elapsed_time.setVisible(False)
-                self.label_eta.setVisible(False)
-                self._set_ui_controls_enabled(True)
-                QMessageBox.information(
-                    self, "Done", "Backward tracking and merging complete."
-                )
-        else:
-            # Hide stats labels
-            self.label_current_fps.setVisible(False)
-            self.label_elapsed_time.setVisible(False)
-            self.label_eta.setVisible(False)
-            self._set_ui_controls_enabled(True)
-            if not finished_normally:
-                QMessageBox.warning(
-                    self,
-                    "Tracking Interrupted",
-                    "Tracking was stopped or encountered an error.",
-                )
-        gc.collect()
+        # Interpolate occlusions for individual dataset (post-pass)
+        if self.chk_enable_individual_dataset.isChecked():
+            self._generate_interpolated_individual_crops(final_csv_path)
+
+        # Clean up session logging
+        self._cleanup_session_logging()
+        self._cleanup_temporary_files()
+
+        # Hide stats labels
+        self.label_current_fps.setVisible(False)
+        self.label_elapsed_time.setVisible(False)
+        self.label_eta.setVisible(False)
+        self._set_ui_controls_enabled(True)
+        self.btn_start.blockSignals(True)
+        self.btn_start.setChecked(False)
+        self.btn_start.blockSignals(False)
+        self.btn_start.setText("Start Full Tracking")
+        self._apply_ui_state("idle" if self.current_video_path else "no_video")
+        logger.info("✓ Tracking session complete.")
+
+    def _generate_interpolated_individual_crops(self, csv_path):
+        """Post-pass interpolation for occluded segments in individual dataset."""
+        try:
+            if not self.chk_individual_interpolate.isChecked():
+                return
+
+            target_csv = None
+            if csv_path and os.path.exists(csv_path):
+                target_csv = csv_path
+            elif self.csv_line.text() and os.path.exists(self.csv_line.text()):
+                target_csv = self.csv_line.text()
+            if not target_csv or not os.path.exists(target_csv):
+                return
+
+            video_path = self.file_line.text()
+            if not video_path or not os.path.exists(video_path):
+                return
+
+            params = self.get_parameters_dict()
+
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.progress_label.setText("Interpolating occluded crops...")
+
+            if hasattr(self, "interp_worker") and self.interp_worker is not None:
+                try:
+                    self.interp_worker.quit()
+                except Exception:
+                    pass
+
+            self.interp_worker = InterpolatedCropsWorker(
+                target_csv,
+                video_path,
+                self.current_detection_cache_path,
+                params,
+            )
+            self.interp_worker.progress_signal.connect(self.on_progress_update)
+            self.interp_worker.finished_signal.connect(
+                self._on_interpolated_crops_finished
+            )
+            self.interp_worker.start()
+        except Exception as e:
+            logger.warning(f"Interpolated individual crops failed: {e}")
+
+    def _interp_angle(self, theta_start, theta_end, t):
+        deg0 = math.degrees(theta_start)
+        deg1 = math.degrees(theta_end)
+        # Treat OBB angles as 180-degree periodic; pick shortest path.
+        candidates = (deg1, deg1 + 180.0, deg1 - 180.0)
+        best_delta = None
+        for cand in candidates:
+            delta = wrap_angle_degs(cand - deg0)
+            if best_delta is None or abs(delta) < abs(best_delta):
+                best_delta = delta
+        return math.radians(deg0 + (best_delta or 0.0) * t)
+
+    def _get_detection_size(self, detection_cache, frame_id, detection_id, params):
+        if detection_cache is None or detection_id is None or pd.isna(detection_id):
+            return None, None
+        try:
+            _, _, shapes, _, obb_corners, detection_ids = detection_cache.get_frame(
+                int(frame_id)
+            )
+        except Exception:
+            return None, None
+
+        idx = None
+        try:
+            for i, did in enumerate(detection_ids):
+                if int(did) == int(detection_id):
+                    idx = i
+                    break
+        except Exception:
+            idx = None
+
+        if idx is None:
+            return None, None
+
+        # YOLO OBB corners
+        if obb_corners and idx < len(obb_corners):
+            c = np.asarray(obb_corners[idx], dtype=np.float32)
+            if c.shape[0] >= 4:
+                w = float(np.linalg.norm(c[1] - c[0]))
+                h = float(np.linalg.norm(c[2] - c[1]))
+                if w < h:
+                    w, h = h, w
+                return w, h
+
+        # Background subtraction shapes
+        if shapes and idx < len(shapes):
+            area, aspect_ratio = shapes[idx][0], shapes[idx][1]
+            if aspect_ratio > 0 and area > 0:
+                ax2 = math.sqrt(4 * area / (math.pi * aspect_ratio))
+                ax1 = aspect_ratio * ax2
+                return ax1, ax2
+
+        return None, None
 
     @Slot(dict)
     def on_histogram_data(self, histogram_data):
@@ -4000,43 +8171,31 @@ class MainWindow(QMainWindow):
 
     def start_backward_tracking(self):
         logger.info(f"=" * 80)
-        logger.info("Starting backward tracking pass...")
+        logger.info("Starting backward tracking pass (using cached detections)...")
         logger.info(f"=" * 80)
 
         video_fp = self.file_line.text()
         if not video_fp:
             return
-        base_name, ext = os.path.splitext(video_fp)
-        reversed_video_path = f"{base_name}_reversed{ext}"
 
-        # Track reversed video as temporary file
-        if reversed_video_path not in self.temporary_files:
-            self.temporary_files.append(reversed_video_path)
-
+        # Use original video (no reversal needed with detection caching)
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
-        self.progress_bar.setRange(0, 0)
-        self.progress_label.setText("Creating reversed video (FFmpeg)...")
+        self.progress_bar.setValue(0)
+        self.progress_label.setText(
+            "Starting backward tracking (using cached detections)..."
+        )
         QApplication.processEvents()
 
-        self.reversal_worker = VideoReversalWorker(video_fp, reversed_video_path)
-        self.reversal_worker.finished.connect(self.on_reversal_finished)
-        self.reversal_worker.start()
-
-    @Slot(bool, str, str)
-    def on_reversal_finished(self, success, output_path, error_message):
-        self.progress_bar.setRange(0, 100)
-        if not success:
-            self.progress_bar.setVisible(False)
-            self.progress_label.setVisible(False)
-            QMessageBox.critical(self, "Error", error_message)
-            return
-        self.progress_label.setText("Starting backward tracking...")
-        QApplication.processEvents()
-        self.start_tracking_on_video(output_path, backward_mode=True)
+        # Start backward tracking directly on original video with cached detections
+        self.start_tracking_on_video(video_fp, backward_mode=True)
 
     def start_tracking(self, preview_mode: bool, backward_mode: bool = False):
-        self.save_config()
+        # Only save config when NOT in preview mode
+        if not preview_mode:
+            if not self.save_config():
+                # User cancelled config save, abort tracking
+                return
         video_fp = self.file_line.text()
         if not video_fp:
             QMessageBox.warning(self, "No video", "Please select a video file first.")
@@ -4049,41 +8208,52 @@ class MainWindow(QMainWindow):
     def start_preview_on_video(self, video_path):
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+
+        # Stop video playback if active
+        if self.is_playing:
+            self._stop_playback()
+
+        # Reset first frame flag for auto-fit
+        self._tracking_first_frame = True
         self.csv_writer_thread = None
         self.tracking_worker = TrackingWorker(
             video_path,
             csv_writer_thread=None,
             video_output_path=None,
             backward_mode=False,
+            detection_cache_path=None,  # No caching in preview mode
+            preview_mode=True,  # Preview mode - frame-by-frame only
         )
-        self.tracking_worker.set_parameters(self.get_parameters_dict())
+        params = self.get_parameters_dict()
+        # Preview should always render frames regardless of visualization-free toggle
+        params["VISUALIZATION_FREE_MODE"] = False
+        self.tracking_worker.set_parameters(params)
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
         self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
+        self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
         self.progress_bar.setValue(0)
         self.progress_label.setText("Preview Mode Active")
 
-        # Update video preview for viz-free mode
-        if self.get_parameters_dict().get("VISUALIZATION_FREE_MODE", False):
-            self.video_label.clear()
-            self.video_label.setText(
-                "Visualization Disabled\n\n"
-                "Maximum speed processing mode active.\n"
-                "Real-time stats displayed below."
-            )
-            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
-
-        self._set_ui_controls_enabled(False)
+        self._prepare_tracking_display()
+        self._apply_ui_state("preview")
         self.tracking_worker.start()
 
     def start_tracking_on_video(self, video_path, backward_mode=False):
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+
+        # Stop video playback if active
+        if self.is_playing:
+            self._stop_playback()
+
+        # Reset first frame flag for auto-fit
+        self._tracking_first_frame = True
 
         # Session logging is already set up in start_full() - don't duplicate here
         # For backward mode, we reuse the same session log
@@ -4105,6 +8275,7 @@ class MainWindow(QMainWindow):
                     "DetectionConfidence",
                     "AssignmentConfidence",
                     "PositionUncertainty",
+                    "DetectionID",
                 ]
             else:
                 hdr = [
@@ -4116,25 +8287,101 @@ class MainWindow(QMainWindow):
                     "Theta",
                     "FrameID",
                     "State",
+                    "DetectionID",
                 ]
             csv_path = self.csv_line.text()
+            base, ext = os.path.splitext(csv_path)
             if backward_mode:
-                base, ext = os.path.splitext(csv_path)
                 csv_path = f"{base}_backward{ext}"
+            elif self.chk_enable_backward.isChecked():
+                # Forward mode with backward tracking enabled - save as _forward.csv
+                csv_path = f"{base}_forward{ext}"
             self.csv_writer_thread = CSVWriterThread(csv_path, header=hdr)
             self.csv_writer_thread.start()
 
-        video_output_path = (
-            self.video_out_line.text()
-            if (self.check_video_output.isChecked() and self.video_out_line.text())
-            else None
+        # Video output is no longer generated during tracking
+        # Instead, it's generated from post-processed trajectories after merging
+        # This ensures the video shows clean, merged trajectories with stable IDs
+        video_output_path = None
+
+        # Generate detection cache path based on video and detection method
+        # Cache is always created for forward tracking to allow reuse on reruns
+        detection_cache_path = None
+        params = self.get_parameters_dict()
+        detection_method = params.get("DETECTION_METHOD", "background_subtraction")
+        advanced_config = params.get("ADVANCED_CONFIG", {})
+        yolo_batching_enabled = detection_method == "yolo_obb" and advanced_config.get(
+            "enable_yolo_batching", True
         )
+        use_cached_detections = self.chk_use_cached_detections.isChecked()
+
+        # Generate model-specific cache name
+        def get_cache_model_id():
+            """Generate a unique identifier for the current detection configuration."""
+            # Include resize factor in cache ID since detections are scale-dependent
+            resize_factor = params.get("RESIZE_FACTOR", 1.0)
+            resize_str = f"r{int(resize_factor*100)}"
+
+            if detection_method == "yolo_obb":
+                yolo_model = params.get("YOLO_MODEL_PATH", "best.pt")
+                model_name = os.path.basename(yolo_model)
+                cache_params = {
+                    "model": model_name,
+                    "conf": params.get("YOLO_CONFIDENCE_THRESHOLD"),
+                    "iou": params.get("YOLO_IOU_THRESHOLD"),
+                    "classes": params.get("YOLO_TARGET_CLASSES"),
+                    "device": params.get("YOLO_DEVICE"),
+                }
+                h = hashlib.md5(
+                    json.dumps(cache_params, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:8]
+                return f"yolo_{model_name.replace('.pt', '')}_{resize_str}_{h}"
+            else:
+                cache_params = {
+                    "learning_rate": params.get("BACKGROUND_LEARNING_RATE"),
+                    "prime_frames": params.get("BACKGROUND_PRIME_FRAMES"),
+                    "dark_on_light": params.get("DARK_ON_LIGHT_BACKGROUND"),
+                    "adaptive": params.get("ENABLE_ADAPTIVE_BACKGROUND"),
+                    "gpu": params.get("ENABLE_GPU_BACKGROUND"),
+                    "min_detections": params.get("MIN_DETECTIONS_TO_START"),
+                    "min_counts": params.get("MIN_DETECTION_COUNTS"),
+                }
+                h = hashlib.md5(
+                    json.dumps(cache_params, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:8]
+                return f"bgsub_{resize_str}_{h}"
+
+        base_name = os.path.splitext(video_path)[0]
+        model_id = get_cache_model_id()
+        base_prefix = os.path.basename(base_name) + "_detection_cache_"
+
+        # Choose a writable directory for cache (prefer video dir, then CSV dir, else temp)
+        cache_dir = os.path.dirname(video_path)
+        if not os.access(cache_dir, os.W_OK):
+            csv_dir = (
+                os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+            )
+            if csv_dir and os.access(csv_dir, os.W_OK):
+                cache_dir = csv_dir
+            else:
+                cache_dir = tempfile.gettempdir()
+                logger.warning(
+                    f"Video directory not writable; using temp cache dir: {cache_dir}"
+                )
+
+        detection_cache_path = os.path.join(cache_dir, f"{base_prefix}{model_id}.npz")
+
+        # Do NOT delete old detection caches; keep all for reuse
+        self.current_detection_cache_path = detection_cache_path
 
         self.tracking_worker = TrackingWorker(
             video_path,
             csv_writer_thread=self.csv_writer_thread,
             video_output_path=video_output_path,
             backward_mode=backward_mode,
+            detection_cache_path=detection_cache_path,
+            preview_mode=False,  # Full tracking mode - batching enabled if applicable
+            use_cached_detections=use_cached_detections,
         )
         self.tracking_worker.set_parameters(self.get_parameters_dict())
         self.parameters_changed.connect(self.tracking_worker.update_parameters)
@@ -4143,6 +8390,7 @@ class MainWindow(QMainWindow):
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
         self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
+        self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
@@ -4151,17 +8399,8 @@ class MainWindow(QMainWindow):
             "Backward Tracking..." if backward_mode else "Forward Tracking..."
         )
 
-        # Update video preview for viz-free mode
-        if self.get_parameters_dict().get("VISUALIZATION_FREE_MODE", False):
-            self.video_label.clear()
-            self.video_label.setText(
-                "Visualization Disabled\n\n"
-                "Maximum speed processing mode active.\n"
-                "Real-time stats displayed below."
-            )
-            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
-
-        self._set_ui_controls_enabled(False)
+        self._prepare_tracking_display()
+        self._apply_ui_state("tracking")
         self.tracking_worker.start()
 
     def get_parameters_dict(self):
@@ -4215,9 +8454,6 @@ class MainWindow(QMainWindow):
         min_respawn_distance_pixels = (
             self.spin_min_respawn_distance.value() * scaled_body_size
         )
-        max_distance_break_pixels = (
-            self.spin_max_distance_break.value() * scaled_body_size
-        )
 
         # Convert time-based velocities to frame-based for tracking
         fps = self.spin_fps.value()
@@ -4228,14 +8464,37 @@ class MainWindow(QMainWindow):
             self.spin_max_velocity_break.value() * scaled_body_size / fps
         )
 
+        # YOLO Batching settings from UI (overrides advanced_config defaults)
+        advanced_config = self.advanced_config.copy()
+        advanced_config["enable_yolo_batching"] = (
+            self.chk_enable_yolo_batching.isChecked()
+        )
+        advanced_config["yolo_batch_size_mode"] = (
+            "auto" if self.combo_yolo_batch_mode.currentIndex() == 0 else "manual"
+        )
+        advanced_config["yolo_manual_batch_size"] = self.spin_yolo_batch_size.value()
+
         return {
+            "ADVANCED_CONFIG": advanced_config,  # Include advanced config for batch optimization
             "DETECTION_METHOD": det_method,
-            "FPS": fps,  # Video frame rate
+            "FPS": fps,  # Acquisition frame rate
+            "START_FRAME": (
+                self.spin_start_frame.value()
+                if self.spin_start_frame.isEnabled()
+                else 0
+            ),
+            "END_FRAME": (
+                self.spin_end_frame.value() if self.spin_end_frame.isEnabled() else None
+            ),
             "YOLO_MODEL_PATH": yolo_path,
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
             "YOLO_TARGET_CLASSES": yolo_cls,
-            "YOLO_DEVICE": self.combo_yolo_device.currentText().split(" ")[0],
+            "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
+            "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[0]
+            != "cpu",
+            "ENABLE_TENSORRT": self.chk_enable_tensorrt.isChecked(),
+            "TENSORRT_MAX_BATCH_SIZE": self.spin_tensorrt_batch.value(),
             "MAX_TARGETS": N,
             "THRESHOLD_VALUE": self.spin_threshold.value(),
             "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
@@ -4248,8 +8507,12 @@ class MainWindow(QMainWindow):
             "ENABLE_POSTPROCESSING": self.enable_postprocessing.isChecked(),
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
             "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
-            "MAX_DISTANCE_BREAK": max_distance_break_pixels,
             "MAX_OCCLUSION_GAP": self.spin_max_occlusion_gap.value(),
+            "MAX_VELOCITY_ZSCORE": self.spin_max_velocity_zscore.value(),
+            "VELOCITY_ZSCORE_WINDOW": self.spin_velocity_zscore_window.value(),
+            "VELOCITY_ZSCORE_MIN_VELOCITY": self.spin_velocity_zscore_min_vel.value()
+            * scaled_body_size
+            / fps,
             "CONTINUITY_THRESHOLD": recovery_search_distance_pixels,
             "MIN_RESPAWN_DISTANCE": min_respawn_distance_pixels,
             "MIN_DETECTION_COUNTS": self.spin_min_detect.value(),
@@ -4309,6 +8572,14 @@ class MainWindow(QMainWindow):
             "ENABLE_HISTOGRAMS": self.enable_histograms.isChecked(),
             "HISTOGRAM_HISTORY_FRAMES": self.spin_histogram_history.value(),
             "ROI_MASK": self.roi_mask,
+            "REFERENCE_BODY_SIZE": reference_body_size,
+            # Conservative trajectory merging parameters (in resized coordinate space)
+            # These are used in resolve_trajectories() for bidirectional merging
+            # AGREEMENT_DISTANCE: max distance for frames to be considered "agreeing"
+            # MIN_OVERLAP_FRAMES: minimum agreeing frames to consider merge candidates
+            "AGREEMENT_DISTANCE": self.spin_merge_overlap_multiplier.value()
+            * scaled_body_size,
+            "MIN_OVERLAP_FRAMES": self.spin_min_overlap_frames.value(),
             # Dataset generation parameters
             "ENABLE_DATASET_GENERATION": self.chk_enable_dataset_gen.isChecked(),
             "DATASET_NAME": self.line_dataset_name.text(),
@@ -4316,6 +8587,13 @@ class MainWindow(QMainWindow):
             "DATASET_OUTPUT_DIR": self.line_dataset_output.text(),
             "DATASET_MAX_FRAMES": self.spin_dataset_max_frames.value(),
             "DATASET_CONF_THRESHOLD": self.spin_dataset_conf_threshold.value(),
+            # Dataset-specific YOLO parameters from advanced config (for export, not tracking)
+            "DATASET_YOLO_CONFIDENCE_THRESHOLD": self.advanced_config.get(
+                "dataset_yolo_confidence_threshold", 0.05
+            ),
+            "DATASET_YOLO_IOU_THRESHOLD": self.advanced_config.get(
+                "dataset_yolo_iou_threshold", 0.5
+            ),
             "DATASET_DIVERSITY_WINDOW": self.spin_dataset_diversity_window.value(),
             "DATASET_INCLUDE_CONTEXT": self.chk_dataset_include_context.isChecked(),
             "DATASET_PROBABILISTIC_SAMPLING": self.chk_dataset_probabilistic.isChecked(),
@@ -4324,6 +8602,33 @@ class MainWindow(QMainWindow):
             "METRIC_HIGH_ASSIGNMENT_COST": self.chk_metric_high_assignment_cost.isChecked(),
             "METRIC_TRACK_LOSS": self.chk_metric_track_loss.isChecked(),
             "METRIC_HIGH_UNCERTAINTY": self.chk_metric_high_uncertainty.isChecked(),
+            # Individual analysis parameters
+            "ENABLE_IDENTITY_ANALYSIS": self.chk_enable_individual_analysis.isChecked(),
+            "IDENTITY_METHOD": self.combo_identity_method.currentText()
+            .lower()
+            .replace(" ", "_")
+            .replace("(", "")
+            .replace(")", ""),
+            "IDENTITY_CROP_SIZE_MULTIPLIER": self.spin_identity_crop_multiplier.value(),
+            "IDENTITY_CROP_MIN_SIZE": self.spin_identity_crop_min.value(),
+            "IDENTITY_CROP_MAX_SIZE": self.spin_identity_crop_max.value(),
+            "COLOR_TAG_MODEL_PATH": self.line_color_tag_model.text(),
+            "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
+            "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
+            "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
+            # Real-time Individual Dataset Generation parameters
+            "ENABLE_INDIVIDUAL_DATASET": self.chk_enable_individual_dataset.isChecked(),
+            "INDIVIDUAL_DATASET_NAME": self.line_individual_dataset_name.text().strip()
+            or "individual_dataset",
+            "INDIVIDUAL_DATASET_OUTPUT_DIR": self.line_individual_output.text(),
+            "INDIVIDUAL_OUTPUT_FORMAT": self.combo_individual_format.currentText().lower(),
+            "INDIVIDUAL_SAVE_INTERVAL": self.spin_individual_interval.value(),
+            "INDIVIDUAL_INTERPOLATE_OCCLUSIONS": self.chk_individual_interpolate.isChecked(),
+            "INDIVIDUAL_CROP_PADDING": self.spin_individual_padding.value(),
+            "INDIVIDUAL_BACKGROUND_COLOR": [
+                int(c) for c in self._background_color
+            ],  # Ensure JSON serializable
+            "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
         }
 
     def load_config(self):
@@ -4341,27 +8646,198 @@ class MainWindow(QMainWindow):
             )
             logger.info(f"Configuration loaded from {config_path}")
 
-    def _load_config_from_file(self, config_path):
-        """Internal method to load config from a specific file path."""
+    def _load_config_from_file(self, config_path, preset_mode=False):
+        """Internal method to load config from a specific file path.
+
+        This method supports both new standardized key names and legacy key names
+        for backward compatibility with older config files.
+
+        Args:
+            config_path: Path to the config/preset file
+            preset_mode: If True, skip loading video paths and ROI data (for organism presets)
+        """
         if not os.path.isfile(config_path):
             return
+
+        def get_cfg(new_key, *legacy_keys, default=None):
+            """Helper to get config value with fallback to legacy keys."""
+            if new_key in cfg:
+                return cfg[new_key]
+            for key in legacy_keys:
+                if key in cfg:
+                    return cfg[key]
+            return default
+
         try:
             with open(config_path, "r") as f:
                 cfg = json.load(f)
-            self.file_line.setText(cfg.get("file_path", ""))
-            self.csv_line.setText(cfg.get("csv_path", ""))
-            self.check_video_output.setChecked(cfg.get("video_output_enabled", False))
-            # Only override video output path if one is saved in config
-            saved_video_path = cfg.get("video_output_path", "")
-            if saved_video_path:
-                self.video_out_line.setText(saved_video_path)
 
-            det_method = cfg.get("detection_method", "background_subtraction")
+            # === FILE MANAGEMENT ===
+            # Skip file paths when loading presets (only load for full configs)
+            if not preset_mode:
+                # Only set paths if they're currently empty (preserve existing paths)
+                if not self.file_line.text().strip():
+                    video_path = get_cfg("file_path", default="")
+                    if video_path:
+                        # Use the same setup logic as browsing for a file
+                        self._setup_video_file(video_path, skip_config_load=True)
+                if not self.csv_line.text().strip():
+                    self.csv_line.setText(get_cfg("csv_path", default=""))
+                self.check_video_output.setChecked(
+                    get_cfg("video_output_enabled", default=False)
+                )
+                saved_video_path = get_cfg("video_output_path", default="")
+                if saved_video_path and not self.video_out_line.text().strip():
+                    self.video_out_line.setText(saved_video_path)
+
+            # === REFERENCE PARAMETERS ===
+            # Only load video-specific reference parameters from configs (not presets)
+            if not preset_mode:
+                # Load FPS if saved in config
+                saved_fps = get_cfg("fps", default=None)
+                if saved_fps is not None:
+                    self.spin_fps.setValue(saved_fps)
+
+                # Load reference body size if saved in config
+                saved_body_size = get_cfg("reference_body_size", default=None)
+                if saved_body_size is not None:
+                    self.spin_reference_body_size.setValue(saved_body_size)
+
+                # Load frame range if saved in config
+                saved_start_frame = get_cfg("start_frame", default=None)
+                if saved_start_frame is not None and self.spin_start_frame.isEnabled():
+                    self.spin_start_frame.setValue(saved_start_frame)
+
+                saved_end_frame = get_cfg("end_frame", default=None)
+                if saved_end_frame is not None and self.spin_end_frame.isEnabled():
+                    self.spin_end_frame.setValue(saved_end_frame)
+
+            # === SYSTEM PERFORMANCE ===
+            self.spin_resize.setValue(get_cfg("resize_factor", default=1.0))
+            self.check_save_confidence.setChecked(
+                get_cfg("save_confidence_metrics", default=True)
+            )
+            self.chk_use_cached_detections.setChecked(
+                get_cfg("use_cached_detections", default=True)
+            )
+            self.chk_visualization_free.setChecked(
+                get_cfg("visualization_free_mode", default=False)
+            )
+
+            # === DETECTION STRATEGY ===
+            det_method = get_cfg("detection_method", default="background_subtraction")
             self.combo_detection_method.setCurrentIndex(
                 0 if det_method == "background_subtraction" else 1
             )
 
-            yolo_model = cfg.get("yolo_model_path", "yolo26s-obb.pt")
+            # === SIZE FILTERING ===
+            self.chk_size_filtering.setChecked(
+                get_cfg("enable_size_filtering", default=False)
+            )
+            self.spin_min_object_size.setValue(
+                get_cfg("min_object_size_multiplier", default=0.3)
+            )
+            self.spin_max_object_size.setValue(
+                get_cfg("max_object_size_multiplier", default=3.0)
+            )
+
+            # === IMAGE ENHANCEMENT ===
+            self.slider_brightness.setValue(int(get_cfg("brightness", default=0.0)))
+            self.slider_contrast.setValue(int(get_cfg("contrast", default=1.0) * 100))
+            self.slider_gamma.setValue(int(get_cfg("gamma", default=1.0) * 100))
+            self.chk_dark_on_light.setChecked(
+                get_cfg("dark_on_light_background", default=True)
+            )
+
+            # === BACKGROUND SUBTRACTION ===
+            self.spin_bg_prime.setValue(
+                get_cfg("background_prime_frames", "bg_prime_frames", default=10)
+            )
+            self.chk_adaptive_bg.setChecked(
+                get_cfg(
+                    "enable_adaptive_background", "adaptive_background", default=True
+                )
+            )
+            self.spin_bg_learning.setValue(
+                get_cfg("background_learning_rate", default=0.001)
+            )
+            self.spin_threshold.setValue(
+                get_cfg("subtraction_threshold", "threshold_value", default=50)
+            )
+
+            # === LIGHTING STABILIZATION ===
+            self.chk_lighting_stab.setChecked(
+                get_cfg(
+                    "enable_lighting_stabilization",
+                    "lighting_stabilization",
+                    default=True,
+                )
+            )
+            self.spin_lighting_smooth.setValue(
+                get_cfg("lighting_smooth_factor", default=0.95)
+            )
+            self.spin_lighting_median.setValue(
+                get_cfg("lighting_median_window", default=5)
+            )
+
+            # === MORPHOLOGY & NOISE ===
+            self.spin_morph_size.setValue(get_cfg("morph_kernel_size", default=5))
+            self.spin_min_contour.setValue(get_cfg("min_contour_area", default=50))
+            self.spin_max_contour_multiplier.setValue(
+                get_cfg("max_contour_multiplier", default=20)
+            )
+
+            # === ADVANCED SEPARATION ===
+            self.chk_conservative_split.setChecked(
+                get_cfg("enable_conservative_split", default=True)
+            )
+            self.spin_conservative_kernel.setValue(
+                get_cfg("conservative_kernel_size", default=3)
+            )
+            self.spin_conservative_erode.setValue(
+                get_cfg(
+                    "conservative_erode_iterations",
+                    "conservative_erode_iter",
+                    default=1,
+                )
+            )
+            self.spin_merge_threshold.setValue(
+                get_cfg("merge_area_threshold", default=1000)
+            )
+            self.chk_additional_dilation.setChecked(
+                get_cfg("enable_additional_dilation", default=False)
+            )
+            self.spin_dilation_kernel_size.setValue(
+                get_cfg("dilation_kernel_size", default=3)
+            )
+            self.spin_dilation_iterations.setValue(
+                get_cfg("dilation_iterations", default=2)
+            )
+
+            # === YOLO CONFIGURATION ===
+            yolo_model = get_cfg("yolo_model_path", default="yolo26s-obb.pt")
+
+            # Resolve model path (handles both relative and absolute)
+            resolved_yolo_model = resolve_model_path(yolo_model)
+
+            # Validate model exists if it's a relative path from preset
+            if preset_mode and not os.path.isabs(yolo_model):
+                if not os.path.exists(resolved_yolo_model):
+                    logger.warning(
+                        f"Preset references non-existent model: {yolo_model}\n"
+                        f"Expected location: {resolved_yolo_model}"
+                    )
+                    QMessageBox.warning(
+                        self,
+                        "Model Not Found",
+                        f"The preset references a model that doesn't exist:\n\n"
+                        f"Model: {yolo_model}\n"
+                        f"Expected at: {resolved_yolo_model}\n\n"
+                        f"Please ensure the model is in your local models archive:\n"
+                        f"{get_models_directory()}",
+                    )
+
+            # Try to find model in combo box
             found = False
             for i in range(self.combo_yolo_model.count() - 1):
                 if self.combo_yolo_model.itemText(i).startswith(yolo_model):
@@ -4369,205 +8845,399 @@ class MainWindow(QMainWindow):
                     found = True
                     break
             if not found:
+                # Model not in dropdown, use custom model
                 self.combo_yolo_model.setCurrentIndex(self.combo_yolo_model.count() - 1)
-                self.yolo_custom_model_line.setText(yolo_model)
+                # Always update custom model line with resolved path
+                self.yolo_custom_model_line.setText(resolved_yolo_model)
 
             self.spin_yolo_confidence.setValue(
-                cfg.get("yolo_confidence_threshold", 0.25)
+                get_cfg("yolo_confidence_threshold", default=0.25)
             )
-            self.spin_yolo_iou.setValue(cfg.get("yolo_iou_threshold", 0.7))
-
-            yolo_cls = cfg.get("yolo_target_classes", None)
+            self.spin_yolo_iou.setValue(get_cfg("yolo_iou_threshold", default=0.7))
+            yolo_cls = get_cfg("yolo_target_classes", default=None)
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
 
-            yolo_dev = cfg.get("yolo_device", "auto")
-            idx = self.combo_yolo_device.findText(yolo_dev, Qt.MatchStartsWith)
-            if idx >= 0:
-                self.combo_yolo_device.setCurrentIndex(idx)
+            # Device selection (skip in preset mode)
+            if not preset_mode:
+                yolo_dev = get_cfg("yolo_device", default="auto")
+                idx = self.combo_device.findText(yolo_dev, Qt.MatchStartsWith)
+                if idx >= 0:
+                    self.combo_device.setCurrentIndex(idx)
 
-            self.spin_fps.setValue(cfg.get("fps", 30.0))  # Video frame rate
-            self.spin_max_targets.setValue(cfg.get("max_targets", 4))
-            self.spin_threshold.setValue(cfg.get("threshold_value", 50))
-            self.spin_morph_size.setValue(cfg.get("morph_kernel_size", 5))
-            self.spin_min_contour.setValue(cfg.get("min_contour_area", 50))
-            self.chk_size_filtering.setChecked(cfg.get("enable_size_filtering", False))
+            # TensorRT
+            self.chk_enable_tensorrt.setChecked(
+                get_cfg("enable_tensorrt", default=False)
+            )
+            self.spin_tensorrt_batch.setValue(
+                get_cfg("tensorrt_max_batch_size", default=16)
+            )
+            # Update TensorRT batch spinner state based on checkbox
+            tensorrt_enabled = self.chk_enable_tensorrt.isChecked()
+            self.spin_tensorrt_batch.setEnabled(tensorrt_enabled)
+            self.lbl_tensorrt_batch.setEnabled(tensorrt_enabled)
 
-            # Load body-size-based parameters
-            self.spin_reference_body_size.setValue(cfg.get("reference_body_size", 20.0))
-            self.spin_min_object_size.setValue(
-                cfg.get("min_object_size_multiplier", 0.3)
+            # YOLO Batching settings
+            self.chk_enable_yolo_batching.setChecked(
+                get_cfg("enable_yolo_batching", default=True)
             )
-            self.spin_max_object_size.setValue(
-                cfg.get("max_object_size_multiplier", 3.0)
+            batch_mode = get_cfg("yolo_batch_size_mode", default="auto")
+            self.combo_yolo_batch_mode.setCurrentIndex(0 if batch_mode == "auto" else 1)
+            self.spin_yolo_batch_size.setValue(
+                get_cfg("yolo_manual_batch_size", default=16)
             )
-            self.spin_max_dist.setValue(cfg.get("max_dist_multiplier", 1.5))
-            self.spin_continuity_thresh.setValue(
-                cfg.get(
-                    "recovery_search_distance_multiplier",
-                    cfg.get("continuity_threshold_multiplier", 0.5),
+            # Update spinner enabled state based on loaded checkbox and combo box values
+            batching_enabled = self.chk_enable_yolo_batching.isChecked()
+            is_manual = self.combo_yolo_batch_mode.currentIndex() == 1
+            self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
+            self.combo_yolo_batch_mode.setEnabled(batching_enabled)
+
+            # === CORE TRACKING ===
+            self.spin_max_targets.setValue(get_cfg("max_targets", default=4))
+            self.spin_max_dist.setValue(
+                get_cfg(
+                    "max_assignment_distance_multiplier",
+                    "max_dist_multiplier",
+                    default=1.5,
                 )
             )
-            self.spin_min_respawn_distance.setValue(
-                cfg.get("min_respawn_distance_multiplier", 2.5)
+            self.spin_continuity_thresh.setValue(
+                get_cfg(
+                    "recovery_search_distance_multiplier",
+                    "continuity_threshold_multiplier",
+                    default=0.5,
+                )
             )
-            self.spin_max_distance_break.setValue(
-                cfg.get("max_distance_break_multiplier", 15.0)
+            self.chk_enable_backward.setChecked(
+                get_cfg("enable_backward_tracking", default=True)
             )
 
-            self.spin_max_contour_multiplier.setValue(
-                cfg.get("max_contour_multiplier", 20)
+            # === KALMAN FILTER ===
+            self.spin_kalman_noise.setValue(
+                get_cfg("kalman_process_noise", "kalman_noise", default=0.03)
             )
+            self.spin_kalman_meas.setValue(
+                get_cfg("kalman_measurement_noise", "kalman_meas_noise", default=0.1)
+            )
+            self.spin_kalman_damping.setValue(
+                get_cfg("kalman_velocity_damping", "kalman_damping", default=0.95)
+            )
+            self.spin_kalman_maturity_age.setValue(
+                get_cfg("kalman_maturity_age", default=5)
+            )
+            self.spin_kalman_initial_velocity_retention.setValue(
+                get_cfg("kalman_initial_velocity_retention", default=0.2)
+            )
+            self.spin_kalman_max_velocity.setValue(
+                get_cfg("kalman_max_velocity_multiplier", default=2.0)
+            )
+            self.spin_kalman_longitudinal_noise.setValue(
+                get_cfg("kalman_longitudinal_noise_multiplier", default=5.0)
+            )
+            self.spin_kalman_lateral_noise.setValue(
+                get_cfg("kalman_lateral_noise_multiplier", default=0.1)
+            )
+
+            # === COST FUNCTION WEIGHTS ===
+            self.spin_Wp.setValue(get_cfg("weight_position", "W_POSITION", default=1.0))
+            self.spin_Wo.setValue(
+                get_cfg("weight_orientation", "W_ORIENTATION", default=1.0)
+            )
+            self.spin_Wa.setValue(get_cfg("weight_area", "W_AREA", default=0.001))
+            self.spin_Wasp.setValue(
+                get_cfg("weight_aspect_ratio", "W_ASPECT", default=0.1)
+            )
+            self.chk_use_mahal.setChecked(
+                get_cfg("use_mahalanobis_distance", "USE_MAHALANOBIS", default=True)
+            )
+
+            # === ASSIGNMENT ALGORITHM ===
+            self.combo_assignment_method.setCurrentIndex(
+                1 if get_cfg("enable_greedy_assignment", default=False) else 0
+            )
+            self.chk_spatial_optimization.setChecked(
+                get_cfg("enable_spatial_optimization", default=False)
+            )
+
+            # === ORIENTATION & MOTION ===
+            self.spin_velocity.setValue(get_cfg("velocity_threshold", default=5.0))
+            self.chk_instant_flip.setChecked(
+                get_cfg("enable_instant_flip", "instant_flip", default=True)
+            )
+            self.spin_max_orient.setValue(
+                get_cfg(
+                    "max_orientation_delta_stopped",
+                    "max_orient_delta_stopped",
+                    default=30.0,
+                )
+            )
+
+            # === TRACK LIFECYCLE ===
+            self.spin_lost_thresh.setValue(
+                get_cfg("lost_frames_threshold", "lost_threshold_frames", default=10)
+            )
+            self.spin_min_respawn_distance.setValue(
+                get_cfg("min_respawn_distance_multiplier", default=2.5)
+            )
+            self.spin_min_detections_to_start.setValue(
+                get_cfg("min_detections_to_start", default=1)
+            )
+            self.spin_min_detect.setValue(
+                get_cfg("min_detect_frames", "min_detect_counts", default=10)
+            )
+            self.spin_min_track.setValue(
+                get_cfg("min_track_frames", "min_track_counts", default=10)
+            )
+
+            # === POST-PROCESSING ===
             self.enable_postprocessing.setChecked(
-                cfg.get("enable_postprocessing", True)
+                get_cfg("enable_postprocessing", default=True)
             )
             self.spin_min_trajectory_length.setValue(
-                cfg.get("min_trajectory_length", 10)
+                get_cfg("min_trajectory_length", default=10)
             )
-            self.spin_max_velocity_break.setValue(cfg.get("max_velocity_break", 50.0))
-            self.spin_max_occlusion_gap.setValue(cfg.get("max_occlusion_gap", 30))
-
-            # Load interpolation settings
-            interp_method = cfg.get("interpolation_method", "None")
+            self.spin_max_velocity_break.setValue(
+                get_cfg("max_velocity_break", default=50.0)
+            )
+            self.spin_max_occlusion_gap.setValue(
+                get_cfg("max_occlusion_gap", default=30)
+            )
+            self.spin_max_velocity_zscore.setValue(
+                get_cfg("max_velocity_zscore", default=0.0)
+            )
+            self.spin_velocity_zscore_window.setValue(
+                get_cfg("velocity_zscore_window", default=10)
+            )
+            self.spin_velocity_zscore_min_vel.setValue(
+                get_cfg("velocity_zscore_min_velocity", default=2.0)
+            )
+            interp_method = get_cfg("interpolation_method", default="None")
             idx = self.combo_interpolation_method.findText(
                 interp_method, Qt.MatchFixedString
             )
             if idx >= 0:
                 self.combo_interpolation_method.setCurrentIndex(idx)
             self.spin_interpolation_max_gap.setValue(
-                cfg.get("interpolation_max_gap", 10)
+                get_cfg("interpolation_max_gap", default=10)
+            )
+            self.chk_cleanup_temp_files.setChecked(
+                get_cfg("cleanup_temp_files", default=True)
             )
 
-            self.spin_min_detect.setValue(cfg.get("min_detect_counts", 10))
-            self.spin_min_detections_to_start.setValue(
-                cfg.get("min_detections_to_start", 1)
+            # === TRAJECTORY MERGING (Conservative Strategy) ===
+            # Agreement distance and min overlap frames for conservative merging
+            self.spin_merge_overlap_multiplier.setValue(
+                get_cfg("merge_agreement_distance_multiplier", default=0.5)
             )
-            self.spin_min_track.setValue(cfg.get("min_track_counts", 10))
-            self.spin_traj_hist.setValue(cfg.get("traj_history", 5))
-            self.spin_bg_prime.setValue(cfg.get("bg_prime_frames", 10))
-            self.chk_lighting_stab.setChecked(cfg.get("lighting_stabilization", True))
-            self.chk_adaptive_bg.setChecked(cfg.get("adaptive_background", True))
-            self.spin_bg_learning.setValue(cfg.get("background_learning_rate", 0.001))
-            self.spin_lighting_smooth.setValue(cfg.get("lighting_smooth_factor", 0.95))
-            self.spin_lighting_median.setValue(cfg.get("lighting_median_window", 5))
-            self.spin_kalman_noise.setValue(cfg.get("kalman_noise", 0.03))
-            self.spin_kalman_meas.setValue(cfg.get("kalman_meas_noise", 0.1))
-            self.spin_kalman_damping.setValue(cfg.get("kalman_damping", 0.95))
-            self.spin_kalman_maturity_age.setValue(cfg.get("kalman_maturity_age", 5))
-            self.spin_kalman_initial_velocity_retention.setValue(
-                cfg.get("kalman_initial_velocity_retention", 0.2)
+            self.spin_min_overlap_frames.setValue(
+                get_cfg("min_overlap_frames", default=5)
             )
-            self.spin_kalman_max_velocity.setValue(
-                cfg.get("kalman_max_velocity_multiplier", 2.0)
+
+            # === VIDEO VISUALIZATION ===
+            self.check_show_labels.setChecked(
+                get_cfg("video_show_labels", default=True)
             )
-            self.spin_kalman_longitudinal_noise.setValue(
-                cfg.get("kalman_longitudinal_noise_multiplier", 5.0)
+            self.check_show_orientation.setChecked(
+                get_cfg("video_show_orientation", default=True)
             )
-            self.spin_kalman_lateral_noise.setValue(
-                cfg.get("kalman_lateral_noise_multiplier", 0.1)
+            self.check_show_trails.setChecked(
+                get_cfg("video_show_trails", default=False)
             )
-            self.spin_resize.setValue(cfg.get("resize_factor", 1.0))
-            self.check_save_confidence.setChecked(
-                cfg.get("save_confidence_metrics", True)
+            self.spin_trail_duration.setValue(
+                get_cfg("video_trail_duration", default=1.0)
             )
-            self.chk_conservative_split.setChecked(
-                cfg.get("enable_conservative_split", True)
+            self.spin_marker_size.setValue(get_cfg("video_marker_size", default=0.3))
+            self.spin_text_scale.setValue(get_cfg("video_text_scale", default=0.5))
+            self.spin_arrow_length.setValue(get_cfg("video_arrow_length", default=0.7))
+
+            # === REAL-TIME ANALYTICS ===
+            self.enable_histograms.setChecked(
+                get_cfg("enable_histograms", default=False)
             )
-            self.spin_merge_threshold.setValue(cfg.get("merge_area_threshold", 1000))
-            self.spin_conservative_kernel.setValue(
-                cfg.get("conservative_kernel_size", 3)
-            )
-            self.spin_conservative_erode.setValue(cfg.get("conservative_erode_iter", 1))
-            self.enable_histograms.setChecked(cfg.get("enable_histograms", False))
             self.spin_histogram_history.setValue(
-                cfg.get("histogram_history_frames", 300)
-            )
-            self.chk_additional_dilation.setChecked(
-                cfg.get("enable_additional_dilation", False)
-            )
-            self.spin_dilation_iterations.setValue(cfg.get("dilation_iterations", 2))
-            self.spin_dilation_kernel_size.setValue(cfg.get("dilation_kernel_size", 3))
-            self.slider_brightness.setValue(int(cfg.get("brightness", 0.0)))
-            self.slider_contrast.setValue(int(cfg.get("contrast", 1.0) * 100))
-            self.slider_gamma.setValue(int(cfg.get("gamma", 1.0) * 100))
-            self.chk_dark_on_light.setChecked(cfg.get("dark_on_light_background", True))
-            self.spin_velocity.setValue(cfg.get("velocity_threshold", 5.0))
-            self.chk_instant_flip.setChecked(cfg.get("instant_flip", True))
-            self.spin_max_orient.setValue(cfg.get("max_orient_delta_stopped", 30.0))
-            self.spin_lost_thresh.setValue(cfg.get("lost_threshold_frames", 10))
-            # min_respawn_distance already loaded in backward compatibility section above
-            self.spin_Wp.setValue(cfg.get("W_POSITION", 1.0))
-            self.spin_Wo.setValue(cfg.get("W_ORIENTATION", 1.0))
-            self.spin_Wa.setValue(cfg.get("W_AREA", 0.001))
-            self.spin_Wasp.setValue(cfg.get("W_ASPECT", 0.1))
-            self.chk_use_mahal.setChecked(cfg.get("USE_MAHALANOBIS", True))
-
-            # Assignment algorithm settings
-            self.combo_assignment_method.setCurrentIndex(
-                1 if cfg.get("enable_greedy_assignment", False) else 0
-            )
-            self.chk_spatial_optimization.setChecked(
-                cfg.get("enable_spatial_optimization", False)
+                get_cfg("histogram_history_frames", default=300)
             )
 
-            self.chk_show_fg.setChecked(cfg.get("show_fg", True))
-            self.chk_show_bg.setChecked(cfg.get("show_bg", True))
-            self.chk_show_circles.setChecked(cfg.get("show_circles", True))
-            self.chk_show_orientation.setChecked(cfg.get("show_orientation", True))
-            self.chk_show_yolo_obb.setChecked(cfg.get("show_yolo_obb", False))
-            self.chk_show_trajectories.setChecked(cfg.get("show_trajectories", True))
-            self.chk_show_labels.setChecked(cfg.get("show_labels", True))
-            self.chk_show_state.setChecked(cfg.get("show_state", True))
+            # === VISUALIZATION OVERLAYS ===
+            self.chk_show_circles.setChecked(
+                get_cfg("show_track_markers", "show_circles", default=True)
+            )
+            self.chk_show_orientation.setChecked(
+                get_cfg("show_orientation_lines", "show_orientation", default=True)
+            )
+            self.chk_show_trajectories.setChecked(
+                get_cfg("show_trajectory_trails", "show_trajectories", default=True)
+            )
+            self.chk_show_labels.setChecked(
+                get_cfg("show_id_labels", "show_labels", default=True)
+            )
+            self.chk_show_state.setChecked(
+                get_cfg("show_state_text", "show_state", default=True)
+            )
             self.chk_show_kalman_uncertainty.setChecked(
-                cfg.get("show_kalman_uncertainty", False)
+                get_cfg("show_kalman_uncertainty", default=False)
             )
-            self.chk_debug_logging.setChecked(cfg.get("debug_logging", False))
-            self.chk_visualization_free.setChecked(
-                cfg.get("visualization_free_mode", False)
+            self.chk_show_fg.setChecked(
+                get_cfg("show_foreground_mask", "show_fg", default=True)
             )
-            self.chk_cleanup_temp_files.setChecked(cfg.get("cleanup_temp_files", True))
-            self.chk_enable_backward.setChecked(
-                cfg.get("enable_backward_tracking", True)
+            self.chk_show_bg.setChecked(
+                get_cfg("show_background_model", "show_bg", default=True)
             )
-            self.slider_zoom.setValue(int(cfg.get("zoom_factor", 1.0) * 100))
+            self.chk_show_yolo_obb.setChecked(get_cfg("show_yolo_obb", default=False))
+            self.spin_traj_hist.setValue(
+                get_cfg("trajectory_history_seconds", "traj_history", default=5)
+            )
+            self.chk_debug_logging.setChecked(get_cfg("debug_logging", default=False))
+            self.slider_zoom.setValue(int(get_cfg("zoom_factor", default=1.0) * 100))
 
-            # Dataset generation parameters
+            # === DATASET GENERATION ===
             self.chk_enable_dataset_gen.setChecked(
-                cfg.get("enable_dataset_generation", False)
+                get_cfg("enable_dataset_generation", default=False)
             )
-            self.line_dataset_name.setText(cfg.get("dataset_name", ""))
+            self.line_dataset_name.setText(get_cfg("dataset_name", default=""))
             self.line_dataset_class_name.setText(
-                cfg.get("dataset_class_name", "object")
+                get_cfg("dataset_class_name", default="object")
             )
-            self.line_dataset_output.setText(cfg.get("dataset_output_dir", ""))
-            self.spin_dataset_max_frames.setValue(cfg.get("dataset_max_frames", 100))
+            # Skip output directory in preset mode
+            if not preset_mode:
+                self.line_dataset_output.setText(
+                    get_cfg("dataset_output_dir", default="")
+                )
+            self.spin_dataset_max_frames.setValue(
+                get_cfg("dataset_max_frames", default=100)
+            )
             self.spin_dataset_conf_threshold.setValue(
-                cfg.get("dataset_conf_threshold", 0.5)
+                get_cfg(
+                    "dataset_confidence_threshold",
+                    "dataset_conf_threshold",
+                    default=0.5,
+                )
             )
+            # Note: dataset YOLO conf/IOU now in advanced_config.json, not per-video config
             self.spin_dataset_diversity_window.setValue(
-                cfg.get("dataset_diversity_window", 30)
+                get_cfg("dataset_diversity_window", default=30)
             )
             self.chk_dataset_include_context.setChecked(
-                cfg.get("dataset_include_context", True)
+                get_cfg("dataset_include_context", default=True)
             )
             self.chk_dataset_probabilistic.setChecked(
-                cfg.get("dataset_probabilistic_sampling", True)
+                get_cfg("dataset_probabilistic_sampling", default=True)
             )
             self.chk_metric_low_confidence.setChecked(
-                cfg.get("metric_low_confidence", True)
+                get_cfg("metric_low_confidence", default=True)
             )
             self.chk_metric_count_mismatch.setChecked(
-                cfg.get("metric_count_mismatch", True)
+                get_cfg("metric_count_mismatch", default=True)
             )
             self.chk_metric_high_assignment_cost.setChecked(
-                cfg.get("metric_high_assignment_cost", True)
+                get_cfg("metric_high_assignment_cost", default=True)
             )
-            self.chk_metric_track_loss.setChecked(cfg.get("metric_track_loss", True))
+            self.chk_metric_track_loss.setChecked(
+                get_cfg("metric_track_loss", default=True)
+            )
             self.chk_metric_high_uncertainty.setChecked(
-                cfg.get("metric_high_uncertainty", False)
+                get_cfg("metric_high_uncertainty", default=False)
             )
 
-            # Load ROI shapes
+            # === INDIVIDUAL ANALYSIS ===
+            self.chk_enable_individual_analysis.setChecked(
+                get_cfg("enable_identity_analysis", default=False)
+            )
+            method_map = {
+                "none_disabled": 0,
+                "color_tags_yolo": 1,
+                "apriltags": 2,
+                "custom": 3,
+            }
+            identity_method = get_cfg("identity_method", default="none_disabled")
+            self.combo_identity_method.setCurrentIndex(
+                method_map.get(identity_method, 0)
+            )
+            self.spin_identity_crop_multiplier.setValue(
+                get_cfg("identity_crop_size_multiplier", default=3.0)
+            )
+            self.spin_identity_crop_min.setValue(
+                get_cfg("identity_crop_min_size", default=64)
+            )
+            self.spin_identity_crop_max.setValue(
+                get_cfg("identity_crop_max_size", default=256)
+            )
+            # Skip model path in preset mode
+            if not preset_mode and not self.line_color_tag_model.text().strip():
+                color_tag_model = get_cfg("color_tag_model_path", default="")
+                if color_tag_model:
+                    # Resolve model path
+                    resolved_path = resolve_model_path(color_tag_model)
+                    self.line_color_tag_model.setText(resolved_path)
+            elif preset_mode:
+                # For presets, resolve but also validate
+                color_tag_model = get_cfg("color_tag_model_path", default="")
+                if color_tag_model:
+                    resolved_path = resolve_model_path(color_tag_model)
+
+                    # Validate if it's a relative path
+                    if not os.path.isabs(color_tag_model) and not os.path.exists(
+                        resolved_path
+                    ):
+                        logger.warning(
+                            f"Preset references non-existent color tag model: {color_tag_model}\n"
+                            f"Expected location: {resolved_path}"
+                        )
+                        # Don't show dialog for color tag model since it's optional
+                        # Just log the warning
+                    elif not self.line_color_tag_model.text().strip():
+                        self.line_color_tag_model.setText(resolved_path)
+            self.spin_color_tag_conf.setValue(
+                get_cfg("color_tag_confidence", default=0.5)
+            )
+            apriltag_family = get_cfg("apriltag_family", default="tag36h11")
+            families = [
+                "tag36h11",
+                "tag25h9",
+                "tag16h5",
+                "tagCircle21h7",
+                "tagStandard41h12",
+            ]
+            if apriltag_family in families:
+                self.combo_apriltag_family.setCurrentIndex(
+                    families.index(apriltag_family)
+                )
+            self.spin_apriltag_decimate.setValue(
+                get_cfg("apriltag_decimate", default=1.0)
+            )
+
+            # === REAL-TIME INDIVIDUAL DATASET ===
+            self.chk_enable_individual_dataset.setChecked(
+                get_cfg("enable_individual_dataset", default=False)
+            )
+            self.line_individual_dataset_name.setText(
+                get_cfg("individual_dataset_name", default="individual_dataset")
+            )
+            # Skip output directory in preset mode
+            if not preset_mode:
+                self.line_individual_output.setText(
+                    get_cfg("individual_dataset_output_dir", default="")
+                )
+            format_text = get_cfg("individual_output_format", default="png").upper()
+            format_idx = self.combo_individual_format.findText(format_text)
+            if format_idx >= 0:
+                self.combo_individual_format.setCurrentIndex(format_idx)
+            self.spin_individual_interval.setValue(
+                get_cfg("individual_save_interval", default=1)
+            )
+            self.chk_individual_interpolate.setChecked(
+                get_cfg("individual_interpolate_occlusions", default=True)
+            )
+            self.spin_individual_padding.setValue(
+                get_cfg("individual_crop_padding", default=0.1)
+            )
+            # Load background color
+            bg_color = get_cfg("individual_background_color", default=[0, 0, 0])
+            if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
+                self._background_color = tuple(bg_color)
+            self._update_background_color_button()
+
+            # === ROI ===
             self.roi_shapes = cfg.get("roi_shapes", [])
             if self.roi_shapes:
                 # Regenerate the combined mask from loaded shapes
@@ -4598,7 +9268,24 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.warning(f"Failed to load configuration: {e}")
 
-    def save_config(self):
+    def save_config(
+        self,
+        preset_mode=False,
+        preset_path=None,
+        preset_name=None,
+        preset_description=None,
+    ):
+        """Save current configuration to JSON file.
+
+        Args:
+            preset_mode: If True, skip video paths, device settings, and ROI data (for organism presets)
+            preset_path: If provided, save directly to this path without prompting
+            preset_name: Name for the preset (only used in preset_mode)
+            preset_description: Description for the preset (only used in preset_mode)
+
+        Returns:
+            bool: True if config was saved successfully, False if cancelled or failed
+        """
         yolo_path = (
             self.yolo_custom_model_line.text()
             if self.combo_yolo_model.currentText() == "Custom Model..."
@@ -4610,118 +9297,297 @@ class MainWindow(QMainWindow):
             else None
         )
 
-        cfg = {
-            "file_path": self.file_line.text(),
-            "csv_path": self.csv_line.text(),
-            "video_output_enabled": self.check_video_output.isChecked(),
-            "video_output_path": self.video_out_line.text(),
-            "detection_method": (
-                "background_subtraction"
-                if self.combo_detection_method.currentIndex() == 0
-                else "yolo_obb"
-            ),
-            "yolo_model_path": yolo_path,
-            "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
-            "yolo_iou_threshold": self.spin_yolo_iou.value(),
-            "yolo_target_classes": yolo_cls,
-            "yolo_device": self.combo_yolo_device.currentText().split(" ")[0],
-            "fps": self.spin_fps.value(),  # Video frame rate
-            "max_targets": self.spin_max_targets.value(),
-            "threshold_value": self.spin_threshold.value(),
-            "morph_kernel_size": self.spin_morph_size.value(),
-            "min_contour_area": self.spin_min_contour.value(),
-            "enable_size_filtering": self.chk_size_filtering.isChecked(),
-            # Save body-size reference and multipliers (new format)
-            "reference_body_size": self.spin_reference_body_size.value(),
-            "min_object_size_multiplier": self.spin_min_object_size.value(),
-            "max_object_size_multiplier": self.spin_max_object_size.value(),
-            "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
-            "max_dist_multiplier": self.spin_max_dist.value(),
-            "enable_postprocessing": self.enable_postprocessing.isChecked(),
-            "min_trajectory_length": self.spin_min_trajectory_length.value(),
-            "max_velocity_break": self.spin_max_velocity_break.value(),
-            "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
-            "interpolation_method": self.combo_interpolation_method.currentText(),
-            "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
-            "max_distance_break_multiplier": self.spin_max_distance_break.value(),
-            "recovery_search_distance_multiplier": self.spin_continuity_thresh.value(),
-            "min_detect_counts": self.spin_min_detect.value(),
-            "min_detections_to_start": self.spin_min_detections_to_start.value(),
-            "min_track_counts": self.spin_min_track.value(),
-            "traj_history": self.spin_traj_hist.value(),
-            "bg_prime_frames": self.spin_bg_prime.value(),
-            "lighting_stabilization": self.chk_lighting_stab.isChecked(),
-            "adaptive_background": self.chk_adaptive_bg.isChecked(),
-            "background_learning_rate": self.spin_bg_learning.value(),
-            "lighting_smooth_factor": self.spin_lighting_smooth.value(),
-            "lighting_median_window": self.spin_lighting_median.value(),
-            "kalman_noise": self.spin_kalman_noise.value(),
-            "kalman_meas_noise": self.spin_kalman_meas.value(),
-            "kalman_damping": self.spin_kalman_damping.value(),
-            "kalman_maturity_age": self.spin_kalman_maturity_age.value(),
-            "kalman_initial_velocity_retention": self.spin_kalman_initial_velocity_retention.value(),
-            "kalman_max_velocity_multiplier": self.spin_kalman_max_velocity.value(),
-            "kalman_longitudinal_noise_multiplier": self.spin_kalman_longitudinal_noise.value(),
-            "kalman_lateral_noise_multiplier": self.spin_kalman_lateral_noise.value(),
-            "resize_factor": self.spin_resize.value(),
-            "save_confidence_metrics": self.check_save_confidence.isChecked(),
-            "enable_conservative_split": self.chk_conservative_split.isChecked(),
-            "merge_area_threshold": self.spin_merge_threshold.value(),
-            "conservative_kernel_size": self.spin_conservative_kernel.value(),
-            "conservative_erode_iter": self.spin_conservative_erode.value(),
-            "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
-            "dilation_iterations": self.spin_dilation_iterations.value(),
-            "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
-            "brightness": self.slider_brightness.value(),
-            "contrast": self.slider_contrast.value() / 100.0,
-            "gamma": self.slider_gamma.value() / 100.0,
-            "dark_on_light_background": self.chk_dark_on_light.isChecked(),
-            "velocity_threshold": self.spin_velocity.value(),
-            "instant_flip": self.chk_instant_flip.isChecked(),
-            "max_orient_delta_stopped": self.spin_max_orient.value(),
-            "lost_threshold_frames": self.spin_lost_thresh.value(),
-            "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
-            "W_POSITION": self.spin_Wp.value(),
-            "W_ORIENTATION": self.spin_Wo.value(),
-            "W_AREA": self.spin_Wa.value(),
-            "W_ASPECT": self.spin_Wasp.value(),
-            "USE_MAHALANOBIS": self.chk_use_mahal.isChecked(),
-            "enable_greedy_assignment": self.combo_assignment_method.currentIndex()
-            == 1,
-            "enable_spatial_optimization": self.chk_spatial_optimization.isChecked(),
-            "show_fg": self.chk_show_fg.isChecked(),
-            "show_bg": self.chk_show_bg.isChecked(),
-            "show_circles": self.chk_show_circles.isChecked(),
-            "show_orientation": self.chk_show_orientation.isChecked(),
-            "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
-            "show_trajectories": self.chk_show_trajectories.isChecked(),
-            "show_labels": self.chk_show_labels.isChecked(),
-            "show_state": self.chk_show_state.isChecked(),
-            "show_kalman_uncertainty": self.chk_show_kalman_uncertainty.isChecked(),
-            "visualization_free_mode": self.chk_visualization_free.isChecked(),
-            "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
-            "debug_logging": self.chk_debug_logging.isChecked(),
-            "enable_backward_tracking": self.chk_enable_backward.isChecked(),
-            "zoom_factor": self.slider_zoom.value() / 100.0,
-            "enable_histograms": self.enable_histograms.isChecked(),
-            "histogram_history_frames": self.spin_histogram_history.value(),
-            "roi_shapes": self.roi_shapes,  # Save ROI shapes
-            # Dataset generation parameters
-            "enable_dataset_generation": self.chk_enable_dataset_gen.isChecked(),
-            "dataset_name": self.line_dataset_name.text(),
-            "dataset_class_name": self.line_dataset_class_name.text(),
-            "dataset_output_dir": self.line_dataset_output.text(),
-            "dataset_max_frames": self.spin_dataset_max_frames.value(),
-            "dataset_conf_threshold": self.spin_dataset_conf_threshold.value(),
-            "dataset_diversity_window": self.spin_dataset_diversity_window.value(),
-            "dataset_include_context": self.chk_dataset_include_context.isChecked(),
-            "dataset_probabilistic_sampling": self.chk_dataset_probabilistic.isChecked(),
-            "metric_low_confidence": self.chk_metric_low_confidence.isChecked(),
-            "metric_count_mismatch": self.chk_metric_count_mismatch.isChecked(),
-            "metric_high_assignment_cost": self.chk_metric_high_assignment_cost.isChecked(),
-            "metric_track_loss": self.chk_metric_track_loss.isChecked(),
-            "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
-        }
+        cfg = {}
+
+        # === PRESET METADATA ===
+        # Add name and description when saving as preset
+        if preset_mode:
+            cfg.update(
+                {
+                    "preset_name": preset_name or "Custom",
+                    "description": preset_description or "User-defined custom preset",
+                }
+            )
+
+        # === FILE MANAGEMENT ===
+        # Skip file paths when saving as preset
+        if not preset_mode:
+            cfg.update(
+                {
+                    "file_path": self.file_line.text(),
+                    "csv_path": self.csv_line.text(),
+                    "video_output_enabled": self.check_video_output.isChecked(),
+                    "video_output_path": self.video_out_line.text(),
+                    # Video-specific reference parameters
+                    "fps": self.spin_fps.value(),
+                    "reference_body_size": self.spin_reference_body_size.value(),
+                    # Frame range
+                    "start_frame": (
+                        self.spin_start_frame.value()
+                        if self.spin_start_frame.isEnabled()
+                        else 0
+                    ),
+                    "end_frame": (
+                        self.spin_end_frame.value()
+                        if self.spin_end_frame.isEnabled()
+                        else None
+                    ),
+                }
+            )
+
+        cfg.update(
+            {
+                # === SYSTEM PERFORMANCE ===
+                "resize_factor": self.spin_resize.value(),
+                "save_confidence_metrics": self.check_save_confidence.isChecked(),
+                "use_cached_detections": self.chk_use_cached_detections.isChecked(),
+                "visualization_free_mode": self.chk_visualization_free.isChecked(),
+                # === DETECTION STRATEGY ===
+                "detection_method": (
+                    "background_subtraction"
+                    if self.combo_detection_method.currentIndex() == 0
+                    else "yolo_obb"
+                ),
+                # === SIZE FILTERING ===
+                "enable_size_filtering": self.chk_size_filtering.isChecked(),
+                "min_object_size_multiplier": self.spin_min_object_size.value(),
+                "max_object_size_multiplier": self.spin_max_object_size.value(),
+                # === IMAGE ENHANCEMENT ===
+                "brightness": self.slider_brightness.value(),
+                "contrast": self.slider_contrast.value() / 100.0,
+                "gamma": self.slider_gamma.value() / 100.0,
+                "dark_on_light_background": self.chk_dark_on_light.isChecked(),
+                # === BACKGROUND SUBTRACTION ===
+                "background_prime_frames": self.spin_bg_prime.value(),
+                "enable_adaptive_background": self.chk_adaptive_bg.isChecked(),
+                "background_learning_rate": self.spin_bg_learning.value(),
+                "subtraction_threshold": self.spin_threshold.value(),
+                # === LIGHTING STABILIZATION ===
+                "enable_lighting_stabilization": self.chk_lighting_stab.isChecked(),
+                "lighting_smooth_factor": self.spin_lighting_smooth.value(),
+                "lighting_median_window": self.spin_lighting_median.value(),
+                # === MORPHOLOGY & NOISE ===
+                "morph_kernel_size": self.spin_morph_size.value(),
+                "min_contour_area": self.spin_min_contour.value(),
+                "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
+                # === ADVANCED SEPARATION ===
+                "enable_conservative_split": self.chk_conservative_split.isChecked(),
+                "conservative_kernel_size": self.spin_conservative_kernel.value(),
+                "conservative_erode_iterations": self.spin_conservative_erode.value(),
+                "merge_area_threshold": self.spin_merge_threshold.value(),
+                "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
+                "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
+                "dilation_iterations": self.spin_dilation_iterations.value(),
+                # === YOLO CONFIGURATION ===
+                # Store relative path if model is in archive, otherwise absolute
+                "yolo_model_path": make_model_path_relative(yolo_path),
+                "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
+                "yolo_iou_threshold": self.spin_yolo_iou.value(),
+                "yolo_target_classes": yolo_cls,
+            }
+        )
+
+        # === DEVICE-SPECIFIC SETTINGS ===
+        # Skip device selection when saving as preset
+        if not preset_mode:
+            cfg["yolo_device"] = self.combo_device.currentText().split(" ")[0]
+
+        cfg.update(
+            {
+                # TensorRT
+                "enable_tensorrt": self.chk_enable_tensorrt.isChecked(),
+                "tensorrt_max_batch_size": self.spin_tensorrt_batch.value(),
+                # YOLO Batching
+                "enable_yolo_batching": self.chk_enable_yolo_batching.isChecked(),
+                "yolo_batch_size_mode": (
+                    "auto"
+                    if self.combo_yolo_batch_mode.currentIndex() == 0
+                    else "manual"
+                ),
+                "yolo_manual_batch_size": self.spin_yolo_batch_size.value(),
+                # === CORE TRACKING ===
+                "max_targets": self.spin_max_targets.value(),
+                "max_assignment_distance_multiplier": self.spin_max_dist.value(),
+                "recovery_search_distance_multiplier": self.spin_continuity_thresh.value(),
+                "enable_backward_tracking": self.chk_enable_backward.isChecked(),
+                # === KALMAN FILTER ===
+                "kalman_process_noise": self.spin_kalman_noise.value(),
+                "kalman_measurement_noise": self.spin_kalman_meas.value(),
+                "kalman_velocity_damping": self.spin_kalman_damping.value(),
+                "kalman_maturity_age": self.spin_kalman_maturity_age.value(),
+                "kalman_initial_velocity_retention": self.spin_kalman_initial_velocity_retention.value(),
+                "kalman_max_velocity_multiplier": self.spin_kalman_max_velocity.value(),
+                "kalman_longitudinal_noise_multiplier": self.spin_kalman_longitudinal_noise.value(),
+                "kalman_lateral_noise_multiplier": self.spin_kalman_lateral_noise.value(),
+                # === COST FUNCTION WEIGHTS ===
+                "weight_position": self.spin_Wp.value(),
+                "weight_orientation": self.spin_Wo.value(),
+                "weight_area": self.spin_Wa.value(),
+                "weight_aspect_ratio": self.spin_Wasp.value(),
+                "use_mahalanobis_distance": self.chk_use_mahal.isChecked(),
+                # === ASSIGNMENT ALGORITHM ===
+                "enable_greedy_assignment": self.combo_assignment_method.currentIndex()
+                == 1,
+                "enable_spatial_optimization": self.chk_spatial_optimization.isChecked(),
+                # === ORIENTATION & MOTION ===
+                "velocity_threshold": self.spin_velocity.value(),
+                "enable_instant_flip": self.chk_instant_flip.isChecked(),
+                "max_orientation_delta_stopped": self.spin_max_orient.value(),
+                # === TRACK LIFECYCLE ===
+                "lost_frames_threshold": self.spin_lost_thresh.value(),
+                "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
+                "min_detections_to_start": self.spin_min_detections_to_start.value(),
+                "min_detect_frames": self.spin_min_detect.value(),
+                "min_track_frames": self.spin_min_track.value(),
+                # === POST-PROCESSING ===
+                "enable_postprocessing": self.enable_postprocessing.isChecked(),
+                "min_trajectory_length": self.spin_min_trajectory_length.value(),
+                "max_velocity_break": self.spin_max_velocity_break.value(),
+                "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
+                "max_velocity_zscore": self.spin_max_velocity_zscore.value(),
+                "velocity_zscore_window": self.spin_velocity_zscore_window.value(),
+                "velocity_zscore_min_velocity": self.spin_velocity_zscore_min_vel.value(),
+                "interpolation_method": self.combo_interpolation_method.currentText(),
+                "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
+                "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
+                # === TRAJECTORY MERGING (Conservative Strategy) ===
+                # Agreement distance and min overlap frames for conservative merging
+                "merge_agreement_distance_multiplier": self.spin_merge_overlap_multiplier.value(),
+                "min_overlap_frames": self.spin_min_overlap_frames.value(),
+                # === VIDEO VISUALIZATION ===
+                "video_show_labels": self.check_show_labels.isChecked(),
+                "video_show_orientation": self.check_show_orientation.isChecked(),
+                "video_show_trails": self.check_show_trails.isChecked(),
+                "video_trail_duration": self.spin_trail_duration.value(),
+                "video_marker_size": self.spin_marker_size.value(),
+                "video_text_scale": self.spin_text_scale.value(),
+                "video_arrow_length": self.spin_arrow_length.value(),
+                # === REAL-TIME ANALYTICS ===
+                "enable_histograms": self.enable_histograms.isChecked(),
+                "histogram_history_frames": self.spin_histogram_history.value(),
+                # === VISUALIZATION OVERLAYS ===
+                "show_track_markers": self.chk_show_circles.isChecked(),
+                "show_orientation_lines": self.chk_show_orientation.isChecked(),
+                "show_trajectory_trails": self.chk_show_trajectories.isChecked(),
+                "show_id_labels": self.chk_show_labels.isChecked(),
+                "show_state_text": self.chk_show_state.isChecked(),
+                "show_kalman_uncertainty": self.chk_show_kalman_uncertainty.isChecked(),
+                "show_foreground_mask": self.chk_show_fg.isChecked(),
+                "show_background_model": self.chk_show_bg.isChecked(),
+                "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
+                "trajectory_history_seconds": self.spin_traj_hist.value(),
+                "debug_logging": self.chk_debug_logging.isChecked(),
+                "zoom_factor": self.slider_zoom.value() / 100.0,
+            }
+        )
+
+        # === ROI ===
+        # Skip ROI when saving as preset
+        if not preset_mode:
+            cfg["roi_shapes"] = self.roi_shapes
+
+        cfg.update(
+            {
+                # === DATASET GENERATION ===
+                "enable_dataset_generation": self.chk_enable_dataset_gen.isChecked(),
+                "dataset_name": self.line_dataset_name.text(),
+                "dataset_class_name": self.line_dataset_class_name.text(),
+                "dataset_max_frames": self.spin_dataset_max_frames.value(),
+            }
+        )
+
+        # Dataset output directory (device-specific)
+        if not preset_mode:
+            cfg["dataset_output_dir"] = self.line_dataset_output.text()
+
+        cfg.update(
+            {
+                "dataset_confidence_threshold": self.spin_dataset_conf_threshold.value(),
+                # Note: dataset YOLO conf/IOU now in advanced_config.json, not per-video config
+                "dataset_diversity_window": self.spin_dataset_diversity_window.value(),
+                "dataset_include_context": self.chk_dataset_include_context.isChecked(),
+                "dataset_probabilistic_sampling": self.chk_dataset_probabilistic.isChecked(),
+                "metric_low_confidence": self.chk_metric_low_confidence.isChecked(),
+                "metric_count_mismatch": self.chk_metric_count_mismatch.isChecked(),
+                "metric_high_assignment_cost": self.chk_metric_high_assignment_cost.isChecked(),
+                "metric_track_loss": self.chk_metric_track_loss.isChecked(),
+                "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
+                # === INDIVIDUAL ANALYSIS ===
+                "enable_identity_analysis": self.chk_enable_individual_analysis.isChecked(),
+                "identity_method": self.combo_identity_method.currentText()
+                .lower()
+                .replace(" ", "_")
+                .replace("(", "")
+                .replace(")", ""),
+                "identity_crop_size_multiplier": self.spin_identity_crop_multiplier.value(),
+                "identity_crop_min_size": self.spin_identity_crop_min.value(),
+                "identity_crop_max_size": self.spin_identity_crop_max.value(),
+                "color_tag_confidence": self.spin_color_tag_conf.value(),
+            }
+        )
+
+        # Model paths - save differently for configs vs presets
+        color_tag_path = self.line_color_tag_model.text()
+        if preset_mode:
+            # For presets: always try to make relative if in archive
+            cfg["color_tag_model_path"] = (
+                make_model_path_relative(color_tag_path) if color_tag_path else ""
+            )
+        else:
+            # For configs: store relative if in archive, absolute otherwise
+            cfg["color_tag_model_path"] = (
+                make_model_path_relative(color_tag_path) if color_tag_path else ""
+            )
+
+        cfg.update(
+            {
+                "apriltag_family": self.combo_apriltag_family.currentText(),
+                "apriltag_decimate": self.spin_apriltag_decimate.value(),
+                # === REAL-TIME INDIVIDUAL DATASET ===
+                "enable_individual_dataset": self.chk_enable_individual_dataset.isChecked(),
+                "individual_dataset_name": self.line_individual_dataset_name.text().strip()
+                or "individual_dataset",
+                "individual_output_format": self.combo_individual_format.currentText().lower(),
+            }
+        )
+
+        # Individual output directory (device-specific)
+        if not preset_mode:
+            cfg["individual_dataset_output_dir"] = self.line_individual_output.text()
+
+        cfg.update(
+            {
+                "individual_save_interval": self.spin_individual_interval.value(),
+                "individual_interpolate_occlusions": self.chk_individual_interpolate.isChecked(),
+                "individual_crop_padding": self.spin_individual_padding.value(),
+                "individual_background_color": [
+                    int(c) for c in self._background_color
+                ],  # Ensure JSON serializable
+            }
+        )
+
+        # If preset mode with path provided, save directly
+        if preset_mode and preset_path:
+            try:
+                import tempfile
+
+                os.makedirs(os.path.dirname(preset_path), exist_ok=True)
+                # Write to temp file first, then rename (atomic on most filesystems)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    dir=os.path.dirname(preset_path),
+                    delete=False,
+                    suffix=".tmp",
+                ) as tmp:
+                    json.dump(cfg, tmp, indent=2)
+                    tmp_path = tmp.name
+                os.replace(tmp_path, preset_path)  # Atomic rename
+                logger.info(f"Saved preset to {preset_path}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to save preset: {e}")
+                QMessageBox.critical(self, "Save Error", f"Failed to save preset:\n{e}")
+                return False
 
         # Determine save path: video-based if video selected, otherwise ask user
         video_path = self.file_line.text()
@@ -4730,19 +9596,77 @@ class MainWindow(QMainWindow):
         else:
             default_path = CONFIG_FILENAME
 
-        config_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Configuration", default_path, "JSON Files (*.json)"
-        )
+        config_path = None
+
+        # If default path exists, ask user whether to replace or save elsewhere
+        if default_path and os.path.exists(default_path):
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Question)
+            msg.setWindowTitle("Configuration File Exists")
+            msg.setText(
+                f"A configuration file already exists:\n{os.path.basename(default_path)}"
+            )
+            msg.setInformativeText(
+                "Do you want to replace it or save to a different location?"
+            )
+
+            replace_btn = msg.addButton("Replace Existing", QMessageBox.AcceptRole)
+            save_as_btn = msg.addButton("Save As...", QMessageBox.ActionRole)
+            cancel_btn = msg.addButton(QMessageBox.Cancel)
+            msg.setDefaultButton(replace_btn)
+
+            result = msg.exec()
+            clicked = msg.clickedButton()
+
+            if clicked == replace_btn:
+                config_path = default_path
+            elif clicked == save_as_btn:
+                config_path, _ = QFileDialog.getSaveFileName(
+                    self, "Save Configuration As", default_path, "JSON Files (*.json)"
+                )
+            else:
+                # User clicked Cancel or closed dialog - return False to cancel operation
+                return False
+        else:
+            # No existing file, save directly to default path if available
+            if default_path:
+                config_path = default_path
+            else:
+                # No video selected, ask user where to save
+                config_path, _ = QFileDialog.getSaveFileName(
+                    self, "Save Configuration", CONFIG_FILENAME, "JSON Files (*.json)"
+                )
 
         if config_path:
             try:
-                with open(config_path, "w") as f:
-                    json.dump(cfg, f, indent=2)
+                import tempfile
+
+                # Write to temp file first, then rename (atomic on most filesystems)
+                with tempfile.NamedTemporaryFile(
+                    mode="w",
+                    dir=os.path.dirname(config_path),
+                    delete=False,
+                    suffix=".tmp",
+                ) as tmp:
+                    json.dump(cfg, tmp, indent=2)
+                    tmp_path = tmp.name
+                os.replace(tmp_path, config_path)  # Atomic rename
                 logger.info(
                     f"Configuration saved to {config_path} (including ROI shapes)"
                 )
+                return True
             except Exception as e:
                 logger.warning(f"Failed to save configuration: {e}")
+                # Clean up temp file if save failed
+                try:
+                    if "tmp_path" in locals() and os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except:
+                    pass
+                return False
+        else:
+            # User cancelled file dialog
+            return False
 
     def _setup_session_logging(self, video_path, backward_mode=False):
         """Set up comprehensive logging for the entire tracking session."""
@@ -4796,11 +9720,9 @@ class MainWindow(QMainWindow):
             self.session_log_handler.close()
             self.session_log_handler = None
 
-    def _generate_training_dataset(self):
+    def _generate_training_dataset(self, override_csv_path=None):
         """Generate training dataset from tracking results for active learning."""
         try:
-            from ..utils.dataset_generation import export_dataset, FrameQualityScorer
-
             logger.info("Starting training dataset generation...")
 
             # Validate parameters
@@ -4830,7 +9752,8 @@ class MainWindow(QMainWindow):
                 return
 
             video_path = self.file_line.text()
-            csv_path = self.csv_line.text()
+            # Use override path if provided (e.g. valid processed CSV), otherwise fallback to UI field
+            csv_path = override_csv_path if override_csv_path else self.csv_line.text()
 
             if not video_path or not os.path.exists(video_path):
                 QMessageBox.warning(
@@ -4849,74 +9772,36 @@ class MainWindow(QMainWindow):
             max_frames = self.spin_dataset_max_frames.value()
             diversity_window = self.spin_dataset_diversity_window.value()
             include_context = self.chk_dataset_include_context.isChecked()
-
-            # Load tracking CSV to compute quality scores
-            import pandas as pd
-
-            df = pd.read_csv(csv_path)
-
-            # Initialize quality scorer
-            scorer = FrameQualityScorer(params)
-
-            # Score each frame
-            for frame_id in df["FrameID"].unique():
-                frame_data = df[df["FrameID"] == frame_id]
-
-                # Detection data
-                detection_data = {
-                    "confidences": (
-                        frame_data["DetectionConfidence"].tolist()
-                        if "DetectionConfidence" in frame_data.columns
-                        else []
-                    ),
-                    "count": len(frame_data),
-                }
-
-                # Tracking data (simplified - could be enhanced with actual assignment costs)
-                tracking_data = {
-                    "lost_tracks": int((frame_data["State"] == "lost").sum()),
-                    "uncertainties": (
-                        frame_data["PositionUncertainty"].tolist()
-                        if "PositionUncertainty" in frame_data.columns
-                        else []
-                    ),
-                }
-
-                scorer.score_frame(frame_id, detection_data, tracking_data)
-
-            # Select worst frames with diversity
             probabilistic = self.chk_dataset_probabilistic.isChecked()
-            selected_frames = scorer.get_worst_frames(
-                max_frames, diversity_window, probabilistic=probabilistic
-            )
-
-            if not selected_frames:
-                logger.info("No frames met the quality criteria for export.")
-                return
 
             # Get class name
             class_name = self.line_dataset_class_name.text().strip()
             if not class_name:
                 class_name = "object"
 
-            # Export dataset (non-blocking - runs in background)
-            logger.info(f"Exporting {len(selected_frames)} frames to dataset...")
-            zip_path = export_dataset(
+            # Show progress bar
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.progress_label.setText("Preparing dataset generation...")
+
+            # Create and start dataset generation worker thread
+            self.dataset_worker = DatasetGenerationWorker(
                 video_path=video_path,
                 csv_path=csv_path,
-                frame_ids=selected_frames,
                 output_dir=output_dir,
                 dataset_name=dataset_name,
                 class_name=class_name,
                 params=params,
+                max_frames=max_frames,
+                diversity_window=diversity_window,
                 include_context=include_context,
+                probabilistic=probabilistic,
             )
-
-            logger.info(f"Dataset generation complete: {zip_path}")
-            logger.info(f"Frames exported: {len(selected_frames)}")
-            logger.info(
-                "Next steps: Extract zip, use x-AnyLabeling to review/correct annotations, train improved YOLO model"
-            )
+            self.dataset_worker.progress_signal.connect(self.on_dataset_progress)
+            self.dataset_worker.finished_signal.connect(self.on_dataset_finished)
+            self.dataset_worker.error_signal.connect(self.on_dataset_error)
+            self.dataset_worker.start()
 
         except Exception as e:
             logger.error(f"Dataset generation failed: {e}", exc_info=True)
@@ -4925,6 +9810,43 @@ class MainWindow(QMainWindow):
                 "Dataset Generation Error",
                 f"Failed to generate dataset:\n{str(e)}",
             )
+
+    def on_dataset_progress(self, value, message):
+        """Update progress bar during dataset generation."""
+        self.progress_bar.setValue(value)
+        self.progress_label.setText(message)
+
+    def on_dataset_finished(self, dataset_dir, num_frames):
+        """Handle dataset generation completion."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+
+        logger.info(f"Dataset generation complete: {dataset_dir}")
+        logger.info(f"Frames exported: {num_frames}")
+        logger.info(
+            "Use 'Open Dataset in X-AnyLabeling' button to review/correct annotations"
+        )
+
+        # Optional: Show success message
+        QMessageBox.information(
+            self,
+            "Dataset Generation Complete",
+            f"Successfully generated dataset with {num_frames} frames.\n\n"
+            f"Location: {dataset_dir}\n\n"
+            "Use 'Open Dataset in X-AnyLabeling' to review annotations.",
+        )
+
+    def on_dataset_error(self, error_message):
+        """Handle dataset generation errors."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+
+        logger.error(f"Dataset generation error: {error_message}")
+        QMessageBox.critical(
+            self,
+            "Dataset Generation Error",
+            f"Failed to generate dataset:\n{error_message}",
+        )
 
     def _cleanup_temporary_files(self):
         """Remove temporary files if cleanup is enabled."""
@@ -4997,10 +9919,798 @@ class MainWindow(QMainWindow):
         label.setWordWrap(True)
         label.setStyleSheet(
             "color: #aaa; font-size: 11px; font-weight: normal; "
-            "background-color: #2a2a2a; padding: 8px; border-radius: 4px; "
-            "border-left: 3px solid #4a9eff;"
+            "font-style: italic; padding: 4px 2px; margin: 2px 0px;"
         )
         return label
+
+    def _get_roi_hash(self):
+        """Generate a hash of current ROI configuration for caching."""
+        if not self.roi_shapes:
+            return None
+
+        # Create a simple hash from ROI shapes
+        roi_str = str(
+            [
+                (
+                    s["type"],
+                    (
+                        tuple(s["params"])
+                        if isinstance(s["params"], list)
+                        else s["params"]
+                    ),
+                    s.get("mode", "include"),
+                )
+                for s in self.roi_shapes
+            ]
+        )
+        return hash(roi_str)
+
+    def _invalidate_roi_cache(self):
+        """Invalidate ROI display cache when ROI changes."""
+        self._roi_masked_cache.clear()
+        self._roi_hash = self._get_roi_hash()
+
+    # =========================================================================
+    # PRESET MANAGEMENT
+    # =========================================================================
+
+    def _get_presets_dir(self):
+        """Get the presets directory path."""
+        # Get the repo root (3 levels up from this file)
+        repo_root = os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        )
+        presets_dir = os.path.join(repo_root, "configs")
+        return presets_dir
+
+    def _on_preset_selection_changed(self, index):
+        """Update description label when preset selection changes."""
+        filepath = self.combo_presets.currentData()
+        if not filepath or not os.path.exists(filepath):
+            self.preset_description_label.setVisible(False)
+            return
+
+        try:
+            with open(filepath, "r") as f:
+                cfg = json.load(f)
+
+            description = cfg.get("description", "")
+            if description:
+                self.preset_description_label.setText(f"📋 {description}")
+                self.preset_description_label.setVisible(True)
+            else:
+                self.preset_description_label.setVisible(False)
+        except:
+            self.preset_description_label.setVisible(False)
+
+    def _populate_preset_combo(self):
+        """Populate the preset combo box by auto-scanning configs folder."""
+        presets_dir = self._get_presets_dir()
+
+        if not os.path.exists(presets_dir):
+            return
+
+        presets = []
+        custom_preset = None
+
+        # Scan all JSON files in configs directory
+        for filename in sorted(os.listdir(presets_dir)):
+            if not filename.endswith(".json"):
+                continue
+
+            filepath = os.path.join(presets_dir, filename)
+
+            try:
+                with open(filepath, "r") as f:
+                    cfg = json.load(f)
+
+                # Get preset name from file, fallback to filename
+                preset_name = cfg.get(
+                    "preset_name",
+                    filename.replace(".json", "").replace("_", " ").title(),
+                )
+
+                # Custom preset gets special treatment (star marker, shown first)
+                if filename == "custom.json":
+                    custom_preset = (f"{preset_name} ★", filepath)
+                else:
+                    presets.append((preset_name, filepath))
+            except Exception as e:
+                logger.warning(f"Failed to load preset {filename}: {e}")
+                continue
+
+        # Populate combo box (custom first, then others alphabetically)
+        self.combo_presets.clear()
+        if custom_preset:
+            self.combo_presets.addItem(custom_preset[0], custom_preset[1])
+        for name, filepath in presets:
+            self.combo_presets.addItem(name, filepath)
+
+    def _load_selected_preset(self):
+        """Load the currently selected preset."""
+        filepath = self.combo_presets.currentData()
+        if not filepath or not os.path.exists(filepath):
+            QMessageBox.warning(
+                self, "Preset Not Found", f"Preset file not found: {filepath}"
+            )
+            return
+
+        # Confirm if current settings differ significantly
+        reply = QMessageBox.question(
+            self,
+            "Load Preset",
+            f"Load preset: {self.combo_presets.currentText()}?\n\n"
+            "This will replace your current parameter values.\n"
+            "(Video-specific configs will still override presets when loading videos)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if reply == QMessageBox.Yes:
+            # Use existing config loader in preset mode
+            self._load_config_from_file(filepath, preset_mode=True)
+
+            # Update status
+            preset_name = self.combo_presets.currentText()
+            self.preset_status_label.setText(f"✓ Loaded: {preset_name}")
+            self.preset_status_label.setStyleSheet(
+                "color: #4a9eff; font-style: italic; font-size: 10px;"
+            )
+            logger.info(f"Loaded preset: {preset_name} from {filepath}")
+
+    def _save_custom_preset(self):
+        """Save current settings as custom preset with user-defined name and description."""
+        from PySide6.QtWidgets import QDialog, QDialogButtonBox, QTextEdit
+
+        # Create dialog for preset metadata
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Save Preset")
+        dialog.setModal(True)
+        dialog_layout = QVBoxLayout(dialog)
+
+        # Name input
+        name_label = QLabel("Preset Name (e.g., 'Danio rerio (Zebrafish)'):")
+        name_label.setStyleSheet("color: #fff; font-weight: bold;")
+        name_input = QLineEdit()
+        name_input.setPlaceholderText("Scientific Name (Common Name)")
+        name_input.setText("Custom")
+
+        # Description input
+        desc_label = QLabel("Description (optional):")
+        desc_label.setStyleSheet("color: #fff; font-weight: bold; margin-top: 10px;")
+        desc_input = QTextEdit()
+        desc_input.setPlaceholderText(
+            "Describe the optimizations or use case for this preset..."
+        )
+        desc_input.setMaximumHeight(80)
+
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+
+        dialog_layout.addWidget(name_label)
+        dialog_layout.addWidget(name_input)
+        dialog_layout.addWidget(desc_label)
+        dialog_layout.addWidget(desc_input)
+        dialog_layout.addWidget(button_box)
+
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        preset_name = name_input.text().strip() or "Custom"
+        description = desc_input.toPlainText().strip() or "User-defined custom preset"
+
+        # Ask user for filename
+        presets_dir = self._get_presets_dir()
+        os.makedirs(presets_dir, exist_ok=True)
+
+        # Generate suggested filename from preset name
+        suggested_filename = preset_name.lower()
+        suggested_filename = suggested_filename.split("(")[
+            0
+        ].strip()  # Remove common name part
+        suggested_filename = suggested_filename.replace(" ", "_").replace(".", "")
+        suggested_filename = "".join(
+            c for c in suggested_filename if c.isalnum() or c == "_"
+        )
+        suggested_filename = suggested_filename or "custom"
+        suggested_path = os.path.join(presets_dir, f"{suggested_filename}.json")
+
+        preset_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Preset As", suggested_path, "JSON Files (*.json)"
+        )
+
+        if not preset_path:
+            return
+
+        custom_path = preset_path
+
+        # Use existing config saver in preset mode with custom metadata
+        success = self.save_config(
+            preset_mode=True,
+            preset_path=custom_path,
+            preset_name=preset_name,
+            preset_description=description,
+        )
+
+        if success:
+            # Refresh combo box to show new preset
+            self._populate_preset_combo()
+            # Select the newly saved preset
+            for i in range(self.combo_presets.count()):
+                item_path = self.combo_presets.itemData(i)
+                if item_path == custom_path:
+                    self.combo_presets.setCurrentIndex(i)
+                    break
+
+            self.preset_status_label.setText(f"✓ Saved: {preset_name}")
+            self.preset_status_label.setStyleSheet(
+                "color: #4a9eff; font-style: italic; font-size: 10px;"
+            )
+
+            filename = os.path.basename(custom_path)
+            is_custom = filename == "custom.json"
+
+            QMessageBox.information(
+                self,
+                "Preset Saved",
+                f"Your settings have been saved as:\n{preset_name}\n\n"
+                f"Location: {custom_path}\n\n"
+                + (
+                    "This preset will be loaded automatically on startup and will appear\n"
+                    "at the top of the preset selector with a ★ indicator."
+                    if is_custom
+                    else "This preset is now available in the preset selector."
+                ),
+            )
+
+    def _load_default_preset_on_startup(self):
+        """Load default preset on application startup."""
+        presets_dir = self._get_presets_dir()
+
+        # Try custom preset first
+        custom_path = os.path.join(presets_dir, "custom.json")
+        if os.path.exists(custom_path):
+            logger.info("Loading custom preset on startup")
+            self._load_config_from_file(custom_path, preset_mode=True)
+            return
+
+        # Fall back to default preset
+        default_path = os.path.join(presets_dir, "default.json")
+        if os.path.exists(default_path):
+            logger.info("Loading default preset on startup")
+            self._load_config_from_file(default_path, preset_mode=True)
+            return
+
+        logger.info("No preset found, using hardcoded defaults")
+
+    # =========================================================================
+    # ROI OPTIMIZATION AND VIDEO CROPPING
+    # =========================================================================
+
+    def _load_advanced_config(self):
+        """Load advanced configuration for power users."""
+        # Store config in the package directory (where this file is located)
+        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        config_path = os.path.join(package_dir, "advanced_config.json")
+
+        default_config = {
+            "roi_crop_warning_threshold": 0.6,  # Warn if ROI is <60% of frame
+            "roi_crop_auto_suggest": True,  # Auto-suggest cropping
+            "roi_crop_remind_every_session": False,  # Remind every time or once
+            "roi_crop_padding_fraction": 0.05,  # Padding as fraction of min(width, height) - typically 5%
+            "video_crop_codec": "libx264",  # Codec for cropped videos (libx264 for quality)
+            "video_crop_crf": 18,  # CRF quality (lower = better, 18 = visually lossless)
+            "video_crop_preset": "medium",  # ffmpeg preset (ultrafast, fast, medium, slow, veryslow)
+            # YOLO Batching - Memory Fractions (device-specific optimization)
+            "mps_memory_fraction": 0.3,  # Conservative 30% of unified memory for MPS (Apple Silicon)
+            "cuda_memory_fraction": 0.7,  # 70% of VRAM for CUDA (NVIDIA GPUs)
+            # Dataset Generation - YOLO Detection Parameters (separate from tracking)
+            "dataset_yolo_confidence_threshold": 0.05,  # Very low - detect all animals including uncertain ones for annotation
+            "dataset_yolo_iou_threshold": 0.5,  # Moderate - remove obvious duplicates but keep borderline cases for manual review
+        }
+
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    user_config = json.load(f)
+                default_config.update(user_config)
+                logger.info(f"Loaded advanced config from {config_path}")
+            except Exception as e:
+                logger.warning(f"Could not load advanced config: {e}")
+        else:
+            # Auto-create advanced_config.json with defaults on first run
+            # This makes the file discoverable for power users who want to customize
+            try:
+                config_dir = os.path.dirname(config_path)
+                os.makedirs(config_dir, exist_ok=True)
+                with open(config_path, "w") as f:
+                    json.dump(default_config, f, indent=2)
+                logger.info(f"Created default advanced config at {config_path}")
+            except Exception as e:
+                logger.warning(f"Could not create advanced config file: {e}")
+
+        return default_config
+
+    def _save_advanced_config(self):
+        """Save advanced configuration."""
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "advanced_config.json",
+        )
+        try:
+            import tempfile
+
+            # Write to temp file first, then rename (atomic on most filesystems)
+            config_dir = os.path.dirname(config_path)
+            os.makedirs(config_dir, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=config_dir, delete=False, suffix=".tmp"
+            ) as tmp:
+                json.dump(self.advanced_config, tmp, indent=2)
+                tmp_path = tmp.name
+            os.replace(tmp_path, config_path)  # Atomic rename
+            logger.info(f"Saved advanced config to {config_path}")
+        except Exception as e:
+            logger.error(f"Could not save advanced config: {e}")
+
+    def _calculate_roi_bounding_box(self, padding=None):
+        """Calculate the bounding box of the current ROI mask with optional padding.
+
+        Args:
+            padding: Fraction of min(width, height) to add as padding (e.g., 0.05 = 5%).
+                    If None, uses value from advanced config.
+
+        Returns:
+            Tuple (x, y, w, h) or None if no ROI
+        """
+        if self.roi_mask is None:
+            return None
+
+        # Find all non-zero points in the mask
+        points = cv2.findNonZero(self.roi_mask)
+        if points is None or len(points) == 0:
+            return None
+
+        # Get bounding rectangle
+        x, y, w, h = cv2.boundingRect(points)
+
+        # Apply padding if requested (helps with detection by providing context)
+        if padding is None:
+            padding = self.advanced_config.get("roi_crop_padding_fraction", 0.05)
+
+        if padding > 0:
+            # Get frame dimensions
+            frame_h, frame_w = self.roi_mask.shape[:2]
+
+            # Calculate padding in pixels based on smaller dimension
+            min_dim = min(frame_w, frame_h)
+            padding_pixels = int(min_dim * padding)
+
+            # Add padding while staying within frame bounds
+            x = max(0, x - padding_pixels)
+            y = max(0, y - padding_pixels)
+            w = min(frame_w - x, w + 2 * padding_pixels)
+            h = min(frame_h - y, h + 2 * padding_pixels)
+
+        return (x, y, w, h)
+
+    def _estimate_roi_efficiency(self):
+        """Estimate the efficiency gain from cropping to ROI.
+
+        Returns:
+            tuple: (roi_coverage_percent, potential_speedup_factor) or (None, None)
+        """
+        if self.roi_mask is None or self.preview_frame_original is None:
+            return (None, None)
+
+        bbox = self._calculate_roi_bounding_box()
+        if bbox is None:
+            return (None, None)
+
+        x, y, w, h = bbox
+        frame_h, frame_w = self.roi_mask.shape
+
+        frame_area = frame_w * frame_h
+        roi_area = w * h
+
+        roi_coverage = roi_area / frame_area
+        # Speedup is roughly inverse of area ratio (simplification, but good estimate)
+        potential_speedup = 1.0 / roi_coverage if roi_coverage > 0 else 1.0
+
+        return (roi_coverage * 100, potential_speedup)
+
+    def _update_roi_optimization_info(self):
+        """Update the ROI optimization label with efficiency information."""
+        coverage, speedup = self._estimate_roi_efficiency()
+
+        if coverage is None:
+            if hasattr(self, "roi_optimization_label"):
+                self.roi_optimization_label.setText("")
+            return
+
+        threshold = self.advanced_config.get("roi_crop_warning_threshold", 0.6) * 100
+
+        if coverage < threshold and hasattr(self, "roi_optimization_label"):
+            self.roi_optimization_label.setText(
+                f"⚡ ROI is {coverage:.1f}% of frame - up to {speedup:.1f}x faster if cropped!"
+            )
+        elif hasattr(self, "roi_optimization_label"):
+            self.roi_optimization_label.setText("")
+
+    def _check_roi_optimization_warning(self):
+        """Check if we should warn the user about ROI optimization."""
+        if not self.advanced_config.get("roi_crop_auto_suggest", True):
+            return
+
+        # Don't warn if already shown this session (unless configured otherwise)
+        if self.roi_crop_warning_shown and not self.advanced_config.get(
+            "roi_crop_remind_every_session", False
+        ):
+            return
+
+        coverage, speedup = self._estimate_roi_efficiency()
+        if coverage is None:
+            return
+
+        threshold = self.advanced_config.get("roi_crop_warning_threshold", 0.6) * 100
+
+        if coverage < threshold:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Information)
+            msg.setWindowTitle("ROI Optimization Opportunity")
+            msg.setText(f"⚡ Performance Optimization Available")
+            msg.setInformativeText(
+                f"Your ROI covers only {coverage:.1f}% of the video frame.\\n\\n"
+                f"Cropping the video to the ROI bounding box could provide\\n"
+                f"up to {speedup:.1f}x speedup in tracking performance!\\n\\n"
+                f"Would you like to:"
+            )
+
+            btn_crop_now = msg.addButton("Crop Video Now", QMessageBox.AcceptRole)
+            btn_remind_later = msg.addButton(
+                "Remind Me When Tracking", QMessageBox.ActionRole
+            )
+            btn_dont_show = msg.addButton("Don't Show Again", QMessageBox.RejectRole)
+            msg.setDefaultButton(btn_crop_now)
+
+            msg.exec()
+            clicked = msg.clickedButton()
+
+            if clicked == btn_crop_now:
+                self.crop_video_to_roi()
+            elif clicked == btn_remind_later:
+                self.roi_crop_warning_shown = True
+            elif clicked == btn_dont_show:
+                self.advanced_config["roi_crop_auto_suggest"] = False
+                self._save_advanced_config()
+                self.roi_crop_warning_shown = True
+
+    def crop_video_to_roi(self):
+        """Crop the video to the ROI bounding box and save as new file."""
+        if self.roi_mask is None:
+            QMessageBox.warning(self, "No ROI", "Please define an ROI before cropping.")
+            return
+
+        video_path = self.file_line.text()
+        if not video_path or not os.path.exists(video_path):
+            QMessageBox.warning(self, "No Video", "Please load a video first.")
+            return
+
+        # Get padding fraction from advanced config (default 5% of min dimension)
+        padding_fraction = self.advanced_config.get("roi_crop_padding_fraction", 0.05)
+
+        bbox = self._calculate_roi_bounding_box(padding=padding_fraction)
+        if bbox is None:
+            QMessageBox.warning(
+                self, "Invalid ROI", "Could not calculate ROI bounding box."
+            )
+            return
+
+        x, y, w, h = bbox
+        padding_percent = padding_fraction * 100
+        logger.info(
+            f"ROI crop with {padding_percent:.1f}% padding: x={x}, y={y}, w={w}, h={h}"
+        )
+
+        # Suggest output filename
+        video_dir = os.path.dirname(video_path)
+        video_name = os.path.splitext(os.path.basename(video_path))[0]
+        suggested_name = f"{video_name}_cropped_roi.mp4"
+        suggested_path = os.path.join(video_dir, suggested_name)
+
+        # Ask user for output location
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Cropped Video",
+            suggested_path,
+            "Video Files (*.mp4 *.avi *.mov);;All Files (*)",
+        )
+
+        if not output_path:
+            return  # User cancelled
+
+        try:
+            # Use ffmpeg for high-quality cropping that preserves video properties
+            # This is much faster and maintains quality better than re-encoding with OpenCV
+            import subprocess
+
+            # Get video properties for the success message
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise Exception("Cannot open source video")
+
+            frame_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            frame_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+
+            # Build ffmpeg command for high-quality cropping
+            # Get settings from advanced config
+            codec = self.advanced_config.get("video_crop_codec", "libx264")
+            crf = str(self.advanced_config.get("video_crop_crf", 18))
+            preset = self.advanced_config.get("video_crop_preset", "medium")
+
+            ffmpeg_cmd = [
+                "ffmpeg",
+                "-i",
+                video_path,
+                "-filter:v",
+                f"crop={w}:{h}:{x}:{y}",  # Crop to ROI bounding box
+                "-c:v",
+                codec,  # Video codec from config
+                "-crf",
+                crf,  # Quality (lower = better, 18 is visually lossless)
+                "-preset",
+                preset,  # Encoding speed preset
+                "-c:a",
+                "copy",  # Copy audio without re-encoding
+                "-movflags",
+                "+faststart",  # Enable streaming/fast preview
+                "-y",  # Overwrite output file
+                output_path,
+            ]
+
+            # Log the ffmpeg command for debugging
+            logger.info(
+                f"Starting video crop: {frame_w}x{frame_h} -> {w}x{h} (padding: {padding_percent:.1f}%)"
+            )
+            logger.info(f"ffmpeg command: {' '.join(ffmpeg_cmd)}")
+
+            # Show non-blocking message
+            QMessageBox.information(
+                self,
+                "Cropping Video",
+                f"Video cropping has started in the background.\n\n"
+                f"Original: {frame_w}x{frame_h}\n"
+                f"Cropped: {w}x{h}\n"
+                f"Padding: {padding_percent:.1f}% of frame (improves detection)\n\n"
+                f"Note: Padding provides visual context for better YOLO confidence.\n"
+                f"Adjust 'roi_crop_padding_fraction' in advanced_config.json if needed.\n\n"
+                f"This may take a few minutes. The application will remain responsive.\n"
+                f"You'll be notified when cropping is complete.",
+            )
+
+            # Run ffmpeg in background with progress logging
+
+            # Run ffmpeg in background with progress logging
+            # Capture stderr for progress tracking but don't block UI
+            process = subprocess.Popen(
+                ffmpeg_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+                start_new_session=True,  # Detach from parent process
+            )
+
+            # Get total frames for progress tracking
+            cap_temp = cv2.VideoCapture(video_path)
+            total_frames = int(cap_temp.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap_temp.release()
+
+            # Store process info for potential future use
+            self._crop_process = {
+                "process": process,
+                "output_path": output_path,
+                "original_size": (frame_w, frame_h),
+                "cropped_size": (w, h),
+                "total_frames": total_frames,
+                "last_logged_progress": 0,
+            }
+
+            # Set up a timer to check when process completes
+            from PySide6.QtCore import QTimer
+
+            self._crop_check_timer = QTimer()
+            self._crop_check_timer.timeout.connect(self._check_crop_completion)
+            self._crop_check_timer.start(2000)  # Check every 2 seconds
+
+            # Disable UI controls while cropping is in progress
+            self._set_ui_controls_enabled(False)
+            # Also disable crop button specifically
+            if hasattr(self, "btn_crop_video"):
+                self.btn_crop_video.setText("Cropping...")
+                self.btn_crop_video.setEnabled(False)
+
+            logger.info(f"Started background video crop: {video_path} -> {output_path}")
+
+        except Exception as e:
+            # Re-enable UI if crop failed to start
+            self._set_ui_controls_enabled(True)
+            if hasattr(self, "btn_crop_video"):
+                self.btn_crop_video.setText("Crop Video to ROI")
+                self.btn_crop_video.setEnabled(True)
+
+            QMessageBox.critical(
+                self,
+                "Crop Failed",
+                f"Failed to start video crop:\n{str(e)}",
+            )
+            logger.error(f"Video crop failed: {e}")
+            import traceback
+
+            traceback.print_exc()
+
+    def _check_crop_completion(self):
+        """Check if background crop process has completed."""
+        if not hasattr(self, "_crop_process"):
+            if hasattr(self, "_crop_check_timer"):
+                self._crop_check_timer.stop()
+            return
+
+        process = self._crop_process["process"]
+
+        # Read and log any new stderr output (ffmpeg progress)
+        try:
+            # Read available lines without blocking (non-blocking I/O)
+            if process.stderr:
+                import fcntl
+                import os as os_module
+
+                # Set stderr to non-blocking mode
+                fd = process.stderr.fileno()
+                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os_module.O_NONBLOCK)
+
+                try:
+                    while True:
+                        line = process.stderr.readline()
+                        if not line:
+                            break
+
+                        # Parse progress from ffmpeg output
+                        if "frame=" in line:
+                            try:
+                                frame_str = line.split("frame=")[1].split()[0]
+                                current_frame = int(frame_str)
+                                total_frames = self._crop_process.get("total_frames", 0)
+
+                                # Log every 10% of progress
+                                if total_frames > 0:
+                                    progress_pct = int(
+                                        (current_frame / total_frames) * 100
+                                    )
+                                    last_logged = self._crop_process.get(
+                                        "last_logged_progress", 0
+                                    )
+
+                                    if progress_pct >= last_logged + 10:
+                                        logger.info(
+                                            f"Video crop progress: {progress_pct}% ({current_frame}/{total_frames} frames)"
+                                        )
+                                        self._crop_process["last_logged_progress"] = (
+                                            progress_pct
+                                        )
+                            except (ValueError, IndexError):
+                                pass
+                except (IOError, OSError):
+                    # No data available right now
+                    pass
+        except Exception:
+            # Don't let logging errors break the process
+            pass
+
+        return_code = process.poll()  # Non-blocking check
+
+        if return_code is not None:  # Process has finished
+            self._crop_check_timer.stop()
+            output_path = self._crop_process["output_path"]
+            orig_w, orig_h = self._crop_process["original_size"]
+            crop_w, crop_h = self._crop_process["cropped_size"]
+
+            if return_code == 0 and os.path.exists(output_path):
+                # Success - ask if user wants to load the cropped video
+                reply = QMessageBox.question(
+                    self,
+                    "Crop Complete",
+                    f"Video successfully cropped to ROI!\n\n"
+                    f"Original: {orig_w}x{orig_h}\n"
+                    f"Cropped: {crop_w}x{crop_h}\n"
+                    f"Saved to: {os.path.basename(output_path)}\n\n"
+                    f"Would you like to load the cropped video now?\n"
+                    f"(Note: ROI will be cleared since the video is already cropped)",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
+
+                if reply == QMessageBox.Yes:
+                    # Load the cropped video with full initialization (same as select_file)
+                    self.file_line.setText(output_path)
+                    self.current_video_path = output_path
+                    self.clear_roi()  # Clear ROI since we're loading the cropped version
+
+                    # Auto-generate output paths based on cropped video name
+                    video_dir = os.path.dirname(output_path)
+                    video_name = os.path.splitext(os.path.basename(output_path))[0]
+
+                    # Auto-populate CSV output
+                    csv_path = os.path.join(video_dir, f"{video_name}_tracking.csv")
+                    self.csv_line.setText(csv_path)
+
+                    # Auto-populate video output and enable it
+                    video_out_path = os.path.join(
+                        video_dir, f"{video_name}_tracking.mp4"
+                    )
+                    self.video_out_line.setText(video_out_path)
+                    self.check_video_output.setChecked(True)
+
+                    # Enable preview detection button
+                    self.btn_test_detection.setEnabled(True)
+                    self.btn_detect_fps.setEnabled(True)
+
+                    # Disable crop button and clear optimization info (no ROI anymore)
+                    self.btn_crop_video.setEnabled(False)
+                    if hasattr(self, "roi_optimization_label"):
+                        self.roi_optimization_label.setText("")
+                    self.roi_crop_warning_shown = False
+
+                    # Auto-load config if it exists
+                    config_path = get_video_config_path(output_path)
+                    if config_path and os.path.isfile(config_path):
+                        self._load_config_from_file(config_path)
+                        self.config_status_label.setText(
+                            f"✓ Loaded: {os.path.basename(config_path)}"
+                        )
+                        self.config_status_label.setStyleSheet(
+                            "color: #4a9eff; font-style: italic; font-size: 10px;"
+                        )
+                        logger.info(
+                            f"Cropped video loaded: {output_path} (auto-loaded config)"
+                        )
+                    else:
+                        self.config_status_label.setText(
+                            "No config found (using current settings)"
+                        )
+                        self.config_status_label.setStyleSheet(
+                            "color: #f39c12; font-style: italic; font-size: 10px;"
+                        )
+                        logger.info(
+                            f"Cropped video loaded: {output_path} (no config found)"
+                        )
+
+                # Re-enable UI controls after successful crop
+                self._set_ui_controls_enabled(True)
+                if hasattr(self, "btn_crop_video"):
+                    self.btn_crop_video.setText("Crop Video to ROI")
+
+                logger.info(f"Successfully cropped video to {output_path}")
+            else:
+                # Process failed - re-enable UI
+                self._set_ui_controls_enabled(True)
+                if hasattr(self, "btn_crop_video"):
+                    self.btn_crop_video.setText("Crop Video to ROI")
+                    self.btn_crop_video.setEnabled(True)
+
+                logger.error(f"Video crop failed with return code {return_code}")
+                QMessageBox.critical(
+                    self,
+                    "Crop Failed",
+                    f"Video cropping failed (return code: {return_code})\n\n"
+                    f"Check that ffmpeg is installed and the video is valid.",
+                )
+
+            # Clean up
+            del self._crop_process
 
     def plot_fps(self, fps_list):
         if len(fps_list) < 2:

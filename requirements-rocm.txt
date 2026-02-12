@@ -1,0 +1,87 @@
+# AMD ROCm GPU-accelerated packages for multi-animal-tracker
+# Install with: uv pip install -v -r requirements-rocm.txt
+#
+# ⚠️ CRITICAL: SYSTEM-LEVEL ROCM MUST BE INSTALLED FIRST ⚠️
+#
+# ROCm is NOT just a Python package - it requires system-level installation.
+# See detailed guide: ROCM_SETUP.md
+#
+# Quick install (Ubuntu 22.04/24.04):
+#   sudo apt install rocm-hip-runtime rocm-hip-sdk rocm-smi-lib
+#   sudo apt install rocm-dev rocrand rocblas rocsparse rocfft hipsparse
+#   sudo usermod -a -G video,render $USER
+#   # Log out and back in, then verify: rocm-smi
+#
+# PREREQUISITES CHECKLIST:
+# ✓ AMD GPU: Radeon RX 5000+, Instinct MI series
+# ✓ Linux: Ubuntu 22.04/24.04, RHEL 8/9, SLES 15
+# ✓ ROCm 6.0+ installed system-wide (verify with: rocm-smi)
+# ✓ User added to 'video' and 'render' groups
+# ✓ Environment variables set (see ROCM_SETUP.md)
+#
+# Verify ROCm before continuing:
+#   rocm-smi                     # Should show your GPU
+#   /opt/rocm/bin/hipconfig      # Should show ROCm version
+#
+# Test after installation:
+#   python -c "import torch; print(torch.cuda.is_available())"  # Should be True
+#   python -c "import cupy as cp; print(cp.cuda.Device(0))"     # Should work
+
+# PyTorch with ROCm support
+# ROCm VERSION: Uncomment ONE index URL matching your ROCm version
+# Check your ROCm version with: rocm-smi or dpkg -l | grep rocm
+
+# ROCm 6.2 (latest as of 2026)
+--extra-index-url https://download.pytorch.org/whl/rocm6.2
+# ROCm 6.1
+# --extra-index-url https://download.pytorch.org/whl/rocm6.1
+# ROCm 6.0
+# --extra-index-url https://download.pytorch.org/whl/rocm6.0
+# ROCm 5.7 (older)
+# --extra-index-url https://download.pytorch.org/whl/rocm5.7
+
+torEQUIRES: rocm-dev, rocrand, rocblas, rocsparse, rocfft, hipsparse (system packages)
+# Install system packages BEFORE running this:
+#   sudo apt install rocm-dev rocrand rocblas rocsparse rocfft hipsparse hiprand hipfft
+#
+# ROCm 6.x support (works with ROCm 6.0, 6.1, 6.2)
+cupy-rocm-6-0
+# For ROCm 5.x, use: cupy-rocm-5-0
+#
+# Note: CuPy-ROCm compilation can take 5-10 minutes on first install
+# If compilation fails, see ROCM_SETUP.md troubleshooting section
+
+# Computer vision & deep learning
+timm
+pupil-apriltags
+ultralytics
+
+# ONNX runtime with DirectML support (works with ROCm via HIP)
+onnx
+onnxslim
+# Note: onnxruntime-rocm is not officially maintained
+# Use CPU version or DirectML on Windows
+onnxruntime
+
+# CuPy with ROCm support (experimental)
+# Provides GPU-accelerated background subtraction
+# ROCm 6.x support
+cupy-rocm-6-0
+# For ROCm 5.x, use: cupy-rocm-5-0
+
+# NOTE: The following are NOT available for AMD GPUs:
+# - TensorRT (NVIDIA only)
+# - CUDA-specific libraries
+#
+# ROCm provides GPU acceleration for:
+# - YOLO inference via PyTorch (ROCm-optimized)
+# - Background subtraction via CuPy-ROCm (experimental)
+# - Neural network training and inference
+#
+# Performance notes:
+# - PyTorch ROCm is well-supported and performs close to CUDA
+# - CuPy-ROCm is experimental, may have compatibility issues
+# - No TensorRT equivalent for ROCm (use PyTorch directly)
+
+# Install this package in editable mode
+-e .

@@ -89,8 +89,10 @@ def _compute_cost_matrix_sota(
 class TrackAssigner:
     """Handles assignment of detections to tracks with SOTA optimizations."""
 
-    def __init__(self, params):
+    def __init__(self, params, worker=None):
         self.params = params
+        self.worker = worker
+        self._large_n_warning_shown = False  # Track if we've shown the warning
 
     def _get_spatial_candidates(self, N, M, pred_pos, meas_pos, max_dist):
         """Use KD-tree to find candidate matches within max_dist for large N."""
@@ -114,6 +116,26 @@ class TrackAssigner:
         M = len(measurements)
         if M == 0:
             return np.zeros((N, 0), np.float32), {}
+
+        # Warn about spatial indexing for large N
+        if (
+            N > 25
+            and not p.get("USE_SPATIAL_PRUNING", False)
+            and not self._large_n_warning_shown
+        ):
+            warning_msg = (
+                f"Tracking {N} objects without spatial indexing may be slow.\n\n"
+                f"Consider enabling these optimizations in tracking_config.json:\n"
+                f"  • USE_SPATIAL_PRUNING: true\n"
+                f"  • ENABLE_GREEDY_ASSIGNMENT: true\n\n"
+                f"Expected performance improvement: 10-30% for {N}+ objects."
+            )
+            logger.warning(warning_msg.replace("\n", " "))
+            if self.worker is not None:
+                self.worker.warning_signal.emit(
+                    "Performance Optimization Available", warning_msg
+                )
+            self._large_n_warning_shown = True
 
         # SOTA: Get pre-calculated Inverse Innovation Covariances from Manager
         S_inv_batch = kf_manager.get_mahalanobis_matrices()

@@ -1,0 +1,54 @@
+name: multi-animal-tracker-cuda
+channels:
+  - conda-forge
+  - nvidia
+  - defaults
+dependencies:
+  # Core Python
+  - python=3.13
+  
+  # Scientific computing stack
+  - numpy
+  - scipy
+  - pandas
+  - jupyter
+  - ipykernel
+  - ipywidgets
+  - einops
+  - umap-learn
+  - scikit-learn
+  - pyyaml
+  
+  # Visualization
+  - matplotlib
+  - seaborn
+  - bokeh
+  
+  # Computer vision
+  - opencv
+  - scikit-image
+  - pillow
+  - shapely
+  
+  # Efficiency - CPU and GPU
+  - numba
+
+  # GUI framework (Qt6 - modern, better HiDPI support)
+  - pyside6>=6.6
+  - qt6-main
+  - pyqtwebengine
+  
+  # Development tools
+  - pip
+  - setuptools
+  - wheel
+  - pytest
+  - black
+  - flake8
+  
+  # Install GPU-accelerated packages via pip
+  # Step 1: mamba/conda installs core packages + uv
+  # Step 2: uv installs GPU packages from requirements-gpu.txt (much faster)
+  - pip:
+    - uv  # Fast package installer for step 2
+    

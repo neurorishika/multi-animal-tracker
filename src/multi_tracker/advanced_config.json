@@ -1,0 +1,13 @@
+{
+  "roi_crop_warning_threshold": 0.6,
+  "roi_crop_auto_suggest": true,
+  "roi_crop_remind_every_session": false,
+  "roi_crop_padding_fraction": 0.05,
+  "video_crop_codec": "libx264",
+  "video_crop_crf": 18,
+  "video_crop_preset": "medium",
+  "mps_memory_fraction": 0.3,
+  "cuda_memory_fraction": 0.7,
+  "dataset_yolo_confidence_threshold": 0.05,
+  "dataset_yolo_iou_threshold": 0.5
+}

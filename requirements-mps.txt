@@ -1,0 +1,36 @@
+# Apple Silicon (MPS) optimized packages for multi-animal-tracker
+# Install with: uv pip install -v -r requirements-mps.txt
+#
+# Compatible with: M1, M2, M3, M4 chips (macOS 12.3+)
+# Metal Performance Shaders (MPS) backend provides GPU acceleration via PyTorch
+
+# PyTorch with MPS support (native Apple Silicon)
+# MPS is automatically detected and used when available
+# No extra index URL needed - standard PyTorch includes MPS
+torch
+torchvision
+torchaudio
+
+# Computer vision & deep learning
+timm
+pupil-apriltags
+ultralytics
+
+# ONNX for model export (CPU version - no ONNX runtime GPU for MPS yet)
+onnx
+onnxslim
+onnxruntime  # CPU version, but optimized for ARM64
+
+# NOTE: The following are NOT available for Apple Silicon:
+# - CuPy (NVIDIA CUDA only)
+# - TensorRT (NVIDIA only)
+# - ROCm (AMD only)
+#
+# PyTorch MPS backend provides GPU acceleration for:
+# - YOLO inference (~2-3× speedup vs CPU)
+# - Neural network operations
+# 
+# Background subtraction remains CPU-based (Numba-optimized)
+
+# Install this package in editable mode
+-e .

@@ -1,27 +1,41 @@
-name: multi-animal-tracker
+name: multi-animal-tracker-base
 channels:
   - conda-forge
   - defaults
 dependencies:
   # Core Python
-  - python=3.11
+  - python=3.13
   
   # Scientific computing stack
   - numpy
   - scipy
-  - matplotlib
   - pandas
+  - jupyter
+  - ipykernel
+  - ipywidgets
+  - einops
+  - umap-learn
+  - scikit-learn
+  - pyyaml
+  
+  # Visualization
+  - matplotlib
+  - seaborn
+  - bokeh
   
   # Computer vision
   - opencv
   - scikit-image
+  - pillow
+  - shapely
   
-  # Efficiency
+  # Efficiency - CPU acceleration
   - numba
   
-  # GUI framework (Qt5 only, no Qt6)
-  - pyside2=5.15.*
-  - qt=5.15.*
+  # GUI framework (Qt6 - modern, better HiDPI and Apple Silicon support)
+  - pyside6>=6.6
+  - qt6-main
+  - pyqtwebengine
   
   # Development tools
   - pip
@@ -33,9 +47,7 @@ dependencies:
   - black
   - flake8
   
-  # Install your package via pip (after conda deps are resolved)
+  # Install uv for fast pip package installation
+  # After creating environment, run: uv pip install -v -r requirements.txt
   - pip:
-    - torch
-    - torchvision
-    - ultralytics  # YOLO models for object detection
-    - -e .
+    - uv

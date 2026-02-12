@@ -41,6 +41,8 @@ setup(
             "multianimaltracker=multi_tracker.main:main",
             "mat=multi_tracker.main:main",
             "multi-animal-tracker=multi_tracker.main:main",
+            "posekit-labeller=multi_tracker.gui.pose_label:main",
+            "pkl=multi_tracker.gui.pose_label:main",
         ],
     },
     

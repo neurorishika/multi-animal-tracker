@@ -1,0 +1,54 @@
+# GPU-accelerated packages for multi-animal-tracker
+# Install with: uv pip install -v -r requirements-gpu.txt
+#
+# CUDA VERSION: Uncomment ONE PyTorch index URL matching your CUDA version
+# Check your CUDA version with: nvidia-smi
+
+# PyTorch with CUDA support
+# --extra-index-url https://download.pytorch.org/whl/cu126
+# --extra-index-url https://download.pytorch.org/whl/cu128
+--extra-index-url https://download.pytorch.org/whl/cu130
+# --extra-index-url https://download.pytorch.org/whl/cpu
+
+torch
+torchvision
+torchaudio
+
+# Computer vision & deep learning
+timm
+pupil-apriltags
+ultralytics
+
+# TensorRT - NVIDIA inference optimization for YOLO acceleration
+# See: https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html
+# Default: CUDA 13.0 (cu13) - change suffix to match your CUDA version
+tensorrt
+tensorrt-cu13
+tensorrt-cu13-bindings
+tensorrt-cu13-libs
+# For CUDA 12.x, comment out cu13 lines above and uncomment:
+# tensorrt
+# tensorrt-cu12
+# tensorrt-cu12-bindings
+# tensorrt-cu12-libs
+# For CUDA 11.x:
+# tensorrt
+# tensorrt-cu11
+# tensorrt-cu11-bindings
+# tensorrt-cu11-libs
+
+# ONNX runtime with GPU support for model export and optimization
+onnx
+onnxslim
+onnxruntime-gpu
+
+# CuPy for GPU-accelerated array computations
+# Using prerelease for CUDA 13 compatibility fixes
+--pre
+-f https://pip.cupy.dev/pre
+cupy-cuda13x
+# For CUDA 12.x (stable): cupy-cuda12x
+# For CUDA 11.x (stable): cupy-cuda11x
+
+# Install this package in editable mode
+-e .
