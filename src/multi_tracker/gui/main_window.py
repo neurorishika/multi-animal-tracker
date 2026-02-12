@@ -727,15 +727,11 @@ class DatasetGenerationWorker(QThread):
             )
 
             if not selected_frames:
-                self.error_signal.emit(
-                    "No frames met the quality criteria for export."
-                )
+                self.error_signal.emit("No frames met the quality criteria for export.")
                 return
 
             # Export dataset
-            self.progress_signal.emit(
-                60, f"Exporting {len(selected_frames)} frames..."
-            )
+            self.progress_signal.emit(60, f"Exporting {len(selected_frames)} frames...")
             dataset_dir = export_dataset(
                 video_path=self.video_path,
                 csv_path=self.csv_path,
