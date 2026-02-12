@@ -75,7 +75,7 @@ conda activate multi-animal-tracker-base
 uv pip install -v -r requirements.txt
 
 # Verify installation
-python -c "from multi_tracker.main import main; print('✓ Installation successful!')"
+python -c "from multi_tracker.app.launcher import main; print('✓ Installation successful!')"
 ```
 
 ### GPU-Accelerated Installation (NVIDIA Only)
@@ -364,7 +364,7 @@ mat
 #### Workflow 4: Batch Processing (Command Line)
 ```python
 # batch_process.py
-from multi_tracker.core.tracking_worker import TrackingWorker
+from multi_tracker.core.tracking.worker import TrackingWorker
 import cv2
 
 videos = ["exp1.mp4", "exp2.mp4", "exp3.mp4"]
@@ -861,27 +861,30 @@ To convert pixels to mm/cm:
 multi-animal-tracker/
 ├── src/
 │   └── multi_tracker/
-│       ├── main.py                    # Entry point, GUI launch
+│       ├── app/launcher.py            # Entry point, GUI launch
 │       ├── core/                      # Core tracking algorithms
-│       │   ├── detection.py           # Detection methods (BG + YOLO)
-│       │   ├── background_models.py   # Background modeling
-│       │   ├── tracking_worker.py     # Main tracking loop
-│       │   ├── kalman_filters.py      # Predictive filtering
-│       │   ├── assignment.py          # Hungarian algorithm
-│       │   ├── post_processing.py     # Trajectory cleaning
-│       │   └── individual_analysis.py # Per-animal data extraction
+│       │   ├── detectors/engine.py    # Detection methods (BG + YOLO)
+│       │   ├── background/model.py    # Background modeling
+│       │   ├── tracking/worker.py     # Main tracking loop
+│       │   ├── filters/kalman.py      # Predictive filtering
+│       │   ├── assigners/hungarian.py # Hungarian algorithm
+│       │   ├── post/processing.py     # Trajectory cleaning
+│       │   └── identity/analysis.py   # Per-animal data extraction
 │       ├── gui/                       # Qt6 interface
 │       │   ├── main_window.py         # Main application window
-│       │   └── histogram_widgets.py   # Real-time visualization
+│       │   ├── widgets/histograms.py  # Real-time visualization
+│       │   └── dialogs/train_yolo_dialog.py
+│       ├── data/                      # Data I/O and datasets
+│       │   ├── detection_cache.py     # Detection caching for backward pass
+│       │   ├── csv_writer.py          # Async CSV output
+│       │   └── dataset_generation.py  # YOLO dataset export
 │       └── utils/                     # Utilities
 │           ├── gpu_utils.py           # GPU/acceleration detection
 │           ├── batch_optimizer.py     # Auto batch sizing
-│           ├── detection_cache.py     # Detection caching for backward pass
 │           ├── frame_prefetcher.py    # Async frame loading
-│           ├── csv_writer.py          # Async CSV output
 │           ├── image_processing.py    # Frame preprocessing
 │           ├── geometry.py            # ROI and spatial ops
-│           └── dataset_generation.py  # YOLO dataset export
+│           └── ...
 ├── docs/                              # Documentation
 │   ├── user_guide.md
 │   ├── yolo_detection_guide.md
@@ -1254,4 +1257,3 @@ A:
 ---
 
 **Made with ❤️ for the behavioral neuroscience community**
-

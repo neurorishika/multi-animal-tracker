@@ -258,7 +258,7 @@ def export_dataset(
     import pandas as pd
     from datetime import datetime
     import shutil
-    from ..core.detection import create_detector
+    from ..core.detectors.engine import create_detector
 
     logger.info(f"Starting dataset export for {len(frame_ids)} frames")
 

@@ -60,7 +60,7 @@ Detect fiducial markers (AprilTags) attached to animals.
 Implement your own identity classifier.
 
 **Implementation:**
-1. Edit `src/multi_tracker/core/individual_analysis.py`
+1. Edit `src/multi_tracker/core/identity/analysis.py`
 2. Override `_classify_identity` in `IdentityProcessor`
 3. Process the crop and return identity + confidence
 

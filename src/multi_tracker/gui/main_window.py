@@ -57,20 +57,20 @@ from PySide6.QtWidgets import (
 )
 import matplotlib.pyplot as plt
 
-from ..core.tracking_worker import TrackingWorker
-from ..core.post_processing import (
+from ..core.tracking.worker import TrackingWorker
+from ..core.post.processing import (
     process_trajectories,
     resolve_trajectories,
     interpolate_trajectories,
 )
-from ..utils.csv_writer import CSVWriterThread
+from ..data.csv_writer import CSVWriterThread
 from ..utils.geometry import fit_circle_to_points
 from ..utils.geometry import wrap_angle_degs
 from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
-from ..utils.detection_cache import DetectionCache
-from .histogram_widgets import HistogramPanel
-from ..core.individual_analysis import IndividualDatasetGenerator
-from .train_yolo_dialog import TrainYoloDialog
+from ..data.detection_cache import DetectionCache
+from .widgets.histograms import HistogramPanel
+from ..core.identity.analysis import IndividualDatasetGenerator
+from .dialogs.train_yolo_dialog import TrainYoloDialog
 
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
@@ -672,7 +672,7 @@ class DatasetGenerationWorker(QThread):
 
     def run(self):
         try:
-            from ..utils.dataset_generation import export_dataset, FrameQualityScorer
+            from ..data.dataset_generation import export_dataset, FrameQualityScorer
 
             self.progress_signal.emit(5, "Initializing dataset generation...")
 
@@ -2520,6 +2520,20 @@ class MainWindow(QMainWindow):
         )
         f_yolo.addRow("IOU Threshold:", self.spin_yolo_iou)
 
+        self.chk_use_custom_obb_iou = QCheckBox("Use Custom OBB IOU Filtering")
+        self.chk_use_custom_obb_iou.setChecked(
+            False
+        )  # Default: use YOLO's built-in NMS
+        self.chk_use_custom_obb_iou.setToolTip(
+            "Use custom polygon-based IOU filtering for OBB detections.\n\n"
+            "• UNCHECKED (Default): Use YOLO's built-in NMS (faster, less accurate for OBB)\n"
+            "• CHECKED: Use custom shapely-based polygon IOU (slower, more accurate)\n\n"
+            "YOLO's built-in NMS uses axis-aligned approximation which can miss overlaps.\n"
+            "Custom filtering uses true polygon intersection but is ~2-5x slower.\n\n"
+            "Recommended: Keep UNCHECKED unless you see overlapping detections."
+        )
+        f_yolo.addRow("", self.chk_use_custom_obb_iou)
+
         self.line_yolo_classes = QLineEdit()
         self.line_yolo_classes.setPlaceholderText("e.g. 15, 16 (Empty for all)")
         self.line_yolo_classes.setToolTip(
@@ -4201,7 +4215,7 @@ class MainWindow(QMainWindow):
         custom_layout.addWidget(
             self._create_help_label(
                 "Implement custom identity classifier in:\n"
-                "src/multi_tracker/core/individual_analysis.py"
+                "src/multi_tracker/core/identity/analysis.py"
             )
         )
         self.identity_config_stack.addWidget(custom_widget)
@@ -4520,9 +4534,11 @@ class MainWindow(QMainWindow):
         import sys
 
         try:
-            # Find the pose_label.py script in the same directory as main_window.py
+            # The labeler lives in the top-level posekit package.
             gui_dir = Path(__file__).parent
-            pose_label_script = gui_dir / "pose_label.py"
+            package_root = gui_dir.parent
+            labeler_dir = package_root / "posekit"
+            pose_label_script = labeler_dir / "pose_label.py"
 
             if not pose_label_script.exists():
                 QMessageBox.critical(
@@ -4536,7 +4552,7 @@ class MainWindow(QMainWindow):
             # This avoids conda activation and terminal detection complexity
             subprocess.Popen(
                 [sys.executable, str(pose_label_script), str(folder)],
-                cwd=str(gui_dir),
+                cwd=str(labeler_dir),
             )
 
             logger.info(f"Opened Pose Label UI for folder: {folder}")
@@ -5535,8 +5551,8 @@ class MainWindow(QMainWindow):
                 )
 
         from ..utils.image_processing import apply_image_adjustments
-        from ..core.background_models import BackgroundModel
-        from ..core.detection import YOLOOBBDetector
+        from ..core.background.model import BackgroundModel
+        from ..core.detectors.engine import YOLOOBBDetector
 
         # Convert RGB preview to BGR for OpenCV
         frame_bgr = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2BGR)
@@ -5793,6 +5809,7 @@ class MainWindow(QMainWindow):
                     ),
                     "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
                     "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
+                    "USE_CUSTOM_OBB_IOU_FILTERING": self.chk_use_custom_obb_iou.isChecked(),
                     "YOLO_TARGET_CLASSES": (
                         [
                             int(x.strip())
@@ -7829,7 +7846,7 @@ class MainWindow(QMainWindow):
 
                 if csv_to_process and os.path.exists(csv_to_process):
                     # Use CSV-based processing to preserve confidence columns
-                    from ..core.post_processing import (
+                    from ..core.post.processing import (
                         process_trajectories_from_csv,
                         interpolate_trajectories,
                     )
@@ -7895,7 +7912,7 @@ class MainWindow(QMainWindow):
                     self.start_backward_tracking()
                 else:
                     # Forward-only mode: Apply interpolation here (no merge step)
-                    from ..core.post_processing import interpolate_trajectories
+                    from ..core.post.processing import interpolate_trajectories
 
                     interp_method = (
                         self.combo_interpolation_method.currentText().lower()
@@ -8489,6 +8506,7 @@ class MainWindow(QMainWindow):
             "YOLO_MODEL_PATH": yolo_path,
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
+            "USE_CUSTOM_OBB_IOU_FILTERING": self.chk_use_custom_obb_iou.isChecked(),
             "YOLO_TARGET_CLASSES": yolo_cls,
             "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
             "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[0]
@@ -8854,6 +8872,9 @@ class MainWindow(QMainWindow):
                 get_cfg("yolo_confidence_threshold", default=0.25)
             )
             self.spin_yolo_iou.setValue(get_cfg("yolo_iou_threshold", default=0.7))
+            self.chk_use_custom_obb_iou.setChecked(
+                get_cfg("use_custom_obb_iou_filtering", default=False)
+            )
             yolo_cls = get_cfg("yolo_target_classes", default=None)
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
@@ -9383,6 +9404,7 @@ class MainWindow(QMainWindow):
                 "yolo_model_path": make_model_path_relative(yolo_path),
                 "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
                 "yolo_iou_threshold": self.spin_yolo_iou.value(),
+                "use_custom_obb_iou_filtering": self.chk_use_custom_obb_iou.isChecked(),
                 "yolo_target_classes": yolo_cls,
             }
         )

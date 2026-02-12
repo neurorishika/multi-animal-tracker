@@ -248,7 +248,7 @@ class YOLOOBBDetector:
 
     def _detect_device(self):
         """Detect and configure the optimal device for inference."""
-        from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
+        from multi_tracker.utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
 
         # Check user preference
         device_preference = self.params.get("YOLO_DEVICE", "auto")
@@ -286,7 +286,7 @@ class YOLOOBBDetector:
         enable_tensorrt = self.params.get("ENABLE_TENSORRT", False)
 
         # Check if TensorRT is requested and available
-        from ..utils.gpu_utils import TENSORRT_AVAILABLE
+        from multi_tracker.utils.gpu_utils import TENSORRT_AVAILABLE
 
         if enable_tensorrt and TENSORRT_AVAILABLE and self.device.startswith("cuda"):
             self._try_load_tensorrt_model(model_path_str)
@@ -542,6 +542,11 @@ class YOLOOBBDetector:
                 union_areas = curr_area + rem_areas[overlaps] - inter_areas
                 approx_ious = inter_areas / np.maximum(union_areas, 1e-6)
 
+                # Initially keep all overlapping boxes, then selectively suppress high-IOU ones
+                # This fixes the bug where low-IOU boxes were incorrectly removed
+                overlapping_indices = np.where(overlaps)[0]
+                keep_remaining[overlapping_indices] = True
+
                 # Identify which need precise polygon IOU check
                 # Only check if approx IOU is within 0.2 of threshold
                 need_precise = approx_ious >= (iou_threshold - 0.2)
@@ -614,17 +619,19 @@ class YOLOOBBDetector:
         p = self.params
         conf_threshold = p.get("YOLO_CONFIDENCE_THRESHOLD", 0.25)
         iou_threshold = p.get("YOLO_IOU_THRESHOLD", 0.7)
+        use_custom_iou = p.get("USE_CUSTOM_OBB_IOU_FILTERING", False)
         target_classes = p.get("YOLO_TARGET_CLASSES", None)  # None means all classes
         max_det = p.get("MAX_TARGETS", 8) * p.get("MAX_CONTOUR_MULTIPLIER", 20)
 
         # Run inference on the configured device
-        # Disable YOLO's built-in NMS (iou=1.0) - we use our custom polygon-based IOU filtering instead
-        # YOLO's NMS doesn't work well for OBB, so we rely on _filter_overlapping_detections
+        # Use custom polygon-based IOU filtering OR YOLO's built-in NMS based on user preference
+        # - Custom filtering (use_custom_iou=True): Disable YOLO NMS (iou=1.0), apply shapely polygon IOU after
+        # - YOLO NMS (use_custom_iou=False): Use YOLO's built-in axis-aligned NMS (faster but less accurate)
         try:
             results = self.model.predict(
                 frame,
                 conf=conf_threshold,
-                iou=1.0,  # Disable YOLO NMS - use custom filtering with actual iou_threshold
+                iou=1.0 if use_custom_iou else iou_threshold,  # Conditional NMS
                 classes=target_classes,
                 max_det=max_det,
                 device=self.device,
@@ -681,8 +688,8 @@ class YOLOOBBDetector:
             obb_corners_list.append(obb_data.xyxyxyxy[i].cpu().numpy())
 
         # Apply additional IOU-based filtering to remove overlapping detections
-        # YOLO's built-in NMS doesn't always work well for OBB
-        if len(meas) > 1:
+        # Only apply custom polygon-based filtering if enabled by user
+        if use_custom_iou and len(meas) > 1:
             original_count = len(meas)
             meas, sizes, shapes, confidences, obb_corners_list = (
                 self._filter_overlapping_detections(
@@ -691,7 +698,7 @@ class YOLOOBBDetector:
             )
             if len(meas) < original_count:
                 logger.info(
-                    f"Frame {frame_count}: IOU-based post-filtering removed {original_count - len(meas)} "
+                    f"Frame {frame_count}: Custom IOU filtering removed {original_count - len(meas)} "
                     f"overlapping detections (kept {len(meas)}/{original_count}, IOU threshold={iou_threshold:.2f})"
                 )
 
@@ -734,6 +741,7 @@ class YOLOOBBDetector:
         p = self.params
         conf_threshold = p.get("YOLO_CONFIDENCE_THRESHOLD", 0.25)
         iou_threshold = p.get("YOLO_IOU_THRESHOLD", 0.7)
+        use_custom_iou = p.get("USE_CUSTOM_OBB_IOU_FILTERING", False)
         target_classes = p.get("YOLO_TARGET_CLASSES", None)
         max_det = p.get("MAX_TARGETS", 8) * p.get("MAX_CONTOUR_MULTIPLIER", 20)
         N = p["MAX_TARGETS"]
@@ -764,12 +772,12 @@ class YOLOOBBDetector:
                     )
 
                 # Run inference on this chunk
-                # Disable YOLO's built-in NMS - we use custom polygon-based IOU filtering
+                # Use custom polygon-based IOU filtering OR YOLO's built-in NMS based on user preference
                 try:
                     chunk_results = self.model.predict(
                         chunk_frames,
                         conf=conf_threshold,
-                        iou=1.0,  # Disable YOLO NMS - use custom filtering
+                        iou=1.0 if use_custom_iou else iou_threshold,  # Conditional NMS
                         classes=target_classes,
                         max_det=max_det,
                         device=self.device,
@@ -785,12 +793,12 @@ class YOLOOBBDetector:
             results_batch = all_results
         else:
             # Standard PyTorch inference - no chunking needed
-            # Disable YOLO's built-in NMS - we use custom polygon-based IOU filtering
+            # Use custom polygon-based IOU filtering OR YOLO's built-in NMS based on user preference
             try:
                 results_batch = self.model.predict(
                     frames,
                     conf=conf_threshold,
-                    iou=1.0,  # Disable YOLO NMS - use custom filtering
+                    iou=1.0 if use_custom_iou else iou_threshold,  # Conditional NMS
                     classes=target_classes,
                     max_det=max_det,
                     device=self.device,
@@ -849,7 +857,8 @@ class YOLOOBBDetector:
                 obb_corners_list.append(obb_data.xyxyxyxy[i].cpu().numpy())
 
             # Apply additional IOU-based filtering to remove overlapping detections
-            if len(meas) > 1:
+            # Only apply custom polygon-based filtering if enabled by user
+            if use_custom_iou and len(meas) > 1:
                 original_count = len(meas)
                 meas, sizes, shapes, confidences, obb_corners_list = (
                     self._filter_overlapping_detections(
@@ -863,7 +872,7 @@ class YOLOOBBDetector:
                 )
                 if len(meas) < original_count:
                     logger.debug(
-                        f"Batch frame {frame_count}: Post-NMS filtering removed {original_count - len(meas)} overlapping detections"
+                        f"Batch frame {frame_count}: Custom IOU filtering removed {original_count - len(meas)} overlapping detections"
                     )
 
             # Keep only top N by size

@@ -15,18 +15,6 @@ from pathlib import Path
 # Fix OpenMP conflict on macOS (PyTorch + OpenCV + NumPy can load multiple OpenMP libraries)
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
-# Import Qt before other modules to avoid conflicts
-try:
-    from PySide6.QtWidgets import QApplication
-    from PySide6.QtCore import Qt
-except ImportError as e:
-    print("Error: PySide6 not found. Please install it with:")
-    print("conda install -c conda-forge pyside6")
-    print("or")
-    print("pip install PySide6")
-    sys.exit(1)
-
-
 # Set up logging
 def setup_logging(log_level=logging.INFO, enable_file_logging=False, log_dir=None):
     """Set up logging configuration for the multi-tracker application.
@@ -145,9 +133,19 @@ def main():
         sys.exit(1)
 
     try:
+        # Import Qt at runtime so package imports don't hard-fail on missing GUI deps.
+        try:
+            from PySide6.QtWidgets import QApplication
+        except ImportError:
+            print("Error: PySide6 not found. Please install it with:")
+            print("conda install -c conda-forge pyside6")
+            print("or")
+            print("pip install PySide6")
+            sys.exit(1)
+
         # Import GUI components (after dependency check)
-        from .gui.main_window import MainWindow
-        from .utils.gpu_utils import log_device_info
+        from ..gui.main_window import MainWindow
+        from ..utils.gpu_utils import log_device_info
 
         # Log GPU/acceleration availability
         log_device_info()
@@ -162,7 +160,7 @@ def main():
         try:
             from PySide6.QtGui import QIcon
 
-            icon_path = Path(__file__).parent / "resources" / "icon.png"
+            icon_path = Path(__file__).resolve().parent.parent / "resources" / "icon.png"
             if icon_path.exists():
                 app.setWindowIcon(QIcon(str(icon_path)))
         except Exception:
@@ -171,7 +169,7 @@ def main():
         # Create and show main window
         logger.info("Initializing main window...")
         main_window = MainWindow()
-        main_window.show()
+        main_window.showMaximized()
 
         logger.info("Multi-Animal Tracker GUI launched successfully")
 

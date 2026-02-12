@@ -120,18 +120,18 @@ unreliable_tracks = track_quality[
 ### Code Locations
 
 - **Detection confidence calculation**:
-  - [detection.py](../src/multi_tracker/core/detection.py): `ObjectDetector.detect_objects()` (lines 50-110)
-  - [detection.py](../src/multi_tracker/core/detection.py): `YOLOOBBDetector.detect_objects()` (lines 200-300)
+  - [engine.py](../src/multi_tracker/core/detectors/engine.py): `ObjectDetector.detect_objects()` (lines 50-110)
+  - [engine.py](../src/multi_tracker/core/detectors/engine.py): `YOLOOBBDetector.detect_objects()` (lines 200-300)
 
 - **Assignment confidence calculation**:
-  - [assignment.py](../src/multi_tracker/core/assignment.py): `compute_assignment_confidence()` (lines 360-396)
+  - [hungarian.py](../src/multi_tracker/core/assigners/hungarian.py): `compute_assignment_confidence()` (lines 360-396)
 
 - **Position uncertainty extraction**:
-  - [kalman_filters.py](../src/multi_tracker/core/kalman_filters.py): `get_position_uncertainties()` (lines 55-73)
+  - [kalman.py](../src/multi_tracker/core/filters/kalman.py): `get_position_uncertainties()` (lines 55-73)
 
 - **CSV integration**:
   - [main_window.py](../src/multi_tracker/gui/main_window.py): CSV header definition (lines 3220-3231)
-  - [tracking_worker.py](../src/multi_tracker/core/tracking_worker.py): Confidence tracking through pipeline
+  - [worker.py](../src/multi_tracker/core/tracking/worker.py): Confidence tracking through pipeline
 
 ### Special Cases
 

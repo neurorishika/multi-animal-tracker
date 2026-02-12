@@ -4939,7 +4939,7 @@ class MainWindow(QMainWindow):
             pass
         new_win = MainWindow(proj, imgs)
         new_win.resize(self.size())
-        new_win.show()
+        new_win.showMaximized()
         app = QApplication.instance()
         if app is not None:
             if not hasattr(app, "_posekit_windows"):
@@ -6592,7 +6592,7 @@ def main():
 
     win = MainWindow(proj, imgs)
     win.resize(1500, 860)
-    win.show()
+    win.showMaximized()
     sys.exit(app.exec())
 
 

@@ -29,10 +29,10 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QWidget,
 )
-from ..utils.gpu_utils import get_device_info
+from ...utils.gpu_utils import get_device_info
 
-from ..utils.xanylabeling_cli import convert_project, HARD_CODED_CMD
-from ..utils.dataset_merge import (
+from ...integrations.xanylabeling_cli import convert_project, HARD_CODED_CMD
+from ...data.dataset_merge import (
     detect_dataset_layout,
     validate_labels,
     rewrite_labels_to_single_class,

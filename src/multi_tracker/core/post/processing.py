@@ -1,4 +1,4 @@
-# src/multi_tracker/core/post_processing.py
+# src/multi_tracker/core/post/processing.py
 """
 Trajectory post-processing utilities for cleaning and refining tracking data.
 
@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 import warnings
 
 # Import Numba from gpu_utils (handles availability detection)
-from ..utils.gpu_utils import NUMBA_AVAILABLE, njit, prange
+from multi_tracker.utils.gpu_utils import NUMBA_AVAILABLE, njit, prange
 
 logger = logging.getLogger(__name__)
 

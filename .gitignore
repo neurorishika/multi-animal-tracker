@@ -164,12 +164,6 @@ tmp/
 *.tmp
 *.temp
 
-# Output directories
-output/
-results/
-exports/
-videos/
-data/
 
 # Backup files
 *.bak

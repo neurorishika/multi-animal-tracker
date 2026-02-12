@@ -7,8 +7,8 @@ import numpy as np
 import cv2
 import logging
 import random
-from ..utils.image_processing import apply_image_adjustments
-from ..utils.gpu_utils import (
+from multi_tracker.utils.image_processing import apply_image_adjustments
+from multi_tracker.utils.gpu_utils import (
     CUDA_AVAILABLE,
     MPS_AVAILABLE,
     NUMBA_AVAILABLE,

@@ -11,16 +11,16 @@ import cv2
 from collections import deque
 from PySide6.QtCore import QThread, Signal, QMutex, Slot
 
-from ..utils.image_processing import apply_image_adjustments, stabilize_lighting
-from ..utils.geometry import wrap_angle_degs
-from ..utils.detection_cache import DetectionCache
-from ..utils.batch_optimizer import BatchOptimizer
-from ..utils.frame_prefetcher import FramePrefetcher
-from .kalman_filters import KalmanFilterManager
-from .background_models import BackgroundModel
-from .detection import create_detector
-from .assignment import TrackAssigner
-from .individual_analysis import IndividualDatasetGenerator
+from multi_tracker.utils.image_processing import apply_image_adjustments, stabilize_lighting
+from multi_tracker.utils.geometry import wrap_angle_degs
+from multi_tracker.data.detection_cache import DetectionCache
+from multi_tracker.utils.batch_optimizer import BatchOptimizer
+from multi_tracker.utils.frame_prefetcher import FramePrefetcher
+from multi_tracker.core.filters.kalman import KalmanFilterManager
+from multi_tracker.core.background.model import BackgroundModel
+from multi_tracker.core.detectors.engine import create_detector
+from multi_tracker.core.assigners.hungarian import TrackAssigner
+from multi_tracker.core.identity.analysis import IndividualDatasetGenerator
 
 logger = logging.getLogger(__name__)
 

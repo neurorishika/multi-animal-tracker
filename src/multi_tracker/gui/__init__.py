@@ -6,6 +6,6 @@ histogram widgets, and other UI elements.
 """
 
 from .main_window import MainWindow
-from .histogram_widgets import RealtimeHistogramWidget, HistogramPanel
+from .widgets.histograms import RealtimeHistogramWidget, HistogramPanel
 
 __all__ = ["MainWindow", "RealtimeHistogramWidget", "HistogramPanel"]

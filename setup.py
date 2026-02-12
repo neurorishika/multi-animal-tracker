@@ -38,11 +38,11 @@ setup(
     # Console scripts
     entry_points={
         "console_scripts": [
-            "multianimaltracker=multi_tracker.main:main",
-            "mat=multi_tracker.main:main",
-            "multi-animal-tracker=multi_tracker.main:main",
-            "posekit-labeller=multi_tracker.gui.pose_label:main",
-            "pkl=multi_tracker.gui.pose_label:main",
+            "multianimaltracker=multi_tracker.app.launcher:main",
+            "mat=multi_tracker.app.launcher:main",
+            "multi-animal-tracker=multi_tracker.app.launcher:main",
+            "posekit-labeler=multi_tracker.posekit.pose_label:main",
+            "pkl=multi_tracker.posekit.pose_label:main",
         ],
     },
     
