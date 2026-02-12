@@ -638,6 +638,123 @@ class InterpolatedCropsWorker(QThread):
             self.finished_signal.emit({"saved": 0, "gaps": 0})
 
 
+class DatasetGenerationWorker(QThread):
+    """Worker thread for generating training datasets without blocking the UI."""
+
+    progress_signal = Signal(int, str)  # progress value, status message
+    finished_signal = Signal(str, int)  # dataset_dir, num_frames
+    error_signal = Signal(str)  # error message
+
+    def __init__(
+        self,
+        video_path,
+        csv_path,
+        output_dir,
+        dataset_name,
+        class_name,
+        params,
+        max_frames,
+        diversity_window,
+        include_context,
+        probabilistic,
+    ):
+        super().__init__()
+        self.video_path = video_path
+        self.csv_path = csv_path
+        self.output_dir = output_dir
+        self.dataset_name = dataset_name
+        self.class_name = class_name
+        self.params = params
+        self.max_frames = max_frames
+        self.diversity_window = diversity_window
+        self.include_context = include_context
+        self.probabilistic = probabilistic
+
+    def run(self):
+        try:
+            from ..utils.dataset_generation import export_dataset, FrameQualityScorer
+
+            self.progress_signal.emit(5, "Initializing dataset generation...")
+
+            # Load tracking CSV to compute quality scores
+            self.progress_signal.emit(10, "Loading tracking data...")
+            df = pd.read_csv(self.csv_path)
+
+            # Initialize quality scorer
+            self.progress_signal.emit(15, "Initializing quality scorer...")
+            scorer = FrameQualityScorer(self.params)
+
+            # Score each frame
+            self.progress_signal.emit(20, "Scoring frames...")
+            unique_frames = df["FrameID"].unique()
+            total_unique = len(unique_frames)
+
+            for idx, frame_id in enumerate(unique_frames):
+                if idx % 100 == 0:  # Update progress every 100 frames
+                    progress = 20 + int((idx / total_unique) * 30)
+                    self.progress_signal.emit(
+                        progress, f"Scoring frames ({idx}/{total_unique})..."
+                    )
+
+                frame_data = df[df["FrameID"] == frame_id]
+
+                # Detection data
+                detection_data = {
+                    "confidences": (
+                        frame_data["DetectionConfidence"].tolist()
+                        if "DetectionConfidence" in frame_data.columns
+                        else []
+                    ),
+                    "count": len(frame_data),
+                }
+
+                # Tracking data
+                tracking_data = {
+                    "lost_tracks": int((frame_data["State"] == "lost").sum()),
+                    "uncertainties": (
+                        frame_data["PositionUncertainty"].tolist()
+                        if "PositionUncertainty" in frame_data.columns
+                        else []
+                    ),
+                }
+
+                scorer.score_frame(frame_id, detection_data, tracking_data)
+
+            # Select worst frames with diversity
+            self.progress_signal.emit(50, "Selecting challenging frames...")
+            selected_frames = scorer.get_worst_frames(
+                self.max_frames, self.diversity_window, probabilistic=self.probabilistic
+            )
+
+            if not selected_frames:
+                self.error_signal.emit(
+                    "No frames met the quality criteria for export."
+                )
+                return
+
+            # Export dataset
+            self.progress_signal.emit(
+                60, f"Exporting {len(selected_frames)} frames..."
+            )
+            dataset_dir = export_dataset(
+                video_path=self.video_path,
+                csv_path=self.csv_path,
+                frame_ids=selected_frames,
+                output_dir=self.output_dir,
+                dataset_name=self.dataset_name,
+                class_name=self.class_name,
+                params=self.params,
+                include_context=self.include_context,
+            )
+
+            self.progress_signal.emit(100, "Dataset generation complete!")
+            self.finished_signal.emit(dataset_dir, len(selected_frames))
+
+        except Exception as e:
+            logger.exception("Error during dataset generation")
+            self.error_signal.emit(str(e))
+
+
 def get_video_config_path(video_path):
     """Get the config file path for a given video file."""
     if not video_path:
@@ -1050,6 +1167,7 @@ class MainWindow(QMainWindow):
 
         self.tracking_worker = None
         self.csv_writer_thread = None
+        self.dataset_worker = None
         self.reversal_worker = None
         self.final_full_trajs = []
         self.temporary_files = []  # Track temporary files for cleanup
@@ -9586,8 +9704,6 @@ class MainWindow(QMainWindow):
     def _generate_training_dataset(self, override_csv_path=None):
         """Generate training dataset from tracking results for active learning."""
         try:
-            from ..utils.dataset_generation import export_dataset, FrameQualityScorer
-
             logger.info("Starting training dataset generation...")
 
             # Validate parameters
@@ -9637,74 +9753,36 @@ class MainWindow(QMainWindow):
             max_frames = self.spin_dataset_max_frames.value()
             diversity_window = self.spin_dataset_diversity_window.value()
             include_context = self.chk_dataset_include_context.isChecked()
-
-            # Load tracking CSV to compute quality scores
-            import pandas as pd
-
-            df = pd.read_csv(csv_path)
-
-            # Initialize quality scorer
-            scorer = FrameQualityScorer(params)
-
-            # Score each frame
-            for frame_id in df["FrameID"].unique():
-                frame_data = df[df["FrameID"] == frame_id]
-
-                # Detection data
-                detection_data = {
-                    "confidences": (
-                        frame_data["DetectionConfidence"].tolist()
-                        if "DetectionConfidence" in frame_data.columns
-                        else []
-                    ),
-                    "count": len(frame_data),
-                }
-
-                # Tracking data (simplified - could be enhanced with actual assignment costs)
-                tracking_data = {
-                    "lost_tracks": int((frame_data["State"] == "lost").sum()),
-                    "uncertainties": (
-                        frame_data["PositionUncertainty"].tolist()
-                        if "PositionUncertainty" in frame_data.columns
-                        else []
-                    ),
-                }
-
-                scorer.score_frame(frame_id, detection_data, tracking_data)
-
-            # Select worst frames with diversity
             probabilistic = self.chk_dataset_probabilistic.isChecked()
-            selected_frames = scorer.get_worst_frames(
-                max_frames, diversity_window, probabilistic=probabilistic
-            )
-
-            if not selected_frames:
-                logger.info("No frames met the quality criteria for export.")
-                return
 
             # Get class name
             class_name = self.line_dataset_class_name.text().strip()
             if not class_name:
                 class_name = "object"
 
-            # Export dataset (non-blocking - runs in background)
-            logger.info(f"Exporting {len(selected_frames)} frames to dataset...")
-            dataset_dir = export_dataset(
+            # Show progress bar
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.progress_label.setText("Preparing dataset generation...")
+
+            # Create and start dataset generation worker thread
+            self.dataset_worker = DatasetGenerationWorker(
                 video_path=video_path,
                 csv_path=csv_path,
-                frame_ids=selected_frames,
                 output_dir=output_dir,
                 dataset_name=dataset_name,
                 class_name=class_name,
                 params=params,
+                max_frames=max_frames,
+                diversity_window=diversity_window,
                 include_context=include_context,
+                probabilistic=probabilistic,
             )
-
-            logger.info(f"Dataset generation complete: {dataset_dir}")
-            logger.info(f"Frames exported: {len(selected_frames)}")
-            logger.info(
-                "Use 'Open Dataset in X-AnyLabeling' button to review/correct annotations"
-            )
+            self.dataset_worker.progress_signal.connect(self.on_dataset_progress)
+            self.dataset_worker.finished_signal.connect(self.on_dataset_finished)
+            self.dataset_worker.error_signal.connect(self.on_dataset_error)
+            self.dataset_worker.start()
 
         except Exception as e:
             logger.error(f"Dataset generation failed: {e}", exc_info=True)
@@ -9713,6 +9791,43 @@ class MainWindow(QMainWindow):
                 "Dataset Generation Error",
                 f"Failed to generate dataset:\n{str(e)}",
             )
+
+    def on_dataset_progress(self, value, message):
+        """Update progress bar during dataset generation."""
+        self.progress_bar.setValue(value)
+        self.progress_label.setText(message)
+
+    def on_dataset_finished(self, dataset_dir, num_frames):
+        """Handle dataset generation completion."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+
+        logger.info(f"Dataset generation complete: {dataset_dir}")
+        logger.info(f"Frames exported: {num_frames}")
+        logger.info(
+            "Use 'Open Dataset in X-AnyLabeling' button to review/correct annotations"
+        )
+
+        # Optional: Show success message
+        QMessageBox.information(
+            self,
+            "Dataset Generation Complete",
+            f"Successfully generated dataset with {num_frames} frames.\n\n"
+            f"Location: {dataset_dir}\n\n"
+            "Use 'Open Dataset in X-AnyLabeling' to review annotations.",
+        )
+
+    def on_dataset_error(self, error_message):
+        """Handle dataset generation errors."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+
+        logger.error(f"Dataset generation error: {error_message}")
+        QMessageBox.critical(
+            self,
+            "Dataset Generation Error",
+            f"Failed to generate dataset:\n{error_message}",
+        )
 
     def _cleanup_temporary_files(self):
         """Remove temporary files if cleanup is enabled."""

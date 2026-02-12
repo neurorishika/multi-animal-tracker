@@ -394,4 +394,4 @@ training/YOLO-obb/combined_dataset*
 training/YOLO-obb/training_runs/combined_dataset*
 
 # sleap files
-*.slp
+**/*.slp
