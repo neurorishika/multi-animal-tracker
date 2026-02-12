@@ -263,6 +263,35 @@ def get_available_devices():
     return devices
 
 
+def _list_sleap_envs() -> Tuple[List[str], str]:
+    """Return (envs, error_message). envs contains conda envs starting with 'sleap'."""
+    if shutil.which("conda") is None:
+        return [], "Conda not found on PATH."
+    try:
+        res = subprocess.run(
+            ["conda", "env", "list"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if res.returncode != 0:
+            return [], "Unable to list conda environments."
+        envs: List[str] = []
+        for line in (res.stdout or "").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if not parts:
+                continue
+            name = parts[0]
+            if name.lower().startswith("sleap"):
+                envs.append(name)
+        return envs, ""
+    except Exception as e:
+        return [], f"Env scan failed: {e}"
+
+
 
 
 def _is_cuda_device(device: str) -> bool:
@@ -967,8 +996,8 @@ class SmartSelectDialog(QDialog):
         self.btn_explorer.setEnabled(False)
 
         # wiring
-        self.btn_close.clicked.connect(self.reject)
-        self.btn_add.clicked.connect(self.accept)
+        self.btn_close.clicked.connect(self._on_close)
+        self.btn_add.clicked.connect(self._on_add)
         self.btn_compute.clicked.connect(self._compute)
         self.btn_cancel.clicked.connect(self._cancel_compute)
         self.btn_preview.clicked.connect(self._preview)
@@ -976,6 +1005,7 @@ class SmartSelectDialog(QDialog):
         self.btn_explorer.clicked.connect(self._open_explorer)
 
         self.selected_indices: List[int] = []
+        self._did_add = False
 
         self._thread = None
         self._worker = None
@@ -993,6 +1023,15 @@ class SmartSelectDialog(QDialog):
         self._update_min_frames()
 
         self._apply_settings()
+
+    def _on_add(self):
+        self._did_add = True
+        self.accept()
+
+    def _on_close(self):
+        self.selected_indices = []
+        self._did_add = False
+        self.reject()
 
     def _apply_settings(self):
         settings = _load_dialog_settings("smart_select")
@@ -1094,7 +1133,7 @@ class SmartSelectDialog(QDialog):
             )
             return
 
-        cache_dir = self.project.out_root / ".posekit" / "embeddings"
+        cache_dir = self.project.out_root / "posekit" / "embeddings"
 
         self.btn_compute.setEnabled(False)
         self.btn_cancel.setEnabled(True)
@@ -1327,7 +1366,7 @@ class SmartSelectDialog(QDialog):
             self,
             "Save cluster assignments",
             str(
-                (self.project.out_root / ".posekit" / "clusters").resolve()
+                (self.project.out_root / "posekit" / "clusters").resolve()
                 / "clusters.csv"
             ),
             "CSV (*.csv)",
@@ -1344,6 +1383,13 @@ class SmartSelectDialog(QDialog):
             for local_pos, idx in enumerate(self._eligible_indices):
                 w.writerow([str(self.image_paths[idx]), int(self._cluster[local_pos])])
 
+        win = self.window()
+        if win and hasattr(win, "_on_clusters_updated"):
+            try:
+                win._on_clusters_updated()
+            except Exception:
+                pass
+
         QMessageBox.information(self, "Saved", f"Wrote cluster CSV:\n{out}")
 
 
@@ -1351,7 +1397,7 @@ class SmartSelectDialog(QDialog):
         if self._cluster is None or self._eligible_indices is None:
             return
         out = (
-            self.project.out_root / ".posekit" / "clusters" / "clusters.csv"
+            self.project.out_root / "posekit" / "clusters" / "clusters.csv"
         )
         out.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -1366,6 +1412,11 @@ class SmartSelectDialog(QDialog):
                 win.statusBar().showMessage(
                     f"Clusters saved → {out}", 4000
                 )
+            if win and hasattr(win, "_on_clusters_updated"):
+                try:
+                    win._on_clusters_updated()
+                except Exception:
+                    pass
         except Exception:
             # Silent fail; user can still export manually.
             pass
@@ -3278,7 +3329,7 @@ class TrainingRunnerDialog(QDialog):
         # Dataset (aux only) is always visible.
 
     def _default_sleap_out_path(self) -> Path:
-        base = self.project.out_root / ".posekit" / "sleap"
+        base = self.project.out_root / "posekit" / "sleap"
         ts = datetime.now().strftime("%Y%m%d%H%M%S")
         proj_name = self.project.project_path.stem or "pose_project"
         return base / f"{proj_name}_{ts}.slp"
@@ -3407,6 +3458,7 @@ class TrainingRunnerDialog(QDialog):
         self.btn_sleap_export.setEnabled(True)
         self.btn_sleap_open.setEnabled(True)
         self._append_log(f"[SLEAP] Exported: {slp_path}")
+        self._set_latest_sleap_dataset(Path(slp_path))
         if self._sleap_open_after_export:
             self._sleap_open_after_export = False
             self._launch_sleap(Path(slp_path))
@@ -3416,6 +3468,15 @@ class TrainingRunnerDialog(QDialog):
         self.btn_sleap_open.setEnabled(True)
         self._append_log(f"[SLEAP] Export failed: {msg}")
         QMessageBox.warning(self, "SLEAP export failed", msg)
+
+    def _set_latest_sleap_dataset(self, slp_path: Path):
+        try:
+            self.project.latest_sleap_dataset = slp_path
+            self.project.project_path.write_text(
+                json.dumps(self.project.to_json(), indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            self._append_log(f"[SLEAP] Warning: failed to save latest dataset: {e}")
 
     def _open_sleap(self):
         slp_path = self._sleap_out_path()
@@ -3886,6 +3947,10 @@ class EvaluationWorker(QObject):
         pck_thr: float,
         oks_sigma: float,
         batch: int,
+        backend: str = "yolo",
+        sleap_env: Optional[str] = None,
+        sleap_device: str = "auto",
+        sleap_batch: int = 4,
         pred_cache: Optional[Dict[str, List[Tuple[float, float, float]]]] = None,
     ):
         super().__init__()
@@ -3901,6 +3966,10 @@ class EvaluationWorker(QObject):
         self.pck_thr = float(pck_thr)
         self.oks_sigma = float(oks_sigma)
         self.batch = int(batch)
+        self.backend = (backend or "yolo").lower()
+        self.sleap_env = sleap_env
+        self.sleap_device = sleap_device
+        self.sleap_batch = int(sleap_batch)
         self.pred_cache = pred_cache
         self._cancel = False
 
@@ -3957,17 +4026,26 @@ class EvaluationWorker(QObject):
 
     def run(self):
         try:
-            try:
-                from ultralytics import YOLO
-            except Exception as e:
-                self.failed.emit(
-                    f"Ultralytics not available. Install with: pip install ultralytics\n{e}"
-                )
-                return
+            if self.backend != "sleap":
+                try:
+                    from ultralytics import YOLO
+                except Exception as e:
+                    self.failed.emit(
+                        f"Ultralytics not available. Install with: pip install ultralytics\n{e}"
+                    )
+                    return
 
-            if not self.weights_path.exists() and not self.pred_cache:
-                self.failed.emit(f"Weights not found: {self.weights_path}")
-                return
+            if self.backend == "sleap":
+                if not self.weights_path.exists() or not self.weights_path.is_dir():
+                    self.failed.emit(f"SLEAP model dir not found: {self.weights_path}")
+                    return
+                if not self.sleap_env:
+                    self.failed.emit("Select a SLEAP conda env.")
+                    return
+            else:
+                if not self.weights_path.exists() and not self.pred_cache:
+                    self.failed.emit(f"Weights not found: {self.weights_path}")
+                    return
 
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"Eval run dir: {self.run_dir}")
@@ -4001,6 +4079,11 @@ class EvaluationWorker(QObject):
                     conf=self.conf,
                     batch=self.batch,
                     progress_cb=self.progress.emit,
+                    backend=self.backend,
+                    sleap_env=self.sleap_env,
+                    sleap_device=self.sleap_device,
+                    sleap_batch=self.sleap_batch,
+                    sleap_max_instances=1,
                 )
                 if preds is None:
                     self.failed.emit(err or "Prediction failed.")
@@ -4063,6 +4146,9 @@ class EvaluationWorker(QObject):
                     frame_confs = [None] * num_kpts
                     for k in range(num_kpts):
                         if gt_kpts[k].v <= 0:
+                            continue
+                        if pred_conf is not None and pred_conf[k] <= 0.0:
+                            # Treat zero-confidence predictions as missing.
                             continue
 
                         px, py = pred_xy[k]
@@ -4219,6 +4305,7 @@ class EvaluationDashboardDialog(QDialog):
         self.project = project
         self.image_paths = image_paths
         self.add_frames_callback = add_frames_callback
+        self._lock_model = False
         self._thread = None
         self._worker = None
         self._path_to_index = {}
@@ -4244,12 +4331,32 @@ class EvaluationDashboardDialog(QDialog):
         cfg_group = QGroupBox("Config")
         cfg_layout = QFormLayout(cfg_group)
 
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["YOLO", "SLEAP"])
+        cfg_layout.addRow("Backend:", self.backend_combo)
+
+        self.weights_label = QLabel("Weights:")
         self.weights_edit = QLineEdit(weights_path or "")
         self.btn_weights_browse = QPushButton("Browse…")
         weights_row = QHBoxLayout()
         weights_row.addWidget(self.weights_edit, 1)
         weights_row.addWidget(self.btn_weights_browse)
-        cfg_layout.addRow("Weights:", weights_row)
+        cfg_layout.addRow(self.weights_label, weights_row)
+
+        self.sleap_env_row = QWidget()
+        sleap_env_layout = QHBoxLayout(self.sleap_env_row)
+        sleap_env_layout.setContentsMargins(0, 0, 0, 0)
+        self.sleap_env_combo = QComboBox()
+        self.sleap_env_combo.setToolTip("Environment name must start with 'sleap'.")
+        self.btn_sleap_refresh = QPushButton("↻")
+        self.btn_sleap_refresh.setMaximumWidth(40)
+        self.btn_sleap_refresh.setToolTip("Refresh conda environments list")
+        sleap_env_layout.addWidget(self.sleap_env_combo, 1)
+        sleap_env_layout.addWidget(self.btn_sleap_refresh)
+        cfg_layout.addRow("SLEAP env:", self.sleap_env_row)
+        self.lbl_sleap_env_status = QLabel("")
+        self.lbl_sleap_env_status.setStyleSheet("QLabel { color: #b00; }")
+        cfg_layout.addRow("", self.lbl_sleap_env_status)
 
         self.device_combo = QComboBox()
         self.device_combo.addItems(get_available_devices())
@@ -4353,15 +4460,30 @@ class EvaluationDashboardDialog(QDialog):
         self.btn_out_browse.clicked.connect(self._browse_out)
         self.btn_run.clicked.connect(self._run_eval)
         self.btn_close.clicked.connect(self.reject)
+        self.backend_combo.currentTextChanged.connect(self._on_backend_changed)
+        self.btn_sleap_refresh.clicked.connect(self._refresh_sleap_envs)
 
         self._update_default_out_dir()
         self._apply_settings()
         self._apply_latest_weights_default()
+        self._refresh_sleap_envs()
+        self._apply_backend_ui()
+
+    def lock_model_path(self, path: str):
+        if path:
+            self.weights_edit.setText(path)
+        self._lock_model = True
+        self.weights_edit.setReadOnly(True)
+        self.btn_weights_browse.setEnabled(False)
+        self._apply_backend_ui()
 
     def _apply_settings(self):
         settings = _load_dialog_settings("evaluation_dashboard")
         if not settings:
             return
+        self.backend_combo.setCurrentText(
+            settings.get("backend", self.backend_combo.currentText())
+        )
         self.weights_edit.setText(settings.get("weights", self.weights_edit.text()))
         self.device_combo.setCurrentText(settings.get("device", self.device_combo.currentText()))
         self.imgsz_spin.setValue(int(settings.get("imgsz", self.imgsz_spin.value())))
@@ -4370,6 +4492,10 @@ class EvaluationDashboardDialog(QDialog):
         self.pck_spin.setValue(float(settings.get("pck", self.pck_spin.value())))
         self.oks_spin.setValue(float(settings.get("oks", self.oks_spin.value())))
         self.out_dir_edit.setText(settings.get("out_dir", self.out_dir_edit.text()))
+        if "sleap_env" in settings:
+            self.sleap_env_combo.setCurrentText(
+                settings.get("sleap_env", self.sleap_env_combo.currentText())
+            )
 
     def _apply_latest_weights_default(self):
         if (
@@ -4378,13 +4504,15 @@ class EvaluationDashboardDialog(QDialog):
             and not self.weights_edit.text().strip()
             and Path(self.project.latest_pose_weights).exists()
         ):
-            self.weights_edit.setText(str(self.project.latest_pose_weights))
-            self._update_default_out_dir()
+            if self.backend_combo.currentText().strip().lower() != "sleap":
+                self.weights_edit.setText(str(self.project.latest_pose_weights))
+                self._update_default_out_dir()
 
     def _save_settings(self):
         _save_dialog_settings(
             "evaluation_dashboard",
             {
+                "backend": self.backend_combo.currentText(),
                 "weights": self.weights_edit.text().strip(),
                 "device": self.device_combo.currentText(),
                 "imgsz": int(self.imgsz_spin.value()),
@@ -4393,6 +4521,7 @@ class EvaluationDashboardDialog(QDialog):
                 "pck": float(self.pck_spin.value()),
                 "oks": float(self.oks_spin.value()),
                 "out_dir": self.out_dir_edit.text().strip(),
+                "sleap_env": self.sleap_env_combo.currentText().strip(),
             },
         )
 
@@ -4406,11 +4535,58 @@ class EvaluationDashboardDialog(QDialog):
             self.log_view.verticalScrollBar().maximum()
         )
 
+    def _on_backend_changed(self, _text: str):
+        self._apply_backend_ui()
+        if self.backend_combo.currentText().strip().lower() == "sleap":
+            self._refresh_sleap_envs()
+
+    def _apply_backend_ui(self):
+        is_sleap = self.backend_combo.currentText().strip().lower() == "sleap"
+        self.weights_label.setText("Model dir:" if is_sleap else "Weights:")
+        self.sleap_env_row.setVisible(is_sleap)
+        self.lbl_sleap_env_status.setVisible(is_sleap)
+        self.imgsz_spin.setEnabled(not is_sleap)
+        self.conf_spin.setEnabled(not is_sleap)
+        if self._lock_model:
+            self.weights_label.setVisible(False)
+            self.weights_edit.setVisible(False)
+            self.btn_weights_browse.setVisible(False)
+
+    def _refresh_sleap_envs(self):
+        current = self.sleap_env_combo.currentText().strip()
+        self.sleap_env_combo.clear()
+        self.sleap_env_combo.setEnabled(True)
+        envs, err = _list_sleap_envs()
+        if not envs:
+            self.sleap_env_combo.addItem("No sleap envs found")
+            self.sleap_env_combo.setEnabled(False)
+            self.lbl_sleap_env_status.setText(err or "No conda envs starting with 'sleap' found.")
+        else:
+            self.sleap_env_combo.addItems(envs)
+            if current and current in envs:
+                self.sleap_env_combo.setCurrentText(current)
+            self.lbl_sleap_env_status.setText("")
+
+    def _get_sleap_env(self) -> Optional[str]:
+        env = self.sleap_env_combo.currentText().strip()
+        if not env or env.lower().startswith("no sleap"):
+            return None
+        return env
+
     def _browse_weights(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Select weights", "", "*.pt")
-        if path:
-            self.weights_edit.setText(path)
-            self._update_default_out_dir()
+        if self._lock_model:
+            return
+        if self.backend_combo.currentText().strip().lower() == "sleap":
+            path = QFileDialog.getExistingDirectory(
+                self, "Select SLEAP model directory"
+            )
+            if path:
+                self.weights_edit.setText(path)
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, "Select weights", "", "*.pt")
+            if path:
+                self.weights_edit.setText(path)
+                self._update_default_out_dir()
 
     def _browse_out(self):
         path = QFileDialog.getExistingDirectory(self, "Select output dir")
@@ -4436,10 +4612,36 @@ class EvaluationDashboardDialog(QDialog):
         return [self.image_paths[i] for i in labeled]
 
     def _run_eval(self):
-        weights = Path(self.weights_edit.text().strip())
-        if not weights.exists():
-            QMessageBox.warning(self, "Missing weights", "Please select weights file.")
+        backend = self.backend_combo.currentText().strip().lower()
+        weights_txt = self.weights_edit.text().strip()
+        if not weights_txt:
+            QMessageBox.warning(
+                self,
+                "Missing model",
+                "Please select a weights file or SLEAP model directory.",
+            )
             return
+        weights = Path(weights_txt)
+        if backend == "sleap":
+            if not weights.exists() or not weights.is_dir():
+                QMessageBox.warning(
+                    self, "Missing model", "Please select a SLEAP model directory."
+                )
+                return
+            sleap_env = self._get_sleap_env()
+            if not sleap_env:
+                QMessageBox.warning(
+                    self,
+                    "No SLEAP env",
+                    "Select a conda env starting with 'sleap' for SLEAP inference.",
+                )
+                return
+        else:
+            if not weights.exists():
+                QMessageBox.warning(
+                    self, "Missing weights", "Please select weights file."
+                )
+                return
 
         eval_paths = self._collect_eval_paths()
         if not eval_paths:
@@ -4451,7 +4653,7 @@ class EvaluationDashboardDialog(QDialog):
 
         pred_cache = None
         if self.cb_use_cache.isChecked():
-            cache = self.infer.get_cache_for_paths(weights, eval_paths)
+            cache = self.infer.get_cache_for_paths(weights, eval_paths, backend=backend)
             if cache is not None:
                 pred_cache = cache
             else:
@@ -4479,6 +4681,10 @@ class EvaluationDashboardDialog(QDialog):
             oks_sigma=self.oks_spin.value(),
             batch=self.batch_spin.value(),
             pred_cache=pred_cache,
+            backend=backend,
+            sleap_env=self._get_sleap_env() if backend == "sleap" else None,
+            sleap_device=self.device_combo.currentText(),
+            sleap_batch=self.batch_spin.value(),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -4585,6 +4791,10 @@ class ActiveLearningWorker(QObject):
         preds_cache_a: Optional[Dict[str, List[Tuple[float, float, float]]]] = None,
         preds_cache_b: Optional[Dict[str, List[Tuple[float, float, float]]]] = None,
         keypoint_index: int = 0,
+        backend: str = "yolo",
+        sleap_env: Optional[str] = None,
+        sleap_device: str = "auto",
+        sleap_batch: int = 4,
     ):
         super().__init__()
         self.strategy = strategy
@@ -4603,6 +4813,10 @@ class ActiveLearningWorker(QObject):
         self.preds_cache_a = preds_cache_a
         self.preds_cache_b = preds_cache_b
         self.keypoint_index = int(keypoint_index)
+        self.backend = (backend or "yolo").lower()
+        self.sleap_env = sleap_env
+        self.sleap_device = sleap_device
+        self.sleap_batch = int(sleap_batch)
         self._cancel = False
 
     def cancel(self):
@@ -4618,6 +4832,11 @@ class ActiveLearningWorker(QObject):
             conf=self.conf,
             batch=self.batch,
             progress_cb=self.progress.emit,
+            backend=self.backend,
+            sleap_env=self.sleap_env,
+            sleap_device=self.sleap_device,
+            sleap_batch=self.sleap_batch,
+            sleap_max_instances=1,
         )
         if preds_list is None:
             self.failed.emit(err or "Prediction failed.")
@@ -4875,6 +5094,7 @@ class ActiveLearningDialog(QDialog):
         self.is_labeled_fn = is_labeled_fn
         self.labeling_indices = set(labeling_indices)
         self.add_frames_callback = add_frames_callback
+        self._lock_model = False
         self._thread = None
         self._worker = None
         self._path_to_index = {}
@@ -4916,6 +5136,10 @@ class ActiveLearningDialog(QDialog):
         common_group = QGroupBox("Selection")
         common_layout = QFormLayout(common_group)
 
+        self.backend_combo = QComboBox()
+        self.backend_combo.addItems(["YOLO", "SLEAP"])
+        common_layout.addRow("Backend:", self.backend_combo)
+
         self.scope_combo = QComboBox()
         self.scope_combo.addItems(["Unlabeled only", "All frames", "Labeling set"])
         common_layout.addRow("Scope:", self.scope_combo)
@@ -4949,6 +5173,21 @@ class ActiveLearningDialog(QDialog):
         self.cb_use_cache.setChecked(True)
         common_layout.addRow("", self.cb_use_cache)
 
+        self.sleap_env_row = QWidget()
+        sleap_env_layout = QHBoxLayout(self.sleap_env_row)
+        sleap_env_layout.setContentsMargins(0, 0, 0, 0)
+        self.sleap_env_combo = QComboBox()
+        self.sleap_env_combo.setToolTip("Environment name must start with 'sleap'.")
+        self.btn_sleap_refresh = QPushButton("↻")
+        self.btn_sleap_refresh.setMaximumWidth(40)
+        self.btn_sleap_refresh.setToolTip("Refresh conda environments list")
+        sleap_env_layout.addWidget(self.sleap_env_combo, 1)
+        sleap_env_layout.addWidget(self.btn_sleap_refresh)
+        common_layout.addRow("SLEAP env:", self.sleap_env_row)
+        self.lbl_sleap_env_status = QLabel("")
+        self.lbl_sleap_env_status.setStyleSheet("QLabel { color: #b00; }")
+        common_layout.addRow("", self.lbl_sleap_env_status)
+
         content_layout.addWidget(common_group)
 
         # Strategy-specific controls
@@ -4962,7 +5201,8 @@ class ActiveLearningDialog(QDialog):
         row_a = QHBoxLayout()
         row_a.addWidget(self.weights_a_edit, 1)
         row_a.addWidget(self.btn_weights_a)
-        w1_layout.addRow("Weights:", row_a)
+        self.weights_a_label = QLabel("Weights:")
+        w1_layout.addRow(self.weights_a_label, row_a)
         self.kpt_combo = QComboBox()
         self.kpt_combo.addItems(self.project.keypoint_names)
         w1_layout.addRow("Keypoint:", self.kpt_combo)
@@ -4975,14 +5215,16 @@ class ActiveLearningDialog(QDialog):
         row_b1 = QHBoxLayout()
         row_b1.addWidget(self.weights_b1_edit, 1)
         row_b1.addWidget(self.btn_weights_b1)
-        w2_layout.addRow("Weights A:", row_b1)
+        self.weights_b1_label = QLabel("Weights A:")
+        w2_layout.addRow(self.weights_b1_label, row_b1)
 
         self.weights_b2_edit = QLineEdit("")
         self.btn_weights_b2 = QPushButton("Browse…")
         row_b2 = QHBoxLayout()
         row_b2.addWidget(self.weights_b2_edit, 1)
         row_b2.addWidget(self.btn_weights_b2)
-        w2_layout.addRow("Weights B:", row_b2)
+        self.weights_b2_label = QLabel("Weights B:")
+        w2_layout.addRow(self.weights_b2_label, row_b2)
 
         # Eval error
         w3 = QWidget()
@@ -5028,6 +5270,7 @@ class ActiveLearningDialog(QDialog):
 
         # Wiring
         self.strategy_combo.currentIndexChanged.connect(self._on_strategy_changed)
+        self.backend_combo.currentTextChanged.connect(self._on_backend_changed)
         self.btn_weights_a.clicked.connect(
             lambda: self._browse_weights(self.weights_a_edit)
         )
@@ -5041,15 +5284,35 @@ class ActiveLearningDialog(QDialog):
         self.btn_run.clicked.connect(self._run)
         self.btn_add.clicked.connect(self._add_selected)
         self.btn_close.clicked.connect(self.reject)
+        self.btn_sleap_refresh.clicked.connect(self._refresh_sleap_envs)
 
         self._on_strategy_changed(0)
         self._apply_settings()
         self._apply_latest_weights_default()
+        self._refresh_sleap_envs()
+        self._apply_backend_ui()
+
+    def lock_model_path(self, path: str):
+        if path:
+            self.weights_a_edit.setText(path)
+            self.weights_b1_edit.setText(path)
+            self.weights_b2_edit.setText(path)
+        self._lock_model = True
+        self.weights_a_edit.setReadOnly(True)
+        self.weights_b1_edit.setReadOnly(True)
+        self.weights_b2_edit.setReadOnly(True)
+        self.btn_weights_a.setEnabled(False)
+        self.btn_weights_b1.setEnabled(False)
+        self.btn_weights_b2.setEnabled(False)
+        self._apply_backend_ui()
 
     def _apply_settings(self):
         settings = _load_dialog_settings("active_learning")
         if not settings:
             return
+        self.backend_combo.setCurrentText(
+            settings.get("backend", self.backend_combo.currentText())
+        )
         self.strategy_combo.setCurrentIndex(int(settings.get("strategy_index", 0)))
         self.scope_combo.setCurrentText(settings.get("scope", self.scope_combo.currentText()))
         self.n_spin.setValue(int(settings.get("n", self.n_spin.value())))
@@ -5063,6 +5326,10 @@ class ActiveLearningDialog(QDialog):
         self.eval_csv_edit.setText(settings.get("eval_csv", self.eval_csv_edit.text()))
         if "kpt_index" in settings:
             self.kpt_combo.setCurrentIndex(int(settings.get("kpt_index", 0)))
+        if "sleap_env" in settings:
+            self.sleap_env_combo.setCurrentText(
+                settings.get("sleap_env", self.sleap_env_combo.currentText())
+            )
 
     def _apply_latest_weights_default(self):
         if (
@@ -5070,16 +5337,18 @@ class ActiveLearningDialog(QDialog):
             and self.project.latest_pose_weights
             and Path(self.project.latest_pose_weights).exists()
         ):
-            latest = str(self.project.latest_pose_weights)
-            if not self.weights_a_edit.text().strip():
-                self.weights_a_edit.setText(latest)
-            if not self.weights_b1_edit.text().strip():
-                self.weights_b1_edit.setText(latest)
+            if self.backend_combo.currentText().strip().lower() != "sleap":
+                latest = str(self.project.latest_pose_weights)
+                if not self.weights_a_edit.text().strip():
+                    self.weights_a_edit.setText(latest)
+                if not self.weights_b1_edit.text().strip():
+                    self.weights_b1_edit.setText(latest)
 
     def _save_settings(self):
         _save_dialog_settings(
             "active_learning",
             {
+                "backend": self.backend_combo.currentText(),
                 "strategy_index": int(self.strategy_combo.currentIndex()),
                 "scope": self.scope_combo.currentText(),
                 "n": int(self.n_spin.value()),
@@ -5092,6 +5361,7 @@ class ActiveLearningDialog(QDialog):
                 "weights_b2": self.weights_b2_edit.text().strip(),
                 "eval_csv": self.eval_csv_edit.text().strip(),
                 "kpt_index": int(self.kpt_combo.currentIndex()),
+                "sleap_env": self.sleap_env_combo.currentText().strip(),
             },
         )
 
@@ -5105,10 +5375,69 @@ class ActiveLearningDialog(QDialog):
             self.log_view.verticalScrollBar().maximum()
         )
 
+    def _on_backend_changed(self, _text: str):
+        self._apply_backend_ui()
+        if self.backend_combo.currentText().strip().lower() == "sleap":
+            self._refresh_sleap_envs()
+
+    def _apply_backend_ui(self):
+        is_sleap = self.backend_combo.currentText().strip().lower() == "sleap"
+        self.sleap_env_row.setVisible(is_sleap)
+        self.lbl_sleap_env_status.setVisible(is_sleap)
+        label = "Model dir:" if is_sleap else "Weights:"
+        self.weights_a_label.setText(label)
+        self.weights_b1_label.setText("Model dir A:" if is_sleap else "Weights A:")
+        self.weights_b2_label.setText("Model dir B:" if is_sleap else "Weights B:")
+        self.imgsz_spin.setEnabled(not is_sleap)
+        self.conf_spin.setEnabled(not is_sleap)
+        if self._lock_model:
+            for w in (
+                self.weights_a_label,
+                self.weights_b1_label,
+                self.weights_b2_label,
+                self.weights_a_edit,
+                self.weights_b1_edit,
+                self.weights_b2_edit,
+                self.btn_weights_a,
+                self.btn_weights_b1,
+                self.btn_weights_b2,
+            ):
+                w.setVisible(False)
+
+    def _refresh_sleap_envs(self):
+        current = self.sleap_env_combo.currentText().strip()
+        self.sleap_env_combo.clear()
+        self.sleap_env_combo.setEnabled(True)
+        envs, err = _list_sleap_envs()
+        if not envs:
+            self.sleap_env_combo.addItem("No sleap envs found")
+            self.sleap_env_combo.setEnabled(False)
+            self.lbl_sleap_env_status.setText(err or "No conda envs starting with 'sleap' found.")
+        else:
+            self.sleap_env_combo.addItems(envs)
+            if current and current in envs:
+                self.sleap_env_combo.setCurrentText(current)
+            self.lbl_sleap_env_status.setText("")
+
+    def _get_sleap_env(self) -> Optional[str]:
+        env = self.sleap_env_combo.currentText().strip()
+        if not env or env.lower().startswith("no sleap"):
+            return None
+        return env
+
     def _browse_weights(self, line_edit: QLineEdit):
-        path, _ = QFileDialog.getOpenFileName(self, "Select weights", "", "*.pt")
-        if path:
-            line_edit.setText(path)
+        if self._lock_model:
+            return
+        if self.backend_combo.currentText().strip().lower() == "sleap":
+            path = QFileDialog.getExistingDirectory(
+                self, "Select SLEAP model directory"
+            )
+            if path:
+                line_edit.setText(path)
+        else:
+            path, _ = QFileDialog.getOpenFileName(self, "Select weights", "", "*.pt")
+            if path:
+                line_edit.setText(path)
 
     def _browse_eval_csv(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select eval CSV", "", "*.csv")
@@ -5167,18 +5496,63 @@ class ActiveLearningDialog(QDialog):
             weights_b = None
             eval_csv = self.eval_csv_edit.text().strip()
 
+        backend = self.backend_combo.currentText().strip().lower()
+        needs_infer = strategy in {"lowest_conf", "lowest_conf_kpt", "disagreement"}
+        if needs_infer:
+            if not weights_a:
+                QMessageBox.warning(
+                    self,
+                    "Missing model",
+                    "Please select SLEAP model directory."
+                    if backend == "sleap"
+                    else "Please select model weights.",
+                )
+                return
+            if strategy == "disagreement" and not weights_b:
+                QMessageBox.warning(
+                    self,
+                    "Missing model",
+                    "Please select SLEAP model directory B."
+                    if backend == "sleap"
+                    else "Please select model weights B.",
+                )
+                return
+        if backend == "sleap" and needs_infer:
+            sleap_env = self._get_sleap_env()
+            if not sleap_env:
+                QMessageBox.warning(
+                    self,
+                    "No SLEAP env",
+                    "Select a conda env starting with 'sleap' for SLEAP inference.",
+                )
+                return
+            if weights_a and not Path(weights_a).is_dir():
+                QMessageBox.warning(
+                    self, "Missing model", "SLEAP model directory A not found."
+                )
+                return
+            if weights_b and not Path(weights_b).is_dir():
+                QMessageBox.warning(
+                    self, "Missing model", "SLEAP model directory B not found."
+                )
+                return
+
         preds_cache_a = None
         preds_cache_b = None
         if self.cb_use_cache.isChecked():
             if weights_a:
                 cache_a = self.infer.get_cache_for_paths(
-                    Path(weights_a), [self.image_paths[i] for i in candidates]
+                    Path(weights_a),
+                    [self.image_paths[i] for i in candidates],
+                    backend=backend,
                 )
                 if cache_a is not None:
                     preds_cache_a = cache_a
             if weights_b:
                 cache_b = self.infer.get_cache_for_paths(
-                    Path(weights_b), [self.image_paths[i] for i in candidates]
+                    Path(weights_b),
+                    [self.image_paths[i] for i in candidates],
+                    backend=backend,
                 )
                 if cache_b is not None:
                     preds_cache_b = cache_b
@@ -5201,6 +5575,10 @@ class ActiveLearningDialog(QDialog):
             preds_cache_a=preds_cache_a,
             preds_cache_b=preds_cache_b,
             keypoint_index=self.kpt_combo.currentIndex(),
+            backend=backend,
+            sleap_env=self._get_sleap_env() if backend == "sleap" else None,
+            sleap_device=self.device_combo.currentText(),
+            sleap_batch=self.batch_spin.value(),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -5239,6 +5617,8 @@ class ActiveLearningDialog(QDialog):
     def _add_selected(self):
         selected = self.results_list.selectedItems()
         if not selected:
+            selected = [self.results_list.item(i) for i in range(self.results_list.count())]
+        if not selected:
             return
         indices = []
         for item in selected:
@@ -5256,6 +5636,8 @@ class ActiveLearningDialog(QDialog):
             return
         if self.add_frames_callback:
             self.add_frames_callback(indices, "Active learning")
+            self.accept()
             return
         if hasattr(self.parent(), "_add_indices_to_labeling"):
             self.parent()._add_indices_to_labeling(indices, "Active learning")
+        self.accept()

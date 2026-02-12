@@ -36,6 +36,7 @@ import os
 import random
 import sys
 import subprocess
+import shutil
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,7 @@ try:
         cluster_stratified_split,
         cluster_kfold_split,
         save_split_files,
+        IncrementalEmbeddingCache,
         Keypoint,
         load_yolo_pose_label,
         save_yolo_pose_label,
@@ -75,6 +77,7 @@ try:
         TrainingRunnerDialog,
         EvaluationDashboardDialog,
         ActiveLearningDialog,
+        get_available_devices,
     )
 except ImportError:
     # Direct script execution - use absolute imports
@@ -86,6 +89,7 @@ except ImportError:
         cluster_stratified_split,
         cluster_kfold_split,
         save_split_files,
+        IncrementalEmbeddingCache,
         Keypoint,
         load_yolo_pose_label,
         save_yolo_pose_label,
@@ -101,18 +105,21 @@ except ImportError:
         TrainingRunnerDialog,
         EvaluationDashboardDialog,
         ActiveLearningDialog,
+        get_available_devices,
     )
 
-from PySide6.QtCore import Qt, QRectF, QSize, QObject, Signal, Slot, QThread, QTimer
+from PySide6.QtCore import Qt, QRect, QRectF, QSize, QObject, Signal, Slot, QThread, QTimer
 from PySide6.QtGui import (
     QAction,
     QColor,
     QFont,
     QImage,
     QKeySequence,
+    QPalette,
     QPainter,
     QPen,
     QPixmap,
+    QBrush,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -152,6 +159,9 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QInputDialog,
     QProgressBar,
+    QStyledItemDelegate,
+    QStyle,
+    QStyleOptionViewItem,
 )
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -211,6 +221,7 @@ class Project:
     kpt_opacity: float = 1.0
     edge_opacity: float = 0.7
     latest_pose_weights: Optional[Path] = None
+    latest_sleap_dataset: Optional[Path] = None
 
     def to_json(self) -> dict:
         base = self.project_path.parent
@@ -220,6 +231,11 @@ class Project:
         latest_weights = (
             _relativize_path(self.latest_pose_weights, base)
             if self.latest_pose_weights
+            else None
+        )
+        latest_sleap_dataset = (
+            _relativize_path(self.latest_sleap_dataset, base)
+            if self.latest_sleap_dataset
             else None
         )
         paths_relative = (
@@ -232,6 +248,9 @@ class Project:
             "out_root": str(out_root),
             "labels_dir": str(labels_dir),
             "latest_pose_weights": str(latest_weights) if latest_weights else "",
+            "latest_sleap_dataset": str(latest_sleap_dataset)
+            if latest_sleap_dataset
+            else "",
             "paths_relative": bool(paths_relative),
             "class_names": self.class_names,
             "keypoint_names": self.keypoint_names,
@@ -269,6 +288,12 @@ class Project:
         )
         if latest_pose_weights and latest_pose_weights.suffix != ".pt":
             latest_pose_weights = None
+        sleap_raw = Path(data.get("latest_sleap_dataset", "") or "")
+        latest_sleap_dataset = (
+            _resolve_project_path(sleap_raw, base, data) if str(sleap_raw) else None
+        )
+        if latest_sleap_dataset and latest_sleap_dataset.suffix != ".slp":
+            latest_sleap_dataset = None
         return Project(
             images_dir=images_dir,
             out_root=out_root,
@@ -294,6 +319,7 @@ class Project:
             kpt_opacity=float(data.get("kpt_opacity", 1.0)),
             edge_opacity=float(data.get("edge_opacity", 0.7)),
             latest_pose_weights=latest_pose_weights,
+            latest_sleap_dataset=latest_sleap_dataset,
         )
 
 
@@ -331,7 +357,8 @@ class PosePredictWorker(QObject):
         self.sleap_env = sleap_env
         self.sleap_device = sleap_device
         self.sleap_batch = int(sleap_batch)
-        self.sleap_max_instances = int(sleap_max_instances)
+        # Enforce single-instance predictions for PoseKit.
+        self.sleap_max_instances = 1
 
     def _extract_best_prediction(self, result):
         if result is None or result.keypoints is None:
@@ -457,7 +484,8 @@ class BulkPosePredictWorker(QObject):
         self.sleap_env = sleap_env
         self.sleap_device = sleap_device
         self.sleap_batch = int(sleap_batch)
-        self.sleap_max_instances = int(sleap_max_instances)
+        # Enforce single-instance predictions for PoseKit.
+        self.sleap_max_instances = 1
         self._cancel = False
 
     def cancel(self):
@@ -587,7 +615,7 @@ def get_keypoint_palette() -> List[QColor]:
 
 def get_ui_settings_path() -> Path:
     """Get path to UI settings file in user's home directory."""
-    config_dir = Path.home() / ".posekit"
+    config_dir = Path.home() / "posekit"
     config_dir.mkdir(exist_ok=True)
     return config_dir / "ui_settings.json"
 
@@ -1663,6 +1691,112 @@ class PoseCanvas(QGraphicsView):
 
 
 # -----------------------------
+# Frame list delegate
+# -----------------------------
+class FrameListDelegate(QStyledItemDelegate):
+    """Render frame name with right-aligned prediction confidence."""
+
+    CONF_ROLE = Qt.UserRole + 2
+    KP_COUNT_ROLE = Qt.UserRole + 3
+    CLUSTER_ROLE = Qt.UserRole + 4
+
+    def paint(self, painter, option, index):
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        style = opt.widget.style() if opt.widget else QApplication.style()
+        style.drawPrimitive(QStyle.PE_PanelItemViewItem, opt, painter, opt.widget)
+
+        text = index.data(Qt.DisplayRole) or ""
+        conf_val = index.data(self.CONF_ROLE)
+        conf_text = "" if conf_val in (None, "") else f"{float(conf_val):.3f}"
+        kpt_val = index.data(self.KP_COUNT_ROLE)
+        kpt_text = "" if kpt_val in (None, "") else f"k{int(kpt_val)}"
+        cluster_val = index.data(self.CLUSTER_ROLE)
+        if cluster_val in (None, "", -1):
+            cluster_text = ""
+        else:
+            try:
+                cluster_text = f"c{int(cluster_val)}"
+            except Exception:
+                cluster_text = ""
+
+        fg = index.data(Qt.ForegroundRole)
+        if isinstance(fg, QBrush):
+            base_color = fg.color()
+        elif isinstance(fg, QColor):
+            base_color = fg
+        else:
+            base_color = opt.palette.color(QPalette.Text)
+
+        if opt.state & QStyle.State_Selected:
+            text_color = opt.palette.color(QPalette.HighlightedText)
+            conf_color = opt.palette.color(QPalette.HighlightedText)
+        else:
+            text_color = base_color
+            conf_color = QColor(140, 140, 140)
+
+        r = opt.rect.adjusted(6, 0, -6, 0)
+        conf_w = 54 if conf_text else 0
+        kpt_w = 40 if kpt_text else 0
+        cluster_w = 40 if cluster_text else 0
+        available = max(0, r.width())
+        total = conf_w + kpt_w + cluster_w
+        if available < conf_w:
+            conf_w = available
+            kpt_w = 0
+            cluster_w = 0
+        elif available < conf_w + kpt_w:
+            cluster_w = 0
+        elif available < total:
+            cluster_w = 0
+        right_total = conf_w + kpt_w + cluster_w
+        name_rect = QRect(r.left(), r.top(), max(0, r.width() - right_total), r.height())
+        conf_rect = QRect(
+            max(r.left(), r.right() - conf_w + 1), r.top(), max(0, conf_w), r.height()
+        )
+        kpt_rect = QRect(
+            max(r.left(), conf_rect.left() - kpt_w), r.top(), max(0, kpt_w), r.height()
+        )
+        cluster_rect = QRect(
+            max(r.left(), kpt_rect.left() - cluster_w),
+            r.top(),
+            max(0, cluster_w),
+            r.height(),
+        )
+
+        painter.save()
+        painter.setPen(text_color)
+        if name_rect.width() > 0:
+            fm = painter.fontMetrics()
+            elided = fm.elidedText(text, Qt.ElideRight, max(0, name_rect.width()))
+            painter.drawText(
+                name_rect, Qt.AlignVCenter | Qt.AlignLeft, elided
+            )
+        if cluster_text and cluster_rect.width() > 0:
+            painter.setPen(conf_color)
+            fm = painter.fontMetrics()
+            cluster_elided = fm.elidedText(
+                cluster_text, Qt.ElideLeft, cluster_rect.width()
+            )
+            painter.drawText(
+                cluster_rect, Qt.AlignVCenter | Qt.AlignRight, cluster_elided
+            )
+        if kpt_text and kpt_rect.width() > 0:
+            painter.setPen(conf_color)
+            fm = painter.fontMetrics()
+            kpt_elided = fm.elidedText(kpt_text, Qt.ElideLeft, kpt_rect.width())
+            painter.drawText(
+                kpt_rect, Qt.AlignVCenter | Qt.AlignRight, kpt_elided
+            )
+        if conf_text and conf_rect.width() > 0:
+            painter.setPen(conf_color)
+            fm = painter.fontMetrics()
+            conf_elided = fm.elidedText(conf_text, Qt.ElideLeft, conf_rect.width())
+            painter.drawText(conf_rect, Qt.AlignVCenter | Qt.AlignRight, conf_elided)
+        painter.restore()
+
+
+# -----------------------------
 # Skeleton editor
 # -----------------------------
 class SkeletonEditorDialog(QDialog):
@@ -2274,6 +2408,13 @@ class MainWindow(QMainWindow):
         self.show_predictions = True
         self.show_pred_conf = False
         self._sleap_env_pref = ""
+        self._pred_conf_cache_key: Optional[str] = None
+        self._pred_conf_map: Dict[str, Optional[float]] = {}
+        self._pred_conf_complete = False
+        self._pred_kpt_count_map: Dict[str, Optional[int]] = {}
+        self._list_items: Dict[int, QListWidgetItem] = {}
+        self._cluster_ids_cache: Optional[List[int]] = None
+        self._cluster_ids_mtime: Optional[float] = None
         self.infer = PoseInferenceService(
             self.project.out_root,
             self.project.keypoint_names,
@@ -2289,9 +2430,10 @@ class MainWindow(QMainWindow):
                 if 0 <= int(i) < len(image_paths)
             }
         self.metadata_manager = MetadataManager(
-            self.project.out_root / ".posekit" / "metadata.json"
+            self.project.out_root / "posekit" / "metadata.json"
         )
         self.autosave_delay_ms = DEFAULT_AUTOSAVE_DELAY_MS
+        self._rebuild_path_index()
 
         splitter = QSplitter(Qt.Horizontal, self)
         self.setCentralWidget(splitter)
@@ -2305,17 +2447,40 @@ class MainWindow(QMainWindow):
         self.labeling_list.setDragDropMode(QListWidget.DragDrop)
         self.labeling_list.setDefaultDropAction(Qt.MoveAction)
         self.labeling_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.labeling_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.labeling_list.setTextElideMode(Qt.ElideRight)
+        self.labeling_list.setItemDelegate(FrameListDelegate(self.labeling_list))
         left_layout.addWidget(self.labeling_list, 1)
 
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Find frame...")
         left_layout.addWidget(self.search_edit)
 
+        sort_row = QHBoxLayout()
+        sort_row.addWidget(QLabel("Sort:"))
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItems(
+            [
+                "Default",
+                "Pred conf (high to low)",
+                "Pred conf (low to high)",
+                "Detected kpts (high to low)",
+                "Detected kpts (low to high)",
+                "Cluster id (low to high)",
+                "Cluster id (high to low)",
+            ]
+        )
+        sort_row.addWidget(self.sort_combo, 1)
+        left_layout.addLayout(sort_row)
+
         left_layout.addWidget(QLabel("All Frames"))
         self.frame_list = QListWidget()
         self.frame_list.setDragDropMode(QListWidget.DragDrop)
         self.frame_list.setDefaultDropAction(Qt.MoveAction)
         self.frame_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.frame_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.frame_list.setTextElideMode(Qt.ElideRight)
+        self.frame_list.setItemDelegate(FrameListDelegate(self.frame_list))
         left_layout.addWidget(self.frame_list, 1)
 
         # Frame management buttons
@@ -2350,6 +2515,12 @@ class MainWindow(QMainWindow):
         )
         frame_btns.addWidget(self.btn_smart_select)
         self.btn_smart_select.clicked.connect(self.open_smart_select)
+
+        self.btn_delete_frames = QPushButton("Delete Selected…")
+        self.btn_delete_frames.setToolTip(
+            "Permanently delete selected images (and labels) from the dataset"
+        )
+        frame_btns.addWidget(self.btn_delete_frames)
 
         left_layout.addLayout(frame_btns)
 
@@ -2540,6 +2711,18 @@ class MainWindow(QMainWindow):
         backend_row.addWidget(self.combo_pred_backend, 1)
         model_layout.addLayout(backend_row)
 
+        pred_conf_row = QHBoxLayout()
+        pred_conf_row.addWidget(QLabel("Min pred conf"))
+        self.sp_pred_conf = QDoubleSpinBox()
+        self.sp_pred_conf.setRange(0.0, 1.0)
+        self.sp_pred_conf.setSingleStep(0.05)
+        self.sp_pred_conf.setValue(0.25)
+        self.sp_pred_conf.setToolTip(
+            "Minimum keypoint confidence to display/apply (YOLO + SLEAP)."
+        )
+        pred_conf_row.addWidget(self.sp_pred_conf)
+        model_layout.addLayout(pred_conf_row)
+
         # YOLO settings
         self.yolo_pred_widget = QWidget()
         yolo_layout = QVBoxLayout(self.yolo_pred_widget)
@@ -2554,15 +2737,6 @@ class MainWindow(QMainWindow):
         pred_weights_row.addWidget(self.btn_pred_weights)
         pred_weights_row.addWidget(self.btn_pred_weights_latest)
         yolo_layout.addLayout(pred_weights_row)
-
-        pred_conf_row = QHBoxLayout()
-        pred_conf_row.addWidget(QLabel("Min pred conf"))
-        self.sp_pred_conf = QDoubleSpinBox()
-        self.sp_pred_conf.setRange(0.0, 1.0)
-        self.sp_pred_conf.setSingleStep(0.05)
-        self.sp_pred_conf.setValue(0.25)
-        pred_conf_row.addWidget(self.sp_pred_conf)
-        yolo_layout.addLayout(pred_conf_row)
         model_layout.addWidget(self.yolo_pred_widget)
 
         # SLEAP settings
@@ -2586,23 +2760,15 @@ class MainWindow(QMainWindow):
         self.sleap_model_edit = QLineEdit("")
         self.sleap_model_edit.setPlaceholderText("Select SLEAP model directory")
         self.btn_sleap_model = QPushButton("Browse…")
+        self.btn_sleap_model_latest = QPushButton("Use Latest")
         model_row.addWidget(self.sleap_model_edit, 1)
         model_row.addWidget(self.btn_sleap_model)
+        model_row.addWidget(self.btn_sleap_model_latest)
         sleap_layout.addRow("Model dir:", model_row)
 
         self.combo_sleap_device = QComboBox()
-        self.combo_sleap_device.addItems(["auto", "cuda", "cpu", "mps"])
+        self.combo_sleap_device.addItems(get_available_devices())
         sleap_layout.addRow("Device:", self.combo_sleap_device)
-
-        self.sp_sleap_batch = QSpinBox()
-        self.sp_sleap_batch.setRange(1, 128)
-        self.sp_sleap_batch.setValue(4)
-        sleap_layout.addRow("Batch size:", self.sp_sleap_batch)
-
-        self.sp_sleap_max_instances = QSpinBox()
-        self.sp_sleap_max_instances.setRange(1, 32)
-        self.sp_sleap_max_instances.setValue(1)
-        sleap_layout.addRow("Max instances:", self.sp_sleap_max_instances)
 
         sleap_btns = QHBoxLayout()
         self.btn_sleap_start = QPushButton("Start SLEAP Service")
@@ -2668,11 +2834,15 @@ class MainWindow(QMainWindow):
         left_scroll.setWidget(left)
         left_scroll.setWidgetResizable(True)
         left_scroll.setFrameShape(QFrame.NoFrame)
+        left_scroll.setMinimumWidth(320)
+        left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         right_scroll = QScrollArea()
         right_scroll.setWidget(right)
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.NoFrame)
+        right_scroll.setMinimumWidth(320)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         splitter.addWidget(left_scroll)
         splitter.addWidget(canvas_container)
@@ -2683,9 +2853,14 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 10)
         splitter.setStretchFactor(2, 1)
 
+        splitter.setHandleWidth(8)
+        splitter.setStyleSheet(
+            "QSplitter::handle { background: #b0b0b0; }"
+        )
+
         # Set initial sizes: ~200px per side panel, rest to center
         # This will be adjusted when window is shown based on total width
-        splitter.setSizes([200, 800, 200])
+        splitter.setSizes([320, 840, 320])
 
         # Set minimum sizes to 0 to allow full collapsing/scaling
         splitter.setCollapsible(0, True)
@@ -2733,6 +2908,7 @@ class MainWindow(QMainWindow):
         self.btn_proj.clicked.connect(self.open_project_settings)
         self.btn_export.clicked.connect(self.export_dataset_dialog)
         self.sp_autosave_delay.valueChanged.connect(self._update_autosave_delay)
+        self.sp_pred_conf.valueChanged.connect(self._on_pred_conf_changed)
         self.btn_train.clicked.connect(self.open_training_runner)
         self.btn_eval.clicked.connect(self.open_evaluation_dashboard)
         self.btn_active.clicked.connect(self.open_active_learning)
@@ -2749,12 +2925,15 @@ class MainWindow(QMainWindow):
         )
         self.btn_sleap_refresh.clicked.connect(self._refresh_sleap_envs)
         self.btn_sleap_model.clicked.connect(self._browse_sleap_model_dir)
+        self.btn_sleap_model_latest.clicked.connect(self._use_latest_sleap_model)
         self.btn_sleap_start.clicked.connect(self._start_sleap_service)
         self.btn_sleap_stop.clicked.connect(self._stop_sleap_service)
         self.btn_unlabeled_to_labeling.clicked.connect(self._move_unlabeled_to_labeling)
         self.btn_unlabeled_to_all.clicked.connect(self._move_unlabeled_to_all)
         self.btn_random_to_labeling.clicked.connect(self._add_random_to_labeling)
+        self.btn_delete_frames.clicked.connect(self._delete_selected_frames)
         self.search_edit.textChanged.connect(self._populate_frames)
+        self.sort_combo.currentTextChanged.connect(self._populate_frames)
         self.rb_frame.toggled.connect(self._update_mode)
         self.vis_group.buttonClicked.connect(self._update_vis_mode)
         self.class_combo.currentIndexChanged.connect(self._mark_dirty)
@@ -2768,6 +2947,7 @@ class MainWindow(QMainWindow):
 
         # Load UI settings now that all widgets are created
         self._refresh_sleap_envs()
+        self._sleap_batch_predict = 4
         self._load_ui_settings()
         self._update_pred_backend_ui()
 
@@ -2887,8 +3067,7 @@ class MainWindow(QMainWindow):
             "sleap_env": self.combo_sleap_env.currentText().strip(),
             "sleap_model_dir": self.sleap_model_edit.text().strip(),
             "sleap_device": self.combo_sleap_device.currentText().strip(),
-            "sleap_batch": int(self.sp_sleap_batch.value()),
-            "sleap_max_instances": int(self.sp_sleap_max_instances.value()),
+            "sleap_batch_predict": int(getattr(self, "_sleap_batch_predict", 4)),
             "show_predictions": bool(self.cb_show_preds.isChecked()),
             "show_pred_conf": bool(self.cb_show_pred_conf.isChecked()),
         }
@@ -2940,12 +3119,11 @@ class MainWindow(QMainWindow):
                 self.combo_sleap_device.setCurrentText(
                     str(settings["sleap_device"])
                 )
-            if "sleap_batch" in settings:
-                self.sp_sleap_batch.setValue(int(settings["sleap_batch"]))
-            if "sleap_max_instances" in settings:
-                self.sp_sleap_max_instances.setValue(
-                    int(settings["sleap_max_instances"])
-                )
+            if "sleap_batch_predict" in settings:
+                self._sleap_batch_predict = int(settings["sleap_batch_predict"])
+            elif "sleap_batch" in settings:
+                # Backwards compatibility for older settings key.
+                self._sleap_batch_predict = int(settings["sleap_batch"])
             if "show_predictions" in settings:
                 self.cb_show_preds.setChecked(bool(settings["show_predictions"]))
                 self.show_predictions = bool(self.cb_show_preds.isChecked())
@@ -2970,6 +3148,13 @@ class MainWindow(QMainWindow):
         act_save = QAction("Save", self)
         act_save.setShortcut(QKeySequence.Save)
         act_save.triggered.connect(self.save_all_labeling_frames)
+
+        act_open_proj = QAction("Open Project…", self)
+        act_open_proj.setShortcut(QKeySequence.Open)
+        act_open_proj.triggered.connect(self.open_project_dialog)
+
+        act_open_images = QAction("Open Images Folder…", self)
+        act_open_images.triggered.connect(self.open_images_folder)
 
         act_export = QAction("Export dataset.yaml + splits…", self)
         act_export.setShortcut(QKeySequence("Ctrl+E"))
@@ -3055,6 +3240,8 @@ class MainWindow(QMainWindow):
         act_active.triggered.connect(self.open_active_learning)
 
         m_file.addAction(act_save)
+        m_file.addAction(act_open_proj)
+        m_file.addAction(act_open_images)
         m_file.addAction(act_proj)
         m_file.addSeparator()
         m_file.addAction(act_export)
@@ -3112,6 +3299,18 @@ class MainWindow(QMainWindow):
             return False
         return bool(lp.read_text(encoding="utf-8").strip())
 
+    def _count_labeled_kpts(self, img_path: Path) -> int:
+        try:
+            loaded = load_yolo_pose_label(
+                self._label_path_for(img_path), len(self.project.keypoint_names)
+            )
+        except Exception:
+            return 0
+        if loaded is None:
+            return 0
+        _cls, kpts_norm, _bbox = loaded
+        return sum(1 for kp in kpts_norm if kp.v > 0)
+
     def save_project(self):
         if hasattr(self.project, "labeling_frames"):
             self.project.labeling_frames = sorted(
@@ -3127,13 +3326,36 @@ class MainWindow(QMainWindow):
         self._suppress_list_rebuild = True
         self.labeling_list.blockSignals(True)
         self.frame_list.blockSignals(True)
+        self.labeling_list.setUpdatesEnabled(False)
+        self.frame_list.setUpdatesEnabled(False)
         self.labeling_list.clear()
         self.frame_list.clear()
+        self._list_items = {}
 
         query = self.search_edit.text().strip().lower()
+        indices = []
         for idx, img_path in enumerate(self.image_paths):
             if query and query not in img_path.name.lower():
                 continue
+            indices.append(idx)
+
+        conf_map = self._get_pred_conf_for_indices(indices)
+        kpt_map = self._get_pred_kpt_count_for_indices(indices)
+        cluster_map = self._get_cluster_id_for_indices(indices)
+        sort_mode = (
+            self.sort_combo.currentText().strip()
+            if hasattr(self, "sort_combo")
+            else "Default"
+        )
+        reverse = sort_mode in {
+            "Pred conf (high to low)",
+            "Detected kpts (high to low)",
+            "Cluster id (high to low)",
+        }
+
+        items = []
+        for idx in indices:
+            img_path = self.image_paths[idx]
             # Check if saved to disk
             is_saved = self._is_labeled(img_path)
             in_cache = idx in self._frame_cache
@@ -3154,9 +3376,7 @@ class MainWindow(QMainWindow):
                 cached = self._frame_cache[idx]
                 num_labeled = sum(1 for kp in cached.kpts if kp.v > 0)
             elif is_saved:
-                # Load from disk to check keypoint status
-                ann = self._load_ann_from_disk(idx)
-                num_labeled = sum(1 for kp in ann.kpts if kp.v > 0)
+                num_labeled = self._count_labeled_kpts(img_path)
 
             # Determine color: Green=all labeled, Orange=some labeled, White=none
             if num_labeled == total_kpts:
@@ -3167,29 +3387,98 @@ class MainWindow(QMainWindow):
                 color = QColor(220, 220, 220)  # White
 
             item_text = f"{tick}{img_path.name}"
+            pred_conf = conf_map.get(idx)
+            pred_kpt_count = kpt_map.get(idx)
+            cluster_id = cluster_map.get(idx)
+            items.append(
+                {
+                    "idx": idx,
+                    "is_saved": is_saved,
+                    "in_labeling": idx in self.labeling_frames,
+                    "item_text": item_text,
+                    "color": color,
+                    "pred_conf": pred_conf,
+                    "pred_kpt_count": pred_kpt_count,
+                    "cluster_id": cluster_id,
+                }
+            )
 
+        if sort_mode != "Default":
+            if sort_mode.startswith("Pred conf"):
+                items.sort(
+                    key=lambda it: (
+                        it["pred_conf"]
+                        if it["pred_conf"] is not None
+                        else (-1.0 if reverse else 1e9)
+                    ),
+                    reverse=reverse,
+                )
+            elif sort_mode.startswith("Detected kpts"):
+                items.sort(
+                    key=lambda it: (
+                        it["pred_kpt_count"]
+                        if it["pred_kpt_count"] is not None
+                        else (-1 if reverse else 1_000_000)
+                    ),
+                    reverse=reverse,
+                )
+            elif sort_mode.startswith("Cluster id"):
+                items.sort(
+                    key=lambda it: (
+                        it["cluster_id"]
+                        if it["cluster_id"] is not None
+                        else (-1 if reverse else 1_000_000)
+                    ),
+                    reverse=reverse,
+                )
+
+        for it in items:
+            idx = it["idx"]
             # Labeled frames always go to labeling list
-            if is_saved or idx in self.labeling_frames:
-                # Ensure labeled frames are in the labeling set
-                if is_saved:
+            if it["is_saved"] or it["in_labeling"]:
+                if it["is_saved"]:
                     self.labeling_frames.add(idx)
-
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.UserRole, idx)  # Store actual index
-                item.setForeground(color)
+                item = QListWidgetItem(it["item_text"])
+                item.setData(Qt.UserRole, idx)
+                item.setData(FrameListDelegate.CONF_ROLE, it["pred_conf"])
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, it["pred_kpt_count"])
+                item.setData(FrameListDelegate.CLUSTER_ROLE, it["cluster_id"])
+                item.setForeground(it["color"])
                 self.labeling_list.addItem(item)
+                self._list_items[idx] = item
             else:
-                item = QListWidgetItem(item_text)
-                item.setData(Qt.UserRole, idx)  # Store actual index
-                item.setForeground(color)
+                item = QListWidgetItem(it["item_text"])
+                item.setData(Qt.UserRole, idx)
+                item.setData(FrameListDelegate.CONF_ROLE, it["pred_conf"])
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, it["pred_kpt_count"])
+                item.setData(FrameListDelegate.CLUSTER_ROLE, it["cluster_id"])
+                item.setForeground(it["color"])
                 self.frame_list.addItem(item)
+                self._list_items[idx] = item
 
         self.labeling_list.blockSignals(False)
         self.frame_list.blockSignals(False)
+        self.labeling_list.setUpdatesEnabled(True)
+        self.frame_list.setUpdatesEnabled(True)
         self._suppress_list_rebuild = False
 
-    def _update_frame_item(self, idx: int):
+    def _update_frame_item(
+        self,
+        idx: int,
+        pred_conf: Optional[float] = None,
+        pred_kpt_count: Optional[int] = None,
+        cluster_id: Optional[int] = None,
+        conf_only: bool = False,
+    ):
         """Update a single frame item in the lists without rebuilding everything."""
+        if conf_only:
+            item = self._list_items.get(idx)
+            if item is not None:
+                item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
+                if cluster_id is not None:
+                    item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
+            return
         img_path = self.image_paths[idx]
         is_saved = self._is_labeled(img_path)
         in_cache = idx in self._frame_cache
@@ -3209,8 +3498,7 @@ class MainWindow(QMainWindow):
             cached = self._frame_cache[idx]
             num_labeled = sum(1 for kp in cached.kpts if kp.v > 0)
         elif is_saved:
-            ann = self._load_ann_from_disk(idx)
-            num_labeled = sum(1 for kp in ann.kpts if kp.v > 0)
+            num_labeled = self._count_labeled_kpts(img_path)
 
         # Determine color
         if num_labeled == total_kpts:
@@ -3221,21 +3509,258 @@ class MainWindow(QMainWindow):
             color = QColor(220, 220, 220)  # White
 
         item_text = f"{tick}{img_path.name}"
+        if pred_conf is None:
+            pred_conf = self._get_pred_conf_for_indices([idx]).get(idx)
+        if pred_kpt_count is None:
+            pred_kpt_count = self._get_pred_kpt_count_for_indices([idx]).get(idx)
+        if cluster_id is None:
+            cluster_id = self._get_cluster_id_for_indices([idx]).get(idx)
 
         # Find and update the item in the appropriate list
+        item = self._list_items.get(idx)
+        if item is not None:
+            item.setForeground(color)
+            item.setText(item_text)
+            item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
+            item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
+            item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
+            return
+
         for i in range(self.labeling_list.count()):
             item = self.labeling_list.item(i)
             if item.data(Qt.UserRole) == idx:
-                item.setText(item_text)
                 item.setForeground(color)
+                item.setText(item_text)
+                item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
+                item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
                 return
 
         for i in range(self.frame_list.count()):
             item = self.frame_list.item(i)
             if item.data(Qt.UserRole) == idx:
-                item.setText(item_text)
                 item.setForeground(color)
+                item.setText(item_text)
+                item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
+                item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
                 return
+
+    def _clear_conf_display(self) -> None:
+        if self._list_items:
+            for item in self._list_items.values():
+                item.setData(FrameListDelegate.CONF_ROLE, None)
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, None)
+            return
+        for i in range(self.labeling_list.count()):
+            item = self.labeling_list.item(i)
+            if item is not None:
+                item.setData(FrameListDelegate.CONF_ROLE, None)
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, None)
+        for i in range(self.frame_list.count()):
+            item = self.frame_list.item(i)
+            if item is not None:
+                item.setData(FrameListDelegate.CONF_ROLE, None)
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, None)
+
+    def _rebuild_path_index(self):
+        self._path_to_index: Dict[str, int] = {}
+        for i, p in enumerate(self.image_paths):
+            try:
+                self._path_to_index[str(p)] = i
+                self._path_to_index[str(p.resolve())] = i
+            except Exception:
+                self._path_to_index[str(p)] = i
+
+    def _get_pred_conf_for_indices(self, indices: List[int]) -> Dict[int, Optional[float]]:
+        self._ensure_pred_conf_cache()
+        out: Dict[int, Optional[float]] = {}
+        for idx in indices:
+            img_path = self.image_paths[idx]
+            key = str(img_path)
+            val = self._pred_conf_map.get(key)
+            if val is None:
+                try:
+                    val = self._pred_conf_map.get(str(Path(img_path).resolve()))
+                except Exception:
+                    val = None
+            out[idx] = val
+        return out
+
+    def _get_pred_kpt_count_for_indices(
+        self, indices: List[int]
+    ) -> Dict[int, Optional[int]]:
+        self._ensure_pred_conf_cache()
+        out: Dict[int, Optional[int]] = {}
+        for idx in indices:
+            img_path = self.image_paths[idx]
+            key = str(img_path)
+            val = self._pred_kpt_count_map.get(key)
+            if val is None:
+                try:
+                    val = self._pred_kpt_count_map.get(
+                        str(Path(img_path).resolve())
+                    )
+                except Exception:
+                    val = None
+            out[idx] = val
+        return out
+
+    def _ensure_cluster_ids_cache(self) -> None:
+        csv_path = self.project.out_root / "posekit" / "clusters" / "clusters.csv"
+        if not csv_path.exists():
+            self._cluster_ids_cache = None
+            self._cluster_ids_mtime = None
+            return
+        try:
+            mtime = float(csv_path.stat().st_mtime)
+        except Exception:
+            mtime = None
+        refreshed = not (
+            self._cluster_ids_cache is not None
+            and self._cluster_ids_mtime == mtime
+            and len(self._cluster_ids_cache) == len(self.image_paths)
+        )
+        if not refreshed:
+            return
+        cluster_ids = self._load_cluster_ids_from_csv(csv_path)
+        self._cluster_ids_cache = cluster_ids
+        self._cluster_ids_mtime = mtime
+        if not self._suppress_list_rebuild and self._list_items:
+            self._refresh_cluster_roles_all()
+
+    def _get_cluster_id_for_indices(
+        self, indices: List[int]
+    ) -> Dict[int, Optional[int]]:
+        self._ensure_cluster_ids_cache()
+        out: Dict[int, Optional[int]] = {}
+        for idx in indices:
+            cid = None
+            if self._cluster_ids_cache and idx < len(self._cluster_ids_cache):
+                cid_val = self._cluster_ids_cache[idx]
+                cid = cid_val if cid_val is not None and cid_val >= 0 else None
+            out[idx] = cid
+        return out
+
+    def _refresh_cluster_roles_all(self) -> None:
+        if not self._cluster_ids_cache:
+            return
+        for idx, item in self._list_items.items():
+            if idx < 0 or idx >= len(self.image_paths):
+                continue
+            cid_val = None
+            if idx < len(self._cluster_ids_cache):
+                raw = self._cluster_ids_cache[idx]
+                cid_val = raw if raw is not None and raw >= 0 else None
+            item.setData(FrameListDelegate.CLUSTER_ROLE, cid_val)
+
+    def _pred_cache_key_for(self, model: Optional[Path], backend: str) -> Optional[str]:
+        if not model:
+            return None
+        try:
+            sig = self.infer._model_sig(model, backend)
+        except Exception:
+            sig = None
+        conf_thr = self._pred_conf_default()
+        return f"{backend}|{model}|{sig}|thr={conf_thr:.6f}"
+
+    def _current_pred_cache_key(self) -> Optional[str]:
+        model = self._get_pred_model_silent()
+        backend = self._pred_backend()
+        return self._pred_cache_key_for(model, backend)
+
+    def _ensure_pred_conf_cache(self) -> None:
+        key = self._current_pred_cache_key()
+        if not key:
+            self._pred_conf_cache_key = None
+            self._pred_conf_map = {}
+            self._pred_conf_complete = False
+            self._pred_kpt_count_map = {}
+            return
+        if key == self._pred_conf_cache_key and self._pred_conf_complete:
+            return
+        model = self._get_pred_model_silent()
+        if not model:
+            self._pred_conf_cache_key = None
+            self._pred_conf_map = {}
+            self._pred_conf_complete = False
+            self._pred_kpt_count_map = {}
+            return
+        backend = self._pred_backend()
+        preds_cache = self.infer.load_cache(model, backend=backend)
+        self._pred_conf_cache_key = key
+        conf_map, kpt_map = self._build_pred_stats_maps(preds_cache)
+        self._pred_conf_map = conf_map
+        self._pred_kpt_count_map = kpt_map
+        self._pred_conf_complete = True
+
+    def _build_pred_stats_maps(
+        self, preds_cache: Dict[str, List[Tuple[float, float, float]]]
+    ) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[int]]]:
+        conf_map: Dict[str, Optional[float]] = {}
+        kpt_map: Dict[str, Optional[int]] = {}
+        conf_thr = self._pred_conf_default()
+        for path, pred_list in preds_cache.items():
+            confs = [
+                float(p[2])
+                for p in pred_list
+                if len(p) >= 3 and np.isfinite(p[2])
+            ]
+            val = float(np.mean(confs)) if confs else None
+            if confs:
+                kpt_count = int(sum(1 for c in confs if c > conf_thr))
+            else:
+                kpt_count = 0 if pred_list else None
+            conf_map[path] = val
+            kpt_map[path] = kpt_count
+            try:
+                resolved = str(Path(path).resolve())
+                conf_map[resolved] = val
+                kpt_map[resolved] = kpt_count
+            except Exception:
+                pass
+        return conf_map, kpt_map
+
+    def _update_pred_conf_map_from_preds(
+        self,
+        preds: Dict[str, List[Tuple[float, float, float]]],
+        model: Optional[Path] = None,
+        backend: Optional[str] = None,
+    ) -> None:
+        if not preds:
+            return
+        if backend is None:
+            backend = self._pred_backend()
+        if model is None:
+            model = self._get_pred_model_silent()
+        key = self._pred_cache_key_for(model, backend)
+        if not key:
+            return
+        if key != self._pred_conf_cache_key:
+            self._pred_conf_cache_key = key
+            self._pred_conf_map = {}
+            self._pred_conf_complete = False
+            self._pred_kpt_count_map = {}
+        conf_thr = self._pred_conf_default()
+        for path, pred_list in preds.items():
+            confs = [
+                float(p[2])
+                for p in pred_list
+                if len(p) >= 3 and np.isfinite(p[2])
+            ]
+            val = float(np.mean(confs)) if confs else None
+            if confs:
+                kpt_count = int(sum(1 for c in confs if c > conf_thr))
+            else:
+                kpt_count = 0 if pred_list else None
+            self._pred_conf_map[path] = val
+            self._pred_kpt_count_map[path] = kpt_count
+            try:
+                resolved = str(Path(path).resolve())
+                self._pred_conf_map[resolved] = val
+                self._pred_kpt_count_map[resolved] = kpt_count
+            except Exception:
+                pass
 
     def _rebuild_kpt_list(self):
         self.kpt_list.clear()
@@ -4400,6 +4925,66 @@ class MainWindow(QMainWindow):
         self.save_project()
         self._update_info()
 
+    def _switch_project_window(self, proj: Project):
+        imgs = list_images(proj.images_dir)
+        if not imgs:
+            QMessageBox.critical(
+                self, "No images", f"No images found under: {proj.images_dir}"
+            )
+            return
+        try:
+            self._perform_autosave()
+            self.save_project()
+        except Exception:
+            pass
+        new_win = MainWindow(proj, imgs)
+        new_win.resize(self.size())
+        new_win.show()
+        app = QApplication.instance()
+        if app is not None:
+            if not hasattr(app, "_posekit_windows"):
+                app._posekit_windows = []
+            app._posekit_windows.append(new_win)
+        self.close()
+
+    def open_project_dialog(self):
+        start = str(self.project.project_path.parent)
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open pose_project.json", start, "pose_project.json;All Files (*)"
+        )
+        if not path:
+            return
+        project_path = Path(path).expanduser().resolve()
+        if not project_path.exists():
+            QMessageBox.warning(self, "Missing", "Project file not found.")
+            return
+        try:
+            data = json.loads(project_path.read_text(encoding="utf-8"))
+            base = project_path.parent
+            images_dir = _resolve_project_path(Path(data["images_dir"]), base, data)
+        except Exception as e:
+            QMessageBox.warning(self, "Invalid project", str(e))
+            return
+        proj = load_project_with_repairs(project_path, images_dir)
+        self._switch_project_window(proj)
+
+    def open_images_folder(self):
+        start = str(self.project.images_dir) if self.project.images_dir else ""
+        path = QFileDialog.getExistingDirectory(self, "Select images folder", start)
+        if not path:
+            return
+        images_dir = Path(path).expanduser().resolve()
+        out_root = (images_dir.parent / "pose_project").resolve()
+        proj = None
+        found = find_project(images_dir, out_root)
+        if found:
+            proj = load_project_with_repairs(found, images_dir)
+        else:
+            proj = create_project_via_wizard(images_dir, out_root_hint=out_root)
+        if proj is None:
+            return
+        self._switch_project_window(proj)
+
     def export_dataset_dialog(self):
         dlg = QDialog(self)
         dlg.setWindowTitle("Export dataset.yaml + copied images/labels")
@@ -4479,7 +5064,7 @@ class MainWindow(QMainWindow):
             )
             if csv_path is None or not csv_path.exists():
                 default_csv = (
-                    self.project.out_root / ".posekit" / "clusters" / "clusters.csv"
+                    self.project.out_root / "posekit" / "clusters" / "clusters.csv"
                 )
                 csv_path = default_csv if default_csv.exists() else None
             if not csv_path:
@@ -4559,9 +5144,8 @@ class MainWindow(QMainWindow):
 
     def open_smart_select(self):
         dlg = SmartSelectDialog(self, self.project, self.image_paths, self._is_labeled)
-        if dlg.exec() != QDialog.Accepted:
-            # dialog uses Close; we still want to apply if user clicked Add
-            pass
+        if dlg.exec() != QDialog.Accepted or not getattr(dlg, "_did_add", False):
+            return
 
         # If they added nothing, ignore
         picked = getattr(dlg, "selected_indices", None)
@@ -4581,6 +5165,212 @@ class MainWindow(QMainWindow):
             self, title, f"Added {len(indices)} frames to labeling set."
         )
 
+    def _collect_selected_indices(self) -> List[int]:
+        idxs = set()
+        for item in self.labeling_list.selectedItems():
+            try:
+                idx = int(item.data(Qt.UserRole))
+                idxs.add(idx)
+            except Exception:
+                continue
+        for item in self.frame_list.selectedItems():
+            try:
+                idx = int(item.data(Qt.UserRole))
+                idxs.add(idx)
+            except Exception:
+                continue
+        return sorted(idxs)
+
+    def _delete_selected_frames(self):
+        indices = self._collect_selected_indices()
+        if not indices:
+            QMessageBox.information(self, "Delete", "No frames selected.")
+            return
+
+        names = [self.image_paths[i].name for i in indices if i < len(self.image_paths)]
+        preview = "\n".join(names[:10])
+        if len(names) > 10:
+            preview += f"\n… (+{len(names) - 10} more)"
+
+        resp = QMessageBox.warning(
+            self,
+            "Delete selected frames?",
+            "This will permanently delete the selected images and any corresponding labels.\n\n"
+            f"Count: {len(indices)}\n\n{preview}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if resp != QMessageBox.Yes:
+            return
+
+        # Keep track of current frame path for remapping
+        cur_path = None
+        if 0 <= self.current_index < len(self.image_paths):
+            cur_path = self.image_paths[self.current_index]
+
+        deleted_paths: List[Path] = []
+
+        # Delete files
+        for idx in indices:
+            if idx < 0 or idx >= len(self.image_paths):
+                continue
+            img_path = self.image_paths[idx]
+            deleted_paths.append(img_path)
+            try:
+                if img_path.exists():
+                    img_path.unlink()
+            except Exception:
+                pass
+            try:
+                lbl_path = self._label_path_for(img_path)
+                if lbl_path.exists():
+                    lbl_path.unlink()
+            except Exception:
+                pass
+
+        self._cleanup_deleted_cache(deleted_paths)
+
+        # Rebuild image list and labeling set by path
+        old_labeling_paths = {
+            self.image_paths[i]
+            for i in self.labeling_frames
+            if 0 <= i < len(self.image_paths)
+        }
+        self.image_paths = list_images(self.project.images_dir)
+        self._rebuild_path_index()
+        self.labeling_frames = set()
+        for i, p in enumerate(self.image_paths):
+            if p in old_labeling_paths or self._is_labeled(p):
+                self.labeling_frames.add(i)
+
+        # Reset caches and current state
+        self._frame_cache.clear()
+        self._ann = None
+        self._dirty = False
+        self._undo_stack.clear()
+        self._pred_conf_cache_key = None
+        self._pred_conf_map = {}
+        self._pred_conf_complete = False
+        self._pred_kpt_count_map = {}
+        self._cluster_ids_cache = None
+        self._cluster_ids_mtime = None
+
+        # Remap current index
+        self.current_index = 0
+        if cur_path:
+            try:
+                self.current_index = self.image_paths.index(cur_path)
+            except ValueError:
+                self.current_index = 0
+
+        self._populate_frames()
+        if self.image_paths:
+            self.load_frame(self.current_index)
+        else:
+            self.canvas.set_image(np.zeros((1, 1, 3), dtype=np.uint8))
+            self.lbl_info.setText("No images found.")
+
+    def _cleanup_deleted_cache(self, deleted_paths: List[Path]) -> None:
+        if not deleted_paths:
+            return
+        deleted_keys = set()
+        for p in deleted_paths:
+            try:
+                deleted_keys.add(str(p))
+                deleted_keys.add(str(Path(p).resolve()))
+            except Exception:
+                deleted_keys.add(str(p))
+
+        # Metadata cleanup
+        try:
+            keys = list(self.metadata_manager.metadata.keys())
+            for k in keys:
+                try:
+                    if str(Path(k).resolve()) in deleted_keys or k in deleted_keys:
+                        self.metadata_manager.metadata.pop(k, None)
+                except Exception:
+                    if k in deleted_keys:
+                        self.metadata_manager.metadata.pop(k, None)
+            self.metadata_manager.save()
+        except Exception:
+            pass
+
+        # Prediction cache cleanup
+        pred_dir = self.project.out_root / "posekit" / "predictions"
+        if pred_dir.exists():
+            for cache_path in pred_dir.glob("*.json"):
+                try:
+                    data = json.loads(cache_path.read_text(encoding="utf-8"))
+                    preds = data.get("preds", {})
+                    if not preds:
+                        continue
+                    changed = False
+                    for k in list(preds.keys()):
+                        if k in deleted_keys:
+                            preds.pop(k, None)
+                            changed = True
+                    if changed:
+                        data["preds"] = preds
+                        cache_path.write_text(
+                            json.dumps(data), encoding="utf-8"
+                        )
+                except Exception:
+                    continue
+
+        # Embeddings cache cleanup (path-based)
+        try:
+            emb_root = self.project.out_root / "posekit" / "embeddings"
+            if emb_root.exists():
+                for child in emb_root.iterdir():
+                    if not child.is_dir():
+                        continue
+                    try:
+                        cache = IncrementalEmbeddingCache(
+                            self.project.out_root / "posekit", child.name
+                        )
+                        cache.remove_paths(deleted_keys)
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # Clusters cache cleanup (path-based CSV)
+        try:
+            cluster_csv = (
+                self.project.out_root / "posekit" / "clusters" / "clusters.csv"
+            )
+            if cluster_csv.exists():
+                rows = []
+                changed = False
+                with cluster_csv.open("r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        img = row.get("image") or row.get("image_path") or row.get("path")
+                        if not img:
+                            continue
+                        key = img
+                        try:
+                            if (
+                                key in deleted_keys
+                                or str(Path(key).resolve()) in deleted_keys
+                            ):
+                                changed = True
+                                continue
+                        except Exception:
+                            if key in deleted_keys:
+                                changed = True
+                                continue
+                        rows.append({"image": img, "cluster_id": row.get("cluster_id")})
+                if changed:
+                    cluster_csv.parent.mkdir(parents=True, exist_ok=True)
+                    with cluster_csv.open("w", newline="", encoding="utf-8") as f:
+                        writer = csv.writer(f)
+                        writer.writerow(["image", "cluster_id"])
+                        for row in rows:
+                            writer.writerow([row["image"], row["cluster_id"]])
+        except Exception:
+            pass
+
     def _preds_to_keypoints(
         self, preds: List[Tuple[float, float, float]], conf_thr: float = 0.25
     ) -> List[Keypoint]:
@@ -4590,7 +5380,7 @@ class MainWindow(QMainWindow):
                 c = 0.0
             if not np.isfinite(x) or not np.isfinite(y):
                 x, y, c = 0.0, 0.0, 0.0
-            if c >= conf_thr:
+            if c > conf_thr and c > 0.0:
                 kpts.append(Keypoint(float(x), float(y), 2))
             else:
                 kpts.append(Keypoint(0.0, 0.0, 0))
@@ -4601,6 +5391,14 @@ class MainWindow(QMainWindow):
             return float(self.sp_pred_conf.value())
         except Exception:
             return 0.25
+
+    def _on_pred_conf_changed(self, _value: float):
+        self._pred_conf_cache_key = None
+        self._pred_conf_map = {}
+        self._pred_conf_complete = False
+        self._pred_kpt_count_map = {}
+        self._populate_frames()
+        self._rebuild_canvas()
 
     def _pred_backend(self) -> str:
         try:
@@ -4645,10 +5443,13 @@ class MainWindow(QMainWindow):
         else:
             self._set_sleap_status("SLEAP: off", visible=False)
         if not is_sleap:
-            try:
-                PoseInferenceService.shutdown_sleap_service()
-            except Exception:
-                pass
+            if PoseInferenceService.sleap_service_running():
+                self._stop_sleap_service()
+            else:
+                try:
+                    PoseInferenceService.shutdown_sleap_service()
+                except Exception:
+                    pass
 
     def _refresh_sleap_envs(self):
         if not hasattr(self, "combo_sleap_env"):
@@ -4701,7 +5502,114 @@ class MainWindow(QMainWindow):
             self, "Select SLEAP model directory", start
         )
         if path:
-            self.sleap_model_edit.setText(path)
+            self._validate_sleap_model_dir(Path(path), notify=True)
+
+    def _is_sleap_model_dir(self, path: Path) -> bool:
+        if not path.exists() or not path.is_dir():
+            return False
+        return (path / "training_config.yaml").exists() or (
+            path / "training_config.json"
+        ).exists()
+
+    def _find_latest_sleap_model_dir_from(self, base: Path) -> Optional[Path]:
+        models_dir = base / "models"
+        if not models_dir.exists() or not models_dir.is_dir():
+            return None
+        best_ts = None
+        best_path = None
+        for child in models_dir.iterdir():
+            if not child.is_dir():
+                continue
+            name = child.name
+            prefix = name.split(".", 1)[0]
+            try:
+                ts = datetime.strptime(prefix, "%y%m%d_%H%M%S")
+            except Exception:
+                continue
+            if not self._is_sleap_model_dir(child):
+                continue
+            if best_ts is None or ts > best_ts:
+                best_ts = ts
+                best_path = child
+        return best_path
+
+    def _resolve_sleap_model_dir(self, path: Path) -> Optional[Path]:
+        try:
+            path = path.expanduser().resolve()
+        except Exception:
+            pass
+        if path.is_file():
+            path = path.parent
+        if self._is_sleap_model_dir(path):
+            return path
+        found = self._find_latest_sleap_model_dir_from(path)
+        if found:
+            return found
+        try:
+            parent = path.parent
+        except Exception:
+            parent = None
+        if parent:
+            found = self._find_latest_sleap_model_dir_from(parent)
+            if found:
+                return found
+        return None
+
+    def _validate_sleap_model_dir(
+        self, path: Path, notify: bool = True
+    ) -> Optional[Path]:
+        resolved = self._resolve_sleap_model_dir(path)
+        if not resolved:
+            if notify:
+                QMessageBox.warning(
+                    self,
+                    "Invalid SLEAP model dir",
+                    "Selected folder does not contain training_config.yaml/json.\n"
+                    "Choose a model folder under models/<YYMMDD_HHMMSS>.*",
+                )
+            return None
+        if notify and resolved != path:
+            QMessageBox.information(
+                self,
+                "SLEAP model folder resolved",
+                f"'{path}' is not a model folder.\nUsing:\n{resolved}",
+            )
+        self.sleap_model_edit.setText(str(resolved))
+        return resolved
+
+    def _find_latest_sleap_model_dir(self, slp_path: Path) -> Optional[Path]:
+        try:
+            base = slp_path.parent
+        except Exception:
+            return None
+        return self._find_latest_sleap_model_dir_from(base)
+
+    def _use_latest_sleap_model(self):
+        slp = getattr(self.project, "latest_sleap_dataset", None)
+        if not slp:
+            QMessageBox.information(
+                self,
+                "No SLEAP dataset",
+                "No latest SLEAP dataset recorded. Export a SLEAP dataset first.",
+            )
+            return
+        slp_path = Path(slp)
+        if not slp_path.exists():
+            QMessageBox.warning(
+                self,
+                "Missing dataset",
+                f"Latest SLEAP dataset not found:\n{slp_path}",
+            )
+            return
+        model_dir = self._find_latest_sleap_model_dir(slp_path)
+        if not model_dir:
+            QMessageBox.warning(
+                self,
+                "No models found",
+                f"No models folder with timestamped runs found next to:\n{slp_path}",
+            )
+            return
+        self._validate_sleap_model_dir(model_dir, notify=False)
 
     def _get_sleap_env(self) -> Optional[str]:
         env = self.combo_sleap_env.currentText().strip()
@@ -4712,31 +5620,24 @@ class MainWindow(QMainWindow):
     def _get_sleap_model_or_prompt(self) -> Optional[Path]:
         txt = self.sleap_model_edit.text().strip()
         if txt:
-            p = Path(txt).expanduser().resolve()
-            if p.exists() and p.is_dir():
-                return p
-            QMessageBox.warning(
-                self, "Invalid model", "SLEAP model directory not found."
-            )
+            resolved = self._validate_sleap_model_dir(Path(txt), notify=True)
+            if resolved:
+                return resolved
             return None
         self._browse_sleap_model_dir()
         txt = self.sleap_model_edit.text().strip()
         if not txt:
             return None
-        p = Path(txt).expanduser().resolve()
-        if p.exists() and p.is_dir():
-            return p
-        QMessageBox.warning(self, "Invalid model", "SLEAP model directory not found.")
+        resolved = self._validate_sleap_model_dir(Path(txt), notify=True)
+        if resolved:
+            return resolved
         return None
 
     def _get_sleap_model_silent(self) -> Optional[Path]:
         txt = self.sleap_model_edit.text().strip()
         if not txt:
             return None
-        p = Path(txt).expanduser().resolve()
-        if p.exists() and p.is_dir():
-            return p
-        return None
+        return self._validate_sleap_model_dir(Path(txt), notify=False)
 
     def _start_sleap_service(self):
         env = self._get_sleap_env()
@@ -4773,13 +5674,34 @@ class MainWindow(QMainWindow):
         self._sleap_service_thread.start()
 
     def _stop_sleap_service(self):
-        if self._sleap_service_thread and self._sleap_service_thread.isRunning():
-            return
+        if hasattr(self, "btn_sleap_start") and hasattr(self, "btn_sleap_stop"):
+            self.btn_sleap_start.setEnabled(False)
+            self.btn_sleap_stop.setEnabled(False)
+        self._set_sleap_status("SLEAP: stopping", visible=True)
+        self.statusBar().showMessage("Stopping SLEAP service…", 2000)
+
         try:
             PoseInferenceService.shutdown_sleap_service()
-        except Exception:
-            pass
+        except Exception as e:
+            self._set_sleap_status("SLEAP: error", visible=True)
+            self.statusBar().showMessage(f"SLEAP stop failed: {e}", 4000)
+        if self._sleap_service_thread and self._sleap_service_thread.isRunning():
+            try:
+                self._sleap_service_thread.quit()
+            except Exception:
+                pass
+
+        running = PoseInferenceService.sleap_service_running()
+        if running:
+            self._set_sleap_status("SLEAP: running", visible=True)
+            self.statusBar().showMessage("SLEAP service still running.", 4000)
+            if hasattr(self, "btn_sleap_start") and hasattr(self, "btn_sleap_stop"):
+                self.btn_sleap_start.setEnabled(False)
+                self.btn_sleap_stop.setEnabled(True)
+            return
+
         self._set_sleap_status("SLEAP: idle", visible=True)
+        self.statusBar().showMessage("SLEAP service stopped.", 3000)
         if hasattr(self, "btn_sleap_start") and hasattr(self, "btn_sleap_stop"):
             self.btn_sleap_start.setEnabled(True)
             self.btn_sleap_stop.setEnabled(False)
@@ -4858,12 +5780,14 @@ class MainWindow(QMainWindow):
         model = self._get_pred_model_silent()
         if not model:
             return None, None
+        backend = self._pred_backend()
         preds = self._get_pred_for_frame(
-            model, self.image_paths[self.current_index], backend=self._pred_backend()
+            model, self.image_paths[self.current_index], backend=backend
         )
         if not preds:
             return None, None
-        pred_kpts = self._preds_to_keypoints(preds, conf_thr=0.0)
+        conf_thr = self._pred_conf_default()
+        pred_kpts = self._preds_to_keypoints(preds, conf_thr=conf_thr)
         pred_confs = []
         for p in preds:
             if len(p) >= 3 and np.isfinite(p[2]):
@@ -4996,8 +5920,8 @@ class MainWindow(QMainWindow):
             conf=self._last_pred_conf or 0.0,
             sleap_env=sleap_env,
             sleap_device=self.combo_sleap_device.currentText().strip(),
-            sleap_batch=int(self.sp_sleap_batch.value()),
-            sleap_max_instances=int(self.sp_sleap_max_instances.value()),
+            sleap_batch=1,
+            sleap_max_instances=1,
         )
         self._pred_worker.moveToThread(self._pred_thread)
         self._pred_thread.started.connect(self._pred_worker.run)
@@ -5035,8 +5959,18 @@ class MainWindow(QMainWindow):
         model = getattr(self, "_last_pred_model", None)
         backend = getattr(self, "_last_pred_backend", "yolo")
         if model:
-            self.infer.merge_cache(
-                model, {str(self.image_paths[self.current_index]): preds}, backend=backend
+            img_path = str(self.image_paths[self.current_index])
+            self.infer.merge_cache(model, {img_path: preds}, backend=backend)
+            self._update_pred_conf_map_from_preds(
+                {img_path: preds}, model=model, backend=backend
+            )
+            conf_val = self._pred_conf_map.get(img_path)
+            kpt_val = self._pred_kpt_count_map.get(img_path)
+            self._update_frame_item(
+                self.current_index,
+                pred_conf=conf_val,
+                pred_kpt_count=kpt_val,
+                conf_only=True,
             )
         self._rebuild_canvas()
 
@@ -5056,6 +5990,11 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Cleared prediction cache ({removed} file(s)).", 3000
             )
+            self._pred_conf_cache_key = None
+            self._pred_conf_map = {}
+            self._pred_conf_complete = False
+            self._pred_kpt_count_map = {}
+            self._clear_conf_display()
             self._rebuild_canvas()
             return
 
@@ -5072,6 +6011,11 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"Cleared all prediction caches ({removed} file(s)).", 3000
         )
+        self._pred_conf_cache_key = None
+        self._pred_conf_map = {}
+        self._pred_conf_complete = False
+        self._pred_kpt_count_map = {}
+        self._clear_conf_display()
         self._rebuild_canvas()
 
     def _adopt_prediction_kpt(self, kpt_idx: int, x: float, y: float):
@@ -5091,7 +6035,8 @@ class MainWindow(QMainWindow):
                 conf = preds[kpt_idx][2] if len(preds[kpt_idx]) >= 3 else 1.0
                 preds[kpt_idx] = (float(x), float(y), float(conf))
             self._push_undo()
-            self._ann.kpts = self._preds_to_keypoints(preds, conf_thr=0.0)
+            conf_thr = self._pred_conf_default()
+            self._ann.kpts = self._preds_to_keypoints(preds, conf_thr=conf_thr)
             self._set_dirty()
             self._rebuild_canvas()
             self._update_info()
@@ -5158,7 +6103,8 @@ class MainWindow(QMainWindow):
             if res != QMessageBox.Yes:
                 return
         self._push_undo()
-        self._ann.kpts = self._preds_to_keypoints(preds, conf_thr=0.0)
+        conf_thr = self._pred_conf_default()
+        self._ann.kpts = self._preds_to_keypoints(preds, conf_thr=conf_thr)
         self._mark_dirty()
         self._rebuild_canvas()
         self._update_info()
@@ -5222,6 +6168,23 @@ class MainWindow(QMainWindow):
 
         self._last_pred_model = model
         self._last_pred_backend = backend
+        sleap_batch = 4
+        if backend == "sleap":
+            default_batch = int(getattr(self, "_sleap_batch_predict", 4))
+            batch_val, ok = QInputDialog.getInt(
+                self,
+                "SLEAP Batch Size",
+                "Batch size:",
+                default_batch,
+                1,
+                512,
+                1,
+            )
+            if not ok:
+                self.btn_predict_bulk.setEnabled(True)
+                return
+            self._sleap_batch_predict = int(batch_val)
+            sleap_batch = self._sleap_batch_predict
         self._bulk_pred_thread = QThread()
         self._bulk_pred_worker = BulkPosePredictWorker(
             model_path=model,
@@ -5236,8 +6199,8 @@ class MainWindow(QMainWindow):
             batch=16,
             sleap_env=sleap_env,
             sleap_device=self.combo_sleap_device.currentText().strip(),
-            sleap_batch=int(self.sp_sleap_batch.value()),
-            sleap_max_instances=int(self.sp_sleap_max_instances.value()),
+            sleap_batch=int(sleap_batch),
+            sleap_max_instances=1,
         )
         self._bulk_pred_worker.moveToThread(self._bulk_pred_thread)
         self._bulk_pred_thread.started.connect(self._bulk_pred_worker.run)
@@ -5272,6 +6235,33 @@ class MainWindow(QMainWindow):
         backend = getattr(self, "_last_pred_backend", "yolo")
         if model:
             self.infer.merge_cache(model, preds, backend=backend)
+            self._update_pred_conf_map_from_preds(preds, model=model, backend=backend)
+            for path in preds.keys():
+                idx = self._path_to_index.get(path)
+                if idx is None:
+                    try:
+                        idx = self._path_to_index.get(str(Path(path).resolve()))
+                    except Exception:
+                        idx = None
+                if idx is None:
+                    continue
+                conf_val = self._pred_conf_map.get(path)
+                if conf_val is None:
+                    try:
+                        conf_val = self._pred_conf_map.get(str(Path(path).resolve()))
+                    except Exception:
+                        conf_val = None
+                kpt_val = self._pred_kpt_count_map.get(path)
+                if kpt_val is None:
+                    try:
+                        kpt_val = self._pred_kpt_count_map.get(
+                            str(Path(path).resolve())
+                        )
+                    except Exception:
+                        kpt_val = None
+                self._update_frame_item(
+                    idx, pred_conf=conf_val, pred_kpt_count=kpt_val, conf_only=True
+                )
         self._rebuild_canvas()
 
     def _on_bulk_pred_failed(self, msg: str):
@@ -5284,6 +6274,16 @@ class MainWindow(QMainWindow):
 
     def open_training_runner(self):
         dlg = TrainingRunnerDialog(self, self.project, self.image_paths)
+        try:
+            backend = self._pred_backend()
+            if backend == "sleap":
+                dlg.backend_combo.setCurrentText("SLEAP")
+            else:
+                dlg.backend_combo.setCurrentText("YOLO Pose")
+            if hasattr(dlg, "_update_backend_ui"):
+                dlg._update_backend_ui()
+        except Exception:
+            pass
         dlg.exec()
 
     def open_evaluation_dashboard(self):
@@ -5300,6 +6300,19 @@ class MainWindow(QMainWindow):
                 idxs, reason
             ),
         )
+        try:
+            backend = self._pred_backend()
+            dlg.backend_combo.setCurrentText("SLEAP" if backend == "sleap" else "YOLO")
+            if backend == "sleap":
+                model_path = self.sleap_model_edit.text().strip()
+            else:
+                model_path = self.pred_weights_edit.text().strip()
+            if model_path:
+                dlg.lock_model_path(model_path)
+            if hasattr(dlg, "_apply_backend_ui"):
+                dlg._apply_backend_ui()
+        except Exception:
+            pass
         dlg.exec()
 
     def open_active_learning(self):
@@ -5313,6 +6326,19 @@ class MainWindow(QMainWindow):
                 idxs, reason
             ),
         )
+        try:
+            backend = self._pred_backend()
+            dlg.backend_combo.setCurrentText("SLEAP" if backend == "sleap" else "YOLO")
+            if backend == "sleap":
+                model_path = self.sleap_model_edit.text().strip()
+            else:
+                model_path = self.pred_weights_edit.text().strip()
+            if model_path:
+                dlg.lock_model_path(model_path)
+            if hasattr(dlg, "_apply_backend_ui"):
+                dlg._apply_backend_ui()
+        except Exception:
+            pass
         dlg.exec()
 
     # Backwards/alternate name used in older menu wiring.
@@ -5369,6 +6395,11 @@ class MainWindow(QMainWindow):
             else:
                 cluster_ids.append(-1)
         return cluster_ids
+
+    def _on_clusters_updated(self):
+        self._cluster_ids_cache = None
+        self._cluster_ids_mtime = None
+        self._populate_frames()
 
 
 # -----------------------------
@@ -5489,7 +6520,12 @@ def create_project_via_wizard(
 
 def parse_args():
     ap = argparse.ArgumentParser(description="PoseKit labeler")
-    ap.add_argument("images", help="Folder of images (recursively scanned)")
+    ap.add_argument(
+        "images",
+        nargs="?",
+        default=None,
+        help="Folder of images (recursively scanned)",
+    )
     ap.add_argument(
         "--out", default=None, help="Output root (default: <images>/../pose_project)"
     )
@@ -5506,10 +6542,20 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     args = parse_args()
-    images_dir = Path(args.images).expanduser().resolve()
-    if not images_dir.exists():
-        print(f"Images dir not found: {images_dir}", file=sys.stderr)
-        sys.exit(2)
+    app = None
+    if not args.images:
+        app = QApplication(sys.argv)
+        picked = QFileDialog.getExistingDirectory(
+            None, "Select images folder"
+        )
+        if not picked:
+            sys.exit(0)
+        images_dir = Path(picked).expanduser().resolve()
+    else:
+        images_dir = Path(args.images).expanduser().resolve()
+        if not images_dir.exists():
+            print(f"Images dir not found: {images_dir}", file=sys.stderr)
+            sys.exit(2)
 
     out_root = (
         Path(args.out).expanduser().resolve()
@@ -5517,7 +6563,8 @@ def main():
         else (images_dir.parent / "pose_project").resolve()
     )
 
-    app = QApplication(sys.argv)
+    if app is None:
+        app = QApplication(sys.argv)
 
     proj: Optional[Project] = None
 

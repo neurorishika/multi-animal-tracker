@@ -80,7 +80,7 @@ class PoseInferenceService:
         return hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
 
     def _cache_dir(self) -> Path:
-        return self.out_root / ".posekit" / "predictions"
+        return self.out_root / "posekit" / "predictions"
 
     def _cache_path(self, model_path: Path, backend: str) -> Path:
         return self._cache_dir() / f"{self._cache_key(model_path, backend)}.json"
@@ -227,7 +227,9 @@ class PoseInferenceService:
                 return None, f"SLEAP model dir not found: {model_path}"
             if not sleap_env:
                 return None, "Select a SLEAP conda env."
-            tmp_dir = self.out_root / ".posekit" / "tmp"
+            # PoseKit is single-instance only.
+            sleap_max_instances = 1
+            tmp_dir = self.out_root / "posekit" / "tmp"
             tmp_dir.mkdir(parents=True, exist_ok=True)
             out_json = tmp_dir / f"sleap_pred_{os.getpid()}_{uuid.uuid4().hex}.json"
             ok, preds, err = _run_sleap_predict_service(
@@ -253,7 +255,7 @@ class PoseInferenceService:
         if model_path.suffix != ".pt":
             return None, f"Invalid weights file: {model_path}"
 
-        tmp_dir = self.out_root / ".posekit" / "tmp"
+        tmp_dir = self.out_root / "posekit" / "tmp"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         out_json = tmp_dir / f"pose_pred_{os.getpid()}_{uuid.uuid4().hex}.json"
 
@@ -284,7 +286,7 @@ class PoseInferenceService:
     ) -> Tuple[bool, str, Optional[Path]]:
         log_path = None
         try:
-            log_dir = Path(out_root) / ".posekit" / "logs"
+            log_dir = Path(out_root) / "posekit" / "logs"
             log_path = log_dir / f"sleap_service_{os.getpid()}_{uuid.uuid4().hex}.log"
         except Exception:
             log_path = None
@@ -1126,6 +1128,14 @@ class _SleapHttpService:
                 self.proc.terminate()
             except Exception:
                 pass
+        if self.proc and self.proc.poll() is None:
+            try:
+                self.proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
         self.proc = None
         self.port = None
         self.env_name = None
@@ -1170,7 +1180,7 @@ def _run_sleap_predict_service(
     log_path = None
     try:
         out_root = out_json.parents[2]
-        log_dir = out_root / ".posekit" / "logs"
+        log_dir = out_root / "posekit" / "logs"
         log_path = log_dir / f"sleap_service_{os.getpid()}_{uuid.uuid4().hex}.log"
     except Exception:
         log_path = None

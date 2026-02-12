@@ -243,6 +243,95 @@ def _find_merge_candidates_python(
 # ============================================================================
 
 
+def _compute_velocity_zscore_breaks(
+    traj_df,
+    zscore_threshold=3.0,
+    window_size=10,
+    min_velocity_threshold=2.0,
+    std_regularization=0.5,
+    active_velocity_threshold=0.5,
+):
+    """
+    Identify trajectory break points based on velocity z-scores.
+
+    Detects sudden, statistically significant changes in velocity that often indicate
+    identity swaps. For each point, calculates the z-score of its velocity relative to
+    the rolling mean and std of recent past velocities.
+
+    CRITICAL SAFEGUARDS to avoid false positives:
+    1. Minimum velocity threshold - prevents breaking when animal starts moving from rest
+    2. Regularized std - prevents extreme z-scores from low-variability periods
+    3. Active velocity filtering - excludes near-stationary periods from statistics
+
+    Args:
+        traj_df (pd.DataFrame): Trajectory with 'Velocity' column already computed
+        zscore_threshold (float): Z-score threshold for breaking (default: 3.0)
+        window_size (int): Number of past velocities to use for statistics (default: 10)
+        min_velocity_threshold (float): Minimum velocity to consider for z-score breaking (pixels/frame)
+        std_regularization (float): Regularization added to std to prevent extreme z-scores (pixels/frame)
+        active_velocity_threshold (float): Minimum velocity to be considered "active" (pixels/frame)
+
+    Returns:
+        list: Indices where velocity z-score exceeds threshold
+    """
+    if len(traj_df) < window_size + 2:
+        return []  # Not enough data for z-score analysis
+
+    velocities = traj_df["Velocity"].values
+    break_indices = []
+
+    # Start from window_size+1 to ensure we have enough history
+    for i in range(window_size + 1, len(velocities)):
+        current_vel = velocities[i]
+
+        # Skip if current velocity is NaN (happens at trajectory start or after gaps)
+        if pd.isna(current_vel):
+            continue
+
+        # SAFEGUARD 1: Skip if current velocity is too low
+        # This prevents false breaks when animal transitions from rest to normal movement
+        if current_vel < min_velocity_threshold:
+            continue
+
+        # Get past velocities within the window (excluding NaN values)
+        past_velocities = velocities[max(0, i - window_size) : i]
+        past_velocities = past_velocities[~pd.isna(past_velocities)]
+
+        # Need at least 3 past velocities for meaningful statistics
+        if len(past_velocities) < 3:
+            continue
+
+        # SAFEGUARD 3: Calculate statistics using only "active" velocities
+        # This prevents stationary periods from creating artificially low baseline
+        active_velocities = past_velocities[
+            past_velocities >= active_velocity_threshold
+        ]
+
+        # If too few active velocities, fall back to all velocities
+        if len(active_velocities) >= 3:
+            mean_vel = np.mean(active_velocities)
+            std_vel = np.std(active_velocities, ddof=1)
+        else:
+            mean_vel = np.mean(past_velocities)
+            std_vel = np.std(past_velocities, ddof=1)
+
+        # SAFEGUARD 2: Regularize std to prevent extreme z-scores
+        # When std is very small (consistent low movement), regularization prevents
+        # normal movement from triggering breaks
+        regularized_std = std_vel + std_regularization
+
+        # Calculate z-score with regularized std
+        zscore = (current_vel - mean_vel) / regularized_std
+
+        # Break if z-score exceeds threshold (only positive - sudden acceleration)
+        # This now requires BOTH unusually high velocity relative to history
+        # AND sufficient absolute velocity (via min_velocity_threshold check above)
+        if zscore > zscore_threshold:
+            break_indices.append(traj_df.index[i])
+
+    return break_indices
+
+
 def process_trajectories_from_csv(csv_path, params):
     """
     Cleans and refines trajectory data from CSV file, preserving all columns including confidence metrics.
@@ -268,6 +357,9 @@ def process_trajectories_from_csv(csv_path, params):
     max_vel_break = params.get("MAX_VELOCITY_BREAK", 100.0)
     # MAX_DISTANCE_BREAK is derived from MAX_VELOCITY_BREAK * frame_diff (computed per-point)
     max_occlusion_gap = params.get("MAX_OCCLUSION_GAP", 30)
+    max_vel_zscore = params.get("MAX_VELOCITY_ZSCORE", 0.0)  # 0.0 means disabled
+    vel_zscore_window = params.get("VELOCITY_ZSCORE_WINDOW", 10)
+    vel_zscore_min_vel = params.get("VELOCITY_ZSCORE_MIN_VELOCITY", 2.0)  # pixels/frame
 
     try:
         # Read the CSV file
@@ -306,6 +398,7 @@ def process_trajectories_from_csv(csv_path, params):
         "original_count": df["TrajectoryID"].nunique(),
         "removed_short": 0,
         "broken_velocity": 0,
+        "broken_velocity_zscore": 0,
         "broken_occlusion": 0,
         "broken_spatial_gap": 0,  # New: breaks due to spatial jumps across NaN gaps
         "final_count": 0,
@@ -337,6 +430,15 @@ def process_trajectories_from_csv(csv_path, params):
         break_indices = traj_df[traj_df["Velocity"] > max_vel_break].index.tolist()
 
         stats["broken_velocity"] += len(break_indices)
+
+        # Add z-score based velocity breaks if enabled
+        if max_vel_zscore > 0:
+            zscore_break_indices = _compute_velocity_zscore_breaks(
+                traj_df, zscore_threshold=max_vel_zscore, window_size=vel_zscore_window
+            )
+            stats["broken_velocity_zscore"] += len(zscore_break_indices)
+            # Combine break indices and remove duplicates
+            break_indices = sorted(set(break_indices + zscore_break_indices))
 
         # Create segments based on break points
         segment_start_idx = 0
@@ -532,6 +634,9 @@ def process_trajectories(trajectories_full, params):
     min_len = params.get("MIN_TRAJECTORY_LENGTH", 10)
     max_vel_break = params.get("MAX_VELOCITY_BREAK", 100.0)
     # MAX_DISTANCE_BREAK is derived from MAX_VELOCITY_BREAK * frame_diff (computed per-point)
+    max_vel_zscore = params.get("MAX_VELOCITY_ZSCORE", 0.0)  # 0.0 means disabled
+    vel_zscore_window = params.get("VELOCITY_ZSCORE_WINDOW", 10)
+    vel_zscore_min_vel = params.get("VELOCITY_ZSCORE_MIN_VELOCITY", 2.0)  # pixels/frame
 
     all_data = []
     # Note: Using original track_id as TrajectoryID for this initial dataframe.
@@ -554,6 +659,7 @@ def process_trajectories(trajectories_full, params):
             "original_count": 0,
             "removed_short": 0,
             "broken_velocity": 0,
+            "broken_velocity_zscore": 0,
             "final_count": 0,
         }
 
@@ -563,6 +669,7 @@ def process_trajectories(trajectories_full, params):
         "original_count": len([t for t in trajectories_full if t]),
         "removed_short": 0,
         "broken_velocity": 0,
+        "broken_velocity_zscore": 0,
         "final_count": 0,
     }
 
@@ -588,6 +695,22 @@ def process_trajectories(trajectories_full, params):
         break_indices = traj_df[traj_df["Velocity"] > max_vel_break].index.tolist()
 
         stats["broken_velocity"] += len(break_indices)
+
+        # Add z-score based velocity breaks if enabled
+        if max_vel_zscore > 0:
+            # Calculate body-size-relative thresholds
+            # std_regularization and active_threshold are set to ~25% and ~12.5% of min_velocity
+            zscore_break_indices = _compute_velocity_zscore_breaks(
+                traj_df,
+                zscore_threshold=max_vel_zscore,
+                window_size=vel_zscore_window,
+                min_velocity_threshold=vel_zscore_min_vel,
+                std_regularization=vel_zscore_min_vel * 0.25,
+                active_velocity_threshold=vel_zscore_min_vel * 0.125,
+            )
+            stats["broken_velocity_zscore"] += len(zscore_break_indices)
+            # Combine break indices and remove duplicates
+            break_indices = sorted(set(break_indices + zscore_break_indices))
 
         # Create segments based on break points
         segment_start_idx = 0

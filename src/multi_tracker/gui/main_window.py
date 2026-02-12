@@ -350,7 +350,9 @@ class InterpolatedCropsWorker(QThread):
                 group = group.sort_values("FrameID").reset_index(drop=True)
                 states = group["State"].astype(str).str.strip().str.lower()
                 # Treat any value containing 'occluded' as occluded
-                states = states.where(~states.str.contains("occluded", na=False), "occluded")
+                states = states.where(
+                    ~states.str.contains("occluded", na=False), "occluded"
+                )
                 occluded_rows += int((states == "occluded").sum())
 
                 last_valid_idx = None
@@ -376,9 +378,12 @@ class InterpolatedCropsWorker(QThread):
 
                     prev_row = group.iloc[last_valid_idx]
                     next_row = group.iloc[j]
-                    if pd.isna(prev_row["X"]) or pd.isna(prev_row["Y"]) or pd.isna(
-                        next_row["X"]
-                    ) or pd.isna(next_row["Y"]):
+                    if (
+                        pd.isna(prev_row["X"])
+                        or pd.isna(prev_row["Y"])
+                        or pd.isna(next_row["X"])
+                        or pd.isna(next_row["Y"])
+                    ):
                         i = j
                         continue
 
@@ -583,16 +588,22 @@ class InterpolatedCropsWorker(QThread):
                 try:
                     np.savez_compressed(
                         str(roi_npz_path),
-                        frame_id=np.array([r["frame_id"] for r in roi_rows], dtype=np.int64),
+                        frame_id=np.array(
+                            [r["frame_id"] for r in roi_rows], dtype=np.int64
+                        ),
                         trajectory_id=np.array(
                             [r["trajectory_id"] for r in roi_rows], dtype=np.int64
                         ),
-                        filename=np.array([r["filename"] for r in roi_rows], dtype=object),
+                        filename=np.array(
+                            [r["filename"] for r in roi_rows], dtype=object
+                        ),
                         cx=np.array([r["cx"] for r in roi_rows], dtype=np.float32),
                         cy=np.array([r["cy"] for r in roi_rows], dtype=np.float32),
                         w=np.array([r["w"] for r in roi_rows], dtype=np.float32),
                         h=np.array([r["h"] for r in roi_rows], dtype=np.float32),
-                        theta=np.array([r["theta"] for r in roi_rows], dtype=np.float32),
+                        theta=np.array(
+                            [r["theta"] for r in roi_rows], dtype=np.float32
+                        ),
                         interp_from_start=np.array(
                             [r["interp_from_start"] for r in roi_rows], dtype=np.int64
                         ),
@@ -605,9 +616,11 @@ class InterpolatedCropsWorker(QThread):
                         interp_total=np.array(
                             [r["interp_total"] for r in roi_rows], dtype=np.int64
                         ),
-                        obb_corners=np.stack(roi_corners).astype(np.float32)
-                        if roi_corners
-                        else np.zeros((0, 4, 2), dtype=np.float32),
+                        obb_corners=(
+                            np.stack(roi_corners).astype(np.float32)
+                            if roi_corners
+                            else np.zeros((0, 4, 2), dtype=np.float32)
+                        ),
                     )
                 except Exception:
                     pass
@@ -3219,6 +3232,52 @@ class MainWindow(QMainWindow):
         self.lbl_max_occlusion_gap = QLabel("Max Occlusion Gap (frames):")
         f_pp.addRow(self.lbl_max_occlusion_gap, self.spin_max_occlusion_gap)
 
+        # Z-score based velocity breaking
+        self.spin_max_velocity_zscore = QDoubleSpinBox()
+        self.spin_max_velocity_zscore.setRange(0.0, 10.0)
+        self.spin_max_velocity_zscore.setSingleStep(0.5)
+        self.spin_max_velocity_zscore.setDecimals(1)
+        self.spin_max_velocity_zscore.setValue(0.0)  # 0 = disabled
+        self.spin_max_velocity_zscore.setToolTip(
+            "Z-score threshold for velocity-based trajectory breaking (0 = disabled).\n"
+            "Detects sudden, statistically anomalous velocity changes that often\n"
+            "indicate identity swaps or tracking errors.\n\n"
+            "Safeguards prevent false breaks when animals transition from rest to movement:\n"
+            "• Only triggers on substantial velocities (>2 px/frame)\n"
+            "• Uses regularized statistics to handle low-variability periods\n"
+            "• Filters out stationary noise from baseline calculations\n\n"
+            "Recommended: 3.0-5.0 for sensitive detection, 0 to disable."
+        )
+        self.lbl_max_velocity_zscore = QLabel("Velocity Z-score Threshold:")
+        f_pp.addRow(self.lbl_max_velocity_zscore, self.spin_max_velocity_zscore)
+
+        self.spin_velocity_zscore_window = QSpinBox()
+        self.spin_velocity_zscore_window.setRange(5, 50)
+        self.spin_velocity_zscore_window.setValue(10)
+        self.spin_velocity_zscore_window.setToolTip(
+            "Number of past velocities to use for z-score calculation (5-50 frames).\n"
+            "Larger windows = more stable statistics but less responsive to changes.\n"
+            "Smaller windows = more sensitive but may be noisy.\n"
+            "Recommended: 10-20 frames."
+        )
+        self.lbl_velocity_zscore_window = QLabel("Z-score Window (frames):")
+        f_pp.addRow(self.lbl_velocity_zscore_window, self.spin_velocity_zscore_window)
+
+        self.spin_velocity_zscore_min_vel = QDoubleSpinBox()
+        self.spin_velocity_zscore_min_vel.setRange(0.1, 50.0)
+        self.spin_velocity_zscore_min_vel.setSingleStep(0.5)
+        self.spin_velocity_zscore_min_vel.setDecimals(1)
+        self.spin_velocity_zscore_min_vel.setValue(2.0)
+        self.spin_velocity_zscore_min_vel.setToolTip(
+            "Minimum velocity for z-score breaking (body-sizes/second).\n"
+            "Prevents false breaks when animal starts moving from stationary state.\n"
+            "Z-score analysis only triggers when velocity exceeds this threshold.\n"
+            "Automatically scaled by body size and frame rate.\n"
+            "Recommended: 1.0-3.0 body-sizes/s depending on animal locomotion speed."
+        )
+        self.lbl_velocity_zscore_min_vel = QLabel("Z-score Min Velocity (body/s):")
+        f_pp.addRow(self.lbl_velocity_zscore_min_vel, self.spin_velocity_zscore_min_vel)
+
         # Interpolation settings
         self.combo_interpolation_method = QComboBox()
         self.combo_interpolation_method.addItems(["None", "Linear", "Cubic", "Spline"])
@@ -3787,7 +3846,9 @@ class MainWindow(QMainWindow):
             "After tracking completes, fill occluded gaps by interpolating center/size/angle\n"
             "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
         )
-        ind_output_layout.addRow("Occlusion Interpolation:", self.chk_individual_interpolate)
+        ind_output_layout.addRow(
+            "Occlusion Interpolation:", self.chk_individual_interpolate
+        )
 
         # Padding fraction (only crop parameter needed - size is determined by OBB)
         self.spin_individual_padding = QDoubleSpinBox()
@@ -4583,6 +4644,12 @@ class MainWindow(QMainWindow):
         self.lbl_max_velocity_break.setVisible(enabled)
         self.spin_max_occlusion_gap.setVisible(enabled)
         self.lbl_max_occlusion_gap.setVisible(enabled)
+        self.spin_max_velocity_zscore.setVisible(enabled)
+        self.lbl_max_velocity_zscore.setVisible(enabled)
+        self.spin_velocity_zscore_window.setVisible(enabled)
+        self.lbl_velocity_zscore_window.setVisible(enabled)
+        self.spin_velocity_zscore_min_vel.setVisible(enabled)
+        self.lbl_velocity_zscore_min_vel.setVisible(enabled)
         self.combo_interpolation_method.setVisible(enabled)
         self.lbl_interpolation_method.setVisible(enabled)
         self.spin_interpolation_max_gap.setVisible(enabled)
@@ -4597,6 +4664,9 @@ class MainWindow(QMainWindow):
         self.spin_min_trajectory_length.setEnabled(enabled)
         self.spin_max_velocity_break.setEnabled(enabled)
         self.spin_max_occlusion_gap.setEnabled(enabled)
+        self.spin_max_velocity_zscore.setEnabled(enabled)
+        self.spin_velocity_zscore_window.setEnabled(enabled)
+        self.spin_velocity_zscore_min_vel.setEnabled(enabled)
         self.combo_interpolation_method.setEnabled(enabled)
         self.spin_interpolation_max_gap.setEnabled(enabled)
         self.spin_merge_overlap_multiplier.setEnabled(enabled)
@@ -7290,9 +7360,7 @@ class MainWindow(QMainWindow):
             pass
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
-        logger.info(
-            f"Interpolated individual crops saved: {saved} (gaps: {gaps})"
-        )
+        logger.info(f"Interpolated individual crops saved: {saved} (gaps: {gaps})")
         if mapping_path:
             logger.info(f"Interpolated mapping saved: {mapping_path}")
         if roi_csv_path:
@@ -8312,6 +8380,11 @@ class MainWindow(QMainWindow):
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
             "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
             "MAX_OCCLUSION_GAP": self.spin_max_occlusion_gap.value(),
+            "MAX_VELOCITY_ZSCORE": self.spin_max_velocity_zscore.value(),
+            "VELOCITY_ZSCORE_WINDOW": self.spin_velocity_zscore_window.value(),
+            "VELOCITY_ZSCORE_MIN_VELOCITY": self.spin_velocity_zscore_min_vel.value()
+            * scaled_body_size
+            / fps,
             "CONTINUITY_THRESHOLD": recovery_search_distance_pixels,
             "MIN_RESPAWN_DISTANCE": min_respawn_distance_pixels,
             "MIN_DETECTION_COUNTS": self.spin_min_detect.value(),
@@ -8794,6 +8867,15 @@ class MainWindow(QMainWindow):
             self.spin_max_occlusion_gap.setValue(
                 get_cfg("max_occlusion_gap", default=30)
             )
+            self.spin_max_velocity_zscore.setValue(
+                get_cfg("max_velocity_zscore", default=0.0)
+            )
+            self.spin_velocity_zscore_window.setValue(
+                get_cfg("velocity_zscore_window", default=10)
+            )
+            self.spin_velocity_zscore_min_vel.setValue(
+                get_cfg("velocity_zscore_min_velocity", default=2.0)
+            )
             interp_method = get_cfg("interpolation_method", default="None")
             idx = self.combo_interpolation_method.findText(
                 interp_method, Qt.MatchFixedString
@@ -9226,6 +9308,9 @@ class MainWindow(QMainWindow):
                 "min_trajectory_length": self.spin_min_trajectory_length.value(),
                 "max_velocity_break": self.spin_max_velocity_break.value(),
                 "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
+                "max_velocity_zscore": self.spin_max_velocity_zscore.value(),
+                "velocity_zscore_window": self.spin_velocity_zscore_window.value(),
+                "velocity_zscore_min_velocity": self.spin_velocity_zscore_min_vel.value(),
                 "interpolation_method": self.combo_interpolation_method.currentText(),
                 "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
                 "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),

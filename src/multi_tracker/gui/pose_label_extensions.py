@@ -1711,7 +1711,7 @@ class IncrementalEmbeddingCache:
         self.meta_path = self.cache_dir / "metadata.json"
 
         self._embeddings: Optional[np.ndarray] = None
-        self._index: Dict[str, int] = {}  # filename -> row index
+        self._index: Dict[str, int] = {}  # path -> row index
         self._stats: Dict[str, Tuple[int, int]] = {}  # path -> (mtime, size)
         self._load()
 
@@ -1872,6 +1872,41 @@ class IncrementalEmbeddingCache:
             self.add_embeddings(to_add_paths, np.vstack(to_add_emb))
         else:
             self._save()
+
+    def remove_paths(self, paths: Set[str]) -> int:
+        """Remove embeddings for deleted paths. Returns number removed."""
+        if not paths:
+            return 0
+        if self._embeddings is None:
+            self._load()
+        if self._embeddings is None or not self._index:
+            return 0
+
+        remove_set = {p for p in paths if p in self._index}
+        if not remove_set:
+            return 0
+
+        keep_items = [
+            (path, idx)
+            for path, idx in sorted(self._index.items(), key=lambda x: x[1])
+            if path not in remove_set
+        ]
+        if not keep_items:
+            self.clear()
+            return len(remove_set)
+
+        keep_indices = [idx for _, idx in keep_items]
+        self._embeddings = self._embeddings[keep_indices]
+        new_index: Dict[str, int] = {}
+        new_stats: Dict[str, Tuple[int, int]] = {}
+        for new_i, (path, _old_idx) in enumerate(keep_items):
+            new_index[path] = new_i
+            if path in self._stats:
+                new_stats[path] = self._stats[path]
+        self._index = new_index
+        self._stats = new_stats
+        self._save()
+        return len(remove_set)
 
     def clear(self):
         """Clear all cached embeddings."""
