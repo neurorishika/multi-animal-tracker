@@ -485,8 +485,7 @@ def _run_pose_predict_subprocess(
         return False, {}, str(e)
 
 
-_SLEAP_SERVICE_CODE = textwrap.dedent(
-    r"""
+_SLEAP_SERVICE_CODE = textwrap.dedent(r"""
 import json,sys,threading,traceback,shutil,inspect,gc,subprocess
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -1018,8 +1017,7 @@ def main():
 
 if __name__=='__main__':
     main()
-"""
-).strip()
+""").strip()
 
 
 class _SleapHttpService:

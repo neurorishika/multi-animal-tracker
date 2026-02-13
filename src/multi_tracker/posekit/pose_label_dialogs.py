@@ -1702,8 +1702,7 @@ class EmbeddingExplorerDialog(QDialog):
             )
 
             # Add hover tool with image
-            hover = HoverTool(
-                tooltips="""
+            hover = HoverTool(tooltips="""
                 <div>
                     <div>
                         <img src="@imgs" style="width:150px; height:auto;"></img>
@@ -1714,8 +1713,7 @@ class EmbeddingExplorerDialog(QDialog):
                         <span style="font-size: 10px; color: #999;">Index: @indices</span>
                     </div>
                 </div>
-            """
-            )
+            """)
             p.add_tools(hover)
 
             p.xaxis.axis_label = "UMAP 1"

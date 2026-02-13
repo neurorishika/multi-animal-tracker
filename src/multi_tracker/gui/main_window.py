@@ -986,8 +986,7 @@ class CollapsibleGroupBox(QWidget):
 
         # Header button (acts as toggle)
         self._header_button = QToolButton()
-        self._header_button.setStyleSheet(
-            """
+        self._header_button.setStyleSheet("""
             QToolButton {
                 background-color: #3a3a3a;
                 border: 1px solid #555;
@@ -1006,8 +1005,7 @@ class CollapsibleGroupBox(QWidget):
                 background-color: #404040;
                 border-color: #4a9eff;
             }
-        """
-        )
+        """)
         self._header_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self._header_button.setArrowType(
             Qt.RightArrow if not initially_expanded else Qt.DownArrow
@@ -1123,8 +1121,7 @@ class MainWindow(QMainWindow):
         self.resize(1360, 850)
 
         # Set comprehensive dark mode styling
-        self.setStyleSheet(
-            """
+        self.setStyleSheet("""
             /* Main window and widgets */
             QMainWindow, QWidget { background-color: #2b2b2b; color: #ffffff; font-family: -apple-system, system-ui, sans-serif; }
 
@@ -1256,8 +1253,7 @@ class MainWindow(QMainWindow):
             QProgressBar::chunk { background-color: #4a9eff; width: 10px; margin: 0.5px; }
 
             QSplitter::handle { background-color: #444; }
-            """
-        )
+            """)
 
         # === STATE VARIABLES ===
         self.roi_base_frame = None
