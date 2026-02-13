@@ -5,7 +5,7 @@ Main application window for the Multi-Animal Tracker.
 Refactored for improved UX with Tabbed interface and logical grouping.
 """
 
-import sys, os, json, math, logging, tempfile
+import sys, os, json, math, logging, tempfile, shutil
 import hashlib
 import numpy as np
 import pandas as pd
@@ -14,6 +14,7 @@ from collections import deque, defaultdict
 import gc
 import csv
 from pathlib import Path
+from datetime import datetime
 
 from PySide6.QtCore import (
     Qt,
@@ -38,6 +39,8 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QCheckBox,
     QMessageBox,
+    QDialog,
+    QDialogButtonBox,
     QGroupBox,
     QFormLayout,
     QLineEdit,
@@ -847,6 +850,107 @@ def make_model_path_relative(model_path: object) -> object:
 
     # Return absolute path if not in models directory
     return model_path
+
+
+def get_yolo_model_registry_path() -> object:
+    """Return path to the local YOLO model metadata registry JSON."""
+    return os.path.join(get_models_directory(), "model_registry.json")
+
+
+def _sanitize_model_token(text: object) -> object:
+    """Sanitize a species/info token for filenames and metadata."""
+    raw = str(text or "").strip()
+    cleaned = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in raw)
+    return cleaned.strip("_")
+
+
+def _normalize_yolo_model_metadata(metadata: object) -> object:
+    """Normalize legacy model metadata to species + model_info schema."""
+    if not isinstance(metadata, dict):
+        return {}
+
+    normalized = dict(metadata)
+    species = _sanitize_model_token(normalized.get("species", ""))
+    model_info = _sanitize_model_token(normalized.get("model_info", ""))
+
+    # Legacy migration path: identifier/id -> species + model_info
+    legacy_identifier = normalized.get("identifier") or normalized.get("id") or ""
+    if (not species or not model_info) and legacy_identifier:
+        legacy_identifier = _sanitize_model_token(legacy_identifier)
+        parts = [p for p in legacy_identifier.split("_") if p]
+        if not species and parts:
+            species = parts[0]
+        if not model_info:
+            model_info = "_".join(parts[1:]) if len(parts) > 1 else "model"
+
+    if species:
+        normalized["species"] = species
+    if model_info:
+        normalized["model_info"] = model_info
+
+    # Drop deprecated fields
+    normalized.pop("identifier", None)
+    normalized.pop("id", None)
+    return normalized
+
+
+def load_yolo_model_registry() -> object:
+    """Load YOLO model metadata registry (path -> metadata)."""
+    registry_path = get_yolo_model_registry_path()
+    if not os.path.exists(registry_path):
+        return {}
+    try:
+        with open(registry_path, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+
+        migrated = {}
+        changed = False
+        for k, v in data.items():
+            key = str(k)
+            norm = _normalize_yolo_model_metadata(v)
+            migrated[key] = norm
+            if norm != v:
+                changed = True
+
+        if changed:
+            save_yolo_model_registry(migrated)
+            logger.info("Migrated YOLO model registry to species/model_info schema")
+
+        return migrated
+    except Exception as e:
+        logger.warning(f"Failed to load YOLO model registry: {e}")
+        return {}
+
+
+def save_yolo_model_registry(registry: object) -> object:
+    """Persist YOLO model metadata registry JSON."""
+    registry_path = get_yolo_model_registry_path()
+    try:
+        with open(registry_path, "w") as f:
+            json.dump(registry, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to save YOLO model registry: {e}")
+
+
+def get_yolo_model_metadata(model_path: object) -> object:
+    """Get metadata for a model path if registered."""
+    rel_path = make_model_path_relative(model_path)
+    registry = load_yolo_model_registry()
+    if rel_path in registry:
+        return _normalize_yolo_model_metadata(registry[rel_path])
+    # Backward compatibility: if absolute path was stored in older versions
+    abs_path = resolve_model_path(model_path)
+    return _normalize_yolo_model_metadata(registry.get(abs_path, {}))
+
+
+def register_yolo_model(model_path: object, metadata: object) -> object:
+    """Register/overwrite metadata entry for a model path."""
+    rel_path = make_model_path_relative(model_path)
+    registry = load_yolo_model_registry()
+    registry[rel_path] = _normalize_yolo_model_metadata(metadata)
+    save_yolo_model_registry(registry)
 
 
 logger = logging.getLogger(__name__)
@@ -2473,14 +2577,7 @@ class MainWindow(QMainWindow):
         f_yolo = QFormLayout(self.yolo_group)
 
         self.combo_yolo_model = QComboBox()
-        self.combo_yolo_model.addItems(
-            [
-                "yolo26s-obb.pt (Balanced)",
-                "yolo26n-obb.pt (Fastest)",
-                "yolov11s-obb.pt",
-                "Custom Model...",
-            ]
-        )
+        self._refresh_yolo_model_combo()
         self.combo_yolo_model.currentIndexChanged.connect(self.on_yolo_model_changed)
         self.combo_yolo_model.setToolTip(
             "YOLO model for oriented bounding box detection.\n"
@@ -5807,10 +5904,8 @@ class MainWindow(QMainWindow):
                     max_size_px2 = float("inf")
 
                 yolo_params = {
-                    "YOLO_MODEL_PATH": (
-                        self.yolo_custom_model_line.text()
-                        if self.combo_yolo_model.currentText() == "Custom Model..."
-                        else self.combo_yolo_model.currentText().split(" ")[0]
+                    "YOLO_MODEL_PATH": resolve_model_path(
+                        self._get_selected_yolo_model_path()
                     ),
                     "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
                     "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
@@ -6663,18 +6758,209 @@ class MainWindow(QMainWindow):
         # In new UI, this is handled by StackedWidget, but we keep this for compatibility logic
         pass
 
+    def _sanitize_model_token(self, text: object) -> object:
+        """Sanitize model metadata token for safe filename use."""
+        return _sanitize_model_token(text)
+
+    def _format_yolo_model_label(self, model_path: object) -> object:
+        """Build combo-box label for a model path, including metadata if available."""
+        rel_path = make_model_path_relative(model_path)
+        filename = os.path.basename(rel_path)
+        metadata = get_yolo_model_metadata(rel_path) or {}
+
+        size = metadata.get("size") or metadata.get("model_size")
+        species = metadata.get("species")
+        model_info = metadata.get("model_info")
+        model_id = None
+        if species and model_info:
+            model_id = f"{species}_{model_info}"
+        elif species:
+            model_id = species
+        if size and model_id:
+            return f"{filename} ({size}, {model_id})"
+
+        builtins = {
+            "yolo26s-obb.pt": "Balanced",
+            "yolo26n-obb.pt": "Fastest",
+            "yolov11s-obb.pt": "Legacy",
+        }
+        if filename in builtins:
+            return f"{filename} ({builtins[filename]})"
+        return filename
+
+    def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
+        """Populate YOLO model combo from built-ins + repository models."""
+        selected_path = preferred_model_path
+        if selected_path is None and hasattr(self, "combo_yolo_model"):
+            selected_path = self._get_selected_yolo_model_path()
+
+        entries = {}
+        for built_in in ("yolo26s-obb.pt", "yolo26n-obb.pt", "yolov11s-obb.pt"):
+            entries[built_in] = self._format_yolo_model_label(built_in)
+
+        models_dir = get_models_directory()
+        try:
+            local_models = sorted(
+                f
+                for f in os.listdir(models_dir)
+                if os.path.splitext(f)[1].lower() in (".pt", ".pth")
+            )
+        except Exception as e:
+            logger.warning(f"Failed to list YOLO model directory '{models_dir}': {e}")
+            local_models = []
+
+        for filename in local_models:
+            rel_path = make_model_path_relative(os.path.join(models_dir, filename))
+            entries[rel_path] = self._format_yolo_model_label(rel_path)
+
+        self.combo_yolo_model.blockSignals(True)
+        self.combo_yolo_model.clear()
+        for model_path, label in entries.items():
+            self.combo_yolo_model.addItem(label, model_path)
+        self.combo_yolo_model.addItem("Custom Model...", "__custom__")
+        self.combo_yolo_model.blockSignals(False)
+
+        self._set_yolo_model_selection(selected_path)
+
+    def _get_selected_yolo_model_path(self) -> object:
+        """Return currently selected YOLO model path (relative when available)."""
+        if not hasattr(self, "combo_yolo_model"):
+            return "yolo26s-obb.pt"
+        selected_data = self.combo_yolo_model.currentData(Qt.UserRole)
+        if selected_data and selected_data != "__custom__":
+            return str(selected_data)
+        if (
+            hasattr(self, "yolo_custom_model_line")
+            and self.yolo_custom_model_line.text().strip()
+        ):
+            return make_model_path_relative(self.yolo_custom_model_line.text().strip())
+        return "yolo26s-obb.pt"
+
+    def _set_yolo_model_selection(self, model_path: object) -> object:
+        """Set combo/custom selection from a model path."""
+        target_path = make_model_path_relative(model_path or "")
+        if not target_path:
+            target_path = "yolo26s-obb.pt"
+
+        for i in range(self.combo_yolo_model.count()):
+            item_data = self.combo_yolo_model.itemData(i, Qt.UserRole)
+            if item_data == target_path:
+                self.combo_yolo_model.setCurrentIndex(i)
+                if hasattr(self, "yolo_custom_model_line"):
+                    self.yolo_custom_model_line.setText("")
+                return
+
+        custom_idx = self.combo_yolo_model.findData("__custom__", Qt.UserRole)
+        if custom_idx < 0:
+            custom_idx = self.combo_yolo_model.count() - 1
+        self.combo_yolo_model.setCurrentIndex(custom_idx)
+        if hasattr(self, "yolo_custom_model_line"):
+            self.yolo_custom_model_line.setText(target_path)
+
+    def _import_yolo_model_to_repository(self, source_path: object) -> object:
+        """Import a model file into models/YOLO-obb using metadata-based naming."""
+        src = str(source_path or "")
+        if not src or not os.path.exists(src):
+            return None
+
+        # Single dialog for metadata collection (size + species + model info + timestamp preview)
+        now_preview = datetime.now()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Model Metadata")
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_form = QFormLayout()
+
+        size_combo = QComboBox(dlg)
+        size_combo.addItems(["26n", "26s", "26m", "26l", "26x", "custom", "unknown"])
+        size_combo.setCurrentText("26s")
+        dlg_form.addRow("YOLO model size:", size_combo)
+
+        stem_tokens = [t for t in Path(src).stem.replace("-", "_").split("_") if t]
+        default_species = (
+            self._sanitize_model_token(stem_tokens[0]) if stem_tokens else "species"
+        )
+        default_info = (
+            self._sanitize_model_token("_".join(stem_tokens[1:]))
+            if len(stem_tokens) > 1
+            else "model"
+        )
+
+        species_line = QLineEdit(default_species, dlg)
+        species_line.setPlaceholderText("species")
+        dlg_form.addRow("Model species:", species_line)
+
+        info_line = QLineEdit(default_info, dlg)
+        info_line.setPlaceholderText("model-info")
+        dlg_form.addRow("Model info:", info_line)
+
+        ts_label = QLabel(now_preview.isoformat(timespec="seconds"), dlg)
+        ts_label.setToolTip("Timestamp applied when model is added to repository")
+        dlg_form.addRow("Added timestamp:", ts_label)
+
+        dlg_layout.addLayout(dlg_form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+
+        model_size = size_combo.currentText().strip() or "unknown"
+        model_species = self._sanitize_model_token(species_line.text())
+        model_info = self._sanitize_model_token(info_line.text())
+        if not model_species or not model_info:
+            QMessageBox.warning(
+                self, "Invalid Metadata", "Species and model info must both be provided."
+            )
+            return None
+
+        now = datetime.now()
+        timestamp_token = now.strftime("%Y%m%d-%H%M%S")
+        added_at = now.isoformat(timespec="seconds")
+        ext = os.path.splitext(src)[1].lower() or ".pt"
+        models_dir = get_models_directory()
+
+        model_slug = f"{model_species}_{model_info}"
+        base_name = f"{timestamp_token}_{model_size}_{model_slug}"
+        dest_path = os.path.join(models_dir, f"{base_name}{ext}")
+        counter = 1
+        while os.path.exists(dest_path):
+            dest_path = os.path.join(models_dir, f"{base_name}_{counter}{ext}")
+            counter += 1
+
+        try:
+            shutil.copy2(src, dest_path)
+        except Exception as e:
+            logger.error(f"Failed to copy model to repository: {e}")
+            QMessageBox.warning(
+                self,
+                "Import Failed",
+                f"Could not import model into repository:\n{e}",
+            )
+            return None
+
+        rel_path = make_model_path_relative(dest_path)
+        metadata = {
+            "size": model_size,
+            "species": model_species,
+            "model_info": model_info,
+            "added_at": added_at,
+            "source_path": src,
+            "stored_filename": os.path.basename(dest_path),
+        }
+        register_yolo_model(rel_path, metadata)
+        logger.info(f"Imported model to repository: {dest_path}")
+        return rel_path
+
     def on_yolo_model_changed(self: object, index: object) -> object:
         """on_yolo_model_changed method documentation."""
-        is_custom = self.combo_yolo_model.currentText() == "Custom Model..."
+        is_custom = self.combo_yolo_model.currentData(Qt.UserRole) == "__custom__"
         self.yolo_custom_model_widget.setVisible(is_custom)
 
     def select_yolo_custom_model(self: object) -> object:
         """select_yolo_custom_model method documentation."""
         start_dir = get_models_directory()
-        if self.yolo_custom_model_line.text():
-            current_path = resolve_model_path(self.yolo_custom_model_line.text())
-            if os.path.exists(current_path):
-                start_dir = os.path.dirname(current_path)
 
         fp, _ = QFileDialog.getOpenFileName(
             self,
@@ -6682,62 +6968,31 @@ class MainWindow(QMainWindow):
             start_dir,
             "PyTorch Model Files (*.pt *.pth);;All Files (*)",
         )
-        if fp:
-            # Check if model is outside the archive
-            models_dir = get_models_directory()
-            try:
-                rel_path = os.path.relpath(fp, models_dir)
-                is_in_archive = not rel_path.startswith("..")
-            except (ValueError, TypeError):
-                is_in_archive = False
+        if not fp:
+            return
 
-            if not is_in_archive:
-                # Ask user if they want to copy to archive
-                reply = QMessageBox.question(
-                    self,
-                    "Copy Model to Archive?",
-                    f"The selected model is outside the local model archive.\n\n"
-                    f"Would you like to copy it to the archive at:\n{models_dir}\n\n"
-                    f"This makes presets portable across devices.",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
+        models_dir = get_models_directory()
+        selected_abs = os.path.abspath(fp)
+        try:
+            rel_path = os.path.relpath(selected_abs, models_dir)
+            is_in_repo = not rel_path.startswith("..")
+        except (ValueError, TypeError):
+            is_in_repo = False
 
-                if reply == QMessageBox.Yes:
-                    import shutil
+        if is_in_repo:
+            final_model_path = make_model_path_relative(selected_abs)
+        else:
+            final_model_path = self._import_yolo_model_to_repository(selected_abs)
+            if not final_model_path:
+                return
+            QMessageBox.information(
+                self,
+                "Model Imported",
+                f"Model imported to repository as:\n{os.path.basename(final_model_path)}",
+            )
 
-                    filename = os.path.basename(fp)
-                    dest_path = os.path.join(models_dir, filename)
-
-                    # Handle duplicate filenames
-                    if os.path.exists(dest_path):
-                        base, ext = os.path.splitext(filename)
-                        counter = 1
-                        while os.path.exists(dest_path):
-                            dest_path = os.path.join(
-                                models_dir, f"{base}_{counter}{ext}"
-                            )
-                            counter += 1
-
-                    try:
-                        shutil.copy2(fp, dest_path)
-                        fp = dest_path
-                        logger.info(f"Copied model to archive: {dest_path}")
-                        QMessageBox.information(
-                            self,
-                            "Model Copied",
-                            f"Model copied to archive as:\n{os.path.basename(dest_path)}",
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to copy model: {e}")
-                        QMessageBox.warning(
-                            self,
-                            "Copy Failed",
-                            f"Could not copy model to archive:\n{e}\n\nUsing original path.",
-                        )
-
-            # Store relative path if model is in archive (portable across devices)
-            self.yolo_custom_model_line.setText(make_model_path_relative(fp))
+        self._refresh_yolo_model_combo(preferred_model_path=final_model_path)
+        self._set_yolo_model_selection(final_model_path)
 
     def toggle_histogram_window(self: object) -> object:
         """toggle_histogram_window method documentation."""
@@ -8366,34 +8621,154 @@ class MainWindow(QMainWindow):
             resize_factor = params.get("RESIZE_FACTOR", 1.0)
             resize_str = f"r{int(resize_factor*100)}"
 
+            def normalize_for_hash(value: object) -> object:
+                """Convert values to deterministic, JSON-safe forms for hashing."""
+                if isinstance(value, np.ndarray):
+                    arr = np.ascontiguousarray(value)
+                    return {
+                        "type": "ndarray",
+                        "dtype": str(arr.dtype),
+                        "shape": list(arr.shape),
+                        "digest": hashlib.md5(arr.tobytes()).hexdigest(),
+                    }
+                if isinstance(value, np.integer):
+                    return int(value)
+                if isinstance(value, np.floating):
+                    if np.isnan(value):
+                        return "NaN"
+                    if np.isinf(value):
+                        return "Infinity" if value > 0 else "-Infinity"
+                    return float(value)
+                if isinstance(value, np.bool_):
+                    return bool(value)
+                if isinstance(value, Path):
+                    return str(value)
+                if isinstance(value, dict):
+                    return {
+                        str(k): normalize_for_hash(v)
+                        for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+                    }
+                if isinstance(value, (list, tuple)):
+                    return [normalize_for_hash(v) for v in value]
+                return value
+
+            def extract_hash_params(keys: object) -> object:
+                return {k: normalize_for_hash(params.get(k)) for k in keys}
+
+            def get_model_fingerprint(model_path: object) -> object:
+                configured = str(model_path or "")
+                resolved = str(resolve_model_path(configured))
+                fingerprint = {
+                    "configured_path": configured,
+                    "resolved_path": resolved,
+                }
+                if resolved and os.path.exists(resolved):
+                    try:
+                        stat = os.stat(resolved)
+                        fingerprint["size_bytes"] = stat.st_size
+                        fingerprint["mtime_ns"] = stat.st_mtime_ns
+                    except OSError:
+                        fingerprint["size_bytes"] = None
+                        fingerprint["mtime_ns"] = None
+                else:
+                    fingerprint["size_bytes"] = None
+                    fingerprint["mtime_ns"] = None
+                return fingerprint
+
+            # Common detection settings that affect detections for both methods.
+            common_detection_keys = (
+                "DETECTION_METHOD",
+                "RESIZE_FACTOR",
+                "MAX_TARGETS",
+                "MAX_CONTOUR_MULTIPLIER",
+                "ENABLE_SIZE_FILTERING",
+                "MIN_OBJECT_SIZE",
+                "MAX_OBJECT_SIZE",
+                "ROI_MASK",
+            )
+
             if detection_method == "yolo_obb":
                 yolo_model = params.get("YOLO_MODEL_PATH", "best.pt")
-                model_name = os.path.basename(yolo_model)
+                model_fingerprint = get_model_fingerprint(yolo_model)
+                model_name = os.path.basename(
+                    model_fingerprint["resolved_path"] or model_fingerprint["configured_path"]
+                )
+                model_stem = os.path.splitext(model_name)[0] or "model"
+                safe_model_stem = "".join(
+                    c if c.isalnum() or c in ("_", "-") else "_" for c in model_stem
+                )
+
+                yolo_detection_keys = (
+                    "YOLO_CONFIDENCE_THRESHOLD",
+                    "YOLO_IOU_THRESHOLD",
+                    "USE_CUSTOM_OBB_IOU_FILTERING",
+                    "YOLO_TARGET_CLASSES",
+                    "YOLO_DEVICE",
+                    "ENABLE_TENSORRT",
+                    "TENSORRT_MAX_BATCH_SIZE",
+                )
                 cache_params = {
-                    "model": model_name,
-                    "conf": params.get("YOLO_CONFIDENCE_THRESHOLD"),
-                    "iou": params.get("YOLO_IOU_THRESHOLD"),
-                    "classes": params.get("YOLO_TARGET_CLASSES"),
-                    "device": params.get("YOLO_DEVICE"),
+                    "common": extract_hash_params(common_detection_keys),
+                    "yolo": extract_hash_params(yolo_detection_keys),
+                    "model": normalize_for_hash(model_fingerprint),
                 }
+                # Class order should not change cache identity.
+                classes = cache_params["yolo"].get("YOLO_TARGET_CLASSES")
+                if classes is not None:
+                    if isinstance(classes, str):
+                        raw_classes = [c.strip() for c in classes.split(",") if c.strip()]
+                    elif isinstance(classes, (list, tuple)):
+                        raw_classes = list(classes)
+                    else:
+                        raw_classes = [classes]
+                    try:
+                        cache_params["yolo"]["YOLO_TARGET_CLASSES"] = sorted(
+                            int(c) for c in raw_classes
+                        )
+                    except (TypeError, ValueError):
+                        cache_params["yolo"]["YOLO_TARGET_CLASSES"] = sorted(
+                            str(c) for c in raw_classes
+                        )
+
                 h = hashlib.md5(
                     json.dumps(cache_params, sort_keys=True).encode("utf-8")
-                ).hexdigest()[:8]
-                return f"yolo_{model_name.replace('.pt', '')}_{resize_str}_{h}"
-            else:
-                cache_params = {
-                    "learning_rate": params.get("BACKGROUND_LEARNING_RATE"),
-                    "prime_frames": params.get("BACKGROUND_PRIME_FRAMES"),
-                    "dark_on_light": params.get("DARK_ON_LIGHT_BACKGROUND"),
-                    "adaptive": params.get("ENABLE_ADAPTIVE_BACKGROUND"),
-                    "gpu": params.get("ENABLE_GPU_BACKGROUND"),
-                    "min_detections": params.get("MIN_DETECTIONS_TO_START"),
-                    "min_counts": params.get("MIN_DETECTION_COUNTS"),
-                }
-                h = hashlib.md5(
-                    json.dumps(cache_params, sort_keys=True).encode("utf-8")
-                ).hexdigest()[:8]
-                return f"bgsub_{resize_str}_{h}"
+                ).hexdigest()[:12]
+                return f"yolo_{safe_model_stem}_{resize_str}_{h}"
+
+            bg_detection_keys = (
+                "BACKGROUND_PRIME_FRAMES",
+                "ENABLE_ADAPTIVE_BACKGROUND",
+                "BACKGROUND_LEARNING_RATE",
+                "ENABLE_GPU_BACKGROUND",
+                "GPU_DEVICE_ID",
+                "THRESHOLD_VALUE",
+                "MORPH_KERNEL_SIZE",
+                "ENABLE_ADDITIONAL_DILATION",
+                "DILATION_ITERATIONS",
+                "DILATION_KERNEL_SIZE",
+                "BRIGHTNESS",
+                "CONTRAST",
+                "GAMMA",
+                "DARK_ON_LIGHT_BACKGROUND",
+                "ENABLE_LIGHTING_STABILIZATION",
+                "LIGHTING_SMOOTH_FACTOR",
+                "LIGHTING_MEDIAN_WINDOW",
+                "ENABLE_CONSERVATIVE_SPLIT",
+                "MERGE_AREA_THRESHOLD",
+                "CONSERVATIVE_KERNEL_SIZE",
+                "CONSERVATIVE_ERODE_ITER",
+                "MIN_CONTOUR_AREA",
+                "MIN_DETECTIONS_TO_START",
+                "MIN_DETECTION_COUNTS",
+            )
+            cache_params = {
+                "common": extract_hash_params(common_detection_keys),
+                "background_subtraction": extract_hash_params(bg_detection_keys),
+            }
+            h = hashlib.md5(
+                json.dumps(cache_params, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:12]
+            return f"bgsub_{resize_str}_{h}"
 
         base_name = os.path.splitext(video_path)[0]
         model_id = get_cache_model_id()
@@ -8459,11 +8834,9 @@ class MainWindow(QMainWindow):
             else "yolo_obb"
         )
 
-        yolo_path = "yolo26s-obb.pt"
-        if self.combo_yolo_model.currentText() == "Custom Model...":
-            yolo_path = self.yolo_custom_model_line.text() or "yolo26s-obb.pt"
-        else:
-            yolo_path = self.combo_yolo_model.currentText().split(" ")[0]
+        yolo_path = resolve_model_path(
+            self._get_selected_yolo_model_path() or "yolo26s-obb.pt"
+        )
 
         yolo_cls = None
         if self.line_yolo_classes.text().strip():
@@ -8883,18 +9256,13 @@ class MainWindow(QMainWindow):
                         f"{get_models_directory()}",
                     )
 
-            # Try to find model in combo box
-            found = False
-            for i in range(self.combo_yolo_model.count() - 1):
-                if self.combo_yolo_model.itemText(i).startswith(yolo_model):
-                    self.combo_yolo_model.setCurrentIndex(i)
-                    found = True
-                    break
-            if not found:
-                # Model not in dropdown, use custom model
-                self.combo_yolo_model.setCurrentIndex(self.combo_yolo_model.count() - 1)
-                # Always update custom model line with resolved path
-                self.yolo_custom_model_line.setText(resolved_yolo_model)
+            # Refresh model combo from repository and apply selection
+            self._refresh_yolo_model_combo(preferred_model_path=yolo_model)
+            if self._get_selected_yolo_model_path() != make_model_path_relative(
+                yolo_model
+            ):
+                # Fall back to resolved path when the configured relative path cannot be matched
+                self._set_yolo_model_selection(resolved_yolo_model)
 
             self.spin_yolo_confidence.setValue(
                 get_cfg("yolo_confidence_threshold", default=0.25)
@@ -9329,11 +9697,7 @@ class MainWindow(QMainWindow):
         Returns:
             bool: True if config was saved successfully, False if cancelled or failed
         """
-        yolo_path = (
-            self.yolo_custom_model_line.text()
-            if self.combo_yolo_model.currentText() == "Custom Model..."
-            else self.combo_yolo_model.currentText().split(" ")[0]
-        )
+        yolo_path = self._get_selected_yolo_model_path()
         yolo_cls = (
             [int(x.strip()) for x in self.line_yolo_classes.text().split(",")]
             if self.line_yolo_classes.text().strip()
@@ -9430,6 +9794,12 @@ class MainWindow(QMainWindow):
                 "yolo_target_classes": yolo_cls,
             }
         )
+        yolo_meta = get_yolo_model_metadata(yolo_path) or {}
+        if yolo_meta:
+            cfg["yolo_model_size"] = yolo_meta.get("size", "")
+            cfg["yolo_model_species"] = yolo_meta.get("species", "")
+            cfg["yolo_model_info"] = yolo_meta.get("model_info", "")
+            cfg["yolo_model_added_at"] = yolo_meta.get("added_at", "")
 
         # === DEVICE-SPECIFIC SETTINGS ===
         # Skip device selection when saving as preset

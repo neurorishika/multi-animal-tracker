@@ -3011,6 +3011,44 @@ class MainWindow(QMainWindow):
         self.labeling_list.setCurrentRow(-1)
         self.lbl_info.setText("Select a frame to display.")
 
+    def show_startup_open_overlay(self: object) -> object:
+        """Show startup chooser overlay for opening a project or image directory."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Open PoseKit Dataset")
+        dlg.setModal(True)
+        dlg.setWindowFlag(Qt.WindowCloseButtonHint, False)
+
+        layout = QVBoxLayout(dlg)
+        msg = QLabel(
+            "No dataset is open.\n\nChoose one option to continue:"
+        )
+        msg.setWordWrap(True)
+        layout.addWidget(msg)
+
+        btn_open_project = QPushButton("Open Project…")
+        btn_open_images = QPushButton("Open Images Folder…")
+        btn_quit = QPushButton("Quit")
+        layout.addWidget(btn_open_project)
+        layout.addWidget(btn_open_images)
+        layout.addWidget(btn_quit)
+
+        def open_project():
+            dlg.accept()
+            self.open_project_dialog()
+            if not self.image_paths:
+                QTimer.singleShot(0, self.show_startup_open_overlay)
+
+        def open_images():
+            dlg.accept()
+            self.open_images_folder()
+            if not self.image_paths:
+                QTimer.singleShot(0, self.show_startup_open_overlay)
+
+        btn_open_project.clicked.connect(open_project)
+        btn_open_images.clicked.connect(open_images)
+        btn_quit.clicked.connect(lambda: (dlg.reject(), self.close()))
+        dlg.exec()
+
     def closeEvent(self: object, event: object) -> object:
         """Save UI settings when window closes."""
         self._perform_autosave()
@@ -6597,6 +6635,23 @@ def create_project_via_wizard(
     return proj
 
 
+def create_empty_startup_project() -> Project:
+    """Create a minimal placeholder project for startup-without-dataset mode."""
+    root = (Path.home() / ".posekit" / "startup").resolve()
+    labels_dir = root / "labels"
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    return Project(
+        images_dir=root,
+        out_root=root,
+        labels_dir=labels_dir,
+        project_path=labels_dir / DEFAULT_PROJECT_NAME,
+        class_names=["object"],
+        keypoint_names=["kp1", "kp2"],
+        skeleton_edges=[(0, 1)],
+        autosave=True,
+    )
+
+
 def parse_args() -> object:
     """parse_args function documentation."""
     ap = argparse.ArgumentParser(description="PoseKit labeler")
@@ -6623,43 +6678,61 @@ def main() -> object:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     args = parse_args()
-    app = None
-    if not args.images:
-        app = QApplication(sys.argv)
-        picked = QFileDialog.getExistingDirectory(
-            None, "Select images folder"
-        )
-        if not picked:
-            sys.exit(0)
-        images_dir = Path(picked).expanduser().resolve()
-    else:
+    app = QApplication(sys.argv)
+
+    # Startup-without-input mode: open full UI first, then show chooser overlay.
+    if not args.images and not args.project:
+        proj = create_empty_startup_project()
+        win = MainWindow(proj, [])
+        win.resize(1500, 860)
+        win.showMaximized()
+        QTimer.singleShot(0, win.show_startup_open_overlay)
+        sys.exit(app.exec())
+
+    if args.images:
         images_dir = Path(args.images).expanduser().resolve()
         if not images_dir.exists():
             print(f"Images dir not found: {images_dir}", file=sys.stderr)
             sys.exit(2)
+    else:
+        images_dir = None
 
     out_root = (
         Path(args.out).expanduser().resolve()
         if args.out
-        else (images_dir.parent / "pose_project").resolve()
+        else (
+            (images_dir.parent / "pose_project").resolve()
+            if images_dir is not None
+            else None
+        )
     )
-
-    if app is None:
-        app = QApplication(sys.argv)
 
     proj: Optional[Project] = None
 
     if args.project:
         project_path = Path(args.project).expanduser().resolve()
         if project_path.exists() and not args.new:
+            if images_dir is None:
+                try:
+                    data = json.loads(project_path.read_text(encoding="utf-8"))
+                    base = project_path.parent
+                    images_dir = _resolve_project_path(
+                        Path(data["images_dir"]), base, data
+                    )
+                except Exception as e:
+                    print(f"Failed to read project images_dir: {e}", file=sys.stderr)
+                    sys.exit(2)
             proj = load_project_with_repairs(project_path, images_dir)
 
     if proj is None and not args.new:
-        found = find_project(images_dir, out_root)
+        found = find_project(images_dir, out_root) if images_dir is not None else None
         if found:
             proj = load_project_with_repairs(found, images_dir)
 
     if proj is None:
+        if images_dir is None:
+            print("No images directory available to create a new project.", file=sys.stderr)
+            sys.exit(2)
         proj = create_project_via_wizard(images_dir, out_root_hint=out_root)
         if proj is None:
             sys.exit(0)
