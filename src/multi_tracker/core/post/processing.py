@@ -7,6 +7,7 @@ Optimizations:
 - Numba JIT compilation for inner loops (if available)
 - Parallel processing for independent trajectory operations
 """
+
 import logging
 import warnings
 from concurrent.futures import ThreadPoolExecutor
