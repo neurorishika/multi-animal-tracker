@@ -86,7 +86,7 @@ GPU_AVAILABLE = CUDA_AVAILABLE or MPS_AVAILABLE
 ANY_ACCELERATION = GPU_AVAILABLE or NUMBA_AVAILABLE
 
 
-def get_device_info():
+def get_device_info() -> object:
     """
     Get information about available compute devices.
 
@@ -161,7 +161,7 @@ def get_device_info():
     return info
 
 
-def log_device_info():
+def log_device_info() -> object:
     """Log available compute devices to help with debugging."""
     info = get_device_info()
 
@@ -170,7 +170,7 @@ def log_device_info():
     logger.info("-" * 60)
 
     if info["cuda_available"]:
-        logger.info(f"✓ CUDA (CuPy): Available")
+        logger.info("✓ CUDA (CuPy): Available")
         if "cuda_device_count" in info:
             logger.info(f"  Devices: {info['cuda_device_count']}")
     else:
@@ -186,11 +186,11 @@ def log_device_info():
         if "torch_cuda_device_name" in info:
             logger.info(f"  Device: {info['torch_cuda_device_name']}")
         if info.get("rocm_available"):
-            logger.info(f"  Backend: ROCm (AMD GPU)")
+            logger.info("  Backend: ROCm (AMD GPU)")
             if "rocm_version" in info:
                 logger.info(f"  ROCm Version: {info['rocm_version']}")
         else:
-            logger.info(f"  Backend: CUDA (NVIDIA GPU)")
+            logger.info("  Backend: CUDA (NVIDIA GPU)")
     else:
         logger.info("✗ CUDA (PyTorch): Not available")
 
@@ -216,7 +216,7 @@ def log_device_info():
     logger.info("=" * 60)
 
 
-def get_optimal_device(enable_gpu=True, prefer_cuda=True):
+def get_optimal_device(enable_gpu: object = True, prefer_cuda: object = True) -> object:
     """
     Get the optimal compute device based on availability.
 

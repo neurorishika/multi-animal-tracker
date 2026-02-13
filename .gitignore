@@ -51,6 +51,9 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 
+# Pre-commit
+.pre-commit-cache/
+
 # Translations
 *.mo
 *.pot
@@ -129,7 +132,7 @@ dmypy.json
 .pyre/
 
 # =============================================================================
-# Multi-Animal Tracker Specific Files
+# Multi-Animal-Tracker Specific Files
 # =============================================================================
 
 # Data files
@@ -164,12 +167,6 @@ tmp/
 *.tmp
 *.temp
 
-# Output directories
-output/
-results/
-exports/
-videos/
-data/
 
 # Backup files
 *.bak
@@ -395,3 +392,6 @@ training/YOLO-obb/training_runs/combined_dataset*
 
 # sleap files
 **/*.slp
+
+# ruff cache
+.ruff_cache

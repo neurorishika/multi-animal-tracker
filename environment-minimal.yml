@@ -1,34 +1,34 @@
 name: multi-animal-tracker-minimal
 channels:
-  - conda-forge
-  - defaults
+- conda-forge
+- defaults
 dependencies:
   # Core Python
-  - python=3.13
-  
+- python=3.13
+
   # Scientific computing stack (minimal)
-  - numpy
-  - scipy
-  - pandas
-  - numba
-  - pyyaml
+- numpy
+- scipy
+- pandas
+- numba
+- pyyaml
 
   # Computer vision
-  - opencv
-  - scikit-image
-  - pillow
-  - shapely
-  
+- opencv
+- scikit-image
+- pillow
+- shapely
+
   # GUI framework (Qt6 - modern, better Apple Silicon support)
-  - pyside6>=6.6
-  - qt6-main
-  
+- pyside6>=6.6
+- qt6-main
+
   # Development tools
-  - pip
-  - setuptools
-  - wheel
-  
+- pip
+- setuptools
+- wheel
+
   # Install uv for fast pip package installation
   # After creating environment, run: uv pip install -v -r requirements-minimal.txt
-  - pip:
-    - uv
+- pip:
+  - uv

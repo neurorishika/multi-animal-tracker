@@ -1,4 +1,4 @@
-# ROCm Setup Guide for Multi-Animal Tracker
+# ROCm Setup Guide for Multi-Animal-Tracker
 
 This guide provides detailed instructions for setting up AMD GPU acceleration with ROCm.
 
@@ -126,7 +126,7 @@ Then reload:
 source ~/.bashrc
 ```
 
-### 6. Install Multi-Animal Tracker with ROCm
+### 6. Install Multi-Animal-Tracker with ROCm
 
 Now install the tracker environment:
 
@@ -299,7 +299,7 @@ If you need a different ROCm version:
    # Change from:
    --extra-index-url https://download.pytorch.org/whl/rocm6.2
    cupy-rocm-6-0
-   
+
    # To (for ROCm 6.1):
    --extra-index-url https://download.pytorch.org/whl/rocm6.1
    cupy-rocm-6-0  # CuPy-ROCm 6.0 works with ROCm 6.x

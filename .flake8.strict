@@ -1,0 +1,47 @@
+# Strict Flake8 configuration for code quality improvements
+# Use: flake8 --config=.flake8.strict [files]
+# Or: make lint-strict
+
+[flake8]
+max-line-length = 88
+
+# Ignore formatter-related spacing/line-wrap differences; Black is source of truth.
+# E226/E231 are still reported by pycodestyle in patterns Black does not rewrite (e.g. some f-string expressions).
+extend-ignore = E203,W503,E501,E226,E231
+
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    .eggs,
+    *.egg,
+    build,
+    dist,
+    site,
+    legacy,
+    .pytest_cache,
+    .mypy_cache,
+    .tox,
+    *.egg-info,
+    .coverage
+
+filename = *.py
+
+# Strict complexity threshold
+max-complexity = 10
+
+# Per-file ignores (only essentials)
+per-file-ignores =
+    __init__.py:F401
+    src/multi_tracker/core/background/model.py:F811
+    tests/*:S101
+
+# Enable comprehensive checks
+select =
+    E,   # pycodestyle errors
+    W,   # pycodestyle warnings
+    F,   # pyflakes
+    C,   # mccabe complexity
+    B,   # bugbear
+    SIM, # simplify

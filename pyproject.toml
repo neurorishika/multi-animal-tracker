@@ -1,0 +1,146 @@
+# pyproject.toml - Project configuration for multi-animal-tracker
+
+[build-system]
+requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-animal-tracker"
+version = "1.0.0"
+description = "High-performance multi-animal tracking and pose-labeling toolkit"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Rishika Mohanta", email = "neurorishika@gmail.com"}
+]
+keywords = ["animal tracking", "computer vision", "behavioral analysis", "opencv", "pose estimation"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+
+[project.urls]
+Homepage = "https://github.com/neurorishika/multi-animal-tracker"
+Documentation = "https://github.com/neurorishika/multi-animal-tracker/tree/main/docs"
+Repository = "https://github.com/neurorishika/multi-animal-tracker"
+Issues = "https://github.com/neurorishika/multi-animal-tracker/issues"
+
+[project.scripts]
+multi-animal-tracker = "multi_tracker.app.launcher:main"
+mat = "multi_tracker.app.launcher:main"
+posekit-labeler = "multi_tracker.posekit.pose_label:main"
+pose = "multi_tracker.posekit.pose_label:main"
+
+# ============================================================================
+# Black - Code formatter
+# ============================================================================
+[tool.black]
+line-length = 88
+target-version = ['py311', 'py312', 'py313']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | \.eggs
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.pytest_cache
+  | __pycache__
+  | _build
+  | buck-out
+  | build
+  | dist
+  | site
+  | legacy
+)/
+'''
+
+# ============================================================================
+# isort - Import sorting
+# ============================================================================
+[tool.isort]
+profile = "black"
+line_length = 88
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+skip_glob = ["legacy/*", "site/*", "build/*", "dist/*"]
+
+# ============================================================================
+# pytest - Testing framework
+# ============================================================================
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--strict-config",
+    "-m", "not benchmark",
+    "--tb=short",
+]
+markers = [
+    "benchmark: Performance-oriented tests that are non-gating by default",
+    "slow: Tests that take a long time to run",
+    "integration: Integration tests",
+    "unit: Unit tests",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+# ============================================================================
+# Coverage - Code coverage
+# ============================================================================
+[tool.coverage.run]
+source = ["src/multi_tracker"]
+omit = [
+    "*/tests/*",
+    "*/test_*.py",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+    "legacy/*",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+]
+
+# ============================================================================
+# mypy - Static type checking
+# ============================================================================
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+exclude = [
+    "legacy/",
+    "build/",
+    "dist/",
+    "site/",
+]

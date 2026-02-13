@@ -29,7 +29,7 @@ onnxruntime  # CPU version, but optimized for ARM64
 # PyTorch MPS backend provides GPU acceleration for:
 # - YOLO inference (~2-3× speedup vs CPU)
 # - Neural network operations
-# 
+#
 # Background subtraction remains CPU-based (Numba-optimized)
 
 # Install this package in editable mode

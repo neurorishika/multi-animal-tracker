@@ -4,11 +4,12 @@ Utility script to validate YOLO pose labels for NaN and numerical issues.
 Run this before training to catch problematic labels.
 """
 
-from pathlib import Path
-import numpy as np
 import argparse
 import logging
-from typing import List, Tuple, Set
+from pathlib import Path
+from typing import List, Tuple
+
+import numpy as np
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -152,12 +153,13 @@ def validate_dataset(
 
             if fix_issues:
                 # TODO: Implement automatic fixes for common issues
-                logger.info(f"  Auto-fix not yet implemented")
+                logger.info("  Auto-fix not yet implemented")
 
     return valid_count, invalid_count, fixed_count
 
 
-def main():
+def main() -> object:
+    """main function documentation."""
     parser = argparse.ArgumentParser(
         description="Validate YOLO pose labels for NaN and numerical issues"
     )

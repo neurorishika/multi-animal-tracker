@@ -1,5 +1,5 @@
 """
-Multi-Animal Tracker Package
+Multi-Animal-Tracker Package
 
 A comprehensive solution for tracking multiple animals in video recordings using computer vision techniques.
 The system combines background subtraction, Kalman filtering, and Hungarian algorithm for robust multi-object tracking.
@@ -20,12 +20,19 @@ __version__ = "1.0.0"
 __author__ = "Your Name"
 __email__ = "your.email@example.com"
 
-from .main import main, setup_logging, parse_arguments
+from .app.launcher import main, parse_arguments, setup_logging
 
 try:
-    from .core.tracking_worker import TrackingWorker
+    from .core.tracking.worker import TrackingWorker
     from .gui.main_window import MainWindow
-    __all__ = ["main", "TrackingWorker", "MainWindow"]
+
+    __all__ = [
+        "main",
+        "parse_arguments",
+        "setup_logging",
+        "TrackingWorker",
+        "MainWindow",
+    ]
 except ImportError:
     # During development, some modules might not be available yet
-    __all__ = ["main"]
+    __all__ = ["main", "parse_arguments", "setup_logging"]

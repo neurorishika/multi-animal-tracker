@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to the Multi-Animal Tracker project will be documented in this file.
+All notable changes to the Multi-Animal-Tracker project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -38,7 +38,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - YOLO model selection dropdown with YOLOv8 and YOLOv11 models
   - Custom model file browser
   - Confidence threshold slider
-  - IOU threshold slider  
+  - IOU threshold slider
   - Target classes text input for filtering specific COCO classes
   - Dark mode styling for all new controls
   - Automatic show/hide of YOLO parameters based on detection method
@@ -49,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Support for both pretrained and custom YOLO models
   - Automatic model downloading for pretrained models
   - Support for YOLOv11 models (latest version)
-- **Documentation**: 
+- **Documentation**:
   - Added comprehensive YOLO detection guide (`docs/yolo_detection_guide.md`)
   - Added GUI-specific guide (`docs/yolo_gui_guide.md`)
   - Quick reference card (`YOLO_QUICK_REFERENCE.md`)

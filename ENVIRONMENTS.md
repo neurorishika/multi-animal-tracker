@@ -119,7 +119,7 @@ mamba activate multi-animal-tracker-mps
 uv pip install -v -r requirements-mps.txt
 ```
 
-**Performance**: 
+**Performance**:
 - YOLO inference: ~2-3× faster than CPU (~30 FPS on M1 Pro)
 - Background subtraction: CPU-based (~60 FPS with Numba)
 

@@ -3,8 +3,8 @@ Batch size optimizer for YOLO detection based on available device memory.
 """
 
 import logging
-import numpy as np
-from .gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE, torch
+
+from .gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE, torch
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ class BatchOptimizer:
         self.device_name = None
         self.available_memory = None
 
-    def detect_device(self):
+    def detect_device(self: object) -> object:
         """
         Detect available compute device and its memory.
 
@@ -63,7 +63,7 @@ class BatchOptimizer:
                 self.available_memory = available_memory * mps_fraction
                 logger.info(f"MPS device detected: {self.device_name}")
                 logger.info(
-                    f"Available unified memory (conservative): {self.available_memory:.0f} MB ({mps_fraction*100:.0f}% of {available_memory:.0f} MB)"
+                    f"Available unified memory (conservative): {self.available_memory:.0f} MB ({mps_fraction * 100:.0f}% of {available_memory:.0f} MB)"
                 )
             except ImportError:
                 # Fallback if psutil not available
@@ -81,8 +81,11 @@ class BatchOptimizer:
         return (self.device_type, self.device_name, self.available_memory)
 
     def estimate_batch_size(
-        self, frame_width, frame_height, model_name="yolo26s-obb.pt"
-    ):
+        self: object,
+        frame_width: object,
+        frame_height: object,
+        model_name: object = "yolo26s-obb.pt",
+    ) -> object:
         """
         Estimate optimal batch size for YOLO inference.
 
@@ -179,11 +182,11 @@ class BatchOptimizer:
 
         batch_size = max(1, min(safe_batch, max_allowed))
 
-        logger.info(f"Batch size estimation:")
+        logger.info("Batch size estimation:")
         logger.info(f"  Device: {self.device_type.upper()} ({self.device_name})")
         logger.info(f"  Frame size: {frame_width}×{frame_height}")
         logger.info(f"  Available memory: {self.available_memory:.0f} MB")
-        logger.info(f"  Memory fraction: {memory_fraction*100:.0f}%")
+        logger.info(f"  Memory fraction: {memory_fraction * 100:.0f}%")
         logger.info(f"  Usable memory: {usable_memory:.0f} MB")
         logger.info(f"  Model overhead: {overhead_mb} MB")
         logger.info(f"  Memory per frame: {memory_per_frame_total:.1f} MB")
@@ -192,7 +195,7 @@ class BatchOptimizer:
 
         return batch_size
 
-    def get_device_info(self):
+    def get_device_info(self: object) -> object:
         """
         Get human-readable device information.
 

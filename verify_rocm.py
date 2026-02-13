@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ROCm Verification Script for Multi-Animal Tracker
+ROCm Verification Script for Multi-Animal-Tracker
 
 This script checks if your ROCm installation is properly configured
 and if all required components are available.
@@ -9,9 +9,9 @@ Usage:
     python verify_rocm.py
 """
 
-import sys
-import subprocess
 import os
+import subprocess
+import sys
 
 
 def print_header(text):
@@ -175,8 +175,9 @@ def check_performance():
     print_header("Performance Tests")
 
     try:
-        import torch
         import time
+
+        import torch
 
         if not torch.cuda.is_available():
             print("Skipping performance tests - no GPU available")
@@ -208,8 +209,9 @@ def check_performance():
         print_check("Performance tests", False, str(e))
 
     try:
-        import cupy as cp
         import time
+
+        import cupy as cp
 
         # Test CuPy operations
         size = 1000
@@ -232,7 +234,7 @@ def check_performance():
 
 def main():
     """Main verification routine."""
-    print_header("Multi-Animal Tracker - ROCm Verification")
+    print_header("Multi-Animal-Tracker - ROCm Verification")
     print("This script checks your ROCm installation and Python packages.\n")
 
     # System checks

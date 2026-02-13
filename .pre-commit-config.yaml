@@ -1,0 +1,80 @@
+# Pre-commit hooks for code quality
+# See https://pre-commit.com for more information
+# Install: pre-commit install
+# Run manually: pre-commit run --all-files
+
+repos:
+  # Black - Python code formatter
+- repo: https://github.com/psf/black
+  rev: 26.1.0
+  hooks:
+  - id: black
+    language_version: python3.13
+    args: ['--config=pyproject.toml']
+
+  # Ruff - fast lint autofix for safe mechanical issues
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.12.8
+  hooks:
+  - id: ruff
+    args:
+    - --fix
+    - --select=F401,F541,F841
+    - --exit-non-zero-on-fix
+
+  # Flake8 - Python linter
+- repo: https://github.com/pycqa/flake8
+  rev: 7.1.1
+  hooks:
+  - id: flake8
+    args: ['--config=.flake8']
+    additional_dependencies:
+    - flake8-docstrings
+    - flake8-bugbear
+    - flake8-comprehensions
+    - flake8-simplify
+
+  # isort - Import sorting
+- repo: https://github.com/pycqa/isort
+  rev: 5.13.2
+  hooks:
+  - id: isort
+    args: ['--profile=black', '--line-length=88']
+
+  # autopep8 - pycodestyle whitespace fixes Black does not always rewrite
+- repo: https://github.com/hhatto/autopep8
+  rev: v2.3.2
+  hooks:
+  - id: autopep8
+    args: ['--in-place', '--select=E226,E231']
+
+  # General file checks
+- repo: https://github.com/pre-commit/pre-commit-hooks
+  rev: v5.0.0
+  hooks:
+  - id: trailing-whitespace
+  - id: end-of-file-fixer
+  - id: check-yaml
+  - id: check-json
+  - id: check-added-large-files
+    args: ['--maxkb=1000']
+  - id: check-merge-conflict
+  - id: check-toml
+  - id: mixed-line-ending
+    args: ['--fix=lf']
+
+  # Notebook formatting
+- repo: https://github.com/nbQA-dev/nbQA
+  rev: 1.9.1
+  hooks:
+  - id: nbqa-black
+    args: ['--config=pyproject.toml']
+  - id: nbqa-isort
+    args: ['--profile=black']
+
+  # YAML formatting
+- repo: https://github.com/macisamuele/language-formatters-pre-commit-hooks
+  rev: v2.14.0
+  hooks:
+  - id: pretty-format-yaml
+    args: ['--autofix', '--indent=2', '--preserve-quotes']

@@ -1,76 +1,74 @@
 #!/usr/bin/env python3
 """
-Main application window for the Multi-Animal Tracker.
+Main application window for the Multi-Animal-Tracker.
 
 Refactored for improved UX with Tabbed interface and logical grouping.
 """
 
-import sys, os, json, math, logging, tempfile
-import hashlib
-import numpy as np
-import pandas as pd
-import cv2
-from collections import deque, defaultdict
-import gc
 import csv
+import gc
+import hashlib
+import json
+import logging
+import math
+import os
+import shutil
+import tempfile
+from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import (
-    Qt,
-    Slot,
-    Signal,
-    QThread,
-    QMutex,
-    QPropertyAnimation,
-    QEasingCurve,
-    QTimer,
-)
-from PySide6.QtGui import QImage, QPixmap, QPainter, QPen, QIcon, QColor, QAction
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QLabel,
-    QPushButton,
-    QVBoxLayout,
-    QHBoxLayout,
-    QFileDialog,
-    QSpinBox,
-    QDoubleSpinBox,
-    QCheckBox,
-    QMessageBox,
-    QGroupBox,
-    QFormLayout,
-    QLineEdit,
-    QScrollArea,
-    QProgressBar,
-    QProgressDialog,
+    QAbstractButton,
     QApplication,
+    QCheckBox,
     QComboBox,
-    QTabWidget,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
     QSplitter,
     QStackedWidget,
-    QSizePolicy,
-    QFrame,
-    QSlider,
+    QTabWidget,
     QToolButton,
-    QAbstractButton,
+    QVBoxLayout,
+    QWidget,
 )
-import matplotlib.pyplot as plt
 
-from ..core.tracking_worker import TrackingWorker
-from ..core.post_processing import (
+from ..core.identity.analysis import IndividualDatasetGenerator
+from ..core.post.processing import (
+    interpolate_trajectories,
     process_trajectories,
     resolve_trajectories,
-    interpolate_trajectories,
 )
-from ..utils.csv_writer import CSVWriterThread
-from ..utils.geometry import fit_circle_to_points
-from ..utils.geometry import wrap_angle_degs
-from ..utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
-from ..utils.detection_cache import DetectionCache
-from .histogram_widgets import HistogramPanel
-from ..core.individual_analysis import IndividualDatasetGenerator
-from .train_yolo_dialog import TrainYoloDialog
+from ..core.tracking.worker import TrackingWorker
+from ..data.csv_writer import CSVWriterThread
+from ..data.detection_cache import DetectionCache
+from ..utils.geometry import fit_circle_to_points, wrap_angle_degs
+from ..utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
+from .dialogs.train_yolo_dialog import TrainYoloDialog
+from .widgets.histograms import HistogramPanel
 
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
@@ -102,7 +100,8 @@ class MergeWorker(QThread):
         self.interp_method = interp_method
         self.max_gap = max_gap
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             self.progress_signal.emit(10, "Preparing trajectories...")
 
@@ -268,7 +267,8 @@ class InterpolatedCropsWorker(QThread):
 
         return None, None
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             if not self.csv_path or not os.path.exists(self.csv_path):
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
@@ -670,9 +670,10 @@ class DatasetGenerationWorker(QThread):
         self.include_context = include_context
         self.probabilistic = probabilistic
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
-            from ..utils.dataset_generation import export_dataset, FrameQualityScorer
+            from ..data.dataset_generation import FrameQualityScorer, export_dataset
 
             self.progress_signal.emit(5, "Initializing dataset generation...")
 
@@ -751,7 +752,7 @@ class DatasetGenerationWorker(QThread):
             self.error_signal.emit(str(e))
 
 
-def get_video_config_path(video_path):
+def get_video_config_path(video_path: object) -> object:
     """Get the config file path for a given video file."""
     if not video_path:
         return None
@@ -760,7 +761,7 @@ def get_video_config_path(video_path):
     return os.path.join(video_dir, f"{video_name}_config.json")
 
 
-def get_models_directory():
+def get_models_directory() -> object:
     """
     Get the path to the local models directory.
 
@@ -781,7 +782,7 @@ def get_models_directory():
     return models_dir
 
 
-def resolve_model_path(model_path):
+def resolve_model_path(model_path: object) -> object:
     """
     Resolve a model path to an absolute path.
 
@@ -816,7 +817,7 @@ def resolve_model_path(model_path):
     return model_path
 
 
-def make_model_path_relative(model_path):
+def make_model_path_relative(model_path: object) -> object:
     """
     Convert an absolute model path to relative if it's in the models directory.
 
@@ -846,6 +847,107 @@ def make_model_path_relative(model_path):
     return model_path
 
 
+def get_yolo_model_registry_path() -> object:
+    """Return path to the local YOLO model metadata registry JSON."""
+    return os.path.join(get_models_directory(), "model_registry.json")
+
+
+def _sanitize_model_token(text: object) -> object:
+    """Sanitize a species/info token for filenames and metadata."""
+    raw = str(text or "").strip()
+    cleaned = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in raw)
+    return cleaned.strip("_")
+
+
+def _normalize_yolo_model_metadata(metadata: object) -> object:
+    """Normalize legacy model metadata to species + model_info schema."""
+    if not isinstance(metadata, dict):
+        return {}
+
+    normalized = dict(metadata)
+    species = _sanitize_model_token(normalized.get("species", ""))
+    model_info = _sanitize_model_token(normalized.get("model_info", ""))
+
+    # Legacy migration path: identifier/id -> species + model_info
+    legacy_identifier = normalized.get("identifier") or normalized.get("id") or ""
+    if (not species or not model_info) and legacy_identifier:
+        legacy_identifier = _sanitize_model_token(legacy_identifier)
+        parts = [p for p in legacy_identifier.split("_") if p]
+        if not species and parts:
+            species = parts[0]
+        if not model_info:
+            model_info = "_".join(parts[1:]) if len(parts) > 1 else "model"
+
+    if species:
+        normalized["species"] = species
+    if model_info:
+        normalized["model_info"] = model_info
+
+    # Drop deprecated fields
+    normalized.pop("identifier", None)
+    normalized.pop("id", None)
+    return normalized
+
+
+def load_yolo_model_registry() -> object:
+    """Load YOLO model metadata registry (path -> metadata)."""
+    registry_path = get_yolo_model_registry_path()
+    if not os.path.exists(registry_path):
+        return {}
+    try:
+        with open(registry_path, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+
+        migrated = {}
+        changed = False
+        for k, v in data.items():
+            key = str(k)
+            norm = _normalize_yolo_model_metadata(v)
+            migrated[key] = norm
+            if norm != v:
+                changed = True
+
+        if changed:
+            save_yolo_model_registry(migrated)
+            logger.info("Migrated YOLO model registry to species/model_info schema")
+
+        return migrated
+    except Exception as e:
+        logger.warning(f"Failed to load YOLO model registry: {e}")
+        return {}
+
+
+def save_yolo_model_registry(registry: object) -> object:
+    """Persist YOLO model metadata registry JSON."""
+    registry_path = get_yolo_model_registry_path()
+    try:
+        with open(registry_path, "w") as f:
+            json.dump(registry, f, indent=2)
+    except Exception as e:
+        logger.warning(f"Failed to save YOLO model registry: {e}")
+
+
+def get_yolo_model_metadata(model_path: object) -> object:
+    """Get metadata for a model path if registered."""
+    rel_path = make_model_path_relative(model_path)
+    registry = load_yolo_model_registry()
+    if rel_path in registry:
+        return _normalize_yolo_model_metadata(registry[rel_path])
+    # Backward compatibility: if absolute path was stored in older versions
+    abs_path = resolve_model_path(model_path)
+    return _normalize_yolo_model_metadata(registry.get(abs_path, {}))
+
+
+def register_yolo_model(model_path: object, metadata: object) -> object:
+    """Register/overwrite metadata entry for a model path."""
+    rel_path = make_model_path_relative(model_path)
+    registry = load_yolo_model_registry()
+    registry[rel_path] = _normalize_yolo_model_metadata(metadata)
+    save_yolo_model_registry(registry)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -871,8 +973,7 @@ class CollapsibleGroupBox(QWidget):
 
         # Header button (acts as toggle)
         self._header_button = QToolButton()
-        self._header_button.setStyleSheet(
-            """
+        self._header_button.setStyleSheet("""
             QToolButton {
                 background-color: #3a3a3a;
                 border: 1px solid #555;
@@ -891,8 +992,7 @@ class CollapsibleGroupBox(QWidget):
                 background-color: #404040;
                 border-color: #4a9eff;
             }
-        """
-        )
+        """)
         self._header_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self._header_button.setArrowType(
             Qt.RightArrow if not initially_expanded else Qt.DownArrow
@@ -913,7 +1013,7 @@ class CollapsibleGroupBox(QWidget):
 
         self._main_layout.addWidget(self._content_container)
 
-    def setContentLayout(self, layout):
+    def setContentLayout(self: object, layout: object) -> object:
         """Set the content layout for the collapsible section."""
         # Clear existing layout
         while self._content_layout.count():
@@ -927,15 +1027,15 @@ class CollapsibleGroupBox(QWidget):
         self._content_layout.addWidget(content_widget)
         self._content_widget = content_widget
 
-    def addWidget(self, widget):
+    def addWidget(self: object, widget: object) -> object:
         """Add a widget to the content area."""
         self._content_layout.addWidget(widget)
 
-    def addLayout(self, layout):
+    def addLayout(self: object, layout: object) -> object:
         """Add a layout to the content area."""
         self._content_layout.addLayout(layout)
 
-    def setAccordionGroup(self, accordion):
+    def setAccordionGroup(self: object, accordion: object) -> object:
         """Set the accordion group this collapsible belongs to."""
         self._accordion_group = accordion
 
@@ -947,7 +1047,7 @@ class CollapsibleGroupBox(QWidget):
                 self._accordion_group.collapseAllExcept(self)
         self.setExpanded(checked)
 
-    def setExpanded(self, expanded: bool):
+    def setExpanded(self: object, expanded: bool) -> object:
         """Set the expanded state of the collapsible."""
         self._is_expanded = expanded
         self._header_button.setChecked(expanded)
@@ -972,23 +1072,23 @@ class AccordionContainer:
     def __init__(self):
         self._collapsibles = []
 
-    def addCollapsible(self, collapsible: CollapsibleGroupBox):
+    def addCollapsible(self: object, collapsible: CollapsibleGroupBox) -> object:
         """Add a collapsible to this accordion group."""
         collapsible.setAccordionGroup(self)
         self._collapsibles.append(collapsible)
 
-    def collapseAllExcept(self, keep_expanded: CollapsibleGroupBox):
+    def collapseAllExcept(self: object, keep_expanded: CollapsibleGroupBox) -> object:
         """Collapse all collapsibles except the specified one."""
         for collapsible in self._collapsibles:
             if collapsible is not keep_expanded and collapsible.isExpanded():
                 collapsible.setExpanded(False)
 
-    def collapseAll(self):
+    def collapseAll(self: object) -> object:
         """Collapse all collapsibles."""
         for collapsible in self._collapsibles:
             collapsible.setExpanded(False)
 
-    def expandFirst(self):
+    def expandFirst(self: object) -> object:
         """Expand the first collapsible (if any)."""
         if self._collapsibles:
             self._collapsibles[0].setExpanded(True)
@@ -1004,15 +1104,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         """Initialize the main application window and UI components."""
         super().__init__()
-        self.setWindowTitle("Multi-Animal Tracker Pro")
+        self.setWindowTitle("Multi-Animal-Tracker")
         self.resize(1360, 850)
 
         # Set comprehensive dark mode styling
-        self.setStyleSheet(
-            """
+        self.setStyleSheet("""
             /* Main window and widgets */
             QMainWindow, QWidget { background-color: #2b2b2b; color: #ffffff; font-family: -apple-system, system-ui, sans-serif; }
-            
+
             /* Tabs */
             QTabWidget::pane { border: 1px solid #444; top: -1px; }
             QTabBar::tab {
@@ -1030,7 +1129,7 @@ class MainWindow(QMainWindow):
             QGroupBox::title {
                 subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #4a9eff;
             }
-            
+
             /* Buttons */
             QPushButton {
                 background-color: #444; border: 1px solid #555; color: #fff;
@@ -1040,7 +1139,7 @@ class MainWindow(QMainWindow):
             QPushButton:pressed { background-color: #2a75c4; }
             QPushButton:checked { background-color: #2a75c4; border: 1px solid #4a9eff; }
             QPushButton:disabled { background-color: #333; color: #666; border-color: #333; }
-            
+
             /* Specific Action Buttons */
             QPushButton#ActionBtn { background-color: #4a9eff; font-weight: bold; font-size: 13px; }
             QPushButton#ActionBtn:hover { background-color: #3d8bdb; }
@@ -1054,7 +1153,7 @@ class MainWindow(QMainWindow):
                 min-width: 120px;
             }
             QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QComboBox:focus { border: 1px solid #4a9eff; }
-            
+
             /* ComboBox dropdown */
             QComboBox::drop-down {
                 subcontrol-origin: padding;
@@ -1096,7 +1195,7 @@ class MainWindow(QMainWindow):
                 background-color: #4a9eff;
                 color: #fff;
             }
-            
+
             /* SpinBox arrows */
             QSpinBox::up-button, QDoubleSpinBox::up-button {
                 subcontrol-origin: border;
@@ -1112,7 +1211,7 @@ class MainWindow(QMainWindow):
             QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {
                 background-color: #4a9eff;
             }
-            
+
             QSpinBox::down-button, QDoubleSpinBox::down-button {
                 subcontrol-origin: border;
                 subcontrol-position: bottom right;
@@ -1127,22 +1226,21 @@ class MainWindow(QMainWindow):
             QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
                 background-color: #4a9eff;
             }
-            
+
             /* Scrollbars */
             QScrollBar:vertical { background: #2b2b2b; width: 12px; }
             QScrollBar::handle:vertical { background: #555; border-radius: 6px; min-height: 20px; }
             QScrollBar::handle:vertical:hover { background: #666; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-            
+
             /* Progress Bar */
             QProgressBar {
                 border: 1px solid #555; border-radius: 4px; text-align: center; background: #222;
             }
             QProgressBar::chunk { background-color: #4a9eff; width: 10px; margin: 0.5px; }
-            
+
             QSplitter::handle { background-color: #444; }
-            """
-        )
+            """)
 
         # === STATE VARIABLES ===
         self.roi_base_frame = None
@@ -1164,6 +1262,7 @@ class MainWindow(QMainWindow):
         self.tracking_worker = None
         self.csv_writer_thread = None
         self.dataset_worker = None
+        self.interp_worker = None
         self.reversal_worker = None
         self.final_full_trajs = []
         self.temporary_files = []  # Track temporary files for cleanup
@@ -1203,6 +1302,7 @@ class MainWindow(QMainWindow):
         self._video_interactions_enabled = True
         self._ui_state = "idle"
         self._saved_widget_enabled_states = {}
+        self._pending_finish_after_interp = False
 
         # Advanced configuration (for power users)
         self.advanced_config = self._load_advanced_config()
@@ -1234,7 +1334,7 @@ class MainWindow(QMainWindow):
         # Default to "no video loaded" state
         self._apply_ui_state("no_video")
 
-    def init_ui(self):
+    def init_ui(self: object) -> object:
         """Build the structured UI using Splitter and Tabs."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -1256,11 +1356,12 @@ class MainWindow(QMainWindow):
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet("background-color: #000; border: none;")
         self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.video_label = QLabel("Load a video to begin...")
+        self.video_label = QLabel("")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setStyleSheet("color: #666; font-size: 16px;")
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll.setWidget(self.video_label)
+        self._show_video_logo_placeholder()
 
         # Enable mouse tracking and events for interactive pan/zoom
         self.video_label.setMouseTracking(True)
@@ -1283,7 +1384,7 @@ class MainWindow(QMainWindow):
 
         # Top row: mode selection and controls
         roi_layout = QHBoxLayout()
-        roi_label = QLabel("ROI Controls:")
+        roi_label = QLabel("ROI controls")
         roi_label.setStyleSheet("font-weight: bold; color: #bbb;")
 
         # Mode selector
@@ -1390,7 +1491,7 @@ class MainWindow(QMainWindow):
         zoom_layout = QHBoxLayout(zoom_frame)
         zoom_layout.setContentsMargins(10, 5, 10, 5)
 
-        zoom_label = QLabel("Zoom:")
+        zoom_label = QLabel("Zoom")
         zoom_label.setStyleSheet("font-weight: bold; color: #bbb;")
 
         self.slider_zoom = QSlider(Qt.Horizontal)
@@ -1443,32 +1544,32 @@ class MainWindow(QMainWindow):
         # Tab 1: Setup (Files & Performance)
         self.tab_setup = QWidget()
         self.setup_setup_ui()
-        self.tabs.addTab(self.tab_setup, "Setup")
+        self.tabs.addTab(self.tab_setup, "Get Started")
 
         # Tab 2: Detection (Image, Method, Params)
         self.tab_detection = QWidget()
         self.setup_detection_ui()
-        self.tabs.addTab(self.tab_detection, "Detection")
+        self.tabs.addTab(self.tab_detection, "Find Animals")
 
         # Tab 3: Tracking (Kalman, Logic, Lifecycle)
         self.tab_tracking = QWidget()
         self.setup_tracking_ui()
-        self.tabs.addTab(self.tab_tracking, "Tracking")
+        self.tabs.addTab(self.tab_tracking, "Track Movement")
 
         # Tab 4: Data (Post-proc, Histograms)
         self.tab_data = QWidget()
         self.setup_data_ui()
-        self.tabs.addTab(self.tab_data, "Processing")
+        self.tabs.addTab(self.tab_data, "Clean Results")
 
         # Tab 5: Dataset Generation (Active Learning)
         self.tab_dataset = QWidget()
         self.setup_dataset_ui()
-        self.tabs.addTab(self.tab_dataset, "Dataset Generation")
+        self.tabs.addTab(self.tab_dataset, "Build Dataset")
 
         # Tab 6: Individual Analysis (Identity)
         self.tab_individual = QWidget()
         self.setup_individual_analysis_ui()
-        self.tabs.addTab(self.tab_individual, "Individual Analysis")
+        self.tabs.addTab(self.tab_individual, "Analyze Individuals")
 
         right_layout.addWidget(self.tabs, stretch=1)
 
@@ -1561,7 +1662,7 @@ class MainWindow(QMainWindow):
     # TAB UI BUILDERS
     # =========================================================================
 
-    def setup_setup_ui(self):
+    def setup_setup_ui(self: object) -> object:
         """Tab 1: Setup - Files, Video, Display & Debug."""
         layout = QVBoxLayout(self.tab_setup)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1575,7 +1676,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Preset Selector
         # ============================================================
-        g_presets = QGroupBox("Default Presets")
+        g_presets = QGroupBox("How do you want to start?")
         vl_presets = QVBoxLayout(g_presets)
         vl_presets.addWidget(
             self._create_help_label(
@@ -1584,7 +1685,7 @@ class MainWindow(QMainWindow):
         )
 
         preset_layout = QHBoxLayout()
-        preset_label = QLabel("Organism Preset:")
+        preset_label = QLabel("Organism preset")
         preset_label.setStyleSheet("font-weight: bold;")
 
         self.combo_presets = QComboBox()
@@ -1635,7 +1736,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Video Setup (File Management + Frame Rate)
         # ============================================================
-        g_files = QGroupBox("Video Setup")
+        g_files = QGroupBox("What video are you analyzing?")
         vl_files = QVBoxLayout(g_files)
         vl_files.addWidget(
             self._create_help_label(
@@ -1678,7 +1779,7 @@ class MainWindow(QMainWindow):
             "Auto-detect frame rate from video metadata (may differ from actual acquisition rate)"
         )
         fps_layout.addWidget(self.btn_detect_fps)
-        fl.addRow("Acquisition Frame Rate (FPS):", fps_layout)
+        fl.addRow("What frame rate was the video acquired at (FPS)?", fps_layout)
 
         # FPS info label
         self.label_fps_info = QLabel()
@@ -1693,7 +1794,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Video Player & Frame Range
         # ============================================================
-        self.g_video_player = QGroupBox("Video Player & Frame Range")
+        self.g_video_player = QGroupBox("Which part of the video should be used?")
         vl_player = QVBoxLayout(self.g_video_player)
         vl_player.addWidget(
             self._create_help_label(
@@ -1766,7 +1867,7 @@ class MainWindow(QMainWindow):
         controls_layout.addStretch()
 
         # Playback speed control
-        controls_layout.addWidget(QLabel("Speed:"))
+        controls_layout.addWidget(QLabel("Playback speed"))
         self.combo_playback_speed = QComboBox()
         self.combo_playback_speed.addItems(["0.25x", "0.5x", "1x", "2x", "4x"])
         self.combo_playback_speed.setCurrentText("1x")
@@ -1777,7 +1878,7 @@ class MainWindow(QMainWindow):
         vl_player.addLayout(controls_layout)
 
         # Frame range selection
-        range_group = QGroupBox("Tracking Frame Range")
+        range_group = QGroupBox("What frame range should be tracked?")
         range_layout = QFormLayout(range_group)
         range_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
@@ -1797,7 +1898,7 @@ class MainWindow(QMainWindow):
         self.btn_set_start_current.clicked.connect(self._set_start_to_current)
         self.btn_set_start_current.setToolTip("Set start frame to current frame")
         start_layout.addWidget(self.btn_set_start_current)
-        range_layout.addRow("Start Frame:", start_layout)
+        range_layout.addRow("Which frame should tracking start from?", start_layout)
 
         # End frame
         end_layout = QHBoxLayout()
@@ -1815,7 +1916,7 @@ class MainWindow(QMainWindow):
         self.btn_set_end_current.clicked.connect(self._set_end_to_current)
         self.btn_set_end_current.setToolTip("Set end frame to current frame")
         end_layout.addWidget(self.btn_set_end_current)
-        range_layout.addRow("End Frame:", end_layout)
+        range_layout.addRow("Which frame should tracking stop at?", end_layout)
 
         # Range info
         self.lbl_range_info = QLabel()
@@ -1840,7 +1941,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Output Files
         # ============================================================
-        g_output = QGroupBox("Output Files")
+        g_output = QGroupBox("Where should results be saved?")
         vl_output = QVBoxLayout(g_output)
         fl_output = QFormLayout(None)
         fl_output.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
@@ -1872,7 +1973,7 @@ class MainWindow(QMainWindow):
         config_layout.addWidget(self.btn_show_gpu_info)
 
         config_layout.addStretch()
-        fl_output.addRow("Configuration:", config_layout)
+        fl_output.addRow("Save configuration snapshot?", config_layout)
 
         # Config status label
         self.config_status_label = QLabel("No config loaded (using defaults)")
@@ -1887,7 +1988,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # System Performance
         # ============================================================
-        g_sys = QGroupBox("System Performance")
+        g_sys = QGroupBox("How should performance be balanced?")
         vl_sys = QVBoxLayout(g_sys)
         vl_sys.addWidget(
             self._create_help_label(
@@ -1908,9 +2009,11 @@ class MainWindow(QMainWindow):
             "1.0 = full resolution, 0.5 = half resolution (4× faster).\n"
             "All body-size-based parameters auto-scale with this value."
         )
-        fl_sys.addRow("Processing Resize Factor:", self.spin_resize)
+        fl_sys.addRow(
+            "How much should frames be downscaled before processing?", self.spin_resize
+        )
 
-        self.check_save_confidence = QCheckBox("Save Confidence Metrics (slower)")
+        self.check_save_confidence = QCheckBox("Save confidence metrics (slower)")
         self.check_save_confidence.setChecked(True)
         self.check_save_confidence.setToolTip(
             "Save detection, assignment, and position uncertainty metrics to CSV.\n"
@@ -1954,7 +2057,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Display Settings (moved from Visuals tab)
         # ============================================================
-        self.g_display = QGroupBox("Display Settings")
+        self.g_display = QGroupBox("How should the preview look?")
         vl_display = QVBoxLayout(self.g_display)
         vl_display.addWidget(
             self._create_help_label(
@@ -1993,7 +2096,7 @@ class MainWindow(QMainWindow):
         )
         vl_display.addWidget(self.chk_show_state)
 
-        self.chk_show_kalman_uncertainty = QCheckBox("Show Kalman Uncertainty")
+        self.chk_show_kalman_uncertainty = QCheckBox("Show prediction uncertainty")
         self.chk_show_kalman_uncertainty.setChecked(False)
         self.chk_show_kalman_uncertainty.setToolTip(
             "Draw ellipses showing Kalman filter position uncertainty.\n"
@@ -2012,7 +2115,9 @@ class MainWindow(QMainWindow):
             "Longer = more visible path history but more cluttered.\n"
             "Recommended: 3-10 seconds."
         )
-        f_trail.addRow("Trail History (sec):", self.spin_traj_hist)
+        f_trail.addRow(
+            "How many seconds of trail history should be shown?", self.spin_traj_hist
+        )
         vl_display.addLayout(f_trail)
 
         form.addWidget(self.g_display)
@@ -2020,7 +2125,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Advanced / Debug (moved from Visuals tab)
         # ============================================================
-        g_debug = QGroupBox("Advanced / Debug")
+        g_debug = QGroupBox("Need advanced troubleshooting options?")
         v_dbg = QVBoxLayout(g_debug)
         v_dbg.addWidget(
             self._create_help_label(
@@ -2028,7 +2133,7 @@ class MainWindow(QMainWindow):
                 "but generates large log files. Disable for production runs."
             )
         )
-        self.chk_debug_logging = QCheckBox("Enable Verbose Debug Logging")
+        self.chk_debug_logging = QCheckBox("Enable detailed debug logging")
         self.chk_debug_logging.stateChanged.connect(self.toggle_debug_logging)
         v_dbg.addWidget(self.chk_debug_logging)
         form.addWidget(g_debug)
@@ -2037,7 +2142,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_detection_ui(self):
+    def setup_detection_ui(self: object) -> object:
         """Tab 2: Detection - Method, Image Proc, Algo specific."""
         layout = QVBoxLayout(self.tab_detection)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2051,7 +2156,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # 1. Detection Method Selector
         # ============================================================
-        g_method = QGroupBox("Detection Strategy")
+        g_method = QGroupBox("How should animals be detected?")
         l_method_outer = QVBoxLayout(g_method)
         l_method_outer.addWidget(
             self._create_help_label(
@@ -2065,7 +2170,9 @@ class MainWindow(QMainWindow):
         self.combo_detection_method.currentIndexChanged.connect(
             self._on_detection_method_changed_ui
         )
-        f_method.addRow("Method:", self.combo_detection_method)
+        f_method.addRow(
+            "Which detection method should be used?", self.combo_detection_method
+        )
 
         # Device selection (shared between both detection methods)
         self.combo_device = QComboBox()
@@ -2094,7 +2201,7 @@ class MainWindow(QMainWindow):
 
         self.combo_device.addItems(device_options)
         self.combo_device.setToolTip("\n".join(device_tooltip_parts))
-        f_method.addRow("Compute Device:", self.combo_device)
+        f_method.addRow("Which compute device should run detection?", self.combo_device)
 
         l_method_outer.addLayout(f_method)
         vbox.addWidget(g_method)
@@ -2130,7 +2237,7 @@ class MainWindow(QMainWindow):
         # Brightness slider
         bright_layout = QVBoxLayout()
         bright_label_row = QHBoxLayout()
-        bright_label_row.addWidget(QLabel("Brightness:"))
+        bright_label_row.addWidget(QLabel("Brightness"))
         self.label_brightness_val = QLabel("0")
         self.label_brightness_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
         bright_label_row.addWidget(self.label_brightness_val)
@@ -2154,7 +2261,7 @@ class MainWindow(QMainWindow):
         # Contrast slider
         contrast_layout = QVBoxLayout()
         contrast_label_row = QHBoxLayout()
-        contrast_label_row.addWidget(QLabel("Contrast:"))
+        contrast_label_row.addWidget(QLabel("Contrast"))
         self.label_contrast_val = QLabel("1.0")
         self.label_contrast_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
         contrast_label_row.addWidget(self.label_contrast_val)
@@ -2178,7 +2285,7 @@ class MainWindow(QMainWindow):
         # Gamma slider
         gamma_layout = QVBoxLayout()
         gamma_label_row = QHBoxLayout()
-        gamma_label_row.addWidget(QLabel("Gamma:"))
+        gamma_label_row.addWidget(QLabel("Gamma"))
         self.label_gamma_val = QLabel("1.0")
         self.label_gamma_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
         gamma_label_row.addWidget(self.label_gamma_val)
@@ -2200,7 +2307,7 @@ class MainWindow(QMainWindow):
         vl_img.addLayout(gamma_layout)
 
         # Dark on light checkbox
-        self.chk_dark_on_light = QCheckBox("Dark Animals on Light Background")
+        self.chk_dark_on_light = QCheckBox("Animals are darker than background")
         self.chk_dark_on_light.setChecked(True)
         self.chk_dark_on_light.setToolTip(
             "Check if animals are darker than background (most common).\n"
@@ -2231,9 +2338,11 @@ class MainWindow(QMainWindow):
             "Recommended: 10-100 frames.\n"
             "Use more if background varies or animals are present initially."
         )
-        f_bg.addRow("Priming Frames:", self.spin_bg_prime)
+        f_bg.addRow(
+            "How many startup frames should build the background?", self.spin_bg_prime
+        )
 
-        self.chk_adaptive_bg = QCheckBox("Adaptive Background (Update over time)")
+        self.chk_adaptive_bg = QCheckBox("Continuously update background model")
         self.chk_adaptive_bg.setChecked(True)
         self.chk_adaptive_bg.setToolTip(
             "Continuously update background model during tracking.\n"
@@ -2251,7 +2360,7 @@ class MainWindow(QMainWindow):
             "Lower = slower adaptation (stable, good for mostly static background).\n"
             "Higher = faster adaptation (use for variable lighting/shadows)."
         )
-        f_bg.addRow("Learning Rate:", self.spin_bg_learning)
+        f_bg.addRow("How quickly should the background adapt?", self.spin_bg_learning)
 
         self.spin_threshold = QSpinBox()
         self.spin_threshold.setRange(0, 255)
@@ -2262,7 +2371,7 @@ class MainWindow(QMainWindow):
             "Higher = less sensitive (cleaner, may miss animals).\n"
             "Recommended: 30-70 depending on contrast."
         )
-        f_bg.addRow("Subtraction Threshold:", self.spin_threshold)
+        f_bg.addRow("What subtraction threshold should be used?", self.spin_threshold)
         vl_bg_model.addLayout(f_bg)
         g_bg_model.setContentLayout(vl_bg_model)
         l_bg.addWidget(g_bg_model)
@@ -2297,7 +2406,9 @@ class MainWindow(QMainWindow):
             "Lower = faster response to sudden lighting shifts.\n"
             "Recommended: 0.9-0.98"
         )
-        f_light.addRow("Smooth Factor:", self.spin_lighting_smooth)
+        f_light.addRow(
+            "How much lighting smoothing should be applied?", self.spin_lighting_smooth
+        )
 
         self.spin_lighting_median = QSpinBox()
         self.spin_lighting_median.setRange(3, 15)
@@ -2309,7 +2420,9 @@ class MainWindow(QMainWindow):
             "Smaller window = faster response, less smoothing.\n"
             "Recommended: 5-9"
         )
-        f_light.addRow("Median Window:", self.spin_lighting_median)
+        f_light.addRow(
+            "How many frames for the lighting median window?", self.spin_lighting_median
+        )
         vl_light.addLayout(f_light)
         g_light.setContentLayout(vl_light)
         l_bg.addWidget(g_light)
@@ -2336,7 +2449,7 @@ class MainWindow(QMainWindow):
             "Smaller = preserves detail, may leave noise.\n"
             "Recommended: 3-7 for typical tracking scenarios."
         )
-        f_morph.addRow("Main Kernel Size:", self.spin_morph_size)
+        f_morph.addRow("What main kernel size should be used?", self.spin_morph_size)
 
         self.spin_min_contour = QSpinBox()
         self.spin_min_contour.setRange(0, 100000)
@@ -2347,7 +2460,9 @@ class MainWindow(QMainWindow):
             "Recommended: 20-100 depending on animal size and zoom.\n"
             "Note: Similar to min object size but in absolute pixels."
         )
-        f_morph.addRow("Min Contour Area:", self.spin_min_contour)
+        f_morph.addRow(
+            "What is the smallest contour area to keep (px^2)?", self.spin_min_contour
+        )
 
         self.spin_max_contour_multiplier = QSpinBox()
         self.spin_max_contour_multiplier.setRange(5, 100)
@@ -2358,7 +2473,7 @@ class MainWindow(QMainWindow):
             "Filters out very large blobs (clusters, shadows, artifacts).\n"
             "Recommended: 10-30"
         )
-        f_morph.addRow("Max Contour Multiplier:", self.spin_max_contour_multiplier)
+        f_morph.addRow("Maximum contour multiplier", self.spin_max_contour_multiplier)
         vl_morph.addLayout(f_morph)
         g_morph.setContentLayout(vl_morph)
         l_bg.addWidget(g_morph)
@@ -2374,7 +2489,7 @@ class MainWindow(QMainWindow):
             )
         )
         f_split = QFormLayout(None)
-        self.chk_conservative_split = QCheckBox("Conservative Splitting (Erosion)")
+        self.chk_conservative_split = QCheckBox("Use conservative split (erosion)")
         self.chk_conservative_split.setChecked(True)
         self.chk_conservative_split.setToolTip(
             "Use erosion to separate touching animals more conservatively.\n"
@@ -2401,9 +2516,9 @@ class MainWindow(QMainWindow):
             "More iterations = stronger separation effect.\n"
             "Recommended: 1-2"
         )
-        h_split.addWidget(QLabel("K-Size:"))
+        h_split.addWidget(QLabel("Kernel size"))
         h_split.addWidget(self.spin_conservative_kernel)
-        h_split.addWidget(QLabel("Iters:"))
+        h_split.addWidget(QLabel("Iterations"))
         h_split.addWidget(self.spin_conservative_erode)
         f_split.addRow(h_split)
 
@@ -2416,9 +2531,11 @@ class MainWindow(QMainWindow):
             "Lower = merge more aggressively, Higher = keep fragments separate.\n"
             "Recommended: 500-2000"
         )
-        f_split.addRow("Merge Area Threshold:", self.spin_merge_threshold)
+        f_split.addRow(
+            "What merge area threshold should be used?", self.spin_merge_threshold
+        )
 
-        self.chk_additional_dilation = QCheckBox("Reconnect Thin Parts (Dilation)")
+        self.chk_additional_dilation = QCheckBox("Reconnect thin parts (dilation)")
         self.chk_additional_dilation.setToolTip(
             "Use dilation to reconnect thin parts (e.g., legs, antennae).\n"
             "Recommended: Enable if animals have thin appendages.\n"
@@ -2444,9 +2561,9 @@ class MainWindow(QMainWindow):
             "More iterations = thicker result.\n"
             "Recommended: 1-3"
         )
-        h_dil.addWidget(QLabel("K-Size:"))
+        h_dil.addWidget(QLabel("Kernel size"))
         h_dil.addWidget(self.spin_dilation_kernel_size)
-        h_dil.addWidget(QLabel("Iters:"))
+        h_dil.addWidget(QLabel("Iterations"))
         h_dil.addWidget(self.spin_dilation_iterations)
         f_split.addRow(h_dil)
         vl_split.addLayout(f_split)
@@ -2465,26 +2582,19 @@ class MainWindow(QMainWindow):
             )
         )
 
-        self.yolo_group = QGroupBox("YOLO Configuration")
+        self.yolo_group = QGroupBox("How should YOLO detection be configured?")
         self.yolo_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         f_yolo = QFormLayout(self.yolo_group)
 
         self.combo_yolo_model = QComboBox()
-        self.combo_yolo_model.addItems(
-            [
-                "yolo26s-obb.pt (Balanced)",
-                "yolo26n-obb.pt (Fastest)",
-                "yolov11s-obb.pt",
-                "Custom Model...",
-            ]
-        )
+        self._refresh_yolo_model_combo()
         self.combo_yolo_model.currentIndexChanged.connect(self.on_yolo_model_changed)
         self.combo_yolo_model.setToolTip(
             "YOLO model for oriented bounding box detection.\n"
             "yolo26s = balanced speed/accuracy, yolo26n = fastest.\n"
             "Select 'Custom Model...' to use your own trained model."
         )
-        f_yolo.addRow("Model:", self.combo_yolo_model)
+        f_yolo.addRow("Which YOLO model should be used?", self.combo_yolo_model)
 
         # Custom model container (hidden by default)
         self.yolo_custom_model_widget = QWidget()
@@ -2495,7 +2605,10 @@ class MainWindow(QMainWindow):
         self.btn_yolo_custom_model.clicked.connect(self.select_yolo_custom_model)
         h_cust.addWidget(self.yolo_custom_model_line)
         h_cust.addWidget(self.btn_yolo_custom_model)
-        f_yolo.addRow("Path:", self.yolo_custom_model_widget)
+        f_yolo.addRow(
+            "Which custom YOLO model file should be used?",
+            self.yolo_custom_model_widget,
+        )
         self.yolo_custom_model_widget.setVisible(False)
 
         self.spin_yolo_confidence = QDoubleSpinBox()
@@ -2507,7 +2620,10 @@ class MainWindow(QMainWindow):
             "Higher = fewer detections (may miss animals).\n"
             "Recommended: 0.2-0.4"
         )
-        f_yolo.addRow("Confidence:", self.spin_yolo_confidence)
+        f_yolo.addRow(
+            "What minimum YOLO confidence should be accepted?",
+            self.spin_yolo_confidence,
+        )
 
         self.spin_yolo_iou = QDoubleSpinBox()
         self.spin_yolo_iou.setRange(0.01, 1.0)
@@ -2518,7 +2634,21 @@ class MainWindow(QMainWindow):
             "Higher = keep more overlapping detections.\n"
             "Recommended: 0.5-0.8"
         )
-        f_yolo.addRow("IOU Threshold:", self.spin_yolo_iou)
+        f_yolo.addRow("What IOU overlap threshold should YOLO use?", self.spin_yolo_iou)
+
+        self.chk_use_custom_obb_iou = QCheckBox("Use custom OBB overlap filtering")
+        self.chk_use_custom_obb_iou.setChecked(
+            False
+        )  # Default: use YOLO's built-in NMS
+        self.chk_use_custom_obb_iou.setToolTip(
+            "Use custom polygon-based IOU filtering for OBB detections.\n\n"
+            "• UNCHECKED (Default): Use YOLO's built-in NMS (faster, less accurate for OBB)\n"
+            "• CHECKED: Use custom shapely-based polygon IOU (slower, more accurate)\n\n"
+            "YOLO's built-in NMS uses axis-aligned approximation which can miss overlaps.\n"
+            "Custom filtering uses true polygon intersection but is ~2-5x slower.\n\n"
+            "Recommended: Keep UNCHECKED unless you see overlapping detections."
+        )
+        f_yolo.addRow("", self.chk_use_custom_obb_iou)
 
         self.line_yolo_classes = QLineEdit()
         self.line_yolo_classes.setPlaceholderText("e.g. 15, 16 (Empty for all)")
@@ -2527,14 +2657,14 @@ class MainWindow(QMainWindow):
             "Example: '0,1,2' to detect only classes 0, 1, and 2.\n"
             "Refer to your model's class definitions."
         )
-        f_yolo.addRow("Target Classes:", self.line_yolo_classes)
+        f_yolo.addRow("Which classes should be detected?", self.line_yolo_classes)
 
         l_yolo.addWidget(self.yolo_group)
 
         # ============================================================
         # GPU Acceleration Settings (TensorRT + Batching)
         # ============================================================
-        self.g_gpu_accel = QGroupBox("GPU Acceleration")
+        self.g_gpu_accel = QGroupBox("Which hardware should be used?")
         vl_gpu = QVBoxLayout(self.g_gpu_accel)
         vl_gpu.addWidget(
             self._create_help_label(
@@ -2580,7 +2710,7 @@ class MainWindow(QMainWindow):
             "Reduce if build fails (try 8, 4, or 1).\n"
             "Typical: 16-32 (high-end), 8-16 (mid-range), 1-8 (low VRAM)"
         )
-        self.lbl_tensorrt_batch = QLabel("  Max Batch Size:")
+        self.lbl_tensorrt_batch = QLabel("Maximum batch size")
         f_gpu.addRow(self.lbl_tensorrt_batch, self.spin_tensorrt_batch)
 
         # GPU Batching
@@ -2610,7 +2740,7 @@ class MainWindow(QMainWindow):
         self.combo_yolo_batch_mode.currentIndexChanged.connect(
             self._on_yolo_batch_mode_changed
         )
-        self.lbl_yolo_batch_mode = QLabel("  Batch Size Mode:")
+        self.lbl_yolo_batch_mode = QLabel("Batch size mode")
         f_gpu.addRow(self.lbl_yolo_batch_mode, self.combo_yolo_batch_mode)
 
         self.spin_yolo_batch_size = QSpinBox()
@@ -2623,7 +2753,7 @@ class MainWindow(QMainWindow):
             "Larger = faster but uses more GPU memory.\n"
             "Typical values: 8-32 depending on GPU."
         )
-        self.lbl_yolo_batch_size = QLabel("  Manual Batch Size:")
+        self.lbl_yolo_batch_size = QLabel("Manual batch size")
         f_gpu.addRow(self.lbl_yolo_batch_size, self.spin_yolo_batch_size)
 
         vl_gpu.addLayout(f_gpu)
@@ -2653,7 +2783,7 @@ class MainWindow(QMainWindow):
         # Detection Overlays (moved from Visuals tab)
         # ============================================================
         # Background Subtraction specific overlays
-        self.g_overlays_bg = QGroupBox("Background Subtraction Debug Overlays")
+        self.g_overlays_bg = QGroupBox("Which background diagnostics should be shown?")
         v_ov_bg = QVBoxLayout(self.g_overlays_bg)
         v_ov_bg.addWidget(
             self._create_help_label(
@@ -2673,7 +2803,7 @@ class MainWindow(QMainWindow):
         vbox.addWidget(self.g_overlays_bg)
 
         # YOLO specific overlays
-        self.g_overlays_yolo = QGroupBox("YOLO Debug Overlays")
+        self.g_overlays_yolo = QGroupBox("Which YOLO diagnostics should be shown?")
         v_ov_yolo = QVBoxLayout(self.g_overlays_yolo)
         v_ov_yolo.addWidget(
             self._create_help_label(
@@ -2695,7 +2825,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Reference Body Size (Spatial Scale)
         # ============================================================
-        g_body_size = QGroupBox("Reference Body Size")
+        g_body_size = QGroupBox("What is the expected animal size?")
         vl_body_size = QVBoxLayout(g_body_size)
         vl_body_size.addWidget(
             self._create_help_label(
@@ -2719,7 +2849,10 @@ class MainWindow(QMainWindow):
             "All distance/size parameters are scaled relative to this value."
         )
         self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
-        fl_body.addRow("Reference Body Size (px):", self.spin_reference_body_size)
+        fl_body.addRow(
+            "What reference body size (px) should be used?",
+            self.spin_reference_body_size,
+        )
 
         # Info label showing calculated area
         self.label_body_size_info = QLabel()
@@ -2733,7 +2866,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Detection size statistics panel
         # ============================================================
-        g_detect_stats = QGroupBox("Auto-Configure Body Size from Detection")
+        g_detect_stats = QGroupBox("Should size be estimated from detections?")
         vl_stats = QVBoxLayout(g_detect_stats)
         vl_stats.addWidget(
             self._create_help_label(
@@ -2775,7 +2908,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Size Filtering
         # ============================================================
-        g_size = QGroupBox("Size Filtering")
+        g_size = QGroupBox("Which detections should be kept by size?")
         vl_size = QVBoxLayout(g_size)
         vl_size.addWidget(
             self._create_help_label(
@@ -2784,7 +2917,7 @@ class MainWindow(QMainWindow):
             )
         )
         f_size = QFormLayout(None)
-        self.chk_size_filtering = QCheckBox("Enable Size Constraints")
+        self.chk_size_filtering = QCheckBox("Filter detections by size")
         self.chk_size_filtering.setToolTip(
             "Filter detected objects by area to remove noise and artifacts.\n"
             "Recommended: Enable for cleaner tracking."
@@ -2812,9 +2945,9 @@ class MainWindow(QMainWindow):
             "Filters out large clusters or artifacts.\n"
             "Recommended: 2-4× (handles overlapping animals)"
         )
-        h_sf.addWidget(QLabel("Min (×body):"))
+        h_sf.addWidget(QLabel("Min size (body lengths)"))
         h_sf.addWidget(self.spin_min_object_size)
-        h_sf.addWidget(QLabel("Max (×body):"))
+        h_sf.addWidget(QLabel("Max size (body lengths)"))
         h_sf.addWidget(self.spin_max_object_size)
         f_size.addRow(h_sf)
         vl_size.addLayout(f_size)
@@ -2824,7 +2957,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_tracking_ui(self):
+    def setup_tracking_ui(self: object) -> object:
         """Tab 3: Tracking Logic."""
         layout = QVBoxLayout(self.tab_tracking)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2836,7 +2969,7 @@ class MainWindow(QMainWindow):
         vbox = QVBoxLayout(content)
 
         # Core Params
-        g_core = QGroupBox("Core Tracking Parameters")
+        g_core = QGroupBox("How should track continuity be handled?")
         vl_core = QVBoxLayout(g_core)
         vl_core.addWidget(
             self._create_help_label(
@@ -2854,7 +2987,7 @@ class MainWindow(QMainWindow):
             "Set this to the expected number of animals in your video.\n"
             "Higher values use more memory and may slow down processing."
         )
-        f_core.addRow("Max Targets (Animals):", self.spin_max_targets)
+        f_core.addRow("How many animals should be tracked?", self.spin_max_targets)
 
         self.spin_max_dist = QDoubleSpinBox()
         self.spin_max_dist.setRange(0.1, 20.0)
@@ -2867,7 +3000,10 @@ class MainWindow(QMainWindow):
             "Too low = tracks break frequently, Too high = identity swaps.\n"
             "Recommended: 1-2× for normal motion, 3-5× for fast motion."
         )
-        f_core.addRow("Max Assignment Dist (×body):", self.spin_max_dist)
+        f_core.addRow(
+            "How far can an animal move between frames (body lengths)?",
+            self.spin_max_dist,
+        )
 
         self.spin_continuity_thresh = QDoubleSpinBox()
         self.spin_continuity_thresh.setRange(0.1, 10.0)
@@ -2880,9 +3016,12 @@ class MainWindow(QMainWindow):
             "Smaller = more conservative recovery (fewer false merges).\n"
             "Recommended: 0.3-1.0×"
         )
-        f_core.addRow("Recovery Search Distance (×body):", self.spin_continuity_thresh)
+        f_core.addRow(
+            "Recovery search distance (body lengths)",
+            self.spin_continuity_thresh,
+        )
 
-        self.chk_enable_backward = QCheckBox("Run Backward Tracking after Forward")
+        self.chk_enable_backward = QCheckBox("Run reverse pass for better accuracy")
         self.chk_enable_backward.setChecked(True)
         self.chk_enable_backward.setToolTip(
             "Run tracking in reverse (using cached detections) after forward pass to improve accuracy.\n"
@@ -2899,7 +3038,7 @@ class MainWindow(QMainWindow):
         self.tracking_accordion = AccordionContainer()
 
         # Kalman
-        g_kf = CollapsibleGroupBox("Kalman Filter (Motion Model)")
+        g_kf = CollapsibleGroupBox("How should motion prediction behave?")
         self.tracking_accordion.addCollapsible(g_kf)
         vl_kf = QVBoxLayout()
         vl_kf.addWidget(
@@ -2921,7 +3060,7 @@ class MainWindow(QMainWindow):
             "Note: Optimal value depends on frame rate (time step).\n"
             "Recommended: 0.01-0.05 for predictable motion."
         )
-        f_kf.addRow("Process Noise:", self.spin_kalman_noise)
+        f_kf.addRow("How smooth should motion prediction be?", self.spin_kalman_noise)
 
         self.spin_kalman_meas = QDoubleSpinBox()
         self.spin_kalman_meas.setRange(0.0, 1.0)
@@ -2932,7 +3071,9 @@ class MainWindow(QMainWindow):
             "Higher = trust predictions more (smooth, may drift).\n"
             "Recommended: 0.05-0.15"
         )
-        f_kf.addRow("Measurement Noise:", self.spin_kalman_meas)
+        f_kf.addRow(
+            "How strongly should detections override prediction?", self.spin_kalman_meas
+        )
 
         self.spin_kalman_damping = QDoubleSpinBox()
         self.spin_kalman_damping.setRange(0.5, 0.99)
@@ -2946,10 +3087,12 @@ class MainWindow(QMainWindow):
             "Higher = slower decay (better for continuous motion).\n"
             "Recommended: 0.90-0.95"
         )
-        f_kf.addRow("Velocity Damping:", self.spin_kalman_damping)
+        f_kf.addRow(
+            "How quickly should estimated speed decay?", self.spin_kalman_damping
+        )
 
         # Age-dependent velocity damping
-        age_label = QLabel("Age-Dependent Damping (New Tracks):")
+        age_label = QLabel("How conservative should new tracks be?")
         age_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
         f_kf.addRow(age_label)
 
@@ -2963,7 +3106,9 @@ class MainWindow(QMainWindow):
             "Lower = faster adaptation, Higher = more conservative.\n"
             "Recommended: 3-10 frames"
         )
-        f_kf.addRow("  Maturity Age (frames):", self.spin_kalman_maturity_age)
+        f_kf.addRow(
+            "How many frames until a track is trusted?", self.spin_kalman_maturity_age
+        )
 
         self.spin_kalman_initial_velocity_retention = QDoubleSpinBox()
         self.spin_kalman_initial_velocity_retention.setRange(0.0, 1.0)
@@ -2979,7 +3124,8 @@ class MainWindow(QMainWindow):
             "Recommended: 0.1-0.3"
         )
         f_kf.addRow(
-            "  Initial Velocity Retention:", self.spin_kalman_initial_velocity_retention
+            "How much initial speed should new tracks keep?",
+            self.spin_kalman_initial_velocity_retention,
         )
 
         self.spin_kalman_max_velocity = QDoubleSpinBox()
@@ -2994,10 +3140,13 @@ class MainWindow(QMainWindow):
             "Lower = more conservative, Higher = allows faster movement.\n"
             "Recommended: 1.5-3.0 depending on animal speed"
         )
-        f_kf.addRow("  Max Velocity (×body):", self.spin_kalman_max_velocity)
+        f_kf.addRow(
+            "What maximum speed should prediction allow (body lengths/frame)?",
+            self.spin_kalman_max_velocity,
+        )
 
         # Anisotropic process noise
-        aniso_label = QLabel("Anisotropic Process Noise:")
+        aniso_label = QLabel("Should forward and sideways uncertainty differ?")
         aniso_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
         f_kf.addRow(aniso_label)
 
@@ -3013,7 +3162,10 @@ class MainWindow(QMainWindow):
             "Multiplies base process noise for forward direction.\n"
             "Recommended: 3.0-7.0"
         )
-        f_kf.addRow("  Longitudinal Multiplier:", self.spin_kalman_longitudinal_noise)
+        f_kf.addRow(
+            "How much uncertainty along movement direction?",
+            self.spin_kalman_longitudinal_noise,
+        )
 
         self.spin_kalman_lateral_noise = QDoubleSpinBox()
         self.spin_kalman_lateral_noise.setRange(0.01, 5.0)
@@ -3027,14 +3179,14 @@ class MainWindow(QMainWindow):
             "Multiplies base process noise for sideways direction.\n"
             "Recommended: 0.05-0.2"
         )
-        f_kf.addRow("  Lateral Multiplier:", self.spin_kalman_lateral_noise)
+        f_kf.addRow("How much uncertainty sideways?", self.spin_kalman_lateral_noise)
 
         vl_kf.addLayout(f_kf)
         g_kf.setContentLayout(vl_kf)
         vbox.addWidget(g_kf)
 
         # Weights
-        g_weights = CollapsibleGroupBox("Cost Function Weights")
+        g_weights = CollapsibleGroupBox("What should matching prioritize?")
         self.tracking_accordion.addCollapsible(g_weights)
         l_weights = QVBoxLayout()
         l_weights.addWidget(
@@ -3053,7 +3205,7 @@ class MainWindow(QMainWindow):
             "Higher = prioritize spatial proximity.\n"
             "Recommended: 1.0 (primary factor)"
         )
-        row1.addWidget(QLabel("Position:"))
+        row1.addWidget(QLabel("Position importance"))
         row1.addWidget(self.spin_Wp)
 
         self.spin_Wo = QDoubleSpinBox()
@@ -3064,7 +3216,7 @@ class MainWindow(QMainWindow):
             "Higher = penalize large orientation changes.\n"
             "Recommended: 0.5-2.0 (helps maintain correct identity)"
         )
-        row1.addWidget(QLabel("Orientation:"))
+        row1.addWidget(QLabel("Direction importance"))
         row1.addWidget(self.spin_Wo)
         l_weights.addLayout(row1)
 
@@ -3079,7 +3231,7 @@ class MainWindow(QMainWindow):
             "Higher = penalize size changes.\n"
             "Recommended: 0.001-0.01 (prevents size-based swaps)"
         )
-        row2.addWidget(QLabel("Area:"))
+        row2.addWidget(QLabel("Size importance"))
         row2.addWidget(self.spin_Wa)
 
         self.spin_Wasp = QDoubleSpinBox()
@@ -3090,11 +3242,11 @@ class MainWindow(QMainWindow):
             "Higher = penalize shape changes.\n"
             "Recommended: 0.05-0.2 (helps with occlusions)"
         )
-        row2.addWidget(QLabel("Aspect Ratio:"))
+        row2.addWidget(QLabel("Shape importance"))
         row2.addWidget(self.spin_Wasp)
         l_weights.addLayout(row2)
 
-        self.chk_use_mahal = QCheckBox("Use Mahalanobis Distance")
+        self.chk_use_mahal = QCheckBox("Use motion-aware distance")
         self.chk_use_mahal.setChecked(True)
         self.chk_use_mahal.setToolTip(
             "Use Mahalanobis distance instead of Euclidean for position.\n"
@@ -3106,7 +3258,7 @@ class MainWindow(QMainWindow):
         vbox.addWidget(g_weights)
 
         # Assignment Algorithm (for large N optimization)
-        g_assign = CollapsibleGroupBox("Assignment Algorithm (for Large N)")
+        g_assign = CollapsibleGroupBox("How should matches be computed at scale?")
         self.tracking_accordion.addCollapsible(g_assign)
         vl_assign = QVBoxLayout()
         vl_assign.addWidget(
@@ -3119,18 +3271,16 @@ class MainWindow(QMainWindow):
 
         self.combo_assignment_method = QComboBox()
         self.combo_assignment_method.addItems(
-            ["Hungarian (Optimal)", "Greedy (Fast for N>100)"]
+            ["Most accurate (slower)", "Fast approximate (large groups)"]
         )
         self.combo_assignment_method.setCurrentIndex(0)
         self.combo_assignment_method.setToolTip(
             "Hungarian: Optimal global assignment (slow for N>100)\n"
             "Greedy: Fast approximation for large N (200+)"
         )
-        f_assign.addRow("Method:", self.combo_assignment_method)
+        f_assign.addRow("Which method should be used?", self.combo_assignment_method)
 
-        self.chk_spatial_optimization = QCheckBox(
-            "Enable Spatial Optimization (KD-Tree)"
-        )
+        self.chk_spatial_optimization = QCheckBox("Speed up matching for many animals")
         self.chk_spatial_optimization.setChecked(False)
         self.chk_spatial_optimization.setToolTip(
             "Uses KD-tree to reduce comparisons for large N (50+).\n"
@@ -3143,7 +3293,7 @@ class MainWindow(QMainWindow):
         vbox.addWidget(g_assign)
 
         # Orientation & Lifecycle
-        g_misc = CollapsibleGroupBox("Orientation & Lifecycle")
+        g_misc = CollapsibleGroupBox("How should direction changes be handled?")
         self.tracking_accordion.addCollapsible(g_misc)
         vl_misc = QVBoxLayout()
         vl_misc.addWidget(
@@ -3166,9 +3316,11 @@ class MainWindow(QMainWindow):
             "Independent of frame rate - automatically scaled by FPS.\n"
             "Recommended: 2-10 body-sizes/s depending on animal speed."
         )
-        f_misc.addRow("Motion Velocity Threshold (body/s):", self.spin_velocity)
+        f_misc.addRow("Moving-speed threshold (body lengths/sec)", self.spin_velocity)
 
-        self.chk_instant_flip = QCheckBox("Instant Flip (Fast Motion)")
+        self.chk_instant_flip = QCheckBox(
+            "Allow instant direction flips when moving fast"
+        )
         self.chk_instant_flip.setChecked(True)
         self.chk_instant_flip.setToolTip(
             "Allow instant 180° orientation flip when moving quickly.\n"
@@ -3185,13 +3337,15 @@ class MainWindow(QMainWindow):
             "Larger = allow more rotation while stopped.\n"
             "Recommended: 20-45° (prevents orientation jitter)."
         )
-        f_misc.addRow("Max Orient Δ (Stopped):", self.spin_max_orient)
+        f_misc.addRow(
+            "Max direction change while stopped (degrees)", self.spin_max_orient
+        )
         vl_misc.addLayout(f_misc)
         g_misc.setContentLayout(vl_misc)
         vbox.addWidget(g_misc)
 
         # Track Lifecycle
-        g_lifecycle = CollapsibleGroupBox("Track Lifecycle")
+        g_lifecycle = CollapsibleGroupBox("When should tracks start and end?")
         self.tracking_accordion.addCollapsible(g_lifecycle)
         vl_lifecycle = QVBoxLayout()
         vl_lifecycle.addWidget(
@@ -3211,7 +3365,10 @@ class MainWindow(QMainWindow):
             "Lower = tracks end quickly, creating fragments.\n"
             "Recommended: 5-20 frames."
         )
-        f_lifecycle.addRow("Lost Frames Threshold:", self.spin_lost_thresh)
+        f_lifecycle.addRow(
+            "How long to keep a track without detections (frames)?",
+            self.spin_lost_thresh,
+        )
 
         self.spin_min_respawn_distance = QDoubleSpinBox()
         self.spin_min_respawn_distance.setRange(0.0, 20.0)
@@ -3223,13 +3380,16 @@ class MainWindow(QMainWindow):
             "Prevents creating duplicate tracks near existing animals.\n"
             "Recommended: 2-4× body size."
         )
-        f_lifecycle.addRow("Min Respawn Dist (×body):", self.spin_min_respawn_distance)
+        f_lifecycle.addRow(
+            "How far from existing tracks to start a new one (body lengths)?",
+            self.spin_min_respawn_distance,
+        )
         vl_lifecycle.addLayout(f_lifecycle)
         g_lifecycle.setContentLayout(vl_lifecycle)
         vbox.addWidget(g_lifecycle)
 
         # Stability
-        g_stab = CollapsibleGroupBox("Initialization Stability")
+        g_stab = CollapsibleGroupBox("How strict should new track validation be?")
         self.tracking_accordion.addCollapsible(g_stab)
         vl_stab = QVBoxLayout()
         vl_stab.addWidget(
@@ -3248,7 +3408,10 @@ class MainWindow(QMainWindow):
             "Lower = faster tracking startup, more noise-based tracks.\n"
             "Recommended: 1-3"
         )
-        f_stab.addRow("Min Detections to Start:", self.spin_min_detections_to_start)
+        f_stab.addRow(
+            "How many detections before starting a new track?",
+            self.spin_min_detections_to_start,
+        )
 
         self.spin_min_detect = QSpinBox()
         self.spin_min_detect.setRange(1, 500)
@@ -3258,7 +3421,7 @@ class MainWindow(QMainWindow):
             "Filters out short-lived false tracks in post-processing.\n"
             "Recommended: 5-20 frames."
         )
-        f_stab.addRow("Min Detect Frames:", self.spin_min_detect)
+        f_stab.addRow("Minimum detection frames to keep a track", self.spin_min_detect)
 
         self.spin_min_track = QSpinBox()
         self.spin_min_track.setRange(1, 500)
@@ -3268,7 +3431,7 @@ class MainWindow(QMainWindow):
             "Filters out tracks with too many gaps/predictions.\n"
             "Recommended: Similar to min detect frames."
         )
-        f_stab.addRow("Min Tracking Frames:", self.spin_min_track)
+        f_stab.addRow("Minimum total frames to keep a track", self.spin_min_track)
         vl_stab.addLayout(f_stab)
         g_stab.setContentLayout(vl_stab)
         vbox.addWidget(g_stab)
@@ -3277,7 +3440,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_data_ui(self):
+    def setup_data_ui(self: object) -> object:
         """Tab 4: Post-Processing."""
         layout = QVBoxLayout(self.tab_data)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3289,7 +3452,7 @@ class MainWindow(QMainWindow):
         vbox = QVBoxLayout(content)
 
         # Post-Processing
-        g_pp = QGroupBox("Trajectory Post-Processing")
+        g_pp = QGroupBox("How should tracks be cleaned after tracking?")
         vl_pp = QVBoxLayout(g_pp)
         vl_pp.addWidget(
             self._create_help_label(
@@ -3299,7 +3462,7 @@ class MainWindow(QMainWindow):
         )
         f_pp = QFormLayout(None)
         f_pp.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        self.enable_postprocessing = QCheckBox("Enable Automatic Cleaning")
+        self.enable_postprocessing = QCheckBox("Auto-clean trajectories")
         self.enable_postprocessing.setChecked(True)
         self.enable_postprocessing.setToolTip(
             "Automatically clean trajectories by removing outliers and fragments.\n"
@@ -3317,7 +3480,7 @@ class MainWindow(QMainWindow):
             "Filters out brief false detections and transient tracks.\n"
             "Recommended: 5-30 frames depending on video length."
         )
-        self.lbl_min_trajectory_length = QLabel("Min Length (frames):")
+        self.lbl_min_trajectory_length = QLabel("Minimum trajectory length (frames)")
         f_pp.addRow(self.lbl_min_trajectory_length, self.spin_min_trajectory_length)
 
         self.spin_max_velocity_break = QDoubleSpinBox()
@@ -3331,7 +3494,9 @@ class MainWindow(QMainWindow):
             "Independent of frame rate - automatically scaled by FPS.\n"
             "Recommended: 30-100 body-sizes/s for typical animal motion."
         )
-        self.lbl_max_velocity_break = QLabel("Max Velocity Break (body/s):")
+        self.lbl_max_velocity_break = QLabel(
+            "Break trajectory above speed (body lengths/sec)"
+        )
         f_pp.addRow(self.lbl_max_velocity_break, self.spin_max_velocity_break)
 
         self.spin_max_occlusion_gap = QSpinBox()
@@ -3343,7 +3508,7 @@ class MainWindow(QMainWindow):
             "Set to 0 to disable occlusion-based splitting.\n"
             "Recommended: 20-50 frames for typical tracking scenarios."
         )
-        self.lbl_max_occlusion_gap = QLabel("Max Occlusion Gap (frames):")
+        self.lbl_max_occlusion_gap = QLabel("Maximum occlusion gap (frames)")
         f_pp.addRow(self.lbl_max_occlusion_gap, self.spin_max_occlusion_gap)
 
         # Z-score based velocity breaking
@@ -3362,7 +3527,7 @@ class MainWindow(QMainWindow):
             "• Filters out stationary noise from baseline calculations\n\n"
             "Recommended: 3.0-5.0 for sensitive detection, 0 to disable."
         )
-        self.lbl_max_velocity_zscore = QLabel("Velocity Z-score Threshold:")
+        self.lbl_max_velocity_zscore = QLabel("Velocity z-score threshold")
         f_pp.addRow(self.lbl_max_velocity_zscore, self.spin_max_velocity_zscore)
 
         self.spin_velocity_zscore_window = QSpinBox()
@@ -3374,7 +3539,7 @@ class MainWindow(QMainWindow):
             "Smaller windows = more sensitive but may be noisy.\n"
             "Recommended: 10-20 frames."
         )
-        self.lbl_velocity_zscore_window = QLabel("Z-score Window (frames):")
+        self.lbl_velocity_zscore_window = QLabel("Z-score window (frames)")
         f_pp.addRow(self.lbl_velocity_zscore_window, self.spin_velocity_zscore_window)
 
         self.spin_velocity_zscore_min_vel = QDoubleSpinBox()
@@ -3389,7 +3554,9 @@ class MainWindow(QMainWindow):
             "Automatically scaled by body size and frame rate.\n"
             "Recommended: 1.0-3.0 body-sizes/s depending on animal locomotion speed."
         )
-        self.lbl_velocity_zscore_min_vel = QLabel("Z-score Min Velocity (body/s):")
+        self.lbl_velocity_zscore_min_vel = QLabel(
+            "Minimum speed for z-score check (body lengths/sec)"
+        )
         f_pp.addRow(self.lbl_velocity_zscore_min_vel, self.spin_velocity_zscore_min_vel)
 
         # Interpolation settings
@@ -3404,7 +3571,9 @@ class MainWindow(QMainWindow):
             "• Spline: Smoothing spline with automatic smoothing\n"
             "Applied to X, Y positions and heading (circular interpolation)."
         )
-        self.lbl_interpolation_method = QLabel("Interpolation Method:")
+        self.lbl_interpolation_method = QLabel(
+            "Which interpolation method should be used?"
+        )
         f_pp.addRow(self.lbl_interpolation_method, self.combo_interpolation_method)
 
         self.spin_interpolation_max_gap = QSpinBox()
@@ -3416,7 +3585,7 @@ class MainWindow(QMainWindow):
             "Prevents interpolation across large occlusions.\n"
             "Recommended: 5-15 frames."
         )
-        self.lbl_interpolation_max_gap = QLabel("Max Interpolation Gap:")
+        self.lbl_interpolation_max_gap = QLabel("Maximum interpolation gap (frames)")
         f_pp.addRow(self.lbl_interpolation_max_gap, self.spin_interpolation_max_gap)
 
         # Trajectory Merging Settings (Conservative Strategy)
@@ -3431,7 +3600,9 @@ class MainWindow(QMainWindow):
             "Disagreeing frames cause trajectory splits for conservative identity handling.\n"
             "Recommended: 0.3-0.7× body size."
         )
-        self.lbl_merge_overlap_multiplier = QLabel("Agreement Distance (×body):")
+        self.lbl_merge_overlap_multiplier = QLabel(
+            "Merge agreement distance (body lengths)"
+        )
         f_pp.addRow(
             self.lbl_merge_overlap_multiplier, self.spin_merge_overlap_multiplier
         )
@@ -3445,7 +3616,7 @@ class MainWindow(QMainWindow):
             "the agreement distance to be merged. Higher = more conservative.\n"
             "Recommended: 5-15 frames."
         )
-        self.lbl_min_overlap_frames = QLabel("Min Overlap Frames:")
+        self.lbl_min_overlap_frames = QLabel("Minimum overlap frames")
         f_pp.addRow(self.lbl_min_overlap_frames, self.spin_min_overlap_frames)
 
         # Cleanup option
@@ -3462,7 +3633,7 @@ class MainWindow(QMainWindow):
         vbox.addWidget(g_pp)
 
         # Video Export (from post-processed trajectories)
-        g_video = QGroupBox("Video Export")
+        g_video = QGroupBox("What export video should be created?")
         vl_video = QVBoxLayout(g_video)
         vl_video.addWidget(
             self._create_help_label(
@@ -3474,7 +3645,7 @@ class MainWindow(QMainWindow):
         f_video = QFormLayout(None)
         f_video.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
-        self.check_video_output = QCheckBox("Generate Video from Final Trajectories")
+        self.check_video_output = QCheckBox("Export trajectory video")
         self.check_video_output.setChecked(False)
         self.check_video_output.toggled.connect(self._on_video_output_toggled)
         self.check_video_output.setToolTip(
@@ -3532,7 +3703,7 @@ class MainWindow(QMainWindow):
             "Longer trails show more movement history.\n"
             "Automatically converted to frames using video FPS."
         )
-        self.lbl_trail_duration = QLabel("Trail Duration (seconds):")
+        self.lbl_trail_duration = QLabel("Trail duration (seconds)")
         f_video.addRow(self.lbl_trail_duration, self.spin_trail_duration)
 
         self.spin_marker_size = QDoubleSpinBox()
@@ -3544,7 +3715,7 @@ class MainWindow(QMainWindow):
             "Size of position marker (0.1-5.0 × body size).\n"
             "Scaled by reference body size for consistency."
         )
-        self.lbl_marker_size = QLabel("Marker Size (×body):")
+        self.lbl_marker_size = QLabel("Marker size (body lengths)")
         f_video.addRow(self.lbl_marker_size, self.spin_marker_size)
 
         self.spin_text_scale = QDoubleSpinBox()
@@ -3555,7 +3726,7 @@ class MainWindow(QMainWindow):
         self.spin_text_scale.setToolTip(
             "Scale factor for ID labels (0.3-3.0).\n" "Larger values = bigger text."
         )
-        self.lbl_text_scale = QLabel("Text Scale:")
+        self.lbl_text_scale = QLabel("Text scale")
         f_video.addRow(self.lbl_text_scale, self.spin_text_scale)
 
         self.spin_arrow_length = QDoubleSpinBox()
@@ -3567,7 +3738,7 @@ class MainWindow(QMainWindow):
             "Length of orientation arrow (0.5-10.0 × body size).\n"
             "Scaled by reference body size."
         )
-        self.lbl_arrow_length = QLabel("Arrow Length (×body):")
+        self.lbl_arrow_length = QLabel("Arrow length (body lengths)")
         f_video.addRow(self.lbl_arrow_length, self.spin_arrow_length)
 
         vl_video.addLayout(f_video)
@@ -3591,7 +3762,7 @@ class MainWindow(QMainWindow):
         self.lbl_arrow_length.setVisible(False)
 
         # Histograms
-        g_hist = QGroupBox("Real-Time Analytics")
+        g_hist = QGroupBox("Which live metrics should be displayed?")
         vl_hist = QVBoxLayout(g_hist)
         vl_hist.addWidget(
             self._create_help_label(
@@ -3600,7 +3771,7 @@ class MainWindow(QMainWindow):
             )
         )
         f_hist = QFormLayout(None)
-        self.enable_histograms = QCheckBox("Collect Histogram Data")
+        self.enable_histograms = QCheckBox("Collect live analytics")
         self.enable_histograms.setToolTip(
             "Collect real-time statistics during tracking.\n"
             "Tracks speed, direction, and spatial distributions.\n"
@@ -3616,7 +3787,9 @@ class MainWindow(QMainWindow):
             "Larger window = smoother trends but slower response.\n"
             "Recommended: 100-500 frames for most videos."
         )
-        f_hist.addRow("History Window:", self.spin_histogram_history)
+        f_hist.addRow(
+            "How many frames in live analytics history?", self.spin_histogram_history
+        )
 
         self.btn_show_histograms = QPushButton("Open Plot Window")
         self.btn_show_histograms.setCheckable(True)
@@ -3629,7 +3802,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_dataset_ui(self):
+    def setup_dataset_ui(self: object) -> object:
         """Tab 6: Dataset Generation for Active Learning."""
         layout = QVBoxLayout(self.tab_dataset)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3646,7 +3819,9 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Active Learning Dataset Section
         # ============================================================
-        self.g_active_learning = QGroupBox("Generate Animal Detection Dataset...")
+        self.g_active_learning = QGroupBox(
+            "Do you want to generate a detection dataset?"
+        )
         vl_active = QVBoxLayout(self.g_active_learning)
         vl_active.addWidget(
             self._create_help_label(
@@ -3671,7 +3846,7 @@ class MainWindow(QMainWindow):
         vl_content = QVBoxLayout(self.active_learning_content)
 
         # Dataset configuration
-        self.g_dataset_config = QGroupBox("Dataset Configuration")
+        self.g_dataset_config = QGroupBox("How should the dataset be configured?")
         f_config = QFormLayout(self.g_dataset_config)
         f_config.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
@@ -3681,7 +3856,7 @@ class MainWindow(QMainWindow):
         self.line_dataset_name.setToolTip(
             "Name for the dataset (used for folder and zip file naming)."
         )
-        f_config.addRow("Dataset Name:", self.line_dataset_name)
+        f_config.addRow("Dataset name", self.line_dataset_name)
 
         # Class name
         self.line_dataset_class_name = QLineEdit()
@@ -3692,7 +3867,9 @@ class MainWindow(QMainWindow):
             "This will be used in the classes.txt file for YOLO training.\n"
             "Examples: ant, bee, mouse, fish, etc."
         )
-        f_config.addRow("Class Name:", self.line_dataset_class_name)
+        f_config.addRow(
+            "What class label should be used?", self.line_dataset_class_name
+        )
 
         # Output directory
         h_output = QHBoxLayout()
@@ -3705,12 +3882,12 @@ class MainWindow(QMainWindow):
         self.btn_browse_output.clicked.connect(self._select_dataset_output_dir)
         h_output.addWidget(self.line_dataset_output)
         h_output.addWidget(self.btn_browse_output)
-        f_config.addRow("Output Directory:", h_output)
+        f_config.addRow("Output directory", h_output)
 
         vl_content.addWidget(self.g_dataset_config)
 
         # Frame selection parameters
-        self.g_frame_selection = QGroupBox("Frame Selection Criteria")
+        self.g_frame_selection = QGroupBox("How should frames be selected?")
         f_selection = QFormLayout(self.g_frame_selection)
         f_selection.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
@@ -3723,7 +3900,7 @@ class MainWindow(QMainWindow):
             "Higher values provide more training data but increase annotation time.\n"
             "Recommended: 50-200 frames for initial improvement."
         )
-        f_selection.addRow("Max Frames to Export:", self.spin_dataset_max_frames)
+        f_selection.addRow("Maximum frames to export", self.spin_dataset_max_frames)
 
         # Frame quality scoring threshold (used DURING TRACKING to identify problematic frames)
         self.spin_dataset_conf_threshold = QDoubleSpinBox()
@@ -3739,7 +3916,10 @@ class MainWindow(QMainWindow):
             "• Higher (0.5-0.7): Flag moderately uncertain detections too\n\n"
             "Recommended: 0.5 (default) - captures frames that need model improvement"
         )
-        f_selection.addRow("Frame Quality Threshold:", self.spin_dataset_conf_threshold)
+        f_selection.addRow(
+            "What frame quality threshold should be used?",
+            self.spin_dataset_conf_threshold,
+        )
 
         # Add help label explaining advanced options
         advanced_help = self._create_help_label(
@@ -3760,18 +3940,23 @@ class MainWindow(QMainWindow):
             "Recommended: 20-50 frames (depends on video frame rate)."
         )
         f_selection.addRow(
-            "Diversity Window (frames):", self.spin_dataset_diversity_window
+            "Diversity window (frames)",
+            self.spin_dataset_diversity_window,
         )
 
         # Include context frames
-        self.chk_dataset_include_context = QCheckBox("Include Context Frames (±1)")
+        self.chk_dataset_include_context = QCheckBox(
+            "Include neighboring frames (+/-1)"
+        )
         self.chk_dataset_include_context.setChecked(True)
         self.chk_dataset_include_context.setToolTip(
             "Export the frame before and after each selected frame.\n"
             "Provides temporal context which can improve annotation quality.\n"
             "Increases dataset size by 3x."
         )
-        f_selection.addRow("Context Frames:", self.chk_dataset_include_context)
+        f_selection.addRow(
+            "Include neighboring frames", self.chk_dataset_include_context
+        )
 
         self.chk_dataset_probabilistic = QCheckBox("Probabilistic Sampling")
         self.chk_dataset_probabilistic.setChecked(True)
@@ -3781,43 +3966,45 @@ class MainWindow(QMainWindow):
             "Greedy: Always select absolute worst frames first (may be too extreme).\n"
             "Recommended: Enabled for better training data diversity."
         )
-        f_selection.addRow("Sampling Strategy:", self.chk_dataset_probabilistic)
+        f_selection.addRow("Use probabilistic sampling", self.chk_dataset_probabilistic)
 
         vl_content.addWidget(self.g_frame_selection)
 
         # Quality metrics
-        self.g_quality_metrics = QGroupBox("Quality Metrics")
+        self.g_quality_metrics = QGroupBox("Which quality checks should be applied?")
         v_metrics = QVBoxLayout(self.g_quality_metrics)
 
-        self.chk_metric_low_confidence = QCheckBox("Low Detection Confidence")
+        self.chk_metric_low_confidence = QCheckBox("Flag low detection confidence")
         self.chk_metric_low_confidence.setChecked(True)
         self.chk_metric_low_confidence.setToolTip(
             "Flag frames where YOLO confidence is below threshold."
         )
         v_metrics.addWidget(self.chk_metric_low_confidence)
 
-        self.chk_metric_count_mismatch = QCheckBox("Detection Count Mismatch")
+        self.chk_metric_count_mismatch = QCheckBox("Flag detection count mismatch")
         self.chk_metric_count_mismatch.setChecked(True)
         self.chk_metric_count_mismatch.setToolTip(
             "Flag frames where detected count doesn't match expected number of animals."
         )
         v_metrics.addWidget(self.chk_metric_count_mismatch)
 
-        self.chk_metric_high_assignment_cost = QCheckBox("High Assignment Cost")
+        self.chk_metric_high_assignment_cost = QCheckBox(
+            "Flag uncertain track assignment"
+        )
         self.chk_metric_high_assignment_cost.setChecked(True)
         self.chk_metric_high_assignment_cost.setToolTip(
             "Flag frames where tracker struggles to match detections to tracks."
         )
         v_metrics.addWidget(self.chk_metric_high_assignment_cost)
 
-        self.chk_metric_track_loss = QCheckBox("Frequent Track Losses")
+        self.chk_metric_track_loss = QCheckBox("Flag frequent track loss")
         self.chk_metric_track_loss.setChecked(True)
         self.chk_metric_track_loss.setToolTip(
             "Flag frames where tracks are frequently lost."
         )
         v_metrics.addWidget(self.chk_metric_track_loss)
 
-        self.chk_metric_high_uncertainty = QCheckBox("High Position Uncertainty")
+        self.chk_metric_high_uncertainty = QCheckBox("Flag high position uncertainty")
         self.chk_metric_high_uncertainty.setChecked(False)
         self.chk_metric_high_uncertainty.setToolTip(
             "Flag frames where Kalman filter is very uncertain about positions."
@@ -3827,12 +4014,12 @@ class MainWindow(QMainWindow):
         vl_content.addWidget(self.g_quality_metrics)
 
         # X-AnyLabeling Integration
-        self.g_xanylabeling = QGroupBox("X-AnyLabeling Integration")
+        self.g_xanylabeling = QGroupBox("How should X-AnyLabeling be integrated?")
         vl_xany = QVBoxLayout(self.g_xanylabeling)
 
         # Conda environment selection
         h_env = QHBoxLayout()
-        h_env.addWidget(QLabel("Conda Environment:"))
+        h_env.addWidget(QLabel("Conda environment"))
         self.combo_xanylabeling_env = QComboBox()
         self.combo_xanylabeling_env.setToolTip(
             "Select a conda environment with X-AnyLabeling installed.\n"
@@ -3874,7 +4061,7 @@ class MainWindow(QMainWindow):
         # ============================================================
         # YOLO-OBB Training (separate section)
         # ============================================================
-        self.g_yolo_training = QGroupBox("YOLO-OBB Training")
+        self.g_yolo_training = QGroupBox("Do you want to train a YOLO-OBB model?")
         vl_yolo_train = QVBoxLayout(self.g_yolo_training)
         self.btn_open_training_dialog = QPushButton("Train YOLO-OBB Model...")
         self.btn_open_training_dialog.setToolTip(
@@ -3893,7 +4080,9 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Individual Dataset Generator Section (Real-time OBB crops)
         # ============================================================
-        self.g_individual_dataset = QGroupBox("Real-time Individual Dataset (YOLO OBB)")
+        self.g_individual_dataset = QGroupBox(
+            "Should individual crops be collected in real time?"
+        )
         vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
         vl_ind_dataset.addWidget(
             self._create_help_label(
@@ -3917,7 +4106,9 @@ class MainWindow(QMainWindow):
         vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
 
         # Output Configuration
-        self.ind_output_group = QGroupBox("Output Configuration")
+        self.ind_output_group = QGroupBox(
+            "Where should individual-analysis outputs go?"
+        )
         ind_output_layout = QFormLayout(self.ind_output_group)
         ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
@@ -3927,7 +4118,7 @@ class MainWindow(QMainWindow):
         self.line_individual_dataset_name.setToolTip(
             "Name for this dataset. Timestamp will be appended automatically."
         )
-        ind_output_layout.addRow("Dataset Name:", self.line_individual_dataset_name)
+        ind_output_layout.addRow("Dataset name", self.line_individual_dataset_name)
 
         # Output directory
         h_ind_output = QHBoxLayout()
@@ -3940,7 +4131,7 @@ class MainWindow(QMainWindow):
         self.btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
         h_ind_output.addWidget(self.line_individual_output)
         h_ind_output.addWidget(self.btn_browse_ind_output)
-        ind_output_layout.addRow("Output Directory:", h_ind_output)
+        ind_output_layout.addRow("Output directory", h_ind_output)
 
         # Output format
         self.combo_individual_format = QComboBox()
@@ -3949,7 +4140,7 @@ class MainWindow(QMainWindow):
         self.combo_individual_format.setToolTip(
             "PNG: Lossless, larger files\nJPEG: Smaller files, slight quality loss"
         )
-        ind_output_layout.addRow("Image Format:", self.combo_individual_format)
+        ind_output_layout.addRow("Image format", self.combo_individual_format)
 
         # Save interval
         self.spin_individual_interval = QSpinBox()
@@ -3960,7 +4151,7 @@ class MainWindow(QMainWindow):
             "Save crops every N frames.\n"
             "1 = every frame, 10 = every 10th frame, etc."
         )
-        ind_output_layout.addRow("Save Every N Frames:", self.spin_individual_interval)
+        ind_output_layout.addRow("Save every N frames", self.spin_individual_interval)
 
         self.chk_individual_interpolate = QCheckBox(
             "Interpolate Occluded Frames After Tracking"
@@ -3971,7 +4162,7 @@ class MainWindow(QMainWindow):
             "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
         )
         ind_output_layout.addRow(
-            "Occlusion Interpolation:", self.chk_individual_interpolate
+            "Interpolate occluded frames", self.chk_individual_interpolate
         )
 
         # Padding fraction (only crop parameter needed - size is determined by OBB)
@@ -3984,7 +4175,9 @@ class MainWindow(QMainWindow):
             "Padding around OBB bounding box as fraction of size.\n"
             "0.1 = 10% padding on each side."
         )
-        ind_output_layout.addRow("Padding Fraction:", self.spin_individual_padding)
+        ind_output_layout.addRow(
+            "What padding fraction should be used?", self.spin_individual_padding
+        )
 
         # Background color for masked regions
         bg_color_layout = QHBoxLayout()
@@ -4019,7 +4212,9 @@ class MainWindow(QMainWindow):
         # Now update the button display with all widgets created
         self._update_background_color_button()
 
-        ind_output_layout.addRow("Background Color:", bg_color_layout)
+        ind_output_layout.addRow(
+            "Which background color should crops use?", bg_color_layout
+        )
 
         vl_ind_dataset.addWidget(self.ind_output_group)
 
@@ -4035,39 +4230,26 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Pose Label UI Integration (Top-level section)
         # ============================================================
-        self.g_pose_label = QGroupBox("Pose Labelling")
+        self.g_pose_label = QGroupBox("Do you want to launch PoseKit labeler?")
         vl_pose = QVBoxLayout(self.g_pose_label)
         vl_pose.addWidget(
             self._create_help_label(
-                "Open any image folder with the PoseKit Labeler UI for keypoint annotation.\n"
-                "Supports YOLO Pose format labels (.txt) with normalized bbox + keypoints + visibility."
+                "Open an individual dataset folder in PoseKit Labeler for keypoint annotation.\n"
+                "Select a dataset root that contains an `images/` directory."
             )
         )
 
-        # Folder selection
-        h_pose_folder = QHBoxLayout()
-        h_pose_folder.addWidget(QLabel("Folder to Label:"))
-        self.line_pose_folder = QLineEdit()
-        self.line_pose_folder.setPlaceholderText("Select images folder...")
-        self.line_pose_folder.setToolTip(
-            "Folder containing images to label with keypoints.\n"
-            "Labels will be saved as .txt files in the same directory."
-        )
-        h_pose_folder.addWidget(self.line_pose_folder, 1)
-        self.btn_browse_pose_folder = QPushButton("Browse...")
-        self.btn_browse_pose_folder.clicked.connect(self._select_pose_folder)
-        h_pose_folder.addWidget(self.btn_browse_pose_folder)
-        vl_pose.addLayout(h_pose_folder)
-
         # Open in Pose Label button
-        self.btn_open_pose_label = QPushButton("Open PoseKit Labeler")
+        self.btn_open_pose_label = QPushButton(
+            "Open Individual Dataset in PoseKit Labeler"
+        )
         self.btn_open_pose_label.setToolTip(
-            "Launch the PoseKit Labeler for keypoint annotation.\n"
-            "You can create/edit project settings, import skeleton definitions, etc.\n"
-            "Labels are auto-saved and compatible with YOLO training."
+            "Browse for a dataset directory and open it in PoseKit Labeler.\n"
+            "Directory must contain: images/\n"
+            "PoseKit project data will be stored in: posekit_project/"
         )
         self.btn_open_pose_label.clicked.connect(self._open_pose_label_ui)
-        self.btn_open_pose_label.setEnabled(False)
+        self.btn_open_pose_label.setEnabled(True)
         vl_pose.addWidget(self.btn_open_pose_label)
 
         form.addWidget(self.g_pose_label)
@@ -4080,7 +4262,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_individual_analysis_ui(self):
+    def setup_individual_analysis_ui(self: object) -> object:
         """Tab 7: Individual Analysis - Real-time Identity & Post-hoc Pose Analysis."""
         layout = QVBoxLayout(self.tab_individual)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -4092,7 +4274,7 @@ class MainWindow(QMainWindow):
         form = QVBoxLayout(content)
 
         # Info box
-        info_box = QGroupBox("Individual-Level Processing")
+        info_box = QGroupBox("How should individuals be processed?")
         info_layout = QVBoxLayout(info_box)
         info_layout.addWidget(
             self._create_help_label(
@@ -4116,7 +4298,7 @@ class MainWindow(QMainWindow):
         form.addWidget(self.chk_enable_individual_analysis)
 
         # Identity Classification Section
-        self.g_identity = QGroupBox("Identity Classification (Real-time)")
+        self.g_identity = QGroupBox("Should identity classification run in real time?")
         vl_identity = QVBoxLayout(self.g_identity)
         vl_identity.addWidget(
             self._create_help_label(
@@ -4142,7 +4324,9 @@ class MainWindow(QMainWindow):
         self.combo_identity_method.currentIndexChanged.connect(
             self._on_identity_method_changed
         )
-        fl_identity.addRow("Identity Method:", self.combo_identity_method)
+        fl_identity.addRow(
+            "Which identity method should be used?", self.combo_identity_method
+        )
 
         # Model/Config for identity (stacked widget for different methods)
         self.identity_config_stack = QStackedWidget()
@@ -4165,7 +4349,9 @@ class MainWindow(QMainWindow):
         color_model_layout = QHBoxLayout()
         color_model_layout.addWidget(self.line_color_tag_model)
         color_model_layout.addWidget(btn_select_color_model)
-        color_layout.addRow("Model File:", color_model_layout)
+        color_layout.addRow(
+            "Which identity model file should be used?", color_model_layout
+        )
         self.spin_color_tag_conf = QDoubleSpinBox()
         self.spin_color_tag_conf.setRange(0.01, 1.0)
         self.spin_color_tag_conf.setValue(0.5)
@@ -4173,7 +4359,9 @@ class MainWindow(QMainWindow):
         self.spin_color_tag_conf.setToolTip(
             "Minimum confidence for color tag detection"
         )
-        color_layout.addRow("Confidence:", self.spin_color_tag_conf)
+        color_layout.addRow(
+            "What confidence threshold should identity use?", self.spin_color_tag_conf
+        )
         self.identity_config_stack.addWidget(color_widget)
 
         # Page 2: AprilTags
@@ -4184,7 +4372,9 @@ class MainWindow(QMainWindow):
             ["tag36h11", "tag25h9", "tag16h5", "tagCircle21h7", "tagStandard41h12"]
         )
         self.combo_apriltag_family.setToolTip("AprilTag family to detect")
-        apriltag_layout.addRow("Tag Family:", self.combo_apriltag_family)
+        apriltag_layout.addRow(
+            "Which AprilTag family should be used?", self.combo_apriltag_family
+        )
         self.spin_apriltag_decimate = QDoubleSpinBox()
         self.spin_apriltag_decimate.setRange(1.0, 4.0)
         self.spin_apriltag_decimate.setValue(1.0)
@@ -4192,7 +4382,10 @@ class MainWindow(QMainWindow):
         self.spin_apriltag_decimate.setToolTip(
             "Decimation factor for faster detection (higher = faster but less accurate)"
         )
-        apriltag_layout.addRow("Decimate:", self.spin_apriltag_decimate)
+        apriltag_layout.addRow(
+            "How much AprilTag downsampling should be used?",
+            self.spin_apriltag_decimate,
+        )
         self.identity_config_stack.addWidget(apriltag_widget)
 
         # Page 3: Custom
@@ -4201,7 +4394,7 @@ class MainWindow(QMainWindow):
         custom_layout.addWidget(
             self._create_help_label(
                 "Implement custom identity classifier in:\n"
-                "src/multi_tracker/core/individual_analysis.py"
+                "src/multi_tracker/core/identity/analysis.py"
             )
         )
         self.identity_config_stack.addWidget(custom_widget)
@@ -4210,7 +4403,7 @@ class MainWindow(QMainWindow):
         vl_identity.addWidget(self.identity_config_stack)
 
         # Crop Parameters
-        crop_group = QGroupBox("Crop Parameters")
+        crop_group = QGroupBox("How should identity crops be extracted?")
         crop_layout = QFormLayout(crop_group)
 
         self.spin_identity_crop_multiplier = QDoubleSpinBox()
@@ -4222,21 +4415,21 @@ class MainWindow(QMainWindow):
             "Crop size = body_size × multiplier\n"
             "Larger values include more context, smaller values focus on the animal"
         )
-        crop_layout.addRow("Size Multiplier:", self.spin_identity_crop_multiplier)
+        crop_layout.addRow("Crop size multiplier", self.spin_identity_crop_multiplier)
 
         self.spin_identity_crop_min = QSpinBox()
         self.spin_identity_crop_min.setRange(32, 512)
         self.spin_identity_crop_min.setValue(64)
         self.spin_identity_crop_min.setSingleStep(16)
         self.spin_identity_crop_min.setToolTip("Minimum crop size in pixels")
-        crop_layout.addRow("Min Size (px):", self.spin_identity_crop_min)
+        crop_layout.addRow("Minimum crop size (px)", self.spin_identity_crop_min)
 
         self.spin_identity_crop_max = QSpinBox()
         self.spin_identity_crop_max.setRange(64, 1024)
         self.spin_identity_crop_max.setValue(256)
         self.spin_identity_crop_max.setSingleStep(16)
         self.spin_identity_crop_max.setToolTip("Maximum crop size in pixels")
-        crop_layout.addRow("Max Size (px):", self.spin_identity_crop_max)
+        crop_layout.addRow("Maximum crop size (px)", self.spin_identity_crop_max)
 
         vl_identity.addWidget(crop_group)
 
@@ -4468,41 +4661,39 @@ class MainWindow(QMainWindow):
                 self, "Launch Error", f"Failed to open X-AnyLabeling:\n{str(e)}"
             )
 
-    def _select_pose_folder(self):
-        """Browse for a folder to label with Pose Label UI."""
+    def _open_pose_label_ui(self):
+        """Open a dataset folder in PoseKit Labeler."""
+        start_dir = (
+            self.line_individual_output.text().strip()
+            or self.line_dataset_output.text().strip()
+            or str(Path.home())
+        )
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Select Folder with Images to Label",
-            (
-                self.line_pose_folder.text()
-                if self.line_pose_folder.text()
-                else str(Path.home())
-            ),
+            "Select Pose Dataset Folder",
+            start_dir,
         )
+        if not directory:
+            return
 
-        if directory:
-            self.line_pose_folder.setText(directory)
-            self.btn_open_pose_label.setEnabled(True)
-
-    def _open_pose_label_ui(self):
-        """Open a folder in the Pose Label UI using the current environment."""
-        folder_path = self.line_pose_folder.text()
-
-        if not folder_path or not Path(folder_path).exists():
+        dataset_root = Path(directory).expanduser().resolve()
+        images_dir = dataset_root / "images"
+        if not images_dir.exists() or not images_dir.is_dir():
             QMessageBox.warning(
                 self,
-                "Invalid Folder",
-                "Please select a valid folder with images to label.",
+                "Invalid Dataset",
+                "Selected folder does not contain an `images/` directory.\n\n"
+                "Please select a dataset root with this structure:\n"
+                "dataset_root/\n"
+                "  images/\n",
             )
             return
 
-        folder = Path(folder_path)
-
-        # Check if folder has any images
+        # Check if images directory has any images
         image_extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
         has_images = any(
             f.suffix.lower() in image_extensions
-            for f in folder.iterdir()
+            for f in images_dir.rglob("*")
             if f.is_file()
         )
 
@@ -4510,7 +4701,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(
                 self,
                 "No Images Found",
-                f"No image files found in:\n{folder_path}\n\n"
+                f"No image files found in:\n{images_dir}\n\n"
                 f"Supported formats: {', '.join(image_extensions)}",
             )
             return
@@ -4520,9 +4711,11 @@ class MainWindow(QMainWindow):
         import sys
 
         try:
-            # Find the pose_label.py script in the same directory as main_window.py
+            # The labeler lives in the top-level posekit package.
             gui_dir = Path(__file__).parent
-            pose_label_script = gui_dir / "pose_label.py"
+            package_root = gui_dir.parent
+            labeler_dir = package_root / "posekit"
+            pose_label_script = labeler_dir / "pose_label.py"
 
             if not pose_label_script.exists():
                 QMessageBox.critical(
@@ -4535,18 +4728,19 @@ class MainWindow(QMainWindow):
             # Use the current Python executable (same environment as mat)
             # This avoids conda activation and terminal detection complexity
             subprocess.Popen(
-                [sys.executable, str(pose_label_script), str(folder)],
-                cwd=str(gui_dir),
+                [sys.executable, str(pose_label_script), str(dataset_root)],
+                cwd=str(labeler_dir),
             )
 
-            logger.info(f"Opened Pose Label UI for folder: {folder}")
+            logger.info(f"Opened PoseKit Labeler for dataset: {dataset_root}")
             QMessageBox.information(
                 self,
-                "Pose Label UI Launched",
-                f"Pose Label UI is starting...\n\n"
-                f"Folder: {folder}\n\n"
-                f"You can now create/edit project settings, define skeletons,\n"
-                f"and annotate keypoints. Labels will be auto-saved.",
+                "PoseKit Labeler Launched",
+                f"PoseKit Labeler is starting...\n\n"
+                f"Dataset: {dataset_root}\n"
+                f"Images: {images_dir}\n\n"
+                f"Project data will be created/loaded at:\n"
+                f"{dataset_root / 'posekit_project'}",
             )
 
         except Exception as e:
@@ -4644,8 +4838,8 @@ class MainWindow(QMainWindow):
 
     def _select_individual_background_color(self):
         """Open color picker for individual dataset background color."""
-        from PySide6.QtWidgets import QColorDialog
         from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QColorDialog
 
         # Convert current BGR to RGB for QColorDialog
         b, g, r = self._background_color
@@ -4814,7 +5008,7 @@ class MainWindow(QMainWindow):
         self._update_preview_display()
         self.on_detection_method_changed(index)
 
-    def select_file(self):
+    def select_file(self: object) -> object:
         """Select video file via file dialog."""
         fp, _ = QFileDialog.getOpenFileName(
             self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
@@ -4883,12 +5077,14 @@ class MainWindow(QMainWindow):
         # Enable full UI now that a video is loaded
         self._apply_ui_state("idle")
 
-    def select_csv(self):
+    def select_csv(self: object) -> object:
+        """select_csv method documentation."""
         fp, _ = QFileDialog.getSaveFileName(self, "Select CSV", "", "CSV Files (*.csv)")
         if fp:
             self.csv_line.setText(fp)
 
-    def select_video_output(self):
+    def select_video_output(self: object) -> object:
+        """select_video_output method documentation."""
         fp, _ = QFileDialog.getSaveFileName(
             self, "Select Video Output", "", "Video Files (*.mp4 *.avi)"
         )
@@ -5015,7 +5211,7 @@ class MainWindow(QMainWindow):
 
         # Update UI
         self.lbl_current_frame.setText(
-            f"Frame: {self.video_current_frame_idx}/{self.video_total_frames-1}"
+            f"Frame: {self.video_current_frame_idx}/{self.video_total_frames - 1}"
         )
         self.slider_timeline.blockSignals(True)
         self.slider_timeline.setValue(self.video_current_frame_idx)
@@ -5254,7 +5450,7 @@ class MainWindow(QMainWindow):
                 self,
                 "FPS Detected",
                 f"Frame rate detected: {detected_fps:.2f} FPS\n\n"
-                f"Time per frame: {1000.0/detected_fps:.2f} ms",
+                f"Time per frame: {1000.0 / detected_fps:.2f} ms",
             )
 
     def _auto_detect_fps(self, video_path):
@@ -5534,9 +5730,9 @@ class MainWindow(QMainWindow):
                     "Running detection test WITHOUT size filtering (recommended for size estimation)"
                 )
 
+        from ..core.background.model import BackgroundModel
+        from ..core.detectors.engine import YOLOOBBDetector
         from ..utils.image_processing import apply_image_adjustments
-        from ..core.background_models import BackgroundModel
-        from ..core.detection import YOLOOBBDetector
 
         # Convert RGB preview to BGR for OpenCV
         frame_bgr = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2BGR)
@@ -5655,7 +5851,7 @@ class MainWindow(QMainWindow):
                     max_size_multiplier = self.spin_max_object_size.value()
                     min_size_px2 = min_size_multiplier * scaled_body_area
                     max_size_px2 = max_size_multiplier * scaled_body_area
-                    logger.info(f"Background subtraction size filtering ENABLED:")
+                    logger.info("Background subtraction size filtering ENABLED:")
                     logger.info(f"  Resize factor: {resize_f:.2f}")
                     logger.info(f"  Reference body size: {reference_body_size:.1f} px")
                     logger.info(
@@ -5685,7 +5881,7 @@ class MainWindow(QMainWindow):
 
                         if detection_num < 5:  # Log first 5 detections for debugging
                             logger.info(
-                                f"  Detection {detection_num+1}: {area:.1f} px² (range: {min_size_px2:.1f}-{max_size_px2:.1f}) - {'PASS' if passes_filter else 'FILTERED OUT'}"
+                                f"  Detection {detection_num + 1}: {area:.1f} px² (range: {min_size_px2:.1f}-{max_size_px2:.1f}) - {'PASS' if passes_filter else 'FILTERED OUT'}"
                             )
 
                         detection_num += 1
@@ -5786,13 +5982,12 @@ class MainWindow(QMainWindow):
                     max_size_px2 = float("inf")
 
                 yolo_params = {
-                    "YOLO_MODEL_PATH": (
-                        self.yolo_custom_model_line.text()
-                        if self.combo_yolo_model.currentText() == "Custom Model..."
-                        else self.combo_yolo_model.currentText().split(" ")[0]
+                    "YOLO_MODEL_PATH": resolve_model_path(
+                        self._get_selected_yolo_model_path()
                     ),
                     "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
                     "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
+                    "USE_CUSTOM_OBB_IOU_FILTERING": self.chk_use_custom_obb_iou.isChecked(),
                     "YOLO_TARGET_CLASSES": (
                         [
                             int(x.strip())
@@ -5833,7 +6028,7 @@ class MainWindow(QMainWindow):
                     # Logging parameters (already calculated above when building yolo_params)
                     min_size_multiplier = self.spin_min_object_size.value()
                     max_size_multiplier = self.spin_max_object_size.value()
-                    logger.info(f"YOLO size filtering ENABLED:")
+                    logger.info("YOLO size filtering ENABLED:")
                     logger.info(f"  Resize factor: {resize_f:.2f}")
                     logger.info(f"  Reference body size: {reference_body_size:.1f} px")
                     logger.info(
@@ -5875,7 +6070,7 @@ class MainWindow(QMainWindow):
                         for i in range(min(5, len(sizes))):
                             passes_filter = min_size_px2 <= sizes[i] <= max_size_px2
                             logger.info(
-                                f"  Detection {i+1}: {sizes[i]:.1f} px² - {'PASS' if passes_filter else 'FILTERED OUT'}"
+                                f"  Detection {i + 1}: {sizes[i]:.1f} px² - {'PASS' if passes_filter else 'FILTERED OUT'}"
                             )
 
                 # Filter detections by ROI AFTER detection (vectorized)
@@ -6133,15 +6328,16 @@ class MainWindow(QMainWindow):
 
     def _handle_video_event(self, evt):
         """Handle video events including pinch gestures."""
-        if not self._video_interactions_enabled:
-            evt.ignore()
-            return False
-        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtCore import QEvent
 
         if evt.type() == QEvent.Gesture:
+            if not self._video_interactions_enabled:
+                evt.ignore()
+                return False
             return self._handle_gesture_event(evt)
 
-        # Pass other events to default handler
+        # Always pass non-gesture events through so paint/layout still work
+        # even when interactions are disabled (no-video placeholder state).
         return QLabel.event(self.video_label, evt)
 
     def _handle_gesture_event(self, evt):
@@ -6156,7 +6352,6 @@ class MainWindow(QMainWindow):
 
         gesture = evt.gesture(Qt.PinchGesture)
         if gesture:
-            from PySide6.QtWidgets import QGesture
 
             if gesture.state() == Qt.GestureUpdated:
                 # Get scale factor
@@ -6255,7 +6450,8 @@ class MainWindow(QMainWindow):
         self.scroll.horizontalScrollBar().setValue(0)
         self.scroll.verticalScrollBar().setValue(0)
 
-    def record_roi_click(self, evt):
+    def record_roi_click(self: object, evt: object) -> object:
+        """record_roi_click method documentation."""
         if not self.roi_selection_active or self.roi_base_frame is None:
             return
 
@@ -6297,7 +6493,8 @@ class MainWindow(QMainWindow):
         self.roi_points.append((x, y))
         self.update_roi_preview()
 
-    def update_roi_preview(self):
+    def update_roi_preview(self: object) -> object:
+        """update_roi_preview method documentation."""
         if self.roi_base_frame is None:
             return
         pix = QPixmap.fromImage(self.roi_base_frame).toImage().copy()
@@ -6382,7 +6579,8 @@ class MainWindow(QMainWindow):
         painter.end()
         self.video_label.setPixmap(QPixmap.fromImage(pix))
 
-    def start_roi_selection(self):
+    def start_roi_selection(self: object) -> object:
+        """start_roi_selection method documentation."""
         if not self.file_line.text():
             QMessageBox.warning(self, "No Video", "Please select a video file first.")
             return
@@ -6436,7 +6634,8 @@ class MainWindow(QMainWindow):
 
         self.update_roi_preview()
 
-    def finish_roi_selection(self):
+    def finish_roi_selection(self: object) -> object:
+        """finish_roi_selection method documentation."""
         if not self.roi_base_frame:
             return
 
@@ -6563,7 +6762,7 @@ class MainWindow(QMainWindow):
         # Invalidate cache when ROI changes
         self._invalidate_roi_cache()
 
-    def undo_last_roi_shape(self):
+    def undo_last_roi_shape(self: object) -> object:
         """Remove the last added ROI shape."""
         if not self.roi_shapes:
             return
@@ -6597,7 +6796,8 @@ class MainWindow(QMainWindow):
 
         self.update_roi_preview()
 
-    def clear_roi(self):
+    def clear_roi(self: object) -> object:
+        """clear_roi method documentation."""
         self.roi_mask = None
         self.roi_points = []
         self.roi_fitted_circle = None
@@ -6623,28 +6823,223 @@ class MainWindow(QMainWindow):
 
         logger.info("All ROI shapes cleared")
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self: object, event: object) -> object:
+        """keyPressEvent method documentation."""
         if event.key() == Qt.Key_Escape and self.roi_selection_active:
             self.clear_roi()
         else:
             super().keyPressEvent(event)
 
-    def on_detection_method_changed(self, index):
-        is_yolo = index == 1
+    def on_detection_method_changed(self: object, index: object) -> object:
+        """on_detection_method_changed method documentation."""
         # In new UI, this is handled by StackedWidget, but we keep this for compatibility logic
         pass
 
-    def on_yolo_model_changed(self, index):
-        is_custom = self.combo_yolo_model.currentText() == "Custom Model..."
+    def _sanitize_model_token(self, text: object) -> object:
+        """Sanitize model metadata token for safe filename use."""
+        return _sanitize_model_token(text)
+
+    def _format_yolo_model_label(self, model_path: object) -> object:
+        """Build combo-box label for a model path, including metadata if available."""
+        rel_path = make_model_path_relative(model_path)
+        filename = os.path.basename(rel_path)
+        metadata = get_yolo_model_metadata(rel_path) or {}
+
+        size = metadata.get("size") or metadata.get("model_size")
+        species = metadata.get("species")
+        model_info = metadata.get("model_info")
+        model_id = None
+        if species and model_info:
+            model_id = f"{species}_{model_info}"
+        elif species:
+            model_id = species
+        if size and model_id:
+            return f"{filename} ({size}, {model_id})"
+
+        builtins = {
+            "yolo26s-obb.pt": "Balanced",
+            "yolo26n-obb.pt": "Fastest",
+            "yolov11s-obb.pt": "Legacy",
+        }
+        if filename in builtins:
+            return f"{filename} ({builtins[filename]})"
+        return filename
+
+    def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
+        """Populate YOLO model combo from built-ins + repository models."""
+        selected_path = preferred_model_path
+        if selected_path is None and hasattr(self, "combo_yolo_model"):
+            selected_path = self._get_selected_yolo_model_path()
+
+        entries = {}
+        for built_in in ("yolo26s-obb.pt", "yolo26n-obb.pt", "yolov11s-obb.pt"):
+            entries[built_in] = self._format_yolo_model_label(built_in)
+
+        models_dir = get_models_directory()
+        try:
+            local_models = sorted(
+                f
+                for f in os.listdir(models_dir)
+                if os.path.splitext(f)[1].lower() in (".pt", ".pth")
+            )
+        except Exception as e:
+            logger.warning(f"Failed to list YOLO model directory '{models_dir}': {e}")
+            local_models = []
+
+        for filename in local_models:
+            rel_path = make_model_path_relative(os.path.join(models_dir, filename))
+            entries[rel_path] = self._format_yolo_model_label(rel_path)
+
+        self.combo_yolo_model.blockSignals(True)
+        self.combo_yolo_model.clear()
+        for model_path, label in entries.items():
+            self.combo_yolo_model.addItem(label, model_path)
+        self.combo_yolo_model.addItem("Custom Model...", "__custom__")
+        self.combo_yolo_model.blockSignals(False)
+
+        self._set_yolo_model_selection(selected_path)
+
+    def _get_selected_yolo_model_path(self) -> object:
+        """Return currently selected YOLO model path (relative when available)."""
+        if not hasattr(self, "combo_yolo_model"):
+            return "yolo26s-obb.pt"
+        selected_data = self.combo_yolo_model.currentData(Qt.UserRole)
+        if selected_data and selected_data != "__custom__":
+            return str(selected_data)
+        if (
+            hasattr(self, "yolo_custom_model_line")
+            and self.yolo_custom_model_line.text().strip()
+        ):
+            return make_model_path_relative(self.yolo_custom_model_line.text().strip())
+        return "yolo26s-obb.pt"
+
+    def _set_yolo_model_selection(self, model_path: object) -> object:
+        """Set combo/custom selection from a model path."""
+        target_path = make_model_path_relative(model_path or "")
+        if not target_path:
+            target_path = "yolo26s-obb.pt"
+
+        for i in range(self.combo_yolo_model.count()):
+            item_data = self.combo_yolo_model.itemData(i, Qt.UserRole)
+            if item_data == target_path:
+                self.combo_yolo_model.setCurrentIndex(i)
+                if hasattr(self, "yolo_custom_model_line"):
+                    self.yolo_custom_model_line.setText("")
+                return
+
+        custom_idx = self.combo_yolo_model.findData("__custom__", Qt.UserRole)
+        if custom_idx < 0:
+            custom_idx = self.combo_yolo_model.count() - 1
+        self.combo_yolo_model.setCurrentIndex(custom_idx)
+        if hasattr(self, "yolo_custom_model_line"):
+            self.yolo_custom_model_line.setText(target_path)
+
+    def _import_yolo_model_to_repository(self, source_path: object) -> object:
+        """Import a model file into models/YOLO-obb using metadata-based naming."""
+        src = str(source_path or "")
+        if not src or not os.path.exists(src):
+            return None
+
+        # Single dialog for metadata collection (size + species + model info + timestamp preview)
+        now_preview = datetime.now()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Model Metadata")
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_form = QFormLayout()
+
+        size_combo = QComboBox(dlg)
+        size_combo.addItems(["26n", "26s", "26m", "26l", "26x", "custom", "unknown"])
+        size_combo.setCurrentText("26s")
+        dlg_form.addRow("YOLO model size:", size_combo)
+
+        stem_tokens = [t for t in Path(src).stem.replace("-", "_").split("_") if t]
+        default_species = (
+            self._sanitize_model_token(stem_tokens[0]) if stem_tokens else "species"
+        )
+        default_info = (
+            self._sanitize_model_token("_".join(stem_tokens[1:]))
+            if len(stem_tokens) > 1
+            else "model"
+        )
+
+        species_line = QLineEdit(default_species, dlg)
+        species_line.setPlaceholderText("species")
+        dlg_form.addRow("Model species:", species_line)
+
+        info_line = QLineEdit(default_info, dlg)
+        info_line.setPlaceholderText("model-info")
+        dlg_form.addRow("Model info:", info_line)
+
+        ts_label = QLabel(now_preview.isoformat(timespec="seconds"), dlg)
+        ts_label.setToolTip("Timestamp applied when model is added to repository")
+        dlg_form.addRow("Added timestamp:", ts_label)
+
+        dlg_layout.addLayout(dlg_form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+
+        model_size = size_combo.currentText().strip() or "unknown"
+        model_species = self._sanitize_model_token(species_line.text())
+        model_info = self._sanitize_model_token(info_line.text())
+        if not model_species or not model_info:
+            QMessageBox.warning(
+                self,
+                "Invalid Metadata",
+                "Species and model info must both be provided.",
+            )
+            return None
+
+        now = datetime.now()
+        timestamp_token = now.strftime("%Y%m%d-%H%M%S")
+        added_at = now.isoformat(timespec="seconds")
+        ext = os.path.splitext(src)[1].lower() or ".pt"
+        models_dir = get_models_directory()
+
+        model_slug = f"{model_species}_{model_info}"
+        base_name = f"{timestamp_token}_{model_size}_{model_slug}"
+        dest_path = os.path.join(models_dir, f"{base_name}{ext}")
+        counter = 1
+        while os.path.exists(dest_path):
+            dest_path = os.path.join(models_dir, f"{base_name}_{counter}{ext}")
+            counter += 1
+
+        try:
+            shutil.copy2(src, dest_path)
+        except Exception as e:
+            logger.error(f"Failed to copy model to repository: {e}")
+            QMessageBox.warning(
+                self,
+                "Import Failed",
+                f"Could not import model into repository:\n{e}",
+            )
+            return None
+
+        rel_path = make_model_path_relative(dest_path)
+        metadata = {
+            "size": model_size,
+            "species": model_species,
+            "model_info": model_info,
+            "added_at": added_at,
+            "source_path": src,
+            "stored_filename": os.path.basename(dest_path),
+        }
+        register_yolo_model(rel_path, metadata)
+        logger.info(f"Imported model to repository: {dest_path}")
+        return rel_path
+
+    def on_yolo_model_changed(self: object, index: object) -> object:
+        """on_yolo_model_changed method documentation."""
+        is_custom = self.combo_yolo_model.currentData(Qt.UserRole) == "__custom__"
         self.yolo_custom_model_widget.setVisible(is_custom)
 
-    def select_yolo_custom_model(self):
-        # Default to models directory, or current model location if set
+    def select_yolo_custom_model(self: object) -> object:
+        """select_yolo_custom_model method documentation."""
         start_dir = get_models_directory()
-        if self.yolo_custom_model_line.text():
-            current_path = resolve_model_path(self.yolo_custom_model_line.text())
-            if os.path.exists(current_path):
-                start_dir = os.path.dirname(current_path)
 
         fp, _ = QFileDialog.getOpenFileName(
             self,
@@ -6652,64 +7047,34 @@ class MainWindow(QMainWindow):
             start_dir,
             "PyTorch Model Files (*.pt *.pth);;All Files (*)",
         )
-        if fp:
-            # Check if model is outside the archive
-            models_dir = get_models_directory()
-            try:
-                rel_path = os.path.relpath(fp, models_dir)
-                is_in_archive = not rel_path.startswith("..")
-            except (ValueError, TypeError):
-                is_in_archive = False
+        if not fp:
+            return
 
-            if not is_in_archive:
-                # Ask user if they want to copy to archive
-                reply = QMessageBox.question(
-                    self,
-                    "Copy Model to Archive?",
-                    f"The selected model is outside the local model archive.\n\n"
-                    f"Would you like to copy it to the archive at:\n{models_dir}\n\n"
-                    f"This makes presets portable across devices.",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.Yes,
-                )
+        models_dir = get_models_directory()
+        selected_abs = os.path.abspath(fp)
+        try:
+            rel_path = os.path.relpath(selected_abs, models_dir)
+            is_in_repo = not rel_path.startswith("..")
+        except (ValueError, TypeError):
+            is_in_repo = False
 
-                if reply == QMessageBox.Yes:
-                    import shutil
+        if is_in_repo:
+            final_model_path = make_model_path_relative(selected_abs)
+        else:
+            final_model_path = self._import_yolo_model_to_repository(selected_abs)
+            if not final_model_path:
+                return
+            QMessageBox.information(
+                self,
+                "Model Imported",
+                f"Model imported to repository as:\n{os.path.basename(final_model_path)}",
+            )
 
-                    filename = os.path.basename(fp)
-                    dest_path = os.path.join(models_dir, filename)
+        self._refresh_yolo_model_combo(preferred_model_path=final_model_path)
+        self._set_yolo_model_selection(final_model_path)
 
-                    # Handle duplicate filenames
-                    if os.path.exists(dest_path):
-                        base, ext = os.path.splitext(filename)
-                        counter = 1
-                        while os.path.exists(dest_path):
-                            dest_path = os.path.join(
-                                models_dir, f"{base}_{counter}{ext}"
-                            )
-                            counter += 1
-
-                    try:
-                        shutil.copy2(fp, dest_path)
-                        fp = dest_path
-                        logger.info(f"Copied model to archive: {dest_path}")
-                        QMessageBox.information(
-                            self,
-                            "Model Copied",
-                            f"Model copied to archive as:\n{os.path.basename(dest_path)}",
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to copy model: {e}")
-                        QMessageBox.warning(
-                            self,
-                            "Copy Failed",
-                            f"Could not copy model to archive:\n{e}\n\nUsing original path.",
-                        )
-
-            # Store relative path if model is in archive (portable across devices)
-            self.yolo_custom_model_line.setText(make_model_path_relative(fp))
-
-    def toggle_histogram_window(self):
+    def toggle_histogram_window(self: object) -> object:
+        """toggle_histogram_window method documentation."""
         if self.histogram_window is None:
             if self.histogram_panel is None:
                 self.histogram_panel = HistogramPanel(
@@ -6737,7 +7102,8 @@ class MainWindow(QMainWindow):
         else:
             self.histogram_window.hide()
 
-    def toggle_preview(self, checked):
+    def toggle_preview(self: object, checked: object) -> object:
+        """toggle_preview method documentation."""
         if checked:
             # Warn user that preview doesn't save config
             msg = QMessageBox()
@@ -6767,7 +7133,8 @@ class MainWindow(QMainWindow):
             self.btn_preview.setText("Preview Mode")
             self.btn_start.setEnabled(True)
 
-    def toggle_tracking(self, checked):
+    def toggle_tracking(self: object, checked: object) -> object:
+        """toggle_tracking method documentation."""
         if checked:
             # If preview is active, stop it first
             if self.btn_preview.isChecked():
@@ -6789,7 +7156,8 @@ class MainWindow(QMainWindow):
         else:
             self.stop_tracking()
 
-    def toggle_debug_logging(self, checked):
+    def toggle_debug_logging(self: object, checked: object) -> object:
+        """toggle_debug_logging method documentation."""
         if checked:
             logger.setLevel(logging.DEBUG)
             logger.info("Debug logging enabled")
@@ -6836,10 +7204,11 @@ class MainWindow(QMainWindow):
             if hasattr(self, "_stored_preview_text") and self._stored_preview_text:
                 self.video_label.setText(self._stored_preview_text)
             elif not self.video_label.pixmap():
-                self.video_label.setText("Load a video to begin...")
+                self._show_video_logo_placeholder()
             self.video_label.setStyleSheet("color: #666; font-size: 16px;")
 
-    def start_full(self):
+    def start_full(self: object) -> object:
+        """start_full method documentation."""
         if self.btn_preview.isChecked():
             self.btn_preview.setChecked(False)
             self.btn_preview.setText("Preview Mode")
@@ -6856,7 +7225,8 @@ class MainWindow(QMainWindow):
 
         self.start_tracking(preview_mode=False)
 
-    def stop_tracking(self):
+    def stop_tracking(self: object) -> object:
+        """stop_tracking method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             self.tracking_worker.stop()
             self.progress_bar.setVisible(False)
@@ -6970,7 +7340,9 @@ class MainWindow(QMainWindow):
     def _set_video_interaction_enabled(self, enabled: bool):
         self._video_interactions_enabled = enabled
         self.slider_zoom.setEnabled(enabled)
-        self.scroll.setEnabled(enabled)
+        # Keep the viewport enabled so placeholder/logo rendering is not dimmed
+        # by disabled-widget styling (notably on macOS).
+        self.scroll.setEnabled(True)
         if not enabled:
             self.video_label.unsetCursor()
 
@@ -6987,6 +7359,50 @@ class MainWindow(QMainWindow):
                 "Real-time stats displayed below."
             )
             self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+
+    def _show_video_logo_placeholder(self):
+        """Show MAT logo in the video panel when no video is loaded."""
+        try:
+            project_root = Path(__file__).resolve().parents[3]
+            logo_path = project_root / "brand" / "multianimaltracker.svg"
+            vw = max(640, self.scroll.viewport().width())
+            vh = max(420, self.scroll.viewport().height())
+            canvas = QPixmap(vw, vh)
+            canvas.fill(QColor(0, 0, 0, 0))
+
+            renderer = QSvgRenderer(str(logo_path))
+            if renderer.isValid():
+                view_box = renderer.viewBoxF()
+                if view_box.isEmpty():
+                    default_size = renderer.defaultSize()
+                    view_box = QRectF(
+                        0,
+                        0,
+                        max(1, default_size.width()),
+                        max(1, default_size.height()),
+                    )
+
+                # Preserve source aspect ratio and size it prominently.
+                max_w = max(1, int(vw * 0.9))
+                max_h = max(1, int(vh * 0.8))
+                scale = min(max_w / view_box.width(), max_h / view_box.height())
+                logo_w = max(1, int(view_box.width() * scale))
+                logo_h = max(1, int(view_box.height() * scale))
+                x = (vw - logo_w) // 2
+                y = (vh - logo_h) // 2
+
+                painter = QPainter(canvas)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                renderer.render(painter, QRectF(x, y, logo_w, logo_h))
+                painter.end()
+                self.video_label.setPixmap(canvas)
+                self.video_label.setText("")
+                return
+        except Exception:
+            pass
+        self.video_label.setPixmap(QPixmap())
+        self.video_label.setText("Multi-Animal-Tracker\n\nLoad a video to begin...")
 
     def _is_visualization_enabled(self) -> bool:
         # Preview should always render frames regardless of visualization-free toggle
@@ -7017,8 +7433,6 @@ class MainWindow(QMainWindow):
                 self.btn_refresh_envs,
                 self.btn_open_xanylabeling,
                 self.btn_open_training_dialog,
-                self.line_pose_folder,
-                self.btn_browse_pose_folder,
                 self.btn_open_pose_label,
             ]
             self._set_interactive_widgets_enabled(
@@ -7029,6 +7443,7 @@ class MainWindow(QMainWindow):
             self.btn_start.setEnabled(False)
             self._set_video_interaction_enabled(False)
             self.g_video_player.setVisible(False)
+            self._show_video_logo_placeholder()
             return
 
         if state == "idle":
@@ -7167,16 +7582,19 @@ class MainWindow(QMainWindow):
         return result_copy
 
     @Slot(int, str)
-    def on_progress_update(self, percentage, status_text):
+    def on_progress_update(
+        self: object, percentage: object, status_text: object
+    ) -> object:
+        """on_progress_update method documentation."""
         self.progress_bar.setValue(percentage)
         self.progress_label.setText(status_text)
 
     @Slot(str, str)
-    def on_tracking_warning(self, title, message):
+    def on_tracking_warning(self: object, title: object, message: object) -> object:
         """Display tracking warnings in the UI."""
         QMessageBox.information(self, title, message)
 
-    def show_gpu_info(self):
+    def show_gpu_info(self: object) -> object:
         """Display GPU and acceleration information dialog."""
         from ..utils.gpu_utils import get_device_info
 
@@ -7237,7 +7655,7 @@ class MainWindow(QMainWindow):
         msg_box.exec()
 
     @Slot(dict)
-    def on_stats_update(self, stats):
+    def on_stats_update(self: object, stats: object) -> object:
         """Update real-time tracking statistics."""
         # Update FPS
         if "fps" in stats:
@@ -7274,7 +7692,8 @@ class MainWindow(QMainWindow):
             self.label_eta.setVisible(True)
 
     @Slot(np.ndarray)
-    def on_new_frame(self, rgb):
+    def on_new_frame(self: object, rgb: object) -> object:
+        """on_new_frame method documentation."""
         z = max(self.slider_zoom.value() / 100.0, 0.1)
         h, w, _ = rgb.shape
 
@@ -7326,7 +7745,9 @@ class MainWindow(QMainWindow):
         )
         return result_df
 
-    def save_trajectories_to_csv(self, trajectories, output_path):
+    def save_trajectories_to_csv(
+        self: object, trajectories: object, output_path: object
+    ) -> object:
         """Save processed trajectories to CSV.
 
         Args:
@@ -7404,10 +7825,11 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to save processed trajectories to {output_path}: {e}")
             return False
 
-    def merge_and_save_trajectories(self):
-        logger.info(f"=" * 80)
+    def merge_and_save_trajectories(self: object) -> object:
+        """merge_and_save_trajectories method documentation."""
+        logger.info("=" * 80)
         logger.info("Starting trajectory merging process...")
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
 
         forward_trajs = getattr(self, "forward_processed_trajs", None)
         backward_trajs = getattr(self, "backward_processed_trajs", None)
@@ -7467,7 +7889,7 @@ class MainWindow(QMainWindow):
         self.merge_worker.error_signal.connect(self.on_merge_error)
         self.merge_worker.start()
 
-    def on_merge_progress(self, value, message):
+    def on_merge_progress(self: object, value: object, message: object) -> object:
         """Update progress bar during merge."""
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
@@ -7496,7 +7918,15 @@ class MainWindow(QMainWindow):
         if roi_npz_path:
             logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
 
-    def on_merge_error(self, error_message):
+        if self.interp_worker is not None and not self.interp_worker.isRunning():
+            self.interp_worker.deleteLater()
+            self.interp_worker = None
+
+        if self._pending_finish_after_interp:
+            self._pending_finish_after_interp = False
+            self._finalize_tracking_session_ui()
+
+    def on_merge_error(self: object, error_message: object) -> object:
         """Handle merge errors."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -7505,7 +7935,7 @@ class MainWindow(QMainWindow):
         )
         logger.error(f"Trajectory merge error: {error_message}")
 
-    def on_merge_finished(self, resolved_trajectories):
+    def on_merge_finished(self: object, resolved_trajectories: object) -> object:
         """Handle completion of trajectory merging."""
         self.progress_label.setText("Saving merged trajectories...")
 
@@ -7568,7 +7998,7 @@ class MainWindow(QMainWindow):
 
         # Get video properties
         fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -7583,13 +8013,37 @@ class MainWindow(QMainWindow):
             return
 
         logger.info(f"Writing video: {frame_width}x{frame_height} @ {fps} FPS")
-        logger.info(f"Total frames: {total_frames}")
 
         # Get visualization parameters
         params = self.get_parameters_dict()
+        start_frame = int(params.get("START_FRAME", 0) or 0)
+        end_frame = params.get("END_FRAME", None)
+        if end_frame is None:
+            end_frame = total_video_frames - 1 if total_video_frames > 0 else 0
+        end_frame = int(end_frame)
+
+        # Clamp to video bounds and export only the tracked subset.
+        if total_video_frames > 0:
+            start_frame = max(0, min(start_frame, total_video_frames - 1))
+            end_frame = max(start_frame, min(end_frame, total_video_frames - 1))
+        total_frames = max(0, end_frame - start_frame + 1)
+        logger.info(
+            f"Exporting tracked frame range: {start_frame}-{end_frame} ({total_frames} frames)"
+        )
+
+        if total_frames <= 0:
+            logger.error("Invalid frame range for video generation.")
+            cap.release()
+            out.release()
+            self._finish_tracking_session(final_csv_path=csv_path)
+            return
+
+        # Seek once to the tracked start frame so we don't write unrelated frames.
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
         colors = params.get("TRAJECTORY_COLORS", [])
         reference_body_size = params.get("REFERENCE_BODY_SIZE", 30.0)
-        resize_factor = params.get("RESIZE_FACTOR", 1.0)
 
         # Get video visualization settings
         show_labels = self.check_show_labels.isChecked()
@@ -7630,8 +8084,9 @@ class MainWindow(QMainWindow):
                 traj_by_track[track_id] = []
             traj_by_track[track_id].append(row)
 
-        # Process video frame by frame
-        for frame_idx in range(total_frames):
+        # Process only the tracked frame range.
+        for rel_idx in range(total_frames):
+            frame_idx = start_frame + rel_idx
             ret, frame = cap.read()
             if not ret:
                 break
@@ -7750,8 +8205,8 @@ class MainWindow(QMainWindow):
             out.write(frame)
 
             # Update progress every 30 frames
-            if frame_idx % 30 == 0:
-                progress = int((frame_idx / total_frames) * 100)
+            if rel_idx % 30 == 0:
+                progress = int(((rel_idx + 1) / total_frames) * 100)
                 self.progress_bar.setValue(progress)
                 QApplication.processEvents()
 
@@ -7766,7 +8221,10 @@ class MainWindow(QMainWindow):
         self._finish_tracking_session(final_csv_path=csv_path)
 
     @Slot(bool, list, list)
-    def on_tracking_finished(self, finished_normally, fps_list, full_traj):
+    def on_tracking_finished(
+        self: object, finished_normally: object, fps_list: object, full_traj: object
+    ) -> object:
+        """on_tracking_finished method documentation."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
 
@@ -7829,9 +8287,9 @@ class MainWindow(QMainWindow):
 
                 if csv_to_process and os.path.exists(csv_to_process):
                     # Use CSV-based processing to preserve confidence columns
-                    from ..core.post_processing import (
-                        process_trajectories_from_csv,
+                    from ..core.post.processing import (
                         interpolate_trajectories,
+                        process_trajectories_from_csv,
                     )
 
                     processed_trajectories, stats = process_trajectories_from_csv(
@@ -7895,7 +8353,7 @@ class MainWindow(QMainWindow):
                     self.start_backward_tracking()
                 else:
                     # Forward-only mode: Apply interpolation here (no merge step)
-                    from ..core.post_processing import interpolate_trajectories
+                    from ..core.post.processing import interpolate_trajectories
 
                     interp_method = (
                         self.combo_interpolation_method.currentText().lower()
@@ -7938,6 +8396,10 @@ class MainWindow(QMainWindow):
                         self._generate_video_from_trajectories(
                             processed_trajectories, final_csv_path
                         )
+                        # _generate_video_from_trajectories() calls
+                        # _finish_tracking_session(), which already handles dataset
+                        # generation and cleanup. Avoid running post-finish logic twice.
+                        return
 
                     # Generate dataset if enabled (BEFORE cleanup so files are still available)
                     if self.chk_enable_dataset_gen.isChecked():
@@ -8027,8 +8489,16 @@ class MainWindow(QMainWindow):
 
         # Interpolate occlusions for individual dataset (post-pass)
         if self.chk_enable_individual_dataset.isChecked():
-            self._generate_interpolated_individual_crops(final_csv_path)
+            started = self._generate_interpolated_individual_crops(final_csv_path)
+            if started:
+                # Hold final UI/session completion until interpolation finishes.
+                self._pending_finish_after_interp = True
+                return
 
+        self._finalize_tracking_session_ui()
+
+    def _finalize_tracking_session_ui(self):
+        """Finalize session cleanup and return UI to idle state."""
         # Clean up session logging
         self._cleanup_session_logging()
         self._cleanup_temporary_files()
@@ -8049,7 +8519,7 @@ class MainWindow(QMainWindow):
         """Post-pass interpolation for occluded segments in individual dataset."""
         try:
             if not self.chk_individual_interpolate.isChecked():
-                return
+                return False
 
             target_csv = None
             if csv_path and os.path.exists(csv_path):
@@ -8057,11 +8527,11 @@ class MainWindow(QMainWindow):
             elif self.csv_line.text() and os.path.exists(self.csv_line.text()):
                 target_csv = self.csv_line.text()
             if not target_csv or not os.path.exists(target_csv):
-                return
+                return False
 
             video_path = self.file_line.text()
             if not video_path or not os.path.exists(video_path):
-                return
+                return False
 
             params = self.get_parameters_dict()
 
@@ -8070,11 +8540,14 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(0)
             self.progress_label.setText("Interpolating occluded crops...")
 
-            if hasattr(self, "interp_worker") and self.interp_worker is not None:
-                try:
-                    self.interp_worker.quit()
-                except Exception:
-                    pass
+            if self.interp_worker is not None and self.interp_worker.isRunning():
+                logger.warning(
+                    "Interpolated crop generation already in progress; skipping duplicate request."
+                )
+                return True
+            if self.interp_worker is not None and not self.interp_worker.isRunning():
+                self.interp_worker.deleteLater()
+                self.interp_worker = None
 
             self.interp_worker = InterpolatedCropsWorker(
                 target_csv,
@@ -8087,8 +8560,10 @@ class MainWindow(QMainWindow):
                 self._on_interpolated_crops_finished
             )
             self.interp_worker.start()
+            return True
         except Exception as e:
             logger.warning(f"Interpolated individual crops failed: {e}")
+            return False
 
     def _interp_angle(self, theta_start, theta_end, t):
         deg0 = math.degrees(theta_start)
@@ -8145,7 +8620,8 @@ class MainWindow(QMainWindow):
         return None, None
 
     @Slot(dict)
-    def on_histogram_data(self, histogram_data):
+    def on_histogram_data(self: object, histogram_data: object) -> object:
+        """on_histogram_data method documentation."""
         if (
             self.enable_histograms.isChecked()
             and self.histogram_window is not None
@@ -8169,10 +8645,11 @@ class MainWindow(QMainWindow):
                     histogram_data["assignment_costs"]
                 )
 
-    def start_backward_tracking(self):
-        logger.info(f"=" * 80)
+    def start_backward_tracking(self: object) -> object:
+        """start_backward_tracking method documentation."""
+        logger.info("=" * 80)
         logger.info("Starting backward tracking pass (using cached detections)...")
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
 
         video_fp = self.file_line.text()
         if not video_fp:
@@ -8190,8 +8667,10 @@ class MainWindow(QMainWindow):
         # Start backward tracking directly on original video with cached detections
         self.start_tracking_on_video(video_fp, backward_mode=True)
 
-    def start_tracking(self, preview_mode: bool, backward_mode: bool = False):
-        # Only save config when NOT in preview mode
+    def start_tracking(
+        self: object, preview_mode: bool, backward_mode: bool = False
+    ) -> object:
+        """start_tracking method documentation."""
         if not preview_mode:
             if not self.save_config():
                 # User cancelled config save, abort tracking
@@ -8205,7 +8684,8 @@ class MainWindow(QMainWindow):
         else:
             self.start_tracking_on_video(video_fp, backward_mode=False)
 
-    def start_preview_on_video(self, video_path):
+    def start_preview_on_video(self: object, video_path: object) -> object:
+        """start_preview_on_video method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
 
@@ -8244,7 +8724,10 @@ class MainWindow(QMainWindow):
         self._apply_ui_state("preview")
         self.tracking_worker.start()
 
-    def start_tracking_on_video(self, video_path, backward_mode=False):
+    def start_tracking_on_video(
+        self: object, video_path: object, backward_mode: object = False
+    ) -> object:
+        """start_tracking_on_video method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
 
@@ -8308,51 +8791,177 @@ class MainWindow(QMainWindow):
         # Cache is always created for forward tracking to allow reuse on reruns
         detection_cache_path = None
         params = self.get_parameters_dict()
-        detection_method = params.get("DETECTION_METHOD", "background_subtraction")
-        advanced_config = params.get("ADVANCED_CONFIG", {})
-        yolo_batching_enabled = detection_method == "yolo_obb" and advanced_config.get(
-            "enable_yolo_batching", True
+        logger.info(
+            f"Launching {'backward' if backward_mode else 'forward'} tracking for frame range "
+            f"{params.get('START_FRAME')}..{params.get('END_FRAME')}"
         )
+        detection_method = params.get("DETECTION_METHOD", "background_subtraction")
         use_cached_detections = self.chk_use_cached_detections.isChecked()
 
         # Generate model-specific cache name
-        def get_cache_model_id():
+        def get_cache_model_id() -> object:
             """Generate a unique identifier for the current detection configuration."""
             # Include resize factor in cache ID since detections are scale-dependent
             resize_factor = params.get("RESIZE_FACTOR", 1.0)
-            resize_str = f"r{int(resize_factor*100)}"
+            resize_str = f"r{int(resize_factor * 100)}"
+
+            def normalize_for_hash(value: object) -> object:
+                """Convert values to deterministic, JSON-safe forms for hashing."""
+                if isinstance(value, np.ndarray):
+                    arr = np.ascontiguousarray(value)
+                    return {
+                        "type": "ndarray",
+                        "dtype": str(arr.dtype),
+                        "shape": list(arr.shape),
+                        "digest": hashlib.md5(arr.tobytes()).hexdigest(),
+                    }
+                if isinstance(value, np.integer):
+                    return int(value)
+                if isinstance(value, np.floating):
+                    if np.isnan(value):
+                        return "NaN"
+                    if np.isinf(value):
+                        return "Infinity" if value > 0 else "-Infinity"
+                    return float(value)
+                if isinstance(value, np.bool_):
+                    return bool(value)
+                if isinstance(value, Path):
+                    return str(value)
+                if isinstance(value, dict):
+                    return {
+                        str(k): normalize_for_hash(v)
+                        for k, v in sorted(value.items(), key=lambda item: str(item[0]))
+                    }
+                if isinstance(value, (list, tuple)):
+                    return [normalize_for_hash(v) for v in value]
+                return value
+
+            def extract_hash_params(keys: object) -> object:
+                return {k: normalize_for_hash(params.get(k)) for k in keys}
+
+            def get_model_fingerprint(model_path: object) -> object:
+                configured = str(model_path or "")
+                resolved = str(resolve_model_path(configured))
+                fingerprint = {
+                    "configured_path": configured,
+                    "resolved_path": resolved,
+                }
+                if resolved and os.path.exists(resolved):
+                    try:
+                        stat = os.stat(resolved)
+                        fingerprint["size_bytes"] = stat.st_size
+                        fingerprint["mtime_ns"] = stat.st_mtime_ns
+                    except OSError:
+                        fingerprint["size_bytes"] = None
+                        fingerprint["mtime_ns"] = None
+                else:
+                    fingerprint["size_bytes"] = None
+                    fingerprint["mtime_ns"] = None
+                return fingerprint
+
+            # Common detection settings that affect detections for both methods.
+            common_detection_keys = (
+                "DETECTION_METHOD",
+                "RESIZE_FACTOR",
+                "MAX_TARGETS",
+                "MAX_CONTOUR_MULTIPLIER",
+                "ENABLE_SIZE_FILTERING",
+                "MIN_OBJECT_SIZE",
+                "MAX_OBJECT_SIZE",
+                "ROI_MASK",
+            )
 
             if detection_method == "yolo_obb":
                 yolo_model = params.get("YOLO_MODEL_PATH", "best.pt")
-                model_name = os.path.basename(yolo_model)
+                model_fingerprint = get_model_fingerprint(yolo_model)
+                model_name = os.path.basename(
+                    model_fingerprint["resolved_path"]
+                    or model_fingerprint["configured_path"]
+                )
+                model_stem = os.path.splitext(model_name)[0] or "model"
+                safe_model_stem = "".join(
+                    c if c.isalnum() or c in ("_", "-") else "_" for c in model_stem
+                )
+
+                yolo_detection_keys = (
+                    "YOLO_CONFIDENCE_THRESHOLD",
+                    "YOLO_IOU_THRESHOLD",
+                    "USE_CUSTOM_OBB_IOU_FILTERING",
+                    "YOLO_TARGET_CLASSES",
+                    "YOLO_DEVICE",
+                    "ENABLE_TENSORRT",
+                    "TENSORRT_MAX_BATCH_SIZE",
+                )
                 cache_params = {
-                    "model": model_name,
-                    "conf": params.get("YOLO_CONFIDENCE_THRESHOLD"),
-                    "iou": params.get("YOLO_IOU_THRESHOLD"),
-                    "classes": params.get("YOLO_TARGET_CLASSES"),
-                    "device": params.get("YOLO_DEVICE"),
+                    "common": extract_hash_params(common_detection_keys),
+                    "yolo": extract_hash_params(yolo_detection_keys),
+                    "model": normalize_for_hash(model_fingerprint),
                 }
+                # Class order should not change cache identity.
+                classes = cache_params["yolo"].get("YOLO_TARGET_CLASSES")
+                if classes is not None:
+                    if isinstance(classes, str):
+                        raw_classes = [
+                            c.strip() for c in classes.split(",") if c.strip()
+                        ]
+                    elif isinstance(classes, (list, tuple)):
+                        raw_classes = list(classes)
+                    else:
+                        raw_classes = [classes]
+                    try:
+                        cache_params["yolo"]["YOLO_TARGET_CLASSES"] = sorted(
+                            int(c) for c in raw_classes
+                        )
+                    except (TypeError, ValueError):
+                        cache_params["yolo"]["YOLO_TARGET_CLASSES"] = sorted(
+                            str(c) for c in raw_classes
+                        )
+
                 h = hashlib.md5(
                     json.dumps(cache_params, sort_keys=True).encode("utf-8")
-                ).hexdigest()[:8]
-                return f"yolo_{model_name.replace('.pt', '')}_{resize_str}_{h}"
-            else:
-                cache_params = {
-                    "learning_rate": params.get("BACKGROUND_LEARNING_RATE"),
-                    "prime_frames": params.get("BACKGROUND_PRIME_FRAMES"),
-                    "dark_on_light": params.get("DARK_ON_LIGHT_BACKGROUND"),
-                    "adaptive": params.get("ENABLE_ADAPTIVE_BACKGROUND"),
-                    "gpu": params.get("ENABLE_GPU_BACKGROUND"),
-                    "min_detections": params.get("MIN_DETECTIONS_TO_START"),
-                    "min_counts": params.get("MIN_DETECTION_COUNTS"),
-                }
-                h = hashlib.md5(
-                    json.dumps(cache_params, sort_keys=True).encode("utf-8")
-                ).hexdigest()[:8]
-                return f"bgsub_{resize_str}_{h}"
+                ).hexdigest()[:12]
+                return f"yolo_{safe_model_stem}_{resize_str}_{h}"
+
+            bg_detection_keys = (
+                "BACKGROUND_PRIME_FRAMES",
+                "ENABLE_ADAPTIVE_BACKGROUND",
+                "BACKGROUND_LEARNING_RATE",
+                "ENABLE_GPU_BACKGROUND",
+                "GPU_DEVICE_ID",
+                "THRESHOLD_VALUE",
+                "MORPH_KERNEL_SIZE",
+                "ENABLE_ADDITIONAL_DILATION",
+                "DILATION_ITERATIONS",
+                "DILATION_KERNEL_SIZE",
+                "BRIGHTNESS",
+                "CONTRAST",
+                "GAMMA",
+                "DARK_ON_LIGHT_BACKGROUND",
+                "ENABLE_LIGHTING_STABILIZATION",
+                "LIGHTING_SMOOTH_FACTOR",
+                "LIGHTING_MEDIAN_WINDOW",
+                "ENABLE_CONSERVATIVE_SPLIT",
+                "MERGE_AREA_THRESHOLD",
+                "CONSERVATIVE_KERNEL_SIZE",
+                "CONSERVATIVE_ERODE_ITER",
+                "MIN_CONTOUR_AREA",
+                "MIN_DETECTIONS_TO_START",
+                "MIN_DETECTION_COUNTS",
+            )
+            cache_params = {
+                "common": extract_hash_params(common_detection_keys),
+                "background_subtraction": extract_hash_params(bg_detection_keys),
+            }
+            h = hashlib.md5(
+                json.dumps(cache_params, sort_keys=True).encode("utf-8")
+            ).hexdigest()[:12]
+            return f"bgsub_{resize_str}_{h}"
 
         base_name = os.path.splitext(video_path)[0]
         model_id = get_cache_model_id()
+        # Share the exact detection hash with downstream detector code so
+        # TensorRT engine cache invalidation matches detection cache invalidation.
+        params["DETECTION_CACHE_MODEL_ID"] = model_id
         base_prefix = os.path.basename(base_name) + "_detection_cache_"
 
         # Choose a writable directory for cache (prefer video dir, then CSV dir, else temp)
@@ -8383,7 +8992,7 @@ class MainWindow(QMainWindow):
             preview_mode=False,  # Full tracking mode - batching enabled if applicable
             use_cached_detections=use_cached_detections,
         )
-        self.tracking_worker.set_parameters(self.get_parameters_dict())
+        self.tracking_worker.set_parameters(params)
         self.parameters_changed.connect(self.tracking_worker.update_parameters)
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
@@ -8403,7 +9012,8 @@ class MainWindow(QMainWindow):
         self._apply_ui_state("tracking")
         self.tracking_worker.start()
 
-    def get_parameters_dict(self):
+    def get_parameters_dict(self: object) -> object:
+        """get_parameters_dict method documentation."""
         N = self.spin_max_targets.value()
         np.random.seed(42)
         colors = [tuple(c.tolist()) for c in np.random.randint(0, 255, (N, 3))]
@@ -8414,11 +9024,9 @@ class MainWindow(QMainWindow):
             else "yolo_obb"
         )
 
-        yolo_path = "yolo26s-obb.pt"
-        if self.combo_yolo_model.currentText() == "Custom Model...":
-            yolo_path = self.yolo_custom_model_line.text() or "yolo26s-obb.pt"
-        else:
-            yolo_path = self.combo_yolo_model.currentText().split(" ")[0]
+        yolo_path = resolve_model_path(
+            self._get_selected_yolo_model_path() or "yolo26s-obb.pt"
+        )
 
         yolo_cls = None
         if self.line_yolo_classes.text().strip():
@@ -8426,7 +9034,7 @@ class MainWindow(QMainWindow):
                 yolo_cls = [
                     int(x.strip()) for x in self.line_yolo_classes.text().split(",")
                 ]
-            except:
+            except ValueError:
                 pass
 
         # Calculate actual pixel values from body-size multipliers
@@ -8478,17 +9086,14 @@ class MainWindow(QMainWindow):
             "ADVANCED_CONFIG": advanced_config,  # Include advanced config for batch optimization
             "DETECTION_METHOD": det_method,
             "FPS": fps,  # Acquisition frame rate
-            "START_FRAME": (
-                self.spin_start_frame.value()
-                if self.spin_start_frame.isEnabled()
-                else 0
-            ),
-            "END_FRAME": (
-                self.spin_end_frame.value() if self.spin_end_frame.isEnabled() else None
-            ),
+            # Keep selected frame range stable even when controls are disabled
+            # during tracking/backward pass.
+            "START_FRAME": self.spin_start_frame.value(),
+            "END_FRAME": self.spin_end_frame.value(),
             "YOLO_MODEL_PATH": yolo_path,
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
+            "USE_CUSTOM_OBB_IOU_FILTERING": self.chk_use_custom_obb_iou.isChecked(),
             "YOLO_TARGET_CLASSES": yolo_cls,
             "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
             "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[0]
@@ -8631,7 +9236,7 @@ class MainWindow(QMainWindow):
             "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
         }
 
-    def load_config(self):
+    def load_config(self: object) -> object:
         """Manually load config from file dialog."""
         config_path, _ = QFileDialog.getOpenFileName(
             self, "Load Configuration", "", "JSON Files (*.json)"
@@ -8659,7 +9264,9 @@ class MainWindow(QMainWindow):
         if not os.path.isfile(config_path):
             return
 
-        def get_cfg(new_key, *legacy_keys, default=None):
+        def get_cfg(
+            new_key: object, *legacy_keys: object, default: object = None
+        ) -> object:
             """Helper to get config value with fallback to legacy keys."""
             if new_key in cfg:
                 return cfg[new_key]
@@ -8837,23 +9444,21 @@ class MainWindow(QMainWindow):
                         f"{get_models_directory()}",
                     )
 
-            # Try to find model in combo box
-            found = False
-            for i in range(self.combo_yolo_model.count() - 1):
-                if self.combo_yolo_model.itemText(i).startswith(yolo_model):
-                    self.combo_yolo_model.setCurrentIndex(i)
-                    found = True
-                    break
-            if not found:
-                # Model not in dropdown, use custom model
-                self.combo_yolo_model.setCurrentIndex(self.combo_yolo_model.count() - 1)
-                # Always update custom model line with resolved path
-                self.yolo_custom_model_line.setText(resolved_yolo_model)
+            # Refresh model combo from repository and apply selection
+            self._refresh_yolo_model_combo(preferred_model_path=yolo_model)
+            if self._get_selected_yolo_model_path() != make_model_path_relative(
+                yolo_model
+            ):
+                # Fall back to resolved path when the configured relative path cannot be matched
+                self._set_yolo_model_selection(resolved_yolo_model)
 
             self.spin_yolo_confidence.setValue(
                 get_cfg("yolo_confidence_threshold", default=0.25)
             )
             self.spin_yolo_iou.setValue(get_cfg("yolo_iou_threshold", default=0.7))
+            self.chk_use_custom_obb_iou.setChecked(
+                get_cfg("use_custom_obb_iou_filtering", default=False)
+            )
             yolo_cls = get_cfg("yolo_target_classes", default=None)
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
@@ -9269,12 +9874,12 @@ class MainWindow(QMainWindow):
             logger.warning(f"Failed to load configuration: {e}")
 
     def save_config(
-        self,
-        preset_mode=False,
-        preset_path=None,
-        preset_name=None,
-        preset_description=None,
-    ):
+        self: object,
+        preset_mode: object = False,
+        preset_path: object = None,
+        preset_name: object = None,
+        preset_description: object = None,
+    ) -> object:
         """Save current configuration to JSON file.
 
         Args:
@@ -9286,11 +9891,7 @@ class MainWindow(QMainWindow):
         Returns:
             bool: True if config was saved successfully, False if cancelled or failed
         """
-        yolo_path = (
-            self.yolo_custom_model_line.text()
-            if self.combo_yolo_model.currentText() == "Custom Model..."
-            else self.combo_yolo_model.currentText().split(" ")[0]
-        )
+        yolo_path = self._get_selected_yolo_model_path()
         yolo_cls = (
             [int(x.strip()) for x in self.line_yolo_classes.text().split(",")]
             if self.line_yolo_classes.text().strip()
@@ -9383,9 +9984,16 @@ class MainWindow(QMainWindow):
                 "yolo_model_path": make_model_path_relative(yolo_path),
                 "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
                 "yolo_iou_threshold": self.spin_yolo_iou.value(),
+                "use_custom_obb_iou_filtering": self.chk_use_custom_obb_iou.isChecked(),
                 "yolo_target_classes": yolo_cls,
             }
         )
+        yolo_meta = get_yolo_model_metadata(yolo_path) or {}
+        if yolo_meta:
+            cfg["yolo_model_size"] = yolo_meta.get("size", "")
+            cfg["yolo_model_species"] = yolo_meta.get("species", "")
+            cfg["yolo_model_info"] = yolo_meta.get("model_info", "")
+            cfg["yolo_model_added_at"] = yolo_meta.get("added_at", "")
 
         # === DEVICE-SPECIFIC SETTINGS ===
         # Skip device selection when saving as preset
@@ -9661,7 +10269,7 @@ class MainWindow(QMainWindow):
                 try:
                     if "tmp_path" in locals() and os.path.exists(tmp_path):
                         os.remove(tmp_path)
-                except:
+                except OSError:
                     pass
                 return False
         else:
@@ -9678,9 +10286,9 @@ class MainWindow(QMainWindow):
 
         # Only set up logging if not already set up
         if self.session_log_handler is not None:
-            logger.info(f"=" * 80)
-            logger.info(f"Session log already active, continuing...")
-            logger.info(f"=" * 80)
+            logger.info("=" * 80)
+            logger.info("Session log already active, continuing...")
+            logger.info("=" * 80)
             return
 
         # Create log file next to the video
@@ -9702,11 +10310,11 @@ class MainWindow(QMainWindow):
         root_logger = logging.getLogger()
         root_logger.addHandler(self.session_log_handler)
 
-        logger.info(f"=" * 80)
-        logger.info(f"TRACKING SESSION STARTED")
+        logger.info("=" * 80)
+        logger.info("TRACKING SESSION STARTED")
         logger.info(f"Session log: {log_path}")
         logger.info(f"Video: {video_path}")
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
 
     def _cleanup_session_logging(self):
         """Remove session log handler from root logger."""
@@ -9724,6 +10332,17 @@ class MainWindow(QMainWindow):
         """Generate training dataset from tracking results for active learning."""
         try:
             logger.info("Starting training dataset generation...")
+
+            # Prevent launching overlapping dataset threads; this can lead to
+            # QThread destruction while still running if references are replaced.
+            if self.dataset_worker is not None and self.dataset_worker.isRunning():
+                logger.warning(
+                    "Dataset generation already in progress; skipping duplicate request."
+                )
+                return
+            if self.dataset_worker is not None and not self.dataset_worker.isRunning():
+                self.dataset_worker.deleteLater()
+                self.dataset_worker = None
 
             # Validate parameters
             dataset_name = self.line_dataset_name.text().strip()
@@ -9801,6 +10420,9 @@ class MainWindow(QMainWindow):
             self.dataset_worker.progress_signal.connect(self.on_dataset_progress)
             self.dataset_worker.finished_signal.connect(self.on_dataset_finished)
             self.dataset_worker.error_signal.connect(self.on_dataset_error)
+            self.dataset_worker.finished.connect(
+                self._on_dataset_worker_thread_finished
+            )
             self.dataset_worker.start()
 
         except Exception as e:
@@ -9811,12 +10433,14 @@ class MainWindow(QMainWindow):
                 f"Failed to generate dataset:\n{str(e)}",
             )
 
-    def on_dataset_progress(self, value, message):
+    def on_dataset_progress(self: object, value: object, message: object) -> object:
         """Update progress bar during dataset generation."""
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
 
-    def on_dataset_finished(self, dataset_dir, num_frames):
+    def on_dataset_finished(
+        self: object, dataset_dir: object, num_frames: object
+    ) -> object:
         """Handle dataset generation completion."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -9836,7 +10460,7 @@ class MainWindow(QMainWindow):
             "Use 'Open Dataset in X-AnyLabeling' to review annotations.",
         )
 
-    def on_dataset_error(self, error_message):
+    def on_dataset_error(self: object, error_message: object) -> object:
         """Handle dataset generation errors."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -9847,6 +10471,12 @@ class MainWindow(QMainWindow):
             "Dataset Generation Error",
             f"Failed to generate dataset:\n{error_message}",
         )
+
+    def _on_dataset_worker_thread_finished(self):
+        """Release completed dataset worker safely."""
+        if self.dataset_worker is not None and not self.dataset_worker.isRunning():
+            self.dataset_worker.deleteLater()
+            self.dataset_worker = None
 
     def _cleanup_temporary_files(self):
         """Remove temporary files if cleanup is enabled."""
@@ -9980,7 +10610,7 @@ class MainWindow(QMainWindow):
                 self.preset_description_label.setVisible(True)
             else:
                 self.preset_description_label.setVisible(False)
-        except:
+        except (OSError, json.JSONDecodeError):
             self.preset_description_label.setVisible(False)
 
     def _populate_preset_combo(self):
@@ -10069,14 +10699,14 @@ class MainWindow(QMainWindow):
         dialog_layout = QVBoxLayout(dialog)
 
         # Name input
-        name_label = QLabel("Preset Name (e.g., 'Danio rerio (Zebrafish)'):")
+        name_label = QLabel("Preset name (e.g., danio rerio / zebrafish)")
         name_label.setStyleSheet("color: #fff; font-weight: bold;")
         name_input = QLineEdit()
         name_input.setPlaceholderText("Scientific Name (Common Name)")
         name_input.setText("Custom")
 
         # Description input
-        desc_label = QLabel("Description (optional):")
+        desc_label = QLabel("Description (optional)")
         desc_label.setStyleSheet("color: #fff; font-weight: bold; margin-top: 10px;")
         desc_input = QTextEdit()
         desc_input.setPlaceholderText(
@@ -10360,7 +10990,7 @@ class MainWindow(QMainWindow):
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Information)
             msg.setWindowTitle("ROI Optimization Opportunity")
-            msg.setText(f"⚡ Performance Optimization Available")
+            msg.setText("⚡ Performance Optimization Available")
             msg.setInformativeText(
                 f"Your ROI covers only {coverage:.1f}% of the video frame.\\n\\n"
                 f"Cropping the video to the ROI bounding box could provide\\n"
@@ -10387,7 +11017,7 @@ class MainWindow(QMainWindow):
                 self._save_advanced_config()
                 self.roi_crop_warning_shown = True
 
-    def crop_video_to_roi(self):
+    def crop_video_to_roi(self: object) -> object:
         """Crop the video to the ROI bounding box and save as new file."""
         if self.roi_mask is None:
             QMessageBox.warning(self, "No ROI", "Please define an ROI before cropping.")
@@ -10712,7 +11342,8 @@ class MainWindow(QMainWindow):
             # Clean up
             del self._crop_process
 
-    def plot_fps(self, fps_list):
+    def plot_fps(self: object, fps_list: object) -> object:
+        """plot_fps method documentation."""
         if len(fps_list) < 2:
             return
         plt.figure()
