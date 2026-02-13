@@ -392,3 +392,6 @@ training/YOLO-obb/training_runs/combined_dataset*
 
 # sleap files
 **/*.slp
+
+# ruff cache
+.ruff_cache

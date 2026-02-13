@@ -204,17 +204,19 @@ def _build_frame_lookup(traj_df, require_valid_x=False):
     if traj_df is None or traj_df.empty:
         return {}
 
-    records = traj_df.to_dict("records")
-    frames = traj_df["FrameID"].tolist()
+    columns = list(traj_df.columns)
+    col_arrays = {col: traj_df[col].to_numpy(copy=False) for col in columns}
+    frames = col_arrays["FrameID"]
+    n_rows = len(traj_df)
 
-    if not require_valid_x:
-        return {frames[i]: records[i] for i in range(len(frames))}
+    if require_valid_x and "X" in col_arrays:
+        valid_positions = np.flatnonzero(~pd.isna(col_arrays["X"]))
+    else:
+        valid_positions = range(n_rows)
 
-    x_values = traj_df["X"].values
     lookup = {}
-    for i in range(len(frames)):
-        if not pd.isna(x_values[i]):
-            lookup[frames[i]] = records[i]
+    for i in valid_positions:
+        lookup[frames[i]] = {col: col_arrays[col][i] for col in columns}
     return lookup
 
 
@@ -251,22 +253,29 @@ def _find_merge_candidates_python(
             bwd_x = bwd["X"].values
             bwd_y = bwd["Y"].values
 
-            # Count agreeing frames using vectorized operations
-            agreeing_frames = 0
-            for frame in common_frames:
-                fi_idx = fwd_frame_to_idx[frame]
-                bi_idx = bwd_frame_to_idx[frame]
+            # Count agreeing frames using vectorized operations.
+            common_frames_list = list(common_frames)
+            fi_indices = np.fromiter(
+                (fwd_frame_to_idx[f] for f in common_frames_list), dtype=np.int64
+            )
+            bi_indices = np.fromiter(
+                (bwd_frame_to_idx[f] for f in common_frames_list), dtype=np.int64
+            )
 
-                fx, fy = fwd_x[fi_idx], fwd_y[fi_idx]
-                bx, by = bwd_x[bi_idx], bwd_y[bi_idx]
+            fx = fwd_x[fi_indices]
+            fy = fwd_y[fi_indices]
+            bx = bwd_x[bi_indices]
+            by = bwd_y[bi_indices]
 
-                # Skip if either has NaN positions
-                if np.isnan(fx) or np.isnan(bx):
-                    continue
+            # Skip pairs where either trajectory has NaN X.
+            valid_mask = (~np.isnan(fx)) & (~np.isnan(bx))
+            if not np.any(valid_mask):
+                continue
 
-                dist = np.sqrt((fx - bx) ** 2 + (fy - by) ** 2)
-                if dist <= agreement_distance:
-                    agreeing_frames += 1
+            dx = fx[valid_mask] - bx[valid_mask]
+            dy = fy[valid_mask] - by[valid_mask]
+            dist = np.sqrt(dx * dx + dy * dy)
+            agreeing_frames = int(np.count_nonzero(dist <= agreement_distance))
 
             if agreeing_frames >= min_overlap:
                 merge_candidates.append((fi, bi, agreeing_frames, len(common_frames)))
@@ -997,54 +1006,59 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
     t1_by_frame = _build_frame_lookup(traj1, require_valid_x=False)
     t2_by_frame = _build_frame_lookup(traj2, require_valid_x=False)
 
-    frames1 = set(traj1["FrameID"])
-    frames2 = set(traj2["FrameID"])
+    frames1 = set(t1_by_frame.keys())
+    frames2 = set(t2_by_frame.keys())
     all_frames = sorted(frames1.union(frames2))
-    common_frames = frames1.intersection(frames2)
-
-    # Classify each frame
-    # Returns: ("agree", merged_row), ("disagree", (r1, r2)), ("t1_only", row), ("t2_only", row)
-    frame_classifications = {}
-
-    for frame in all_frames:
-        if frame in common_frames:
-            r1, r2 = t1_by_frame[frame], t2_by_frame[frame]
-
-            # Handle NaN positions
-            x1_valid = not pd.isna(r1.get("X"))
-            x2_valid = not pd.isna(r2.get("X"))
-
-            if not x1_valid and not x2_valid:
-                # Both NaN, treat as agree with averaged metadata
-                merged = _average_trajectory_rows(r1, r2)
-                frame_classifications[frame] = ("agree", merged)
-            elif not x1_valid:
-                frame_classifications[frame] = ("t2_only", r2)
-            elif not x2_valid:
-                frame_classifications[frame] = ("t1_only", r1)
-            else:
-                dist = np.sqrt((r1["X"] - r2["X"]) ** 2 + (r1["Y"] - r2["Y"]) ** 2)
-                if dist <= agreement_distance:
-                    merged = _average_trajectory_rows(r1, r2)
-                    frame_classifications[frame] = ("agree", merged)
-                else:
-                    frame_classifications[frame] = ("disagree", (r1, r2))
-        elif frame in frames1:
-            frame_classifications[frame] = ("t1_only", t1_by_frame[frame])
-        else:
-            frame_classifications[frame] = ("t2_only", t2_by_frame[frame])
 
     # Build trajectory segments using state machine
     # State: "merged" = building single merged segment
     #        "split" = building two parallel segments (after disagreement)
-    result_segments = []
+    result_segments_rows = []
     state = "merged"
     current_segment = []
     split_t1_segment = []
     split_t2_segment = []
 
+    def _append_if_long(segment_rows):
+        if len(segment_rows) >= min_length:
+            result_segments_rows.append(segment_rows)
+
     for frame in all_frames:
-        classification, data = frame_classifications[frame]
+        in_t1 = frame in t1_by_frame
+        in_t2 = frame in t2_by_frame
+
+        if in_t1 and in_t2:
+            r1 = t1_by_frame[frame]
+            r2 = t2_by_frame[frame]
+
+            x1_valid = not pd.isna(r1.get("X"))
+            x2_valid = not pd.isna(r2.get("X"))
+
+            if not x1_valid and not x2_valid:
+                classification = "agree"
+                data = _average_trajectory_rows(r1, r2)
+            elif not x1_valid:
+                classification = "t2_only"
+                data = r2
+            elif not x2_valid:
+                classification = "t1_only"
+                data = r1
+            else:
+                dx = r1["X"] - r2["X"]
+                dy = r1["Y"] - r2["Y"]
+                dist = np.sqrt(dx * dx + dy * dy)
+                if dist <= agreement_distance:
+                    classification = "agree"
+                    data = _average_trajectory_rows(r1, r2)
+                else:
+                    classification = "disagree"
+                    data = (r1, r2)
+        elif in_t1:
+            classification = "t1_only"
+            data = t1_by_frame[frame]
+        else:
+            classification = "t2_only"
+            data = t2_by_frame[frame]
 
         if state == "merged":
             if classification == "agree":
@@ -1055,8 +1069,7 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
                 current_segment.append(data)
             elif classification == "disagree":
                 # End current merged segment and start split
-                if len(current_segment) >= min_length:
-                    result_segments.append(pd.DataFrame(current_segment))
+                _append_if_long(current_segment)
                 current_segment = []
 
                 # Start split segments
@@ -1068,10 +1081,8 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
         elif state == "split":
             if classification == "agree":
                 # End split, save segments, start new merged segment
-                if len(split_t1_segment) >= min_length:
-                    result_segments.append(pd.DataFrame(split_t1_segment))
-                if len(split_t2_segment) >= min_length:
-                    result_segments.append(pd.DataFrame(split_t2_segment))
+                _append_if_long(split_t1_segment)
+                _append_if_long(split_t2_segment)
                 split_t1_segment = []
                 split_t2_segment = []
 
@@ -1093,24 +1104,21 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
 
     # Finalize remaining segments
     if state == "merged":
-        if len(current_segment) >= min_length:
-            result_segments.append(pd.DataFrame(current_segment))
+        _append_if_long(current_segment)
     elif state == "split":
-        if len(split_t1_segment) >= min_length:
-            result_segments.append(pd.DataFrame(split_t1_segment))
-        if len(split_t2_segment) >= min_length:
-            result_segments.append(pd.DataFrame(split_t2_segment))
+        _append_if_long(split_t1_segment)
+        _append_if_long(split_t2_segment)
 
     # Further split any segments with large gaps OR spatial jumps
     max_spatial_jump = agreement_distance * 5  # ~50px for 9.62 agreement_distance
     final_segments = []
-    for seg in result_segments:
-        if seg.empty:
+    for seg_rows in result_segments_rows:
+        if not seg_rows:
             continue
-        sub_segments = _split_dataframe_into_segments(
-            seg, max_gap=5, max_spatial_jump=max_spatial_jump
+        sub_segments_rows = _split_rows_into_segments(
+            seg_rows, max_gap=5, max_spatial_jump=max_spatial_jump
         )
-        final_segments.extend(sub_segments)
+        final_segments.extend(pd.DataFrame(seg) for seg in sub_segments_rows if seg)
 
     return final_segments
 
@@ -2219,20 +2227,25 @@ def _clean_trajectory(traj_df):
     if "State" not in traj_df.columns:
         return traj_df
 
-    # Check if all states are occluded/lost (no valid detections)
-    valid_states = ~traj_df["State"].isin(["occluded", "lost"])
-    if not valid_states.any():
+    state_values = traj_df["State"].to_numpy(copy=False)
+    invalid_mask = (state_values == "occluded") | (state_values == "lost")
+
+    # Fast-path: no leading/trailing invalid states to trim.
+    if not invalid_mask.any():
+        return traj_df
+
+    valid_positions = np.flatnonzero(~invalid_mask)
+    if len(valid_positions) == 0:
         return None
 
-    # Find first and last valid detections
-    valid_indices = traj_df[valid_states].index
-    first_valid_idx = valid_indices[0]
-    last_valid_idx = valid_indices[-1]
+    first_valid_pos = int(valid_positions[0])
+    last_valid_pos = int(valid_positions[-1])
+
+    if first_valid_pos == 0 and last_valid_pos == len(traj_df) - 1:
+        return traj_df
 
     # Trim trajectory to valid detection range
-    cleaned_df = traj_df.loc[first_valid_idx:last_valid_idx].copy()
-
-    return cleaned_df
+    return traj_df.iloc[first_valid_pos : last_valid_pos + 1].copy()
 
 
 def _clean_trajectories(traj_list, min_length=5):
@@ -2440,9 +2453,12 @@ def _split_dataframe_into_segments(df, max_gap=5, max_spatial_jump=50.0):
 
     segments = []
     current_segment = []
-    rows = df.to_dict("records")
+    columns = list(df.columns)
+    col_arrays = [df[col].to_numpy(copy=False) for col in columns]
+    n_rows = len(df)
 
-    for row in rows:
+    for idx in range(n_rows):
+        row = {col: arr[idx] for col, arr in zip(columns, col_arrays)}
         should_split = False
 
         if current_segment:
@@ -2480,6 +2496,54 @@ def _split_dataframe_into_segments(df, max_gap=5, max_spatial_jump=50.0):
     # Add the last segment
     if current_segment:
         segments.append(pd.DataFrame(current_segment))
+
+    return segments
+
+
+def _split_rows_into_segments(rows, max_gap=5, max_spatial_jump=50.0):
+    """
+    Split list-of-dict rows into continuous segments based on FrameID gaps/spatial jumps.
+    Used to avoid DataFrame round-trips in tight loops.
+    """
+    if not rows:
+        return []
+
+    segments = []
+    current_segment = []
+
+    for row in rows:
+        should_split = False
+        if current_segment:
+            prev_row = current_segment[-1]
+            frame_gap = row["FrameID"] - prev_row["FrameID"]
+
+            if frame_gap > max_gap:
+                should_split = True
+
+            if not should_split and frame_gap <= max_gap:
+                prev_x, prev_y = prev_row.get("X"), prev_row.get("Y")
+                curr_x, curr_y = row.get("X"), row.get("Y")
+
+                if (
+                    not pd.isna(prev_x)
+                    and not pd.isna(curr_x)
+                    and not pd.isna(prev_y)
+                    and not pd.isna(curr_y)
+                ):
+                    dx = curr_x - prev_x
+                    dy = curr_y - prev_y
+                    dist = np.sqrt(dx * dx + dy * dy)
+                    if dist > max_spatial_jump:
+                        should_split = True
+
+        if not current_segment or not should_split:
+            current_segment.append(row)
+        else:
+            segments.append(current_segment)
+            current_segment = [row]
+
+    if current_segment:
+        segments.append(current_segment)
 
     return segments
 
