@@ -113,6 +113,7 @@ from PySide6.QtCore import (
     QRect,
     QRectF,
     QSize,
+    QEvent,
     QObject,
     Signal,
     Slot,
@@ -147,6 +148,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsTextItem,
     QGraphicsView,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -174,6 +176,8 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
     QStyle,
     QStyleOptionViewItem,
+    QSizePolicy,
+    QAbstractSpinBox,
 )
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -189,6 +193,9 @@ DEFAULT_AUTOSAVE_DELAY_MS = 3000
 # -----------------------------
 # Data model
 # -----------------------------
+DEFAULT_EDGE_WIDTH = 2.0
+
+
 @dataclass
 class Keypoint:
     """Single keypoint annotation in pixel space."""
@@ -240,6 +247,7 @@ class Project:
     # Opacity
     kpt_opacity: float = 1.0
     edge_opacity: float = 0.7
+    edge_width: float = DEFAULT_EDGE_WIDTH
     latest_pose_weights: Optional[Path] = None
     latest_sleap_dataset: Optional[Path] = None
 
@@ -290,6 +298,7 @@ class Project:
             "label_font_size": self.label_font_size,
             "kpt_opacity": self.kpt_opacity,
             "edge_opacity": self.edge_opacity,
+            "edge_width": self.edge_width,
         }
 
     @staticmethod
@@ -340,6 +349,7 @@ class Project:
             label_font_size=int(data.get("label_font_size", DEFAULT_LABEL_FONT_SIZE)),
             kpt_opacity=float(data.get("kpt_opacity", 1.0)),
             edge_opacity=float(data.get("edge_opacity", 0.7)),
+            edge_width=float(data.get("edge_width", DEFAULT_EDGE_WIDTH)),
             latest_pose_weights=latest_pose_weights,
             latest_sleap_dataset=latest_sleap_dataset,
         )
@@ -1227,12 +1237,12 @@ class PoseCanvas(QGraphicsView):
         self._img_w = 1
         self._img_h = 1
         self._current_kpt = 0
-        self._click_vis = 2
         self._kpt_radius = DEFAULT_KPT_RADIUS
         self._label_font_size = DEFAULT_LABEL_FONT_SIZE
         self._palette = get_keypoint_palette()
         self._kpt_opacity = 1.0
         self._edge_opacity = 0.7
+        self._edge_width = DEFAULT_EDGE_WIDTH
         self._zoom_factor = 1.0
         self._min_zoom = 0.3
         self._max_zoom = 30.0
@@ -1263,10 +1273,6 @@ class PoseCanvas(QGraphicsView):
         """Set the active keypoint index used for click placement."""
         self._current_kpt = idx
 
-    def set_click_visibility(self, v: int) -> None:
-        """Set visibility code assigned to newly placed keypoints."""
-        self._click_vis = v
-
     def set_kpt_radius(self, r: float) -> None:
         """Update rendered keypoint radius."""
         self._kpt_radius = max(0.5, float(r))
@@ -1282,6 +1288,10 @@ class PoseCanvas(QGraphicsView):
     def set_edge_opacity(self, opacity: float) -> None:
         """Update skeleton edge alpha channel used for overlay drawing."""
         self._edge_opacity = max(0.0, min(1.0, float(opacity)))
+
+    def set_edge_width(self, width: float) -> None:
+        """Update skeleton edge width used for annotation and prediction edges."""
+        self._edge_width = max(0.5, float(width))
 
     def fit_to_view(self: object) -> object:
         """Fit the image to the view."""
@@ -1332,7 +1342,7 @@ class PoseCanvas(QGraphicsView):
         # Create edges with opacity
         edge_alpha = int(255 * self._edge_opacity)
         for ei, (a, b) in enumerate(edges):
-            pen = QPen(QColor(100, 100, 100, edge_alpha), 2)
+            pen = QPen(QColor(100, 100, 100, edge_alpha), self._edge_width)
             edge = QGraphicsLineItem()
             edge.setPen(pen)
             edge.setZValue(3)
@@ -1411,7 +1421,8 @@ class PoseCanvas(QGraphicsView):
                     and pred_kpts[a].v > 0
                     and pred_kpts[b].v > 0
                 ):
-                    pen = QPen(QColor(0, 220, 255, pred_edge_alpha), 1.5)
+                    pred_w = max(0.75, self._edge_width * 0.75)
+                    pen = QPen(QColor(0, 220, 255, pred_edge_alpha), pred_w)
                     pen.setStyle(Qt.DashLine)
                     edge = QGraphicsLineItem(
                         pred_kpts[a].x,
@@ -1611,7 +1622,7 @@ class PoseCanvas(QGraphicsView):
                                 next_unlabeled,
                                 float(pos.x()),
                                 float(pos.y()),
-                                self._click_vis,
+                                2,
                             )
                     # If all labeled, ignore click
                 return super().mousePressEvent(event)
@@ -1666,7 +1677,7 @@ class PoseCanvas(QGraphicsView):
                             next_unlabeled,
                             float(pos.x()),
                             float(pos.y()),
-                            self._click_vis,
+                            2,
                         )
             else:
                 # No annotation data, place normally
@@ -1675,7 +1686,7 @@ class PoseCanvas(QGraphicsView):
                         self._current_kpt,
                         float(pos.x()),
                         float(pos.y()),
-                        self._click_vis,
+                        2,
                     )
         super().mousePressEvent(event)
 
@@ -2451,7 +2462,6 @@ class MainWindow(QMainWindow):
         self.current_index = max(0, min(project.last_index, len(image_paths) - 1))
         self.current_kpt = 0
         self.mode = "frame"  # frame | keypoint
-        self.click_vis = 2
         self._img_bgr = None
         self._img_display = None
         self._img_wh = (1, 1)
@@ -2546,20 +2556,21 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.frame_list, 1)
 
         # Frame management buttons
-        frame_btns = QVBoxLayout()
+        frame_btns = QGridLayout()
+        frame_btns.setHorizontalSpacing(6)
+        frame_btns.setVerticalSpacing(6)
         self.btn_unlabeled_to_labeling = QPushButton("Unlabeled → Labeling")
         self.btn_unlabeled_to_labeling.setToolTip(
             "Move all unlabeled frames to labeling list"
         )
-        frame_btns.addWidget(self.btn_unlabeled_to_labeling)
+        frame_btns.addWidget(self.btn_unlabeled_to_labeling, 0, 0)
 
         self.btn_unlabeled_to_all = QPushButton("Unlabeled → All")
         self.btn_unlabeled_to_all.setToolTip(
             "Move unlabeled frames from labeling to all frames list"
         )
-        frame_btns.addWidget(self.btn_unlabeled_to_all)
+        frame_btns.addWidget(self.btn_unlabeled_to_all, 0, 1)
 
-        random_row = QHBoxLayout()
         self.btn_random_to_labeling = QPushButton("Random")
         self.btn_random_to_labeling.setToolTip(
             "Add random unlabeled frames to labeling"
@@ -2567,22 +2578,21 @@ class MainWindow(QMainWindow):
         self.spin_random_count = QSpinBox()
         self.spin_random_count.setRange(1, 1000)
         self.spin_random_count.setValue(10)
-        random_row.addWidget(self.btn_random_to_labeling)
-        random_row.addWidget(self.spin_random_count)
-        frame_btns.addLayout(random_row)
+        frame_btns.addWidget(self.btn_random_to_labeling, 1, 0)
+        frame_btns.addWidget(self.spin_random_count, 1, 1)
 
         self.btn_smart_select = QPushButton("Smart Select…")
         self.btn_smart_select.setToolTip(
             "Select diverse frames using embeddings + clustering"
         )
-        frame_btns.addWidget(self.btn_smart_select)
+        frame_btns.addWidget(self.btn_smart_select, 2, 0)
         self.btn_smart_select.clicked.connect(self.open_smart_select)
 
         self.btn_delete_frames = QPushButton("Delete Selected…")
         self.btn_delete_frames.setToolTip(
             "Permanently delete selected images (and labels) from the dataset"
         )
-        frame_btns.addWidget(self.btn_delete_frames)
+        frame_btns.addWidget(self.btn_delete_frames, 2, 1)
 
         left_layout.addLayout(frame_btns)
 
@@ -2598,6 +2608,7 @@ class MainWindow(QMainWindow):
         self.canvas.set_label_font_size(self.project.label_font_size)
         self.canvas.set_kpt_opacity(self.project.kpt_opacity)
         self.canvas.set_edge_opacity(self.project.edge_opacity)
+        self.canvas.set_edge_width(self.project.edge_width)
         self.canvas_hint = QLabel(
             "Left click: place/move  •  Right click: toggle vis / place occluded  •  "
             "Wheel: zoom  •  A/D: prev/next  •  Q/E: prev/next keypoint  •  "
@@ -2668,19 +2679,6 @@ class MainWindow(QMainWindow):
         self.rb_frame.setChecked(True)
         ann_layout.addWidget(self.rb_frame)
         ann_layout.addWidget(self.rb_kpt)
-        ann_layout.addSpacing(4)
-        ann_layout.addWidget(QLabel("What visibility state should clicks assign?"))
-        self.vis_group = QButtonGroup(self)
-        self.rb_vis = QRadioButton("Visible (2)")
-        self.rb_occ = QRadioButton("Occluded (1)")
-        self.rb_miss = QRadioButton("Missing (0)")
-        self.rb_vis.setChecked(True)
-        self.vis_group.addButton(self.rb_vis, 2)
-        self.vis_group.addButton(self.rb_occ, 1)
-        self.vis_group.addButton(self.rb_miss, 0)
-        ann_layout.addWidget(self.rb_vis)
-        ann_layout.addWidget(self.rb_occ)
-        ann_layout.addWidget(self.rb_miss)
         right_layout.addWidget(ann_group)
 
         # Display
@@ -2724,6 +2722,15 @@ class MainWindow(QMainWindow):
         self.sp_edge_opacity.setValue(self.project.edge_opacity)
         opacity_row2.addWidget(self.sp_edge_opacity)
         disp_layout.addLayout(opacity_row2)
+
+        edge_width_row = QHBoxLayout()
+        edge_width_row.addWidget(QLabel("Edge width"))
+        self.sp_edge_width = QDoubleSpinBox()
+        self.sp_edge_width.setRange(0.5, 10.0)
+        self.sp_edge_width.setSingleStep(0.25)
+        self.sp_edge_width.setValue(float(self.project.edge_width))
+        edge_width_row.addWidget(self.sp_edge_width)
+        disp_layout.addLayout(edge_width_row)
 
         size_row = QHBoxLayout()
         self.sp_kpt_size = QDoubleSpinBox()
@@ -2852,13 +2859,17 @@ class MainWindow(QMainWindow):
         self.btn_predict_bulk = QPushButton("Predict Dataset…")
         self.btn_apply_preds = QPushButton("Apply Predictions")
         self.btn_clear_pred_cache = QPushButton("Clear Prediction Cache")
-        model_layout.addWidget(self.btn_train)
-        model_layout.addWidget(self.btn_eval)
-        model_layout.addWidget(self.btn_active)
-        model_layout.addWidget(self.btn_predict)
-        model_layout.addWidget(self.btn_predict_bulk)
-        model_layout.addWidget(self.btn_apply_preds)
-        model_layout.addWidget(self.btn_clear_pred_cache)
+        model_btn_grid = QGridLayout()
+        model_btn_grid.setHorizontalSpacing(6)
+        model_btn_grid.setVerticalSpacing(6)
+        model_btn_grid.addWidget(self.btn_train, 0, 0)
+        model_btn_grid.addWidget(self.btn_eval, 0, 1)
+        model_btn_grid.addWidget(self.btn_active, 1, 0)
+        model_btn_grid.addWidget(self.btn_predict, 1, 1)
+        model_btn_grid.addWidget(self.btn_predict_bulk, 2, 0)
+        model_btn_grid.addWidget(self.btn_apply_preds, 2, 1)
+        model_btn_grid.addWidget(self.btn_clear_pred_cache, 3, 0, 1, 2)
+        model_layout.addLayout(model_btn_grid)
         right_layout.addWidget(model_group)
 
         # Project
@@ -2867,9 +2878,13 @@ class MainWindow(QMainWindow):
         self.btn_skel = QPushButton("Skeleton Editor (Ctrl+G)")
         self.btn_proj = QPushButton("Project Settings (Ctrl+P)")
         self.btn_export = QPushButton("Export dataset.yaml + splits…")
-        proj_layout.addWidget(self.btn_skel)
-        proj_layout.addWidget(self.btn_proj)
-        proj_layout.addWidget(self.btn_export)
+        proj_btn_grid = QGridLayout()
+        proj_btn_grid.setHorizontalSpacing(6)
+        proj_btn_grid.setVerticalSpacing(6)
+        proj_btn_grid.addWidget(self.btn_skel, 0, 0)
+        proj_btn_grid.addWidget(self.btn_proj, 0, 1)
+        proj_btn_grid.addWidget(self.btn_export, 1, 0, 1, 2)
+        proj_layout.addLayout(proj_btn_grid)
         right_layout.addWidget(proj_group)
 
         # Shortcuts
@@ -2882,7 +2897,6 @@ class MainWindow(QMainWindow):
             "A/D: prev/next frame\n"
             "Q/E: prev/next keypoint\n"
             "Space: advance\n"
-            "V/O/N: set visibility\n"
             "Ctrl+S: save\n"
             "Ctrl+F: next unlabeled"
         )
@@ -2894,20 +2908,27 @@ class MainWindow(QMainWindow):
         self.lbl_info.setWordWrap(True)
         right_layout.addWidget(self.lbl_info)
         right_layout.addStretch(1)
+        self._set_panel_controls_expanding(left)
+        left.layout().activate()
+        left_min_w = max(400, int(left.sizeHint().width()) + 24)
+        left.setMinimumWidth(left_min_w)
+        right.layout().activate()
+        right_min_w = max(340, min(420, int(right.sizeHint().width()) + 16))
+        right.setMinimumWidth(right_min_w)
 
         # Wrap left and right panels in ScrollAreas to allow scaling
         left_scroll = QScrollArea()
         left_scroll.setWidget(left)
         left_scroll.setWidgetResizable(True)
         left_scroll.setFrameShape(QFrame.NoFrame)
-        left_scroll.setMinimumWidth(320)
+        left_scroll.setMinimumWidth(left_min_w)
         left_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         right_scroll = QScrollArea()
         right_scroll.setWidget(right)
         right_scroll.setWidgetResizable(True)
         right_scroll.setFrameShape(QFrame.NoFrame)
-        right_scroll.setMinimumWidth(320)
+        right_scroll.setMinimumWidth(right_min_w)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         splitter.addWidget(left_scroll)
@@ -2924,7 +2945,7 @@ class MainWindow(QMainWindow):
 
         # Set initial sizes: ~200px per side panel, rest to center
         # This will be adjusted when window is shown based on total width
-        splitter.setSizes([320, 840, 320])
+        splitter.setSizes([left_min_w, 800, right_min_w])
 
         # Set minimum sizes to 0 to allow full collapsing/scaling
         splitter.setCollapsible(0, True)
@@ -2997,7 +3018,6 @@ class MainWindow(QMainWindow):
         self.search_edit.textChanged.connect(self._populate_frames)
         self.sort_combo.currentTextChanged.connect(self._populate_frames)
         self.rb_frame.toggled.connect(self._update_mode)
-        self.vis_group.buttonClicked.connect(self._update_vis_mode)
         self.class_combo.currentIndexChanged.connect(self._mark_dirty)
         self.cb_enhance.toggled.connect(self._toggle_enhancement)
         self.btn_enhance_settings.clicked.connect(self._open_enhancement_settings)
@@ -3005,6 +3025,7 @@ class MainWindow(QMainWindow):
         self.sp_label_size.valueChanged.connect(self._update_label_size)
         self.sp_kpt_opacity.valueChanged.connect(self._update_kpt_opacity)
         self.sp_edge_opacity.valueChanged.connect(self._update_edge_opacity)
+        self.sp_edge_width.valueChanged.connect(self._update_edge_width)
         self.btn_fit_view.clicked.connect(self.fit_to_view)
 
         # Load UI settings now that all widgets are created
@@ -3012,6 +3033,9 @@ class MainWindow(QMainWindow):
         self._sleap_batch_predict = 4
         self._load_ui_settings()
         self._update_pred_backend_ui()
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
 
         # Populate list + load
         self._populate_frames()
@@ -3098,6 +3122,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self: object, event: object) -> object:
         """Save UI settings when window closes."""
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
         self._perform_autosave()
         self.save_project()
         self._save_ui_settings()
@@ -3106,6 +3136,12 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
+
+    def eventFilter(self, obj, event):
+        if event is not None and event.type() == QEvent.Wheel:
+            if isinstance(obj, QAbstractSpinBox):
+                return True
+        return super().eventFilter(obj, event)
 
     def keyPressEvent(self: object, event: object) -> object:
         """Handle arrow key nudging of keypoints with modifier keys."""
@@ -3192,6 +3228,7 @@ class MainWindow(QMainWindow):
             "label_font_size": self.project.label_font_size,
             "kpt_opacity": self.project.kpt_opacity,
             "edge_opacity": self.project.edge_opacity,
+            "edge_width": self.project.edge_width,
             "clahe_clip": self.project.clahe_clip,
             "clahe_grid": list(self.project.clahe_grid),
             "sharpen_amt": self.project.sharpen_amt,
@@ -3228,6 +3265,9 @@ class MainWindow(QMainWindow):
             if "edge_opacity" in settings:
                 self.project.edge_opacity = float(settings["edge_opacity"])
                 self.sp_edge_opacity.setValue(self.project.edge_opacity)
+            if "edge_width" in settings:
+                self.project.edge_width = float(settings["edge_width"])
+                self.sp_edge_width.setValue(self.project.edge_width)
             if "controls_open" in settings:
                 self.controls_group.setChecked(bool(settings["controls_open"]))
             if "frame_search" in settings:
@@ -3323,16 +3363,6 @@ class MainWindow(QMainWindow):
         act_skel.setShortcut(QKeySequence("Ctrl+G"))
         act_skel.triggered.connect(self.open_skeleton_editor)
 
-        act_vis = QAction("Click Visible", self)
-        act_vis.setShortcut(QKeySequence("V"))
-        act_occ = QAction("Click Occluded", self)
-        act_occ.setShortcut(QKeySequence("O"))
-        act_mis = QAction("Click Missing", self)
-        act_mis.setShortcut(QKeySequence("N"))
-        act_vis.triggered.connect(lambda: self._set_vis_radio(2))
-        act_occ.triggered.connect(lambda: self._set_vis_radio(1))
-        act_mis.triggered.connect(lambda: self._set_vis_radio(0))
-
         act_clear = QAction("Clear Current Keypoint", self)
         act_clear.setShortcut(QKeySequence(Qt.Key_Delete))
         act_clear.triggered.connect(self.clear_current_keypoint)
@@ -3389,9 +3419,6 @@ class MainWindow(QMainWindow):
         m_nav.addAction(act_next_unl)
 
         m_tools.addAction(act_skel)
-        m_tools.addAction(act_vis)
-        m_tools.addAction(act_occ)
-        m_tools.addAction(act_mis)
         m_tools.addAction(act_clear)
         m_tools.addAction(act_clear_all)
         m_tools.addSeparator()
@@ -3432,6 +3459,13 @@ class MainWindow(QMainWindow):
         if not lp.exists():
             return False
         return bool(lp.read_text(encoding="utf-8").strip())
+
+    def _set_panel_controls_expanding(self, panel: QWidget):
+        for w in panel.findChildren(QWidget):
+            if isinstance(w, (QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox)):
+                pol = w.sizePolicy()
+                pol.setHorizontalPolicy(QSizePolicy.Expanding)
+                w.setSizePolicy(pol)
 
     def _count_labeled_kpts(self, img_path: Path) -> int:
         try:
@@ -4047,7 +4081,6 @@ class MainWindow(QMainWindow):
                 self.kpt_list.setCurrentRow(first_unlabeled)
 
         self.canvas.set_current_keypoint(self.current_kpt)
-        self.canvas.set_click_visibility(self.click_vis)
         self._refresh_canvas_image()
         self._rebuild_canvas()
         self._update_info()
@@ -4184,10 +4217,6 @@ class MainWindow(QMainWindow):
             self._cache_current_frame()
             self._prime_cache_for_labeling()
 
-    def _update_vis_mode(self):
-        self.click_vis = int(self.vis_group.checkedId())
-        self.canvas.set_click_visibility(self.click_vis)
-
     def _toggle_enhancement(self, checked: bool):
         self.project.enhance_enabled = bool(checked)
         if self.cb_enhance.isChecked() != self.project.enhance_enabled:
@@ -4222,6 +4251,13 @@ class MainWindow(QMainWindow):
     def _update_edge_opacity(self, value: float):
         self.project.edge_opacity = float(value)
         self.canvas.set_edge_opacity(self.project.edge_opacity)
+        if self._ann is not None:
+            self._rebuild_canvas()
+        self.save_project()
+
+    def _update_edge_width(self, value: float):
+        self.project.edge_width = float(value)
+        self.canvas.set_edge_width(self.project.edge_width)
         if self._ann is not None:
             self._rebuild_canvas()
         self.save_project()
@@ -4317,14 +4353,6 @@ class MainWindow(QMainWindow):
         self._img_display = None
         self._refresh_canvas_image()
         self.save_project()
-
-    def _set_vis_radio(self, v: int):
-        if v == 2:
-            self.rb_vis.setChecked(True)
-        elif v == 1:
-            self.rb_occ.setChecked(True)
-        else:
-            self.rb_miss.setChecked(True)
 
     def _set_autosave_status(self, text: str):
         if hasattr(self, "status_autosave") and self.status_autosave is not None:
@@ -5802,8 +5830,13 @@ class MainWindow(QMainWindow):
                 self.btn_sleap_start.setEnabled(False)
                 self.btn_sleap_stop.setEnabled(True)
             return
-        if self._sleap_service_thread and self._sleap_service_thread.isRunning():
-            return
+        if self._sleap_service_thread is not None:
+            try:
+                if self._sleap_service_thread.isRunning():
+                    return
+            except RuntimeError:
+                # Qt object can already be deleted; drop stale reference.
+                self._sleap_service_thread = None
         self._set_sleap_status("SLEAP: starting", visible=True)
         self._set_busy_progress("Starting SLEAP service…")
         self.btn_sleap_start.setEnabled(False)
@@ -5815,9 +5848,16 @@ class MainWindow(QMainWindow):
         self._sleap_service_worker.finished.connect(self._on_sleap_service_started)
         self._sleap_service_worker.finished.connect(self._sleap_service_thread.quit)
         self._sleap_service_thread.finished.connect(
+            self._on_sleap_service_thread_finished
+        )
+        self._sleap_service_thread.finished.connect(
             self._sleap_service_thread.deleteLater
         )
         self._sleap_service_thread.start()
+
+    def _on_sleap_service_thread_finished(self):
+        self._sleap_service_thread = None
+        self._sleap_service_worker = None
 
     def _stop_sleap_service(self):
         if hasattr(self, "btn_sleap_start") and hasattr(self, "btn_sleap_stop"):
@@ -5825,17 +5865,20 @@ class MainWindow(QMainWindow):
             self.btn_sleap_stop.setEnabled(False)
         self._set_sleap_status("SLEAP: stopping", visible=True)
         self.statusBar().showMessage("Stopping SLEAP service…", 2000)
+        self._clear_progress()
 
         try:
             PoseInferenceService.shutdown_sleap_service()
         except Exception as e:
             self._set_sleap_status("SLEAP: error", visible=True)
             self.statusBar().showMessage(f"SLEAP stop failed: {e}", 4000)
-        if self._sleap_service_thread and self._sleap_service_thread.isRunning():
+        if self._sleap_service_thread is not None:
             try:
-                self._sleap_service_thread.quit()
-            except Exception:
-                pass
+                if self._sleap_service_thread.isRunning():
+                    self._sleap_service_thread.quit()
+            except RuntimeError:
+                # Already deleted by Qt lifecycle.
+                self._sleap_service_thread = None
 
         running = PoseInferenceService.sleap_service_running()
         if running:

@@ -6,6 +6,7 @@ Supports both background subtraction and YOLO OBB detection methods.
 import numpy as np
 import cv2
 import logging
+import hashlib
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -151,9 +152,26 @@ class YOLOOBBDetector:
             # Get max batch size from UI parameter
             max_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
 
-            # Generate TensorRT engine filename based on model name and batch size
-            model_name = Path(model_path_str).stem
-            engine_path = cache_dir / f"{model_name}_batch{max_batch_size}.engine"
+            # Generate a TensorRT engine filename tied to the actual model identity.
+            # This prevents stale reuse when users swap models with the same filename.
+            resolved_model = Path(model_path_str).expanduser().resolve()
+            model_stem = resolved_model.stem or "model"
+            safe_model_stem = "".join(
+                c if c.isalnum() or c in ("_", "-") else "_" for c in model_stem
+            )
+            fingerprint_parts = [
+                str(resolved_model),
+                f"batch={max_batch_size}",
+            ]
+            detection_cache_model_id = self.params.get("DETECTION_CACHE_MODEL_ID")
+            if detection_cache_model_id:
+                fingerprint_parts.append(f"detection_id={detection_cache_model_id}")
+            if resolved_model.exists():
+                stat = resolved_model.stat()
+                fingerprint_parts.append(f"size={stat.st_size}")
+                fingerprint_parts.append(f"mtime_ns={stat.st_mtime_ns}")
+            fingerprint = hashlib.md5("|".join(fingerprint_parts).encode("utf-8")).hexdigest()[:12]
+            engine_path = cache_dir / f"{safe_model_stem}_{fingerprint}.engine"
 
             # Check if TensorRT engine already exists
             if engine_path.exists():

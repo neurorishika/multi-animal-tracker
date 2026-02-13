@@ -8894,6 +8894,9 @@ class MainWindow(QMainWindow):
 
         base_name = os.path.splitext(video_path)[0]
         model_id = get_cache_model_id()
+        # Share the exact detection hash with downstream detector code so
+        # TensorRT engine cache invalidation matches detection cache invalidation.
+        params["DETECTION_CACHE_MODEL_ID"] = model_id
         base_prefix = os.path.basename(base_name) + "_detection_cache_"
 
         # Choose a writable directory for cache (prefer video dir, then CSV dir, else temp)
@@ -8924,7 +8927,7 @@ class MainWindow(QMainWindow):
             preview_mode=False,  # Full tracking mode - batching enabled if applicable
             use_cached_detections=use_cached_detections,
         )
-        self.tracking_worker.set_parameters(self.get_parameters_dict())
+        self.tracking_worker.set_parameters(params)
         self.parameters_changed.connect(self.tracking_worker.update_parameters)
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
