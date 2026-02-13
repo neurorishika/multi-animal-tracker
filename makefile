@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-gpu env-create-mps env-create-rocm env-update env-update-gpu env-update-mps env-update-rocm env-remove env-remove-gpu env-remove-mps env-remove-rocm install install-gpu install-mps install-rocm setup setup-gpu setup-mps setup-rocm test verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format format-check whitespace-fix lint lint-autofix lint-autofix-unsafe lint-moderate lint-strict lint-report commit-prep pre-commit-check help
+.PHONY: env-create env-create-gpu env-create-mps env-create-rocm env-update env-update-gpu env-update-mps env-update-rocm env-remove env-remove-gpu env-remove-mps env-remove-rocm install install-gpu install-mps install-rocm setup setup-gpu setup-mps setup-rocm test pytest coverage test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format format-check whitespace-fix lint lint-autofix lint-autofix-unsafe lint-moderate lint-strict lint-report commit-prep pre-commit-check help
 
 # Environment names for different platforms
 ENV_NAME = multi-animal-tracker
@@ -95,6 +95,21 @@ test:
 	@echo "Testing package installation..."
 	python -c "from multi_tracker.app.launcher import main; print('✅ Import successful')"
 	@echo "✅ All tests passed!"
+
+pytest:
+	@echo "🧪 Running pytest..."
+	python -m pytest
+
+coverage: test-cov
+
+test-cov:
+	@echo "🧪 Running pytest with coverage..."
+	python -m pytest --cov=src/multi_tracker --cov-report=term
+
+test-cov-html:
+	@echo "🧪 Running pytest with HTML coverage report..."
+	python -m pytest --cov=src/multi_tracker --cov-report=html --cov-report=term
+	@echo "📊 Coverage report generated in htmlcov/index.html"
 
 verify-rocm:
 	@echo "🔍 Verifying ROCm installation..."
@@ -334,6 +349,10 @@ help:
 	@echo ""
 	@echo "🧪 TESTING & VERIFICATION:"
 	@echo "  make test            - Test package imports"
+	@echo "  make pytest          - Run all pytest tests"
+	@echo "  make coverage        - Run tests with coverage report"
+	@echo "  make test-cov        - Run tests with coverage report (alias)"
+	@echo "  make test-cov-html   - Run tests with HTML coverage report"
 	@echo "  make verify-rocm     - Verify ROCm installation (AMD GPUs only)"
 	@echo "  make clean           - Remove Python cache files"
 	@echo ""
