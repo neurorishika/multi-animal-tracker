@@ -157,7 +157,8 @@ def validate_dataset(
     return valid_count, invalid_count, fixed_count
 
 
-def main():
+def main() -> object:
+    """main function documentation."""
     parser = argparse.ArgumentParser(
         description="Validate YOLO pose labels for NaN and numerical issues"
     )

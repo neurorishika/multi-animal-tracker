@@ -8,6 +8,7 @@ import numpy as np
 import logging
 from pathlib import Path
 import json
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from multi_tracker.utils.image_processing import compute_median_color_from_frame
 
@@ -20,7 +21,7 @@ class IdentityProcessor:
     Processes cropped regions around detections to assign identities.
     """
 
-    def __init__(self, params):
+    def __init__(self, params: Dict[str, Any]):
         self.params = params
         self.method = params.get("IDENTITY_METHOD", "none")
         self.enabled = params.get("ENABLE_IDENTITY_ANALYSIS", False)
@@ -35,8 +36,14 @@ class IdentityProcessor:
         )
 
     def extract_crop(
-        self, frame, cx, cy, body_size, theta=None, padding_multiplier=None
-    ):
+        self,
+        frame: np.ndarray,
+        cx: float,
+        cy: float,
+        body_size: float,
+        theta: Optional[float] = None,
+        padding_multiplier: Optional[float] = None,
+    ) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
         Extract a crop around a detection.
 
@@ -104,7 +111,9 @@ class IdentityProcessor:
 
         return crop, crop_info
 
-    def process_frame(self, frame, detections, frame_id):
+    def process_frame(
+        self, frame: np.ndarray, detections: Sequence[Dict[str, Any]], frame_id: int
+    ) -> Tuple[List[Optional[str]], List[float], List[np.ndarray]]:
         """
         Process all detections in a frame to assign identities.
 
@@ -144,7 +153,9 @@ class IdentityProcessor:
 
         return identities, confidences, crops
 
-    def _classify_identity(self, crop, crop_info, detection):
+    def _classify_identity(
+        self, crop: np.ndarray, crop_info: Dict[str, Any], detection: Dict[str, Any]
+    ) -> Tuple[Optional[str], float]:
         """
         Classify identity from crop. Override this method for specific implementations.
 
@@ -167,12 +178,12 @@ class IdentityProcessor:
         else:
             return None, 0.0
 
-    def _dummy_color_tag_classifier(self, crop):
+    def _dummy_color_tag_classifier(self, crop: np.ndarray) -> Tuple[str, float]:
         """Placeholder for color tag classification."""
         # TODO: Implement YOLO-based color tag detection
         return f"color_tag_{np.random.randint(0, 10)}", 0.5
 
-    def _dummy_apriltag_classifier(self, crop):
+    def _dummy_apriltag_classifier(self, crop: np.ndarray) -> Tuple[str, float]:
         """Placeholder for AprilTag detection."""
         # TODO: Implement AprilTag detection
         return f"apriltag_{np.random.randint(0, 10)}", 0.5
@@ -193,7 +204,13 @@ class IndividualDatasetGenerator:
     - Uses already-filtered detections (ROI + size filtering done by tracking)
     """
 
-    def __init__(self, params, output_dir, video_name, dataset_name=None):
+    def __init__(
+        self,
+        params: Dict[str, Any],
+        output_dir: Optional[str],
+        video_name: str,
+        dataset_name: Optional[str] = None,
+    ):
         """
         Initialize the individual dataset generator.
 
@@ -243,7 +260,7 @@ class IndividualDatasetGenerator:
             f"output_dir={self.output_dir}"
         )
 
-    def set_background_color(self, color):
+    def set_background_color(self, color: Tuple[int, int, int]) -> None:
         """
         Set the background color for masked crops.
 
@@ -258,7 +275,7 @@ class IndividualDatasetGenerator:
             )
 
     @staticmethod
-    def compute_median_color_from_frame(frame):
+    def compute_median_color_from_frame(frame: np.ndarray) -> Tuple[int, int, int]:
         """
         Compute the median color (BGR) from a frame.
 
@@ -274,7 +291,9 @@ class IndividualDatasetGenerator:
         return compute_median_color_from_frame(frame)
 
     @staticmethod
-    def ellipse_to_obb_corners(cx, cy, major_axis, minor_axis, theta):
+    def ellipse_to_obb_corners(
+        cx: float, cy: float, major_axis: float, minor_axis: float, theta: float
+    ) -> np.ndarray:
         """
         Convert ellipse parameters to OBB corner points.
 
@@ -345,17 +364,17 @@ class IndividualDatasetGenerator:
 
     def process_frame(
         self,
-        frame,
-        frame_id,
-        meas,
-        obb_corners=None,
-        ellipse_params=None,
-        confidences=None,
-        track_ids=None,
-        trajectory_ids=None,
-        coord_scale_factor=1.0,
-        detection_ids=None,
-    ):
+        frame: np.ndarray,
+        frame_id: int,
+        meas: Sequence[Sequence[float]],
+        obb_corners: Optional[Sequence[np.ndarray]] = None,
+        ellipse_params: Optional[Sequence[Sequence[float]]] = None,
+        confidences: Optional[Sequence[float]] = None,
+        track_ids: Optional[Sequence[int]] = None,
+        trajectory_ids: Optional[Sequence[int]] = None,
+        coord_scale_factor: float = 1.0,
+        detection_ids: Optional[Sequence[int]] = None,
+    ) -> int:
         """
         Process a frame and save masked crops for each detection.
 
@@ -476,18 +495,19 @@ class IndividualDatasetGenerator:
 
     def save_interpolated_crop(
         self,
-        frame,
-        frame_id,
-        cx,
-        cy,
-        w,
-        h,
-        theta,
-        traj_id,
-        interp_from,
-        interp_index,
-        interp_total,
-    ):
+        frame: np.ndarray,
+        frame_id: int,
+        cx: float,
+        cy: float,
+        w: float,
+        h: float,
+        theta: float,
+        traj_id: int,
+        interp_from: Tuple[int, int],
+        interp_index: int,
+        interp_total: int,
+    ) -> Optional[str]:
+        """Save one interpolated crop for trajectory gap-filling supervision."""
         if not self.enabled or self.crops_dir is None:
             return None
 
@@ -672,7 +692,7 @@ class IndividualDatasetGenerator:
             logger.warning(f"Failed to save crop: {e}")
             return None
 
-    def finalize(self):
+    def finalize(self) -> Optional[str]:
         """
         Finalize the dataset and save metadata.
         Called when tracking completes.

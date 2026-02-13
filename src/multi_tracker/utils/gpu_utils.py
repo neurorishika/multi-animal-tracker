@@ -86,7 +86,7 @@ GPU_AVAILABLE = CUDA_AVAILABLE or MPS_AVAILABLE
 ANY_ACCELERATION = GPU_AVAILABLE or NUMBA_AVAILABLE
 
 
-def get_device_info():
+def get_device_info() -> object:
     """
     Get information about available compute devices.
 
@@ -161,7 +161,7 @@ def get_device_info():
     return info
 
 
-def log_device_info():
+def log_device_info() -> object:
     """Log available compute devices to help with debugging."""
     info = get_device_info()
 
@@ -216,7 +216,7 @@ def log_device_info():
     logger.info("=" * 60)
 
 
-def get_optimal_device(enable_gpu=True, prefer_cuda=True):
+def get_optimal_device(enable_gpu: object = True, prefer_cuda: object = True) -> object:
     """
     Get the optimal compute device based on availability.
 

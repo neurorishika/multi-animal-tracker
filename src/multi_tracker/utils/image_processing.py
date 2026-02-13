@@ -52,7 +52,7 @@ if NUMBA_AVAILABLE:
         return results
 
 
-def apply_image_adjustments(gray, brightness, contrast, gamma, use_gpu=False):
+def apply_image_adjustments(gray: object, brightness: object, contrast: object, gamma: object, use_gpu: object = False) -> object:
     """
     Apply brightness, contrast, and gamma corrections to grayscale image.
 
@@ -134,16 +134,7 @@ if NUMBA_AVAILABLE:
         return np.mean(data)
 
 
-def stabilize_lighting(
-    frame,
-    reference_intensity,
-    current_intensity_history,
-    alpha=0.95,
-    roi_mask=None,
-    median_window=5,
-    lighting_state=None,
-    use_gpu=False,
-):
+def stabilize_lighting(frame: object, reference_intensity: object, current_intensity_history: object, alpha: object = 0.95, roi_mask: object = None, median_window: object = 5, lighting_state: object = None, use_gpu: object = False) -> object:
     """
     Stabilize lighting conditions by normalizing frame intensity to a reference level.
 
@@ -265,7 +256,7 @@ def stabilize_lighting(
     return stabilized, current_intensity_history, current_mean
 
 
-def compute_median_color_from_frame(frame):
+def compute_median_color_from_frame(frame: object) -> object:
     """
     Compute the median color (BGR) from a frame.
 

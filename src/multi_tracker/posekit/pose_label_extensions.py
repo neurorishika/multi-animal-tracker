@@ -43,6 +43,7 @@ class FrameMetadata:
     cluster_id: Optional[int] = None
 
     def to_json(self) -> dict:
+        """Serialize frame metadata to a JSON-safe dictionary."""
         return {
             "image_path": self.image_path,
             "tags": list(sorted(self.tags)),
@@ -52,6 +53,7 @@ class FrameMetadata:
 
     @staticmethod
     def from_json(data: dict) -> "FrameMetadata":
+        """Build a FrameMetadata object from serialized JSON data."""
         return FrameMetadata(
             image_path=data["image_path"],
             tags=set(data.get("tags", [])),
@@ -68,7 +70,7 @@ class MetadataManager:
         self.metadata: Dict[str, FrameMetadata] = {}
         self.load()
 
-    def load(self):
+    def load(self: object) -> object:
         """Load metadata from disk."""
         if not self.metadata_path.exists():
             return
@@ -82,7 +84,7 @@ class MetadataManager:
         except Exception as e:
             logger.error(f"Failed to load metadata: {e}")
 
-    def save(self):
+    def save(self: object) -> object:
         """Save metadata to disk."""
         try:
             self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,25 +102,25 @@ class MetadataManager:
             self.metadata[image_path] = FrameMetadata(image_path=image_path)
         return self.metadata[image_path]
 
-    def add_tag(self, image_path: str, tag: str):
+    def add_tag(self: object, image_path: str, tag: str) -> object:
         """Add a tag to a frame."""
         meta = self.get_metadata(image_path)
         meta.tags.add(tag)
         self.save()
 
-    def remove_tag(self, image_path: str, tag: str):
+    def remove_tag(self: object, image_path: str, tag: str) -> object:
         """Remove a tag from a frame."""
         meta = self.get_metadata(image_path)
         meta.tags.discard(tag)
         self.save()
 
-    def set_notes(self, image_path: str, notes: str):
+    def set_notes(self: object, image_path: str, notes: str) -> object:
         """Set notes for a frame."""
         meta = self.get_metadata(image_path)
         meta.notes = notes
         self.save()
 
-    def set_cluster_id(self, image_path: str, cluster_id: Optional[int]):
+    def set_cluster_id(self: object, image_path: str, cluster_id: Optional[int]) -> object:
         """Set cluster ID for a frame."""
         meta = self.get_metadata(image_path)
         meta.cluster_id = cluster_id
@@ -138,7 +140,7 @@ class CrashSafeWriter:
     """Writes labels atomically using temp files."""
 
     @staticmethod
-    def write_label(label_path: Path, content: str):
+    def write_label(label_path: Path, content: str) -> object:
         """Write label file atomically using temp file + rename."""
         try:
             # Write to temp file in same directory (ensures same filesystem)
@@ -177,7 +179,7 @@ class LabelVersioning:
         self.max_versions = max_versions
         self.backup_dir.mkdir(parents=True, exist_ok=True)
 
-    def backup_label(self, label_path: Path):
+    def backup_label(self: object, label_path: Path) -> object:
         """Create a versioned backup of a label file."""
         if not label_path.exists():
             return
@@ -211,7 +213,7 @@ class LabelVersioning:
         except Exception as e:
             logger.error(f"Failed to backup {label_path}: {e}")
 
-    def restore_label(self, label_path: Path, version: Optional[int] = None):
+    def restore_label(self: object, label_path: Path, version: Optional[int] = None) -> object:
         """Restore a label from backup."""
         stem = label_path.stem
         existing = sorted(self.backup_dir.glob(f"{stem}.v*.txt"))
@@ -374,11 +376,12 @@ def save_split_files(
     val_indices: List[int],
     test_indices: List[int],
     split_name: str = "split",
-):
+) -> None:
     """Save train/val/test splits to text files."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    def write_split(filename: str, indices: List[int]):
+    def write_split(filename: str, indices: List[int]) -> None:
+        """Write one split file with one absolute image path per line."""
         path = output_dir / filename
         lines = [str(image_paths[i]) + "\n" for i in sorted(indices)]
         path.write_text("".join(lines), encoding="utf-8")
@@ -1592,11 +1595,13 @@ class EmbeddingWorker(QObject):
         self.cache_ok = cache_ok
         self._cancel = False
 
-    def cancel(self):
+    def cancel(self) -> None:
+        """Signal the worker loop to stop at the next safe checkpoint."""
         self._cancel = True
 
     @Slot()
-    def run(self):
+    def run(self) -> None:
+        """Compute/load embeddings and emit final embedding matrix for eligible frames."""
         try:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1784,7 +1789,7 @@ class IncrementalEmbeddingCache:
                 return {}
         return {}
 
-    def set_metadata(self, meta: Dict):
+    def set_metadata(self: object, meta: Dict) -> object:
         """Save cache metadata."""
         try:
             self.meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
@@ -1832,7 +1837,7 @@ class IncrementalEmbeddingCache:
 
         return self._embeddings[indices]
 
-    def add_embeddings(self, image_paths: List[Path], embeddings: np.ndarray):
+    def add_embeddings(self: object, image_paths: List[Path], embeddings: np.ndarray) -> object:
         """Add new embeddings to cache."""
         if len(image_paths) != embeddings.shape[0]:
             raise ValueError("Mismatch between paths and embeddings")
@@ -1851,7 +1856,7 @@ class IncrementalEmbeddingCache:
 
         self._save()
 
-    def update_embeddings(self, image_paths: List[Path], embeddings: np.ndarray):
+    def update_embeddings(self: object, image_paths: List[Path], embeddings: np.ndarray) -> object:
         """Update or add embeddings for given paths."""
         if len(image_paths) != embeddings.shape[0]:
             raise ValueError("Mismatch between paths and embeddings")
@@ -1908,7 +1913,7 @@ class IncrementalEmbeddingCache:
         self._save()
         return len(remove_set)
 
-    def clear(self):
+    def clear(self: object) -> object:
         """Clear all cached embeddings."""
         self._embeddings = None
         self._index = {}

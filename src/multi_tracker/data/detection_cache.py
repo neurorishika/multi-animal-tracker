@@ -70,16 +70,7 @@ class DetectionCache:
                 continue
         return cached
 
-    def add_frame(
-        self,
-        frame_idx,
-        meas,
-        sizes,
-        shapes,
-        confidences,
-        obb_corners=None,
-        detection_ids=None,
-    ):
+    def add_frame(self: object, frame_idx: object, meas: object, sizes: object, shapes: object, confidences: object, obb_corners: object = None, detection_ids: object = None) -> object:
         """
         Add detection data for a single frame (forward pass).
 
@@ -133,7 +124,7 @@ class DetectionCache:
 
         self._total_frames = max(self._total_frames, frame_idx + 1)
 
-    def save(self):
+    def save(self: object) -> object:
         """Save cached detections to disk (call at end of forward pass)."""
         if self.mode != "w":
             raise RuntimeError("Cache opened in read mode, cannot save")
@@ -162,7 +153,7 @@ class DetectionCache:
         # Clear memory
         self._data.clear()
 
-    def get_frame(self, frame_idx):
+    def get_frame(self: object, frame_idx: object) -> object:
         """
         Get detection data for a single frame (backward pass).
 
@@ -221,19 +212,19 @@ class DetectionCache:
 
         return meas, sizes, shapes, confidences, obb_corners, detection_ids
 
-    def get_total_frames(self):
+    def get_total_frames(self: object) -> object:
         """Get total number of frames in cache."""
         return self._total_frames
 
-    def get_frame_range(self):
+    def get_frame_range(self: object) -> object:
         """Get the frame range stored in cache."""
         return self._start_frame, self._end_frame
 
-    def matches_frame_range(self, start_frame, end_frame):
+    def matches_frame_range(self: object, start_frame: object, end_frame: object) -> object:
         """Check if cache matches the requested frame range."""
         return self._start_frame == start_frame and self._end_frame == end_frame
 
-    def covers_frame_range(self, start_frame, end_frame):
+    def covers_frame_range(self: object, start_frame: object, end_frame: object) -> object:
         """Check if cache fully covers the requested frame range."""
         if self._loaded_data is None:
             return False
@@ -243,7 +234,7 @@ class DetectionCache:
             return False
         return all(frame_idx in self._cached_frames for frame_idx in range(start_frame, end_frame + 1))
 
-    def get_missing_frames(self, start_frame, end_frame, max_report=10):
+    def get_missing_frames(self: object, start_frame: object, end_frame: object, max_report: object = 10) -> object:
         """Return a list of missing frame indices (up to max_report)."""
         if self._cached_frames is None:
             return []
@@ -254,7 +245,7 @@ class DetectionCache:
         ]
         return missing[:max_report]
 
-    def close(self):
+    def close(self: object) -> object:
         """Close and cleanup cache resources."""
         if self._loaded_data is not None:
             self._loaded_data.close()

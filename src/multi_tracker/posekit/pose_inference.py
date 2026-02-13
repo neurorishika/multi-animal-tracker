@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 
 class PoseInferenceService:
+    """PoseInferenceService API surface documentation."""
     CACHE_VERSION = 3
 
     def __init__(
@@ -113,6 +114,7 @@ class PoseInferenceService:
     def load_cache(
         self, model_path: Path, backend: str = "yolo"
     ) -> Dict[str, List[Tuple[float, float, float]]]:
+        """load_cache method documentation."""
         key = self._cache_key(model_path, backend)
         if key in self._cache_mem:
             return self._cache_mem[key]
@@ -140,17 +142,14 @@ class PoseInferenceService:
         path.write_text(json.dumps(payload), encoding="utf-8")
         self._cache_mem[self._cache_key(model_path, backend)] = preds
 
-    def merge_cache(
-        self,
-        model_path: Path,
-        new_preds: Dict[str, List[Tuple[float, float, float]]],
-        backend: str = "yolo",
-    ):
+    def merge_cache(self: object, model_path: Path, new_preds: Dict[str, List[Tuple[float, float, float]]], backend: str = 'yolo') -> object:
+        """merge_cache method documentation."""
         cache = self.load_cache(model_path, backend)
         cache.update(new_preds)
         self._write_cache(model_path, cache, backend)
 
     def clear_cache(self, model_path: Optional[Path] = None, backend: str = "yolo") -> int:
+        """clear_cache method documentation."""
         removed = 0
         if model_path is not None:
             key = self._cache_key(model_path, backend)
@@ -184,6 +183,7 @@ class PoseInferenceService:
     def get_cached_pred(
         self, model_path: Path, image_path: Path, backend: str = "yolo"
     ) -> Optional[List[Tuple[float, float, float]]]:
+        """get_cached_pred method documentation."""
         preds = self.load_cache(model_path, backend)
         key = str(Path(image_path))
         if key in preds:
@@ -194,28 +194,15 @@ class PoseInferenceService:
     def get_cache_for_paths(
         self, model_path: Path, paths: List[Path], backend: str = "yolo"
     ) -> Optional[Dict[str, List[Tuple[float, float, float]]]]:
+        """get_cache_for_paths method documentation."""
         preds = self.load_cache(model_path, backend)
         for p in paths:
             if str(p) not in preds and str(p.resolve()) not in preds:
                 return None
         return preds
 
-    def predict(
-        self,
-        model_path: Path,
-        image_paths: List[Path],
-        device: str,
-        imgsz: int,
-        conf: float,
-        batch: int,
-        progress_cb=None,
-        cancel_cb=None,
-        backend: str = "yolo",
-        sleap_env: Optional[str] = None,
-        sleap_device: str = "auto",
-        sleap_batch: int = 4,
-        sleap_max_instances: int = 1,
-    ) -> Tuple[Optional[Dict[str, List[Tuple[float, float, float]]]], str]:
+    def predict(self: object, model_path: Path, image_paths: List[Path], device: str, imgsz: int, conf: float, batch: int, progress_cb: object = None, cancel_cb: object = None, backend: str = 'yolo', sleap_env: Optional[str] = None, sleap_device: str = 'auto', sleap_batch: int = 4, sleap_max_instances: int = 1) -> Tuple[Optional[Dict[str, List[Tuple[float, float, float]]]], str]:
+        """predict method documentation."""
         if not image_paths:
             return {}, ""
         if cancel_cb and cancel_cb():
@@ -277,13 +264,15 @@ class PoseInferenceService:
         return preds, ""
 
     @classmethod
-    def shutdown_sleap_service(cls):
+    def shutdown_sleap_service(cls: object) -> object:
+        """shutdown_sleap_service method documentation."""
         _get_sleap_service().stop()
 
     @classmethod
     def start_sleap_service(
         cls, env_name: str, out_root: Path
     ) -> Tuple[bool, str, Optional[Path]]:
+        """start_sleap_service method documentation."""
         log_path = None
         try:
             log_dir = Path(out_root) / "posekit" / "logs"
@@ -295,6 +284,7 @@ class PoseInferenceService:
 
     @classmethod
     def sleap_service_running(cls) -> bool:
+        """sleap_service_running method documentation."""
         svc = _get_sleap_service()
         return bool(svc.proc and svc.proc.poll() is None and svc.port)
 
@@ -1049,6 +1039,7 @@ class _SleapHttpService:
         return port
 
     def start(self, env_name: str, log_path: Optional[Path] = None) -> Tuple[bool, str]:
+        """start method documentation."""
         if self.proc and self.proc.poll() is None and self.env_name == env_name:
             return True, ""
         self.stop()
@@ -1117,7 +1108,8 @@ class _SleapHttpService:
             err = f"{err} (log: {self.log_path})"
         return False, err
 
-    def stop(self):
+    def stop(self: object) -> object:
+        """stop method documentation."""
         if self.proc and self.proc.poll() is None and self.port:
             try:
                 self.request("/shutdown", {}, timeout=2)
@@ -1141,6 +1133,7 @@ class _SleapHttpService:
         self.env_name = None
 
     def request(self, path: str, payload: dict, timeout: float = 3600.0) -> dict:
+        """request method documentation."""
         if not self.port:
             raise RuntimeError("SLEAP service not running.")
         url = f"http://127.0.0.1:{self.port}{path}"

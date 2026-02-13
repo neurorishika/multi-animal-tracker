@@ -27,7 +27,7 @@ class ObjectDetector:
         out = cv2.erode(sub, kernel, iterations=it)
         return cv2.morphologyEx(out, cv2.MORPH_OPEN, kernel)
 
-    def apply_conservative_split(self, fg_mask):
+    def apply_conservative_split(self: object, fg_mask: object) -> object:
         """Attempts to split merged objects in the foreground mask."""
         cnts, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         N = self.params["MAX_TARGETS"]
@@ -45,7 +45,7 @@ class ObjectDetector:
 
         return fg_mask
 
-    def detect_objects(self, fg_mask, frame_count):
+    def detect_objects(self: object, fg_mask: object, frame_count: object) -> object:
         """Detects and measures objects from the final foreground mask.
 
         Returns:
@@ -597,7 +597,7 @@ class YOLOOBBDetector:
 
         return meas, sizes, shapes, confidences, obb_corners_list
 
-    def detect_objects(self, frame, frame_count):
+    def detect_objects(self: object, frame: object, frame_count: object) -> object:
         """
         Detects objects in a frame using YOLO OBB.
 
@@ -721,7 +721,7 @@ class YOLOOBBDetector:
 
         return meas, sizes, shapes, results[0], confidences
 
-    def detect_objects_batched(self, frames, start_frame_idx, progress_callback=None):
+    def detect_objects_batched(self: object, frames: object, start_frame_idx: object, progress_callback: object = None) -> object:
         """
         Detect objects in a batch of frames using YOLO OBB.
 
@@ -897,7 +897,7 @@ class YOLOOBBDetector:
 
         return batch_detections
 
-    def apply_conservative_split(self, fg_mask):
+    def apply_conservative_split(self: object, fg_mask: object) -> object:
         """
         Placeholder method for compatibility with ObjectDetector interface.
         YOLO doesn't use foreground masks, so this is a no-op.
@@ -905,7 +905,7 @@ class YOLOOBBDetector:
         return fg_mask
 
 
-def create_detector(params):
+def create_detector(params: object) -> object:
     """
     Factory function to create the appropriate detector based on configuration.
 

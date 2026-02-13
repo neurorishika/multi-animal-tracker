@@ -74,26 +74,29 @@ class TrackingWorker(QThread):
         self.frame_prefetcher = None
         self.frame_prefetcher = None
 
-    def set_parameters(self, p: dict):
+    def set_parameters(self: object, p: dict) -> object:
+        """Set full tracking parameter dictionary in a thread-safe way."""
         self.params_mutex.lock()
         self.parameters = p
         self.params_mutex.unlock()
 
     @Slot(dict)
-    def update_parameters(self, new_params: dict):
+    def update_parameters(self: object, new_params: dict) -> object:
         """Slot to safely update parameters from the GUI thread."""
         self.params_mutex.lock()
         self.parameters = new_params
         self.params_mutex.unlock()
         logger.info("Tracking worker parameters updated.")
 
-    def get_current_params(self):
+    def get_current_params(self: object) -> object:
+        """Return a shallow copy of current tracking parameters."""
         self.params_mutex.lock()
         p = dict(self.parameters)
         self.params_mutex.unlock()
         return p
 
-    def stop(self):
+    def stop(self: object) -> object:
+        """Request cooperative stop for current processing loop."""
         self._stop_requested = True
 
     def _forward_frame_iterator(self, cap, use_prefetcher=False):
@@ -156,7 +159,8 @@ class TrackingWorker(QThread):
                     break
                 yield None, relative_idx + 1  # Return None for frame, 1-indexed count
 
-    def emit_frame(self, bgr):
+    def emit_frame(self: object, bgr: object) -> object:
+        """Emit current frame to GUI in RGB format."""
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.frame_signal.emit(rgb)
 
@@ -340,7 +344,8 @@ class TrackingWorker(QThread):
         )
         return frame_idx
 
-    def run(self):
+    def run(self: object) -> object:
+        """Execute tracking pipeline for the configured video and parameters."""
         # === 1. INITIALIZATION (Identical to Original) ===
         gc.collect()
         self._stop_requested = False

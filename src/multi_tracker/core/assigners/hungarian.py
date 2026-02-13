@@ -8,6 +8,7 @@ import numpy as np
 import logging
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
+from typing import Any, Dict, List, Tuple
 
 try:
     from numba import njit
@@ -107,8 +108,14 @@ class TrackAssigner:
         return candidates
 
     def compute_cost_matrix(
-        self, N, measurements, predictions, shapes, kf_manager, last_shape_info
-    ):
+        self,
+        N: int,
+        measurements: List[np.ndarray],
+        predictions: np.ndarray,
+        shapes: List[Tuple[float, float]],
+        kf_manager: Any,
+        last_shape_info: List[Any],
+    ) -> Tuple[np.ndarray, Dict[int, List[int]]]:
         """
         Computes cost matrix. Compatible with Vectorized Kalman Filter.
         """
@@ -208,26 +215,14 @@ class TrackAssigner:
 
         return cost, {}
 
-    def compute_assignment_confidence(self, cost, matched_pairs):
+    def compute_assignment_confidence(self: object, cost: object, matched_pairs: object) -> object:
         """Compute confidence scores for assignments."""
         if not matched_pairs:
             return {}
         scale = self.params.get("MAX_DISTANCE_THRESHOLD", 100.0) * 0.5
         return {r: 1.0 / (1.0 + cost[r, c] / scale) for r, c in matched_pairs}
 
-    def assign_tracks(
-        self,
-        cost,
-        N,
-        M,
-        meas,
-        track_states,
-        tracking_continuity,
-        kf_manager,
-        trajectory_ids,
-        next_trajectory_id,
-        spatial_candidates=None,
-    ):
+    def assign_tracks(self: object, cost: object, N: object, M: object, meas: object, track_states: object, tracking_continuity: object, kf_manager: object, trajectory_ids: object, next_trajectory_id: object, spatial_candidates: object = None) -> object:
         """
         Drop-in replacement for track assignment logic.
         Compatible with kf_manager.X state access.

@@ -253,7 +253,7 @@ def _make_loss_plot_image(
     return img
 
 
-def get_available_devices():
+def get_available_devices() -> object:
     """Get list of available compute devices based on gpu_utils flags."""
     devices = ["auto", "cpu"]
     if CUDA_AVAILABLE or TORCH_CUDA_AVAILABLE or ROCM_AVAILABLE:
@@ -355,6 +355,7 @@ def get_yolo_pose_base_models() -> List[str]:
 
 
 def list_images_in_dir(images_dir: Path) -> List[Path]:
+    """list_images_in_dir function documentation."""
     paths: List[Path] = []
     for p in sorted(images_dir.rglob("*")):
         if p.is_file() and p.suffix.lower() in IMG_EXTS:
@@ -380,6 +381,7 @@ def _label_path_for_image(base_dir: Path, img_path: Path) -> Optional[Path]:
 def load_yolo_dataset_items(
     dataset_yaml: Path,
 ) -> Tuple[List[Tuple[Path, Path]], Dict[str, object]]:
+    """load_yolo_dataset_items function documentation."""
     data = yaml.safe_load(dataset_yaml.read_text(encoding="utf-8"))
     base = Path(data.get("path", dataset_yaml.parent)).expanduser().resolve()
     train = data.get("train")
@@ -560,8 +562,8 @@ class DatasetSplitDialog(QDialog):
             },
         )
 
-    def closeEvent(self, event):
-        # Drop large arrays to reduce memory footprint between sessions.
+    def closeEvent(self: object, event: object) -> object:
+        """closeEvent method documentation."""
         self._emb = None
         self._eligible_indices = None
         self._cluster = None
@@ -1088,7 +1090,8 @@ class SmartSelectDialog(QDialog):
             },
         )
 
-    def closeEvent(self, event):
+    def closeEvent(self: object, event: object) -> object:
+        """closeEvent method documentation."""
         self._save_settings()
         super().closeEvent(event)
 
@@ -1740,7 +1743,8 @@ class EmbeddingExplorerDialog(QDialog):
         """Refresh the visualization."""
         self._load_visualization()
 
-    def closeEvent(self, event):
+    def closeEvent(self: object, event: object) -> object:
+        """closeEvent method documentation."""
         self.embeddings = None
         self.umap_projection = None
         self.cluster_ids = None
@@ -1765,10 +1769,12 @@ class UMAPWorker(QObject):
         self.random_state = random_state
         self._cancelled = False
 
-    def cancel(self):
+    def cancel(self: object) -> object:
+        """cancel method documentation."""
         self._cancelled = True
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             if self._cancelled:
                 return
@@ -1859,6 +1865,7 @@ def evaluate_pose_predictions(
     pck_thresh_frac: float,
     oks_sigma: float,
 ) -> Dict[str, object]:
+    """evaluate_pose_predictions function documentation."""
     per_kpt_errors: List[List[float]] = [[] for _ in range(k)]
     per_kpt_oks: List[List[float]] = [[] for _ in range(k)]
     per_kpt_pck: List[List[int]] = [[] for _ in range(k)]
@@ -2380,7 +2387,8 @@ class _SignalLogHandler(logging.Handler):
         super().__init__()
         self._signal = signal
 
-    def emit(self, record):
+    def emit(self: object, record: object) -> object:
+        """emit method documentation."""
         try:
             msg = self.format(record)
             self._signal.emit(msg)
@@ -2442,6 +2450,7 @@ def _format_float(val, digits: int = 3):
 
 
 class TrainingWorker(QObject):
+    """TrainingWorker API surface documentation."""
     log = Signal(str)
     progress = Signal(int, int)
     finished = Signal(dict)
@@ -2488,7 +2497,8 @@ class TrainingWorker(QObject):
         self._model = None
         self._proc = None
 
-    def cancel(self):
+    def cancel(self: object) -> object:
+        """cancel method documentation."""
         self._cancel = True
         try:
             if self._proc and self._proc.poll() is None:
@@ -2531,7 +2541,8 @@ class TrainingWorker(QObject):
             pass
         self._log_handler = None
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             self.run_dir.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"Training run dir: {self.run_dir}")
@@ -2695,6 +2706,7 @@ class TrainingWorker(QObject):
 
 
 class SleapExportWorker(QObject):
+    """SleapExportWorker API surface documentation."""
     log = Signal(str)
     finished = Signal(str)
     failed = Signal(str)
@@ -2728,7 +2740,8 @@ class SleapExportWorker(QObject):
         self.aux_datasets = aux_datasets or []
         self.aux_items = aux_items or []
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             if not self.env_name:
                 self.failed.emit("No SLEAP conda environment selected.")
@@ -2820,6 +2833,7 @@ class SleapExportWorker(QObject):
 
 
 class TrainingRunnerDialog(QDialog):
+    """TrainingRunnerDialog API surface documentation."""
     def __init__(self, parent, project, image_paths: List[Path]):
         super().__init__(parent)
         self.setWindowTitle("Training Runner")
@@ -2943,7 +2957,8 @@ class TrainingRunnerDialog(QDialog):
         row = 0
         col = 0
 
-        def add_row(label: str, widget: QWidget, tip: str):
+        def add_row(label: str, widget: QWidget, tip: str) -> object:
+            """add_row method documentation."""
             nonlocal row, col
             lbl = QLabel(label)
             lbl.setToolTip(tip)
@@ -3548,7 +3563,8 @@ class TrainingRunnerDialog(QDialog):
             },
         )
 
-    def closeEvent(self, event):
+    def closeEvent(self: object, event: object) -> object:
+        """closeEvent method documentation."""
         self._save_settings()
         super().closeEvent(event)
 
@@ -3928,6 +3944,7 @@ class TrainingRunnerDialog(QDialog):
 
 
 class EvaluationWorker(QObject):
+    """EvaluationWorker API surface documentation."""
     log = Signal(str)
     progress = Signal(int, int)
     finished = Signal(dict)
@@ -3973,7 +3990,8 @@ class EvaluationWorker(QObject):
         self.pred_cache = pred_cache
         self._cancel = False
 
-    def cancel(self):
+    def cancel(self: object) -> object:
+        """cancel method documentation."""
         self._cancel = True
 
     def _extract_best_prediction(self, result, num_kpts: int):
@@ -4024,7 +4042,8 @@ class EvaluationWorker(QObject):
 
         return pred_xy, pred_conf
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             if self.backend != "sleap":
                 try:
@@ -4290,6 +4309,7 @@ class EvaluationWorker(QObject):
 
 
 class EvaluationDashboardDialog(QDialog):
+    """EvaluationDashboardDialog API surface documentation."""
     def __init__(
         self,
         parent,
@@ -4469,7 +4489,8 @@ class EvaluationDashboardDialog(QDialog):
         self._refresh_sleap_envs()
         self._apply_backend_ui()
 
-    def lock_model_path(self, path: str):
+    def lock_model_path(self: object, path: str) -> object:
+        """lock_model_path method documentation."""
         if path:
             self.weights_edit.setText(path)
         self._lock_model = True
@@ -4525,7 +4546,8 @@ class EvaluationDashboardDialog(QDialog):
             },
         )
 
-    def closeEvent(self, event):
+    def closeEvent(self: object, event: object) -> object:
+        """closeEvent method documentation."""
         self._save_settings()
         super().closeEvent(event)
 
@@ -4768,6 +4790,7 @@ class EvaluationDashboardDialog(QDialog):
 
 
 class ActiveLearningWorker(QObject):
+    """ActiveLearningWorker API surface documentation."""
     log = Signal(str)
     progress = Signal(int, int)
     finished = Signal(list)
@@ -4819,7 +4842,8 @@ class ActiveLearningWorker(QObject):
         self.sleap_batch = int(sleap_batch)
         self._cancel = False
 
-    def cancel(self):
+    def cancel(self: object) -> object:
+        """cancel method documentation."""
         self._cancel = True
 
     def _predict_keypoints(self, weights_path: str, paths: List[Path]):
@@ -4903,7 +4927,8 @@ class ActiveLearningWorker(QObject):
 
         return pred_xy, pred_conf
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             paths = [self.image_paths[i] for i in self.candidate_indices]
             if not paths:
@@ -5076,6 +5101,7 @@ class ActiveLearningWorker(QObject):
 
 
 class ActiveLearningDialog(QDialog):
+    """ActiveLearningDialog API surface documentation."""
     def __init__(
         self,
         parent,
@@ -5292,7 +5318,8 @@ class ActiveLearningDialog(QDialog):
         self._refresh_sleap_envs()
         self._apply_backend_ui()
 
-    def lock_model_path(self, path: str):
+    def lock_model_path(self: object, path: str) -> object:
+        """lock_model_path method documentation."""
         if path:
             self.weights_a_edit.setText(path)
             self.weights_b1_edit.setText(path)
@@ -5365,7 +5392,8 @@ class ActiveLearningDialog(QDialog):
             },
         )
 
-    def closeEvent(self, event):
+    def closeEvent(self: object, event: object) -> object:
+        """closeEvent method documentation."""
         self._save_settings()
         super().closeEvent(event)
 

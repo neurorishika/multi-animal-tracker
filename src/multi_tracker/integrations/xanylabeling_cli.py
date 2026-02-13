@@ -1,3 +1,9 @@
+"""Integration helpers for invoking X-AnyLabeling conversion workflows.
+
+This module provides a thin wrapper around the external `xanylabeling` CLI to
+convert project labels into YOLO-OBB format from within MAT workflows.
+"""
+
 import os
 import subprocess
 import logging
@@ -23,7 +29,9 @@ HARD_CODED_CMD = [
 ]
 
 
-def convert_project(project_dir: str, output_dir: str, conda_env: str | None = None):
+def convert_project(
+    project_dir: str, output_dir: str, conda_env: str | None = None
+) -> tuple[bool, str]:
     """Convert an X-AnyLabeling project to YOLO-OBB using the hardcoded CLI.
 
     Args:

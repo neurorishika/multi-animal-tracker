@@ -16,7 +16,7 @@ from pathlib import Path
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 # Set up logging
-def setup_logging(log_level=logging.INFO, enable_file_logging=False, log_dir=None):
+def setup_logging(log_level: object = logging.INFO, enable_file_logging: object = False, log_dir: object = None) -> object:
     """Set up logging configuration for the multi-tracker application.
 
     Note: File logging is now handled per-session in main_window.py.
@@ -41,7 +41,7 @@ def setup_logging(log_level=logging.INFO, enable_file_logging=False, log_dir=Non
     logger.info(f"Working directory: {os.getcwd()}")
 
 
-def parse_arguments():
+def parse_arguments() -> object:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
         description="Multi-Animal Tracker - Real-time animal tracking with circular ROI",
@@ -78,7 +78,7 @@ Examples:
     return parser.parse_args()
 
 
-def check_dependencies():
+def check_dependencies() -> object:
     """Check that all required dependencies are available."""
     required_modules = [
         ("numpy", "numpy"),
@@ -108,7 +108,7 @@ def check_dependencies():
     return True
 
 
-def main():
+def main() -> object:
     """
     Application entry point.
 

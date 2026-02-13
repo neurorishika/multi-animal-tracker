@@ -56,7 +56,7 @@ class RealtimeHistogramWidget(QWidget):
         self.axis.set_ylabel("Frequency")
         self.canvas.draw()
 
-    def update_data(self, new_data):
+    def update_data(self: object, new_data: object) -> object:
         """
         Update histogram with new data points.
 
@@ -80,7 +80,7 @@ class RealtimeHistogramWidget(QWidget):
             self.axis.set_ylabel("Frequency")
             self.canvas.draw()
 
-    def clear_data(self):
+    def clear_data(self: object) -> object:
         """Clear all historical data."""
         self.data_history.clear()
         self.axis.clear()
@@ -138,7 +138,7 @@ class HistogramPanel(QWidget):
 
         self.setLayout(layout)
 
-    def set_history_frames(self, history_frames):
+    def set_history_frames(self: object, history_frames: object) -> object:
         """
         Update the history window size for all histograms.
 
@@ -161,25 +161,25 @@ class HistogramPanel(QWidget):
             self.assignment_cost_histogram.data_history, maxlen=history_frames
         )
 
-    def update_velocity_data(self, velocities):
+    def update_velocity_data(self: object, velocities: object) -> object:
         """Update velocity histogram with new data."""
         self.velocity_histogram.update_data(velocities)
 
-    def update_size_data(self, sizes):
+    def update_size_data(self: object, sizes: object) -> object:
         """Update size histogram with new data."""
         self.size_histogram.update_data(sizes)
 
-    def update_orientation_data(self, orientations):
+    def update_orientation_data(self: object, orientations: object) -> object:
         """Update orientation histogram with new data."""
         # Convert orientations to degrees for better readability
         orientations_deg = [np.degrees(o) for o in orientations]
         self.orientation_histogram.update_data(orientations_deg)
 
-    def update_assignment_cost_data(self, costs):
+    def update_assignment_cost_data(self: object, costs: object) -> object:
         """Update assignment cost histogram with new data."""
         self.assignment_cost_histogram.update_data(costs)
 
-    def clear_all_data(self):
+    def clear_all_data(self: object) -> object:
         """Clear all histogram data."""
         self.velocity_histogram.clear_data()
         self.size_histogram.clear_data()

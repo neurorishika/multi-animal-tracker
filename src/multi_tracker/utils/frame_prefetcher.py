@@ -53,7 +53,7 @@ class FramePrefetcher:
         self.thread = None
         self._started = False
 
-    def start(self):
+    def start(self: object) -> object:
         """Start the background prefetching thread."""
         if self._started:
             logger.warning("FramePrefetcher already started")
@@ -94,7 +94,7 @@ class FramePrefetcher:
             except queue.Full:
                 pass
 
-    def read(self):
+    def read(self: object) -> object:
         """
         Read the next frame (from prefetch buffer).
 
@@ -115,7 +115,7 @@ class FramePrefetcher:
             logger.error("Frame prefetcher timeout - no frames available")
             return False, None
 
-    def stop(self):
+    def stop(self: object) -> object:
         """Stop the prefetching thread and clean up."""
         if not self._started:
             return

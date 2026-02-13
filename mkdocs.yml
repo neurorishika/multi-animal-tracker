@@ -1,0 +1,119 @@
+site_name: Multi-Animal Tracker Docs
+site_description: User and developer documentation for Multi-Animal Tracker and PoseKit
+site_url: https://github.com/neurorishika/multi-animal-tracker
+repo_url: https://github.com/neurorishika/multi-animal-tracker
+repo_name: neurorishika/multi-animal-tracker
+edit_uri: edit/main/docs/
+strict: true
+exclude_docs: |
+  archive/**
+hooks:
+  - docs/hooks.py
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+plugins:
+  - search
+  - autorefs
+  - include-markdown
+  - mkdocstrings:
+      handlers:
+        python:
+          paths:
+            - src
+          options:
+            docstring_style: null
+            show_source: false
+            show_root_heading: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            members_order: source
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Installation: getting-started/installation.md
+      - Quickstart (MAT): getting-started/quickstart-mat.md
+      - Quickstart (PoseKit): getting-started/quickstart-posekit.md
+      - Platform Notes: getting-started/platforms.md
+  - User Guide:
+      - Overview: user-guide/overview.md
+      - End-to-End Workflow: user-guide/workflow.md
+      - Detection Modes: user-guide/detection-modes.md
+      - Tracking and Merging: user-guide/tracking-and-merging.md
+      - Post-processing: user-guide/post-processing.md
+      - Configuration Reference: user-guide/configuration-reference.md
+      - Outputs and CSV Schema: user-guide/outputs-and-csv-schema.md
+      - Dataset Generation: user-guide/dataset-generation.md
+      - Individual Analysis: user-guide/individual-analysis.md
+      - PoseKit Labeler: user-guide/posekit-labeler.md
+      - Troubleshooting: user-guide/troubleshooting.md
+  - Developer Guide:
+      - Architecture: developer-guide/architecture.md
+      - Module Map: developer-guide/module-map.md
+      - Data Flow: developer-guide/data-flow.md
+      - GPU Backends: developer-guide/gpu-backends.md
+      - Performance Tuning: developer-guide/performance-tuning.md
+      - Confidence Metrics: developer-guide/confidence-metrics.md
+      - Extending Detection: developer-guide/extending-detection.md
+      - Extending Identity: developer-guide/extending-identity.md
+      - Contributing: developer-guide/contributing.md
+  - Reference:
+      - API Index: reference/api-index.md
+      - API (App): reference/api-app.md
+      - API (Core): reference/api-core.md
+      - API (Data): reference/api-data.md
+      - API (GUI): reference/api-gui.md
+      - API (PoseKit): reference/api-posekit.md
+      - API (Utils): reference/api-utils.md
+      - CLI Reference: reference/cli-reference.md
+      - Changelog: reference/changelog.md
+      - FAQ: reference/faq.md

@@ -46,7 +46,7 @@ class CSVWriterThread(threading.Thread):
         if self.header:
             self.writer.writerow(self.header)
             
-    def run(self):
+    def run(self: object) -> object:
         """
         Main thread loop for processing queued data.
         
@@ -67,7 +67,7 @@ class CSVWriterThread(threading.Thread):
             self.f.flush()
             self.f.close()
             
-    def enqueue(self, row):
+    def enqueue(self: object, row: object) -> object:
         """
         Add a data row to the write queue.
         
@@ -76,6 +76,6 @@ class CSVWriterThread(threading.Thread):
         """
         self.queue.put(row)
         
-    def stop(self):
+    def stop(self: object) -> object:
         """Signal the thread to stop processing and shutdown gracefully."""
         self._stop_requested = True

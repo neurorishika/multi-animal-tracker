@@ -102,7 +102,8 @@ class MergeWorker(QThread):
         self.interp_method = interp_method
         self.max_gap = max_gap
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             self.progress_signal.emit(10, "Preparing trajectories...")
 
@@ -268,7 +269,8 @@ class InterpolatedCropsWorker(QThread):
 
         return None, None
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             if not self.csv_path or not os.path.exists(self.csv_path):
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
@@ -670,7 +672,8 @@ class DatasetGenerationWorker(QThread):
         self.include_context = include_context
         self.probabilistic = probabilistic
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             from ..data.dataset_generation import export_dataset, FrameQualityScorer
 
@@ -751,7 +754,7 @@ class DatasetGenerationWorker(QThread):
             self.error_signal.emit(str(e))
 
 
-def get_video_config_path(video_path):
+def get_video_config_path(video_path: object) -> object:
     """Get the config file path for a given video file."""
     if not video_path:
         return None
@@ -760,7 +763,7 @@ def get_video_config_path(video_path):
     return os.path.join(video_dir, f"{video_name}_config.json")
 
 
-def get_models_directory():
+def get_models_directory() -> object:
     """
     Get the path to the local models directory.
 
@@ -781,7 +784,7 @@ def get_models_directory():
     return models_dir
 
 
-def resolve_model_path(model_path):
+def resolve_model_path(model_path: object) -> object:
     """
     Resolve a model path to an absolute path.
 
@@ -816,7 +819,7 @@ def resolve_model_path(model_path):
     return model_path
 
 
-def make_model_path_relative(model_path):
+def make_model_path_relative(model_path: object) -> object:
     """
     Convert an absolute model path to relative if it's in the models directory.
 
@@ -913,7 +916,7 @@ class CollapsibleGroupBox(QWidget):
 
         self._main_layout.addWidget(self._content_container)
 
-    def setContentLayout(self, layout):
+    def setContentLayout(self: object, layout: object) -> object:
         """Set the content layout for the collapsible section."""
         # Clear existing layout
         while self._content_layout.count():
@@ -927,15 +930,15 @@ class CollapsibleGroupBox(QWidget):
         self._content_layout.addWidget(content_widget)
         self._content_widget = content_widget
 
-    def addWidget(self, widget):
+    def addWidget(self: object, widget: object) -> object:
         """Add a widget to the content area."""
         self._content_layout.addWidget(widget)
 
-    def addLayout(self, layout):
+    def addLayout(self: object, layout: object) -> object:
         """Add a layout to the content area."""
         self._content_layout.addLayout(layout)
 
-    def setAccordionGroup(self, accordion):
+    def setAccordionGroup(self: object, accordion: object) -> object:
         """Set the accordion group this collapsible belongs to."""
         self._accordion_group = accordion
 
@@ -947,7 +950,7 @@ class CollapsibleGroupBox(QWidget):
                 self._accordion_group.collapseAllExcept(self)
         self.setExpanded(checked)
 
-    def setExpanded(self, expanded: bool):
+    def setExpanded(self: object, expanded: bool) -> object:
         """Set the expanded state of the collapsible."""
         self._is_expanded = expanded
         self._header_button.setChecked(expanded)
@@ -972,23 +975,23 @@ class AccordionContainer:
     def __init__(self):
         self._collapsibles = []
 
-    def addCollapsible(self, collapsible: CollapsibleGroupBox):
+    def addCollapsible(self: object, collapsible: CollapsibleGroupBox) -> object:
         """Add a collapsible to this accordion group."""
         collapsible.setAccordionGroup(self)
         self._collapsibles.append(collapsible)
 
-    def collapseAllExcept(self, keep_expanded: CollapsibleGroupBox):
+    def collapseAllExcept(self: object, keep_expanded: CollapsibleGroupBox) -> object:
         """Collapse all collapsibles except the specified one."""
         for collapsible in self._collapsibles:
             if collapsible is not keep_expanded and collapsible.isExpanded():
                 collapsible.setExpanded(False)
 
-    def collapseAll(self):
+    def collapseAll(self: object) -> object:
         """Collapse all collapsibles."""
         for collapsible in self._collapsibles:
             collapsible.setExpanded(False)
 
-    def expandFirst(self):
+    def expandFirst(self: object) -> object:
         """Expand the first collapsible (if any)."""
         if self._collapsibles:
             self._collapsibles[0].setExpanded(True)
@@ -1234,7 +1237,7 @@ class MainWindow(QMainWindow):
         # Default to "no video loaded" state
         self._apply_ui_state("no_video")
 
-    def init_ui(self):
+    def init_ui(self: object) -> object:
         """Build the structured UI using Splitter and Tabs."""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -1561,7 +1564,7 @@ class MainWindow(QMainWindow):
     # TAB UI BUILDERS
     # =========================================================================
 
-    def setup_setup_ui(self):
+    def setup_setup_ui(self: object) -> object:
         """Tab 1: Setup - Files, Video, Display & Debug."""
         layout = QVBoxLayout(self.tab_setup)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2037,7 +2040,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_detection_ui(self):
+    def setup_detection_ui(self: object) -> object:
         """Tab 2: Detection - Method, Image Proc, Algo specific."""
         layout = QVBoxLayout(self.tab_detection)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -2838,7 +2841,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_tracking_ui(self):
+    def setup_tracking_ui(self: object) -> object:
         """Tab 3: Tracking Logic."""
         layout = QVBoxLayout(self.tab_tracking)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3291,7 +3294,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_data_ui(self):
+    def setup_data_ui(self: object) -> object:
         """Tab 4: Post-Processing."""
         layout = QVBoxLayout(self.tab_data)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -3643,7 +3646,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_dataset_ui(self):
+    def setup_dataset_ui(self: object) -> object:
         """Tab 6: Dataset Generation for Active Learning."""
         layout = QVBoxLayout(self.tab_dataset)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -4094,7 +4097,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-    def setup_individual_analysis_ui(self):
+    def setup_individual_analysis_ui(self: object) -> object:
         """Tab 7: Individual Analysis - Real-time Identity & Post-hoc Pose Analysis."""
         layout = QVBoxLayout(self.tab_individual)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -4830,7 +4833,7 @@ class MainWindow(QMainWindow):
         self._update_preview_display()
         self.on_detection_method_changed(index)
 
-    def select_file(self):
+    def select_file(self: object) -> object:
         """Select video file via file dialog."""
         fp, _ = QFileDialog.getOpenFileName(
             self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
@@ -4899,12 +4902,14 @@ class MainWindow(QMainWindow):
         # Enable full UI now that a video is loaded
         self._apply_ui_state("idle")
 
-    def select_csv(self):
+    def select_csv(self: object) -> object:
+        """select_csv method documentation."""
         fp, _ = QFileDialog.getSaveFileName(self, "Select CSV", "", "CSV Files (*.csv)")
         if fp:
             self.csv_line.setText(fp)
 
-    def select_video_output(self):
+    def select_video_output(self: object) -> object:
+        """select_video_output method documentation."""
         fp, _ = QFileDialog.getSaveFileName(
             self, "Select Video Output", "", "Video Files (*.mp4 *.avi)"
         )
@@ -6272,7 +6277,8 @@ class MainWindow(QMainWindow):
         self.scroll.horizontalScrollBar().setValue(0)
         self.scroll.verticalScrollBar().setValue(0)
 
-    def record_roi_click(self, evt):
+    def record_roi_click(self: object, evt: object) -> object:
+        """record_roi_click method documentation."""
         if not self.roi_selection_active or self.roi_base_frame is None:
             return
 
@@ -6314,7 +6320,8 @@ class MainWindow(QMainWindow):
         self.roi_points.append((x, y))
         self.update_roi_preview()
 
-    def update_roi_preview(self):
+    def update_roi_preview(self: object) -> object:
+        """update_roi_preview method documentation."""
         if self.roi_base_frame is None:
             return
         pix = QPixmap.fromImage(self.roi_base_frame).toImage().copy()
@@ -6399,7 +6406,8 @@ class MainWindow(QMainWindow):
         painter.end()
         self.video_label.setPixmap(QPixmap.fromImage(pix))
 
-    def start_roi_selection(self):
+    def start_roi_selection(self: object) -> object:
+        """start_roi_selection method documentation."""
         if not self.file_line.text():
             QMessageBox.warning(self, "No Video", "Please select a video file first.")
             return
@@ -6453,7 +6461,8 @@ class MainWindow(QMainWindow):
 
         self.update_roi_preview()
 
-    def finish_roi_selection(self):
+    def finish_roi_selection(self: object) -> object:
+        """finish_roi_selection method documentation."""
         if not self.roi_base_frame:
             return
 
@@ -6580,7 +6589,7 @@ class MainWindow(QMainWindow):
         # Invalidate cache when ROI changes
         self._invalidate_roi_cache()
 
-    def undo_last_roi_shape(self):
+    def undo_last_roi_shape(self: object) -> object:
         """Remove the last added ROI shape."""
         if not self.roi_shapes:
             return
@@ -6614,7 +6623,8 @@ class MainWindow(QMainWindow):
 
         self.update_roi_preview()
 
-    def clear_roi(self):
+    def clear_roi(self: object) -> object:
+        """clear_roi method documentation."""
         self.roi_mask = None
         self.roi_points = []
         self.roi_fitted_circle = None
@@ -6640,23 +6650,26 @@ class MainWindow(QMainWindow):
 
         logger.info("All ROI shapes cleared")
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self: object, event: object) -> object:
+        """keyPressEvent method documentation."""
         if event.key() == Qt.Key_Escape and self.roi_selection_active:
             self.clear_roi()
         else:
             super().keyPressEvent(event)
 
-    def on_detection_method_changed(self, index):
+    def on_detection_method_changed(self: object, index: object) -> object:
+        """on_detection_method_changed method documentation."""
         is_yolo = index == 1
         # In new UI, this is handled by StackedWidget, but we keep this for compatibility logic
         pass
 
-    def on_yolo_model_changed(self, index):
+    def on_yolo_model_changed(self: object, index: object) -> object:
+        """on_yolo_model_changed method documentation."""
         is_custom = self.combo_yolo_model.currentText() == "Custom Model..."
         self.yolo_custom_model_widget.setVisible(is_custom)
 
-    def select_yolo_custom_model(self):
-        # Default to models directory, or current model location if set
+    def select_yolo_custom_model(self: object) -> object:
+        """select_yolo_custom_model method documentation."""
         start_dir = get_models_directory()
         if self.yolo_custom_model_line.text():
             current_path = resolve_model_path(self.yolo_custom_model_line.text())
@@ -6726,7 +6739,8 @@ class MainWindow(QMainWindow):
             # Store relative path if model is in archive (portable across devices)
             self.yolo_custom_model_line.setText(make_model_path_relative(fp))
 
-    def toggle_histogram_window(self):
+    def toggle_histogram_window(self: object) -> object:
+        """toggle_histogram_window method documentation."""
         if self.histogram_window is None:
             if self.histogram_panel is None:
                 self.histogram_panel = HistogramPanel(
@@ -6754,7 +6768,8 @@ class MainWindow(QMainWindow):
         else:
             self.histogram_window.hide()
 
-    def toggle_preview(self, checked):
+    def toggle_preview(self: object, checked: object) -> object:
+        """toggle_preview method documentation."""
         if checked:
             # Warn user that preview doesn't save config
             msg = QMessageBox()
@@ -6784,7 +6799,8 @@ class MainWindow(QMainWindow):
             self.btn_preview.setText("Preview Mode")
             self.btn_start.setEnabled(True)
 
-    def toggle_tracking(self, checked):
+    def toggle_tracking(self: object, checked: object) -> object:
+        """toggle_tracking method documentation."""
         if checked:
             # If preview is active, stop it first
             if self.btn_preview.isChecked():
@@ -6806,7 +6822,8 @@ class MainWindow(QMainWindow):
         else:
             self.stop_tracking()
 
-    def toggle_debug_logging(self, checked):
+    def toggle_debug_logging(self: object, checked: object) -> object:
+        """toggle_debug_logging method documentation."""
         if checked:
             logger.setLevel(logging.DEBUG)
             logger.info("Debug logging enabled")
@@ -6856,7 +6873,8 @@ class MainWindow(QMainWindow):
                 self.video_label.setText("Load a video to begin...")
             self.video_label.setStyleSheet("color: #666; font-size: 16px;")
 
-    def start_full(self):
+    def start_full(self: object) -> object:
+        """start_full method documentation."""
         if self.btn_preview.isChecked():
             self.btn_preview.setChecked(False)
             self.btn_preview.setText("Preview Mode")
@@ -6873,7 +6891,8 @@ class MainWindow(QMainWindow):
 
         self.start_tracking(preview_mode=False)
 
-    def stop_tracking(self):
+    def stop_tracking(self: object) -> object:
+        """stop_tracking method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             self.tracking_worker.stop()
             self.progress_bar.setVisible(False)
@@ -7184,16 +7203,17 @@ class MainWindow(QMainWindow):
         return result_copy
 
     @Slot(int, str)
-    def on_progress_update(self, percentage, status_text):
+    def on_progress_update(self: object, percentage: object, status_text: object) -> object:
+        """on_progress_update method documentation."""
         self.progress_bar.setValue(percentage)
         self.progress_label.setText(status_text)
 
     @Slot(str, str)
-    def on_tracking_warning(self, title, message):
+    def on_tracking_warning(self: object, title: object, message: object) -> object:
         """Display tracking warnings in the UI."""
         QMessageBox.information(self, title, message)
 
-    def show_gpu_info(self):
+    def show_gpu_info(self: object) -> object:
         """Display GPU and acceleration information dialog."""
         from ..utils.gpu_utils import get_device_info
 
@@ -7254,7 +7274,7 @@ class MainWindow(QMainWindow):
         msg_box.exec()
 
     @Slot(dict)
-    def on_stats_update(self, stats):
+    def on_stats_update(self: object, stats: object) -> object:
         """Update real-time tracking statistics."""
         # Update FPS
         if "fps" in stats:
@@ -7291,7 +7311,8 @@ class MainWindow(QMainWindow):
             self.label_eta.setVisible(True)
 
     @Slot(np.ndarray)
-    def on_new_frame(self, rgb):
+    def on_new_frame(self: object, rgb: object) -> object:
+        """on_new_frame method documentation."""
         z = max(self.slider_zoom.value() / 100.0, 0.1)
         h, w, _ = rgb.shape
 
@@ -7343,7 +7364,7 @@ class MainWindow(QMainWindow):
         )
         return result_df
 
-    def save_trajectories_to_csv(self, trajectories, output_path):
+    def save_trajectories_to_csv(self: object, trajectories: object, output_path: object) -> object:
         """Save processed trajectories to CSV.
 
         Args:
@@ -7421,7 +7442,8 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to save processed trajectories to {output_path}: {e}")
             return False
 
-    def merge_and_save_trajectories(self):
+    def merge_and_save_trajectories(self: object) -> object:
+        """merge_and_save_trajectories method documentation."""
         logger.info(f"=" * 80)
         logger.info("Starting trajectory merging process...")
         logger.info(f"=" * 80)
@@ -7484,7 +7506,7 @@ class MainWindow(QMainWindow):
         self.merge_worker.error_signal.connect(self.on_merge_error)
         self.merge_worker.start()
 
-    def on_merge_progress(self, value, message):
+    def on_merge_progress(self: object, value: object, message: object) -> object:
         """Update progress bar during merge."""
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
@@ -7513,7 +7535,7 @@ class MainWindow(QMainWindow):
         if roi_npz_path:
             logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
 
-    def on_merge_error(self, error_message):
+    def on_merge_error(self: object, error_message: object) -> object:
         """Handle merge errors."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -7522,7 +7544,7 @@ class MainWindow(QMainWindow):
         )
         logger.error(f"Trajectory merge error: {error_message}")
 
-    def on_merge_finished(self, resolved_trajectories):
+    def on_merge_finished(self: object, resolved_trajectories: object) -> object:
         """Handle completion of trajectory merging."""
         self.progress_label.setText("Saving merged trajectories...")
 
@@ -7783,7 +7805,8 @@ class MainWindow(QMainWindow):
         self._finish_tracking_session(final_csv_path=csv_path)
 
     @Slot(bool, list, list)
-    def on_tracking_finished(self, finished_normally, fps_list, full_traj):
+    def on_tracking_finished(self: object, finished_normally: object, fps_list: object, full_traj: object) -> object:
+        """on_tracking_finished method documentation."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
 
@@ -8162,7 +8185,8 @@ class MainWindow(QMainWindow):
         return None, None
 
     @Slot(dict)
-    def on_histogram_data(self, histogram_data):
+    def on_histogram_data(self: object, histogram_data: object) -> object:
+        """on_histogram_data method documentation."""
         if (
             self.enable_histograms.isChecked()
             and self.histogram_window is not None
@@ -8186,7 +8210,8 @@ class MainWindow(QMainWindow):
                     histogram_data["assignment_costs"]
                 )
 
-    def start_backward_tracking(self):
+    def start_backward_tracking(self: object) -> object:
+        """start_backward_tracking method documentation."""
         logger.info(f"=" * 80)
         logger.info("Starting backward tracking pass (using cached detections)...")
         logger.info(f"=" * 80)
@@ -8207,8 +8232,8 @@ class MainWindow(QMainWindow):
         # Start backward tracking directly on original video with cached detections
         self.start_tracking_on_video(video_fp, backward_mode=True)
 
-    def start_tracking(self, preview_mode: bool, backward_mode: bool = False):
-        # Only save config when NOT in preview mode
+    def start_tracking(self: object, preview_mode: bool, backward_mode: bool = False) -> object:
+        """start_tracking method documentation."""
         if not preview_mode:
             if not self.save_config():
                 # User cancelled config save, abort tracking
@@ -8222,7 +8247,8 @@ class MainWindow(QMainWindow):
         else:
             self.start_tracking_on_video(video_fp, backward_mode=False)
 
-    def start_preview_on_video(self, video_path):
+    def start_preview_on_video(self: object, video_path: object) -> object:
+        """start_preview_on_video method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
 
@@ -8261,7 +8287,8 @@ class MainWindow(QMainWindow):
         self._apply_ui_state("preview")
         self.tracking_worker.start()
 
-    def start_tracking_on_video(self, video_path, backward_mode=False):
+    def start_tracking_on_video(self: object, video_path: object, backward_mode: object = False) -> object:
+        """start_tracking_on_video method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
 
@@ -8333,7 +8360,7 @@ class MainWindow(QMainWindow):
         use_cached_detections = self.chk_use_cached_detections.isChecked()
 
         # Generate model-specific cache name
-        def get_cache_model_id():
+        def get_cache_model_id() -> object:
             """Generate a unique identifier for the current detection configuration."""
             # Include resize factor in cache ID since detections are scale-dependent
             resize_factor = params.get("RESIZE_FACTOR", 1.0)
@@ -8420,7 +8447,8 @@ class MainWindow(QMainWindow):
         self._apply_ui_state("tracking")
         self.tracking_worker.start()
 
-    def get_parameters_dict(self):
+    def get_parameters_dict(self: object) -> object:
+        """get_parameters_dict method documentation."""
         N = self.spin_max_targets.value()
         np.random.seed(42)
         colors = [tuple(c.tolist()) for c in np.random.randint(0, 255, (N, 3))]
@@ -8649,7 +8677,7 @@ class MainWindow(QMainWindow):
             "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
         }
 
-    def load_config(self):
+    def load_config(self: object) -> object:
         """Manually load config from file dialog."""
         config_path, _ = QFileDialog.getOpenFileName(
             self, "Load Configuration", "", "JSON Files (*.json)"
@@ -8677,7 +8705,7 @@ class MainWindow(QMainWindow):
         if not os.path.isfile(config_path):
             return
 
-        def get_cfg(new_key, *legacy_keys, default=None):
+        def get_cfg(new_key: object, *legacy_keys: object, default: object = None) -> object:
             """Helper to get config value with fallback to legacy keys."""
             if new_key in cfg:
                 return cfg[new_key]
@@ -9289,13 +9317,7 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.warning(f"Failed to load configuration: {e}")
 
-    def save_config(
-        self,
-        preset_mode=False,
-        preset_path=None,
-        preset_name=None,
-        preset_description=None,
-    ):
+    def save_config(self: object, preset_mode: object = False, preset_path: object = None, preset_name: object = None, preset_description: object = None) -> object:
         """Save current configuration to JSON file.
 
         Args:
@@ -9833,12 +9855,12 @@ class MainWindow(QMainWindow):
                 f"Failed to generate dataset:\n{str(e)}",
             )
 
-    def on_dataset_progress(self, value, message):
+    def on_dataset_progress(self: object, value: object, message: object) -> object:
         """Update progress bar during dataset generation."""
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
 
-    def on_dataset_finished(self, dataset_dir, num_frames):
+    def on_dataset_finished(self: object, dataset_dir: object, num_frames: object) -> object:
         """Handle dataset generation completion."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -9858,7 +9880,7 @@ class MainWindow(QMainWindow):
             "Use 'Open Dataset in X-AnyLabeling' to review annotations.",
         )
 
-    def on_dataset_error(self, error_message):
+    def on_dataset_error(self: object, error_message: object) -> object:
         """Handle dataset generation errors."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -10409,7 +10431,7 @@ class MainWindow(QMainWindow):
                 self._save_advanced_config()
                 self.roi_crop_warning_shown = True
 
-    def crop_video_to_roi(self):
+    def crop_video_to_roi(self: object) -> object:
         """Crop the video to the ROI bounding box and save as new file."""
         if self.roi_mask is None:
             QMessageBox.warning(self, "No ROI", "Please define an ROI before cropping.")
@@ -10734,7 +10756,8 @@ class MainWindow(QMainWindow):
             # Clean up
             del self._crop_process
 
-    def plot_fps(self, fps_list):
+    def plot_fps(self: object, fps_list: object) -> object:
+        """plot_fps method documentation."""
         if len(fps_list) < 2:
             return
         plt.figure()

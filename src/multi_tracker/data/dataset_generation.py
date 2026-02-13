@@ -34,7 +34,7 @@ class FrameQualityScorer:
         self.use_track_loss = params.get("METRIC_TRACK_LOSS", True)
         self.use_uncertainty = params.get("METRIC_HIGH_UNCERTAINTY", False)
 
-    def score_frame(self, frame_id, detection_data=None, tracking_data=None):
+    def score_frame(self: object, frame_id: object, detection_data: object = None, tracking_data: object = None) -> object:
         """
         Score a single frame based on enabled quality metrics.
 
@@ -151,7 +151,7 @@ class FrameQualityScorer:
 
         return score
 
-    def get_worst_frames(self, max_frames, diversity_window=30, probabilistic=True):
+    def get_worst_frames(self: object, max_frames: object, diversity_window: object = 30, probabilistic: object = True) -> object:
         """
         Select the worst N frames with visual diversity constraint.
 
@@ -222,22 +222,12 @@ class FrameQualityScorer:
 
         return selected
 
-    def get_frame_metadata(self, frame_id):
+    def get_frame_metadata(self: object, frame_id: object) -> object:
         """Get stored metadata for a specific frame."""
         return self.frame_scores.get(frame_id, {"score": 0.0, "metrics": {}})
 
 
-def export_dataset(
-    video_path,
-    csv_path,
-    frame_ids,
-    output_dir,
-    dataset_name,
-    class_name,
-    params,
-    include_context=True,
-    yolo_results_dict=None,
-):
+def export_dataset(video_path: object, csv_path: object, frame_ids: object, output_dir: object, dataset_name: object, class_name: object, params: object, include_context: object = True, yolo_results_dict: object = None) -> object:
     """
     Export selected frames and annotations as a training dataset.
 

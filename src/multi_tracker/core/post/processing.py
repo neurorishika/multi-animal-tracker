@@ -332,7 +332,7 @@ def _compute_velocity_zscore_breaks(
     return break_indices
 
 
-def process_trajectories_from_csv(csv_path, params):
+def process_trajectories_from_csv(csv_path: object, params: object) -> object:
     """
     Cleans and refines trajectory data from CSV file, preserving all columns including confidence metrics.
 
@@ -611,7 +611,7 @@ def process_trajectories_from_csv(csv_path, params):
     return result_df, stats
 
 
-def process_trajectories(trajectories_full, params):
+def process_trajectories(trajectories_full: object, params: object) -> object:
     """
     Cleans and refines raw trajectory data.
 
@@ -737,7 +737,7 @@ def process_trajectories(trajectories_full, params):
     return final_trajectories, stats
 
 
-def resolve_trajectories(forward_trajs, backward_trajs, params=None):
+def resolve_trajectories(forward_trajs: object, backward_trajs: object, params: object = None) -> object:
     """
     Merges forward and backward trajectories using conservative consensus-based merging.
 
@@ -1249,14 +1249,14 @@ def _merge_overlapping_agreeing_trajectories_old(
     # Spatial jump threshold - if a frame is this far from previous, break the segment
     max_spatial_jump = agreement_distance * 5  # ~50px for 9.62 agreement_distance
 
-    def get_last_position(segment):
+    def get_last_position(segment: object) -> object:
         """Get the (X, Y) of the last frame in a segment."""
         if not segment:
             return None, None
         last = segment[-1]
         return last.get("X"), last.get("Y")
 
-    def is_spatially_continuous(segment, new_row, threshold):
+    def is_spatially_continuous(segment: object, new_row: object, threshold: object) -> object:
         """Check if new_row is spatially close to the end of segment."""
         if not segment:
             return True
@@ -1472,14 +1472,14 @@ def _merge_overlapping_agreeing_trajectories(
     # UNLESS DetectionID confirms continuity
     max_spatial_jump = agreement_distance * 5  # ~50px for 9.62 agreement_distance
 
-    def get_last_position(segment):
+    def get_last_position(segment: object) -> object:
         """Get the (X, Y) of the last frame in a segment."""
         if not segment:
             return None, None
         last = segment[-1]
         return last.get("X"), last.get("Y")
 
-    def is_spatially_continuous(segment, new_row, threshold, check_detection_id=True):
+    def is_spatially_continuous(segment: object, new_row: object, threshold: object, check_detection_id: object = True) -> object:
         """
         Check if new_row is spatially close to the end of segment.
 
@@ -2515,7 +2515,7 @@ def _create_segments_from_frames(frame_list, traj_dict, max_gap=5):
     return segments
 
 
-def interpolate_trajectories(trajectories_df, method="linear", max_gap=10):
+def interpolate_trajectories(trajectories_df: object, method: object = 'linear', max_gap: object = 10) -> object:
     """
     Interpolate missing values in trajectories using various methods.
 

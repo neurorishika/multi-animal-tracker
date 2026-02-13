@@ -3,7 +3,7 @@ Utility functions for geometry operations in multi-animal tracking.
 """
 import numpy as np
 
-def fit_circle_to_points(points):
+def fit_circle_to_points(points: object) -> object:
     """
     Fit a circle to a set of points using least squares optimization.
     

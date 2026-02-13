@@ -40,7 +40,7 @@ import shutil
 from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict
+from typing import Any, Dict, List, Optional, Tuple
 import hashlib
 import csv
 import gc
@@ -177,6 +177,8 @@ DEFAULT_AUTOSAVE_DELAY_MS = 3000
 # -----------------------------
 @dataclass
 class Keypoint:
+    """Single keypoint annotation in pixel space."""
+
     x: float = 0.0  # pixel coords
     y: float = 0.0
     v: int = 0  # 0 missing, 1 occluded, 2 visible
@@ -184,6 +186,8 @@ class Keypoint:
 
 @dataclass
 class FrameAnn:
+    """Single-frame annotation containing class, box, and keypoints."""
+
     cls: int
     bbox_xyxy: Optional[Tuple[float, float, float, float]]  # pixel coords
     kpts: List[Keypoint]
@@ -191,6 +195,8 @@ class FrameAnn:
 
 @dataclass
 class Project:
+    """Persistent PoseKit project configuration and UI/session state."""
+
     images_dir: Path
     out_root: Path
     labels_dir: Path
@@ -224,6 +230,7 @@ class Project:
     latest_sleap_dataset: Optional[Path] = None
 
     def to_json(self) -> dict:
+        """Serialize project state to a JSON-compatible dictionary."""
         base = self.project_path.parent
         images_dir = _relativize_path(self.images_dir, base)
         labels_dir = _relativize_path(self.labels_dir, base)
@@ -273,6 +280,7 @@ class Project:
 
     @staticmethod
     def from_json(project_path: Path) -> "Project":
+        """Load project configuration from disk."""
         data = json.loads(project_path.read_text(encoding="utf-8"))
         grid = data.get("clahe_grid", [8, 8])
         if not isinstance(grid, (list, tuple)) or len(grid) != 2:
@@ -324,6 +332,8 @@ class Project:
 
 
 class PosePredictWorker(QObject):
+    """Background worker for one-image pose prediction."""
+
     finished = Signal(list)
     failed = Signal(str)
 
@@ -360,7 +370,10 @@ class PosePredictWorker(QObject):
         # Enforce single-instance predictions for PoseKit.
         self.sleap_max_instances = 1
 
-    def _extract_best_prediction(self, result):
+    def _extract_best_prediction(
+        self, result: Any
+    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """Extract the highest-confidence keypoint set from a model result."""
         if result is None or result.keypoints is None:
             return None, None
         kpts = result.keypoints
@@ -408,7 +421,8 @@ class PosePredictWorker(QObject):
 
         return pred_xy, pred_conf
 
-    def run(self):
+    def run(self) -> None:
+        """Run inference and emit either predicted keypoints or an error."""
         try:
             infer = PoseInferenceService(
                 self.out_root, self.keypoint_names, self.skeleton_edges
@@ -449,6 +463,8 @@ class PosePredictWorker(QObject):
 
 
 class BulkPosePredictWorker(QObject):
+    """Background worker for multi-image pose prediction."""
+
     progress = Signal(int, int)
     finished = Signal(dict)
     failed = Signal(str)
@@ -488,10 +504,12 @@ class BulkPosePredictWorker(QObject):
         self.sleap_max_instances = 1
         self._cancel = False
 
-    def cancel(self):
+    def cancel(self) -> None:
+        """Request cancellation for the running prediction batch."""
         self._cancel = True
 
-    def run(self):
+    def run(self) -> None:
+        """Run batch inference and stream progress updates."""
         try:
             infer = PoseInferenceService(
                 self.out_root, self.keypoint_names, self.skeleton_edges
@@ -521,6 +539,8 @@ class BulkPosePredictWorker(QObject):
 
 
 class SleapServiceWorker(QObject):
+    """Worker that starts and validates the SLEAP backend service."""
+
     finished = Signal(bool, str, str)
 
     def __init__(self, env_name: str, out_root: Path):
@@ -528,7 +548,8 @@ class SleapServiceWorker(QObject):
         self.env_name = env_name
         self.out_root = Path(out_root)
 
-    def run(self):
+    def run(self) -> None:
+        """Start SLEAP service and emit status tuple."""
         try:
             ok, err, log_path = PoseInferenceService.start_sleap_service(
                 self.env_name, self.out_root
@@ -557,6 +578,7 @@ def _resolve_project_path(path: Path, base: Path, data: dict) -> Path:
 
 
 def list_images(images_dir: Path) -> List[Path]:
+    """Recursively list supported image files in sorted order."""
     paths: List[Path] = []
     for p in sorted(images_dir.rglob("*")):
         if p.is_file() and p.suffix.lower() in IMG_EXTS:
@@ -571,6 +593,7 @@ def enhance_for_pose(
     sharpen_amt: float = 1.2,
     blur_sigma: float = 1.0,
 ) -> np.ndarray:
+    """Apply CLAHE and unsharp masking to improve pose keypoint visibility."""
     # 1) CLAHE on L channel (LAB)
     lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
     L, A, B = cv2.split(lab)
@@ -587,6 +610,7 @@ def enhance_for_pose(
 
 
 def get_default_skeleton_dir() -> Optional[Path]:
+    """Return the repository-level skeleton config directory if available."""
     here = Path(__file__).resolve()
     repo_root = here.parents[3] if len(here.parents) >= 4 else here.parent
     cfg = repo_root / DEFAULT_SKELETON_DIRNAME
@@ -596,7 +620,7 @@ def get_default_skeleton_dir() -> Optional[Path]:
 
 
 def get_keypoint_palette() -> List[QColor]:
-    # Distinct palette for keypoints
+    """Return a stable high-contrast color palette for keypoint overlays."""
     return [
         QColor(255, 99, 71),
         QColor(30, 144, 255),
@@ -620,7 +644,7 @@ def get_ui_settings_path() -> Path:
     return config_dir / "ui_settings.json"
 
 
-def load_ui_settings() -> Dict:
+def load_ui_settings() -> Dict[str, Any]:
     """Load persistent UI settings."""
     path = get_ui_settings_path()
     if not path.exists():
@@ -631,7 +655,7 @@ def load_ui_settings() -> Dict:
         return {}
 
 
-def save_ui_settings(settings: Dict):
+def save_ui_settings(settings: Dict[str, Any]) -> None:
     """Save persistent UI settings."""
     path = get_ui_settings_path()
     try:
@@ -979,6 +1003,7 @@ def pick_frames_stratified(
 def load_yolo_pose_label(
     label_path: Path, k: int
 ) -> Optional[Tuple[int, List[Keypoint], Optional[Tuple[float, float, float, float]]]]:
+    """Load a YOLO pose label file and convert entries into Keypoint objects."""
     if not label_path.exists():
         return None
     txt = label_path.read_text(encoding="utf-8").strip()
@@ -1029,6 +1054,7 @@ def save_yolo_pose_label(
     pad_frac: float,
     create_backup: bool = True,
 ) -> None:
+    """Write one annotation in YOLO pose format with optional versioned backup."""
     # Create backup of existing label before overwriting
     if create_backup and label_path.exists():
         try:
@@ -1162,6 +1188,8 @@ def migrate_labels_keypoints(
 # Qt graphics canvas
 # -----------------------------
 class PoseCanvas(QGraphicsView):
+    """Interactive graphics canvas for keypoint editing and prediction overlays."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setRenderHint(QPainter.Antialiasing, True)
@@ -1201,36 +1229,43 @@ class PoseCanvas(QGraphicsView):
         self._dragging_pred = None
         self._pred_edges: List[Tuple[int, int]] = []
 
-    def _ellipse_item_at(self, scene_pos):
+    def _ellipse_item_at(self, scene_pos) -> Optional[QGraphicsEllipseItem]:
         for it in self.scene.items(scene_pos):
             if isinstance(it, QGraphicsEllipseItem):
                 return it
         return None
 
-    def set_callbacks(self, on_place, on_move, on_select=None):
+    def set_callbacks(self: object, on_place: object, on_move: object, on_select: object = None) -> None:
+        """Register callbacks for placement, drag movement, and optional selection."""
         self._on_place = on_place
         self._on_move = on_move
         self._on_select = on_select
 
-    def set_current_keypoint(self, idx: int):
+    def set_current_keypoint(self, idx: int) -> None:
+        """Set the active keypoint index used for click placement."""
         self._current_kpt = idx
 
-    def set_click_visibility(self, v: int):
+    def set_click_visibility(self, v: int) -> None:
+        """Set visibility code assigned to newly placed keypoints."""
         self._click_vis = v
 
-    def set_kpt_radius(self, r: float):
+    def set_kpt_radius(self, r: float) -> None:
+        """Update rendered keypoint radius."""
         self._kpt_radius = max(0.5, float(r))
 
-    def set_label_font_size(self, size: int):
+    def set_label_font_size(self, size: int) -> None:
+        """Update keypoint label font size."""
         self._label_font_size = max(4, int(size))
 
-    def set_kpt_opacity(self, opacity: float):
+    def set_kpt_opacity(self, opacity: float) -> None:
+        """Update keypoint alpha channel used for overlay drawing."""
         self._kpt_opacity = max(0.0, min(1.0, float(opacity)))
 
-    def set_edge_opacity(self, opacity: float):
+    def set_edge_opacity(self, opacity: float) -> None:
+        """Update skeleton edge alpha channel used for overlay drawing."""
         self._edge_opacity = max(0.0, min(1.0, float(opacity)))
 
-    def fit_to_view(self):
+    def fit_to_view(self: object) -> object:
         """Fit the image to the view."""
         if self.pix_item.pixmap().isNull():
             return
@@ -1238,7 +1273,8 @@ class PoseCanvas(QGraphicsView):
         # Update zoom factor
         self._zoom_factor = self.transform().m11()
 
-    def set_image(self, img_bgr: np.ndarray):
+    def set_image(self, img_bgr: np.ndarray) -> None:
+        """Load a BGR image into the canvas and fit it to the current viewport."""
         h, w = img_bgr.shape[:2]
         self._img_w, self._img_h = w, h
         rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
@@ -1256,7 +1292,8 @@ class PoseCanvas(QGraphicsView):
         pred_kpts: Optional[List[Keypoint]] = None,
         pred_confs: Optional[List[float]] = None,
         show_pred_conf: bool = False,
-    ):
+    ) -> None:
+        """Rebuild all keypoint/skeleton and optional prediction overlay items."""
         for item in (
             self.kpt_items
             + self.kpt_labels
@@ -1462,7 +1499,8 @@ class PoseCanvas(QGraphicsView):
         # If all positions collide, return the first one anyway
         return candidates[0]
 
-    def wheelEvent(self, event):
+    def wheelEvent(self: object, event: object) -> None:
+        """Zoom in/out around cursor while clamping to sane zoom bounds."""
         # Use smaller zoom increments for smoother control
         factor = 1.01 if event.angleDelta().y() > 0 else 1 / 1.01
         new_zoom = self._zoom_factor * factor
@@ -1479,7 +1517,8 @@ class PoseCanvas(QGraphicsView):
         self._zoom_factor = new_zoom
         event.accept()
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self: object, event: object) -> None:
+        """Handle placement, selection, visibility toggle, and drag-start behavior."""
         if event.button() == Qt.RightButton:
             pos = self.mapToScene(event.position().toPoint())
             item = self._ellipse_item_at(pos)
@@ -1620,7 +1659,8 @@ class PoseCanvas(QGraphicsView):
                     )
         super().mousePressEvent(event)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self: object, event: object) -> None:
+        """Update dragged keypoint/prediction position during pointer motion."""
         if self._dragging_pred is not None:
             pos = self.mapToScene(event.position().toPoint())
             pred_item = (
@@ -1652,7 +1692,8 @@ class PoseCanvas(QGraphicsView):
                 self._on_move(self._dragging_kpt, float(pos.x()), float(pos.y()))
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self: object, event: object) -> None:
+        """Commit drag interactions and optional prediction adoption on release."""
         if self._dragging_pred is not None:
             idx = self._dragging_pred
             self._dragging_pred = None
@@ -1700,7 +1741,8 @@ class FrameListDelegate(QStyledItemDelegate):
     KP_COUNT_ROLE = Qt.UserRole + 3
     CLUSTER_ROLE = Qt.UserRole + 4
 
-    def paint(self, painter, option, index):
+    def paint(self: object, painter: object, option: object, index: object) -> None:
+        """Render frame row with elided name plus confidence and label counters."""
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)
         style = opt.widget.style() if opt.widget else QApplication.style()
@@ -1800,6 +1842,8 @@ class FrameListDelegate(QStyledItemDelegate):
 # Skeleton editor
 # -----------------------------
 class SkeletonEditorDialog(QDialog):
+    """Dialog to edit keypoint names and skeleton edge topology."""
+
     def __init__(
         self,
         keypoint_names: List[str],
@@ -2019,6 +2063,7 @@ class SkeletonEditorDialog(QDialog):
             return list(edges)
 
         def remap_idx(i: int) -> int:
+            """remap_idx method documentation."""
             if i == old:
                 return new
             if new > old and old < i <= new:
@@ -2172,6 +2217,7 @@ class SkeletonEditorDialog(QDialog):
             QMessageBox.critical(self, "Save failed", f"Failed to write file:\n{exc}")
 
     def get_result(self) -> Tuple[List[str], List[Tuple[int, int]]]:
+        """get_result method documentation."""
         out_names = []
         for i in range(self.kpt_table.rowCount()):
             item = self.kpt_table.item(i, 1)
@@ -2350,25 +2396,31 @@ class ProjectWizard(QDialog):
             self.skel_summary.setText(self._get_skeleton_summary())
 
     def get_classes(self) -> List[str]:
+        """get_classes method documentation."""
         lines = [s.strip() for s in self.classes_edit.toPlainText().splitlines()]
         out = [s for s in lines if s]
         return out if out else ["object"]
 
     def get_keypoints(self) -> List[str]:
+        """get_keypoints method documentation."""
         return list(self._kpt_names) if self._kpt_names else ["kp1", "kp2"]
 
     def get_edges(self) -> List[Tuple[int, int]]:
+        """get_edges method documentation."""
         return list(self._edges)
 
     def get_paths(self) -> Tuple[Path, Path]:
+        """get_paths method documentation."""
         root = Path(self.out_root.text()).expanduser().resolve()
         labels = Path(self.labels_dir.text()).expanduser().resolve()
         return root, labels
 
     def get_options(self) -> Tuple[bool, float]:
+        """get_options method documentation."""
         return bool(self.autosave_cb.isChecked()), float(self.pad_spin.value())
 
     def get_migration(self) -> Tuple[bool, str]:
+        """get_migration method documentation."""
         if self.existing is None:
             return False, "name"
         do = bool(self.migrate_cb.isChecked())
@@ -2380,6 +2432,7 @@ class ProjectWizard(QDialog):
 # Main window
 # -----------------------------
 class MainWindow(QMainWindow):
+    """MainWindow API surface documentation."""
     def __init__(self, project: Project, image_paths: List[Path]):
         super().__init__()
         self.setWindowTitle("PoseKit Labeler")
@@ -2958,7 +3011,7 @@ class MainWindow(QMainWindow):
         self.labeling_list.setCurrentRow(-1)
         self.lbl_info.setText("Select a frame to display.")
 
-    def closeEvent(self, event):
+    def closeEvent(self: object, event: object) -> object:
         """Save UI settings when window closes."""
         self._perform_autosave()
         self.save_project()
@@ -2969,7 +3022,7 @@ class MainWindow(QMainWindow):
             pass
         super().closeEvent(event)
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self: object, event: object) -> object:
         """Handle arrow key nudging of keypoints with modifier keys."""
         # Only process arrow keys
         if event.key() not in [Qt.Key_Left, Qt.Key_Right, Qt.Key_Up, Qt.Key_Down]:
@@ -3311,7 +3364,8 @@ class MainWindow(QMainWindow):
         _cls, kpts_norm, _bbox = loaded
         return sum(1 for kp in kpts_norm if kp.v > 0)
 
-    def save_project(self):
+    def save_project(self: object) -> object:
+        """save_project method documentation."""
         if hasattr(self.project, "labeling_frames"):
             self.project.labeling_frames = sorted(
                 {int(i) for i in self.labeling_frames}
@@ -3853,7 +3907,8 @@ class MainWindow(QMainWindow):
 
         return FrameAnn(cls=cls, bbox_xyxy=bbox, kpts=kpts)
 
-    def load_frame(self, idx: int):
+    def load_frame(self: object, idx: int) -> object:
+        """load_frame method documentation."""
         idx = max(0, min(idx, len(self.image_paths) - 1))
 
         logger.debug("Load frame requested: idx=%d", idx)
@@ -4094,7 +4149,7 @@ class MainWindow(QMainWindow):
             self._rebuild_canvas()
         self.save_project()
 
-    def fit_to_view(self):
+    def fit_to_view(self: object) -> object:
         """Fit image to view."""
         self.canvas.fit_to_view()
 
@@ -4225,7 +4280,8 @@ class MainWindow(QMainWindow):
         if len(self._undo_stack) > self._undo_max:
             self._undo_stack = self._undo_stack[-self._undo_max :]
 
-    def undo_last(self):
+    def undo_last(self: object) -> object:
+        """undo_last method documentation."""
         if not self._undo_stack or self._ann is None:
             return
         self._ann.kpts = self._undo_stack.pop()
@@ -4234,7 +4290,8 @@ class MainWindow(QMainWindow):
         self._update_info()
 
     # ----- edits -----
-    def on_place_kpt(self, kpt_idx: int, x: float, y: float, v: int):
+    def on_place_kpt(self: object, kpt_idx: int, x: float, y: float, v: int) -> object:
+        """on_place_kpt method documentation."""
         if self._ann is None:
             return
         logger.debug(
@@ -4431,7 +4488,8 @@ class MainWindow(QMainWindow):
                 return idx
         return None
 
-    def on_move_kpt(self, kpt_idx: int, x: float, y: float):
+    def on_move_kpt(self: object, kpt_idx: int, x: float, y: float) -> object:
+        """on_move_kpt method documentation."""
         if self._ann is None:
             return
         logger.debug(
@@ -4455,17 +4513,18 @@ class MainWindow(QMainWindow):
         if self.mode == "keypoint":
             self._cache_current_frame()
 
-    def on_select_kpt(self, idx: int):
+    def on_select_kpt(self: object, idx: int) -> object:
         """Called when user clicks on an existing keypoint - make it current."""
         if idx >= 0 and idx < len(self.project.keypoint_names):
             self.current_kpt = idx
             self.kpt_list.setCurrentRow(idx)
             self.canvas.set_current_keypoint(idx)
 
-    def clear_current_keypoint(self):
+    def clear_current_keypoint(self: object) -> object:
+        """clear_current_keypoint method documentation."""
         self.on_place_kpt(self.current_kpt, 0.0, 0.0, 0)
 
-    def clear_all_keypoints(self):
+    def clear_all_keypoints(self: object) -> object:
         """Clear all keypoints from the current frame."""
         if self._ann is None:
             return
@@ -4507,8 +4566,8 @@ class MainWindow(QMainWindow):
         if self._autosave_timer.isActive():
             self._autosave_timer.start(self.autosave_delay_ms)
 
-    def prev_frame(self):
-        # Find previous frame in labeling set
+    def prev_frame(self: object) -> object:
+        """prev_frame method documentation."""
         labeling_indices = sorted(self.labeling_frames)
         if not labeling_indices:
             return
@@ -4578,8 +4637,8 @@ class MainWindow(QMainWindow):
                     self.frame_list.setCurrentRow(i)
                     break
 
-    def next_frame(self, prefer_missing: bool = False):
-        # Find next frame in labeling set
+    def next_frame(self: object, prefer_missing: bool = False) -> object:
+        """next_frame method documentation."""
         labeling_indices = sorted(self.labeling_frames)
         logger.debug(
             "next_frame: current=%d labeling_frames=%s cache_size=%d",
@@ -4661,18 +4720,20 @@ class MainWindow(QMainWindow):
                 self.frame_list.setCurrentRow(i)
                 return
 
-    def prev_keypoint(self):
+    def prev_keypoint(self: object) -> object:
+        """prev_keypoint method documentation."""
         if self.current_kpt > 0:
             self.current_kpt -= 1
             self.kpt_list.setCurrentRow(self.current_kpt)
 
-    def next_keypoint(self):
+    def next_keypoint(self: object) -> object:
+        """next_keypoint method documentation."""
         if self.current_kpt < self.kpt_list.count() - 1:
             self.current_kpt += 1
             self.kpt_list.setCurrentRow(self.current_kpt)
 
-    def next_unlabeled(self):
-        # Search only in labeling frames
+    def next_unlabeled(self: object) -> object:
+        """next_unlabeled method documentation."""
         labeling_indices = sorted(self.labeling_frames)
         if not labeling_indices:
             QMessageBox.information(
@@ -4702,7 +4763,8 @@ class MainWindow(QMainWindow):
         )
 
     # ----- save / export -----
-    def save_current(self, refresh_ui=True):
+    def save_current(self: object, refresh_ui: object = True) -> object:
+        """save_current method documentation."""
         if self._ann is None:
             return
         # Keep cache in sync
@@ -4741,7 +4803,7 @@ class MainWindow(QMainWindow):
         self._set_saved_status()
         self.save_project()
 
-    def save_all_labeling_frames(self):
+    def save_all_labeling_frames(self: object) -> object:
         """Save all labeling frames to disk using current in-memory state."""
         if not self.labeling_frames:
             return
@@ -4796,7 +4858,8 @@ class MainWindow(QMainWindow):
         self._set_saved_status()
         self.save_project()
 
-    def open_skeleton_editor(self):
+    def open_skeleton_editor(self: object) -> object:
+        """open_skeleton_editor method documentation."""
         old_kpts = list(self.project.keypoint_names)
         dlg = SkeletonEditorDialog(
             self.project.keypoint_names,
@@ -4851,7 +4914,8 @@ class MainWindow(QMainWindow):
             self._update_info()
             self.save_project()
 
-    def open_project_settings(self):
+    def open_project_settings(self: object) -> object:
+        """open_project_settings method documentation."""
         wiz = ProjectWizard(self.project.images_dir, existing=self.project, parent=self)
         if wiz.exec() != QDialog.Accepted:
             return
@@ -4947,7 +5011,8 @@ class MainWindow(QMainWindow):
             app._posekit_windows.append(new_win)
         self.close()
 
-    def open_project_dialog(self):
+    def open_project_dialog(self: object) -> object:
+        """open_project_dialog method documentation."""
         start = str(self.project.project_path.parent)
         path, _ = QFileDialog.getOpenFileName(
             self, "Open pose_project.json", start, "pose_project.json;All Files (*)"
@@ -4968,7 +5033,8 @@ class MainWindow(QMainWindow):
         proj = load_project_with_repairs(project_path, images_dir)
         self._switch_project_window(proj)
 
-    def open_images_folder(self):
+    def open_images_folder(self: object) -> object:
+        """open_images_folder method documentation."""
         start = str(self.project.images_dir) if self.project.images_dir else ""
         path = QFileDialog.getExistingDirectory(self, "Select images folder", start)
         if not path:
@@ -4985,7 +5051,8 @@ class MainWindow(QMainWindow):
             return
         self._switch_project_window(proj)
 
-    def export_dataset_dialog(self):
+    def export_dataset_dialog(self: object) -> object:
+        """export_dataset_dialog method documentation."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Export dataset.yaml + copied images/labels")
         layout = QFormLayout(dlg)
@@ -5007,14 +5074,16 @@ class MainWindow(QMainWindow):
         cluster_csv.setPlaceholderText("Optional: clusters.csv (auto-detected)")
         btn_cluster = QPushButton("Choose…")
 
-        def pick_dir():
+        def pick_dir() -> object:
+            """pick_dir method documentation."""
             d = QFileDialog.getExistingDirectory(
                 self, "Select output root", out_root.text()
             )
             if d:
                 out_root.setText(d)
 
-        def pick_cluster():
+        def pick_cluster() -> object:
+            """pick_cluster method documentation."""
             path, _ = QFileDialog.getOpenFileName(
                 self, "Select cluster CSV", str(self.project.out_root), "CSV (*.csv)"
             )
@@ -5142,7 +5211,8 @@ class MainWindow(QMainWindow):
             f"- {info.get('manifest', '')}",
         )
 
-    def open_smart_select(self):
+    def open_smart_select(self: object) -> object:
+        """open_smart_select method documentation."""
         dlg = SmartSelectDialog(self, self.project, self.image_paths, self._is_labeled)
         if dlg.exec() != QDialog.Accepted or not getattr(dlg, "_did_add", False):
             return
@@ -5860,7 +5930,8 @@ class MainWindow(QMainWindow):
         self.save_project()
         return weights
 
-    def predict_current_frame(self):
+    def predict_current_frame(self: object) -> object:
+        """predict_current_frame method documentation."""
         if not self.image_paths or self._ann is None:
             QMessageBox.information(self, "No frame", "Select a frame first.")
             return
@@ -6076,7 +6147,8 @@ class MainWindow(QMainWindow):
                 backend=backend,
             )
 
-    def apply_predictions_current(self):
+    def apply_predictions_current(self: object) -> object:
+        """apply_predictions_current method documentation."""
         if self._ann is None:
             QMessageBox.information(self, "No frame", "Select a frame first.")
             return
@@ -6112,7 +6184,8 @@ class MainWindow(QMainWindow):
         self._populate_frames()
         self._select_frame_in_list(self.current_index)
 
-    def predict_dataset(self):
+    def predict_dataset(self: object) -> object:
+        """predict_dataset method documentation."""
         if not self.image_paths:
             QMessageBox.information(self, "No frames", "No images loaded.")
             return
@@ -6272,7 +6345,8 @@ class MainWindow(QMainWindow):
             self._set_sleap_status("SLEAP: idle", visible=True)
         QMessageBox.warning(self, "Prediction failed", msg)
 
-    def open_training_runner(self):
+    def open_training_runner(self: object) -> object:
+        """open_training_runner method documentation."""
         dlg = TrainingRunnerDialog(self, self.project, self.image_paths)
         try:
             backend = self._pred_backend()
@@ -6286,7 +6360,8 @@ class MainWindow(QMainWindow):
             pass
         dlg.exec()
 
-    def open_evaluation_dashboard(self):
+    def open_evaluation_dashboard(self: object) -> object:
+        """open_evaluation_dashboard method documentation."""
         dlg = EvaluationDashboardDialog(
             self,
             self.project,
@@ -6315,7 +6390,8 @@ class MainWindow(QMainWindow):
             pass
         dlg.exec()
 
-    def open_active_learning(self):
+    def open_active_learning(self: object) -> object:
+        """open_active_learning method documentation."""
         dlg = ActiveLearningDialog(
             self,
             self.project,
@@ -6342,7 +6418,8 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     # Backwards/alternate name used in older menu wiring.
-    def open_active_learning_sampler(self):
+    def open_active_learning_sampler(self: object) -> object:
+        """open_active_learning_sampler method documentation."""
         self.open_active_learning()
 
     def _load_metadata_ui(self):
@@ -6474,6 +6551,7 @@ def _repair_project_paths(proj: Project, project_path: Path, images_dir: Path) -
 
 
 def load_project_with_repairs(project_path: Path, images_dir: Path) -> Project:
+    """load_project_with_repairs function documentation."""
     proj = Project.from_json(project_path)
     if _repair_project_paths(proj, project_path, images_dir):
         proj.project_path.write_text(
@@ -6485,6 +6563,7 @@ def load_project_with_repairs(project_path: Path, images_dir: Path) -> Project:
 def create_project_via_wizard(
     images_dir: Path, out_root_hint: Optional[Path] = None
 ) -> Optional[Project]:
+    """create_project_via_wizard function documentation."""
     wiz = ProjectWizard(images_dir, existing=None)
     if out_root_hint is not None:
         wiz.out_root.setText(str(out_root_hint.resolve()))
@@ -6518,7 +6597,8 @@ def create_project_via_wizard(
     return proj
 
 
-def parse_args():
+def parse_args() -> object:
+    """parse_args function documentation."""
     ap = argparse.ArgumentParser(description="PoseKit labeler")
     ap.add_argument(
         "images",
@@ -6536,7 +6616,8 @@ def parse_args():
     return ap.parse_args()
 
 
-def main():
+def main() -> object:
+    """main function documentation."""
     logging.basicConfig(
         level=logging.DEBUG,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

@@ -7,6 +7,7 @@ import numpy as np
 import cv2
 import logging
 import random
+from typing import Any, Dict, Optional
 from multi_tracker.utils.image_processing import apply_image_adjustments
 from multi_tracker.utils.gpu_utils import (
     CUDA_AVAILABLE,
@@ -190,11 +191,11 @@ class BackgroundModel:
       - CPU fallback with Numba JIT optimization
     """
 
-    def __init__(self, params):
+    def __init__(self, params: Dict[str, Any]):
         self.params = params
-        self.lightest_background = None
-        self.adaptive_background = None
-        self.reference_intensity = None
+        self.lightest_background: Optional[np.ndarray] = None
+        self.adaptive_background: Optional[np.ndarray] = None
+        self.reference_intensity: Optional[float] = None
 
         # GPU acceleration setup
         self.use_gpu = False
@@ -203,7 +204,7 @@ class BackgroundModel:
         self.torch_device = None
         self._setup_gpu_acceleration()
 
-    def _setup_gpu_acceleration(self):
+    def _setup_gpu_acceleration(self) -> None:
         """
         Initialize GPU acceleration if available.
         Priority: CUDA (NVIDIA) > MPS (Apple Silicon) > CPU fallback
@@ -247,7 +248,7 @@ class BackgroundModel:
                 "Using CPU with Numba JIT optimization."
             )
 
-    def prime_background(self, cap):
+    def prime_background(self, cap: cv2.VideoCapture) -> None:
         """
         Initialize background model using "lightest pixel" method with lighting reference.
         This is an exact port of the original `prime_lightest_background` method.
@@ -353,8 +354,10 @@ class BackgroundModel:
                     f"Fallback reference intensity: {self.reference_intensity:.1f}"
                 )
 
-    def update_and_get_background(self, gray, roi_mask, tracking_stabilized):
-        """Updates background models and returns the one for subtraction."""
+    def update_and_get_background(
+        self, gray: np.ndarray, roi_mask: Optional[np.ndarray], tracking_stabilized: bool
+    ) -> Optional[np.ndarray]:
+        """Update the background model and return the active subtraction background."""
         p = self.params
         if self.lightest_background is None:
             self.lightest_background = gray.astype(np.float32)
@@ -443,7 +446,9 @@ class BackgroundModel:
         else:
             return cv2.convertScaleAbs(self.lightest_background)
 
-    def generate_foreground_mask(self, gray, background):
+    def generate_foreground_mask(
+        self, gray: np.ndarray, background: np.ndarray
+    ) -> np.ndarray:
         """Generates the foreground mask from the gray frame and background.
 
         Uses GPU acceleration if available for significant speedup on large frames.

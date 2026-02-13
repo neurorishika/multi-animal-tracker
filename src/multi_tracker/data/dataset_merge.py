@@ -1,3 +1,10 @@
+"""Utilities to validate, normalize, and merge YOLO-OBB datasets.
+
+The functions in this module are used by the GUI dataset builder to combine
+multiple sources (including converted X-AnyLabeling projects) into a single,
+train/val-ready output directory.
+"""
+
 import os
 import json
 import hashlib
@@ -5,6 +12,7 @@ import random
 import logging
 import shutil
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +45,18 @@ def _normalize_path(root, p):
     return p if os.path.isabs(p) else os.path.join(root, p)
 
 
-def detect_dataset_layout(root_dir):
-    """Return dict of split -> (images_dir, labels_dir)."""
+def detect_dataset_layout(root_dir: str | Path) -> dict[str, tuple[str, str]]:
+    """Detect supported dataset folder layout.
+
+    Args:
+        root_dir: Dataset root directory.
+
+    Returns:
+        Mapping of split name to `(images_dir, labels_dir)`.
+
+    Raises:
+        RuntimeError: If no recognized dataset structure is found.
+    """
     root_dir = str(root_dir)
     yaml_path = os.path.join(root_dir, "dataset.yaml")
     splits = {}
@@ -78,7 +96,8 @@ def detect_dataset_layout(root_dir):
     raise RuntimeError(f"No valid dataset layout found in {root_dir}")
 
 
-def get_dataset_class_name(root_dir):
+def get_dataset_class_name(root_dir: str | Path) -> str | None:
+    """Read class name from `dataset.yaml` or `classes.txt` if available."""
     yaml_path = os.path.join(root_dir, "dataset.yaml")
     if os.path.exists(yaml_path):
         try:
@@ -96,7 +115,8 @@ def get_dataset_class_name(root_dir):
     return None
 
 
-def update_dataset_class_name(root_dir, class_name):
+def update_dataset_class_name(root_dir: str | Path, class_name: str) -> None:
+    """Update dataset class metadata in yaml/txt files."""
     yaml_path = os.path.join(root_dir, "dataset.yaml")
     if os.path.exists(yaml_path):
         try:
@@ -124,8 +144,8 @@ def _labels_dir_for_images(images_dir):
     return str(Path(images_dir).parent / "labels")
 
 
-def validate_labels(labels_dir):
-    """Validate YOLO-OBB labels. Returns (class_ids_set, total_files)."""
+def validate_labels(labels_dir: str | Path) -> tuple[set[int], int]:
+    """Validate YOLO-OBB labels and return discovered class IDs and file count."""
     class_ids = set()
     total = 0
     for root, _, files in os.walk(labels_dir):
@@ -150,7 +170,8 @@ def validate_labels(labels_dir):
     return class_ids, total
 
 
-def rewrite_labels_to_single_class(labels_dir, class_id=0):
+def rewrite_labels_to_single_class(labels_dir: str | Path, class_id: int = 0) -> None:
+    """Rewrite all label files so every object uses the same class ID."""
     for root, _, files in os.walk(labels_dir):
         for fn in files:
             if not fn.endswith(".txt"):
@@ -171,19 +192,20 @@ def rewrite_labels_to_single_class(labels_dir, class_id=0):
                 f.write("\n".join(lines) + ("\n" if lines else ""))
 
 
-def write_classes_txt(root_dir, class_name):
+def write_classes_txt(root_dir: str | Path, class_name: str) -> None:
+    """Write `classes.txt` with a single class name."""
     with open(os.path.join(root_dir, "classes.txt"), "w") as f:
         f.write(f"{class_name}\n")
 
 
 def merge_datasets(
-    sources,
-    output_dir,
-    class_name,
-    split_cfg,
-    seed=42,
-    dedup=True,
-):
+    sources: list[dict[str, Any]],
+    output_dir: str | Path,
+    class_name: str,
+    split_cfg: dict[str, float],
+    seed: int = 42,
+    dedup: bool = True,
+) -> str:
     """Merge multiple YOLO-OBB datasets.
 
     sources: list of dicts {"name": str, "path": str}
@@ -239,7 +261,7 @@ def merge_datasets(
     return str(merged_dir)
 
 
-def _collect_images(img_dir):
+def _collect_images(img_dir: str | Path) -> list[str]:
     exts = {".jpg", ".jpeg", ".png", ".bmp"}
     files = []
     for root, _, fnames in os.walk(img_dir):
@@ -249,7 +271,16 @@ def _collect_images(img_dir):
     return files
 
 
-def _copy_split(files, img_dir, lbl_dir, out_img_dir, out_lbl_dir, dedup, seen_hashes, manifest):
+def _copy_split(
+    files: list[str],
+    img_dir: str | Path,
+    lbl_dir: str | Path,
+    out_img_dir: str | Path,
+    out_lbl_dir: str | Path,
+    dedup: bool,
+    seen_hashes: set[str],
+    manifest: dict[str, Any],
+) -> None:
     for fp in files:
         manifest["stats"]["total_images"] += 1
         if dedup:

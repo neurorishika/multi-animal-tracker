@@ -24,7 +24,7 @@ class BatchOptimizer:
         self.device_name = None
         self.available_memory = None
 
-    def detect_device(self):
+    def detect_device(self: object) -> object:
         """
         Detect available compute device and its memory.
 
@@ -80,9 +80,7 @@ class BatchOptimizer:
 
         return (self.device_type, self.device_name, self.available_memory)
 
-    def estimate_batch_size(
-        self, frame_width, frame_height, model_name="yolo26s-obb.pt"
-    ):
+    def estimate_batch_size(self: object, frame_width: object, frame_height: object, model_name: object = 'yolo26s-obb.pt') -> object:
         """
         Estimate optimal batch size for YOLO inference.
 
@@ -192,7 +190,7 @@ class BatchOptimizer:
 
         return batch_size
 
-    def get_device_info(self):
+    def get_device_info(self: object) -> object:
         """
         Get human-readable device information.
 

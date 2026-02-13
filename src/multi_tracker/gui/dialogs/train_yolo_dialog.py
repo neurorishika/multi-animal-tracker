@@ -1,3 +1,9 @@
+"""Qt dialog for building and training YOLO-OBB datasets from GUI sources.
+
+This dialog coordinates conversion, validation, dataset merging, and training
+invocation workflows used by the MAT application.
+"""
+
 import os
 import sys
 import logging
@@ -45,6 +51,8 @@ logger = logging.getLogger(__name__)
 
 
 class BuildDatasetWorker(QThread):
+    """Background worker that converts and merges selected dataset sources."""
+
     status_signal = Signal(int, str)
     log_signal = Signal(str)
     done_signal = Signal(bool, str)
@@ -71,7 +79,8 @@ class BuildDatasetWorker(QThread):
         self.rewrite_classes = rewrite_classes
         self.converted_sources = []
 
-    def run(self):
+    def run(self: object) -> object:
+        """run method documentation."""
         try:
             converted = []
             # Convert X-AnyLabeling sources
@@ -131,7 +140,10 @@ class BuildDatasetWorker(QThread):
 
 
 class TrainYoloDialog(QDialog):
+    """Interactive workflow dialog for YOLO dataset build and training runs."""
+
     def __init__(self, parent=None, class_name="object", conda_envs=None):
+        """Initialize dialog UI state and defaults for dataset/training controls."""
         super().__init__(parent)
         self.setWindowTitle("Train YOLO-OBB Model")
         self.resize(900, 700)

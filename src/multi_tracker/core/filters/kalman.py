@@ -175,14 +175,14 @@ class KalmanFilterManager:
 
         self.I = np.eye(self.dim_s, dtype=np.float32)
 
-    def initialize_filter(self, track_idx, initial_state):
-        """Reset a specific track's state and uncertainty."""
+    def initialize_filter(self, track_idx: int, initial_state: np.ndarray) -> None:
+        """Reset one track slot with a new initial state estimate."""
         self.X[track_idx] = initial_state.flatten()
         self.P[track_idx] = self.init_P.copy()
         self.track_ages[track_idx] = 0  # Reset age counter
 
-    def predict(self):
-        """Batch predict all N targets with age-dependent velocity damping."""
+    def predict(self) -> np.ndarray:
+        """Predict next measurement-space states for all active track slots."""
         # Standard batch prediction
         if NUMBA_AVAILABLE:
             self.X, self.P = _predict_kernel(
@@ -243,11 +243,12 @@ class KalmanFilterManager:
 
         return self.X[:, :3].copy()
 
-    def get_predictions(self):
+    def get_predictions(self) -> np.ndarray:
+        """Compatibility wrapper returning `predict()` output."""
         return self.predict()
 
-    def correct(self, track_idx, measurement):
-        """Update a track with new detection data."""
+    def correct(self, track_idx: int, measurement: np.ndarray) -> None:
+        """Correct a track with one measurement update."""
         if NUMBA_AVAILABLE:
             self.X, self.P = _correct_kernel(
                 self.X,
@@ -287,14 +288,14 @@ class KalmanFilterManager:
         # Increment track age after successful update
         self.track_ages[track_idx] += 1
 
-    def get_mahalanobis_matrices(self):
-        """Calculates batch S_inv for optimized Mahalanobis assignment."""
+    def get_mahalanobis_matrices(self) -> np.ndarray:
+        """Return inverse innovation covariance matrices used by assignment."""
         if NUMBA_AVAILABLE:
             return _get_mahal_kernel(self.P, self.H, self.R)
         else:
             S = self.H @ self.P @ self.H.T + self.R
             return np.linalg.inv(S)
 
-    def get_position_uncertainties(self):
-        """Returns position variance trace for track quality monitoring."""
+    def get_position_uncertainties(self) -> list[float]:
+        """Return per-track positional uncertainty summary values."""
         return np.trace(self.P[:, :2, :2], axis1=1, axis2=2).tolist()

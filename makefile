@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-gpu env-create-minimal env-create-mps env-create-rocm env-update env-remove install install-gpu install-minimal install-mps install-rocm test clean
+.PHONY: env-create env-create-gpu env-create-minimal env-create-mps env-create-rocm env-update env-remove install install-gpu install-minimal install-mps install-rocm test clean docs-install docs-serve docs-build docs-quality docs-check
 
 # Default environment name
 ENV_NAME ?= multi-animal-tracker-base
@@ -67,7 +67,7 @@ env-remove-minimal:
 
 # Development commands
 test:
-	python -c "from multi_tracker.main import main; print('Import successful')"
+	python -c "from multi_tracker.app.launcher import main; print('Import successful')"
 
 verify-rocm:
 	@echo "Verifying ROCm installation..."
@@ -160,3 +160,38 @@ help:
 	@echo "  make env-remove      - Remove environment"
 	@echo "  make clean           - Remove Python cache files"
 	@echo "  make test            - Test import"
+	@echo ""
+	@echo "Documentation:"
+	@echo "  make docs-install    - Install MkDocs docs dependencies"
+	@echo "  make docs-serve      - Start docs dev server"
+	@echo "  make docs-build      - Build docs with strict mode"
+	@echo "  make docs-check      - Strict docs build + terminology checks"
+
+# Documentation commands
+docs-install:
+	uv pip install -r requirements-docs.txt
+
+docs-serve:
+	mkdocs serve
+
+docs-build:
+	mkdocs build --strict
+
+docs-quality:
+	python tools/doc_quality_check.py --baseline docs/doc-quality-baseline.json --min-module-doc 90 --min-symbol-doc 55 --min-typed-func 20
+
+docs-check: docs-build docs-quality
+	@echo "Checking docs terminology..."
+	@set -e; \
+	if command -v rg >/dev/null 2>&1; then \
+		if rg -n "labeller|posekit-labeller" docs README.md mkdocs.yml; then \
+			echo "Found non-canonical labeler spelling"; \
+			exit 1; \
+		fi; \
+	else \
+		if grep -RInE "labeller|posekit-labeller" docs README.md mkdocs.yml; then \
+			echo "Found non-canonical labeler spelling"; \
+			exit 1; \
+		fi; \
+	fi
+	@echo "Docs checks passed."
