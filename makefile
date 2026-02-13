@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-gpu env-create-minimal env-create-mps env-create-rocm env-update env-remove install install-gpu install-minimal install-mps install-rocm test clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format lint
+.PHONY: env-create env-create-gpu env-create-minimal env-create-mps env-create-rocm env-update env-remove install install-gpu install-minimal install-mps install-rocm test clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format lint commit-prep pre-commit-check
 
 # Default environment name
 ENV_NAME ?= multi-animal-tracker-base
@@ -165,9 +165,11 @@ help:
 	@echo "  make pre-commit-install  - Install pre-commit hooks"
 	@echo "  make pre-commit-run      - Run pre-commit on all files"
 	@echo "  make pre-commit-update   - Update pre-commit hook versions"
+	@echo "  make commit-prep         - ⭐ Format code before committing (recommended!)"
 	@echo "  make format              - Format code with black and isort"
 	@echo "  make format-check        - Check code formatting without changes"
 	@echo "  make lint                - Lint code with flake8"
+	@echo "  make pre-commit-check    - Run all checks (format + lint)"
 	@echo ""
 	@echo "Documentation:"
 	@echo "  make docs-install    - Install MkDocs docs dependencies"
@@ -229,3 +231,16 @@ format-check:
 	black --check src/ tests/ tools/
 	isort --check-only src/ tests/ tools/
 	@echo "Format check complete."
+
+# Pre-commit preparation (recommended before git commit)
+commit-prep: format
+	@echo ""
+	@echo "✅ Code formatted and ready to commit!"
+	@echo "📝 Next steps:"
+	@echo "   git add -u"
+	@echo "   git commit -m \"your message\""
+
+# Run all checks (useful for CI or pre-push)
+pre-commit-check: format lint
+	@echo ""
+	@echo "✅ All code quality checks passed!"
