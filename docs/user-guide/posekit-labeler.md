@@ -2,6 +2,12 @@
 
 PoseKit is now organized under `multi_tracker.posekit` and launched via `posekit-labeler`.
 
+## Full UI Control Reference
+
+For complete PoseKit interface documentation (every form control, question labels, defaults, value-selection guidance, and failure modes), see:
+
+- `/reference/ui-components-posekit/`
+
 ## Capabilities
 
 - Project setup wizard (classes/keypoints/skeleton)

@@ -1866,7 +1866,7 @@ class SkeletonEditorDialog(QDialog):
         root = QHBoxLayout()
 
         left = QVBoxLayout()
-        left.addWidget(QLabel("Keypoints (order matters):"))
+        left.addWidget(QLabel("What should keypoints (order matters) be?"))
         self.kpt_table = QTableWidget(len(self.kpt_names), 2)
         self.kpt_table.setHorizontalHeaderLabels(["Index", "Name"])
         self.kpt_table.verticalHeader().setVisible(False)
@@ -1907,7 +1907,7 @@ class SkeletonEditorDialog(QDialog):
         left.addLayout(io_row)
 
         right = QVBoxLayout()
-        right.addWidget(QLabel("Edges (0-based indices):"))
+        right.addWidget(QLabel("What should edges (0-based indices) be?"))
         self.edge_table = QTableWidget(0, 2)
         self.edge_table.setHorizontalHeaderLabels(["A", "B"])
         self.edge_table.verticalHeader().setVisible(False)
@@ -1923,9 +1923,9 @@ class SkeletonEditorDialog(QDialog):
         self.b_spin.setRange(0, mx)
         self.btn_add = QPushButton("Add Edge")
         self.btn_del = QPushButton("Delete Selected")
-        add_row.addWidget(QLabel("A:"))
+        add_row.addWidget(QLabel("What should a be?"))
         add_row.addWidget(self.a_spin)
-        add_row.addWidget(QLabel("B:"))
+        add_row.addWidget(QLabel("What should b be?"))
         add_row.addWidget(self.b_spin)
         add_row.addWidget(self.btn_add)
         add_row.addWidget(self.btn_del)
@@ -2276,14 +2276,14 @@ class ProjectWizard(QDialog):
         row_root = QHBoxLayout()
         row_root.addWidget(self.out_root, 1)
         row_root.addWidget(btn_root)
-        form.addRow("Output root:", row_root)
+        form.addRow("Where should PoseKit project outputs be stored?", row_root)
 
         self.labels_dir = QLineEdit(str(default_labels))
         btn_labels = QPushButton("Choose…")
         row_labels = QHBoxLayout()
         row_labels.addWidget(self.labels_dir, 1)
         row_labels.addWidget(btn_labels)
-        form.addRow("Labels dir:", row_labels)
+        form.addRow("Where should annotation label files be written?", row_labels)
 
         self.autosave_cb = QCheckBox("Autosave when changing frames")
         self.autosave_cb.setChecked(default_autosave)
@@ -2293,14 +2293,14 @@ class ProjectWizard(QDialog):
         self.pad_spin.setRange(0.0, 0.25)
         self.pad_spin.setSingleStep(0.01)
         self.pad_spin.setValue(default_pad)
-        form.addRow("BBox pad fraction:", self.pad_spin)
+        form.addRow("How much padding should be added around keypoints for bbox export?", self.pad_spin)
 
         layout.addLayout(form)
 
         # Classes
         cls_box = QWidget()
         cls_layout = QVBoxLayout(cls_box)
-        cls_layout.addWidget(QLabel("Classes (one per line):"))
+        cls_layout.addWidget(QLabel("What should classes (one per line) be?"))
         self.classes_edit = QPlainTextEdit("\n".join(default_classes))
         cls_layout.addWidget(self.classes_edit, 1)
         layout.addWidget(cls_box, 1)
@@ -2308,7 +2308,7 @@ class ProjectWizard(QDialog):
         # Skeleton Editor button
         skel_box = QWidget()
         skel_layout = QVBoxLayout(skel_box)
-        skel_layout.addWidget(QLabel("Keypoints & Skeleton:"))
+        skel_layout.addWidget(QLabel("What should keypoints & skeleton be?"))
         self.btn_skel = QPushButton("Edit Keypoints & Skeleton…")
         skel_layout.addWidget(self.btn_skel)
 
@@ -2510,7 +2510,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.search_edit)
 
         sort_row = QHBoxLayout()
-        sort_row.addWidget(QLabel("Sort:"))
+        sort_row.addWidget(QLabel("How should frames be sorted?"))
         self.sort_combo = QComboBox()
         self.sort_combo.addItems(
             [
@@ -2599,7 +2599,7 @@ class MainWindow(QMainWindow):
         self.canvas_hint.setStyleSheet("QLabel { color: #666; padding: 6px; }")
 
         self._setting_meta = False
-        self.meta_tags_label = QLabel("Frame tags:")
+        self.meta_tags_label = QLabel("What should frame tags be?")
         self.meta_tags = {}
         tags_row = QHBoxLayout()
         for tag in [
@@ -2643,24 +2643,24 @@ class MainWindow(QMainWindow):
         # Annotation
         ann_group = QGroupBox("Annotation")
         ann_layout = QVBoxLayout(ann_group)
-        ann_layout.addWidget(QLabel("Class"))
+        ann_layout.addWidget(QLabel("Which class is being annotated?"))
         self.class_combo = QComboBox()
         self.class_combo.addItems(self.project.class_names)
         ann_layout.addWidget(self.class_combo)
         ann_layout.addSpacing(4)
-        ann_layout.addWidget(QLabel("Keypoints"))
+        ann_layout.addWidget(QLabel("Which keypoints are being edited?"))
         self.kpt_list = QListWidget()
         self._rebuild_kpt_list()
         ann_layout.addWidget(self.kpt_list, 1)
         ann_layout.addSpacing(4)
-        ann_layout.addWidget(QLabel("Mode"))
+        ann_layout.addWidget(QLabel("How should annotation progression advance?"))
         self.rb_frame = QRadioButton("Frame-by-frame")
         self.rb_kpt = QRadioButton("Keypoint-by-keypoint")
         self.rb_frame.setChecked(True)
         ann_layout.addWidget(self.rb_frame)
         ann_layout.addWidget(self.rb_kpt)
         ann_layout.addSpacing(4)
-        ann_layout.addWidget(QLabel("Click visibility"))
+        ann_layout.addWidget(QLabel("What visibility state should clicks assign?"))
         self.vis_group = QButtonGroup(self)
         self.rb_vis = QRadioButton("Visible (2)")
         self.rb_occ = QRadioButton("Occluded (1)")
@@ -2690,7 +2690,7 @@ class MainWindow(QMainWindow):
         disp_layout.addWidget(self.cb_show_pred_conf)
 
         autosave_row = QHBoxLayout()
-        autosave_row.addWidget(QLabel("Autosave (sec)"))
+        autosave_row.addWidget(QLabel("How often should autosave run (sec)?"))
         self.sp_autosave_delay = QDoubleSpinBox()
         self.sp_autosave_delay.setRange(0.5, 30.0)
         self.sp_autosave_delay.setSingleStep(0.5)
@@ -2724,10 +2724,10 @@ class MainWindow(QMainWindow):
         self.sp_label_size = QSpinBox()
         self.sp_label_size.setRange(4, 20)
         self.sp_label_size.setValue(int(self.project.label_font_size))
-        size_row.addWidget(QLabel("Point"))
+        size_row.addWidget(QLabel("What should point be?"))
         size_row.addWidget(self.sp_kpt_size)
         size_row.addSpacing(6)
-        size_row.addWidget(QLabel("Text"))
+        size_row.addWidget(QLabel("What should text be?"))
         size_row.addWidget(self.sp_label_size)
         disp_layout.addLayout(size_row)
 
@@ -2758,14 +2758,14 @@ class MainWindow(QMainWindow):
         model_layout = QVBoxLayout(model_group)
 
         backend_row = QHBoxLayout()
-        backend_row.addWidget(QLabel("Inference backend"))
+        backend_row.addWidget(QLabel("Which inference backend should generate predictions?"))
         self.combo_pred_backend = QComboBox()
         self.combo_pred_backend.addItems(["YOLO", "SLEAP"])
         backend_row.addWidget(self.combo_pred_backend, 1)
         model_layout.addLayout(backend_row)
 
         pred_conf_row = QHBoxLayout()
-        pred_conf_row.addWidget(QLabel("Min pred conf"))
+        pred_conf_row.addWidget(QLabel("What minimum prediction confidence should be shown/applied?"))
         self.sp_pred_conf = QDoubleSpinBox()
         self.sp_pred_conf.setRange(0.0, 1.0)
         self.sp_pred_conf.setSingleStep(0.05)
@@ -2804,7 +2804,7 @@ class MainWindow(QMainWindow):
         self.btn_sleap_refresh.setToolTip("Refresh conda environments list")
         env_row.addWidget(self.combo_sleap_env, 1)
         env_row.addWidget(self.btn_sleap_refresh)
-        sleap_layout.addRow("Conda env:", env_row)
+        sleap_layout.addRow("What should conda env be?", env_row)
         self.lbl_sleap_env_status = QLabel("")
         self.lbl_sleap_env_status.setStyleSheet("QLabel { color: #b00; }")
         sleap_layout.addRow("", self.lbl_sleap_env_status)
@@ -2817,11 +2817,11 @@ class MainWindow(QMainWindow):
         model_row.addWidget(self.sleap_model_edit, 1)
         model_row.addWidget(self.btn_sleap_model)
         model_row.addWidget(self.btn_sleap_model_latest)
-        sleap_layout.addRow("Model dir:", model_row)
+        sleap_layout.addRow("Where should model dir be set?", model_row)
 
         self.combo_sleap_device = QComboBox()
         self.combo_sleap_device.addItems(get_available_devices())
-        sleap_layout.addRow("Device:", self.combo_sleap_device)
+        sleap_layout.addRow("Which device should be used?", self.combo_sleap_device)
 
         sleap_btns = QHBoxLayout()
         self.btn_sleap_start = QPushButton("Start SLEAP Service")
@@ -4214,10 +4214,10 @@ class MainWindow(QMainWindow):
         grid_row.addWidget(QLabel("Y"))
         grid_row.addWidget(grid_y)
 
-        layout.addRow("CLAHE clip:", clip)
-        layout.addRow("CLAHE grid:", grid_row)
-        layout.addRow("Sharpen amount:", sharpen)
-        layout.addRow("Blur sigma:", blur)
+        layout.addRow("What should clahe clip be?", clip)
+        layout.addRow("What should clahe grid be?", grid_row)
+        layout.addRow("What should sharpen amount be?", sharpen)
+        layout.addRow("What should blur sigma be?", blur)
 
         btns = QHBoxLayout()
         ok = QPushButton("Apply")
@@ -5102,11 +5102,11 @@ class MainWindow(QMainWindow):
         cl_row.addWidget(cluster_csv, 1)
         cl_row.addWidget(btn_cluster)
 
-        layout.addRow("Output root:", row)
-        layout.addRow("Split method:", split_method)
-        layout.addRow("Train fraction:", split)
-        layout.addRow("Random seed:", seed)
-        layout.addRow("Cluster CSV:", cl_row)
+        layout.addRow("Where should output root be set?", row)
+        layout.addRow("Which split method should be used?", split_method)
+        layout.addRow("What train fraction should be used?", split)
+        layout.addRow("What should random seed be?", seed)
+        layout.addRow("What should cluster csv be?", cl_row)
 
         btns = QHBoxLayout()
         ok = QPushButton("Export")

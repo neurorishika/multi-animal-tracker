@@ -1,6 +1,6 @@
 site_name: Multi-Animal Tracker Docs
 site_description: User and developer documentation for Multi-Animal Tracker and PoseKit
-site_url: https://github.com/neurorishika/multi-animal-tracker
+site_url: https://neurorishika.github.io/multi-animal-tracker/
 repo_url: https://github.com/neurorishika/multi-animal-tracker
 repo_name: neurorishika/multi-animal-tracker
 edit_uri: edit/main/docs/
@@ -25,15 +25,15 @@ theme:
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: teal
-      accent: indigo
+      primary: blue
+      accent: light blue
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: teal
-      accent: indigo
+      primary: blue
+      accent: light blue
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
@@ -108,6 +108,8 @@ nav:
       - Contributing: developer-guide/contributing.md
   - Reference:
       - API Index: reference/api-index.md
+      - UI Components (MAT): reference/ui-components-mat.md
+      - UI Components (PoseKit): reference/ui-components-posekit.md
       - API (App): reference/api-app.md
       - API (Core): reference/api-core.md
       - API (Data): reference/api-data.md

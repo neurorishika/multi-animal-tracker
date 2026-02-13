@@ -5,7 +5,12 @@ This module contains the graphical user interface components including the main 
 histogram widgets, and other UI elements.
 """
 
-from .main_window import MainWindow
-from .widgets.histograms import RealtimeHistogramWidget, HistogramPanel
+try:
+    from .main_window import MainWindow
+    from .widgets.histograms import RealtimeHistogramWidget, HistogramPanel
+except Exception:  # pragma: no cover - allows lightweight metadata imports without GUI deps
+    MainWindow = None
+    RealtimeHistogramWidget = None
+    HistogramPanel = None
 
 __all__ = ["MainWindow", "RealtimeHistogramWidget", "HistogramPanel"]
