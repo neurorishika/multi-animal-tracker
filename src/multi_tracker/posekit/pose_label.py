@@ -30,20 +30,20 @@ Hotkeys:
 from __future__ import annotations
 
 import argparse
+import csv
+import gc
+import hashlib
 import json
 import logging
 import os
 import random
-import sys
-import subprocess
 import shutil
-from datetime import datetime
+import subprocess
+import sys
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-import hashlib
-import csv
-import gc
 
 logger = logging.getLogger("pose_label")
 
@@ -53,31 +53,30 @@ import yaml
 
 # Handle both package imports and direct script execution
 try:
-    from .pose_label_extensions import (
-        FrameMetadata,
-        MetadataManager,
-        CrashSafeWriter,
-        LabelVersioning,
-        cluster_stratified_split,
-        cluster_kfold_split,
-        save_split_files,
-        IncrementalEmbeddingCache,
-        Keypoint,
-        load_yolo_pose_label,
-        save_yolo_pose_label,
-        migrate_labels_keypoints,
-        build_yolo_pose_dataset,
-    )
     from .pose_inference import PoseInferenceService
-
     from .pose_label_dialogs import (
+        ActiveLearningDialog,
         DatasetSplitDialog,
+        EvaluationDashboardDialog,
         FrameMetadataDialog,
         SmartSelectDialog,
         TrainingRunnerDialog,
-        EvaluationDashboardDialog,
-        ActiveLearningDialog,
         get_available_devices,
+    )
+    from .pose_label_extensions import (
+        CrashSafeWriter,
+        FrameMetadata,
+        IncrementalEmbeddingCache,
+        Keypoint,
+        LabelVersioning,
+        MetadataManager,
+        build_yolo_pose_dataset,
+        cluster_kfold_split,
+        cluster_stratified_split,
+        load_yolo_pose_label,
+        migrate_labels_keypoints,
+        save_split_files,
+        save_yolo_pose_label,
     )
 except ImportError:
     # Direct script execution - use absolute imports
@@ -109,39 +108,42 @@ except ImportError:
     )
 
 from PySide6.QtCore import (
-    Qt,
+    QEvent,
+    QObject,
     QRect,
     QRectF,
     QSize,
-    QEvent,
-    QObject,
-    Signal,
-    Slot,
+    Qt,
     QThread,
     QTimer,
+    Signal,
+    Slot,
 )
 from PySide6.QtGui import (
     QAction,
+    QBrush,
     QColor,
     QFont,
     QIcon,
     QImage,
     QKeySequence,
-    QPalette,
     QPainter,
+    QPalette,
     QPen,
     QPixmap,
-    QBrush,
 )
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
+    QAbstractSpinBox,
     QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGraphicsEllipseItem,
     QGraphicsLineItem,
     QGraphicsPixmapItem,
@@ -149,35 +151,32 @@ from PySide6.QtWidgets import (
     QGraphicsTextItem,
     QGraphicsView,
     QGridLayout,
+    QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QRadioButton,
+    QScrollArea,
+    QSizePolicy,
     QSpinBox,
-    QDoubleSpinBox,
     QSplitter,
     QStatusBar,
+    QStyle,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
     QVBoxLayout,
     QWidget,
-    QPlainTextEdit,
-    QScrollArea,
-    QFrame,
-    QGroupBox,
-    QInputDialog,
-    QProgressBar,
-    QStyledItemDelegate,
-    QStyle,
-    QStyleOptionViewItem,
-    QSizePolicy,
-    QAbstractSpinBox,
 )
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -887,8 +886,8 @@ def cluster_embeddings_cosine(
     k = max(1, min(int(k), n))
 
     if method == "hierarchical" and n <= hierarchical_limit:
+        from scipy.cluster.hierarchy import fcluster, linkage
         from scipy.spatial.distance import pdist
-        from scipy.cluster.hierarchy import linkage, fcluster
 
         # condensed cosine distances
         d = pdist(emb, metric="cosine")

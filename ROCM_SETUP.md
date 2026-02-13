@@ -299,7 +299,7 @@ If you need a different ROCm version:
    # Change from:
    --extra-index-url https://download.pytorch.org/whl/rocm6.2
    cupy-rocm-6-0
-   
+
    # To (for ROCm 6.1):
    --extra-index-url https://download.pytorch.org/whl/rocm6.1
    cupy-rocm-6-0  # CuPy-ROCm 6.0 works with ROCm 6.x

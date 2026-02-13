@@ -1,53 +1,56 @@
 name: multi-animal-tracker-base
 channels:
-  - conda-forge
-  - defaults
+- conda-forge
+- defaults
 dependencies:
   # Core Python
-  - python=3.13
-  
+- python=3.13
+
   # Scientific computing stack
-  - numpy
-  - scipy
-  - pandas
-  - jupyter
-  - ipykernel
-  - ipywidgets
-  - einops
-  - umap-learn
-  - scikit-learn
-  - pyyaml
-  
+- numpy
+- scipy
+- pandas
+- jupyter
+- ipykernel
+- ipywidgets
+- einops
+- umap-learn
+- scikit-learn
+- pyyaml
+
   # Visualization
-  - matplotlib
-  - seaborn
-  - bokeh
-  
+- matplotlib
+- seaborn
+- bokeh
+
   # Computer vision
-  - opencv
-  - scikit-image
-  - pillow
-  - shapely
-  
+- opencv
+- scikit-image
+- pillow
+- shapely
+
   # Efficiency - CPU acceleration
-  - numba
-  
+- numba
+
   # GUI framework (Qt6 - modern, better HiDPI and Apple Silicon support)
-  - pyside6>=6.6
-  - qt6-main
-  - pyqtwebengine
-  
+- pyside6>=6.6
+- qt6-main
+- pyqtwebengine
+
   # Development tools
-  - pip
-  - setuptools
-  - wheel
-  
+- pip
+- setuptools
+- wheel
+
   # Optional: development dependencies
-  - pytest
-  - black
-  - flake8
-  
+- pytest
+- pytest-cov
+- black
+- flake8
+- isort
+- pre-commit
+
   # Install uv for fast pip package installation
   # After creating environment, run: uv pip install -v -r requirements.txt
-  - pip:
-    - uv
+- pip:
+  - uv

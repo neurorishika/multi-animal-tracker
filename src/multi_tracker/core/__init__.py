@@ -6,19 +6,18 @@ multi-object tracking including Kalman filters, background models,
 object detection, and track assignment.
 """
 
-from .tracking.worker import TrackingWorker
-from .filters.kalman import KalmanFilterManager
+from .assigners.hungarian import TrackAssigner
 from .background.model import BackgroundModel
 from .detectors.engine import ObjectDetector
-from .assigners.hungarian import TrackAssigner
+from .filters.kalman import KalmanFilterManager
+from .identity.analysis import IdentityProcessor, IndividualDatasetGenerator
 from .post.processing import (
+    interpolate_trajectories,
     process_trajectories,
     process_trajectories_from_csv,
     resolve_trajectories,
-    interpolate_trajectories,
 )
-from .identity.analysis import IdentityProcessor, IndividualDatasetGenerator
-
+from .tracking.worker import TrackingWorker
 
 __all__ = [
     "TrackingWorker",

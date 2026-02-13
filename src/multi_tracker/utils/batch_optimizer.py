@@ -3,8 +3,10 @@ Batch size optimizer for YOLO detection based on available device memory.
 """
 
 import logging
+
 import numpy as np
-from .gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE, torch
+
+from .gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE, torch
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +82,12 @@ class BatchOptimizer:
 
         return (self.device_type, self.device_name, self.available_memory)
 
-    def estimate_batch_size(self: object, frame_width: object, frame_height: object, model_name: object = 'yolo26s-obb.pt') -> object:
+    def estimate_batch_size(
+        self: object,
+        frame_width: object,
+        frame_height: object,
+        model_name: object = "yolo26s-obb.pt",
+    ) -> object:
         """
         Estimate optimal batch size for YOLO inference.
 

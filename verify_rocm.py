@@ -9,9 +9,9 @@ Usage:
     python verify_rocm.py
 """
 
-import sys
-import subprocess
 import os
+import subprocess
+import sys
 
 
 def print_header(text):
@@ -175,8 +175,9 @@ def check_performance():
     print_header("Performance Tests")
 
     try:
-        import torch
         import time
+
+        import torch
 
         if not torch.cuda.is_available():
             print("Skipping performance tests - no GPU available")
@@ -208,8 +209,9 @@ def check_performance():
         print_check("Performance tests", False, str(e))
 
     try:
-        import cupy as cp
         import time
+
+        import cupy as cp
 
         # Test CuPy operations
         size = 1000

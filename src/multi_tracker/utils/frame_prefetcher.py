@@ -6,9 +6,10 @@ in the background while the main tracking thread processes the current frame,
 reducing I/O wait times and improving overall throughput.
 """
 
-import threading
-import queue
 import logging
+import queue
+import threading
+
 import cv2
 import numpy as np
 

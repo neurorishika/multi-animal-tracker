@@ -4,12 +4,13 @@ Utility functions for image processing in multi-animal tracking.
 Optimized with Numba JIT and GPU acceleration (CuPy/PyTorch) where available.
 """
 
-import cv2
-import numpy as np
 from collections import deque
 from functools import lru_cache
 
-from multi_tracker.utils.gpu_utils import CUDA_AVAILABLE, cp, NUMBA_AVAILABLE, njit
+import cv2
+import numpy as np
+
+from multi_tracker.utils.gpu_utils import CUDA_AVAILABLE, NUMBA_AVAILABLE, cp, njit
 
 
 @lru_cache(maxsize=128)
@@ -52,7 +53,13 @@ if NUMBA_AVAILABLE:
         return results
 
 
-def apply_image_adjustments(gray: object, brightness: object, contrast: object, gamma: object, use_gpu: object = False) -> object:
+def apply_image_adjustments(
+    gray: object,
+    brightness: object,
+    contrast: object,
+    gamma: object,
+    use_gpu: object = False,
+) -> object:
     """
     Apply brightness, contrast, and gamma corrections to grayscale image.
 
@@ -134,7 +141,16 @@ if NUMBA_AVAILABLE:
         return np.mean(data)
 
 
-def stabilize_lighting(frame: object, reference_intensity: object, current_intensity_history: object, alpha: object = 0.95, roi_mask: object = None, median_window: object = 5, lighting_state: object = None, use_gpu: object = False) -> object:
+def stabilize_lighting(
+    frame: object,
+    reference_intensity: object,
+    current_intensity_history: object,
+    alpha: object = 0.95,
+    roi_mask: object = None,
+    median_window: object = 5,
+    lighting_state: object = None,
+    use_gpu: object = False,
+) -> object:
     """
     Stabilize lighting conditions by normalizing frame intensity to a reference level.
 

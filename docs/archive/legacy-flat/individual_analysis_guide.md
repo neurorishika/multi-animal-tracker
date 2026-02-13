@@ -69,7 +69,7 @@ Implement your own identity classifier.
 def _classify_identity(self, crop, crop_info, detection):
     # Your custom logic
     avg_color = np.mean(crop, axis=(0, 1))
-    
+
     if avg_color[2] > 150:  # Red dominant
         return "red_individual", 0.9
     elif avg_color[0] > 150:  # Blue dominant
@@ -232,7 +232,7 @@ pose_dataset_20260124_143052/
 ### DeepLabCut
 ```bash
 # After exporting pose dataset
-deeplabcut.create_new_project('MyProject', 'YourName', 
+deeplabcut.create_new_project('MyProject', 'YourName',
                                ['/path/to/trajectory_0001.mp4'])
 deeplabcut.extract_frames(config_path)
 deeplabcut.label_frames(config_path)
@@ -261,7 +261,7 @@ with open('metadata.json') as f:
 for traj in meta['trajectories']:
     video_path = traj['video_file']
     frames = traj['frames']
-    
+
     # Your analysis here
     cap = cv2.VideoCapture(video_path)
     # ...
@@ -304,18 +304,18 @@ for traj in meta['trajectories']:
 class IdentityProcessor:
     def __init__(self, params):
         """Initialize identity processor with parameters."""
-        
+
     def extract_crop(self, frame, cx, cy, body_size, theta=None):
         """Extract crop around detection.
-        
+
         Returns:
             crop: Cropped image (BGR)
             crop_info: Metadata dict
         """
-        
+
     def process_frame(self, frame, detections, frame_id):
         """Process all detections in frame.
-        
+
         Returns:
             identities: List of identity labels
             confidences: List of confidence scores
@@ -329,17 +329,17 @@ class IdentityProcessor:
 class IndividualDatasetGenerator:
     def __init__(self, params, video_path, output_dir):
         """Initialize real-time individual dataset generator."""
-        
+
     def process_frame(self, frame, frame_id, detections, track_ids, obb_corners):
         """Process frame and save OBB-masked crops.
-        
+
         Called during forward tracking for each frame with detections.
         Generates crops with only the detected animal visible (OBB mask applied).
         """
-        
+
     def finalize(self):
         """Finalize dataset and save metadata.
-        
+
         Returns:
             output_path: Path to the generated dataset
         """

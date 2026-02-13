@@ -186,19 +186,19 @@ import numpy as np
 
 def process_image(image: np.ndarray) -> np.ndarray:
     """Process image using best available acceleration."""
-    
+
     if CUDA_AVAILABLE and cp is not None:
         # Use CuPy for NVIDIA GPU
         img_gpu = cp.asarray(image)
         result = cp.asnumpy(some_cupy_operation(img_gpu))
         return result
-    
+
     elif MPS_AVAILABLE and torch is not None:
         # Use PyTorch MPS for Apple Silicon
         img_tensor = torch.from_numpy(image).to('mps')
         result = some_torch_operation(img_tensor).cpu().numpy()
         return result
-    
+
     else:
         # CPU fallback
         return some_numpy_operation(image)
@@ -228,14 +228,14 @@ class MyModel(torch.nn.Module):
     def __init__(self, enable_gpu=True):
         super().__init__()
         self.device = get_optimal_device(enable_gpu=enable_gpu)
-        
+
         # Build model
         self.conv1 = torch.nn.Conv2d(3, 64, 3)
         # ... more layers
-        
+
         # Move to device
         self.to(self.device)
-    
+
     def forward(self, x):
         # Input automatically on correct device
         return self.conv1(x)
@@ -250,7 +250,7 @@ import logging
 def main():
     logging.info("Initializing Multi-Animal-Tracker")
     log_device_info()  # Show user their GPU capabilities
-    
+
     # Continue with application
     # ...
 ```
@@ -374,26 +374,26 @@ from multi_tracker.utils.gpu_utils import (
 )
 
 class TestGPUUtils(unittest.TestCase):
-    
+
     def test_device_info_structure(self):
         """Test that device info returns expected keys."""
         info = get_device_info()
-        
+
         required_keys = [
             'cuda_available', 'mps_available', 'torch_available',
             'numba_available', 'gpu_available', 'any_acceleration'
         ]
-        
+
         for key in required_keys:
             self.assertIn(key, info)
             self.assertIsInstance(info[key], bool)
-    
+
     def test_optimal_device_returns_string(self):
         """Test that optimal device returns a valid string."""
         device = get_optimal_device()
         self.assertIsInstance(device, str)
         self.assertIn(device, ["cuda:0", "mps", "cpu"])
-    
+
     def test_gpu_flag_consistency(self):
         """Test that GPU_AVAILABLE matches CUDA or MPS."""
         self.assertEqual(GPU_AVAILABLE, CUDA_AVAILABLE or MPS_AVAILABLE)
@@ -443,7 +443,7 @@ class TestGPUUtils(unittest.TestCase):
    ```python
    # BAD - bypasses centralized detection
    import cupy as cp
-   
+
    # GOOD - uses centralized detection
    from multi_tracker.utils.gpu_utils import cp, CUDA_AVAILABLE
    ```
@@ -453,7 +453,7 @@ class TestGPUUtils(unittest.TestCase):
    # BAD - assumes CUDA
    import cupy as cp
    array = cp.array([1, 2, 3])  # Crashes if no GPU
-   
+
    # GOOD - checks first
    from multi_tracker.utils.gpu_utils import CUDA_AVAILABLE, cp
    if CUDA_AVAILABLE:
@@ -464,7 +464,7 @@ class TestGPUUtils(unittest.TestCase):
    ```python
    # BAD - hardcoded
    device_options = ["cuda:0", "mps", "cpu"]
-   
+
    # GOOD - dynamic
    from multi_tracker.utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
    device_options = ["cpu"]

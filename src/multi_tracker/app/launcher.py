@@ -6,10 +6,10 @@ This module provides the command-line interface and GUI launcher for the
 multi-animal tracking system.
 """
 
-import sys
-import os
-import logging
 import argparse
+import logging
+import os
+import sys
 from pathlib import Path
 
 # Fix OpenMP conflict on macOS (PyTorch + OpenCV + NumPy can load multiple OpenMP libraries)

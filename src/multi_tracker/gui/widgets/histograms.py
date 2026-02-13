@@ -5,10 +5,11 @@ This module provides matplotlib-based histogram widgets that update in real-time
 to show distributions of tracking parameters like velocity, size, orientation, etc.
 """
 
-import numpy as np
 from collections import deque
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout
+
 import matplotlib
+import numpy as np
+from PySide6.QtWidgets import QHBoxLayout, QVBoxLayout, QWidget
 
 matplotlib.use("QtAgg")  # Qt6-compatible backend
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas

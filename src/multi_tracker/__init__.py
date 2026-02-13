@@ -20,7 +20,7 @@ __version__ = "1.0.0"
 __author__ = "Your Name"
 __email__ = "your.email@example.com"
 
-from .app.launcher import main, setup_logging, parse_arguments
+from .app.launcher import main, parse_arguments, setup_logging
 
 try:
     from .core.tracking.worker import TrackingWorker

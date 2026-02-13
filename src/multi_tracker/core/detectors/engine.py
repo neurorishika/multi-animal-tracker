@@ -3,11 +3,12 @@ Object detection utilities for multi-object tracking.
 Supports both background subtraction and YOLO OBB detection methods.
 """
 
-import numpy as np
-import cv2
-import logging
 import hashlib
+import logging
 from pathlib import Path
+
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,9 @@ class YOLOOBBDetector:
                 stat = resolved_model.stat()
                 fingerprint_parts.append(f"size={stat.st_size}")
                 fingerprint_parts.append(f"mtime_ns={stat.st_mtime_ns}")
-            fingerprint = hashlib.md5("|".join(fingerprint_parts).encode("utf-8")).hexdigest()[:12]
+            fingerprint = hashlib.md5(
+                "|".join(fingerprint_parts).encode("utf-8")
+            ).hexdigest()[:12]
             engine_path = cache_dir / f"{safe_model_stem}_{fingerprint}.engine"
 
             # Check if TensorRT engine already exists
@@ -266,7 +269,7 @@ class YOLOOBBDetector:
 
     def _detect_device(self):
         """Detect and configure the optimal device for inference."""
-        from multi_tracker.utils.gpu_utils import TORCH_CUDA_AVAILABLE, MPS_AVAILABLE
+        from multi_tracker.utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
 
         # Check user preference
         device_preference = self.params.get("YOLO_DEVICE", "auto")
@@ -371,9 +374,9 @@ class YOLOOBBDetector:
             return np.array([])
 
         try:
+            from shapely import prepare
             from shapely.geometry import Polygon
             from shapely.validation import make_valid
-            from shapely import prepare
 
             # Create and prepare reference polygon once
             poly1 = Polygon(corners1)
@@ -739,7 +742,12 @@ class YOLOOBBDetector:
 
         return meas, sizes, shapes, results[0], confidences
 
-    def detect_objects_batched(self: object, frames: object, start_frame_idx: object, progress_callback: object = None) -> object:
+    def detect_objects_batched(
+        self: object,
+        frames: object,
+        start_frame_idx: object,
+        progress_callback: object = None,
+    ) -> object:
         """
         Detect objects in a batch of frames using YOLO OBB.
 

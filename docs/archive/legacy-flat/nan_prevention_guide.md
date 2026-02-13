@@ -46,7 +46,7 @@ def _clamp01(x: float) -> float:
 - Checks for non-finite values at each step
 - Uses `max(img_w, 1)` to prevent division by zero
 
-### 3. Robust `compute_bbox_from_kpts()` 
+### 3. Robust `compute_bbox_from_kpts()`
 
 - Added `MIN_BBOX_SIZE = 2.0` pixels to ensure reasonable bbox sizes
 - Validates keypoint coordinates are finite

@@ -4,48 +4,48 @@ This dialog coordinates conversion, validation, dataset merging, and training
 invocation workflows used by the MAT application.
 """
 
-import os
-import sys
 import logging
+import os
 import shutil
+import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, Signal, QProcess
+from PySide6.QtCore import QProcess, Qt, QThread, Signal
 from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QCheckBox,
+    QComboBox,
     QDialog,
-    QVBoxLayout,
+    QDoubleSpinBox,
+    QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
-    QPushButton,
-    QGroupBox,
-    QTableWidget,
-    QTableWidgetItem,
-    QFileDialog,
     QLineEdit,
-    QComboBox,
-    QSpinBox,
-    QDoubleSpinBox,
-    QCheckBox,
-    QTextEdit,
+    QListView,
     QMessageBox,
     QProgressBar,
-    QListView,
-    QTreeView,
-    QAbstractItemView,
+    QPushButton,
     QScrollArea,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QTreeView,
+    QVBoxLayout,
     QWidget,
 )
-from ...utils.gpu_utils import get_device_info
 
-from ...integrations.xanylabeling_cli import convert_project, HARD_CODED_CMD
 from ...data.dataset_merge import (
     detect_dataset_layout,
-    validate_labels,
-    rewrite_labels_to_single_class,
-    merge_datasets,
     get_dataset_class_name,
+    merge_datasets,
+    rewrite_labels_to_single_class,
     update_dataset_class_name,
+    validate_labels,
 )
+from ...integrations.xanylabeling_cli import HARD_CODED_CMD, convert_project
+from ...utils.gpu_utils import get_device_info
 
 logger = logging.getLogger(__name__)
 
@@ -95,10 +95,14 @@ class BuildDatasetWorker(QThread):
                 self.log_signal.emit(log)
                 if not ok:
                     self.status_signal.emit(row, "Failed")
-                    self.done_signal.emit(False, f"Conversion failed for {project_name}")
+                    self.done_signal.emit(
+                        False, f"Conversion failed for {project_name}"
+                    )
                     return
                 self.status_signal.emit(row, "Converted")
-                converted.append({"name": project_name, "path": src["path"], "row": row})
+                converted.append(
+                    {"name": project_name, "path": src["path"], "row": row}
+                )
 
             # Optionally rewrite classes to single class
             if self.rewrite_classes:
@@ -119,7 +123,9 @@ class BuildDatasetWorker(QThread):
                     return
                 for split, (_, lbl_dir) in layout.items():
                     class_ids, _ = validate_labels(lbl_dir)
-                    if len(class_ids) > 1 or (len(class_ids) == 1 and 0 not in class_ids):
+                    if len(class_ids) > 1 or (
+                        len(class_ids) == 1 and 0 not in class_ids
+                    ):
                         self.done_signal.emit(False, "CLASS_MISMATCH")
                         return
                 self.status_signal.emit(row, "Validated")
@@ -259,24 +265,44 @@ class TrainYoloDialog(QDialog):
 
         # Hyperparams
         h_params = QHBoxLayout()
-        self.spin_epochs = QSpinBox(); self.spin_epochs.setRange(1, 1000); self.spin_epochs.setValue(100)
-        self.spin_imgsz = QSpinBox(); self.spin_imgsz.setRange(320, 2048); self.spin_imgsz.setValue(640)
-        self.spin_batch = QSpinBox(); self.spin_batch.setRange(1, 256); self.spin_batch.setValue(16)
-        self.spin_lr0 = QDoubleSpinBox(); self.spin_lr0.setRange(1e-5, 1.0); self.spin_lr0.setDecimals(5); self.spin_lr0.setValue(0.01)
-        self.spin_patience = QSpinBox(); self.spin_patience.setRange(1, 200); self.spin_patience.setValue(30)
+        self.spin_epochs = QSpinBox()
+        self.spin_epochs.setRange(1, 1000)
+        self.spin_epochs.setValue(100)
+        self.spin_imgsz = QSpinBox()
+        self.spin_imgsz.setRange(320, 2048)
+        self.spin_imgsz.setValue(640)
+        self.spin_batch = QSpinBox()
+        self.spin_batch.setRange(1, 256)
+        self.spin_batch.setValue(16)
+        self.spin_lr0 = QDoubleSpinBox()
+        self.spin_lr0.setRange(1e-5, 1.0)
+        self.spin_lr0.setDecimals(5)
+        self.spin_lr0.setValue(0.01)
+        self.spin_patience = QSpinBox()
+        self.spin_patience.setRange(1, 200)
+        self.spin_patience.setValue(30)
         self.combo_device = QComboBox()
         self.combo_device.addItems(self._build_device_options())
-        self.spin_workers = QSpinBox(); self.spin_workers.setRange(0, 32); self.spin_workers.setValue(8)
+        self.spin_workers = QSpinBox()
+        self.spin_workers.setRange(0, 32)
+        self.spin_workers.setValue(8)
         self.chk_cache = QCheckBox("Cache")
-        h_params.addWidget(QLabel("epochs")); h_params.addWidget(self.spin_epochs)
-        h_params.addWidget(QLabel("imgsz")); h_params.addWidget(self.spin_imgsz)
-        h_params.addWidget(QLabel("batch")); h_params.addWidget(self.spin_batch)
-        h_params.addWidget(QLabel("lr0")); h_params.addWidget(self.spin_lr0)
-        h_params.addWidget(QLabel("patience")); h_params.addWidget(self.spin_patience)
+        h_params.addWidget(QLabel("epochs"))
+        h_params.addWidget(self.spin_epochs)
+        h_params.addWidget(QLabel("imgsz"))
+        h_params.addWidget(self.spin_imgsz)
+        h_params.addWidget(QLabel("batch"))
+        h_params.addWidget(self.spin_batch)
+        h_params.addWidget(QLabel("lr0"))
+        h_params.addWidget(self.spin_lr0)
+        h_params.addWidget(QLabel("patience"))
+        h_params.addWidget(self.spin_patience)
         v_train.addLayout(h_params)
         h_params2 = QHBoxLayout()
-        h_params2.addWidget(QLabel("device")); h_params2.addWidget(self.combo_device)
-        h_params2.addWidget(QLabel("workers")); h_params2.addWidget(self.spin_workers)
+        h_params2.addWidget(QLabel("device"))
+        h_params2.addWidget(self.combo_device)
+        h_params2.addWidget(QLabel("workers"))
+        h_params2.addWidget(self.spin_workers)
         h_params2.addWidget(self.chk_cache)
         v_train.addLayout(h_params2)
 
@@ -343,7 +369,9 @@ class TrainYoloDialog(QDialog):
     def _add_source(self, typ, path):
         row = self.table_sources.rowCount()
         self.table_sources.insertRow(row)
-        self.table_sources.setItem(row, 0, QTableWidgetItem("X-AnyLabeling" if typ == "xany" else "YOLO-OBB"))
+        self.table_sources.setItem(
+            row, 0, QTableWidgetItem("X-AnyLabeling" if typ == "xany" else "YOLO-OBB")
+        )
         self.table_sources.setItem(row, 1, QTableWidgetItem(path))
         self.table_sources.setItem(row, 2, QTableWidgetItem("Pending"))
         self.table_sources.item(row, 0).setData(Qt.UserRole, typ)
@@ -362,7 +390,9 @@ class TrainYoloDialog(QDialog):
             self.line_output.setText(directory)
 
     def _choose_weights(self):
-        fp, _ = QFileDialog.getOpenFileName(self, "Select Weights", "", "Weights (*.pt)")
+        fp, _ = QFileDialog.getOpenFileName(
+            self, "Select Weights", "", "Weights (*.pt)"
+        )
         if fp:
             self.line_weights.setText(fp)
 
@@ -372,7 +402,9 @@ class TrainYoloDialog(QDialog):
             return
         output_dir = self.line_output.text().strip()
         if not output_dir:
-            QMessageBox.warning(self, "Output directory", "Please select an output directory.")
+            QMessageBox.warning(
+                self, "Output directory", "Please select an output directory."
+            )
             return
         class_name = self.line_class.text().strip() or "object"
         split_cfg = {
@@ -443,12 +475,16 @@ class TrainYoloDialog(QDialog):
             return
         weights = self._get_weights_path()
         if not weights:
-            QMessageBox.warning(self, "Weights", "Select weights or choose auto-download.")
+            QMessageBox.warning(
+                self, "Weights", "Select weights or choose auto-download."
+            )
             return
 
         yaml_path = os.path.join(self.merged_dataset_dir, "dataset.yaml")
         if not os.path.exists(yaml_path):
-            QMessageBox.warning(self, "Dataset", "dataset.yaml not found in merged dataset.")
+            QMessageBox.warning(
+                self, "Dataset", "dataset.yaml not found in merged dataset."
+            )
             return
 
         output_dir = os.path.join(self.line_output.text().strip(), "training_runs")
@@ -495,7 +531,11 @@ class TrainYoloDialog(QDialog):
     def _read_train_log(self):
         if not self.train_process:
             return
-        text = self.train_process.readAllStandardOutput().data().decode("utf-8", errors="ignore")
+        text = (
+            self.train_process.readAllStandardOutput()
+            .data()
+            .decode("utf-8", errors="ignore")
+        )
         if text:
             self.log_view.append(text)
 

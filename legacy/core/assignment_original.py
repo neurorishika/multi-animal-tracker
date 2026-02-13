@@ -2,26 +2,37 @@
 Track assignment utilities for multi-object tracking.
 Functionally identical to the original implementation's assignment logic.
 """
-import numpy as np
+
 import logging
+
+import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 logger = logging.getLogger(__name__)
 
+
 class TrackAssigner:
     """Handles assignment of detections to tracks."""
-    
+
     def __init__(self, params):
         self.params = params
-        
-    def compute_cost_matrix(self, N, measurements, predictions, shapes, kalman_filters, last_shape_info):
+
+    def compute_cost_matrix(
+        self, N, measurements, predictions, shapes, kalman_filters, last_shape_info
+    ):
         """Computes cost matrix for track-detection assignment."""
         p = self.params
         M = len(measurements)
-        if M == 0: return np.zeros((N, 0), np.float32)
-        
+        if M == 0:
+            return np.zeros((N, 0), np.float32)
+
         cost = np.zeros((N, M), np.float32)
-        Wp, Wo, Wa, Wasp = p["W_POSITION"], p["W_ORIENTATION"], p["W_AREA"], p["W_ASPECT"]
+        Wp, Wo, Wa, Wasp = (
+            p["W_POSITION"],
+            p["W_ORIENTATION"],
+            p["W_AREA"],
+            p["W_ASPECT"],
+        )
         use_maha = p["USE_MAHALANOBIS"]
 
         for i in range(N):
@@ -29,25 +40,38 @@ class TrackAssigner:
                 if use_maha:
                     Pcov = kalman_filters[i].errorCovPre[:2, :2]
                     diff = measurements[j][:2] - predictions[i][:2]
-                    try: 
+                    try:
                         invP = np.linalg.inv(Pcov)
                         posc = np.sqrt(diff.T @ invP @ diff)
-                    except: 
+                    except:
                         posc = np.linalg.norm(diff)
                 else:
                     posc = np.linalg.norm(measurements[j][:2] - predictions[i][:2])
-                
+
                 odiff = abs(predictions[i][2] - measurements[j][2])
-                odiff = min(odiff, 2*np.pi - odiff)
-                
-                prev_a, prev_as = last_shape_info[i] if last_shape_info[i] is not None else shapes[j]
+                odiff = min(odiff, 2 * np.pi - odiff)
+
+                prev_a, prev_as = (
+                    last_shape_info[i] if last_shape_info[i] is not None else shapes[j]
+                )
                 area_diff = abs(shapes[j][0] - prev_a)
                 asp_diff = abs(shapes[j][1] - prev_as)
-            
+
                 cost[i, j] = Wp * posc + Wo * odiff + Wa * area_diff + Wasp * asp_diff
         return cost
 
-    def assign_tracks(self, cost, N, M, meas, track_states, tracking_continuity, kalman_filters, trajectory_ids, next_trajectory_id):
+    def assign_tracks(
+        self,
+        cost,
+        N,
+        M,
+        meas,
+        track_states,
+        tracking_continuity,
+        kalman_filters,
+        trajectory_ids,
+        next_trajectory_id,
+    ):
         """Assigns detections to tracks using the hybrid strategy from the original code."""
         p = self.params
         if M == 0:
@@ -55,11 +79,21 @@ class TrackAssigner:
 
         CONTINUITY_THRESHOLD = p.get("CONTINUITY_THRESHOLD", 10)
         MAX_DIST = p["MAX_DISTANCE_THRESHOLD"]
-        
-        established = [i for i in range(N) if tracking_continuity[i] >= CONTINUITY_THRESHOLD and track_states[i] != 'lost']
-        unstable = [i for i in range(N) if tracking_continuity[i] < CONTINUITY_THRESHOLD and track_states[i] != 'lost']
-        lost = [i for i in range(N) if track_states[i] == 'lost']
-        
+
+        established = [
+            i
+            for i in range(N)
+            if tracking_continuity[i] >= CONTINUITY_THRESHOLD
+            and track_states[i] != "lost"
+        ]
+        unstable = [
+            i
+            for i in range(N)
+            if tracking_continuity[i] < CONTINUITY_THRESHOLD
+            and track_states[i] != "lost"
+        ]
+        lost = [i for i in range(N) if track_states[i] == "lost"]
+
         all_assignments = []
         assigned_dets = set()
 
@@ -74,11 +108,14 @@ class TrackAssigner:
                     assigned_dets.add(c)
 
         # Phase 2: Priority for unstable tracks
-        unstable_sorted = sorted(unstable, key=lambda i: tracking_continuity[i], reverse=True)
+        unstable_sorted = sorted(
+            unstable, key=lambda i: tracking_continuity[i], reverse=True
+        )
         for track_idx in unstable_sorted:
             avail_dets = [j for j in range(M) if j not in assigned_dets]
-            if not avail_dets: break
-            
+            if not avail_dets:
+                break
+
             costs = cost[track_idx][avail_dets]
             best_local_idx = np.argmin(costs)
             if costs[best_local_idx] < MAX_DIST:
@@ -89,35 +126,39 @@ class TrackAssigner:
         # Phase 3: Respawn lost tracks
         unassigned_dets = [j for j in range(M) if j not in assigned_dets]
         MIN_RESPAWN_DIST = p.get("MIN_RESPAWN_DISTANCE", MAX_DIST * 0.8)
-        
+
         for det_idx in unassigned_dets:
-            if not lost: break
-            
-            min_dist_to_assigned = float('inf')
+            if not lost:
+                break
+
+            min_dist_to_assigned = float("inf")
             if assigned_dets:
                 for ad in assigned_dets:
                     dist = np.linalg.norm(meas[det_idx][:2] - meas[ad][:2])
                     min_dist_to_assigned = min(min_dist_to_assigned, dist)
-            
+
             if min_dist_to_assigned >= MIN_RESPAWN_DIST:
-                best_lost_track, best_cost = None, float('inf')
+                best_lost_track, best_cost = None, float("inf")
                 for track_idx in lost:
                     if kalman_filters[track_idx].statePost is not None:
                         last_pos = kalman_filters[track_idx].statePost[:2].flatten()
                         respawn_dist = np.linalg.norm(meas[det_idx][:2] - last_pos)
                         if respawn_dist < best_cost:
                             best_cost, best_lost_track = respawn_dist, track_idx
-                    else: # No previous position, any is fine
+                    else:  # No previous position, any is fine
                         best_lost_track = track_idx
                         break
 
-                if best_lost_track is not None and (kalman_filters[best_lost_track].statePost is None or best_cost < MAX_DIST * 2.0):
+                if best_lost_track is not None and (
+                    kalman_filters[best_lost_track].statePost is None
+                    or best_cost < MAX_DIST * 2.0
+                ):
                     all_assignments.append((best_lost_track, det_idx))
                     assigned_dets.add(det_idx)
                     lost.remove(best_lost_track)
                     trajectory_ids[best_lost_track] = next_trajectory_id
                     next_trajectory_id += 1
-        
+
         if not all_assignments:
             rows, cols = [], []
         else:
@@ -126,11 +167,11 @@ class TrackAssigner:
 
         valid_assignments, high_cost_tracks = [], []
         for r, c in zip(rows, cols):
-            if cost[r,c] < MAX_DIST:
-                valid_assignments.append((r,c))
+            if cost[r, c] < MAX_DIST:
+                valid_assignments.append((r, c))
             else:
                 high_cost_tracks.append(r)
-        
+
         if valid_assignments:
             final_rows, final_cols = zip(*valid_assignments)
         else:
@@ -140,4 +181,10 @@ class TrackAssigner:
         matched_dets_set = set(final_cols)
         free_dets = list(all_dets_set - matched_dets_set)
 
-        return list(final_rows), list(final_cols), free_dets, next_trajectory_id, high_cost_tracks
+        return (
+            list(final_rows),
+            list(final_cols),
+            free_dets,
+            next_trajectory_id,
+            high_cost_tracks,
+        )

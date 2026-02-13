@@ -4,9 +4,9 @@ This module provides a thin wrapper around the external `xanylabeling` CLI to
 convert project labels into YOLO-OBB format from within MAT workflows.
 """
 
+import logging
 import os
 import subprocess
-import logging
 from pathlib import Path
 
 logger = logging.getLogger(__name__)

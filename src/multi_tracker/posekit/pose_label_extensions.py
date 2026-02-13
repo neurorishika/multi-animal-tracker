@@ -12,15 +12,15 @@ Extensions for PoseKit Labeler:
 from __future__ import annotations
 
 import csv
-import random
 import hashlib
 import json
+import logging
+import random
 import shutil
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple, Set
-import logging
+from typing import Dict, List, Optional, Set, Tuple
 
 import cv2
 import numpy as np
@@ -120,7 +120,9 @@ class MetadataManager:
         meta.notes = notes
         self.save()
 
-    def set_cluster_id(self: object, image_path: str, cluster_id: Optional[int]) -> object:
+    def set_cluster_id(
+        self: object, image_path: str, cluster_id: Optional[int]
+    ) -> object:
         """Set cluster ID for a frame."""
         meta = self.get_metadata(image_path)
         meta.cluster_id = cluster_id
@@ -213,7 +215,9 @@ class LabelVersioning:
         except Exception as e:
             logger.error(f"Failed to backup {label_path}: {e}")
 
-    def restore_label(self: object, label_path: Path, version: Optional[int] = None) -> object:
+    def restore_label(
+        self: object, label_path: Path, version: Optional[int] = None
+    ) -> object:
         """Restore a label from backup."""
         stem = label_path.stem
         existing = sorted(self.backup_dir.glob(f"{stem}.v*.txt"))
@@ -521,7 +525,7 @@ def cluster_embeddings_cosine(
     k = max(1, min(int(k), n))
 
     if method == "hierarchical" and n <= hierarchical_limit:
-        from scipy.cluster.hierarchy import linkage, fcluster
+        from scipy.cluster.hierarchy import fcluster, linkage
         from scipy.spatial.distance import pdist
 
         # pdist with cosine => 1 - cosine_similarity
@@ -1635,8 +1639,8 @@ class EmbeddingWorker(QObject):
             self.status.emit("Loading model…")
             device = _choose_device(self.device_pref)
 
-            import torch
             import timm
+            import torch
             from timm.data import resolve_data_config
             from timm.data.transforms_factory import create_transform
 
@@ -1837,7 +1841,9 @@ class IncrementalEmbeddingCache:
 
         return self._embeddings[indices]
 
-    def add_embeddings(self: object, image_paths: List[Path], embeddings: np.ndarray) -> object:
+    def add_embeddings(
+        self: object, image_paths: List[Path], embeddings: np.ndarray
+    ) -> object:
         """Add new embeddings to cache."""
         if len(image_paths) != embeddings.shape[0]:
             raise ValueError("Mismatch between paths and embeddings")
@@ -1856,7 +1862,9 @@ class IncrementalEmbeddingCache:
 
         self._save()
 
-    def update_embeddings(self: object, image_paths: List[Path], embeddings: np.ndarray) -> object:
+    def update_embeddings(
+        self: object, image_paths: List[Path], embeddings: np.ndarray
+    ) -> object:
         """Update or add embeddings for given paths."""
         if len(image_paths) != embeddings.shape[0]:
             raise ValueError("Mismatch between paths and embeddings")

@@ -7,17 +7,32 @@ Optimizations:
 - Numba JIT compilation for inner loops (if available)
 - Parallel processing for independent trajectory operations
 """
-import numpy as np
 import logging
+import warnings
+from concurrent.futures import ThreadPoolExecutor
+
+import numpy as np
 import pandas as pd
+from scipy.interpolate import CubicSpline, UnivariateSpline, interp1d
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial.distance import cdist
-from scipy.interpolate import interp1d, CubicSpline, UnivariateSpline
-from concurrent.futures import ThreadPoolExecutor
-import warnings
 
-# Import Numba from gpu_utils (handles availability detection)
-from multi_tracker.utils.gpu_utils import NUMBA_AVAILABLE, njit, prange
+# Import Numba from gpu_utils (handles availability detection).
+# Fallback keeps post-processing importable in lightweight test environments.
+try:
+    from multi_tracker.utils.gpu_utils import NUMBA_AVAILABLE, njit, prange
+except Exception:
+    NUMBA_AVAILABLE = False
+
+    def njit(*args, **kwargs):
+        def decorator(func):
+            return func
+
+        return decorator
+
+    def prange(*args):
+        return range(*args)
+
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +197,30 @@ def _prepare_trajectory_arrays(traj_dfs):
     return x_array, y_array, frames_array, starts, ends
 
 
+def _build_frame_lookup(traj_df, require_valid_x=False):
+    """
+    Build FrameID -> row dictionary lookup for a trajectory DataFrame.
+
+    Preserves existing duplicate handling semantics: later duplicate FrameID rows
+    overwrite earlier rows.
+    """
+    if traj_df is None or traj_df.empty:
+        return {}
+
+    records = traj_df.to_dict("records")
+    frames = traj_df["FrameID"].tolist()
+
+    if not require_valid_x:
+        return {frames[i]: records[i] for i in range(len(frames))}
+
+    x_values = traj_df["X"].values
+    lookup = {}
+    for i in range(len(frames)):
+        if not pd.isna(x_values[i]):
+            lookup[frames[i]] = records[i]
+    return lookup
+
+
 def _find_merge_candidates_python(
     forward_dfs, backward_dfs, agreement_distance, min_overlap
 ):
@@ -199,6 +238,7 @@ def _find_merge_candidates_python(
         fwd_x = fwd["X"].values
         fwd_y = fwd["Y"].values
         fwd_frame_set = set(fwd_frames)
+        fwd_frame_to_idx = {f: i for i, f in enumerate(fwd_frames)}
 
         for bi, bwd in enumerate(backward_dfs):
             bwd_frames = bwd["FrameID"].values
@@ -209,7 +249,6 @@ def _find_merge_candidates_python(
                 continue
 
             # Build index mappings for fast lookup
-            fwd_frame_to_idx = {f: i for i, f in enumerate(fwd_frames)}
             bwd_frame_to_idx = {f: i for i, f in enumerate(bwd_frames)}
 
             bwd_x = bwd["X"].values
@@ -737,7 +776,9 @@ def process_trajectories(trajectories_full: object, params: object) -> object:
     return final_trajectories, stats
 
 
-def resolve_trajectories(forward_trajs: object, backward_trajs: object, params: object = None) -> object:
+def resolve_trajectories(
+    forward_trajs: object, backward_trajs: object, params: object = None
+) -> object:
     """
     Merges forward and backward trajectories using conservative consensus-based merging.
 
@@ -959,16 +1000,9 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
 
     Returns list of trajectory DataFrames (may be more than input if splits occur).
     """
-    # Build frame dictionaries (OPTIMIZED: avoid iterrows)
-    t1_by_frame = {}
-    for idx in range(len(traj1)):
-        row = traj1.iloc[idx]
-        t1_by_frame[row["FrameID"]] = row.to_dict()
-
-    t2_by_frame = {}
-    for idx in range(len(traj2)):
-        row = traj2.iloc[idx]
-        t2_by_frame[row["FrameID"]] = row.to_dict()
+    # Build frame dictionaries (faster than per-row iloc/to_dict loops)
+    t1_by_frame = _build_frame_lookup(traj1, require_valid_x=False)
+    t2_by_frame = _build_frame_lookup(traj2, require_valid_x=False)
 
     frames1 = set(traj1["FrameID"])
     frames2 = set(traj2["FrameID"])
@@ -1256,7 +1290,9 @@ def _merge_overlapping_agreeing_trajectories_old(
         last = segment[-1]
         return last.get("X"), last.get("Y")
 
-    def is_spatially_continuous(segment: object, new_row: object, threshold: object) -> object:
+    def is_spatially_continuous(
+        segment: object, new_row: object, threshold: object
+    ) -> object:
         """Check if new_row is spatially close to the end of segment."""
         if not segment:
             return True
@@ -1278,19 +1314,19 @@ def _merge_overlapping_agreeing_trajectories_old(
         used = set()
         new_trajectories = []
 
-        # Build lookup for each trajectory (OPTIMIZED: use NumPy arrays)
+        # Build lookups and frame bounds once per iteration for faster pair pruning.
         traj_lookups = []
+        traj_frame_sets = []
+        traj_bounds = []
         for traj in trajectories:
-            frames = traj["FrameID"].values
-            x = traj["X"].values
-            valid_mask = ~np.isnan(x)
-
-            # Build lookup dict from arrays - faster than iterrows
-            lookup = {}
-            for idx in np.where(valid_mask)[0]:
-                row_dict = {col: traj.iloc[idx][col] for col in traj.columns}
-                lookup[frames[idx]] = row_dict
+            lookup = _build_frame_lookup(traj, require_valid_x=True)
+            frame_set = set(lookup.keys())
             traj_lookups.append(lookup)
+            traj_frame_sets.append(frame_set)
+            if frame_set:
+                traj_bounds.append((min(frame_set), max(frame_set)))
+            else:
+                traj_bounds.append((np.inf, -np.inf))
 
         for i in range(len(trajectories)):
             if i in used:
@@ -1298,6 +1334,8 @@ def _merge_overlapping_agreeing_trajectories_old(
 
             traj_a = trajectories[i]
             lookup_a = traj_lookups[i]
+            frames_a = traj_frame_sets[i]
+            start_a, end_a = traj_bounds[i]
 
             for j in range(i + 1, len(trajectories)):
                 if j in used:
@@ -1305,9 +1343,15 @@ def _merge_overlapping_agreeing_trajectories_old(
 
                 traj_b = trajectories[j]
                 lookup_b = traj_lookups[j]
+                frames_b = traj_frame_sets[j]
+                start_b, end_b = traj_bounds[j]
+
+                # Fast temporal pruning before set intersection.
+                if end_a < start_b or end_b < start_a:
+                    continue
 
                 # Find overlapping frames
-                common_frames = set(lookup_a.keys()).intersection(set(lookup_b.keys()))
+                common_frames = frames_a.intersection(frames_b)
                 if len(common_frames) < min_overlap:
                     continue
 
@@ -1324,7 +1368,7 @@ def _merge_overlapping_agreeing_trajectories_old(
                     continue
 
                 # CONSERVATIVE MERGE with spatial continuity checks
-                all_frames_set = set(lookup_a.keys()).union(set(lookup_b.keys()))
+                all_frames_set = frames_a.union(frames_b)
                 all_frames = sorted(all_frames_set)
 
                 # Classify frames
@@ -1479,7 +1523,12 @@ def _merge_overlapping_agreeing_trajectories(
         last = segment[-1]
         return last.get("X"), last.get("Y")
 
-    def is_spatially_continuous(segment: object, new_row: object, threshold: object, check_detection_id: object = True) -> object:
+    def is_spatially_continuous(
+        segment: object,
+        new_row: object,
+        threshold: object,
+        check_detection_id: object = True,
+    ) -> object:
         """
         Check if new_row is spatially close to the end of segment.
 
@@ -1526,19 +1575,19 @@ def _merge_overlapping_agreeing_trajectories(
         used = set()
         new_trajectories = []
 
-        # Build lookup for each trajectory (OPTIMIZED: use NumPy arrays)
+        # Build lookups and frame bounds once per iteration for faster pair pruning.
         traj_lookups = []
+        traj_frame_sets = []
+        traj_bounds = []
         for traj in trajectories:
-            frames = traj["FrameID"].values
-            x = traj["X"].values
-            valid_mask = ~np.isnan(x)
-
-            # Build lookup dict from arrays - faster than iterrows
-            lookup = {}
-            for idx in np.where(valid_mask)[0]:
-                row_dict = {col: traj.iloc[idx][col] for col in traj.columns}
-                lookup[frames[idx]] = row_dict
+            lookup = _build_frame_lookup(traj, require_valid_x=True)
+            frame_set = set(lookup.keys())
             traj_lookups.append(lookup)
+            traj_frame_sets.append(frame_set)
+            if frame_set:
+                traj_bounds.append((min(frame_set), max(frame_set)))
+            else:
+                traj_bounds.append((np.inf, -np.inf))
 
         for i in range(len(trajectories)):
             if i in used:
@@ -1546,6 +1595,8 @@ def _merge_overlapping_agreeing_trajectories(
 
             traj_a = trajectories[i]
             lookup_a = traj_lookups[i]
+            frames_a = traj_frame_sets[i]
+            start_a, end_a = traj_bounds[i]
 
             for j in range(i + 1, len(trajectories)):
                 if j in used:
@@ -1553,9 +1604,15 @@ def _merge_overlapping_agreeing_trajectories(
 
                 traj_b = trajectories[j]
                 lookup_b = traj_lookups[j]
+                frames_b = traj_frame_sets[j]
+                start_b, end_b = traj_bounds[j]
+
+                # Fast temporal pruning before set intersection.
+                if end_a < start_b or end_b < start_a:
+                    continue
 
                 # Find overlapping frames
-                common_frames = set(lookup_a.keys()).intersection(set(lookup_b.keys()))
+                common_frames = frames_a.intersection(frames_b)
                 if len(common_frames) < min_overlap:
                     continue
 
@@ -1604,7 +1661,7 @@ def _merge_overlapping_agreeing_trajectories(
                     )
 
                 # CONSERVATIVE MERGE with spatial continuity checks
-                all_frames_set = set(lookup_a.keys()).union(set(lookup_b.keys()))
+                all_frames_set = frames_a.union(frames_b)
                 all_frames = sorted(all_frames_set)
 
                 # Classify frames
@@ -1938,25 +1995,23 @@ def _stitch_broken_trajectory_fragments(trajectories, agreement_distance, max_ga
         used = set()
         new_trajectories = []
 
-        # Sort by start frame for efficient searching
-        sorted_indices = sorted(
-            range(len(current_trajectories)),
-            key=lambda i: current_trajectories[i].iloc[0]["FrameID"],
-        )
-
-        # Build lookup for start/end info
+        # Build lookup for start/end info, then sort by start frame for efficient searching.
         traj_info = {}
-        for idx in sorted_indices:
-            df = current_trajectories[idx]
+        for idx, df in enumerate(current_trajectories):
             if df.empty:
                 continue
+            start_frame = df["FrameID"].iat[0]
+            end_frame = df["FrameID"].iat[-1]
             traj_info[idx] = {
-                "start_frame": df.iloc[0]["FrameID"],
-                "end_frame": df.iloc[-1]["FrameID"],
-                "start_pos": (df.iloc[0]["X"], df.iloc[0]["Y"]),
-                "end_pos": (df.iloc[-1]["X"], df.iloc[-1]["Y"]),
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "start_pos": (df["X"].iat[0], df["Y"].iat[0]),
+                "end_pos": (df["X"].iat[-1], df["Y"].iat[-1]),
                 "df": df,
             }
+        sorted_indices = sorted(
+            traj_info.keys(), key=lambda i: traj_info[i]["start_frame"]
+        )
 
         idx_ptr = 0
         while idx_ptr < len(sorted_indices):
@@ -2394,8 +2449,9 @@ def _split_dataframe_into_segments(df, max_gap=5, max_spatial_jump=50.0):
 
     segments = []
     current_segment = []
+    rows = df.to_dict("records")
 
-    for idx, row in df.iterrows():
+    for row in rows:
         should_split = False
 
         if current_segment:
@@ -2423,12 +2479,12 @@ def _split_dataframe_into_segments(df, max_gap=5, max_spatial_jump=50.0):
                         should_split = True
 
         if not current_segment or not should_split:
-            current_segment.append(row.to_dict())
+            current_segment.append(row)
         else:
             # Save current segment and start new one
             if current_segment:
                 segments.append(pd.DataFrame(current_segment))
-            current_segment = [row.to_dict()]
+            current_segment = [row]
 
     # Add the last segment
     if current_segment:
@@ -2515,7 +2571,9 @@ def _create_segments_from_frames(frame_list, traj_dict, max_gap=5):
     return segments
 
 
-def interpolate_trajectories(trajectories_df: object, method: object = 'linear', max_gap: object = 10) -> object:
+def interpolate_trajectories(
+    trajectories_df: object, method: object = "linear", max_gap: object = 10
+) -> object:
     """
     Interpolate missing values in trajectories using various methods.
 

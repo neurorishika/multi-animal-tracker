@@ -4,8 +4,9 @@ Functionally identical to the original implementation's assignment logic.
 Optimized for large N (100-200+ tracks) with spatial partitioning.
 """
 
-import numpy as np
 import logging
+
+import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
 

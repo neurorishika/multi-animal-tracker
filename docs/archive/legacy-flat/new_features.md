@@ -34,7 +34,7 @@
 
 ## 3. Per-Frame Metadata/Tags ✓
 
-**Implementation:** 
+**Implementation:**
 - `FrameMetadata` dataclass for storing metadata
 - `MetadataManager` class for managing metadata
 - `FrameMetadataDialog` for UI interaction
@@ -47,7 +47,7 @@
   - `poor_lighting` - Lighting issues
   - `partial_view` - Incomplete view
   - `unclear` - General quality issues
-  
+
 - **Notes:** Free-form text notes per frame
 - **Cluster ID:** Automatically stored when clustering is performed
 - Persistent storage in JSON format

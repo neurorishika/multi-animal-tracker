@@ -3,23 +3,25 @@ Background modeling utilities for multi-object tracking.
 Functionally identical to the original implementation's background logic.
 """
 
-import numpy as np
-import cv2
 import logging
 import random
 from typing import Any, Dict, Optional
-from multi_tracker.utils.image_processing import apply_image_adjustments
+
+import cv2
+import numpy as np
+
 from multi_tracker.utils.gpu_utils import (
     CUDA_AVAILABLE,
     MPS_AVAILABLE,
     NUMBA_AVAILABLE,
+    F,
     cp,
     cupy_ndimage,
-    torch,
-    F,
     njit,
     prange,
+    torch,
 )
+from multi_tracker.utils.image_processing import apply_image_adjustments
 
 # Provide fallback decorators if Numba not available
 if not NUMBA_AVAILABLE:
@@ -355,7 +357,10 @@ class BackgroundModel:
                 )
 
     def update_and_get_background(
-        self, gray: np.ndarray, roi_mask: Optional[np.ndarray], tracking_stabilized: bool
+        self,
+        gray: np.ndarray,
+        roi_mask: Optional[np.ndarray],
+        tracking_stabilized: bool,
     ) -> Optional[np.ndarray]:
         """Update the background model and return the active subtraction background."""
         p = self.params

@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import sys
+import types
+import uuid
+from pathlib import Path
+
+import numpy as np
+
+from tests.helpers.module_loader import load_src_module, make_cv2_stub
+
+
+class _FakeContour(dict):
+    def __len__(self):
+        return int(self.get("n_points", 6))
+
+
+def _load_engine_module():
+    return load_src_module(
+        "multi_tracker/core/detectors/engine.py",
+        "detectors_engine_under_test",
+        stubs={"cv2": make_cv2_stub()},
+    )
+
+
+def test_object_detector_detect_objects_filters_and_limits_count() -> None:
+    mod = _load_engine_module()
+
+    params = {
+        "MAX_TARGETS": 2,
+        "MAX_CONTOUR_MULTIPLIER": 20,
+        "MIN_CONTOUR_AREA": 10.0,
+        "ENABLE_SIZE_FILTERING": True,
+        "MIN_OBJECT_SIZE": 15.0,
+        "MAX_OBJECT_SIZE": 200.0,
+        "MERGE_AREA_THRESHOLD": 1000.0,
+        "CONSERVATIVE_KERNEL_SIZE": 3,
+        "CONSERVATIVE_ERODE_ITER": 1,
+    }
+    detector = mod.ObjectDetector(params)
+
+    contours = [
+        _FakeContour(
+            area=20.0,
+            ellipse=((10.0, 10.0), (8.0, 4.0), 15.0),
+            rect=(0, 0, 5, 5),
+        ),
+        _FakeContour(
+            area=80.0,
+            ellipse=((30.0, 30.0), (20.0, 8.0), 40.0),
+            rect=(20, 20, 10, 10),
+        ),
+        _FakeContour(
+            area=140.0,
+            ellipse=((50.0, 50.0), (24.0, 10.0), 55.0),
+            rect=(40, 40, 12, 12),
+        ),
+        _FakeContour(  # filtered by min size
+            area=5.0,
+            ellipse=((70.0, 70.0), (4.0, 2.0), 0.0),
+            rect=(65, 65, 4, 4),
+        ),
+    ]
+
+    meas, sizes, shapes, yolo_results, confidences = detector.detect_objects(
+        contours, frame_count=1
+    )
+    assert yolo_results is None
+    assert len(meas) == 2  # limited by MAX_TARGETS
+    assert all(m.shape == (3,) for m in meas)
+    assert len(shapes) == 2
+    assert len(confidences) == 2
+    assert all(np.isnan(c) for c in confidences)
+    assert len(sizes) >= 2  # current implementation keeps original filtered size list
+
+
+def test_create_detector_defaults_to_background_subtraction() -> None:
+    mod = _load_engine_module()
+    detector = mod.create_detector({"DETECTION_METHOD": "background_subtraction"})
+    assert isinstance(detector, mod.ObjectDetector)
+
+
+def test_tensorrt_engine_path_changes_with_model_identity_and_detection_id(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            out = export_root / f"{uuid.uuid4().hex}.engine"
+            out.write_bytes(b"fake-engine")
+            return str(out)
+
+    fake_ultra = types.SimpleNamespace(YOLO=FakeYOLO)
+    monkeypatch.setitem(sys.modules, "ultralytics", fake_ultra)
+    monkeypatch.setattr(mod.Path, "home", lambda: tmp_path)
+
+    model_dir_a = tmp_path / "a"
+    model_dir_b = tmp_path / "b"
+    model_dir_a.mkdir(parents=True, exist_ok=True)
+    model_dir_b.mkdir(parents=True, exist_ok=True)
+    model_a = model_dir_a / "best.pt"
+    model_b = model_dir_b / "best.pt"
+    model_a.write_bytes(b"model-a")
+    model_b.write_bytes(b"model-b")
+
+    def build_engine_path(model_path: Path, model_id: str):
+        det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+        det.params = {
+            "TENSORRT_MAX_BATCH_SIZE": 8,
+            "DETECTION_CACHE_MODEL_ID": model_id,
+        }
+        det.device = "cuda:0"
+        det.use_tensorrt = False
+        det.tensorrt_model_path = None
+        det._shapely_warning_shown = False
+        det._try_load_tensorrt_model(str(model_path))
+        assert det.use_tensorrt
+        assert det.tensorrt_model_path is not None
+        return det.tensorrt_model_path
+
+    path_a_id1 = build_engine_path(model_a, "id-A")
+    path_b_id1 = build_engine_path(model_b, "id-A")
+    path_a_id2 = build_engine_path(model_a, "id-B")
+
+    assert path_a_id1 != path_b_id1
+    assert path_a_id1 != path_a_id2

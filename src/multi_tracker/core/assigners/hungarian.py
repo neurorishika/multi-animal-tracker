@@ -4,11 +4,12 @@ Compatible with Vectorized Kalman Filter.
 Uses batch Mahalanobis distance and Numba-accelerated spatial assignment.
 """
 
-import numpy as np
 import logging
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
-from typing import Any, Dict, List, Tuple
 
 try:
     from numba import njit
@@ -215,14 +216,28 @@ class TrackAssigner:
 
         return cost, {}
 
-    def compute_assignment_confidence(self: object, cost: object, matched_pairs: object) -> object:
+    def compute_assignment_confidence(
+        self: object, cost: object, matched_pairs: object
+    ) -> object:
         """Compute confidence scores for assignments."""
         if not matched_pairs:
             return {}
         scale = self.params.get("MAX_DISTANCE_THRESHOLD", 100.0) * 0.5
         return {r: 1.0 / (1.0 + cost[r, c] / scale) for r, c in matched_pairs}
 
-    def assign_tracks(self: object, cost: object, N: object, M: object, meas: object, track_states: object, tracking_continuity: object, kf_manager: object, trajectory_ids: object, next_trajectory_id: object, spatial_candidates: object = None) -> object:
+    def assign_tracks(
+        self: object,
+        cost: object,
+        N: object,
+        M: object,
+        meas: object,
+        track_states: object,
+        tracking_continuity: object,
+        kf_manager: object,
+        trajectory_ids: object,
+        next_trajectory_id: object,
+        spatial_candidates: object = None,
+    ) -> object:
         """
         Drop-in replacement for track assignment logic.
         Compatible with kf_manager.X state access.

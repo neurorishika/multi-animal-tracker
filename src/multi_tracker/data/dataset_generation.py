@@ -3,14 +3,15 @@ Dataset generation utilities for active learning.
 Identifies challenging frames and exports them for annotation.
 """
 
-import os
-import cv2
 import json
-import zipfile
-import numpy as np
-from pathlib import Path
-from collections import defaultdict
 import logging
+import os
+import zipfile
+from collections import defaultdict
+from pathlib import Path
+
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,12 @@ class FrameQualityScorer:
         self.use_track_loss = params.get("METRIC_TRACK_LOSS", True)
         self.use_uncertainty = params.get("METRIC_HIGH_UNCERTAINTY", False)
 
-    def score_frame(self: object, frame_id: object, detection_data: object = None, tracking_data: object = None) -> object:
+    def score_frame(
+        self: object,
+        frame_id: object,
+        detection_data: object = None,
+        tracking_data: object = None,
+    ) -> object:
         """
         Score a single frame based on enabled quality metrics.
 
@@ -151,7 +157,12 @@ class FrameQualityScorer:
 
         return score
 
-    def get_worst_frames(self: object, max_frames: object, diversity_window: object = 30, probabilistic: object = True) -> object:
+    def get_worst_frames(
+        self: object,
+        max_frames: object,
+        diversity_window: object = 30,
+        probabilistic: object = True,
+    ) -> object:
         """
         Select the worst N frames with visual diversity constraint.
 
@@ -227,7 +238,17 @@ class FrameQualityScorer:
         return self.frame_scores.get(frame_id, {"score": 0.0, "metrics": {}})
 
 
-def export_dataset(video_path: object, csv_path: object, frame_ids: object, output_dir: object, dataset_name: object, class_name: object, params: object, include_context: object = True, yolo_results_dict: object = None) -> object:
+def export_dataset(
+    video_path: object,
+    csv_path: object,
+    frame_ids: object,
+    output_dir: object,
+    dataset_name: object,
+    class_name: object,
+    params: object,
+    include_context: object = True,
+    yolo_results_dict: object = None,
+) -> object:
     """
     Export selected frames and annotations as a training dataset.
 
@@ -245,9 +266,11 @@ def export_dataset(video_path: object, csv_path: object, frame_ids: object, outp
     Returns:
         zip_path: Path to created zip file
     """
-    import pandas as pd
-    from datetime import datetime
     import shutil
+    from datetime import datetime
+
+    import pandas as pd
+
     from ..core.detectors.engine import create_detector
 
     logger.info(f"Starting dataset export for {len(frame_ids)} frames")

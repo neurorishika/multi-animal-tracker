@@ -3,12 +3,13 @@ Individual-level analysis for identity classification and pose tracking.
 Extracts regions around detections for downstream processing.
 """
 
-import cv2
-import numpy as np
+import json
 import logging
 from pathlib import Path
-import json
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import cv2
+import numpy as np
 
 from multi_tracker.utils.image_processing import compute_median_color_from_frame
 
@@ -342,6 +343,7 @@ class IndividualDatasetGenerator:
             dataset_folder_name = f"{self.dataset_name}_{run_id}"
         else:
             from datetime import datetime
+
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             dataset_folder_name = f"{self.dataset_name}_{timestamp}"
         self.crops_dir = self.output_dir / dataset_folder_name / "images"

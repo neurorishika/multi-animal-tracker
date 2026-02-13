@@ -4,53 +4,52 @@ Dialogs for PoseKit Labeler extensions.
 """
 
 import csv
-import time
+import gc
 import json
-import math
-from datetime import datetime
-from pathlib import Path
-from typing import List, Optional, Dict, Tuple
 import logging
+import math
+import os
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
-import os
-import shutil
-import re
+import time
 import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
 import yaml
-import gc
-
-from PySide6.QtCore import Qt, QSize, QThread, QObject, Signal, Slot, QTimer
-from PySide6.QtGui import QPixmap, QPainter, QColor, QImage, QPen
-
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QSpinBox,
-    QDoubleSpinBox,
     QCheckBox,
     QComboBox,
-    QMessageBox,
-    QFormLayout,
-    QGroupBox,
-    QTextEdit,
-    QLineEdit,
-    QPlainTextEdit,
+    QDialog,
+    QDoubleSpinBox,
     QFileDialog,
-    QProgressBar,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
-    QStackedWidget,
+    QTextEdit,
+    QVBoxLayout,
     QWidget,
-    QScrollArea,
-    QGridLayout,
 )
 
 # Settings helpers
@@ -68,56 +67,58 @@ except ImportError:
     try:
         from pose_label import load_ui_settings, save_ui_settings
     except Exception:
+
         def load_ui_settings():
             return {}
 
         def save_ui_settings(_settings: Dict):
             return
 
+
 # Handle both package imports and direct script execution
 try:
-    from .pose_label_extensions import (
-        MetadataManager,
-        cluster_stratified_split,
-        cluster_kfold_split,
-        save_split_files,
-        EmbeddingWorker,
-        cluster_embeddings_cosine,
-        pick_frames_stratified,
-        list_labeled_indices,
-        build_yolo_pose_dataset,
-        build_coco_keypoints_dataset,
-        build_ultralytics_flat_dataset,
-        load_yolo_pose_label,
-    )
     from ..utils.gpu_utils import (
         CUDA_AVAILABLE,
         MPS_AVAILABLE,
-        TORCH_CUDA_AVAILABLE,
         ROCM_AVAILABLE,
+        TORCH_CUDA_AVAILABLE,
+    )
+    from .pose_label_extensions import (
+        EmbeddingWorker,
+        MetadataManager,
+        build_coco_keypoints_dataset,
+        build_ultralytics_flat_dataset,
+        build_yolo_pose_dataset,
+        cluster_embeddings_cosine,
+        cluster_kfold_split,
+        cluster_stratified_split,
+        list_labeled_indices,
+        load_yolo_pose_label,
+        pick_frames_stratified,
+        save_split_files,
     )
 except ImportError:
     from pose_label_extensions import (
-        MetadataManager,
-        cluster_stratified_split,
-        cluster_kfold_split,
-        save_split_files,
         EmbeddingWorker,
-        cluster_embeddings_cosine,
-        pick_frames_stratified,
-        list_labeled_indices,
-        build_yolo_pose_dataset,
+        MetadataManager,
         build_coco_keypoints_dataset,
         build_ultralytics_flat_dataset,
+        build_yolo_pose_dataset,
+        cluster_embeddings_cosine,
+        cluster_kfold_split,
+        cluster_stratified_split,
+        list_labeled_indices,
         load_yolo_pose_label,
+        pick_frames_stratified,
+        save_split_files,
     )
 
     try:
         from multi_tracker.utils.gpu_utils import (
             CUDA_AVAILABLE,
             MPS_AVAILABLE,
-            TORCH_CUDA_AVAILABLE,
             ROCM_AVAILABLE,
+            TORCH_CUDA_AVAILABLE,
         )
     except ImportError:
         # Fallback if gpu_utils not available
@@ -290,8 +291,6 @@ def _list_sleap_envs() -> Tuple[List[str], str]:
         return envs, ""
     except Exception as e:
         return [], f"Env scan failed: {e}"
-
-
 
 
 def _is_cuda_device(device: str) -> bool:
@@ -537,15 +536,21 @@ class DatasetSplitDialog(QDialog):
         mode = settings.get("mode_index")
         if mode is not None:
             self.mode_combo.setCurrentIndex(int(mode))
-        self.train_spin.setValue(float(settings.get("train_frac", self.train_spin.value())))
+        self.train_spin.setValue(
+            float(settings.get("train_frac", self.train_spin.value()))
+        )
         self.val_spin.setValue(float(settings.get("val_frac", self.val_spin.value())))
-        self.test_spin.setValue(float(settings.get("test_frac", self.test_spin.value())))
+        self.test_spin.setValue(
+            float(settings.get("test_frac", self.test_spin.value()))
+        )
         self.kfold_spin.setValue(int(settings.get("kfold", self.kfold_spin.value())))
         self.min_per_cluster_spin.setValue(
             int(settings.get("min_per_cluster", self.min_per_cluster_spin.value()))
         )
         self.seed_spin.setValue(int(settings.get("seed", self.seed_spin.value())))
-        self.split_name_edit.setText(settings.get("split_name", self.split_name_edit.text()))
+        self.split_name_edit.setText(
+            settings.get("split_name", self.split_name_edit.text())
+        )
 
     def _save_settings(self):
         _save_dialog_settings(
@@ -1041,26 +1046,42 @@ class SmartSelectDialog(QDialog):
             return
         self.cb_scope.setCurrentText(settings.get("scope", self.cb_scope.currentText()))
         self.cb_exclude_in_labeling.setChecked(
-            bool(settings.get("exclude_labeling", self.cb_exclude_in_labeling.isChecked()))
+            bool(
+                settings.get(
+                    "exclude_labeling", self.cb_exclude_in_labeling.isChecked()
+                )
+            )
         )
-        self.model_combo.setCurrentText(settings.get("model", self.model_combo.currentText()))
-        self.dev_combo.setCurrentText(settings.get("device", self.dev_combo.currentText()))
+        self.model_combo.setCurrentText(
+            settings.get("model", self.model_combo.currentText())
+        )
+        self.dev_combo.setCurrentText(
+            settings.get("device", self.dev_combo.currentText())
+        )
         self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
         self.cb_auto_batch.setChecked(
             bool(settings.get("auto_batch", self.cb_auto_batch.isChecked()))
         )
-        self.max_side_spin.setValue(int(settings.get("max_side", self.max_side_spin.value())))
+        self.max_side_spin.setValue(
+            int(settings.get("max_side", self.max_side_spin.value()))
+        )
         self.cb_use_enhance.setChecked(
             bool(settings.get("use_enhance", self.cb_use_enhance.isChecked()))
         )
         self.n_spin.setValue(int(settings.get("n", self.n_spin.value())))
         self.k_spin.setValue(int(settings.get("k", self.k_spin.value())))
-        self.min_per_spin.setValue(int(settings.get("min_per", self.min_per_spin.value())))
-        self.strategy_combo.setCurrentText(settings.get("strategy", self.strategy_combo.currentText()))
+        self.min_per_spin.setValue(
+            int(settings.get("min_per", self.min_per_spin.value()))
+        )
+        self.strategy_combo.setCurrentText(
+            settings.get("strategy", self.strategy_combo.currentText())
+        )
         self.cb_filter_duplicates.setChecked(
             bool(settings.get("filter_dups", self.cb_filter_duplicates.isChecked()))
         )
-        self.dup_threshold_spin.setValue(float(settings.get("dup_thresh", self.dup_threshold_spin.value())))
+        self.dup_threshold_spin.setValue(
+            float(settings.get("dup_thresh", self.dup_threshold_spin.value()))
+        )
         self.cb_prefer_unlabeled.setChecked(
             bool(settings.get("prefer_unlabeled", self.cb_prefer_unlabeled.isChecked()))
         )
@@ -1203,6 +1224,7 @@ class SmartSelectDialog(QDialog):
         self._worker = None
         try:
             import gc
+
             gc.collect()
         except Exception:
             pass
@@ -1395,26 +1417,23 @@ class SmartSelectDialog(QDialog):
 
         QMessageBox.information(self, "Saved", f"Wrote cluster CSV:\n{out}")
 
-
     def _autosave_clusters(self):
         if self._cluster is None or self._eligible_indices is None:
             return
-        out = (
-            self.project.out_root / "posekit" / "clusters" / "clusters.csv"
-        )
+        out = self.project.out_root / "posekit" / "clusters" / "clusters.csv"
         out.parent.mkdir(parents=True, exist_ok=True)
         try:
             with out.open("w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(["image", "cluster_id"])
                 for local_pos, idx in enumerate(self._eligible_indices):
-                    w.writerow([str(self.image_paths[idx]), int(self._cluster[local_pos])])
+                    w.writerow(
+                        [str(self.image_paths[idx]), int(self._cluster[local_pos])]
+                    )
             self.lbl_status.setText(f"Clusters saved: {out}")
             win = self.window()
             if hasattr(win, "statusBar"):
-                win.statusBar().showMessage(
-                    f"Clusters saved → {out}", 4000
-                )
+                win.statusBar().showMessage(f"Clusters saved → {out}", 4000)
             if win and hasattr(win, "_on_clusters_updated"):
                 try:
                     win._on_clusters_updated()
@@ -1571,6 +1590,7 @@ class EmbeddingExplorerDialog(QDialog):
         self._umap_worker = None
         try:
             import gc
+
             gc.collect()
         except Exception:
             pass
@@ -1581,13 +1601,14 @@ class EmbeddingExplorerDialog(QDialog):
             return
 
         try:
-            from bokeh.plotting import figure, output_file, save
-            from bokeh.models import HoverTool, ColumnDataSource, BoxSelectTool, TapTool
-            from bokeh.palettes import Category20_20, Turbo256
-            from PIL import Image
             import base64
-            from io import BytesIO
             import tempfile
+            from io import BytesIO
+
+            from bokeh.models import BoxSelectTool, ColumnDataSource, HoverTool, TapTool
+            from bokeh.palettes import Category20_20, Turbo256
+            from bokeh.plotting import figure, output_file, save
+            from PIL import Image
 
             self.umap_progress.setText(
                 "Generating Bokeh visualization (encoding images)..."
@@ -1712,7 +1733,9 @@ class EmbeddingExplorerDialog(QDialog):
             output_file(self.bokeh_html_path, title="Embedding Explorer")
             save(p)
 
-            self.umap_progress.setText(f"✓ Visualization ready! HTML: {self.bokeh_html_path}")
+            self.umap_progress.setText(
+                f"✓ Visualization ready! HTML: {self.bokeh_html_path}"
+            )
 
             # Load in web view or open in browser
             self._load_visualization()
@@ -2451,6 +2474,7 @@ def _format_float(val, digits: int = 3):
 
 class TrainingWorker(QObject):
     """TrainingWorker API surface documentation."""
+
     log = Signal(str)
     progress = Signal(int, int)
     finished = Signal(dict)
@@ -2707,6 +2731,7 @@ class TrainingWorker(QObject):
 
 class SleapExportWorker(QObject):
     """SleapExportWorker API surface documentation."""
+
     log = Signal(str)
     finished = Signal(str)
     failed = Signal(str)
@@ -2815,9 +2840,7 @@ class SleapExportWorker(QObject):
             proc = subprocess.run(cmd, capture_output=True, text=True)
             if proc.returncode != 0:
                 err = (
-                    proc.stderr.strip()
-                    or proc.stdout.strip()
-                    or "SLEAP export failed."
+                    proc.stderr.strip() or proc.stdout.strip() or "SLEAP export failed."
                 )
                 if "No module named" in err and "sleap_io" in err:
                     err = (
@@ -2834,6 +2857,7 @@ class SleapExportWorker(QObject):
 
 class TrainingRunnerDialog(QDialog):
     """TrainingRunnerDialog API surface documentation."""
+
     def __init__(self, parent, project, image_paths: List[Path]):
         super().__init__(parent)
         self.setWindowTitle("Training Runner")
@@ -3280,19 +3304,33 @@ class TrainingRunnerDialog(QDialog):
         settings = _load_dialog_settings("training_runner")
         if not settings:
             return
-        self.backend_combo.setCurrentText(settings.get("backend", self.backend_combo.currentText()))
-        self.model_combo.setCurrentText(settings.get("model", self.model_combo.currentText()))
+        self.backend_combo.setCurrentText(
+            settings.get("backend", self.backend_combo.currentText())
+        )
+        self.model_combo.setCurrentText(
+            settings.get("model", self.model_combo.currentText())
+        )
         self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
         self.epochs_spin.setValue(int(settings.get("epochs", self.epochs_spin.value())))
         self.imgsz_spin.setValue(int(settings.get("imgsz", self.imgsz_spin.value())))
-        self.patience_spin.setValue(int(settings.get("patience", self.patience_spin.value())))
-        self.device_combo.setCurrentText(settings.get("device", self.device_combo.currentText()))
-        self.cb_augment.setChecked(bool(settings.get("augment", self.cb_augment.isChecked())))
+        self.patience_spin.setValue(
+            int(settings.get("patience", self.patience_spin.value()))
+        )
+        self.device_combo.setCurrentText(
+            settings.get("device", self.device_combo.currentText())
+        )
+        self.cb_augment.setChecked(
+            bool(settings.get("augment", self.cb_augment.isChecked()))
+        )
         self.hsv_h_spin.setValue(float(settings.get("hsv_h", self.hsv_h_spin.value())))
         self.hsv_s_spin.setValue(float(settings.get("hsv_s", self.hsv_s_spin.value())))
         self.hsv_v_spin.setValue(float(settings.get("hsv_v", self.hsv_v_spin.value())))
-        self.degrees_spin.setValue(float(settings.get("degrees", self.degrees_spin.value())))
-        self.translate_spin.setValue(float(settings.get("translate", self.translate_spin.value())))
+        self.degrees_spin.setValue(
+            float(settings.get("degrees", self.degrees_spin.value()))
+        )
+        self.translate_spin.setValue(
+            float(settings.get("translate", self.translate_spin.value()))
+        )
         self.scale_spin.setValue(float(settings.get("scale", self.scale_spin.value())))
         self.train_split_spin.setValue(
             float(settings.get("train_split", self.train_split_spin.value()))
@@ -3303,7 +3341,9 @@ class TrainingRunnerDialog(QDialog):
         )
         self._last_aux_path = settings.get("last_aux_path", self._last_aux_path)
         self.cb_sleap_include_aux.setChecked(
-            bool(settings.get("sleap_include_aux", self.cb_sleap_include_aux.isChecked()))
+            bool(
+                settings.get("sleap_include_aux", self.cb_sleap_include_aux.isChecked())
+            )
         )
         self.cb_sleap_embed.setChecked(
             bool(settings.get("sleap_embed", self.cb_sleap_embed.isChecked()))
@@ -3608,9 +3648,7 @@ class TrainingRunnerDialog(QDialog):
             list_labeled_indices(self.image_paths, self.project.labels_dir)
         )
         for aux in self._aux_datasets:
-            labeled_count += len(
-                list_labeled_indices(aux["images"], aux["labels_dir"])
-            )
+            labeled_count += len(list_labeled_indices(aux["images"], aux["labels_dir"]))
         if labeled_count < 2:
             QMessageBox.warning(
                 self,
@@ -3635,7 +3673,8 @@ class TrainingRunnerDialog(QDialog):
                 self.project.class_names,
                 self.project.keypoint_names,
                 extra_datasets=[
-                    (d["images"], d["labels_dir"]) for d in self._aux_datasets
+                    (d["images"], d["labels_dir"])
+                    for d in self._aux_datasets
                     if "images" in d and "labels_dir" in d
                 ],
                 extra_items=list(self._aux_items),
@@ -3666,12 +3705,12 @@ class TrainingRunnerDialog(QDialog):
             "scale": float(self.scale_spin.value()),
             "dataset": {
                 "yaml": str(dataset_info["yaml_path"]),
-                    "train": str(dataset_info["train_list"]),
-                    "val": str(dataset_info["val_list"]),
-                    "train_count": dataset_info["train_count"],
-                    "val_count": dataset_info["val_count"],
-                    "manifest": str(dataset_info.get("manifest", "")),
-                },
+                "train": str(dataset_info["train_list"]),
+                "val": str(dataset_info["val_list"]),
+                "train_count": dataset_info["train_count"],
+                "val_count": dataset_info["val_count"],
+                "manifest": str(dataset_info.get("manifest", "")),
+            },
             "aux_datasets": [d["project_path"] for d in self._aux_datasets],
         }
         (run_dir / "config.json").write_text(
@@ -3760,7 +3799,8 @@ class TrainingRunnerDialog(QDialog):
                     candidates = [
                         p
                         for p in candidates
-                        if p.exists() and p.stat().st_mtime >= (self._train_start_ts - 2)
+                        if p.exists()
+                        and p.stat().st_mtime >= (self._train_start_ts - 2)
                     ]
                 if candidates:
                     newest = max(candidates, key=lambda p: p.stat().st_mtime)
@@ -3824,10 +3864,15 @@ class TrainingRunnerDialog(QDialog):
     def _open_eval(self):
         weights = self._last_weights
         if not weights and hasattr(self.project, "latest_pose_weights"):
-            if self.project.latest_pose_weights and Path(self.project.latest_pose_weights).exists():
+            if (
+                self.project.latest_pose_weights
+                and Path(self.project.latest_pose_weights).exists()
+            ):
                 weights = str(self.project.latest_pose_weights)
         if not weights:
-            QMessageBox.information(self, "Missing weights", "No valid weights found to evaluate.")
+            QMessageBox.information(
+                self, "Missing weights", "No valid weights found to evaluate."
+            )
             return
         dlg = EvaluationDashboardDialog(
             self,
@@ -3869,9 +3914,7 @@ class TrainingRunnerDialog(QDialog):
             self.log_view.appendPlainText(f"[loss] using {results_path}")
         try:
             rows = list(
-                csv.reader(
-                    results_path.read_text(encoding="utf-8").splitlines()
-                )
+                csv.reader(results_path.read_text(encoding="utf-8").splitlines())
             )
             if len(rows) < 2:
                 return
@@ -3891,7 +3934,9 @@ class TrainingRunnerDialog(QDialog):
             keys = sorted({name for _, name in train_cols + val_cols})
 
             # Build/refresh component checkboxes
-            if not self.loss_component_checks or set(self.loss_component_checks.keys()) != set(keys):
+            if not self.loss_component_checks or set(
+                self.loss_component_checks.keys()
+            ) != set(keys):
                 for cb in self.loss_component_checks.values():
                     cb.deleteLater()
                 self.loss_component_checks = {}
@@ -3935,9 +3980,7 @@ class TrainingRunnerDialog(QDialog):
             pix = QPixmap.fromImage(img)
             target = self.lbl_loss_plot.size()
             if target.width() > 0 and target.height() > 0:
-                pix = pix.scaled(
-                    target, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
+                pix = pix.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.lbl_loss_plot.setPixmap(pix)
         except Exception:
             return
@@ -3945,6 +3988,7 @@ class TrainingRunnerDialog(QDialog):
 
 class EvaluationWorker(QObject):
     """EvaluationWorker API surface documentation."""
+
     log = Signal(str)
     progress = Signal(int, int)
     finished = Signal(dict)
@@ -4155,7 +4199,9 @@ class EvaluationWorker(QObject):
                         )
                         return
 
-                    pred_xy = np.array([[p[0], p[1]] for p in pred_list], dtype=np.float32)
+                    pred_xy = np.array(
+                        [[p[0], p[1]] for p in pred_list], dtype=np.float32
+                    )
                     pred_conf = np.array([p[2] for p in pred_list], dtype=np.float32)
                     if pred_xy.size == 0:
                         self.progress.emit(idx + 1, total)
@@ -4171,11 +4217,15 @@ class EvaluationWorker(QObject):
                             continue
 
                         px, py = pred_xy[k]
-                        err = float(math.hypot(px - (gt_kpts[k].x * w), py - (gt_kpts[k].y * h)))
+                        err = float(
+                            math.hypot(px - (gt_kpts[k].x * w), py - (gt_kpts[k].y * h))
+                        )
                         conf = float(pred_conf[k]) if pred_conf is not None else 0.0
 
                         ok = err <= (self.pck_thr * scale)
-                        oks = math.exp(-((err**2) / (2 * (self.oks_sigma * scale) ** 2)))
+                        oks = math.exp(
+                            -((err**2) / (2 * (self.oks_sigma * scale) ** 2))
+                        )
 
                         total_kpts += 1
                         total_pck += 1 if ok else 0
@@ -4310,6 +4360,7 @@ class EvaluationWorker(QObject):
 
 class EvaluationDashboardDialog(QDialog):
     """EvaluationDashboardDialog API surface documentation."""
+
     def __init__(
         self,
         parent,
@@ -4506,7 +4557,9 @@ class EvaluationDashboardDialog(QDialog):
             settings.get("backend", self.backend_combo.currentText())
         )
         self.weights_edit.setText(settings.get("weights", self.weights_edit.text()))
-        self.device_combo.setCurrentText(settings.get("device", self.device_combo.currentText()))
+        self.device_combo.setCurrentText(
+            settings.get("device", self.device_combo.currentText())
+        )
         self.imgsz_spin.setValue(int(settings.get("imgsz", self.imgsz_spin.value())))
         self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
         self.conf_spin.setValue(float(settings.get("conf", self.conf_spin.value())))
@@ -4582,7 +4635,9 @@ class EvaluationDashboardDialog(QDialog):
         if not envs:
             self.sleap_env_combo.addItem("No sleap envs found")
             self.sleap_env_combo.setEnabled(False)
-            self.lbl_sleap_env_status.setText(err or "No conda envs starting with 'sleap' found.")
+            self.lbl_sleap_env_status.setText(
+                err or "No conda envs starting with 'sleap' found."
+            )
         else:
             self.sleap_env_combo.addItems(envs)
             if current and current in envs:
@@ -4784,6 +4839,7 @@ class EvaluationDashboardDialog(QDialog):
             self.worst_list.addItem(item)
 
         self._append_log("Evaluation complete.")
+
     def _on_failed(self, msg: str):
         self._append_log(msg)
         QMessageBox.critical(self, "Evaluation failed", msg)
@@ -4791,6 +4847,7 @@ class EvaluationDashboardDialog(QDialog):
 
 class ActiveLearningWorker(QObject):
     """ActiveLearningWorker API surface documentation."""
+
     log = Signal(str)
     progress = Signal(int, int)
     finished = Signal(list)
@@ -5102,6 +5159,7 @@ class ActiveLearningWorker(QObject):
 
 class ActiveLearningDialog(QDialog):
     """ActiveLearningDialog API surface documentation."""
+
     def __init__(
         self,
         parent,
@@ -5341,15 +5399,25 @@ class ActiveLearningDialog(QDialog):
             settings.get("backend", self.backend_combo.currentText())
         )
         self.strategy_combo.setCurrentIndex(int(settings.get("strategy_index", 0)))
-        self.scope_combo.setCurrentText(settings.get("scope", self.scope_combo.currentText()))
+        self.scope_combo.setCurrentText(
+            settings.get("scope", self.scope_combo.currentText())
+        )
         self.n_spin.setValue(int(settings.get("n", self.n_spin.value())))
-        self.device_combo.setCurrentText(settings.get("device", self.device_combo.currentText()))
+        self.device_combo.setCurrentText(
+            settings.get("device", self.device_combo.currentText())
+        )
         self.imgsz_spin.setValue(int(settings.get("imgsz", self.imgsz_spin.value())))
         self.conf_spin.setValue(float(settings.get("conf", self.conf_spin.value())))
         self.batch_spin.setValue(int(settings.get("batch", self.batch_spin.value())))
-        self.weights_a_edit.setText(settings.get("weights_a", self.weights_a_edit.text()))
-        self.weights_b1_edit.setText(settings.get("weights_b1", self.weights_b1_edit.text()))
-        self.weights_b2_edit.setText(settings.get("weights_b2", self.weights_b2_edit.text()))
+        self.weights_a_edit.setText(
+            settings.get("weights_a", self.weights_a_edit.text())
+        )
+        self.weights_b1_edit.setText(
+            settings.get("weights_b1", self.weights_b1_edit.text())
+        )
+        self.weights_b2_edit.setText(
+            settings.get("weights_b2", self.weights_b2_edit.text())
+        )
         self.eval_csv_edit.setText(settings.get("eval_csv", self.eval_csv_edit.text()))
         if "kpt_index" in settings:
             self.kpt_combo.setCurrentIndex(int(settings.get("kpt_index", 0)))
@@ -5440,7 +5508,9 @@ class ActiveLearningDialog(QDialog):
         if not envs:
             self.sleap_env_combo.addItem("No sleap envs found")
             self.sleap_env_combo.setEnabled(False)
-            self.lbl_sleap_env_status.setText(err or "No conda envs starting with 'sleap' found.")
+            self.lbl_sleap_env_status.setText(
+                err or "No conda envs starting with 'sleap' found."
+            )
         else:
             self.sleap_env_combo.addItems(envs)
             if current and current in envs:
@@ -5531,18 +5601,22 @@ class ActiveLearningDialog(QDialog):
                 QMessageBox.warning(
                     self,
                     "Missing model",
-                    "Please select SLEAP model directory."
-                    if backend == "sleap"
-                    else "Please select model weights.",
+                    (
+                        "Please select SLEAP model directory."
+                        if backend == "sleap"
+                        else "Please select model weights."
+                    ),
                 )
                 return
             if strategy == "disagreement" and not weights_b:
                 QMessageBox.warning(
                     self,
                     "Missing model",
-                    "Please select SLEAP model directory B."
-                    if backend == "sleap"
-                    else "Please select model weights B.",
+                    (
+                        "Please select SLEAP model directory B."
+                        if backend == "sleap"
+                        else "Please select model weights B."
+                    ),
                 )
                 return
         if backend == "sleap" and needs_infer:
@@ -5645,7 +5719,9 @@ class ActiveLearningDialog(QDialog):
     def _add_selected(self):
         selected = self.results_list.selectedItems()
         if not selected:
-            selected = [self.results_list.item(i) for i in range(self.results_list.count())]
+            selected = [
+                self.results_list.item(i) for i in range(self.results_list.count())
+            ]
         if not selected:
             return
         indices = []

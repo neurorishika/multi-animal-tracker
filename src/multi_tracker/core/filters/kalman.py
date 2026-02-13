@@ -8,6 +8,7 @@ Features:
 """
 
 import numpy as np
+
 from multi_tracker.utils.gpu_utils import NUMBA_AVAILABLE, njit
 
 

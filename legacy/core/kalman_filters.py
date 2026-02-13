@@ -3,8 +3,8 @@ Kalman filter utilities for multi-object tracking.
 Functionally identical to the original implementation's KF logic.
 """
 
-import numpy as np
 import cv2
+import numpy as np
 
 
 class KalmanFilterManager:

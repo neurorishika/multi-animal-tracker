@@ -30,11 +30,15 @@ class Metrics:
 
     @property
     def module_doc_pct(self) -> float:
-        return 100.0 * self.module_doc / self.module_total if self.module_total else 100.0
+        return (
+            100.0 * self.module_doc / self.module_total if self.module_total else 100.0
+        )
 
     @property
     def symbol_doc_pct(self) -> float:
-        return 100.0 * self.symbol_doc / self.symbol_total if self.symbol_total else 100.0
+        return (
+            100.0 * self.symbol_doc / self.symbol_total if self.symbol_total else 100.0
+        )
 
     @property
     def function_typed_pct(self) -> float:
@@ -179,8 +183,16 @@ def main() -> int:
     summary = rounded(metrics)
 
     print("Documentation Quality Report")
-    print("- module doc coverage: {module_doc_pct}% ({module_doc}/{module_total})".format(**summary))
-    print("- symbol doc coverage: {symbol_doc_pct}% ({symbol_doc}/{symbol_total})".format(**summary))
+    print(
+        "- module doc coverage: {module_doc_pct}% ({module_doc}/{module_total})".format(
+            **summary
+        )
+    )
+    print(
+        "- symbol doc coverage: {symbol_doc_pct}% ({symbol_doc}/{symbol_total})".format(
+            **summary
+        )
+    )
     print(
         "- function full typing coverage: {function_typed_pct}% ({function_fully_typed}/{function_total})".format(
             **summary
@@ -200,7 +212,9 @@ def main() -> int:
         regressions: list[str] = []
         for key in ("module_doc_pct", "symbol_doc_pct", "function_typed_pct"):
             if summary[key] + 1e-9 < baseline.get(key, 0.0):
-                regressions.append(f"{key}: {summary[key]} < baseline {baseline.get(key)}")
+                regressions.append(
+                    f"{key}: {summary[key]} < baseline {baseline.get(key)}"
+                )
         if regressions:
             failed = True
             print("\nRegression detected vs baseline:")

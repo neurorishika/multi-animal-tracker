@@ -8,23 +8,24 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import socket
 import subprocess
 import sys
 import tempfile
-import uuid
-import shutil
+import textwrap
 import threading
 import time
-import urllib.request
 import urllib.error
-import socket
-import textwrap
+import urllib.request
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 
 class PoseInferenceService:
     """PoseInferenceService API surface documentation."""
+
     CACHE_VERSION = 3
 
     def __init__(
@@ -118,7 +119,9 @@ class PoseInferenceService:
         key = self._cache_key(model_path, backend)
         if key in self._cache_mem:
             return self._cache_mem[key]
-        preds = self._read_cache_file(self._cache_path(model_path, backend), backend) or {}
+        preds = (
+            self._read_cache_file(self._cache_path(model_path, backend), backend) or {}
+        )
         self._cache_mem[key] = preds
         return preds
 
@@ -142,13 +145,20 @@ class PoseInferenceService:
         path.write_text(json.dumps(payload), encoding="utf-8")
         self._cache_mem[self._cache_key(model_path, backend)] = preds
 
-    def merge_cache(self: object, model_path: Path, new_preds: Dict[str, List[Tuple[float, float, float]]], backend: str = 'yolo') -> object:
+    def merge_cache(
+        self: object,
+        model_path: Path,
+        new_preds: Dict[str, List[Tuple[float, float, float]]],
+        backend: str = "yolo",
+    ) -> object:
         """merge_cache method documentation."""
         cache = self.load_cache(model_path, backend)
         cache.update(new_preds)
         self._write_cache(model_path, cache, backend)
 
-    def clear_cache(self, model_path: Optional[Path] = None, backend: str = "yolo") -> int:
+    def clear_cache(
+        self, model_path: Optional[Path] = None, backend: str = "yolo"
+    ) -> int:
         """clear_cache method documentation."""
         removed = 0
         if model_path is not None:
@@ -201,7 +211,22 @@ class PoseInferenceService:
                 return None
         return preds
 
-    def predict(self: object, model_path: Path, image_paths: List[Path], device: str, imgsz: int, conf: float, batch: int, progress_cb: object = None, cancel_cb: object = None, backend: str = 'yolo', sleap_env: Optional[str] = None, sleap_device: str = 'auto', sleap_batch: int = 4, sleap_max_instances: int = 1) -> Tuple[Optional[Dict[str, List[Tuple[float, float, float]]]], str]:
+    def predict(
+        self: object,
+        model_path: Path,
+        image_paths: List[Path],
+        device: str,
+        imgsz: int,
+        conf: float,
+        batch: int,
+        progress_cb: object = None,
+        cancel_cb: object = None,
+        backend: str = "yolo",
+        sleap_env: Optional[str] = None,
+        sleap_device: str = "auto",
+        sleap_batch: int = 4,
+        sleap_max_instances: int = 1,
+    ) -> Tuple[Optional[Dict[str, List[Tuple[float, float, float]]]], str]:
         """predict method documentation."""
         if not image_paths:
             return {}, ""
@@ -1071,7 +1096,16 @@ class _SleapHttpService:
         except Exception:
             return False, "Failed to write SLEAP service code."
         self.proc = subprocess.Popen(
-            ["conda", "run", "-n", env_name, "python", "-u", str(code_path), str(cfg_path)],
+            [
+                "conda",
+                "run",
+                "-n",
+                env_name,
+                "python",
+                "-u",
+                str(code_path),
+                str(cfg_path),
+            ],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -1248,7 +1282,9 @@ def _run_sleap_predict_subprocess(
     if shutil.which("conda") is None:
         return False, {}, "Conda not found on PATH."
 
-    tmp_dir = Path(tempfile.gettempdir()) / f"sleap_pred_{os.getpid()}_{uuid.uuid4().hex}"
+    tmp_dir = (
+        Path(tempfile.gettempdir()) / f"sleap_pred_{os.getpid()}_{uuid.uuid4().hex}"
+    )
     tmp_dir.mkdir(parents=True, exist_ok=True)
     req = {
         "model_dir": str(model_dir),

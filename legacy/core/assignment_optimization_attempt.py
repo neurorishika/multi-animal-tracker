@@ -3,8 +3,9 @@ Track assignment utilities for multi-object tracking.
 Functionally identical to the original implementation's assignment logic.
 """
 
-import numpy as np
 import logging
+
+import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 logger = logging.getLogger(__name__)

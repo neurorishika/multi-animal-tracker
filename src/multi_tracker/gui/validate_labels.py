@@ -4,11 +4,12 @@ Utility script to validate YOLO pose labels for NaN and numerical issues.
 Run this before training to catch problematic labels.
 """
 
-from pathlib import Path
-import numpy as np
 import argparse
 import logging
-from typing import List, Tuple, Set
+from pathlib import Path
+from typing import List, Set, Tuple
+
+import numpy as np
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)

@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-gpu env-create-minimal env-create-mps env-create-rocm env-update env-remove install install-gpu install-minimal install-mps install-rocm test clean docs-install docs-serve docs-build docs-quality docs-check
+.PHONY: env-create env-create-gpu env-create-minimal env-create-mps env-create-rocm env-update env-remove install install-gpu install-minimal install-mps install-rocm test clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format lint
 
 # Default environment name
 ENV_NAME ?= multi-animal-tracker-base
@@ -161,6 +161,14 @@ help:
 	@echo "  make clean           - Remove Python cache files"
 	@echo "  make test            - Test import"
 	@echo ""
+	@echo "Code Quality:"
+	@echo "  make pre-commit-install  - Install pre-commit hooks"
+	@echo "  make pre-commit-run      - Run pre-commit on all files"
+	@echo "  make pre-commit-update   - Update pre-commit hook versions"
+	@echo "  make format              - Format code with black and isort"
+	@echo "  make format-check        - Check code formatting without changes"
+	@echo "  make lint                - Lint code with flake8"
+	@echo ""
 	@echo "Documentation:"
 	@echo "  make docs-install    - Install MkDocs docs dependencies"
 	@echo "  make docs-serve      - Start docs dev server"
@@ -195,3 +203,29 @@ docs-check: docs-build docs-quality
 		fi; \
 	fi
 	@echo "Docs checks passed."
+
+# Pre-commit hooks
+pre-commit-install:
+	pre-commit install
+	@echo "Pre-commit hooks installed. They will run automatically on git commit."
+
+pre-commit-run:
+	pre-commit run --all-files
+
+pre-commit-update:
+	pre-commit autoupdate
+
+# Code quality shortcuts
+format:
+	black src/ tests/ tools/
+	isort src/ tests/ tools/
+	@echo "Code formatted with black and isort."
+
+lint:
+	flake8 src/ tests/ tools/
+	@echo "Linting complete."
+
+format-check:
+	black --check src/ tests/ tools/
+	isort --check-only src/ tests/ tools/
+	@echo "Format check complete."

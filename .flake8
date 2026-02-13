@@ -1,0 +1,54 @@
+# Flake8 configuration
+
+[flake8]
+max-line-length = 88
+
+# Ignore codes: E203 (whitespace before ':'), E501 (line too long),
+# W503 (line break before binary operator), E402 (module level import),
+# F401 (imported but unused), D100-D107 (missing docstrings)
+# Additional ignores for initial setup: E226, E231, E722, E741, F541, F811, F841
+# B001, B007, B014 (bugbear), C901, C408, C413, C416, C420 (complexity/code style)
+# SIM102, SIM105, SIM113, SIM114, SIM115, SIM210, SIM910 (simplify recommendations)
+extend-ignore = E203, E226, E231, E501, W503, E402, E722, E741, F401, F541, F811, F841, D100, D101, D102, D103, D104, D105, D107, B001, B007, B014, C408, C413, C416, C420, SIM102, SIM105, SIM113, SIM114, SIM115, SIM210, SIM910
+
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    .eggs,
+    *.egg,
+    build,
+    dist,
+    site,
+    legacy,
+    .pytest_cache,
+    .mypy_cache,
+    .tox,
+    *.egg-info,
+    .coverage
+
+# File patterns to check
+filename =
+    *.py
+
+# McCabe complexity - set higher for existing code, reduce gradually
+max-complexity = 110
+
+# Per-file ignores
+per-file-ignores =
+    __init__.py:F401,E402
+    tests/*:D100,D101,D102,D103,S101
+    conftest.py:E402
+
+# Enable specific checks
+select =
+    E,   # pycodestyle errors
+    W,   # pycodestyle warnings
+    F,   # pyflakes
+    C,   # mccabe complexity
+    B,   # bugbear
+    SIM, # simplify
+
+# Docstring conventions
+docstring-convention = google

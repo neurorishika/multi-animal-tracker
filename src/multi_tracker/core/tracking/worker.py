@@ -3,24 +3,34 @@ Core tracking engine running in separate thread for real-time performance.
 This is the main orchestrator, functionally identical to the original.
 """
 
-import sys, time, gc, math, logging, os, random
+import gc
+import logging
+import math
+import os
+import random
+import sys
+import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
-import numpy as np
-import cv2
-from collections import deque
-from PySide6.QtCore import QThread, Signal, QMutex, Slot
 
-from multi_tracker.utils.image_processing import apply_image_adjustments, stabilize_lighting
-from multi_tracker.utils.geometry import wrap_angle_degs
+import cv2
+import numpy as np
+from PySide6.QtCore import QMutex, QThread, Signal, Slot
+
+from multi_tracker.core.assigners.hungarian import TrackAssigner
+from multi_tracker.core.background.model import BackgroundModel
+from multi_tracker.core.detectors.engine import create_detector
+from multi_tracker.core.filters.kalman import KalmanFilterManager
+from multi_tracker.core.identity.analysis import IndividualDatasetGenerator
 from multi_tracker.data.detection_cache import DetectionCache
 from multi_tracker.utils.batch_optimizer import BatchOptimizer
 from multi_tracker.utils.frame_prefetcher import FramePrefetcher
-from multi_tracker.core.filters.kalman import KalmanFilterManager
-from multi_tracker.core.background.model import BackgroundModel
-from multi_tracker.core.detectors.engine import create_detector
-from multi_tracker.core.assigners.hungarian import TrackAssigner
-from multi_tracker.core.identity.analysis import IndividualDatasetGenerator
+from multi_tracker.utils.geometry import wrap_angle_degs
+from multi_tracker.utils.image_processing import (
+    apply_image_adjustments,
+    stabilize_lighting,
+)
 
 logger = logging.getLogger(__name__)
 

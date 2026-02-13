@@ -5,11 +5,11 @@ multiple sources (including converted X-AnyLabeling projects) into a single,
 train/val-ready output directory.
 """
 
-import os
-import json
 import hashlib
-import random
+import json
 import logging
+import os
+import random
 import shutil
 from pathlib import Path
 from typing import Any
@@ -79,7 +79,9 @@ def detect_dataset_layout(root_dir: str | Path) -> dict[str, tuple[str, str]]:
     images_root = os.path.join(root_dir, "images")
     labels_root = os.path.join(root_dir, "labels")
     xany_label_root = os.path.join(root_dir, "labels")
-    if os.path.isdir(images_root) and (os.path.isdir(labels_root) or os.path.isdir(xany_label_root)):
+    if os.path.isdir(images_root) and (
+        os.path.isdir(labels_root) or os.path.isdir(xany_label_root)
+    ):
         if not os.path.isdir(labels_root) and os.path.isdir(xany_label_root):
             labels_root = xany_label_root
         # split subfolders
@@ -123,6 +125,7 @@ def update_dataset_class_name(root_dir: str | Path, class_name: str) -> None:
             data = _read_dataset_yaml(yaml_path)
             data["names"] = {0: class_name}
             import yaml  # type: ignore
+
             with open(yaml_path, "w") as f:
                 yaml.safe_dump(data, f, sort_keys=False)
         except Exception:
@@ -247,11 +250,29 @@ def merge_datasets(
                 "val": img_files[train_n : train_n + val_n],
             }
             for split, files in splits.items():
-                _copy_split(files, img_dir, lbl_dir, images_dir / split, labels_dir / split, dedup, seen_hashes, manifest)
+                _copy_split(
+                    files,
+                    img_dir,
+                    lbl_dir,
+                    images_dir / split,
+                    labels_dir / split,
+                    dedup,
+                    seen_hashes,
+                    manifest,
+                )
         else:
             for split, (img_dir, lbl_dir) in layout.items():
                 files = _collect_images(img_dir)
-                _copy_split(files, img_dir, lbl_dir, images_dir / split, labels_dir / split, dedup, seen_hashes, manifest)
+                _copy_split(
+                    files,
+                    img_dir,
+                    lbl_dir,
+                    images_dir / split,
+                    labels_dir / split,
+                    dedup,
+                    seen_hashes,
+                    manifest,
+                )
 
     # Write dataset.yaml + classes
     write_classes_txt(merged_dir, class_name)
@@ -298,7 +319,9 @@ def _copy_split(
             raise RuntimeError(f"Missing label for image: {fp}")
 
         dest_img = _unique_dest(out_img_dir, os.path.basename(fp))
-        dest_lbl = os.path.join(out_lbl_dir, os.path.splitext(os.path.basename(dest_img))[0] + ".txt")
+        dest_lbl = os.path.join(
+            out_lbl_dir, os.path.splitext(os.path.basename(dest_img))[0] + ".txt"
+        )
         shutil.copy2(fp, dest_img)
         shutil.copy2(lbl_src, dest_lbl)
 
@@ -337,6 +360,7 @@ def _write_dataset_yaml(root_dir, class_name, include_test=True):
         data["test"] = "images/test"
     try:
         import yaml  # type: ignore
+
         with open(path / "dataset.yaml", "w") as f:
             yaml.safe_dump(data, f, sort_keys=False)
     except Exception:

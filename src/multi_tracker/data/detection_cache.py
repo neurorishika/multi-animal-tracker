@@ -6,9 +6,10 @@ tracking pass and reuse it during the backward pass, eliminating the need for
 RAM-intensive video reversal.
 """
 
-import numpy as np
 import logging
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,16 @@ class DetectionCache:
                 continue
         return cached
 
-    def add_frame(self: object, frame_idx: object, meas: object, sizes: object, shapes: object, confidences: object, obb_corners: object = None, detection_ids: object = None) -> object:
+    def add_frame(
+        self: object,
+        frame_idx: object,
+        meas: object,
+        sizes: object,
+        shapes: object,
+        confidences: object,
+        obb_corners: object = None,
+        detection_ids: object = None,
+    ) -> object:
         """
         Add detection data for a single frame (forward pass).
 
@@ -220,11 +230,15 @@ class DetectionCache:
         """Get the frame range stored in cache."""
         return self._start_frame, self._end_frame
 
-    def matches_frame_range(self: object, start_frame: object, end_frame: object) -> object:
+    def matches_frame_range(
+        self: object, start_frame: object, end_frame: object
+    ) -> object:
         """Check if cache matches the requested frame range."""
         return self._start_frame == start_frame and self._end_frame == end_frame
 
-    def covers_frame_range(self: object, start_frame: object, end_frame: object) -> object:
+    def covers_frame_range(
+        self: object, start_frame: object, end_frame: object
+    ) -> object:
         """Check if cache fully covers the requested frame range."""
         if self._loaded_data is None:
             return False
@@ -232,9 +246,14 @@ class DetectionCache:
             return False
         if self._cached_frames is None:
             return False
-        return all(frame_idx in self._cached_frames for frame_idx in range(start_frame, end_frame + 1))
+        return all(
+            frame_idx in self._cached_frames
+            for frame_idx in range(start_frame, end_frame + 1)
+        )
 
-    def get_missing_frames(self: object, start_frame: object, end_frame: object, max_report: object = 10) -> object:
+    def get_missing_frames(
+        self: object, start_frame: object, end_frame: object, max_report: object = 10
+    ) -> object:
         """Return a list of missing frame indices (up to max_report)."""
         if self._cached_frames is None:
             return []
