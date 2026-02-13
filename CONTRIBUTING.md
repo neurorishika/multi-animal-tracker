@@ -201,14 +201,38 @@ Closes #42
 
 ### Pre-commit Workflow
 
+**⭐ Recommended Approach (avoids re-commit cycle):**
+
+```bash
+# 1. Format your code BEFORE committing
+make commit-prep
+
+# 2. Stage your changes
+git add -u  # or git add <specific-files>
+
+# 3. Commit (hooks will pass since code is already formatted)
+git commit -m "your commit message"
+```
+
+**Alternative: Standard Git Workflow (may require re-commit):**
+
 1. Stage your changes: `git add <files>`
 2. Commit: `git commit -m "message"`
 3. Pre-commit hooks run automatically
-4. If hooks fail:
-   - Review the changes made by auto-formatters
-   - Fix any linting errors
+4. **If Black/isort auto-fix files:**
+   - The commit will be blocked (this is expected)
+   - The files are now formatted, but unstaged
+   - Stage the auto-fixes: `git add -u`
+   - Commit again: `git commit -m "message"`
+   - Hooks will pass this time
+5. **If flake8 fails:**
+   - Fix the linting errors manually
    - Stage the fixes: `git add <fixed-files>`
    - Commit again
+
+**Why does Black fail the first time?**
+
+When Black or isort reformat your code during the commit, they modify the files. Pre-commit then blocks the commit to prevent you from accidentally committing unformatted code. You need to re-stage the auto-formatted files and commit again. Using `make commit-prep` before committing avoids this entirely.
 
 ## Pull Request Process
 
@@ -232,9 +256,10 @@ make clean              # Clean cache files
 
 # Code Quality
 make pre-commit-install # Install hooks
-make pre-commit-run     # Run all hooks
-make format             # Format code
+make commit-prep        # ⭐ Format before committing (recommended!)
+make format             # Format code manually
 make lint               # Lint code
+make pre-commit-check   # Run format + lint
 
 # Testing
 pytest                  # Run tests
