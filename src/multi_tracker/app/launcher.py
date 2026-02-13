@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main entry point for the Multi-Animal Tracker application.
+Main entry point for the Multi-Animal-Tracker application.
 
 This module provides the command-line interface and GUI launcher for the
 multi-animal tracking system.
@@ -15,8 +15,13 @@ from pathlib import Path
 # Fix OpenMP conflict on macOS (PyTorch + OpenCV + NumPy can load multiple OpenMP libraries)
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
+
 # Set up logging
-def setup_logging(log_level: object = logging.INFO, enable_file_logging: object = False, log_dir: object = None) -> object:
+def setup_logging(
+    log_level: object = logging.INFO,
+    enable_file_logging: object = False,
+    log_dir: object = None,
+) -> object:
     """Set up logging configuration for the multi-tracker application.
 
     Note: File logging is now handled per-session in main_window.py.
@@ -36,7 +41,7 @@ def setup_logging(log_level: object = logging.INFO, enable_file_logging: object 
 
     # Log startup info
     logger = logging.getLogger(__name__)
-    logger.info("Multi-Animal Tracker starting up...")
+    logger.info("Multi-Animal-Tracker starting up...")
     logger.info(f"Python version: {sys.version}")
     logger.info(f"Working directory: {os.getcwd()}")
 
@@ -44,7 +49,7 @@ def setup_logging(log_level: object = logging.INFO, enable_file_logging: object 
 def parse_arguments() -> object:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Multi-Animal Tracker - Real-time animal tracking with circular ROI",
+        description="Multi-Animal-Tracker - Real-time animal tracking with circular ROI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -72,7 +77,7 @@ Examples:
     )
 
     parser.add_argument(
-        "--version", action="version", version="Multi-Animal Tracker 1.0.0"
+        "--version", action="version", version="Multi-Animal-Tracker 1.0.0"
     )
 
     return parser.parse_args()
@@ -152,26 +157,39 @@ def main() -> object:
 
         # Create Qt application
         app = QApplication(sys.argv)
-        app.setApplicationName("Multi-Animal Tracker")
+        app.setApplicationName("MultiAnimalTracker")
+        app.setApplicationDisplayName("Multi-Animal-Tracker")
         app.setApplicationVersion("1.0.0")
-        app.setOrganizationName("MBL")
+        app.setOrganizationName("NeuroRishika")
+        app.setDesktopFileName("multi-animal-tracker")
 
         # Set application icon if available
         try:
             from PySide6.QtGui import QIcon
 
-            icon_path = Path(__file__).resolve().parent.parent / "resources" / "icon.png"
-            if icon_path.exists():
-                app.setWindowIcon(QIcon(str(icon_path)))
+            project_root = Path(__file__).resolve().parents[3]
+            brand_icon = project_root / "brand" / "multianimaltracker.svg"
+            fallback_icon = (
+                Path(__file__).resolve().parent.parent / "resources" / "icon.png"
+            )
+            if brand_icon.exists():
+                app.setWindowIcon(QIcon(str(brand_icon)))
+            elif fallback_icon.exists():
+                app.setWindowIcon(QIcon(str(fallback_icon)))
         except Exception:
             pass  # Icon not critical
 
         # Create and show main window
         logger.info("Initializing main window...")
         main_window = MainWindow()
+        try:
+            # Ensure taskbar/dock uses MAT icon on platforms honoring window icon.
+            main_window.setWindowIcon(app.windowIcon())
+        except Exception:
+            pass
         main_window.showMaximized()
 
-        logger.info("Multi-Animal Tracker GUI launched successfully")
+        logger.info("Multi-Animal-Tracker GUI launched successfully")
 
         # Start Qt event loop
         exit_code = app.exec()

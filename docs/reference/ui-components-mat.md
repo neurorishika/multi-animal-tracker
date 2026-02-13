@@ -1,6 +1,6 @@
 # UI Components Reference (MAT)
 
-This reference describes the Multi-Animal Tracker UI by tab, with practical guidance for selecting values.
+This reference describes the Multi-Animal-Tracker UI by tab, with practical guidance for selecting values.
 
 ## How To Use This Page
 

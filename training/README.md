@@ -1,6 +1,6 @@
 # Model Archive
 
-This directory serves as the local model archive for the Multi-Animal Tracker.
+This directory serves as the local model archive for the Multi-Animal-Tracker.
 
 ## Purpose
 

@@ -1,4 +1,4 @@
-# ROCm Setup Guide for Multi-Animal Tracker
+# ROCm Setup Guide for Multi-Animal-Tracker
 
 This guide provides detailed instructions for setting up AMD GPU acceleration with ROCm.
 
@@ -126,7 +126,7 @@ Then reload:
 source ~/.bashrc
 ```
 
-### 6. Install Multi-Animal Tracker with ROCm
+### 6. Install Multi-Animal-Tracker with ROCm
 
 Now install the tracker environment:
 

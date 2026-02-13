@@ -1,5 +1,5 @@
 """
-Core tracking algorithms and components for the Multi-Animal Tracker.
+Core tracking algorithms and components for the Multi-Animal-Tracker.
 
 This package contains the tracking worker and supporting components for
 multi-object tracking including Kalman filters, background models,

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ROCm Verification Script for Multi-Animal Tracker
+ROCm Verification Script for Multi-Animal-Tracker
 
 This script checks if your ROCm installation is properly configured
 and if all required components are available.
@@ -232,7 +232,7 @@ def check_performance():
 
 def main():
     """Main verification routine."""
-    print_header("Multi-Animal Tracker - ROCm Verification")
+    print_header("Multi-Animal-Tracker - ROCm Verification")
     print("This script checks your ROCm installation and Python packages.\n")
 
     # System checks

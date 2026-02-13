@@ -344,7 +344,7 @@ class IndividualDatasetGenerator:
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             dataset_folder_name = f"{self.dataset_name}_{timestamp}"
-        self.crops_dir = self.output_dir / dataset_folder_name / "crops"
+        self.crops_dir = self.output_dir / dataset_folder_name / "images"
         self.crops_dir.mkdir(parents=True, exist_ok=True)
 
         # Create metadata file path
@@ -355,7 +355,7 @@ class IndividualDatasetGenerator:
             try:
                 with open(self.metadata_path, "r") as f:
                     data = json.load(f)
-                self.metadata = data.get("crops", [])
+                self.metadata = data.get("images", data.get("crops", []))
                 self.total_saved = len(self.metadata)
             except Exception:
                 pass
@@ -712,7 +712,8 @@ class IndividualDatasetGenerator:
                 "save_interval": self.save_every_n_frames,
                 "output_format": self.output_format,
             },
-            "crops": self.metadata,
+            "images": self.metadata,
+            "crops": self.metadata,  # Backward compatibility for older consumers.
         }
 
         try:

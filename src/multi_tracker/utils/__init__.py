@@ -1,5 +1,5 @@
 """
-Utility modules for the Multi-Animal Tracker.
+Utility modules for the Multi-Animal-Tracker.
 
 This package contains various utility functions and classes for image processing,
 CSV writing, ROI handling, video processing, GPU acceleration, and other common operations.

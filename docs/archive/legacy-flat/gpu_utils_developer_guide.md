@@ -248,7 +248,7 @@ from multi_tracker.utils.gpu_utils import log_device_info
 import logging
 
 def main():
-    logging.info("Initializing Multi-Animal Tracker")
+    logging.info("Initializing Multi-Animal-Tracker")
     log_device_info()  # Show user their GPU capabilities
     
     # Continue with application

@@ -2,8 +2,8 @@
 """
 PoseKit Labeler: an all-in-one PySide6 labeler for Ultralytics YOLO Pose.
 
-- Start with only images: launches a Setup Wizard to create a project at runtime.
-- If a project exists: loads it automatically.
+- Start with a dataset root containing images/: launches Setup Wizard if needed.
+- If a project exists under posekit_project/: loads it automatically.
 - Project Settings: edit classes/keypoints later, with optional label migration.
 - Writes Ultralytics YOLO Pose labels (.txt) with normalized bbox + keypoints + visibility.
 
@@ -108,11 +108,22 @@ except ImportError:
         get_available_devices,
     )
 
-from PySide6.QtCore import Qt, QRect, QRectF, QSize, QObject, Signal, Slot, QThread, QTimer
+from PySide6.QtCore import (
+    Qt,
+    QRect,
+    QRectF,
+    QSize,
+    QObject,
+    Signal,
+    Slot,
+    QThread,
+    QTimer,
+)
 from PySide6.QtGui import (
     QAction,
     QColor,
     QFont,
+    QIcon,
     QImage,
     QKeySequence,
     QPalette,
@@ -121,6 +132,7 @@ from PySide6.QtGui import (
     QPixmap,
     QBrush,
 )
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -166,6 +178,8 @@ from PySide6.QtWidgets import (
 
 IMG_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 DEFAULT_PROJECT_NAME = "pose_project.json"
+DEFAULT_DATASET_IMAGES_DIR = "images"
+DEFAULT_POSEKIT_PROJECT_DIR = "posekit_project"
 DEFAULT_SKELETON_DIRNAME = "configs"
 DEFAULT_KPT_RADIUS = 5.0
 DEFAULT_LABEL_FONT_SIZE = 10
@@ -255,9 +269,9 @@ class Project:
             "out_root": str(out_root),
             "labels_dir": str(labels_dir),
             "latest_pose_weights": str(latest_weights) if latest_weights else "",
-            "latest_sleap_dataset": str(latest_sleap_dataset)
-            if latest_sleap_dataset
-            else "",
+            "latest_sleap_dataset": (
+                str(latest_sleap_dataset) if latest_sleap_dataset else ""
+            ),
             "paths_relative": bool(paths_relative),
             "class_names": self.class_names,
             "keypoint_names": self.keypoint_names,
@@ -1195,6 +1209,8 @@ class PoseCanvas(QGraphicsView):
         self.setRenderHint(QPainter.Antialiasing, True)
         self.setDragMode(QGraphicsView.NoDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setBackgroundBrush(QBrush(QColor(18, 18, 18)))
+        self.setStyleSheet("QGraphicsView { background-color: #121212; border: none; }")
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
 
@@ -1235,7 +1251,9 @@ class PoseCanvas(QGraphicsView):
                 return it
         return None
 
-    def set_callbacks(self: object, on_place: object, on_move: object, on_select: object = None) -> None:
+    def set_callbacks(
+        self: object, on_place: object, on_move: object, on_select: object = None
+    ) -> None:
         """Register callbacks for placement, drag movement, and optional selection."""
         self._on_place = on_place
         self._on_move = on_move
@@ -1425,7 +1443,9 @@ class PoseCanvas(QGraphicsView):
                     conf = pred_confs[i]
                     lab = QGraphicsTextItem(f"{conf:.3f}")
                     lab.setDefaultTextColor(QColor(0, 220, 255, 200))
-                    lab.setFont(QFont("Arial", max(4, int(self._label_font_size * 0.8))))
+                    lab.setFont(
+                        QFont("Arial", max(4, int(self._label_font_size * 0.8)))
+                    )
                     lab.setPos(kp.x + r + 2, kp.y - r - 2)
                     lab.setZValue(2)
                     lab.setAcceptedMouseButtons(Qt.NoButton)
@@ -1792,7 +1812,9 @@ class FrameListDelegate(QStyledItemDelegate):
         elif available < total:
             cluster_w = 0
         right_total = conf_w + kpt_w + cluster_w
-        name_rect = QRect(r.left(), r.top(), max(0, r.width() - right_total), r.height())
+        name_rect = QRect(
+            r.left(), r.top(), max(0, r.width() - right_total), r.height()
+        )
         conf_rect = QRect(
             max(r.left(), r.right() - conf_w + 1), r.top(), max(0, conf_w), r.height()
         )
@@ -1811,9 +1833,7 @@ class FrameListDelegate(QStyledItemDelegate):
         if name_rect.width() > 0:
             fm = painter.fontMetrics()
             elided = fm.elidedText(text, Qt.ElideRight, max(0, name_rect.width()))
-            painter.drawText(
-                name_rect, Qt.AlignVCenter | Qt.AlignLeft, elided
-            )
+            painter.drawText(name_rect, Qt.AlignVCenter | Qt.AlignLeft, elided)
         if cluster_text and cluster_rect.width() > 0:
             painter.setPen(conf_color)
             fm = painter.fontMetrics()
@@ -1827,9 +1847,7 @@ class FrameListDelegate(QStyledItemDelegate):
             painter.setPen(conf_color)
             fm = painter.fontMetrics()
             kpt_elided = fm.elidedText(kpt_text, Qt.ElideLeft, kpt_rect.width())
-            painter.drawText(
-                kpt_rect, Qt.AlignVCenter | Qt.AlignRight, kpt_elided
-            )
+            painter.drawText(kpt_rect, Qt.AlignVCenter | Qt.AlignRight, kpt_elided)
         if conf_text and conf_rect.width() > 0:
             painter.setPen(conf_color)
             fm = painter.fontMetrics()
@@ -2237,19 +2255,20 @@ class ProjectWizard(QDialog):
     """
 
     def __init__(
-        self, images_dir: Path, existing: Optional[Project] = None, parent=None
+        self, dataset_dir: Path, existing: Optional[Project] = None, parent=None
     ):
         super().__init__(parent)
         self.setWindowTitle("PoseKit Setup" if existing is None else "Project Settings")
         self.setMinimumSize(QSize(820, 560))
 
-        self.images_dir = images_dir
+        self.dataset_dir = dataset_dir.resolve()
+        self.images_dir = self.dataset_dir / DEFAULT_DATASET_IMAGES_DIR
         self.existing = existing
 
         # Defaults
+        default_root = self.dataset_dir / DEFAULT_POSEKIT_PROJECT_DIR
+        default_labels = default_root / "labels"
         if existing is None:
-            default_root = images_dir.parent / "pose_project"
-            default_labels = default_root / "labels"
             default_classes = ["object"]
             default_kpts = ["kp1", "kp2"]
             default_pad = 0.03
@@ -2271,19 +2290,21 @@ class ProjectWizard(QDialog):
 
         # Paths
         form = QFormLayout()
+        self.dataset_dir_line = QLineEdit(str(self.dataset_dir))
+        self.dataset_dir_line.setReadOnly(True)
+        form.addRow("Dataset folder:", self.dataset_dir_line)
+
+        self.images_dir_line = QLineEdit(str(self.images_dir))
+        self.images_dir_line.setReadOnly(True)
+        form.addRow("Images folder:", self.images_dir_line)
+
         self.out_root = QLineEdit(str(default_root))
-        btn_root = QPushButton("Choose…")
-        row_root = QHBoxLayout()
-        row_root.addWidget(self.out_root, 1)
-        row_root.addWidget(btn_root)
-        form.addRow("Where should PoseKit project outputs be stored?", row_root)
+        self.out_root.setReadOnly(True)
+        form.addRow("PoseKit project folder:", self.out_root)
 
         self.labels_dir = QLineEdit(str(default_labels))
-        btn_labels = QPushButton("Choose…")
-        row_labels = QHBoxLayout()
-        row_labels.addWidget(self.labels_dir, 1)
-        row_labels.addWidget(btn_labels)
-        form.addRow("Where should annotation label files be written?", row_labels)
+        self.labels_dir.setReadOnly(True)
+        form.addRow("Annotation labels folder:", self.labels_dir)
 
         self.autosave_cb = QCheckBox("Autosave when changing frames")
         self.autosave_cb.setChecked(default_autosave)
@@ -2293,7 +2314,10 @@ class ProjectWizard(QDialog):
         self.pad_spin.setRange(0.0, 0.25)
         self.pad_spin.setSingleStep(0.01)
         self.pad_spin.setValue(default_pad)
-        form.addRow("How much padding should be added around keypoints for bbox export?", self.pad_spin)
+        form.addRow(
+            "How much padding should be added around keypoints for bbox export?",
+            self.pad_spin,
+        )
 
         layout.addLayout(form)
 
@@ -2356,26 +2380,10 @@ class ProjectWizard(QDialog):
         layout.addLayout(bottom)
 
         # wiring
-        btn_root.clicked.connect(self._pick_root)
-        btn_labels.clicked.connect(self._pick_labels)
         self.ok_btn.clicked.connect(self.accept)
         self.cancel_btn.clicked.connect(self.reject)
 
         self.btn_skel.clicked.connect(self._edit_skeleton)
-
-    def _pick_root(self):
-        d = QFileDialog.getExistingDirectory(
-            self, "Select output root", self.out_root.text()
-        )
-        if d:
-            self.out_root.setText(d)
-
-    def _pick_labels(self):
-        d = QFileDialog.getExistingDirectory(
-            self, "Select labels directory", self.labels_dir.text()
-        )
-        if d:
-            self.labels_dir.setText(d)
 
     def _get_skeleton_summary(self) -> str:
         k = len(self._kpt_names)
@@ -2411,8 +2419,8 @@ class ProjectWizard(QDialog):
 
     def get_paths(self) -> Tuple[Path, Path]:
         """get_paths method documentation."""
-        root = Path(self.out_root.text()).expanduser().resolve()
-        labels = Path(self.labels_dir.text()).expanduser().resolve()
+        root = (self.dataset_dir / DEFAULT_POSEKIT_PROJECT_DIR).resolve()
+        labels = (root / "labels").resolve()
         return root, labels
 
     def get_options(self) -> Tuple[bool, float]:
@@ -2433,6 +2441,7 @@ class ProjectWizard(QDialog):
 # -----------------------------
 class MainWindow(QMainWindow):
     """MainWindow API surface documentation."""
+
     def __init__(self, project: Project, image_paths: List[Path]):
         super().__init__()
         self.setWindowTitle("PoseKit Labeler")
@@ -2758,14 +2767,18 @@ class MainWindow(QMainWindow):
         model_layout = QVBoxLayout(model_group)
 
         backend_row = QHBoxLayout()
-        backend_row.addWidget(QLabel("Which inference backend should generate predictions?"))
+        backend_row.addWidget(
+            QLabel("Which inference backend should generate predictions?")
+        )
         self.combo_pred_backend = QComboBox()
         self.combo_pred_backend.addItems(["YOLO", "SLEAP"])
         backend_row.addWidget(self.combo_pred_backend, 1)
         model_layout.addLayout(backend_row)
 
         pred_conf_row = QHBoxLayout()
-        pred_conf_row.addWidget(QLabel("What minimum prediction confidence should be shown/applied?"))
+        pred_conf_row.addWidget(
+            QLabel("What minimum prediction confidence should be shown/applied?")
+        )
         self.sp_pred_conf = QDoubleSpinBox()
         self.sp_pred_conf.setRange(0.0, 1.0)
         self.sp_pred_conf.setSingleStep(0.05)
@@ -2907,9 +2920,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(2, 1)
 
         splitter.setHandleWidth(8)
-        splitter.setStyleSheet(
-            "QSplitter::handle { background: #b0b0b0; }"
-        )
+        splitter.setStyleSheet("QSplitter::handle { background: #b0b0b0; }")
 
         # Set initial sizes: ~200px per side panel, rest to center
         # This will be adjusted when window is shown based on total width
@@ -2973,9 +2984,7 @@ class MainWindow(QMainWindow):
         self.btn_clear_pred_cache.clicked.connect(self._clear_prediction_cache)
         self.btn_pred_weights.clicked.connect(self._browse_pred_weights)
         self.btn_pred_weights_latest.clicked.connect(self._use_latest_pred_weights)
-        self.combo_pred_backend.currentTextChanged.connect(
-            self._update_pred_backend_ui
-        )
+        self.combo_pred_backend.currentTextChanged.connect(self._update_pred_backend_ui)
         self.btn_sleap_refresh.clicked.connect(self._refresh_sleap_envs)
         self.btn_sleap_model.clicked.connect(self._browse_sleap_model_dir)
         self.btn_sleap_model_latest.clicked.connect(self._use_latest_sleap_model)
@@ -3010,42 +3019,80 @@ class MainWindow(QMainWindow):
         self.frame_list.setCurrentRow(-1)
         self.labeling_list.setCurrentRow(-1)
         self.lbl_info.setText("Select a frame to display.")
+        self._show_canvas_logo_placeholder()
+
+    def _show_canvas_logo_placeholder(self):
+        """Show PoseKit logo in the center canvas when no frame is active."""
+        try:
+            project_root = Path(__file__).resolve().parents[3]
+            logo_path = project_root / "brand" / "posekit.svg"
+            vw = max(1000, self.canvas.viewport().width())
+            vh = max(700, self.canvas.viewport().height())
+            canvas = QPixmap(vw, vh)
+            canvas.fill(QColor(18, 18, 18))
+
+            renderer = QSvgRenderer(str(logo_path))
+            if renderer.isValid():
+                view_box = renderer.viewBoxF()
+                if view_box.isEmpty():
+                    default_size = renderer.defaultSize()
+                    view_box = QRectF(
+                        0,
+                        0,
+                        max(1, default_size.width()),
+                        max(1, default_size.height()),
+                    )
+
+                # Use "contain" scaling from the SVG viewBox to avoid stretch/crop artifacts.
+                max_w = max(1, int(vw * 0.9))
+                max_h = max(1, int(vh * 0.88))
+                scale = min(max_w / view_box.width(), max_h / view_box.height())
+                logo_w = max(1, int(view_box.width() * scale))
+                logo_h = max(1, int(view_box.height() * scale))
+                x = (vw - logo_w) // 2
+                y = (vh - logo_h) // 2
+                painter = QPainter(canvas)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                renderer.render(painter, QRectF(x, y, logo_w, logo_h))
+                painter.end()
+
+                self.canvas.pix_item.setPixmap(canvas)
+                self.canvas.scene.setSceneRect(
+                    QRectF(0, 0, canvas.width(), canvas.height())
+                )
+                self.canvas.resetTransform()
+                self.canvas.fitInView(self.canvas.pix_item, Qt.KeepAspectRatio)
+                # Fit again after layout settles to avoid tiny initial scale on startup.
+                QTimer.singleShot(0, self.canvas.fit_to_view)
+                return
+        except Exception:
+            pass
 
     def show_startup_open_overlay(self: object) -> object:
-        """Show startup chooser overlay for opening a project or image directory."""
+        """Show startup chooser overlay for opening a dataset directory."""
         dlg = QDialog(self)
         dlg.setWindowTitle("Open PoseKit Dataset")
         dlg.setModal(True)
         dlg.setWindowFlag(Qt.WindowCloseButtonHint, False)
 
         layout = QVBoxLayout(dlg)
-        msg = QLabel(
-            "No dataset is open.\n\nChoose one option to continue:"
-        )
+        msg = QLabel("No dataset is open.\n\nChoose one option to continue:")
         msg.setWordWrap(True)
         layout.addWidget(msg)
 
-        btn_open_project = QPushButton("Open Project…")
-        btn_open_images = QPushButton("Open Images Folder…")
+        btn_open_dataset = QPushButton("Open Dataset Folder…")
         btn_quit = QPushButton("Quit")
-        layout.addWidget(btn_open_project)
-        layout.addWidget(btn_open_images)
+        layout.addWidget(btn_open_dataset)
         layout.addWidget(btn_quit)
 
-        def open_project():
+        def open_dataset():
             dlg.accept()
-            self.open_project_dialog()
-            if not self.image_paths:
+            self.open_dataset_folder()
+            if self.isVisible() and not self.image_paths:
                 QTimer.singleShot(0, self.show_startup_open_overlay)
 
-        def open_images():
-            dlg.accept()
-            self.open_images_folder()
-            if not self.image_paths:
-                QTimer.singleShot(0, self.show_startup_open_overlay)
-
-        btn_open_project.clicked.connect(open_project)
-        btn_open_images.clicked.connect(open_images)
+        btn_open_dataset.clicked.connect(open_dataset)
         btn_quit.clicked.connect(lambda: (dlg.reject(), self.close()))
         dlg.exec()
 
@@ -3207,9 +3254,7 @@ class MainWindow(QMainWindow):
             if "sleap_model_dir" in settings:
                 self.sleap_model_edit.setText(str(settings["sleap_model_dir"]))
             if "sleap_device" in settings:
-                self.combo_sleap_device.setCurrentText(
-                    str(settings["sleap_device"])
-                )
+                self.combo_sleap_device.setCurrentText(str(settings["sleap_device"]))
             if "sleap_batch_predict" in settings:
                 self._sleap_batch_predict = int(settings["sleap_batch_predict"])
             elif "sleap_batch" in settings:
@@ -3226,7 +3271,9 @@ class MainWindow(QMainWindow):
                     self.project.latest_pose_weights
                     and Path(self.project.latest_pose_weights).exists()
                 ):
-                    self.pred_weights_edit.setText(str(self.project.latest_pose_weights))
+                    self.pred_weights_edit.setText(
+                        str(self.project.latest_pose_weights)
+                    )
 
     # ----- menus / shortcuts -----
     def _build_actions(self):
@@ -3240,12 +3287,9 @@ class MainWindow(QMainWindow):
         act_save.setShortcut(QKeySequence.Save)
         act_save.triggered.connect(self.save_all_labeling_frames)
 
-        act_open_proj = QAction("Open Project…", self)
+        act_open_proj = QAction("Open Dataset Folder…", self)
         act_open_proj.setShortcut(QKeySequence.Open)
-        act_open_proj.triggered.connect(self.open_project_dialog)
-
-        act_open_images = QAction("Open Images Folder…", self)
-        act_open_images.triggered.connect(self.open_images_folder)
+        act_open_proj.triggered.connect(self.open_dataset_folder)
 
         act_export = QAction("Export dataset.yaml + splits…", self)
         act_export.setShortcut(QKeySequence("Ctrl+E"))
@@ -3332,7 +3376,6 @@ class MainWindow(QMainWindow):
 
         m_file.addAction(act_save)
         m_file.addAction(act_open_proj)
-        m_file.addAction(act_open_images)
         m_file.addAction(act_proj)
         m_file.addSeparator()
         m_file.addAction(act_export)
@@ -3664,7 +3707,9 @@ class MainWindow(QMainWindow):
             except Exception:
                 self._path_to_index[str(p)] = i
 
-    def _get_pred_conf_for_indices(self, indices: List[int]) -> Dict[int, Optional[float]]:
+    def _get_pred_conf_for_indices(
+        self, indices: List[int]
+    ) -> Dict[int, Optional[float]]:
         self._ensure_pred_conf_cache()
         out: Dict[int, Optional[float]] = {}
         for idx in indices:
@@ -3690,9 +3735,7 @@ class MainWindow(QMainWindow):
             val = self._pred_kpt_count_map.get(key)
             if val is None:
                 try:
-                    val = self._pred_kpt_count_map.get(
-                        str(Path(img_path).resolve())
-                    )
+                    val = self._pred_kpt_count_map.get(str(Path(img_path).resolve()))
                 except Exception:
                     val = None
             out[idx] = val
@@ -3794,9 +3837,7 @@ class MainWindow(QMainWindow):
         conf_thr = self._pred_conf_default()
         for path, pred_list in preds_cache.items():
             confs = [
-                float(p[2])
-                for p in pred_list
-                if len(p) >= 3 and np.isfinite(p[2])
+                float(p[2]) for p in pred_list if len(p) >= 3 and np.isfinite(p[2])
             ]
             val = float(np.mean(confs)) if confs else None
             if confs:
@@ -3836,9 +3877,7 @@ class MainWindow(QMainWindow):
         conf_thr = self._pred_conf_default()
         for path, pred_list in preds.items():
             confs = [
-                float(p[2])
-                for p in pred_list
-                if len(p) >= 3 and np.isfinite(p[2])
+                float(p[2]) for p in pred_list if len(p) >= 3 and np.isfinite(p[2])
             ]
             val = float(np.mean(confs)) if confs else None
             if confs:
@@ -4954,7 +4993,8 @@ class MainWindow(QMainWindow):
 
     def open_project_settings(self: object) -> object:
         """open_project_settings method documentation."""
-        wiz = ProjectWizard(self.project.images_dir, existing=self.project, parent=self)
+        dataset_dir = self.project.images_dir.parent
+        wiz = ProjectWizard(dataset_dir, existing=self.project, parent=self)
         if wiz.exec() != QDialog.Accepted:
             return
 
@@ -5049,45 +5089,45 @@ class MainWindow(QMainWindow):
             app._posekit_windows.append(new_win)
         self.close()
 
-    def open_project_dialog(self: object) -> object:
-        """open_project_dialog method documentation."""
-        start = str(self.project.project_path.parent)
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open pose_project.json", start, "pose_project.json;All Files (*)"
+    def open_dataset_folder(self: object) -> object:
+        """Open a dataset root folder containing an images/ directory."""
+        start = (
+            str(self.project.images_dir.parent)
+            if self.project.images_dir
+            else str(Path.home())
         )
+        path = QFileDialog.getExistingDirectory(self, "Select dataset folder", start)
         if not path:
             return
-        project_path = Path(path).expanduser().resolve()
-        if not project_path.exists():
-            QMessageBox.warning(self, "Missing", "Project file not found.")
+        dataset_dir = Path(path).expanduser().resolve()
+        _, images_dir, _out_root, _labels_dir, _project_path = resolve_dataset_paths(
+            dataset_dir
+        )
+        if not images_dir.exists() or not images_dir.is_dir():
+            QMessageBox.warning(
+                self,
+                "Invalid Dataset",
+                f"Selected folder does not contain `{DEFAULT_DATASET_IMAGES_DIR}/`:\n\n"
+                f"{dataset_dir}",
+            )
             return
-        try:
-            data = json.loads(project_path.read_text(encoding="utf-8"))
-            base = project_path.parent
-            images_dir = _resolve_project_path(Path(data["images_dir"]), base, data)
-        except Exception as e:
-            QMessageBox.warning(self, "Invalid project", str(e))
-            return
-        proj = load_project_with_repairs(project_path, images_dir)
-        self._switch_project_window(proj)
-
-    def open_images_folder(self: object) -> object:
-        """open_images_folder method documentation."""
-        start = str(self.project.images_dir) if self.project.images_dir else ""
-        path = QFileDialog.getExistingDirectory(self, "Select images folder", start)
-        if not path:
-            return
-        images_dir = Path(path).expanduser().resolve()
-        out_root = (images_dir.parent / "pose_project").resolve()
         proj = None
-        found = find_project(images_dir, out_root)
+        found = find_project(dataset_dir)
         if found:
-            proj = load_project_with_repairs(found, images_dir)
+            proj = load_project_with_repairs(found, dataset_dir)
         else:
-            proj = create_project_via_wizard(images_dir, out_root_hint=out_root)
+            proj = create_project_via_wizard(dataset_dir)
         if proj is None:
             return
         self._switch_project_window(proj)
+
+    def open_project_dialog(self: object) -> object:
+        """Backward-compatible alias for opening dataset folder."""
+        self.open_dataset_folder()
+
+    def open_images_folder(self: object) -> object:
+        """Backward-compatible alias for opening dataset folder."""
+        self.open_dataset_folder()
 
     def export_dataset_dialog(self: object) -> object:
         """export_dataset_dialog method documentation."""
@@ -5375,7 +5415,7 @@ class MainWindow(QMainWindow):
         if self.image_paths:
             self.load_frame(self.current_index)
         else:
-            self.canvas.set_image(np.zeros((1, 1, 3), dtype=np.uint8))
+            self._show_canvas_logo_placeholder()
             self.lbl_info.setText("No images found.")
 
     def _cleanup_deleted_cache(self, deleted_paths: List[Path]) -> None:
@@ -5419,9 +5459,7 @@ class MainWindow(QMainWindow):
                             changed = True
                     if changed:
                         data["preds"] = preds
-                        cache_path.write_text(
-                            json.dumps(data), encoding="utf-8"
-                        )
+                        cache_path.write_text(json.dumps(data), encoding="utf-8")
                 except Exception:
                     continue
 
@@ -5453,7 +5491,9 @@ class MainWindow(QMainWindow):
                 with cluster_csv.open("r", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
                     for row in reader:
-                        img = row.get("image") or row.get("image_path") or row.get("path")
+                        img = (
+                            row.get("image") or row.get("image_path") or row.get("path")
+                        )
                         if not img:
                             continue
                         key = img
@@ -5773,9 +5813,7 @@ class MainWindow(QMainWindow):
         self._sleap_service_worker.moveToThread(self._sleap_service_thread)
         self._sleap_service_thread.started.connect(self._sleap_service_worker.run)
         self._sleap_service_worker.finished.connect(self._on_sleap_service_started)
-        self._sleap_service_worker.finished.connect(
-            self._sleap_service_thread.quit
-        )
+        self._sleap_service_worker.finished.connect(self._sleap_service_thread.quit)
         self._sleap_service_thread.finished.connect(
             self._sleap_service_thread.deleteLater
         )
@@ -5924,11 +5962,17 @@ class MainWindow(QMainWindow):
     def _toggle_show_pred_conf(self, checked: bool):
         checked = bool(checked)
         self.show_pred_conf = checked
-        if hasattr(self, "cb_show_pred_conf") and self.cb_show_pred_conf.isChecked() != checked:
+        if (
+            hasattr(self, "cb_show_pred_conf")
+            and self.cb_show_pred_conf.isChecked() != checked
+        ):
             self.cb_show_pred_conf.blockSignals(True)
             self.cb_show_pred_conf.setChecked(checked)
             self.cb_show_pred_conf.blockSignals(False)
-        if hasattr(self, "act_show_pred_conf") and self.act_show_pred_conf.isChecked() != checked:
+        if (
+            hasattr(self, "act_show_pred_conf")
+            and self.act_show_pred_conf.isChecked() != checked
+        ):
             self.act_show_pred_conf.blockSignals(True)
             self.act_show_pred_conf.setChecked(checked)
             self.act_show_pred_conf.blockSignals(False)
@@ -6520,29 +6564,42 @@ class MainWindow(QMainWindow):
 # -----------------------------
 # Bootstrap / project discovery
 # -----------------------------
-def find_project(images_dir: Path, out_root: Optional[Path]) -> Optional[Path]:
+def resolve_dataset_paths(dataset_dir: Path) -> Tuple[Path, Path, Path, Path, Path]:
+    """Resolve canonical dataset structure paths.
+
+    Expected structure:
+      dataset_dir/
+        images/
+        posekit_project/
+          pose_project.json
+          labels/
     """
-    Tries to find an existing project json.
-    Search order:
-      1) out_root/pose_project.json
-      2) out_root/labels/pose_project.json
-      3) images_dir/pose_project.json
-      4) images_dir/labels/pose_project.json
+    ds = dataset_dir.expanduser().resolve()
+    images_dir = ds / DEFAULT_DATASET_IMAGES_DIR
+    out_root = ds / DEFAULT_POSEKIT_PROJECT_DIR
+    labels_dir = out_root / "labels"
+    project_path = out_root / DEFAULT_PROJECT_NAME
+    return ds, images_dir, out_root, labels_dir, project_path
+
+
+def find_project(dataset_dir: Path) -> Optional[Path]:
     """
-    candidates: List[Path] = []
-    if out_root:
-        candidates += [
-            out_root / DEFAULT_PROJECT_NAME,
-            out_root / "labels" / DEFAULT_PROJECT_NAME,
-        ]
-    candidates += [
-        images_dir / DEFAULT_PROJECT_NAME,
-        images_dir / "labels" / DEFAULT_PROJECT_NAME,
-        images_dir.parent / "labels" / DEFAULT_PROJECT_NAME,  # Also check parent/labels
+    Find an existing project for a dataset root.
+    Primary location:
+      dataset_dir/posekit_project/pose_project.json
+    Legacy fallbacks are still checked for migration.
+    """
+    dataset_dir, images_dir, out_root, _labels_dir, project_path = (
+        resolve_dataset_paths(dataset_dir)
+    )
+    candidates: List[Path] = [
+        project_path,
+        out_root / "labels" / DEFAULT_PROJECT_NAME,  # Legacy
+        dataset_dir / DEFAULT_PROJECT_NAME,  # Legacy
+        dataset_dir / "labels" / DEFAULT_PROJECT_NAME,  # Legacy
     ]
     for p in candidates:
         if p.exists():
-            # Verify this project actually matches our images_dir
             try:
                 proj_data = json.loads(p.read_text(encoding="utf-8"))
                 base = p.parent
@@ -6551,61 +6608,69 @@ def find_project(images_dir: Path, out_root: Optional[Path]) -> Optional[Path]:
                 )
                 if proj_images_dir.resolve() == images_dir.resolve():
                     return p
-                # If the project file is colocated with images_dir/labels,
-                # allow opening and repair paths for portability.
-                if p.parent in {
-                    images_dir,
-                    images_dir / "labels",
-                    images_dir.parent / "labels",
-                }:
-                    return p
             except (json.JSONDecodeError, KeyError, OSError):
                 continue
     return None
 
 
-def _repair_project_paths(proj: Project, project_path: Path, images_dir: Path) -> bool:
+def _repair_project_paths(proj: Project, dataset_dir: Path) -> bool:
     """Repair project paths when moved across machines. Returns True if changed."""
+    (
+        _dataset_dir,
+        expected_images_dir,
+        expected_out_root,
+        expected_labels_dir,
+        expected_project_path,
+    ) = resolve_dataset_paths(dataset_dir)
     changed = False
-    if proj.images_dir.resolve() != images_dir.resolve():
-        proj.images_dir = images_dir
+    if proj.images_dir.resolve() != expected_images_dir.resolve():
+        proj.images_dir = expected_images_dir
         changed = True
 
-    labels_dir = project_path.parent
-    if proj.labels_dir.resolve() != labels_dir.resolve():
-        proj.labels_dir = labels_dir
+    if proj.labels_dir.resolve() != expected_labels_dir.resolve():
+        proj.labels_dir = expected_labels_dir
         changed = True
 
-    out_root = labels_dir.parent
-    if proj.out_root.resolve() != out_root.resolve():
-        proj.out_root = out_root
+    if proj.out_root.resolve() != expected_out_root.resolve():
+        proj.out_root = expected_out_root
         changed = True
 
-    if proj.project_path.resolve() != project_path.resolve():
-        proj.project_path = project_path
+    if proj.project_path.resolve() != expected_project_path.resolve():
+        proj.project_path = expected_project_path
         changed = True
 
+    expected_out_root.mkdir(parents=True, exist_ok=True)
+    expected_labels_dir.mkdir(parents=True, exist_ok=True)
     return changed
 
 
-def load_project_with_repairs(project_path: Path, images_dir: Path) -> Project:
+def load_project_with_repairs(project_path: Path, dataset_dir: Path) -> Project:
     """load_project_with_repairs function documentation."""
     proj = Project.from_json(project_path)
-    if _repair_project_paths(proj, project_path, images_dir):
+    if _repair_project_paths(proj, dataset_dir):
         proj.project_path.write_text(
             json.dumps(proj.to_json(), indent=2), encoding="utf-8"
         )
     return proj
 
 
-def create_project_via_wizard(
-    images_dir: Path, out_root_hint: Optional[Path] = None
-) -> Optional[Project]:
+def create_project_via_wizard(dataset_dir: Path) -> Optional[Project]:
     """create_project_via_wizard function documentation."""
-    wiz = ProjectWizard(images_dir, existing=None)
-    if out_root_hint is not None:
-        wiz.out_root.setText(str(out_root_hint.resolve()))
-        wiz.labels_dir.setText(str((out_root_hint.resolve() / "labels")))
+    (
+        dataset_dir,
+        images_dir,
+        _default_out_root,
+        _default_labels_dir,
+        default_project_path,
+    ) = resolve_dataset_paths(dataset_dir)
+    if not images_dir.exists() or not images_dir.is_dir():
+        QMessageBox.warning(
+            None,
+            "Invalid Dataset",
+            f"Dataset is missing `{DEFAULT_DATASET_IMAGES_DIR}/`:\n{dataset_dir}",
+        )
+        return None
+    wiz = ProjectWizard(dataset_dir, existing=None)
 
     if wiz.exec() != QDialog.Accepted:
         return None
@@ -6619,7 +6684,7 @@ def create_project_via_wizard(
     out_root.mkdir(parents=True, exist_ok=True)
     labels_dir.mkdir(parents=True, exist_ok=True)
 
-    project_path = labels_dir / DEFAULT_PROJECT_NAME
+    project_path = default_project_path
     proj = Project(
         images_dir=images_dir,
         out_root=out_root,
@@ -6637,14 +6702,17 @@ def create_project_via_wizard(
 
 def create_empty_startup_project() -> Project:
     """Create a minimal placeholder project for startup-without-dataset mode."""
-    root = (Path.home() / ".posekit" / "startup").resolve()
-    labels_dir = root / "labels"
+    dataset_root = (Path.home() / ".posekit" / "startup").resolve()
+    images_dir = dataset_root / DEFAULT_DATASET_IMAGES_DIR
+    out_root = dataset_root / DEFAULT_POSEKIT_PROJECT_DIR
+    labels_dir = out_root / "labels"
+    images_dir.mkdir(parents=True, exist_ok=True)
     labels_dir.mkdir(parents=True, exist_ok=True)
     return Project(
-        images_dir=root,
-        out_root=root,
+        images_dir=images_dir,
+        out_root=out_root,
         labels_dir=labels_dir,
-        project_path=labels_dir / DEFAULT_PROJECT_NAME,
+        project_path=out_root / DEFAULT_PROJECT_NAME,
         class_names=["object"],
         keypoint_names=["kp1", "kp2"],
         skeleton_edges=[(0, 1)],
@@ -6656,13 +6724,10 @@ def parse_args() -> object:
     """parse_args function documentation."""
     ap = argparse.ArgumentParser(description="PoseKit labeler")
     ap.add_argument(
-        "images",
+        "dataset",
         nargs="?",
         default=None,
-        help="Folder of images (recursively scanned)",
-    )
-    ap.add_argument(
-        "--out", default=None, help="Output root (default: <images>/../pose_project)"
+        help="Dataset root folder containing images/ subdirectory",
     )
     ap.add_argument("--project", default=None, help="Explicit project json path")
     ap.add_argument(
@@ -6679,61 +6744,85 @@ def main() -> object:
     )
     args = parse_args()
     app = QApplication(sys.argv)
+    app.setApplicationName("PoseKitLabeler")
+    app.setApplicationDisplayName("PoseKit Labeler")
+    app.setOrganizationName("NeuroRishika")
+    app.setDesktopFileName("posekit-labeler")
+    try:
+        project_root = Path(__file__).resolve().parents[3]
+        icon_path = project_root / "brand" / "posekit.svg"
+        if icon_path.exists():
+            app.setWindowIcon(QIcon(str(icon_path)))
+    except Exception:
+        pass
 
     # Startup-without-input mode: open full UI first, then show chooser overlay.
-    if not args.images and not args.project:
+    if not args.dataset and not args.project:
         proj = create_empty_startup_project()
         win = MainWindow(proj, [])
+        try:
+            win.setWindowIcon(app.windowIcon())
+        except Exception:
+            pass
         win.resize(1500, 860)
         win.showMaximized()
         QTimer.singleShot(0, win.show_startup_open_overlay)
         sys.exit(app.exec())
 
-    if args.images:
-        images_dir = Path(args.images).expanduser().resolve()
-        if not images_dir.exists():
-            print(f"Images dir not found: {images_dir}", file=sys.stderr)
+    dataset_dir: Optional[Path] = None
+    if args.dataset:
+        dataset_dir = Path(args.dataset).expanduser().resolve()
+        if not dataset_dir.exists():
+            print(f"Dataset directory not found: {dataset_dir}", file=sys.stderr)
             sys.exit(2)
-    else:
-        images_dir = None
+        # Backward compatibility: allow passing .../images directly.
+        if dataset_dir.name == DEFAULT_DATASET_IMAGES_DIR:
+            dataset_dir = dataset_dir.parent
 
-    out_root = (
-        Path(args.out).expanduser().resolve()
-        if args.out
-        else (
-            (images_dir.parent / "pose_project").resolve()
-            if images_dir is not None
-            else None
+        _, images_dir, _out_root, _labels_dir, _project_path = resolve_dataset_paths(
+            dataset_dir
         )
-    )
+        if not images_dir.exists() or not images_dir.is_dir():
+            print(
+                f"Invalid dataset root (missing `{DEFAULT_DATASET_IMAGES_DIR}/`): {dataset_dir}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     proj: Optional[Project] = None
 
     if args.project:
         project_path = Path(args.project).expanduser().resolve()
-        if project_path.exists() and not args.new:
-            if images_dir is None:
-                try:
-                    data = json.loads(project_path.read_text(encoding="utf-8"))
-                    base = project_path.parent
-                    images_dir = _resolve_project_path(
-                        Path(data["images_dir"]), base, data
-                    )
-                except Exception as e:
-                    print(f"Failed to read project images_dir: {e}", file=sys.stderr)
-                    sys.exit(2)
-            proj = load_project_with_repairs(project_path, images_dir)
+        if project_path.exists():
+            try:
+                data = json.loads(project_path.read_text(encoding="utf-8"))
+                base = project_path.parent
+                project_images_dir = _resolve_project_path(
+                    Path(data["images_dir"]), base, data
+                )
+                project_dataset_dir = project_images_dir.parent.resolve()
+            except Exception as e:
+                print(f"Failed to read project images_dir: {e}", file=sys.stderr)
+                sys.exit(2)
+
+            if dataset_dir is None:
+                dataset_dir = project_dataset_dir
+            if not args.new:
+                proj = load_project_with_repairs(project_path, dataset_dir)
+        else:
+            print(f"Project file not found: {project_path}", file=sys.stderr)
+            sys.exit(2)
 
     if proj is None and not args.new:
-        found = find_project(images_dir, out_root) if images_dir is not None else None
+        found = find_project(dataset_dir) if dataset_dir is not None else None
         if found:
-            proj = load_project_with_repairs(found, images_dir)
+            proj = load_project_with_repairs(found, dataset_dir)
 
     if proj is None:
-        if images_dir is None:
-            print("No images directory available to create a new project.", file=sys.stderr)
+        if dataset_dir is None:
+            print("No dataset directory provided.", file=sys.stderr)
             sys.exit(2)
-        proj = create_project_via_wizard(images_dir, out_root_hint=out_root)
+        proj = create_project_via_wizard(dataset_dir)
         if proj is None:
             sys.exit(0)
 
@@ -6745,6 +6834,10 @@ def main() -> object:
         sys.exit(2)
 
     win = MainWindow(proj, imgs)
+    try:
+        win.setWindowIcon(app.windowIcon())
+    except Exception:
+        pass
     win.resize(1500, 860)
     win.showMaximized()
     sys.exit(app.exec())

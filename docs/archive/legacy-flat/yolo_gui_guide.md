@@ -4,7 +4,7 @@
 
 ### 1. Detection Method Selection
 
-When you open the Multi-Animal Tracker, you'll see the **Detection Method** section near the top of the control panel:
+When you open the Multi-Animal-Tracker, you'll see the **Detection Method** section near the top of the control panel:
 
 ```
 ┌─────────────────────────────────────┐

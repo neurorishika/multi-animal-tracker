@@ -144,7 +144,7 @@ setup-minimal:
 
 # Help
 help:
-	@echo "Multi-Animal Tracker - Makefile Commands"
+	@echo "Multi-Animal-Tracker - Makefile Commands"
 	@echo ""
 	@echo "Environment Setup (two-step process):"
 	@echo "  make setup           - Create base environment (then activate & make install)"

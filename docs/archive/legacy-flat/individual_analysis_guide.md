@@ -1,6 +1,6 @@
 # Individual-Level Analysis Guide
 
-This guide covers the individual-level analysis features for identity classification and pose tracking in the Multi-Animal Tracker.
+This guide covers the individual-level analysis features for identity classification and pose tracking in the Multi-Animal-Tracker.
 
 ## Overview
 

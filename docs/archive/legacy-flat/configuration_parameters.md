@@ -1,6 +1,6 @@
 # Configuration Parameters Reference
 
-This document provides a comprehensive reference of all configurable parameters in the Multi-Animal Tracker application. All parameters are saved to and loaded from JSON configuration files (e.g., `video_name_config.json`).
+This document provides a comprehensive reference of all configurable parameters in the Multi-Animal-Tracker application. All parameters are saved to and loaded from JSON configuration files (e.g., `video_name_config.json`).
 
 ---
 

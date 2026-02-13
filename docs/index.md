@@ -1,4 +1,4 @@
-# Multi-Animal Tracker Documentation
+# Multi-Animal-Tracker Documentation
 
 This documentation covers two applications in this repository:
 
