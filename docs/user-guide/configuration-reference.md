@@ -32,7 +32,7 @@ For a complete, control-by-control interface reference (question labels, value g
 | `background_learning_rate` | Adaptive background speed | `0.0001 - 0.1` |
 | `yolo_model_path` | YOLO model file path | valid model path |
 | `yolo_confidence_threshold` | Detector confidence gate | `0.01 - 1.0` |
-| `yolo_iou_threshold` | NMS overlap threshold | `0.01 - 1.0` |
+| `yolo_iou_threshold` | IOU overlap threshold | `0.01 - 1.0` |
 | `yolo_device` | Compute device selector | `auto/cpu/cuda:0/mps` |
 
 ## Tracking

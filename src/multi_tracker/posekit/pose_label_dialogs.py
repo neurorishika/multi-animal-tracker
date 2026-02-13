@@ -460,57 +460,57 @@ class DatasetSplitDialog(QDialog):
         content_layout.addWidget(self.mode_combo)
 
         # Train/Val/Test parameters
-        self.tvt_widget = QGroupBox("Train/Val/Test Parameters")
+        self.tvt_widget = QGroupBox("Train/Val/Test split")
         tvt_layout = QFormLayout(self.tvt_widget)
 
         self.train_spin = QDoubleSpinBox()
         self.train_spin.setRange(0.0, 1.0)
         self.train_spin.setSingleStep(0.05)
         self.train_spin.setValue(0.7)
-        tvt_layout.addRow("What train fraction should be used?", self.train_spin)
+        tvt_layout.addRow("Train fraction", self.train_spin)
 
         self.val_spin = QDoubleSpinBox()
         self.val_spin.setRange(0.0, 1.0)
         self.val_spin.setSingleStep(0.05)
         self.val_spin.setValue(0.15)
-        tvt_layout.addRow("What val fraction should be used?", self.val_spin)
+        tvt_layout.addRow("Validation fraction", self.val_spin)
 
         self.test_spin = QDoubleSpinBox()
         self.test_spin.setRange(0.0, 1.0)
         self.test_spin.setSingleStep(0.05)
         self.test_spin.setValue(0.15)
-        tvt_layout.addRow("What test fraction should be used?", self.test_spin)
+        tvt_layout.addRow("Test fraction", self.test_spin)
 
         content_layout.addWidget(self.tvt_widget)
 
         # K-Fold parameters
-        self.kfold_widget = QGroupBox("K-Fold Parameters")
+        self.kfold_widget = QGroupBox("K-fold split")
         kfold_layout = QFormLayout(self.kfold_widget)
 
         self.kfold_spin = QSpinBox()
         self.kfold_spin.setRange(2, 20)
         self.kfold_spin.setValue(5)
-        kfold_layout.addRow("What should number of folds be?", self.kfold_spin)
+        kfold_layout.addRow("Number of folds", self.kfold_spin)
 
         content_layout.addWidget(self.kfold_widget)
         self.kfold_widget.setVisible(False)
 
         # Common parameters
-        common_group = QGroupBox("Common Parameters")
+        common_group = QGroupBox("Common settings")
         common_layout = QFormLayout(common_group)
 
         self.min_per_cluster_spin = QSpinBox()
         self.min_per_cluster_spin.setRange(1, 100)
         self.min_per_cluster_spin.setValue(1)
-        common_layout.addRow("What should min per cluster be?", self.min_per_cluster_spin)
+        common_layout.addRow("Min frames per cluster", self.min_per_cluster_spin)
 
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 999999)
         self.seed_spin.setValue(42)
-        common_layout.addRow("What should random seed be?", self.seed_spin)
+        common_layout.addRow("Random seed", self.seed_spin)
 
         self.split_name_edit = QLineEdit("split")
-        common_layout.addRow("What should split name be?", self.split_name_edit)
+        common_layout.addRow("Split name", self.split_name_edit)
 
         content_layout.addWidget(common_group)
 
@@ -772,7 +772,7 @@ class SmartSelectDialog(QDialog):
 
         # --- scope
         scope_row = QHBoxLayout()
-        scope_row.addWidget(QLabel("What should scope be?"))
+        scope_row.addWidget(QLabel("Scope"))
         self.cb_scope = QComboBox()
         self.cb_scope.addItems(["Unlabeled only", "All frames", "Labeling set"])
         self.cb_scope.setToolTip(
@@ -830,7 +830,7 @@ class SmartSelectDialog(QDialog):
             "• MobileNet: Fastest, smallest - for resource-constrained systems\n"
             "• ConvNeXt: Modern architecture, good quality"
         )
-        emb_form.addRow("What should model be?", self.model_combo)
+        emb_form.addRow("Embedding model", self.model_combo)
 
         dev_row = QHBoxLayout()
         self.dev_combo = QComboBox()
@@ -843,7 +843,7 @@ class SmartSelectDialog(QDialog):
             "• mps: Apple Metal Performance Shaders (fast on Mac)"
         )
         dev_row.addWidget(self.dev_combo)
-        dev_row.addWidget(QLabel("What should batch be?"))
+        dev_row.addWidget(QLabel("Batch size"))
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1, 512)
         self.batch_spin.setValue(32)
@@ -862,9 +862,9 @@ class SmartSelectDialog(QDialog):
             "0 = auto-detect from crop size."
         )
         dev_row.addWidget(self.max_side_spin)
-        emb_form.addRow("What should device / batch be?", dev_row)
+        emb_form.addRow("Device and batch size", dev_row)
 
-        self.cb_use_enhance = QCheckBox("Use Enhance (CLAHE+unsharp)")
+        self.cb_use_enhance = QCheckBox("Enhance images (CLAHE + unsharp)")
         self.cb_use_enhance.setChecked(bool(self.project.enhance_enabled))
         self.cb_use_enhance.setToolTip(
             "Apply image enhancement:\n"
@@ -897,14 +897,14 @@ class SmartSelectDialog(QDialog):
 
         # --- selection params
         sel_row = QHBoxLayout()
-        sel_row.addWidget(QLabel("What should add frames be?"))
+        sel_row.addWidget(QLabel("Frames to add"))
         self.n_spin = QSpinBox()
         self.n_spin.setRange(1, 50000)
         self.n_spin.setValue(50)
         self.n_spin.setToolTip("Number of frames to select for labeling")
         sel_row.addWidget(self.n_spin)
 
-        sel_row.addWidget(QLabel("What should clusters be?"))
+        sel_row.addWidget(QLabel("Clusters"))
         self.k_spin = QSpinBox()
         self.k_spin.setRange(1, 5000)
         self.k_spin.setValue(20)
@@ -913,7 +913,7 @@ class SmartSelectDialog(QDialog):
         )
         sel_row.addWidget(self.k_spin)
 
-        sel_row.addWidget(QLabel("What should min/cluster be?"))
+        sel_row.addWidget(QLabel("Min per cluster"))
         self.min_per_spin = QSpinBox()
         self.min_per_spin.setRange(1, 1000)
         self.min_per_spin.setValue(1)
@@ -929,7 +929,7 @@ class SmartSelectDialog(QDialog):
             "• centroid_then_diverse: Pick cluster centers first, then fill with diverse samples\n"
             "• centroid: Only pick cluster centers (fastest, fewer frames)"
         )
-        sel_row.addWidget(QLabel("What should strategy be?"))
+        sel_row.addWidget(QLabel("Strategy"))
         sel_row.addWidget(self.strategy_combo, 1)
 
         layout.addLayout(sel_row)
@@ -944,7 +944,7 @@ class SmartSelectDialog(QDialog):
         self.cb_filter_duplicates = QCheckBox("Filter near-duplicates")
         opt_row.addWidget(self.cb_filter_duplicates)
 
-        opt_row.addWidget(QLabel("What should threshold be?"))
+        opt_row.addWidget(QLabel("Threshold"))
         self.dup_threshold_spin = QDoubleSpinBox()
         self.dup_threshold_spin.setRange(0.5, 1.0)
         self.dup_threshold_spin.setSingleStep(0.05)
@@ -1467,7 +1467,7 @@ class EmbeddingExplorerDialog(QDialog):
         # Top controls
         controls = QHBoxLayout()
 
-        controls.addWidget(QLabel("What should umap neighbors be?"))
+        controls.addWidget(QLabel("UMAP neighbors"))
         self.neighbors_spin = QSpinBox()
         self.neighbors_spin.setRange(5, 50)
         self.neighbors_spin.setValue(15)
@@ -1982,8 +1982,8 @@ class EvaluationDashboardDialog(QDialog):
         pred_row = QHBoxLayout()
         pred_row.addWidget(self.pred_dir_edit, 1)
         pred_row.addWidget(self.btn_pick_pred)
-        path_layout.addRow("What should gt labels be?", self.gt_dir_edit)
-        path_layout.addRow("What should pred labels be?", pred_row)
+        path_layout.addRow("Ground-truth labels folder", self.gt_dir_edit)
+        path_layout.addRow("Prediction labels folder", pred_row)
         layout.addWidget(path_group)
 
         # Metrics config
@@ -1993,12 +1993,12 @@ class EvaluationDashboardDialog(QDialog):
         self.pck_spin.setRange(0.005, 0.5)
         self.pck_spin.setSingleStep(0.005)
         self.pck_spin.setValue(0.05)
-        cfg_layout.addRow("What should pck threshold (frac of max side) be?", self.pck_spin)
+        cfg_layout.addRow("PCK threshold (fraction of max side)", self.pck_spin)
         self.oks_spin = QDoubleSpinBox()
         self.oks_spin.setRange(0.005, 0.5)
         self.oks_spin.setSingleStep(0.005)
         self.oks_spin.setValue(0.05)
-        cfg_layout.addRow("What should oks sigma (frac of max side) be?", self.oks_spin)
+        cfg_layout.addRow("OKS sigma (fraction of max side)", self.oks_spin)
         layout.addWidget(cfg_group)
 
         # Buttons
@@ -2212,7 +2212,7 @@ class ActiveLearningSamplerDialog(QDialog):
 
         # Scope
         scope_row = QHBoxLayout()
-        scope_row.addWidget(QLabel("What should scope be?"))
+        scope_row.addWidget(QLabel("Scope"))
         self.scope_combo = QComboBox()
         self.scope_combo.addItems(["Unlabeled only", "All frames", "Labeling set"])
         scope_row.addWidget(self.scope_combo, 1)
@@ -2229,7 +2229,7 @@ class ActiveLearningSamplerDialog(QDialog):
                 "Largest error vs GT",
             ]
         )
-        strat_layout.addRow("What should strategy be?", self.strategy_combo)
+        strat_layout.addRow("Strategy", self.strategy_combo)
         layout.addWidget(strat_group)
 
         # Paths
@@ -2245,22 +2245,22 @@ class ActiveLearningSamplerDialog(QDialog):
         row_a = QHBoxLayout()
         row_a.addWidget(self.pred_a_edit, 1)
         row_a.addWidget(self.btn_pick_a)
-        path_layout.addRow("What should predictions a be?", row_a)
+        path_layout.addRow("Predictions A path", row_a)
 
         row_b = QHBoxLayout()
         row_b.addWidget(self.pred_b_edit, 1)
         row_b.addWidget(self.btn_pick_b)
-        path_layout.addRow("What should predictions b be?", row_b)
+        path_layout.addRow("Predictions B path", row_b)
 
         row_gt = QHBoxLayout()
         row_gt.addWidget(self.gt_dir_edit, 1)
         row_gt.addWidget(self.btn_pick_gt)
-        path_layout.addRow("What should gt labels be?", row_gt)
+        path_layout.addRow("Ground-truth labels folder", row_gt)
         layout.addWidget(path_group)
 
         # Count
         count_row = QHBoxLayout()
-        count_row.addWidget(QLabel("What should suggest count be?"))
+        count_row.addWidget(QLabel("Suggested frame count"))
         self.count_spin = QSpinBox()
         self.count_spin.setRange(1, 5000)
         self.count_spin.setValue(50)
@@ -2874,7 +2874,7 @@ class TrainingRunnerDialog(QDialog):
 
         self.backend_combo = QComboBox()
         self.backend_combo.addItems(["YOLO Pose", "ViTPose (soon)", "SLEAP"])
-        backend_layout.addRow("What should backend be?", self.backend_combo)
+        backend_layout.addRow("Backend", self.backend_combo)
 
         content_layout.addWidget(self.backend_group)
 
@@ -2890,12 +2890,12 @@ class TrainingRunnerDialog(QDialog):
         model_row = QHBoxLayout()
         model_row.addWidget(self.model_combo, 1)
         model_row.addWidget(self.btn_model_browse)
-        cfg_layout.addRow("What should base weights be?", model_row)
+        cfg_layout.addRow("Base weights", model_row)
 
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1, 1024)
         self.batch_spin.setValue(16)
-        cfg_layout.addRow("What batch size should be used?", self.batch_spin)
+        cfg_layout.addRow("Batch size", self.batch_spin)
 
         self.cb_auto_batch = QCheckBox("Auto-reduce batch on OOM")
         self.cb_auto_batch.setChecked(True)
@@ -2904,33 +2904,33 @@ class TrainingRunnerDialog(QDialog):
         self.epochs_spin = QSpinBox()
         self.epochs_spin.setRange(1, 10000)
         self.epochs_spin.setValue(50)
-        cfg_layout.addRow("What should epochs be?", self.epochs_spin)
+        cfg_layout.addRow("Epochs", self.epochs_spin)
 
         self.patience_spin = QSpinBox()
         self.patience_spin.setRange(0, 1000)
         self.patience_spin.setValue(10)
-        cfg_layout.addRow("What should early stopping (patience) be?", self.patience_spin)
+        cfg_layout.addRow("Early stopping patience", self.patience_spin)
 
         self.imgsz_spin = QSpinBox()
         self.imgsz_spin.setRange(64, 4096)
         self.imgsz_spin.setValue(640)
-        cfg_layout.addRow("What image size should be used?", self.imgsz_spin)
+        cfg_layout.addRow("Image size", self.imgsz_spin)
 
         self.device_combo = QComboBox()
         self.device_combo.addItems(get_available_devices())
-        cfg_layout.addRow("Which device should be used?", self.device_combo)
+        cfg_layout.addRow("Device", self.device_combo)
 
         # Dataset options (moved here, YOLO-only)
         self.train_split_spin = QDoubleSpinBox()
         self.train_split_spin.setRange(0.05, 0.95)
         self.train_split_spin.setSingleStep(0.05)
         self.train_split_spin.setValue(0.8)
-        cfg_layout.addRow("What train fraction should be used?", self.train_split_spin)
+        cfg_layout.addRow("Train fraction", self.train_split_spin)
 
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(0, 999999)
         self.seed_spin.setValue(42)
-        cfg_layout.addRow("What should random seed be?", self.seed_spin)
+        cfg_layout.addRow("Random seed", self.seed_spin)
 
         self.cb_ignore_occluded = QCheckBox("Ignore occluded keypoints in training")
         self.cb_ignore_occluded.setChecked(True)
@@ -2938,7 +2938,7 @@ class TrainingRunnerDialog(QDialog):
 
         self.lbl_labeled = QLabel("")
         self._refresh_labeled_count()
-        cfg_layout.addRow("What should status be?", self.lbl_labeled)
+        cfg_layout.addRow("Labeled status", self.lbl_labeled)
 
         content_layout.addWidget(self.cfg_group)
 
@@ -3049,7 +3049,7 @@ class TrainingRunnerDialog(QDialog):
         aux_row = QHBoxLayout()
         aux_row.addWidget(self.btn_add_aux)
         aux_row.addWidget(self.btn_remove_aux)
-        data_layout.addRow("What should auxiliary datasets be?", self.aux_list)
+        data_layout.addRow("Auxiliary datasets", self.aux_list)
         data_layout.addRow("", aux_row)
 
         content_layout.addWidget(self.data_group)
@@ -3070,7 +3070,7 @@ class TrainingRunnerDialog(QDialog):
         self.btn_sleap_refresh.setToolTip("Refresh conda environments list")
         env_row.addWidget(self.combo_sleap_env, 1)
         env_row.addWidget(self.btn_sleap_refresh)
-        sleap_layout.addRow("What should conda env be?", env_row)
+        sleap_layout.addRow("Conda environment", env_row)
 
         self.lbl_sleap_env_status = QLabel("")
         self.lbl_sleap_env_status.setStyleSheet("QLabel { color: #b00; }")
@@ -3082,7 +3082,7 @@ class TrainingRunnerDialog(QDialog):
         self.btn_sleap_browse = QPushButton("Browse…")
         out_row.addWidget(self.sleap_out_edit, 1)
         out_row.addWidget(self.btn_sleap_browse)
-        sleap_layout.addRow("Where should output .slp be set?", out_row)
+        sleap_layout.addRow("Output .slp file", out_row)
 
         # Options
         self.cb_sleap_include_aux = QCheckBox("Include auxiliary datasets")
@@ -4353,9 +4353,9 @@ class EvaluationDashboardDialog(QDialog):
 
         self.backend_combo = QComboBox()
         self.backend_combo.addItems(["YOLO", "SLEAP"])
-        cfg_layout.addRow("What should backend be?", self.backend_combo)
+        cfg_layout.addRow("Backend", self.backend_combo)
 
-        self.weights_label = QLabel("What should weights be?")
+        self.weights_label = QLabel("Weights")
         self.weights_edit = QLineEdit(weights_path or "")
         self.btn_weights_browse = QPushButton("Browse…")
         weights_row = QHBoxLayout()
@@ -4373,44 +4373,44 @@ class EvaluationDashboardDialog(QDialog):
         self.btn_sleap_refresh.setToolTip("Refresh conda environments list")
         sleap_env_layout.addWidget(self.sleap_env_combo, 1)
         sleap_env_layout.addWidget(self.btn_sleap_refresh)
-        cfg_layout.addRow("What should sleap env be?", self.sleap_env_row)
+        cfg_layout.addRow("SLEAP environment", self.sleap_env_row)
         self.lbl_sleap_env_status = QLabel("")
         self.lbl_sleap_env_status.setStyleSheet("QLabel { color: #b00; }")
         cfg_layout.addRow("", self.lbl_sleap_env_status)
 
         self.device_combo = QComboBox()
         self.device_combo.addItems(get_available_devices())
-        cfg_layout.addRow("Which device should be used?", self.device_combo)
+        cfg_layout.addRow("Device", self.device_combo)
 
         self.imgsz_spin = QSpinBox()
         self.imgsz_spin.setRange(64, 4096)
         self.imgsz_spin.setValue(640)
-        cfg_layout.addRow("What image size should be used?", self.imgsz_spin)
+        cfg_layout.addRow("Image size", self.imgsz_spin)
 
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1, 256)
         self.batch_spin.setValue(16)
-        cfg_layout.addRow("What should batch be?", self.batch_spin)
+        cfg_layout.addRow("Batch size", self.batch_spin)
 
         self.conf_spin = QDoubleSpinBox()
         self.conf_spin.setRange(0.0, 1.0)
         self.conf_spin.setSingleStep(0.05)
         self.conf_spin.setValue(0.25)
-        cfg_layout.addRow("What conf threshold should be used?", self.conf_spin)
+        cfg_layout.addRow("Confidence threshold", self.conf_spin)
 
         self.pck_spin = QDoubleSpinBox()
         self.pck_spin.setRange(0.01, 0.5)
         self.pck_spin.setSingleStep(0.01)
         self.pck_spin.setValue(0.05)
-        cfg_layout.addRow("What pck threshold should be used?", self.pck_spin)
+        cfg_layout.addRow("PCK threshold", self.pck_spin)
 
         self.oks_spin = QDoubleSpinBox()
         self.oks_spin.setRange(0.01, 1.0)
         self.oks_spin.setSingleStep(0.05)
         self.oks_spin.setValue(0.1)
-        cfg_layout.addRow("What should oks sigma be?", self.oks_spin)
+        cfg_layout.addRow("OKS sigma", self.oks_spin)
 
-        self.cb_use_cache = QCheckBox("Use cached predictions (if available)")
+        self.cb_use_cache = QCheckBox("Use cached predictions when available")
         self.cb_use_cache.setChecked(True)
         cfg_layout.addRow("", self.cb_use_cache)
 
@@ -4419,7 +4419,7 @@ class EvaluationDashboardDialog(QDialog):
         out_row = QHBoxLayout()
         out_row.addWidget(self.out_dir_edit, 1)
         out_row.addWidget(self.btn_out_browse)
-        cfg_layout.addRow("Where should output dir be set?", out_row)
+        cfg_layout.addRow("Output directory", out_row)
 
         content_layout.addWidget(cfg_group)
 
@@ -5155,7 +5155,7 @@ class ActiveLearningDialog(QDialog):
                 "Largest train/val error",
             ]
         )
-        strat_layout.addRow("What should strategy be?", self.strategy_combo)
+        strat_layout.addRow("Strategy", self.strategy_combo)
         content_layout.addWidget(strat_group)
 
         # Common config
@@ -5164,38 +5164,38 @@ class ActiveLearningDialog(QDialog):
 
         self.backend_combo = QComboBox()
         self.backend_combo.addItems(["YOLO", "SLEAP"])
-        common_layout.addRow("What should backend be?", self.backend_combo)
+        common_layout.addRow("Backend", self.backend_combo)
 
         self.scope_combo = QComboBox()
         self.scope_combo.addItems(["Unlabeled only", "All frames", "Labeling set"])
-        common_layout.addRow("What should scope be?", self.scope_combo)
+        common_layout.addRow("Scope", self.scope_combo)
 
         self.n_spin = QSpinBox()
         self.n_spin.setRange(1, 5000)
         self.n_spin.setValue(50)
-        common_layout.addRow("What should suggest n frames be?", self.n_spin)
+        common_layout.addRow("Suggested frame count", self.n_spin)
 
         self.device_combo = QComboBox()
         self.device_combo.addItems(get_available_devices())
-        common_layout.addRow("Which device should be used?", self.device_combo)
+        common_layout.addRow("Device", self.device_combo)
 
         self.imgsz_spin = QSpinBox()
         self.imgsz_spin.setRange(64, 4096)
         self.imgsz_spin.setValue(640)
-        common_layout.addRow("What image size should be used?", self.imgsz_spin)
+        common_layout.addRow("Image size", self.imgsz_spin)
 
         self.conf_spin = QDoubleSpinBox()
         self.conf_spin.setRange(0.0, 1.0)
         self.conf_spin.setSingleStep(0.05)
         self.conf_spin.setValue(0.25)
-        common_layout.addRow("What conf threshold should be used?", self.conf_spin)
+        common_layout.addRow("Confidence threshold", self.conf_spin)
 
         self.batch_spin = QSpinBox()
         self.batch_spin.setRange(1, 256)
         self.batch_spin.setValue(16)
-        common_layout.addRow("What should batch be?", self.batch_spin)
+        common_layout.addRow("Batch size", self.batch_spin)
 
-        self.cb_use_cache = QCheckBox("Use cached predictions (if available)")
+        self.cb_use_cache = QCheckBox("Use cached predictions when available")
         self.cb_use_cache.setChecked(True)
         common_layout.addRow("", self.cb_use_cache)
 
@@ -5209,7 +5209,7 @@ class ActiveLearningDialog(QDialog):
         self.btn_sleap_refresh.setToolTip("Refresh conda environments list")
         sleap_env_layout.addWidget(self.sleap_env_combo, 1)
         sleap_env_layout.addWidget(self.btn_sleap_refresh)
-        common_layout.addRow("What should sleap env be?", self.sleap_env_row)
+        common_layout.addRow("SLEAP environment", self.sleap_env_row)
         self.lbl_sleap_env_status = QLabel("")
         self.lbl_sleap_env_status.setStyleSheet("QLabel { color: #b00; }")
         common_layout.addRow("", self.lbl_sleap_env_status)
@@ -5227,11 +5227,11 @@ class ActiveLearningDialog(QDialog):
         row_a = QHBoxLayout()
         row_a.addWidget(self.weights_a_edit, 1)
         row_a.addWidget(self.btn_weights_a)
-        self.weights_a_label = QLabel("What should weights be?")
+        self.weights_a_label = QLabel("Weights")
         w1_layout.addRow(self.weights_a_label, row_a)
         self.kpt_combo = QComboBox()
         self.kpt_combo.addItems(self.project.keypoint_names)
-        w1_layout.addRow("What should keypoint be?", self.kpt_combo)
+        w1_layout.addRow("Keypoint", self.kpt_combo)
 
         # Disagreement
         w2 = QWidget()
@@ -5241,7 +5241,7 @@ class ActiveLearningDialog(QDialog):
         row_b1 = QHBoxLayout()
         row_b1.addWidget(self.weights_b1_edit, 1)
         row_b1.addWidget(self.btn_weights_b1)
-        self.weights_b1_label = QLabel("What should weights a be?")
+        self.weights_b1_label = QLabel("Weights A")
         w2_layout.addRow(self.weights_b1_label, row_b1)
 
         self.weights_b2_edit = QLineEdit("")
@@ -5249,7 +5249,7 @@ class ActiveLearningDialog(QDialog):
         row_b2 = QHBoxLayout()
         row_b2.addWidget(self.weights_b2_edit, 1)
         row_b2.addWidget(self.btn_weights_b2)
-        self.weights_b2_label = QLabel("What should weights b be?")
+        self.weights_b2_label = QLabel("Weights B")
         w2_layout.addRow(self.weights_b2_label, row_b2)
 
         # Eval error
@@ -5260,7 +5260,7 @@ class ActiveLearningDialog(QDialog):
         row_c = QHBoxLayout()
         row_c.addWidget(self.eval_csv_edit, 1)
         row_c.addWidget(self.btn_eval_csv)
-        w3_layout.addRow("What should eval csv be?", row_c)
+        w3_layout.addRow("Evaluation CSV", row_c)
 
         self.stack.addWidget(w1)
         self.stack.addWidget(w2)
