@@ -2,8 +2,8 @@
 
 This documentation covers two applications in this repository:
 
-- `mat` / `multianimaltracker`: the tracking GUI for detection, tracking, merging, export, and analysis.
-- `posekit-labeler` / `pkl`: the PoseKit labeling and model-assist workflow.
+- `mat` / `multi-animal-tracker`: the tracking GUI for detection, tracking, merging, export, and analysis.
+-  `pose` / `posekit-labeler`: the PoseKit labeling and model-assist workflow.
 
 ## What You Can Find Here
 
@@ -18,12 +18,12 @@ This documentation covers two applications in this repository:
 # tracker GUI
 mat
 # or
-multianimaltracker
+multi-animal-tracker
 
 # pose labeling UI
 posekit-labeler
 # or
-pkl
+pose
 ```
 
 ## Documentation Build

@@ -68,7 +68,7 @@ Launch the tracking GUI for multi-animal video analysis:
 ```bash
 mat
 # or
-multianimaltracker
+multi-animal-tracker
 ```
 
 ### PoseKit Labeler
@@ -78,7 +78,7 @@ Launch the pose labeling interface:
 ```bash
 posekit-labeler
 # or
-pkl
+pose
 ```
 
 ## 📚 Documentation

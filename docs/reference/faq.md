@@ -2,11 +2,11 @@
 
 ## Which command should I use for tracking?
 
-Use `mat` (shortcut) or `multianimaltracker`.
+Use `mat` (shortcut) or `multi-animal-tracker`.
 
 ## Which command should I use for pose labeling?
 
-Use `posekit-labeler` (canonical) or `pkl`.
+Use `posekit-labeler` (canonical) or `pose`.
 
 ## Should I use background subtraction or YOLO OBB?
 

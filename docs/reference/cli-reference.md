@@ -23,7 +23,7 @@ Entry: `multi_tracker.posekit.pose_label:main`
 ### Commands
 
 - `posekit-labeler`
-- `pkl`
+- `pose`
 
 ### Arguments
 
@@ -37,5 +37,5 @@ Entry: `multi_tracker.posekit.pose_label:main`
 ```bash
 mat --log-level DEBUG
 posekit-labeler /path/to/images --out /path/to/project
-pkl /path/to/images --new
+pose /path/to/images --new
 ```

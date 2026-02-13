@@ -5,7 +5,7 @@
 ```bash
 posekit-labeler
 # or
-pkl
+pose
 ```
 
 ## Basic Project Setup

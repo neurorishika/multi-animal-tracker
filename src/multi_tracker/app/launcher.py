@@ -53,9 +53,9 @@ def parse_arguments() -> object:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  multianimaltracker                    # Launch GUI
-  multianimaltracker --log-level DEBUG # Launch with debug logging
-  multianimaltracker --no-file-log     # Disable file logging
+  multi-animal-tracker                    # Launch GUI
+  multi-animal-tracker --log-level DEBUG # Launch with debug logging
+  multi-animal-tracker --no-file-log     # Disable file logging
         """,
     )
 

@@ -36,11 +36,10 @@ setup(
     # Console scripts
     entry_points={
         "console_scripts": [
-            "multianimaltracker=multi_tracker.app.launcher:main",
-            "mat=multi_tracker.app.launcher:main",
             "multi-animal-tracker=multi_tracker.app.launcher:main",
+            "mat=multi_tracker.app.launcher:main",
             "posekit-labeler=multi_tracker.posekit.pose_label:main",
-            "pkl=multi_tracker.posekit.pose_label:main",
+            "pose=multi_tracker.posekit.pose_label:main",
         ],
     },
     # Metadata
