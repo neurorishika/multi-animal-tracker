@@ -674,7 +674,7 @@ def export_dataset(
                     corners_norm[:, 1] /= frame_height
 
                     # Format: class_id x1 y1 x2 y2 x3 y3 x4 y4
-                    obb_line = f"0 {corners_norm[0,0]:.6f} {corners_norm[0,1]:.6f} {corners_norm[1,0]:.6f} {corners_norm[1,1]:.6f} {corners_norm[2,0]:.6f} {corners_norm[2,1]:.6f} {corners_norm[3,0]:.6f} {corners_norm[3,1]:.6f}\n"
+                    obb_line = f"0 {corners_norm[0, 0]:.6f} {corners_norm[0, 1]:.6f} {corners_norm[1, 0]:.6f} {corners_norm[1, 1]:.6f} {corners_norm[2, 0]:.6f} {corners_norm[2, 1]:.6f} {corners_norm[3, 0]:.6f} {corners_norm[3, 1]:.6f}\n"
                     f.write(obb_line)
 
                     # Get track ID - handle different column names

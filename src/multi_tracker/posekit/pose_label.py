@@ -2005,7 +2005,7 @@ class SkeletonEditorDialog(QDialog):
         self.kpt_table.insertRow(i)
         self.kpt_table.setItem(i, 0, QTableWidgetItem(str(i)))
         self.kpt_table.item(i, 0).setFlags(Qt.ItemIsEnabled)
-        self.kpt_table.setItem(i, 1, QTableWidgetItem(f"kp{i+1}"))
+        self.kpt_table.setItem(i, 1, QTableWidgetItem(f"kp{i + 1}"))
         self.kpt_table.setCurrentCell(i, 1)
         self._update_kpt_ranges()
 
@@ -2024,7 +2024,7 @@ class SkeletonEditorDialog(QDialog):
         if r < 0:
             return
         item = self.kpt_table.item(r, 1)
-        current = item.text() if item else f"kp{r+1}"
+        current = item.text() if item else f"kp{r + 1}"
         name, ok = self._simple_text_prompt("Rename keypoint", "New name:", current)
         if ok and name.strip():
             if item is None:
@@ -2043,7 +2043,7 @@ class SkeletonEditorDialog(QDialog):
 
         name_item = self.kpt_table.takeItem(r, 1)
         if name_item is None:
-            name_item = QTableWidgetItem(f"kp{r+1}")
+            name_item = QTableWidgetItem(f"kp{r + 1}")
         self.kpt_table.removeRow(r)
         self.kpt_table.insertRow(nr)
         self.kpt_table.setItem(nr, 0, QTableWidgetItem(str(nr)))
@@ -2235,7 +2235,7 @@ class SkeletonEditorDialog(QDialog):
         out_names = []
         for i in range(self.kpt_table.rowCount()):
             item = self.kpt_table.item(i, 1)
-            out_names.append(item.text().strip() if item else f"kp{i+1}")
+            out_names.append(item.text().strip() if item else f"kp{i + 1}")
         # Return at least the defaults if empty
         if not out_names:
             out_names = ["kp1", "kp2"]

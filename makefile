@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-gpu env-create-mps env-create-rocm env-update env-update-gpu env-update-mps env-update-rocm env-remove env-remove-gpu env-remove-mps env-remove-rocm install install-gpu install-mps install-rocm setup setup-gpu setup-mps setup-rocm test verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format format-check lint lint-autofix lint-autofix-unsafe lint-moderate lint-strict lint-report commit-prep pre-commit-check help
+.PHONY: env-create env-create-gpu env-create-mps env-create-rocm env-update env-update-gpu env-update-mps env-update-rocm env-remove env-remove-gpu env-remove-mps env-remove-rocm install install-gpu install-mps install-rocm setup setup-gpu setup-mps setup-rocm test verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format format-check whitespace-fix lint lint-autofix lint-autofix-unsafe lint-moderate lint-strict lint-report commit-prep pre-commit-check help
 
 # Environment names for different platforms
 ENV_NAME = multi-animal-tracker
@@ -204,6 +204,13 @@ format:
 	isort src/ tests/ tools/
 	@echo "Code formatted with black and isort."
 
+whitespace-fix:
+	@echo "🧹 Fixing pycodestyle whitespace issues (E226/E225/E231)..."
+	uvx autopep8 --in-place --recursive --select=E226,E225,E231 src/ tests/ tools/
+	black src/ tests/ tools/
+	isort src/ tests/ tools/
+	@echo "✅ Whitespace fix complete."
+
 lint:
 	flake8 src/ tests/ tools/
 	@echo "Linting complete."
@@ -217,8 +224,7 @@ lint-autofix:
 	if [ $$RUFF_EXIT -ne 0 ]; then \
 		echo "ℹ️  Ruff auto-fixed what it could; some issues need manual edits."; \
 	fi
-	black src/ tests/ tools/
-	isort src/ tests/ tools/
+	@$(MAKE) whitespace-fix
 	@echo "✅ Auto-fix pass complete."
 	@echo "🔎 Remaining F401/F541/F841 issues:"
 	@set +e; uvx ruff check --select F401,F541,F841 src/ tests/ tools/; set -e
@@ -233,8 +239,7 @@ lint-autofix-unsafe:
 	if [ $$RUFF_EXIT -ne 0 ]; then \
 		echo "ℹ️  Unsafe autofix applied partially; manual edits are still needed."; \
 	fi
-	black src/ tests/ tools/
-	isort src/ tests/ tools/
+	@$(MAKE) whitespace-fix
 	@echo "✅ Unsafe auto-fix pass complete. Please review with 'git diff'."
 
 lint-moderate:
@@ -339,6 +344,7 @@ help:
 	@echo "  make pre-commit-update   - Update pre-commit hook versions"
 	@echo "  make format              - Format code with Black & isort"
 	@echo "  make format-check        - Check code formatting (no changes)"
+	@echo "  make whitespace-fix      - Auto-fix pycodestyle whitespace (E226/E231)"
 	@echo "  make lint                - Lint code with Flake8 (lenient, for CI)"
 	@echo "  make lint-autofix        - 🛠️ Auto-fix safe lint issues before linting"
 	@echo "  make lint-autofix-unsafe - ⚠️ Auto-fix with unsafe rules (review required)"

@@ -63,7 +63,7 @@ class BatchOptimizer:
                 self.available_memory = available_memory * mps_fraction
                 logger.info(f"MPS device detected: {self.device_name}")
                 logger.info(
-                    f"Available unified memory (conservative): {self.available_memory:.0f} MB ({mps_fraction*100:.0f}% of {available_memory:.0f} MB)"
+                    f"Available unified memory (conservative): {self.available_memory:.0f} MB ({mps_fraction * 100:.0f}% of {available_memory:.0f} MB)"
                 )
             except ImportError:
                 # Fallback if psutil not available
@@ -186,7 +186,7 @@ class BatchOptimizer:
         logger.info(f"  Device: {self.device_type.upper()} ({self.device_name})")
         logger.info(f"  Frame size: {frame_width}×{frame_height}")
         logger.info(f"  Available memory: {self.available_memory:.0f} MB")
-        logger.info(f"  Memory fraction: {memory_fraction*100:.0f}%")
+        logger.info(f"  Memory fraction: {memory_fraction * 100:.0f}%")
         logger.info(f"  Usable memory: {usable_memory:.0f} MB")
         logger.info(f"  Model overhead: {overhead_mb} MB")
         logger.info(f"  Memory per frame: {memory_per_frame_total:.1f} MB")

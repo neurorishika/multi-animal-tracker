@@ -5211,7 +5211,7 @@ class MainWindow(QMainWindow):
 
         # Update UI
         self.lbl_current_frame.setText(
-            f"Frame: {self.video_current_frame_idx}/{self.video_total_frames-1}"
+            f"Frame: {self.video_current_frame_idx}/{self.video_total_frames - 1}"
         )
         self.slider_timeline.blockSignals(True)
         self.slider_timeline.setValue(self.video_current_frame_idx)
@@ -5450,7 +5450,7 @@ class MainWindow(QMainWindow):
                 self,
                 "FPS Detected",
                 f"Frame rate detected: {detected_fps:.2f} FPS\n\n"
-                f"Time per frame: {1000.0/detected_fps:.2f} ms",
+                f"Time per frame: {1000.0 / detected_fps:.2f} ms",
             )
 
     def _auto_detect_fps(self, video_path):
@@ -5881,7 +5881,7 @@ class MainWindow(QMainWindow):
 
                         if detection_num < 5:  # Log first 5 detections for debugging
                             logger.info(
-                                f"  Detection {detection_num+1}: {area:.1f} px² (range: {min_size_px2:.1f}-{max_size_px2:.1f}) - {'PASS' if passes_filter else 'FILTERED OUT'}"
+                                f"  Detection {detection_num + 1}: {area:.1f} px² (range: {min_size_px2:.1f}-{max_size_px2:.1f}) - {'PASS' if passes_filter else 'FILTERED OUT'}"
                             )
 
                         detection_num += 1
@@ -6070,7 +6070,7 @@ class MainWindow(QMainWindow):
                         for i in range(min(5, len(sizes))):
                             passes_filter = min_size_px2 <= sizes[i] <= max_size_px2
                             logger.info(
-                                f"  Detection {i+1}: {sizes[i]:.1f} px² - {'PASS' if passes_filter else 'FILTERED OUT'}"
+                                f"  Detection {i + 1}: {sizes[i]:.1f} px² - {'PASS' if passes_filter else 'FILTERED OUT'}"
                             )
 
                 # Filter detections by ROI AFTER detection (vectorized)
@@ -8803,7 +8803,7 @@ class MainWindow(QMainWindow):
             """Generate a unique identifier for the current detection configuration."""
             # Include resize factor in cache ID since detections are scale-dependent
             resize_factor = params.get("RESIZE_FACTOR", 1.0)
-            resize_str = f"r{int(resize_factor*100)}"
+            resize_str = f"r{int(resize_factor * 100)}"
 
             def normalize_for_hash(value: object) -> object:
                 """Convert values to deterministic, JSON-safe forms for hashing."""

@@ -41,6 +41,13 @@ repos:
   - id: isort
     args: ['--profile=black', '--line-length=88']
 
+  # autopep8 - pycodestyle whitespace fixes Black does not always rewrite
+- repo: https://github.com/hhatto/autopep8
+  rev: v2.3.2
+  hooks:
+  - id: autopep8
+    args: ['--in-place', '--select=E226,E231']
+
   # General file checks
 - repo: https://github.com/pre-commit/pre-commit-hooks
   rev: v5.0.0

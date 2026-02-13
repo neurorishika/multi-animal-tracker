@@ -1046,19 +1046,19 @@ def build_yolo_pose_dataset(
                 v = int(float(parts[i + 2]))
             except Exception:
                 logger.warning(
-                    f"Invalid keypoint format in {label_path.name} at index {(i-5)//3}"
+                    f"Invalid keypoint format in {label_path.name} at index {(i - 5) // 3}"
                 )
                 return None
 
             if not np.isfinite(x) or not np.isfinite(y):
                 logger.warning(
-                    f"Non-finite keypoint in {label_path.name}: kpt={(i-5)//3}, x={x}, y={y}"
+                    f"Non-finite keypoint in {label_path.name}: kpt={(i - 5) // 3}, x={x}, y={y}"
                 )
                 return None
 
             if v not in (0, 1, 2):
                 logger.warning(
-                    f"Invalid visibility {v} in {label_path.name} at keypoint {(i-5)//3}"
+                    f"Invalid visibility {v} in {label_path.name} at keypoint {(i - 5) // 3}"
                 )
                 return None
 
@@ -1068,7 +1068,7 @@ def build_yolo_pose_dataset(
                     -EPSILON <= x <= 1.0 + EPSILON and -EPSILON <= y <= 1.0 + EPSILON
                 ):
                     logger.warning(
-                        f"Keypoint out of range in {label_path.name}: kpt={(i-5)//3}, x={x:.6f}, y={y:.6f}, vis={v}"
+                        f"Keypoint out of range in {label_path.name}: kpt={(i - 5) // 3}, x={x:.6f}, y={y:.6f}, vis={v}"
                     )
                     return None
 

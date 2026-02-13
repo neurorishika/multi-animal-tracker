@@ -1322,7 +1322,7 @@ class SmartSelectDialog(QDialog):
             )
             lines.append(f"[c{cid:03d}]{labeled_str} {self.image_paths[idx].name}")
         if len(self.selected_indices) > 300:
-            lines.append(f"... ({len(self.selected_indices)-300} more)")
+            lines.append(f"... ({len(self.selected_indices) - 300} more)")
         self.preview.setPlainText("\n".join(lines))
 
     def _open_explorer(self):
@@ -1373,7 +1373,7 @@ class SmartSelectDialog(QDialog):
                         f"[c{cid:03d}]{labeled_str} {self.image_paths[idx].name}"
                     )
                 if len(self.selected_indices) > 300:
-                    lines.append(f"... ({len(self.selected_indices)-300} more)")
+                    lines.append(f"... ({len(self.selected_indices) - 300} more)")
                 self.preview.setPlainText("\n".join(lines))
 
                 QMessageBox.information(
