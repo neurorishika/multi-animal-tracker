@@ -7985,7 +7985,7 @@ class MainWindow(QMainWindow):
 
         # Get video properties
         fps = cap.get(cv2.CAP_PROP_FPS)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
@@ -8000,10 +8000,35 @@ class MainWindow(QMainWindow):
             return
 
         logger.info(f"Writing video: {frame_width}x{frame_height} @ {fps} FPS")
-        logger.info(f"Total frames: {total_frames}")
 
         # Get visualization parameters
         params = self.get_parameters_dict()
+        start_frame = int(params.get("START_FRAME", 0) or 0)
+        end_frame = params.get("END_FRAME", None)
+        if end_frame is None:
+            end_frame = total_video_frames - 1 if total_video_frames > 0 else 0
+        end_frame = int(end_frame)
+
+        # Clamp to video bounds and export only the tracked subset.
+        if total_video_frames > 0:
+            start_frame = max(0, min(start_frame, total_video_frames - 1))
+            end_frame = max(start_frame, min(end_frame, total_video_frames - 1))
+        total_frames = max(0, end_frame - start_frame + 1)
+        logger.info(
+            f"Exporting tracked frame range: {start_frame}-{end_frame} ({total_frames} frames)"
+        )
+
+        if total_frames <= 0:
+            logger.error("Invalid frame range for video generation.")
+            cap.release()
+            out.release()
+            self._finish_tracking_session(final_csv_path=csv_path)
+            return
+
+        # Seek once to the tracked start frame so we don't write unrelated frames.
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
         colors = params.get("TRAJECTORY_COLORS", [])
         reference_body_size = params.get("REFERENCE_BODY_SIZE", 30.0)
         resize_factor = params.get("RESIZE_FACTOR", 1.0)
@@ -8047,8 +8072,9 @@ class MainWindow(QMainWindow):
                 traj_by_track[track_id] = []
             traj_by_track[track_id].append(row)
 
-        # Process video frame by frame
-        for frame_idx in range(total_frames):
+        # Process only the tracked frame range.
+        for rel_idx in range(total_frames):
+            frame_idx = start_frame + rel_idx
             ret, frame = cap.read()
             if not ret:
                 break
@@ -8167,8 +8193,8 @@ class MainWindow(QMainWindow):
             out.write(frame)
 
             # Update progress every 30 frames
-            if frame_idx % 30 == 0:
-                progress = int((frame_idx / total_frames) * 100)
+            if rel_idx % 30 == 0:
+                progress = int(((rel_idx + 1) / total_frames) * 100)
                 self.progress_bar.setValue(progress)
                 QApplication.processEvents()
 
@@ -8753,6 +8779,10 @@ class MainWindow(QMainWindow):
         # Cache is always created for forward tracking to allow reuse on reruns
         detection_cache_path = None
         params = self.get_parameters_dict()
+        logger.info(
+            f"Launching {'backward' if backward_mode else 'forward'} tracking for frame range "
+            f"{params.get('START_FRAME')}..{params.get('END_FRAME')}"
+        )
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
         advanced_config = params.get("ADVANCED_CONFIG", {})
         yolo_batching_enabled = detection_method == "yolo_obb" and advanced_config.get(
@@ -9048,14 +9078,10 @@ class MainWindow(QMainWindow):
             "ADVANCED_CONFIG": advanced_config,  # Include advanced config for batch optimization
             "DETECTION_METHOD": det_method,
             "FPS": fps,  # Acquisition frame rate
-            "START_FRAME": (
-                self.spin_start_frame.value()
-                if self.spin_start_frame.isEnabled()
-                else 0
-            ),
-            "END_FRAME": (
-                self.spin_end_frame.value() if self.spin_end_frame.isEnabled() else None
-            ),
+            # Keep selected frame range stable even when controls are disabled
+            # during tracking/backward pass.
+            "START_FRAME": self.spin_start_frame.value(),
+            "END_FRAME": self.spin_end_frame.value(),
             "YOLO_MODEL_PATH": yolo_path,
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),

@@ -502,15 +502,21 @@ class TrackingWorker(QThread):
 
                 # Check if cache fully covers requested frame range
                 if detection_cache.covers_frame_range(start_frame, end_frame):
-                    total_frames = detection_cache.get_total_frames()
+                    requested_total_frames = end_frame - start_frame + 1
+                    cache_total_frames = detection_cache.get_total_frames()
+                    # Progress and iteration should always reflect the requested subset,
+                    # not the full cached file span.
+                    total_frames = requested_total_frames
                     use_cached_detections = True
                     if self.backward_mode:
                         logger.info(
-                            f"Backward pass using cached detections ({total_frames} frames, range: {start_frame}-{end_frame})"
+                            f"Backward pass using cached detections for requested range "
+                            f"{start_frame}-{end_frame} ({requested_total_frames} frames; cache has {cache_total_frames})"
                         )
                     else:
                         logger.info(
-                            f"Reusing cached detections from previous run ({total_frames} frames, range: {start_frame}-{end_frame})"
+                            f"Reusing cached detections for requested range "
+                            f"{start_frame}-{end_frame} ({requested_total_frames} frames; cache has {cache_total_frames})"
                         )
                 else:
                     # Frame range mismatch - invalidate cache
@@ -1216,11 +1222,20 @@ class TrackingWorker(QThread):
                     # Add mode information to status text
                     if use_cached_detections:
                         if use_batched_detection:
-                            status_text = f"Tracking (batched): Frame {actual_frame_index} ({self.frame_count} / {total_frames})"
+                            status_text = (
+                                f"Tracking (batched): Frame {self.frame_count}/{total_frames} "
+                                f"(abs {actual_frame_index})"
+                            )
                         else:
-                            status_text = f"Tracking (cached): Frame {actual_frame_index} ({self.frame_count} / {total_frames})"
+                            status_text = (
+                                f"Tracking (cached): Frame {self.frame_count}/{total_frames} "
+                                f"(abs {actual_frame_index})"
+                            )
                     else:
-                        status_text = f"Processing: Frame {actual_frame_index} ({self.frame_count} / {total_frames})"
+                        status_text = (
+                            f"Processing: Frame {self.frame_count}/{total_frames} "
+                            f"(abs {actual_frame_index})"
+                        )
 
                     self.progress_signal.emit(percentage, status_text)
 
