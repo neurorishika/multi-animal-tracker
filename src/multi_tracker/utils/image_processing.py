@@ -4,7 +4,6 @@ Utility functions for image processing in multi-animal tracking.
 Optimized with Numba JIT and GPU acceleration (CuPy/PyTorch) where available.
 """
 
-from collections import deque
 from functools import lru_cache
 
 import cv2

@@ -188,7 +188,6 @@ class LabelVersioning:
 
         try:
             stem = label_path.stem
-            backup_base = self.backup_dir / stem
 
             # Find existing backups
             existing = sorted(self.backup_dir.glob(f"{stem}.v*.txt"))
@@ -556,7 +555,6 @@ def pick_frames_stratified(
     cluster_id: cluster labels for eligible_indices
     returns: selected *global* indices (from eligible_indices mapping)
     """
-    rng = np.random.default_rng(seed)
     want_n = max(0, min(int(want_n), len(eligible_indices)))
     if want_n == 0:
         return []
@@ -1621,10 +1619,9 @@ class EmbeddingWorker(QObject):
             cache.set_metadata(meta)
 
             if self.cache_ok:
-                needs_compute, cached = cache.needs_update(self.image_paths)
+                needs_compute, _ = cache.needs_update(self.image_paths)
             else:
                 needs_compute = list(range(len(self.image_paths)))
-                cached = []
 
             if not needs_compute:
                 self.status.emit("Loading cached embeddings…")

@@ -36,8 +36,6 @@ import hashlib
 import json
 import logging
 import os
-import random
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -49,45 +47,36 @@ logger = logging.getLogger("pose_label")
 
 import cv2
 import numpy as np
-import yaml
 
 # Handle both package imports and direct script execution
 try:
     from .pose_inference import PoseInferenceService
     from .pose_label_dialogs import (
         ActiveLearningDialog,
-        DatasetSplitDialog,
         EvaluationDashboardDialog,
-        FrameMetadataDialog,
         SmartSelectDialog,
         TrainingRunnerDialog,
         get_available_devices,
     )
     from .pose_label_extensions import (
         CrashSafeWriter,
-        FrameMetadata,
         IncrementalEmbeddingCache,
         Keypoint,
         LabelVersioning,
         MetadataManager,
         build_yolo_pose_dataset,
-        cluster_kfold_split,
         cluster_stratified_split,
         load_yolo_pose_label,
         migrate_labels_keypoints,
-        save_split_files,
         save_yolo_pose_label,
     )
 except ImportError:
     # Direct script execution - use absolute imports
     from pose_label_extensions import (
-        FrameMetadata,
         MetadataManager,
         CrashSafeWriter,
         LabelVersioning,
         cluster_stratified_split,
-        cluster_kfold_split,
-        save_split_files,
         IncrementalEmbeddingCache,
         Keypoint,
         load_yolo_pose_label,
@@ -98,8 +87,6 @@ except ImportError:
     from pose_inference import PoseInferenceService
 
     from pose_label_dialogs import (
-        DatasetSplitDialog,
-        FrameMetadataDialog,
         SmartSelectDialog,
         TrainingRunnerDialog,
         EvaluationDashboardDialog,
@@ -117,7 +104,6 @@ from PySide6.QtCore import (
     QThread,
     QTimer,
     Signal,
-    Slot,
 )
 from PySide6.QtGui import (
     QAction,
@@ -731,7 +717,7 @@ def compute_bbox_from_kpts(
 
     # Check for valid coordinates
     if not all(np.isfinite(x) for x in xs) or not all(np.isfinite(y) for y in ys):
-        logger.error(f"Non-finite keypoint coordinates detected")
+        logger.error("Non-finite keypoint coordinates detected")
         return None
 
     x1, x2 = min(xs), max(xs)
@@ -4543,8 +4529,6 @@ class MainWindow(QMainWindow):
 
     def _all_frames_fully_labeled(self) -> bool:
         """Check if all frames in labeling set have all keypoints labeled."""
-        num_kpts = len(self.project.keypoint_names)
-
         for idx in self.labeling_frames:
             if idx in self._frame_cache:
                 ann = self._frame_cache[idx]

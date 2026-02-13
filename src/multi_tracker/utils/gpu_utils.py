@@ -170,7 +170,7 @@ def log_device_info() -> object:
     logger.info("-" * 60)
 
     if info["cuda_available"]:
-        logger.info(f"✓ CUDA (CuPy): Available")
+        logger.info("✓ CUDA (CuPy): Available")
         if "cuda_device_count" in info:
             logger.info(f"  Devices: {info['cuda_device_count']}")
     else:
@@ -186,11 +186,11 @@ def log_device_info() -> object:
         if "torch_cuda_device_name" in info:
             logger.info(f"  Device: {info['torch_cuda_device_name']}")
         if info.get("rocm_available"):
-            logger.info(f"  Backend: ROCm (AMD GPU)")
+            logger.info("  Backend: ROCm (AMD GPU)")
             if "rocm_version" in info:
                 logger.info(f"  ROCm Version: {info['rocm_version']}")
         else:
-            logger.info(f"  Backend: CUDA (NVIDIA GPU)")
+            logger.info("  Backend: CUDA (NVIDIA GPU)")
     else:
         logger.info("✗ CUDA (PyTorch): Not available")
 

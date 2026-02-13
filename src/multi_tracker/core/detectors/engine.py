@@ -198,7 +198,7 @@ class YOLOOBBDetector:
             # Export to TensorRT
             logger.info("=" * 60)
             logger.info("BUILDING TENSORRT ENGINE - This is a one-time optimization")
-            logger.info(f"This may take 1-5 minutes. Please wait...")
+            logger.info("This may take 1-5 minutes. Please wait...")
             logger.info("The engine will be cached for future use.")
             logger.info("=" * 60)
             base_model = YOLO(model_path_str)
@@ -510,7 +510,6 @@ class YOLOOBBDetector:
 
         # Convert inputs to numpy arrays for vectorized operations
         confidences_arr = np.array(confidences)
-        sizes_arr = np.array(sizes)
 
         # Pre-compute axis-aligned bounding boxes (fully vectorized)
         corners_array = np.array(obb_corners_list)  # (n, 4, 2)

@@ -12,6 +12,16 @@ repos:
     language_version: python3.13
     args: ['--config=pyproject.toml']
 
+  # Ruff - fast lint autofix for safe mechanical issues
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.12.8
+  hooks:
+  - id: ruff
+    args:
+    - --fix
+    - --select=F401,F541,F841
+    - --exit-non-zero-on-fix
+
   # Flake8 - Python linter
 - repo: https://github.com/pycqa/flake8
   rev: 7.1.1

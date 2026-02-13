@@ -730,25 +730,23 @@ class IndividualDatasetGenerator:
             # Create README
             readme_path = self.crops_dir.parent / "README.md"
             with open(readme_path, "w") as f:
-                f.write(f"# Individual Detection Dataset\n\n")
+                f.write("# Individual Detection Dataset\n\n")
                 f.write(f"Generated from: {self.video_name}\n\n")
-                f.write(f"## Contents\n\n")
+                f.write("## Contents\n\n")
                 f.write(f"- **{self.total_saved} OBB-masked crops**\n")
-                f.write(f"- Each crop contains only the detected animal (OBB region)\n")
-                f.write(f"- Background outside OBB is masked to black\n")
-                f.write(
-                    f"- Detections are pre-filtered by ROI and size in tracking\n\n"
-                )
-                f.write(f"## File Naming\n\n")
+                f.write("- Each crop contains only the detected animal (OBB region)\n")
+                f.write("- Background outside OBB is masked to black\n")
+                f.write("- Detections are pre-filtered by ROI and size in tracking\n\n")
+                f.write("## File Naming\n\n")
                 f.write(f"- `fXXXXXX_tYYYY_dZZ.{self.output_format}`\n")
-                f.write(f"  - `fXXXXXX`: Frame number\n")
-                f.write(f"  - `tYYYY`: Track ID\n")
-                f.write(f"  - `dZZ`: Detection index within frame\n\n")
-                f.write(f"## Usage\n\n")
-                f.write(f"These crops can be used for:\n")
-                f.write(f"- Training individual identity classifiers\n")
-                f.write(f"- Pose estimation model training\n")
-                f.write(f"- Behavior classification\n")
+                f.write("  - `fXXXXXX`: Frame number\n")
+                f.write("  - `tYYYY`: Track ID\n")
+                f.write("  - `dZZ`: Detection index within frame\n\n")
+                f.write("## Usage\n\n")
+                f.write("These crops can be used for:\n")
+                f.write("- Training individual identity classifiers\n")
+                f.write("- Pose estimation model training\n")
+                f.write("- Behavior classification\n")
 
             return str(self.crops_dir.parent)
 

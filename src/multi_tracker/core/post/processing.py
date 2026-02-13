@@ -9,14 +9,10 @@ Optimizations:
 """
 
 import logging
-import warnings
-from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
 from scipy.interpolate import CubicSpline, UnivariateSpline, interp1d
-from scipy.optimize import linear_sum_assignment
-from scipy.spatial.distance import cdist
 
 # Import Numba from gpu_utils (handles availability detection).
 # Fallback keeps post-processing importable in lightweight test environments.
@@ -399,7 +395,6 @@ def process_trajectories_from_csv(csv_path: object, params: object) -> object:
     max_occlusion_gap = params.get("MAX_OCCLUSION_GAP", 30)
     max_vel_zscore = params.get("MAX_VELOCITY_ZSCORE", 0.0)  # 0.0 means disabled
     vel_zscore_window = params.get("VELOCITY_ZSCORE_WINDOW", 10)
-    vel_zscore_min_vel = params.get("VELOCITY_ZSCORE_MIN_VELOCITY", 2.0)  # pixels/frame
 
     try:
         # Read the CSV file
@@ -421,9 +416,6 @@ def process_trajectories_from_csv(csv_path: object, params: object) -> object:
     except Exception as e:
         logger.error(f"Failed to read CSV {csv_path}: {e}")
         return None, {}
-
-    # Check if confidence columns exist
-    has_confidence = "DetectionConfidence" in df.columns
 
     # Set X, Y, Theta to NaN for occluded/lost states to enable proper interpolation
     if "State" in df.columns:
@@ -1342,7 +1334,6 @@ def _merge_overlapping_agreeing_trajectories_old(
                 if j in used:
                     continue
 
-                traj_b = trajectories[j]
                 lookup_b = traj_lookups[j]
                 frames_b = traj_frame_sets[j]
                 start_b, end_b = traj_bounds[j]
@@ -1603,7 +1594,6 @@ def _merge_overlapping_agreeing_trajectories(
                 if j in used:
                     continue
 
-                traj_b = trajectories[j]
                 lookup_b = traj_lookups[j]
                 frames_b = traj_frame_sets[j]
                 start_b, end_b = traj_bounds[j]
@@ -2659,10 +2649,6 @@ def interpolate_trajectories(
             max_gap=max_gap,
         )
 
-        # Update the result dataframe - use proper indexing to avoid dtype warnings
-        # Get the indices where this trajectory exists
-        traj_indices = result_df[result_df["TrajectoryID"] == traj_id].index
-
         # Remove old rows for this trajectory
         result_df = result_df[result_df["TrajectoryID"] != traj_id]
 
@@ -2674,7 +2660,7 @@ def interpolate_trajectories(
         drop=True
     )
 
-    logger.info(f"Interpolation complete")
+    logger.info("Interpolation complete")
     return result_df
 
 
@@ -2747,7 +2733,7 @@ def _interpolate_column(frames, values, method="linear", max_gap=10):
             gap_frames = frames[start_idx + 1 : end_idx]
             try:
                 result[start_idx + 1 : end_idx] = interp_func(gap_frames)
-            except:
+            except Exception:
                 pass  # Keep NaN if interpolation fails
 
     return result

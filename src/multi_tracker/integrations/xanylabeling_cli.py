@@ -5,7 +5,6 @@ convert project labels into YOLO-OBB format from within MAT workflows.
 """
 
 import logging
-import os
 import subprocess
 from pathlib import Path
 

@@ -53,7 +53,7 @@ def _predict_kernel(X, P, F, Q_base, q_long, q_lat):
 
 
 @njit(cache=True, fastmath=True)
-def _correct_kernel(X, P, H, R, I, track_idx, measurement, max_velocity):
+def _correct_kernel(X, P, H, R, identity_mat, track_idx, measurement, max_velocity):
     """
     Corrects state using Joseph Form for stability and circular angle logic.
     """
@@ -90,7 +90,7 @@ def _correct_kernel(X, P, H, R, I, track_idx, measurement, max_velocity):
 
     # Joseph Form Covariance Update: P = (I-KH)P(I-KH)^T + KRK^T
     # Guarantees P remains positive-definite
-    IKH = I - (K @ H)
+    IKH = identity_mat - (K @ H)
     P[track_idx] = (IKH @ p @ IKH.T) + (K @ R @ K.T)
 
     return X, P
@@ -174,7 +174,7 @@ class KalmanFilterManager:
             [[1, 0, 0, 0, 0], [0, 1, 0, 0, 0], [0, 0, 1, 0, 0]], dtype=np.float32
         )
 
-        self.I = np.eye(self.dim_s, dtype=np.float32)
+        self.identity_mat = np.eye(self.dim_s, dtype=np.float32)
 
     def initialize_filter(self, track_idx: int, initial_state: np.ndarray) -> None:
         """Reset one track slot with a new initial state estimate."""
@@ -256,7 +256,7 @@ class KalmanFilterManager:
                 self.P,
                 self.H,
                 self.R,
-                self.I,
+                self.identity_mat,
                 track_idx,
                 measurement,
                 self.max_velocity,
@@ -274,7 +274,7 @@ class KalmanFilterManager:
             S = self.H @ p @ self.H.T + self.R
             K = p @ self.H.T @ np.linalg.inv(S)
             self.X[track_idx] = (x + (K @ y)).flatten()
-            IKH = self.I - (K @ self.H)
+            IKH = self.identity_mat - (K @ self.H)
             self.P[track_idx] = IKH @ p @ IKH.T + (K @ self.R @ K.T)
 
             # Apply velocity constraint after correction

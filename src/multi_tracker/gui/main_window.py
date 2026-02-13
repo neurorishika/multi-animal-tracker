@@ -13,9 +13,8 @@ import logging
 import math
 import os
 import shutil
-import sys
 import tempfile
-from collections import defaultdict, deque
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -23,19 +22,8 @@ import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import (
-    QEasingCurve,
-    QMutex,
-    QPropertyAnimation,
-    QRect,
-    QRectF,
-    Qt,
-    QThread,
-    QTimer,
-    Signal,
-    Slot,
-)
-from PySide6.QtGui import QAction, QColor, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QAbstractButton,
@@ -55,7 +43,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QProgressBar,
-    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -5864,7 +5851,7 @@ class MainWindow(QMainWindow):
                     max_size_multiplier = self.spin_max_object_size.value()
                     min_size_px2 = min_size_multiplier * scaled_body_area
                     max_size_px2 = max_size_multiplier * scaled_body_area
-                    logger.info(f"Background subtraction size filtering ENABLED:")
+                    logger.info("Background subtraction size filtering ENABLED:")
                     logger.info(f"  Resize factor: {resize_f:.2f}")
                     logger.info(f"  Reference body size: {reference_body_size:.1f} px")
                     logger.info(
@@ -6041,7 +6028,7 @@ class MainWindow(QMainWindow):
                     # Logging parameters (already calculated above when building yolo_params)
                     min_size_multiplier = self.spin_min_object_size.value()
                     max_size_multiplier = self.spin_max_object_size.value()
-                    logger.info(f"YOLO size filtering ENABLED:")
+                    logger.info("YOLO size filtering ENABLED:")
                     logger.info(f"  Resize factor: {resize_f:.2f}")
                     logger.info(f"  Reference body size: {reference_body_size:.1f} px")
                     logger.info(
@@ -6341,7 +6328,7 @@ class MainWindow(QMainWindow):
 
     def _handle_video_event(self, evt):
         """Handle video events including pinch gestures."""
-        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtCore import QEvent
 
         if evt.type() == QEvent.Gesture:
             if not self._video_interactions_enabled:
@@ -6365,7 +6352,6 @@ class MainWindow(QMainWindow):
 
         gesture = evt.gesture(Qt.PinchGesture)
         if gesture:
-            from PySide6.QtWidgets import QGesture
 
             if gesture.state() == Qt.GestureUpdated:
                 # Get scale factor
@@ -6846,7 +6832,6 @@ class MainWindow(QMainWindow):
 
     def on_detection_method_changed(self: object, index: object) -> object:
         """on_detection_method_changed method documentation."""
-        is_yolo = index == 1
         # In new UI, this is handled by StackedWidget, but we keep this for compatibility logic
         pass
 
@@ -7842,9 +7827,9 @@ class MainWindow(QMainWindow):
 
     def merge_and_save_trajectories(self: object) -> object:
         """merge_and_save_trajectories method documentation."""
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
         logger.info("Starting trajectory merging process...")
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
 
         forward_trajs = getattr(self, "forward_processed_trajs", None)
         backward_trajs = getattr(self, "backward_processed_trajs", None)
@@ -8059,7 +8044,6 @@ class MainWindow(QMainWindow):
 
         colors = params.get("TRAJECTORY_COLORS", [])
         reference_body_size = params.get("REFERENCE_BODY_SIZE", 30.0)
-        resize_factor = params.get("RESIZE_FACTOR", 1.0)
 
         # Get video visualization settings
         show_labels = self.check_show_labels.isChecked()
@@ -8663,9 +8647,9 @@ class MainWindow(QMainWindow):
 
     def start_backward_tracking(self: object) -> object:
         """start_backward_tracking method documentation."""
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
         logger.info("Starting backward tracking pass (using cached detections)...")
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
 
         video_fp = self.file_line.text()
         if not video_fp:
@@ -8812,10 +8796,6 @@ class MainWindow(QMainWindow):
             f"{params.get('START_FRAME')}..{params.get('END_FRAME')}"
         )
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
-        advanced_config = params.get("ADVANCED_CONFIG", {})
-        yolo_batching_enabled = detection_method == "yolo_obb" and advanced_config.get(
-            "enable_yolo_batching", True
-        )
         use_cached_detections = self.chk_use_cached_detections.isChecked()
 
         # Generate model-specific cache name
@@ -9054,7 +9034,7 @@ class MainWindow(QMainWindow):
                 yolo_cls = [
                     int(x.strip()) for x in self.line_yolo_classes.text().split(",")
                 ]
-            except:
+            except ValueError:
                 pass
 
         # Calculate actual pixel values from body-size multipliers
@@ -10289,7 +10269,7 @@ class MainWindow(QMainWindow):
                 try:
                     if "tmp_path" in locals() and os.path.exists(tmp_path):
                         os.remove(tmp_path)
-                except:
+                except OSError:
                     pass
                 return False
         else:
@@ -10306,9 +10286,9 @@ class MainWindow(QMainWindow):
 
         # Only set up logging if not already set up
         if self.session_log_handler is not None:
-            logger.info(f"=" * 80)
-            logger.info(f"Session log already active, continuing...")
-            logger.info(f"=" * 80)
+            logger.info("=" * 80)
+            logger.info("Session log already active, continuing...")
+            logger.info("=" * 80)
             return
 
         # Create log file next to the video
@@ -10330,11 +10310,11 @@ class MainWindow(QMainWindow):
         root_logger = logging.getLogger()
         root_logger.addHandler(self.session_log_handler)
 
-        logger.info(f"=" * 80)
-        logger.info(f"TRACKING SESSION STARTED")
+        logger.info("=" * 80)
+        logger.info("TRACKING SESSION STARTED")
         logger.info(f"Session log: {log_path}")
         logger.info(f"Video: {video_path}")
-        logger.info(f"=" * 80)
+        logger.info("=" * 80)
 
     def _cleanup_session_logging(self):
         """Remove session log handler from root logger."""
@@ -10630,7 +10610,7 @@ class MainWindow(QMainWindow):
                 self.preset_description_label.setVisible(True)
             else:
                 self.preset_description_label.setVisible(False)
-        except:
+        except (OSError, json.JSONDecodeError):
             self.preset_description_label.setVisible(False)
 
     def _populate_preset_combo(self):
@@ -11010,7 +10990,7 @@ class MainWindow(QMainWindow):
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Information)
             msg.setWindowTitle("ROI Optimization Opportunity")
-            msg.setText(f"⚡ Performance Optimization Available")
+            msg.setText("⚡ Performance Optimization Available")
             msg.setInformativeText(
                 f"Your ROI covers only {coverage:.1f}% of the video frame.\\n\\n"
                 f"Cropping the video to the ROI bounding box could provide\\n"

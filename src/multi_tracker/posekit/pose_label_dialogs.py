@@ -22,7 +22,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import yaml
-from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -87,7 +87,6 @@ try:
         EmbeddingWorker,
         MetadataManager,
         build_coco_keypoints_dataset,
-        build_ultralytics_flat_dataset,
         build_yolo_pose_dataset,
         cluster_embeddings_cosine,
         cluster_kfold_split,
@@ -102,7 +101,6 @@ except ImportError:
         EmbeddingWorker,
         MetadataManager,
         build_coco_keypoints_dataset,
-        build_ultralytics_flat_dataset,
         build_yolo_pose_dataset,
         cluster_embeddings_cosine,
         cluster_kfold_split,
@@ -396,12 +394,14 @@ def load_yolo_dataset_items(
         if not p.is_absolute():
             p = (base / p).resolve()
         if p.is_file() and p.suffix.lower() in [".txt"]:
-            lines = [l.strip() for l in p.read_text(encoding="utf-8").splitlines()]
+            lines = [
+                line.strip() for line in p.read_text(encoding="utf-8").splitlines()
+            ]
             out = []
-            for l in lines:
-                if not l:
+            for line in lines:
+                if not line:
                     continue
-                lp = Path(l)
+                lp = Path(line)
                 if not lp.is_absolute():
                     lp = (base / lp).resolve()
                 out.append(lp)
@@ -1605,7 +1605,7 @@ class EmbeddingExplorerDialog(QDialog):
             import tempfile
             from io import BytesIO
 
-            from bokeh.models import BoxSelectTool, ColumnDataSource, HoverTool, TapTool
+            from bokeh.models import ColumnDataSource, HoverTool
             from bokeh.palettes import Category20_20, Turbo256
             from bokeh.plotting import figure, output_file, save
             from PIL import Image
@@ -2793,7 +2793,6 @@ class SleapExportWorker(QObject):
                 f"Export dataset ready: {info.get('labeled_count', 0)} frames."
             )
 
-            dataset_dir = info["dataset_dir"]
             coco_path = info["coco_path"]
 
             # Convert via sleap-io (ensures labels are preserved).
@@ -4089,7 +4088,7 @@ class EvaluationWorker(QObject):
         try:
             if self.backend != "sleap":
                 try:
-                    from ultralytics import YOLO
+                    pass
                 except Exception as e:
                     self.failed.emit(
                         f"Ultralytics not available. Install with: pip install ultralytics\n{e}"

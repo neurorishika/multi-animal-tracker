@@ -7,11 +7,8 @@ import gc
 import logging
 import math
 import os
-import random
-import sys
 import time
 from collections import deque
-from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -700,8 +697,6 @@ class TrackingWorker(QThread):
             # Prepare ROI masks once for both detection and visualization
             ROI_mask = params.get("ROI_MASK", None)
             ROI_mask_current = None
-            ROI_mask_3ch = None
-            mask_inv_3ch = None
 
             if ROI_mask is not None and frame is not None:
                 ROI_mask_current = (
@@ -722,9 +717,7 @@ class TrackingWorker(QThread):
                     else:
                         roi_fill_color = np.array([0, 0, 0], dtype=np.uint8)
 
-                # Pre-compute 3-channel masks for reuse
-                ROI_mask_3ch = cv2.cvtColor(ROI_mask_current, cv2.COLOR_GRAY2BGR)
-                mask_inv_3ch = cv2.bitwise_not(ROI_mask_3ch)
+                # ROI_mask_current is used directly below; no 3-channel mask needed here.
 
             detect_start = time.time()
 

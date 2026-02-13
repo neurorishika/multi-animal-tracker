@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-gpu env-create-mps env-create-rocm env-update env-update-gpu env-update-mps env-update-rocm env-remove env-remove-gpu env-remove-mps env-remove-rocm install install-gpu install-mps install-rocm setup setup-gpu setup-mps setup-rocm test verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format format-check lint commit-prep pre-commit-check help
+.PHONY: env-create env-create-gpu env-create-mps env-create-rocm env-update env-update-gpu env-update-mps env-update-rocm env-remove env-remove-gpu env-remove-mps env-remove-rocm install install-gpu install-mps install-rocm setup setup-gpu setup-mps setup-rocm test verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format format-check lint lint-autofix lint-autofix-unsafe lint-moderate lint-strict lint-report commit-prep pre-commit-check help
 
 # Environment names for different platforms
 ENV_NAME = multi-animal-tracker
@@ -208,6 +208,65 @@ lint:
 	flake8 src/ tests/ tools/
 	@echo "Linting complete."
 
+lint-autofix:
+	@echo "🛠️  Auto-fixing safe lint issues (imports, unused vars, spacing, simple strings)..."
+	@set +e; \
+	uvx ruff check --fix --select F401,F541,F841 src/ tests/ tools/; \
+	RUFF_EXIT=$$?; \
+	set -e; \
+	if [ $$RUFF_EXIT -ne 0 ]; then \
+		echo "ℹ️  Ruff auto-fixed what it could; some issues need manual edits."; \
+	fi
+	black src/ tests/ tools/
+	isort src/ tests/ tools/
+	@echo "✅ Auto-fix pass complete."
+	@echo "🔎 Remaining F401/F541/F841 issues:"
+	@set +e; uvx ruff check --select F401,F541,F841 src/ tests/ tools/; set -e
+	@echo "➡️  Next: run 'make lint-moderate' for the full gate."
+
+lint-autofix-unsafe:
+	@echo "⚠️  Running unsafe autofixes (review changes carefully)..."
+	@set +e; \
+	uvx ruff check --fix --unsafe-fixes --select F401,F541,F841 src/ tests/ tools/; \
+	RUFF_EXIT=$$?; \
+	set -e; \
+	if [ $$RUFF_EXIT -ne 0 ]; then \
+		echo "ℹ️  Unsafe autofix applied partially; manual edits are still needed."; \
+	fi
+	black src/ tests/ tools/
+	isort src/ tests/ tools/
+	@echo "✅ Unsafe auto-fix pass complete. Please review with 'git diff'."
+
+lint-moderate:
+	@echo "🔍 Running moderate linting (catches serious issues)..."
+	flake8 --config=.flake8.moderate src/ tests/ tools/
+	@echo "✅ Moderate linting complete."
+
+lint-strict:
+	@echo "🔍 Running strict linting (all issues)..."
+	flake8 --config=.flake8.strict src/ tests/ tools/
+	@echo "✅ Strict linting complete."
+
+lint-report:
+	@echo "📊 Generating linting report (all strictness levels)..."
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "📋 CURRENT (LENIENT) - Pre-commit config"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@flake8 src/ tests/ tools/ | wc -l | xargs -I {} echo "{} issues"
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "📋 MODERATE - Reasonable improvements"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@flake8 --config=.flake8.moderate src/ tests/ tools/ | wc -l | xargs -I {} echo "{} issues"
+	@echo ""
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@echo "📋 STRICT - Best practices target"
+	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+	@flake8 --config=.flake8.strict src/ tests/ tools/ | wc -l | xargs -I {} echo "{} issues"
+	@echo ""
+	@echo "💡 Tip: Use 'make lint-moderate > issues.txt' to save for fixing"
+
 format-check:
 	black --check src/ tests/ tools/
 	isort --check-only src/ tests/ tools/
@@ -280,7 +339,12 @@ help:
 	@echo "  make pre-commit-update   - Update pre-commit hook versions"
 	@echo "  make format              - Format code with Black & isort"
 	@echo "  make format-check        - Check code formatting (no changes)"
-	@echo "  make lint                - Lint code with Flake8"
+	@echo "  make lint                - Lint code with Flake8 (lenient, for CI)"
+	@echo "  make lint-autofix        - 🛠️ Auto-fix safe lint issues before linting"
+	@echo "  make lint-autofix-unsafe - ⚠️ Auto-fix with unsafe rules (review required)"
+	@echo "  make lint-moderate       - 🔍 Moderate linting (serious issues only)"
+	@echo "  make lint-strict         - 🎯 Strict linting (all quality issues)"
+	@echo "  make lint-report         - 📊 Compare all three strictness levels"
 	@echo "  make pre-commit-check    - Run all checks (format + lint)"
 	@echo ""
 	@echo "📚 DOCUMENTATION:"

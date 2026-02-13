@@ -26,7 +26,13 @@ try:
     from .core.tracking.worker import TrackingWorker
     from .gui.main_window import MainWindow
 
-    __all__ = ["main", "TrackingWorker", "MainWindow"]
+    __all__ = [
+        "main",
+        "parse_arguments",
+        "setup_logging",
+        "TrackingWorker",
+        "MainWindow",
+    ]
 except ImportError:
     # During development, some modules might not be available yet
-    __all__ = ["main"]
+    __all__ = ["main", "parse_arguments", "setup_logging"]

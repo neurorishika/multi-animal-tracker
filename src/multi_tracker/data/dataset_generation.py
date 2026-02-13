@@ -5,8 +5,6 @@ Identifies challenging frames and exports them for annotation.
 
 import json
 import logging
-import os
-import zipfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -266,7 +264,6 @@ def export_dataset(
     Returns:
         zip_path: Path to created zip file
     """
-    import shutil
     from datetime import datetime
 
     import pandas as pd
@@ -643,12 +640,6 @@ def export_dataset(
                             f"Frame {frame_id}: Using reference size approximation"
                         )
 
-                    # Normalize to [0, 1]
-                    cx_norm = cx / frame_width
-                    cy_norm = cy / frame_height
-                    w_norm = w / frame_width
-                    h_norm = h / frame_height
-
                     # YOLO OBB format for x-AnyLabeling: class_id x1 y1 x2 y2 x3 y3 x4 y4
                     # Calculate 4 corner points from center, size, and rotation
                     cos_theta = np.cos(theta)
@@ -734,9 +725,9 @@ def export_dataset(
         f.write("This dataset was automatically generated for active learning.\n\n")
         f.write("## Contents\n\n")
         f.write(f"- **images/**: {exported_count} exported frames\n")
-        f.write(f"- **labels/**: YOLO OBB format annotations (initial, needs review)\n")
+        f.write("- **labels/**: YOLO OBB format annotations (initial, needs review)\n")
         f.write(f"- **classes.txt**: Object class definition ({class_name})\n")
-        f.write(f"- **metadata.json**: Detailed frame and annotation metadata\n\n")
+        f.write("- **metadata.json**: Detailed frame and annotation metadata\n\n")
         f.write("## Next Steps\n\n")
         f.write("1. **Review and correct annotations** using x-AnyLabeling:\n")
         f.write("   - Use the 'Open in X-AnyLabeling' button in the tracker GUI\n")

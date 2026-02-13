@@ -44,7 +44,7 @@ from ...data.dataset_merge import (
     update_dataset_class_name,
     validate_labels,
 )
-from ...integrations.xanylabeling_cli import HARD_CODED_CMD, convert_project
+from ...integrations.xanylabeling_cli import convert_project
 from ...utils.gpu_utils import get_device_info
 
 logger = logging.getLogger(__name__)

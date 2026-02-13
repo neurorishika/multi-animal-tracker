@@ -7,7 +7,7 @@ Run this before training to catch problematic labels.
 import argparse
 import logging
 from pathlib import Path
-from typing import List, Set, Tuple
+from typing import List, Tuple
 
 import numpy as np
 
@@ -153,7 +153,7 @@ def validate_dataset(
 
             if fix_issues:
                 # TODO: Implement automatic fixes for common issues
-                logger.info(f"  Auto-fix not yet implemented")
+                logger.info("  Auto-fix not yet implemented")
 
     return valid_count, invalid_count, fixed_count
 
