@@ -1,197 +1,59 @@
-# 🐾 Multi-Animal-Tracker
+# Multi-Animal-Tracker
 
 <div align="center">
-
-**High-performance multi-animal tracking and pose-labeling toolkit**
-
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey.svg)](https://github.com/neurorishika/multi-animal-tracker)
-
-[Getting Started](#-quick-start) • [Documentation](#-documentation) • [Features](#-features) • [Contributing](#-contributing)
-
+  <img src="brand/banner.png" alt="Multi-Animal-Tracker Banner" width="100%" />
 </div>
 
----
+<p align="center"><strong>The primary documentation lives here:</strong><br><a href="https://neurorishika.github.io/multi-animal-tracker/">https://neurorishika.github.io/multi-animal-tracker/</a></p>
 
-## 📋 Table of Contents
+## Start Here
 
-- [Features](#-features)
-- [Quick Start](#-quick-start)
-- [Applications](#-applications)
-- [Documentation](#-documentation)
-- [Development](#-development)
-- [Project Structure](#-project-structure)
-- [Contributing](#-contributing)
-- [License](#-license)
+- User docs: <https://neurorishika.github.io/multi-animal-tracker/>
+- Getting Started: <https://neurorishika.github.io/multi-animal-tracker/getting-started/installation/>
+- User Guide: <https://neurorishika.github.io/multi-animal-tracker/user-guide/overview/>
+- Developer Guide: <https://neurorishika.github.io/multi-animal-tracker/developer-guide/architecture/>
+- API + CLI Reference: <https://neurorishika.github.io/multi-animal-tracker/reference/api-index/>
 
-## ✨ Features
-
-- 🎯 **Multi-Animal Tracking** - Track multiple animals simultaneously with high accuracy
-- 🦴 **Pose Estimation** - Advanced pose-labeling with keypoint detection
-- 🖥️ **Dual GUI System** - Dedicated interfaces for tracking and pose labeling
-- 🚀 **High Performance** - Optimized for speed with GPU acceleration support
-- 📊 **Export Pipeline** - Comprehensive data export and analysis tools
-- 🔧 **Extensible** - Modular architecture for easy customization
-- 📚 **Well-Documented** - Complete documentation with MkDocs Material
-
-## 🚀 Quick Start
-
-### Installation
+## Install (Quick)
 
 ```bash
-# Create conda environment
 mamba env create -f environment.yml
-
-# Activate environment
-conda activate multi-animal-tracker-base
-
-# Install dependencies
-uv pip install -v -r requirements.txt
+conda activate multi-animal-tracker-mps  # or your platform env
+uv pip install -r requirements.txt
 ```
 
-> **Note:** For platform-specific installations (CUDA, ROCm, MPS), see [ENVIRONMENTS.md](ENVIRONMENTS.md)
+Platform-specific environments are documented in `ENVIRONMENTS.md` and in the online docs.
 
-### Quick Setup
-
-```bash
-make setup
-make install
-```
-
-## 🎮 Applications
-
-### Multi-Animal-Tracker (MAT)
-
-Launch the tracking GUI for multi-animal video analysis:
+## Launch
 
 ```bash
+# Multi-Animal-Tracker GUI
 mat
 # or
-multi-animal-tracker
-```
+multianimaltracker
 
-### PoseKit Labeler
-
-Launch the pose labeling interface:
-
-```bash
+# PoseKit labeler
 posekit-labeler
 # or
-pose
+pkl
 ```
 
-## 📚 Documentation
-
-This project uses **MkDocs Material** for comprehensive documentation.
-
-### Browse Documentation
-
-- 🏠 [Home](docs/index.md)
-- 🎓 [Getting Started](docs/getting-started/)
-- 📖 [User Guide](docs/user-guide/)
-- 🛠️ [Developer Guide](docs/developer-guide/)
-- 📘 [API & CLI Reference](docs/reference/)
-
-### Build Documentation Locally
+## Common Commands
 
 ```bash
-# Install documentation dependencies
+# Docs
 make docs-install
-
-# Serve documentation locally (with live reload)
 make docs-serve
-
-# Build static documentation
 make docs-build
+
+# Lint / format
+make lint-autofix
+make lint-moderate
+make lint-strict
 ```
 
-### Documentation Quality
+## Project Links
 
-Run quality checks and audits:
-
-```bash
-# Quality audit
-make docs-quality
-
-# Comprehensive check
-make docs-check
-```
-
-## 🛠️ Development
-
-### Common Commands
-
-```bash
-# Setup and installation
-make setup          # Install runtime dependencies
-make install        # Install package
-
-# Documentation
-make docs-install   # Install documentation tools
-make docs-quality   # Run documentation quality audit
-make docs-check     # Run comprehensive documentation checks
-
-# Cleanup
-make clean          # Clean build artifacts
-```
-
-### GPU Backend Support
-
-Multiple GPU backends are supported:
-
-- **CUDA** - NVIDIA GPUs ([environment-cuda.yml](environment-cuda.yml))
-- **ROCm** - AMD GPUs ([environment-rocm.yml](environment-rocm.yml), [ROCM_SETUP.md](ROCM_SETUP.md))
-- **MPS** - Apple Silicon ([environment-mps.yml](environment-mps.yml))
-
-See [docs/developer-guide/gpu-backends.md](docs/developer-guide/gpu-backends.md) for details.
-
-## 📁 Project Structure
-
-```
-multi-animal-tracker/
-├── src/multi_tracker/
-│   ├── app/              # App bootstrap & launcher
-│   ├── core/             # Tracking & detection core
-│   ├── data/             # Data & export pipeline
-│   ├── gui/              # Multi-Animal-Tracker GUI
-│   ├── posekit/          # Pose labeler app
-│   └── utils/            # Shared utilities
-├── docs/                 # MkDocs documentation
-├── configs/              # Configuration files
-├── models/               # Pre-trained models
-├── training/             # Training scripts & data
-└── tools/                # Development tools
-```
-
-### Key Entry Points
-
-| Component | Path |
-|-----------|------|
-| App Bootstrap | `src/multi_tracker/app/launcher.py` |
-| Tracking Core | `src/multi_tracker/core/` |
-| Data Pipeline | `src/multi_tracker/data/` |
-| Tracker GUI | `src/multi_tracker/gui/` |
-| Pose Labeler | `src/multi_tracker/posekit/` |
-| Utilities | `src/multi_tracker/utils/` |
-
-## 🤝 Contributing
-
-Contributions are welcome! Please see our [Developer Guide](docs/developer-guide/contributing.md) for details on:
-
-- Code architecture
-- Development workflow
-- Testing guidelines
-- Documentation standards
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-<div align="center">
-
-**Made with ❤️ by [Rishika Mohanta](https://github.com/neurorishika)**
-
-</div>
+- Docs site: <https://neurorishika.github.io/multi-animal-tracker/>
+- Source: <https://github.com/neurorishika/multi-animal-tracker>
+- License: `LICENSE`

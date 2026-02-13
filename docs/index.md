@@ -1,43 +1,86 @@
 # Multi-Animal-Tracker Documentation
 
-This documentation covers two applications in this repository:
+![Multi-Animal-Tracker Banner](assets/banner.png)
 
-- `mat` / `multi-animal-tracker`: the tracking GUI for detection, tracking, merging, export, and analysis.
--  `pose` / `posekit-labeler`: the PoseKit labeling and model-assist workflow.
+Welcome to the central documentation for:
 
-## What You Can Find Here
+- `multianimaltracker`/ `mat` (tracking GUI)
+- `posekit-labeler` / `pose` (pose labeling GUI)
 
-- **Getting Started**: installation and first run paths for each app.
-- **User Guide**: workflow-level explanations of features, parameters, outputs, and failure modes.
-- **Developer Guide**: system architecture, module boundaries, extension points, and performance notes.
-- **Reference**: API docs (mkdocstrings), CLI flags, changelog, and FAQ.
+!!! info "Use This Site as the Source of Truth"
+    This docs site is the canonical guide for setup, workflows, feature behavior, and reference material.
 
-## Canonical Commands
+## Quick Navigation
+
+<div class="grid cards" markdown>
+
+- :material-rocket-launch: **Getting Started**
+
+    ---
+
+    Installation, first launch, and platform setup.
+
+    [Open Getting Started](getting-started/installation.md)
+
+- :material-play-circle: **User Guide**
+
+    ---
+
+    End-to-end workflow for tracking, post-processing, datasets, and identity analysis.
+
+    [Open User Guide](user-guide/overview.md)
+
+- :material-source-branch: **Developer Guide**
+
+    ---
+
+    Architecture, module map, data flow, extension points, and performance notes.
+
+    [Open Developer Guide](developer-guide/architecture.md)
+
+- :material-book-open-page-variant: **Reference**
+
+    ---
+
+    API docs, CLI docs, UI component references, FAQ, and changelog.
+
+    [Open Reference](reference/api-index.md)
+
+</div>
+
+## Launch Commands
 
 ```bash
-# tracker GUI
+# Tracking GUI
 mat
 # or
-multi-animal-tracker
+multianimaltracker
 
-# pose labeling UI
+# Pose labeling GUI
 posekit-labeler
 # or
-pose
+pkl
 ```
 
-## Documentation Build
+## Local Docs Workflow
 
-```bash
-make docs-install
-make docs-serve
-# or strict static build
-make docs-build
-```
+=== "Serve locally"
 
-## Documentation Scope
+    ```bash
+    make docs-install
+    make docs-serve
+    ```
 
-This site documents the current package layout:
+=== "Strict build"
+
+    ```bash
+    make docs-build
+    make docs-check
+    ```
+
+## Scope
+
+This documentation maps to the current package layout:
 
 - `multi_tracker.app`
 - `multi_tracker.core`
@@ -46,4 +89,4 @@ This site documents the current package layout:
 - `multi_tracker.posekit`
 - `multi_tracker.utils`
 
-Legacy notes from the previous docs layout are archived under `docs/archive/legacy-flat/`.
+Legacy flat docs are archived under `docs/archive/legacy-flat/`.
