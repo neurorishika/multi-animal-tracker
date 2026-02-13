@@ -35,7 +35,7 @@ multianimaltracker
 # PoseKit labeler
 posekit-labeler
 # or
-pkl
+pose
 ```
 
 ## Common Commands
