@@ -287,26 +287,35 @@ class TrackingWorker(QThread):
                 pass  # Could add finer-grained progress here if needed
 
             batch_results = detector.detect_objects_batched(
-                batch_frames, batch_start_idx, progress_cb
+                batch_frames,
+                batch_start_idx,
+                progress_cb,
+                return_raw=True,
             )
 
             # Cache each frame's detections
-            for local_idx, (meas, sizes, shapes, confidences, obb_corners) in enumerate(
-                batch_results
-            ):
+            for local_idx, (
+                raw_meas,
+                raw_sizes,
+                raw_shapes,
+                raw_confidences,
+                raw_obb_corners,
+            ) in enumerate(batch_results):
                 relative_idx = batch_start_idx + local_idx
                 actual_frame_idx = (
                     start_frame + relative_idx
                 )  # Convert to actual video frame
                 # Calculate DetectionID for each detection using actual frame index
-                detection_ids = [actual_frame_idx * 10000 + i for i in range(len(meas))]
+                detection_ids = [
+                    actual_frame_idx * 10000 + i for i in range(len(raw_meas))
+                ]
                 detection_cache.add_frame(
                     actual_frame_idx,  # Use actual frame index for cache key
-                    meas,
-                    sizes,
-                    shapes,
-                    confidences,
-                    obb_corners,
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
                     detection_ids,
                 )
 
@@ -505,41 +514,65 @@ class TrackingWorker(QThread):
             if should_load_cache and cache_exists:
                 # Load cached detections and validate frame range
                 detection_cache = DetectionCache(self.detection_cache_path, mode="r")
-                cached_start, cached_end = detection_cache.get_frame_range()
-
-                # Check if cache fully covers requested frame range
-                if detection_cache.covers_frame_range(start_frame, end_frame):
-                    requested_total_frames = end_frame - start_frame + 1
-                    cache_total_frames = detection_cache.get_total_frames()
-                    # Progress and iteration should always reflect the requested subset,
-                    # not the full cached file span.
-                    total_frames = requested_total_frames
-                    use_cached_detections = True
-                    if self.backward_mode:
-                        logger.info(
-                            f"Backward pass using cached detections for requested range "
-                            f"{start_frame}-{end_frame} ({requested_total_frames} frames; cache has {cache_total_frames})"
-                        )
-                    else:
-                        logger.info(
-                            f"Reusing cached detections for requested range "
-                            f"{start_frame}-{end_frame} ({requested_total_frames} frames; cache has {cache_total_frames})"
-                        )
-                else:
-                    # Frame range mismatch - invalidate cache
-                    missing = detection_cache.get_missing_frames(start_frame, end_frame)
-                    if missing:
-                        logger.warning(
-                            f"Cache missing {len(missing)}+ frame(s) in requested range (sample: {missing[:5]})"
-                        )
+                if not detection_cache.is_compatible():
                     logger.warning(
-                        f"Cache frame range mismatch! Cache: {cached_start}-{cached_end}, Requested: {start_frame}-{end_frame}"
+                        "Detection cache format is incompatible; deleting and regenerating."
                     )
-                    logger.warning("Deleting old cache and regenerating detections...")
                     detection_cache.close()
                     detection_cache = None
                     os.remove(self.detection_cache_path)
                     cache_exists = False
+                else:
+                    cached_start, cached_end = detection_cache.get_frame_range()
+
+                    # Check if cache fully covers requested frame range
+                    if detection_cache.covers_frame_range(start_frame, end_frame):
+                        requested_total_frames = end_frame - start_frame + 1
+                        cache_total_frames = detection_cache.get_total_frames()
+                        # Progress and iteration should always reflect the requested subset,
+                        # not the full cached file span.
+                        total_frames = requested_total_frames
+                        use_cached_detections = True
+                        if self.backward_mode:
+                            logger.info(
+                                f"Backward pass using cached detections for requested range "
+                                f"{start_frame}-{end_frame} ({requested_total_frames} frames; cache has {cache_total_frames})"
+                            )
+                        else:
+                            logger.info(
+                                f"Reusing cached detections for requested range "
+                                f"{start_frame}-{end_frame} ({requested_total_frames} frames; cache has {cache_total_frames})"
+                            )
+                    else:
+                        # Frame range mismatch - invalidate cache
+                        missing = detection_cache.get_missing_frames(
+                            start_frame, end_frame
+                        )
+                        if missing:
+                            logger.warning(
+                                f"Cache missing {len(missing)}+ frame(s) in requested range (sample: {missing[:5]})"
+                            )
+                        logger.warning(
+                            f"Cache frame range mismatch! Cache: {cached_start}-{cached_end}, Requested: {start_frame}-{end_frame}"
+                        )
+                        logger.warning(
+                            "Deleting old cache and regenerating detections..."
+                        )
+                        detection_cache.close()
+                        detection_cache = None
+                        os.remove(self.detection_cache_path)
+                        cache_exists = False
+
+            if self.backward_mode and not use_cached_detections:
+                logger.error(
+                    "Backward tracking requires a compatible forward detection cache. "
+                    "Please run forward tracking first."
+                )
+                if detection_cache:
+                    detection_cache.close()
+                cap.release()
+                self.finished_signal.emit(False, [], [])
+                return
 
             # Create new cache for writing if needed
             if not use_cached_detections:
@@ -698,16 +731,24 @@ class TrackingWorker(QThread):
             ROI_mask = params.get("ROI_MASK", None)
             ROI_mask_current = None
 
-            if ROI_mask is not None and frame is not None:
-                ROI_mask_current = (
-                    cv2.resize(
-                        ROI_mask, (frame.shape[1], frame.shape[0]), cv2.INTER_NEAREST
+            if ROI_mask is not None:
+                if frame is not None:
+                    target_w, target_h = frame.shape[1], frame.shape[0]
+                else:
+                    base_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    base_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    target_w = max(1, int(base_w * resize_f))
+                    target_h = max(1, int(base_h * resize_f))
+
+                if ROI_mask.shape[1] != target_w or ROI_mask.shape[0] != target_h:
+                    ROI_mask_current = cv2.resize(
+                        ROI_mask, (target_w, target_h), cv2.INTER_NEAREST
                     )
-                    if resize_f != 1.0
-                    else ROI_mask
-                )
+                else:
+                    ROI_mask_current = ROI_mask
+
                 # Calculate fill color on first frame if not yet done
-                if roi_fill_color is None:
+                if frame is not None and roi_fill_color is None:
                     mask_inv = ROI_mask_current == 0
                     outside_pixels = frame[mask_inv]
                     if len(outside_pixels) > 0:
@@ -717,31 +758,61 @@ class TrackingWorker(QThread):
                     else:
                         roi_fill_color = np.array([0, 0, 0], dtype=np.uint8)
 
-                # ROI_mask_current is used directly below; no 3-channel mask needed here.
-
             detect_start = time.time()
 
             # Initialize detection-related variables (in case no detection occurs)
             detection_ids = []
+            raw_detection_ids = []
             filtered_obb_corners = []
             detection_confidences = []
+            raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = (
+                [],
+                [],
+                [],
+                [],
+                [],
+            )
+            yolo_results = None
+            fg_mask = None
+            bg_u8 = None
 
             # Get detections either from cache or by detection
             if use_cached_detections:
                 # Load cached detections using actual frame index
                 # The cache keys are actual video frame indices, so we use actual_frame_index directly
                 (
-                    meas,
-                    sizes,
-                    shapes,
-                    detection_confidences,
-                    filtered_obb_corners,
-                    detection_ids,
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    raw_detection_ids,
                 ) = detection_cache.get_frame(actual_frame_index)
-                # No yolo_results object in cached mode
-                yolo_results = None
-                fg_mask = None
-                bg_u8 = None
+
+                if detection_method == "yolo_obb":
+                    (
+                        meas,
+                        sizes,
+                        shapes,
+                        detection_confidences,
+                        filtered_obb_corners,
+                        detection_ids,
+                    ) = detector.filter_raw_detections(
+                        raw_meas,
+                        raw_sizes,
+                        raw_shapes,
+                        raw_confidences,
+                        raw_obb_corners,
+                        roi_mask=ROI_mask_current,
+                        detection_ids=raw_detection_ids,
+                    )
+                else:
+                    meas = raw_meas
+                    sizes = raw_sizes
+                    shapes = raw_shapes
+                    detection_confidences = raw_confidences
+                    filtered_obb_corners = raw_obb_corners
+                    detection_ids = raw_detection_ids
 
             elif detection_method == "background_subtraction" and frame is not None:
                 # Background subtraction detection pipeline
@@ -793,6 +864,12 @@ class TrackingWorker(QThread):
                 detection_ids = [
                     actual_frame_index * 10000 + i for i in range(len(meas))
                 ]
+                raw_meas = meas
+                raw_sizes = sizes
+                raw_shapes = shapes
+                raw_confidences = detection_confidences
+                raw_obb_corners = filtered_obb_corners
+                raw_detection_ids = detection_ids
 
             elif (
                 detection_method == "yolo_obb" and frame is not None
@@ -801,59 +878,40 @@ class TrackingWorker(QThread):
                 # This preserves natural image context for better confidence estimates
                 yolo_frame = frame.copy()
 
-                # No foreground mask or background for YOLO
-                fg_mask = None
-                bg_u8 = None
-                meas, sizes, shapes, yolo_results, detection_confidences = (
-                    detector.detect_objects(yolo_frame, self.frame_count)
+                (
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    yolo_results,
+                    raw_confidences,
+                    raw_obb_corners,
+                ) = detector.detect_objects(
+                    yolo_frame,
+                    self.frame_count,
+                    return_raw=True,
                 )
 
-                # Get filtered OBB corners from detector (already filtered by size)
-                filtered_obb_corners = (
-                    getattr(yolo_results, "_filtered_obb_corners", [])
-                    if yolo_results
-                    else []
+                raw_detection_ids = [
+                    actual_frame_index * 10000 + i for i in range(len(raw_meas))
+                ]
+                (
+                    meas,
+                    sizes,
+                    shapes,
+                    detection_confidences,
+                    filtered_obb_corners,
+                    detection_ids,
+                ) = detector.filter_raw_detections(
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    roi_mask=ROI_mask_current,
+                    detection_ids=raw_detection_ids,
                 )
-
-                # Filter detections by ROI mask AFTER detection (vectorized)
-                # This is better than masking the image which reduces YOLO confidence
-                if ROI_mask_current is not None and len(meas) > 0:
-                    # Vectorized filtering using NumPy for efficiency with large n
-                    meas_arr = np.array(meas)
-                    cx_arr = meas_arr[:, 0].astype(np.int32)
-                    cy_arr = meas_arr[:, 1].astype(np.int32)
-
-                    # Bounds check
-                    h, w = ROI_mask_current.shape[:2]
-                    in_bounds = (
-                        (cy_arr >= 0) & (cy_arr < h) & (cx_arr >= 0) & (cx_arr < w)
-                    )
-
-                    # ROI check (clip to bounds for safe indexing, then apply bounds mask)
-                    cy_safe = np.clip(cy_arr, 0, h - 1)
-                    cx_safe = np.clip(cx_arr, 0, w - 1)
-                    in_roi = ROI_mask_current[cy_safe, cx_safe] > 0
-
-                    # Combined mask
-                    keep_mask = in_bounds & in_roi
-                    keep_indices = np.where(keep_mask)[0]
-
-                    # Apply filter using boolean indexing
-                    # Keep meas as list of numpy arrays (required by Kalman filter)
-                    meas = [meas_arr[i] for i in keep_indices]
-                    sizes = np.array(sizes)[keep_mask].tolist()
-                    shapes = np.array(shapes)[keep_mask].tolist()
-                    detection_confidences = np.array(detection_confidences)[
-                        keep_mask
-                    ].tolist()
-                    # Also filter OBB corners
-                    filtered_obb_corners = [
-                        filtered_obb_corners[i] for i in keep_indices
-                    ]
-                    # Calculate DetectionID for each kept detection using actual frame index
-                    detection_ids = [
-                        actual_frame_index * 10000 + i for i in range(len(meas))
-                    ]
+                if yolo_results is not None:
+                    yolo_results._filtered_obb_corners = filtered_obb_corners
 
             else:
                 # No frame and no cached detections - skip this iteration
@@ -865,16 +923,15 @@ class TrackingWorker(QThread):
 
             # Cache detections during forward pass (only when actively detecting, not when loading from cache)
             if detection_cache and not self.backward_mode and not use_cached_detections:
-                # detection_ids should already be calculated in detection blocks above
-                # Use actual frame index for cache key
+                # Cache raw detections so confidence/IOU/ROI filtering can be tuned without re-running inference.
                 detection_cache.add_frame(
                     actual_frame_index,
-                    meas,
-                    sizes,
-                    shapes,
-                    detection_confidences,
-                    filtered_obb_corners if filtered_obb_corners else None,
-                    detection_ids,
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners if raw_obb_corners else None,
+                    raw_detection_ids,
                 )
                 cached_frame_indices.add(actual_frame_index)
 
@@ -1145,32 +1202,39 @@ class TrackingWorker(QThread):
                             matched_track_ids.append(-1)
                             matched_traj_ids.append(-1)
 
-                # Determine which data source to use
-                # Use original_frame (full resolution) and coord_scale_factor (1/resize_f)
+                # Export all detections that already passed filtering
+                # (confidence/IOU/ROI/size), regardless of assignment state.
+                # Track/trajectory IDs are attached when available.
+                track_ids_for_dataset = (
+                    matched_track_ids if len(matched_track_ids) == len(meas) else None
+                )
+                traj_ids_for_dataset = (
+                    matched_traj_ids if len(matched_traj_ids) == len(meas) else None
+                )
+                conf_for_dataset = (
+                    detection_confidences if detection_confidences else None
+                )
+                detection_ids_for_dataset = detection_ids if detection_ids else None
+
+                # Use original-frame coordinates for crop extraction.
                 coord_scale_factor = 1.0 / resize_f
 
                 if filtered_obb_corners:
-                    # YOLO OBB detection - use OBB corners directly
+                    # YOLO OBB detection - use filtered OBB corners directly
                     individual_generator.process_frame(
                         frame=original_frame,
                         frame_id=actual_frame_index,
                         meas=meas,
                         obb_corners=filtered_obb_corners,
                         ellipse_params=None,
-                        confidences=(
-                            detection_confidences if detection_confidences else None
-                        ),
-                        track_ids=matched_track_ids if matched_track_ids else None,
-                        trajectory_ids=matched_traj_ids if matched_traj_ids else None,
+                        confidences=conf_for_dataset,
+                        track_ids=track_ids_for_dataset,
+                        trajectory_ids=traj_ids_for_dataset,
                         coord_scale_factor=coord_scale_factor,
-                        detection_ids=detection_ids,
+                        detection_ids=detection_ids_for_dataset,
                     )
                 elif shapes:
-                    # Background subtraction - compute ellipse params from shapes
-                    # shapes contains (area, aspect_ratio) tuples
-                    # From: area = π * ax1 * ax2 / 4, aspect_ratio = ax1 / ax2
-                    # Solve: ax2 = sqrt(4 * area / (π * aspect_ratio))
-                    #        ax1 = aspect_ratio * ax2
+                    # Background subtraction - compute ellipse params from filtered shapes
                     ellipse_params = []
                     for shape in shapes:
                         area, aspect_ratio = shape[0], shape[1]
@@ -1190,13 +1254,11 @@ class TrackingWorker(QThread):
                         meas=meas,
                         obb_corners=None,
                         ellipse_params=ellipse_params,
-                        confidences=(
-                            detection_confidences if detection_confidences else None
-                        ),
-                        track_ids=matched_track_ids if matched_track_ids else None,
-                        trajectory_ids=matched_traj_ids if matched_traj_ids else None,
+                        confidences=conf_for_dataset,
+                        track_ids=track_ids_for_dataset,
+                        trajectory_ids=traj_ids_for_dataset,
                         coord_scale_factor=coord_scale_factor,
-                        detection_ids=detection_ids,
+                        detection_ids=detection_ids_for_dataset,
                     )
 
             # --- Tracking State Updates ---

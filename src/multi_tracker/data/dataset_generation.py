@@ -63,21 +63,22 @@ class FrameQualityScorer:
         if tracking_data is None:
             tracking_data = {}
 
-        # Metric 1: Low detection confidence
+        # Metric 1: Low detection confidence (frame-level average confidence)
         if self.use_confidence and "confidences" in detection_data:
             confidences = detection_data["confidences"]
             if confidences:
                 # Filter out NaN values (from background subtraction)
                 valid_confs = [c for c in confidences if not np.isnan(c)]
                 if valid_confs:
-                    min_conf = min(valid_confs)
                     avg_conf = np.mean(valid_confs)
+                    min_conf = min(valid_confs)
 
-                    # Score based on how far below threshold
-                    if min_conf < self.conf_threshold:
-                        conf_score = (
-                            self.conf_threshold - min_conf
-                        ) / self.conf_threshold
+                    # Score based on how far frame-average confidence is below threshold.
+                    # This uses raw detections when available from cache and avoids
+                    # over-penalizing a frame due to one isolated low-confidence box.
+                    denom = max(self.conf_threshold, 1e-6)
+                    if avg_conf < self.conf_threshold:
+                        conf_score = (self.conf_threshold - avg_conf) / denom
                         score += conf_score * 0.4  # 40% weight
                         metrics["low_confidence"] = {
                             "min": min_conf,

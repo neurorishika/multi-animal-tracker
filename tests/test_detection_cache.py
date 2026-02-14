@@ -83,3 +83,17 @@ def test_detection_cache_missing_frame_reporting(tmp_path: Path) -> None:
         assert not cache.covers_frame_range(0, 4)
         missing = cache.get_missing_frames(0, 4, max_report=10)
         assert missing == [1, 3]
+
+
+def test_detection_cache_rejects_legacy_versions(tmp_path: Path) -> None:
+    cache_path = tmp_path / "legacy.npz"
+    np.savez_compressed(
+        str(cache_path),
+        metadata=np.array(
+            {"total_frames": 1, "start_frame": 0, "end_frame": 0, "version": "1.1"}
+        ),
+        frame_000000_meas=np.array([], dtype=np.float32).reshape(0, 3),
+    )
+
+    with DetectionCache(cache_path, mode="r") as cache:
+        assert not cache.is_compatible()

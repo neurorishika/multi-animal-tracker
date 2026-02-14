@@ -153,27 +153,28 @@ class YOLOOBBDetector:
             # Get max batch size from UI parameter
             max_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
 
-            # Generate a TensorRT engine filename tied to the actual model identity.
-            # This prevents stale reuse when users swap models with the same filename.
+            # Generate a TensorRT engine filename tied to inference identity.
+            # This prevents stale reuse when inference-shaping settings or model files change.
             resolved_model = Path(model_path_str).expanduser().resolve()
             model_stem = resolved_model.stem or "model"
             safe_model_stem = "".join(
                 c if c.isalnum() or c in ("_", "-") else "_" for c in model_stem
             )
-            fingerprint_parts = [
-                str(resolved_model),
-                f"batch={max_batch_size}",
-            ]
-            detection_cache_model_id = self.params.get("DETECTION_CACHE_MODEL_ID")
-            if detection_cache_model_id:
-                fingerprint_parts.append(f"detection_id={detection_cache_model_id}")
-            if resolved_model.exists():
-                stat = resolved_model.stat()
-                fingerprint_parts.append(f"size={stat.st_size}")
-                fingerprint_parts.append(f"mtime_ns={stat.st_mtime_ns}")
-            fingerprint = hashlib.md5(
-                "|".join(fingerprint_parts).encode("utf-8")
-            ).hexdigest()[:12]
+            inference_model_id = self.params.get("INFERENCE_MODEL_ID")
+            if inference_model_id:
+                fingerprint = str(inference_model_id)
+            else:
+                fingerprint_parts = [
+                    str(resolved_model),
+                    f"batch={max_batch_size}",
+                ]
+                if resolved_model.exists():
+                    stat = resolved_model.stat()
+                    fingerprint_parts.append(f"size={stat.st_size}")
+                    fingerprint_parts.append(f"mtime_ns={stat.st_mtime_ns}")
+                fingerprint = hashlib.md5(
+                    "|".join(fingerprint_parts).encode("utf-8")
+                ).hexdigest()[:12]
             engine_path = cache_dir / f"{safe_model_stem}_{fingerprint}.engine"
 
             # Check if TensorRT engine already exists
@@ -485,7 +486,14 @@ class YOLOOBBDetector:
             return inter_area / union_area
 
     def _filter_overlapping_detections(
-        self, meas, sizes, shapes, confidences, obb_corners_list, iou_threshold
+        self,
+        meas,
+        sizes,
+        shapes,
+        confidences,
+        obb_corners_list,
+        iou_threshold,
+        detection_ids=None,
     ):
         """
         Filter overlapping detections using spatially-optimized IOU-based NMS for OBB.
@@ -501,10 +509,13 @@ class YOLOOBBDetector:
             iou_threshold: IOU threshold for considering detections as overlapping
 
         Returns:
-            Filtered versions of all input lists
+            Filtered versions of all input lists. If detection_ids is provided,
+            it is filtered identically and returned as the final element.
         """
         if len(meas) <= 1:
-            return meas, sizes, shapes, confidences, obb_corners_list
+            if detection_ids is None:
+                return meas, sizes, shapes, confidences, obb_corners_list
+            return meas, sizes, shapes, confidences, obb_corners_list, detection_ids
 
         n_detections = len(meas)
 
@@ -614,10 +625,196 @@ class YOLOOBBDetector:
         shapes = [shapes[i] for i in keep_indices]
         confidences = [confidences[i] for i in keep_indices]
         obb_corners_list = [obb_corners_list[i] for i in keep_indices]
+        if detection_ids is not None:
+            detection_ids = [detection_ids[i] for i in keep_indices]
+            return meas, sizes, shapes, confidences, obb_corners_list, detection_ids
 
         return meas, sizes, shapes, confidences, obb_corners_list
 
-    def detect_objects(self: object, frame: object, frame_count: object) -> object:
+    def _raw_detection_cap(self) -> int:
+        """Cap raw detections to 2x MAX_TARGETS to bound cache size and filtering cost."""
+        max_targets = max(1, int(self.params.get("MAX_TARGETS", 8)))
+        return max_targets * 2
+
+    def _extract_raw_detections(self, obb_data):
+        """Extract raw OBB detections, sorted by confidence and capped by policy."""
+        if obb_data is None or len(obb_data) == 0:
+            return [], [], [], [], []
+
+        xywhr = np.ascontiguousarray(obb_data.xywhr.cpu().numpy(), dtype=np.float32)
+        conf_scores = np.ascontiguousarray(
+            obb_data.conf.cpu().numpy(), dtype=np.float32
+        )
+        corners = np.ascontiguousarray(
+            obb_data.xyxyxyxy.cpu().numpy(), dtype=np.float32
+        )
+
+        if xywhr.size == 0 or conf_scores.size == 0:
+            return [], [], [], [], []
+
+        cx = xywhr[:, 0]
+        cy = xywhr[:, 1]
+        w = xywhr[:, 2]
+        h = xywhr[:, 3]
+        angle_rad = xywhr[:, 4]
+
+        angle_deg = np.rad2deg(angle_rad) % 180.0
+        swap_mask = w < h
+        major = np.where(swap_mask, h, w)
+        minor = np.where(swap_mask, w, h)
+        angle_deg = np.where(swap_mask, (angle_deg + 90.0) % 180.0, angle_deg)
+        angle_rad_fixed = np.deg2rad(angle_deg).astype(np.float32)
+
+        sizes = (major * minor).astype(np.float32)
+        ellipse_area = (np.pi * (major / 2.0) * (minor / 2.0)).astype(np.float32)
+        aspect_ratio = np.divide(
+            major,
+            minor,
+            out=np.zeros_like(major, dtype=np.float32),
+            where=minor > 0,
+        )
+
+        meas_arr = np.column_stack((cx, cy, angle_rad_fixed)).astype(np.float32)
+        shapes_arr = np.column_stack((ellipse_area, aspect_ratio)).astype(np.float32)
+
+        cap = self._raw_detection_cap()
+        order = np.argsort(conf_scores)[::-1]
+        if len(order) > cap:
+            order = order[:cap]
+
+        meas_arr = np.ascontiguousarray(meas_arr[order], dtype=np.float32)
+        sizes = np.ascontiguousarray(sizes[order], dtype=np.float32)
+        shapes_arr = np.ascontiguousarray(shapes_arr[order], dtype=np.float32)
+        conf_scores = np.ascontiguousarray(conf_scores[order], dtype=np.float32)
+        corners = np.ascontiguousarray(corners[order], dtype=np.float32)
+
+        meas = [meas_arr[i] for i in range(len(meas_arr))]
+        sizes_list = sizes.tolist()
+        shapes = [tuple(shapes_arr[i]) for i in range(len(shapes_arr))]
+        confidences = conf_scores.tolist()
+        obb_corners_list = [corners[i] for i in range(len(corners))]
+
+        return meas, sizes_list, shapes, confidences, obb_corners_list
+
+    def filter_raw_detections(
+        self,
+        meas,
+        sizes,
+        shapes,
+        confidences,
+        obb_corners_list,
+        roi_mask=None,
+        detection_ids=None,
+    ):
+        """
+        Apply vectorized confidence/size/ROI filtering, then custom OBB IOU suppression.
+        This is shared by live detection and cached-raw detection paths.
+        """
+        if not meas:
+            return [], [], [], [], [], []
+
+        conf_threshold = float(self.params.get("YOLO_CONFIDENCE_THRESHOLD", 0.25))
+        iou_threshold = float(self.params.get("YOLO_IOU_THRESHOLD", 0.7))
+        max_targets = max(1, int(self.params.get("MAX_TARGETS", 8)))
+
+        meas_arr = np.ascontiguousarray(np.asarray(meas, dtype=np.float32))
+        sizes_arr = np.ascontiguousarray(np.asarray(sizes, dtype=np.float32))
+        shapes_arr = np.ascontiguousarray(np.asarray(shapes, dtype=np.float32))
+        conf_arr = np.ascontiguousarray(np.asarray(confidences, dtype=np.float32))
+
+        if detection_ids is None:
+            ids_arr = np.arange(len(meas_arr), dtype=np.float64)
+        else:
+            ids_arr = np.ascontiguousarray(np.asarray(detection_ids, dtype=np.float64))
+
+        n = min(
+            len(meas_arr), len(sizes_arr), len(shapes_arr), len(conf_arr), len(ids_arr)
+        )
+        if obb_corners_list:
+            n = min(n, len(obb_corners_list))
+        if n == 0:
+            return [], [], [], [], [], []
+
+        meas_arr = meas_arr[:n]
+        sizes_arr = sizes_arr[:n]
+        shapes_arr = shapes_arr[:n]
+        conf_arr = conf_arr[:n]
+        ids_arr = ids_arr[:n]
+
+        if obb_corners_list:
+            obb_arr = np.ascontiguousarray(
+                np.asarray(obb_corners_list, dtype=np.float32)
+            )
+            obb_arr = obb_arr[:n]
+        else:
+            obb_arr = np.empty((n, 4, 2), dtype=np.float32)
+
+        keep_mask = conf_arr >= conf_threshold
+
+        if self.params.get("ENABLE_SIZE_FILTERING", False):
+            min_size = float(self.params.get("MIN_OBJECT_SIZE", 0))
+            max_size = float(self.params.get("MAX_OBJECT_SIZE", float("inf")))
+            keep_mask &= (sizes_arr >= min_size) & (sizes_arr <= max_size)
+
+        if roi_mask is not None and len(meas_arr) > 0:
+            h, w = roi_mask.shape[:2]
+            cx = meas_arr[:, 0].astype(np.int32)
+            cy = meas_arr[:, 1].astype(np.int32)
+            in_bounds = (cx >= 0) & (cx < w) & (cy >= 0) & (cy < h)
+            cx_safe = np.clip(cx, 0, max(0, w - 1))
+            cy_safe = np.clip(cy, 0, max(0, h - 1))
+            in_roi = roi_mask[cy_safe, cx_safe] > 0
+            keep_mask &= in_bounds & in_roi
+
+        if not np.any(keep_mask):
+            return [], [], [], [], [], []
+
+        meas_arr = meas_arr[keep_mask]
+        sizes_arr = sizes_arr[keep_mask]
+        shapes_arr = shapes_arr[keep_mask]
+        conf_arr = conf_arr[keep_mask]
+        ids_arr = ids_arr[keep_mask]
+        obb_arr = obb_arr[keep_mask]
+
+        meas_list = [meas_arr[i] for i in range(len(meas_arr))]
+        sizes_list = sizes_arr.tolist()
+        shapes_list = [tuple(shapes_arr[i]) for i in range(len(shapes_arr))]
+        conf_list = conf_arr.tolist()
+        ids_list = ids_arr.tolist()
+        obb_list = [obb_arr[i] for i in range(len(obb_arr))]
+
+        if len(meas_list) > 1:
+            (
+                meas_list,
+                sizes_list,
+                shapes_list,
+                conf_list,
+                obb_list,
+                ids_list,
+            ) = self._filter_overlapping_detections(
+                meas_list,
+                sizes_list,
+                shapes_list,
+                conf_list,
+                obb_list,
+                iou_threshold,
+                detection_ids=ids_list,
+            )
+
+        if len(meas_list) > max_targets:
+            idxs = np.argsort(sizes_list)[::-1][:max_targets]
+            meas_list = [meas_list[i] for i in idxs]
+            sizes_list = [sizes_list[i] for i in idxs]
+            shapes_list = [shapes_list[i] for i in idxs]
+            conf_list = [conf_list[i] for i in idxs]
+            obb_list = [obb_list[i] for i in idxs]
+            ids_list = [ids_list[i] for i in idxs]
+
+        return meas_list, sizes_list, shapes_list, conf_list, obb_list, ids_list
+
+    def detect_objects(
+        self: object, frame: object, frame_count: object, return_raw: bool = False
+    ) -> object:
         """
         Detects objects in a frame using YOLO OBB.
 
@@ -626,32 +823,28 @@ class YOLOOBBDetector:
             frame_count: Current frame number for logging
 
         Returns:
-            meas: List of measurements [cx, cy, angle] in radians
-            sizes: List of detection areas
-            shapes: List of (area, aspect_ratio) tuples
-            yolo_results: Raw YOLO results object for visualization (optional)
-            confidences: List of YOLO confidence scores (0-1)
+            Default mode:
+                meas, sizes, shapes, yolo_results, confidences
+            If return_raw=True:
+                raw_meas, raw_sizes, raw_shapes, yolo_results, raw_confidences, raw_obb_corners
         """
         if self.model is None:
             logger.error("YOLO model not initialized")
+            if return_raw:
+                return [], [], [], None, [], []
             return [], [], [], None, []
 
         p = self.params
-        conf_threshold = p.get("YOLO_CONFIDENCE_THRESHOLD", 0.25)
-        iou_threshold = p.get("YOLO_IOU_THRESHOLD", 0.7)
-        use_custom_iou = p.get("USE_CUSTOM_OBB_IOU_FILTERING", False)
         target_classes = p.get("YOLO_TARGET_CLASSES", None)  # None means all classes
-        max_det = p.get("MAX_TARGETS", 8) * p.get("MAX_CONTOUR_MULTIPLIER", 20)
+        raw_conf_floor = max(1e-4, float(p.get("RAW_YOLO_CONFIDENCE_FLOOR", 1e-3)))
+        max_det = self._raw_detection_cap()
 
         # Run inference on the configured device
-        # Use custom polygon-based IOU filtering OR YOLO's built-in NMS based on user preference
-        # - Custom filtering (use_custom_iou=True): Disable YOLO NMS (iou=1.0), apply shapely polygon IOU after
-        # - YOLO NMS (use_custom_iou=False): Use YOLO's built-in axis-aligned NMS (faster but less accurate)
         try:
             results = self.model.predict(
                 frame,
-                conf=conf_threshold,
-                iou=1.0 if use_custom_iou else iou_threshold,  # Conditional NMS
+                conf=raw_conf_floor,
+                iou=1.0,  # Always use custom OBB IOU filtering after inference
                 classes=target_classes,
                 max_det=max_det,
                 device=self.device,
@@ -659,78 +852,41 @@ class YOLOOBBDetector:
             )
         except Exception as e:
             logger.error(f"YOLO inference failed on frame {frame_count}: {e}")
+            if return_raw:
+                return [], [], [], None, [], []
             return [], [], [], None, []
 
         if len(results) == 0 or results[0].obb is None or len(results[0].obb) == 0:
+            if return_raw:
+                return [], [], [], results[0] if len(results) > 0 else None, [], []
             return [], [], [], results[0] if len(results) > 0 else None, []
 
-        # Extract OBB detections
-        obb_data = results[0].obb
-        conf_scores = obb_data.conf.cpu().numpy()  # YOLO confidence scores
+        raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = (
+            self._extract_raw_detections(results[0].obb)
+        )
 
-        meas, sizes, shapes, confidences = [], [], [], []
-        obb_corners_list = []  # Store OBB corners for filtered detections
-
-        for i in range(len(obb_data)):
-            # Get OBB parameters
-            # obb_data.xyxyxyxy gives the 4 corner points
-            # obb_data.xywhr gives [center_x, center_y, width, height, rotation]
-            xywhr = obb_data.xywhr[i].cpu().numpy()
-            cx, cy, w, h, angle_rad = xywhr
-
-            # Convert angle to match our convention (0-180 degrees, then to radians)
-            # YOLO OBB angles are typically in radians, ranging from -pi/2 to pi/2
-            angle_deg = np.rad2deg(angle_rad) % 180
-
-            # Ensure major axis is first (ax1 >= ax2)
-            if w < h:
-                w, h = h, w
-                angle_deg = (angle_deg + 90) % 180
-
-            area = w * h
-            aspect_ratio = w / h if h > 0 else 0
-
-            # Apply size filtering if enabled
-            if p.get("ENABLE_SIZE_FILTERING", False):
-                min_size = p.get("MIN_OBJECT_SIZE", 0)
-                max_size = p.get("MAX_OBJECT_SIZE", float("inf"))
-                if not (min_size <= area <= max_size):
-                    continue
-
-            # Store measurement in format [cx, cy, angle_rad]
-            meas.append(np.array([cx, cy, np.deg2rad(angle_deg)], dtype=np.float32))
-            sizes.append(float(area))
-            shapes.append(
-                (np.pi * (w / 2) * (h / 2), aspect_ratio)
-            )  # Ellipse area approximation
-            confidences.append(float(conf_scores[i]))  # Store YOLO confidence
-            # Store OBB corners for this detection (4 points, shape: (4, 2))
-            obb_corners_list.append(obb_data.xyxyxyxy[i].cpu().numpy())
-
-        # Apply additional IOU-based filtering to remove overlapping detections
-        # Only apply custom polygon-based filtering if enabled by user
-        if use_custom_iou and len(meas) > 1:
-            original_count = len(meas)
-            meas, sizes, shapes, confidences, obb_corners_list = (
-                self._filter_overlapping_detections(
-                    meas, sizes, shapes, confidences, obb_corners_list, iou_threshold
-                )
+        if return_raw:
+            results[0]._raw_obb_corners = raw_obb_corners
+            return (
+                raw_meas,
+                raw_sizes,
+                raw_shapes,
+                results[0],
+                raw_confidences,
+                raw_obb_corners,
             )
-            if len(meas) < original_count:
-                logger.info(
-                    f"Frame {frame_count}: Custom IOU filtering removed {original_count - len(meas)} "
-                    f"overlapping detections (kept {len(meas)}/{original_count}, IOU threshold={iou_threshold:.2f})"
-                )
 
-        # Keep only top N detections by size
-        N = p["MAX_TARGETS"]
-        if len(meas) > N:
-            idxs = np.argsort(sizes)[::-1][:N]
-            meas = [meas[i] for i in idxs]
-            sizes = [sizes[i] for i in idxs]
-            shapes = [shapes[i] for i in idxs]
-            confidences = [confidences[i] for i in idxs]
-            obb_corners_list = [obb_corners_list[i] for i in idxs]
+        meas, sizes, shapes, confidences, obb_corners_list, _ = (
+            self.filter_raw_detections(
+                raw_meas,
+                raw_sizes,
+                raw_shapes,
+                raw_confidences,
+                raw_obb_corners,
+                roi_mask=None,
+                detection_ids=None,
+            )
+        )
 
         if meas:
             logger.debug(f"Frame {frame_count}: YOLO detected {len(meas)} objects")
@@ -746,6 +902,7 @@ class YOLOOBBDetector:
         frames: object,
         start_frame_idx: object,
         progress_callback: object = None,
+        return_raw: bool = False,
     ) -> object:
         """
         Detect objects in a batch of frames using YOLO OBB.
@@ -756,20 +913,18 @@ class YOLOOBBDetector:
             progress_callback: Optional callback(current, total, message) for progress updates
 
         Returns:
-            List of tuples: [(meas, sizes, shapes, confidences, obb_corners), ...]
-                One tuple per frame in the batch
+            List of tuples per frame:
+              - return_raw=False: (meas, sizes, shapes, confidences, obb_corners)
+              - return_raw=True:  (raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners)
         """
         if self.model is None:
             logger.error("YOLO model not initialized")
             return [([], [], [], [], []) for _ in frames]
 
         p = self.params
-        conf_threshold = p.get("YOLO_CONFIDENCE_THRESHOLD", 0.25)
-        iou_threshold = p.get("YOLO_IOU_THRESHOLD", 0.7)
-        use_custom_iou = p.get("USE_CUSTOM_OBB_IOU_FILTERING", False)
         target_classes = p.get("YOLO_TARGET_CLASSES", None)
-        max_det = p.get("MAX_TARGETS", 8) * p.get("MAX_CONTOUR_MULTIPLIER", 20)
-        N = p["MAX_TARGETS"]
+        raw_conf_floor = max(1e-4, float(p.get("RAW_YOLO_CONFIDENCE_FLOOR", 1e-3)))
+        max_det = self._raw_detection_cap()
 
         # Handle TensorRT fixed batch size
         # TensorRT requires exact batch size, so we need to:
@@ -801,8 +956,8 @@ class YOLOOBBDetector:
                 try:
                     chunk_results = self.model.predict(
                         chunk_frames,
-                        conf=conf_threshold,
-                        iou=1.0 if use_custom_iou else iou_threshold,  # Conditional NMS
+                        conf=raw_conf_floor,
+                        iou=1.0,  # Always use custom OBB IOU filtering after inference
                         classes=target_classes,
                         max_det=max_det,
                         device=self.device,
@@ -822,8 +977,8 @@ class YOLOOBBDetector:
             try:
                 results_batch = self.model.predict(
                     frames,
-                    conf=conf_threshold,
-                    iou=1.0 if use_custom_iou else iou_threshold,  # Conditional NMS
+                    conf=raw_conf_floor,
+                    iou=1.0,  # Always use custom OBB IOU filtering after inference
                     classes=target_classes,
                     max_det=max_det,
                     device=self.device,
@@ -837,7 +992,7 @@ class YOLOOBBDetector:
         batch_detections = []
         for idx in range(actual_frame_count):
             results = results_batch[idx]
-            frame_count = start_frame_idx + idx
+            # frame_count = start_frame_idx + idx
 
             # Handle failed inference (None result from error)
             if results is None:
@@ -848,70 +1003,34 @@ class YOLOOBBDetector:
                 batch_detections.append(([], [], [], [], []))
                 continue
 
-            # Extract OBB detections for this frame
-            obb_data = results.obb
-            conf_scores = obb_data.conf.cpu().numpy()
-
-            meas, sizes, shapes, confidences = [], [], [], []
-            obb_corners_list = []
-
-            for i in range(len(obb_data)):
-                xywhr = obb_data.xywhr[i].cpu().numpy()
-                cx, cy, w, h, angle_rad = xywhr
-
-                angle_deg = np.rad2deg(angle_rad) % 180
-
-                if w < h:
-                    w, h = h, w
-                    angle_deg = (angle_deg + 90) % 180
-
-                area = w * h
-                aspect_ratio = w / h if h > 0 else 0
-
-                # Apply size filtering
-                if p.get("ENABLE_SIZE_FILTERING", False):
-                    min_size = p.get("MIN_OBJECT_SIZE", 0)
-                    max_size = p.get("MAX_OBJECT_SIZE", float("inf"))
-                    if not (min_size <= area <= max_size):
-                        continue
-
-                meas.append(np.array([cx, cy, np.deg2rad(angle_deg)], dtype=np.float32))
-                sizes.append(float(area))
-                shapes.append((np.pi * (w / 2) * (h / 2), aspect_ratio))
-                confidences.append(float(conf_scores[i]))
-                obb_corners_list.append(obb_data.xyxyxyxy[i].cpu().numpy())
-
-            # Apply additional IOU-based filtering to remove overlapping detections
-            # Only apply custom polygon-based filtering if enabled by user
-            if use_custom_iou and len(meas) > 1:
-                original_count = len(meas)
-                meas, sizes, shapes, confidences, obb_corners_list = (
-                    self._filter_overlapping_detections(
-                        meas,
-                        sizes,
-                        shapes,
-                        confidences,
-                        obb_corners_list,
-                        iou_threshold,
-                    )
-                )
-                if len(meas) < original_count:
-                    logger.debug(
-                        f"Batch frame {frame_count}: Custom IOU filtering removed {original_count - len(meas)} overlapping detections"
-                    )
-
-            # Keep only top N by size
-            if len(meas) > N:
-                idxs = np.argsort(sizes)[::-1][:N]
-                meas = [meas[i] for i in idxs]
-                sizes = [sizes[i] for i in idxs]
-                shapes = [shapes[i] for i in idxs]
-                confidences = [confidences[i] for i in idxs]
-                obb_corners_list = [obb_corners_list[i] for i in idxs]
-
-            batch_detections.append(
-                (meas, sizes, shapes, confidences, obb_corners_list)
+            raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = (
+                self._extract_raw_detections(results.obb)
             )
+
+            if return_raw:
+                batch_detections.append(
+                    (raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners)
+                )
+            else:
+                (
+                    meas,
+                    sizes,
+                    shapes,
+                    confidences,
+                    obb_corners_list,
+                    _,
+                ) = self.filter_raw_detections(
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    roi_mask=None,
+                    detection_ids=None,
+                )
+                batch_detections.append(
+                    (meas, sizes, shapes, confidences, obb_corners_list)
+                )
 
             if progress_callback and (idx + 1) % 10 == 0:
                 progress_callback(

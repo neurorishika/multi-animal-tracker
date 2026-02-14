@@ -649,6 +649,7 @@ class DatasetGenerationWorker(QThread):
         self,
         video_path,
         csv_path,
+        detection_cache_path,
         output_dir,
         dataset_name,
         class_name,
@@ -661,6 +662,7 @@ class DatasetGenerationWorker(QThread):
         super().__init__()
         self.video_path = video_path
         self.csv_path = csv_path
+        self.detection_cache_path = detection_cache_path
         self.output_dir = output_dir
         self.dataset_name = dataset_name
         self.class_name = class_name
@@ -684,6 +686,17 @@ class DatasetGenerationWorker(QThread):
             # Initialize quality scorer
             self.progress_signal.emit(15, "Initializing quality scorer...")
             scorer = FrameQualityScorer(self.params)
+            detection_cache = None
+            if self.detection_cache_path and os.path.exists(self.detection_cache_path):
+                try:
+                    detection_cache = DetectionCache(
+                        self.detection_cache_path, mode="r"
+                    )
+                    if not detection_cache.is_compatible():
+                        detection_cache.close()
+                        detection_cache = None
+                except Exception:
+                    detection_cache = None
 
             # Score each frame
             self.progress_signal.emit(20, "Scoring frames...")
@@ -698,13 +711,25 @@ class DatasetGenerationWorker(QThread):
                     )
 
                 frame_data = df[df["FrameID"] == frame_id]
+                raw_confidences = []
+                if detection_cache is not None:
+                    try:
+                        _, _, _, raw_confidences, _, _ = detection_cache.get_frame(
+                            int(frame_id)
+                        )
+                    except Exception:
+                        raw_confidences = []
 
                 # Detection data
                 detection_data = {
                     "confidences": (
-                        frame_data["DetectionConfidence"].tolist()
-                        if "DetectionConfidence" in frame_data.columns
-                        else []
+                        raw_confidences
+                        if raw_confidences
+                        else (
+                            frame_data["DetectionConfidence"].tolist()
+                            if "DetectionConfidence" in frame_data.columns
+                            else []
+                        )
                     ),
                     "count": len(frame_data),
                 }
@@ -720,6 +745,9 @@ class DatasetGenerationWorker(QThread):
                 }
 
                 scorer.score_frame(frame_id, detection_data, tracking_data)
+
+            if detection_cache is not None:
+                detection_cache.close()
 
             # Select worst frames with diversity
             self.progress_signal.emit(50, "Selecting challenging frames...")
@@ -2637,18 +2665,13 @@ class MainWindow(QMainWindow):
         f_yolo.addRow("What IOU overlap threshold should YOLO use?", self.spin_yolo_iou)
 
         self.chk_use_custom_obb_iou = QCheckBox("Use custom OBB overlap filtering")
-        self.chk_use_custom_obb_iou.setChecked(
-            False
-        )  # Default: use YOLO's built-in NMS
+        self.chk_use_custom_obb_iou.setChecked(True)
+        self.chk_use_custom_obb_iou.setEnabled(False)
         self.chk_use_custom_obb_iou.setToolTip(
-            "Use custom polygon-based IOU filtering for OBB detections.\n\n"
-            "• UNCHECKED (Default): Use YOLO's built-in NMS (faster, less accurate for OBB)\n"
-            "• CHECKED: Use custom shapely-based polygon IOU (slower, more accurate)\n\n"
-            "YOLO's built-in NMS uses axis-aligned approximation which can miss overlaps.\n"
-            "Custom filtering uses true polygon intersection but is ~2-5x slower.\n\n"
-            "Recommended: Keep UNCHECKED unless you see overlapping detections."
+            "Custom polygon-based OBB IOU filtering is always enabled.\n"
+            "This improves overlap handling consistency across cached and live detections."
         )
-        f_yolo.addRow("", self.chk_use_custom_obb_iou)
+        self.chk_use_custom_obb_iou.setVisible(False)
 
         self.line_yolo_classes = QLineEdit()
         self.line_yolo_classes.setPlaceholderText("e.g. 15, 16 (Empty for all)")
@@ -5987,7 +6010,7 @@ class MainWindow(QMainWindow):
                     ),
                     "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
                     "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
-                    "USE_CUSTOM_OBB_IOU_FILTERING": self.chk_use_custom_obb_iou.isChecked(),
+                    "USE_CUSTOM_OBB_IOU_FILTERING": True,
                     "YOLO_TARGET_CLASSES": (
                         [
                             int(x.strip())
@@ -6051,14 +6074,33 @@ class MainWindow(QMainWindow):
                     f"iou={yolo_params['YOLO_IOU_THRESHOLD']:.2f})"
                 )
                 detector = YOLOOBBDetector(yolo_params)
-                meas, sizes, shapes, yolo_results, detection_confidences = (
-                    detector.detect_objects(frame_to_process, 0)
+                (
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    yolo_results,
+                    raw_confidences,
+                    raw_obb_corners,
+                ) = detector.detect_objects(frame_to_process, 0, return_raw=True)
+                (
+                    meas,
+                    sizes,
+                    shapes,
+                    detection_confidences,
+                    filtered_obb_corners,
+                    _,
+                ) = detector.filter_raw_detections(
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    roi_mask=roi_for_yolo,
+                    detection_ids=None,
                 )
 
                 if use_size_filtering:
-                    logger.info(
-                        f"YOLO detected {len(meas)} objects before ROI filtering"
-                    )
+                    logger.info(f"YOLO detected {len(meas)} objects after filtering")
                     if len(sizes) > 0:
                         logger.info(
                             f"  Size range: {min(sizes):.1f} - {max(sizes):.1f} px²"
@@ -6073,82 +6115,42 @@ class MainWindow(QMainWindow):
                                 f"  Detection {i + 1}: {sizes[i]:.1f} px² - {'PASS' if passes_filter else 'FILTERED OUT'}"
                             )
 
-                # Filter detections by ROI AFTER detection (vectorized)
-                if roi_for_yolo is not None and len(meas) > 0:
-                    # Vectorized filtering using NumPy for efficiency with large n
-                    meas_arr = np.array(meas)
-                    cx_arr = meas_arr[:, 0].astype(np.int32)
-                    cy_arr = meas_arr[:, 1].astype(np.int32)
+                # Collect detected dimensions for statistics (only for filtered detections)
+                detected_dimensions = []
+                for i, corners in enumerate(filtered_obb_corners):
+                    corners = np.asarray(corners, dtype=np.float32)
+                    major_axis = float(np.linalg.norm(corners[1] - corners[0]))
+                    minor_axis = float(np.linalg.norm(corners[2] - corners[1]))
+                    if major_axis < minor_axis:
+                        major_axis, minor_axis = minor_axis, major_axis
+                    detected_dimensions.append((major_axis, minor_axis))
 
-                    # Bounds check
-                    h, w = roi_for_yolo.shape[:2]
-                    in_bounds = (
-                        (cy_arr >= 0) & (cy_arr < h) & (cx_arr >= 0) & (cx_arr < w)
+                    corners_int = corners.astype(np.int32)
+                    cv2.polylines(
+                        test_frame,
+                        [corners_int],
+                        isClosed=True,
+                        color=(0, 255, 255),
+                        thickness=2,
                     )
 
-                    # ROI check (clip to bounds for safe indexing, then apply bounds mask)
-                    cy_safe = np.clip(cy_arr, 0, h - 1)
-                    cx_safe = np.clip(cx_arr, 0, w - 1)
-                    in_roi = roi_for_yolo[cy_safe, cx_safe] > 0
-
-                    # Combined mask
-                    keep_mask = in_bounds & in_roi
-                    filtered_indices = np.where(keep_mask)[0].tolist()
-
-                    # Apply filter using boolean indexing
-                    # Keep meas as list of numpy arrays for consistency
-                    meas = [meas_arr[i] for i in filtered_indices]
-                    sizes = np.array(sizes)[keep_mask].tolist()
-                    shapes = np.array(shapes)[keep_mask].tolist()
-                    detection_confidences = np.array(detection_confidences)[
-                        keep_mask
-                    ].tolist()
-                else:
-                    filtered_indices = list(range(len(meas)))  # Keep all
-
-                # Collect detected dimensions for statistics (only for filtered detections)
-                # Extract actual width/height from YOLO OBB results
-                detected_dimensions = []
-                if (
-                    yolo_results
-                    and hasattr(yolo_results, "obb")
-                    and len(yolo_results.obb) > 0
-                ):
-                    obb_data = yolo_results.obb
-                    for i in filtered_indices:
-                        # xywhr gives [center_x, center_y, width, height, rotation]
-                        xywhr = obb_data.xywhr[i].cpu().numpy()
-                        _, _, w, h, _ = xywhr
-                        major_axis = max(w, h)
-                        minor_axis = min(w, h)
-                        detected_dimensions.append((major_axis, minor_axis))
-
-                # Visualize YOLO detections (only filtered ones)
-                if yolo_results and hasattr(yolo_results, "obb"):
-                    obb_data = yolo_results.obb
-                    for i in filtered_indices:
-                        corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
-                        cv2.polylines(
+                    conf = (
+                        detection_confidences[i]
+                        if i < len(detection_confidences)
+                        else float("nan")
+                    )
+                    if not np.isnan(conf):
+                        cx = int(corners[:, 0].mean())
+                        cy = int(corners[:, 1].mean())
+                        cv2.putText(
                             test_frame,
-                            [corners],
-                            isClosed=True,
-                            color=(0, 255, 255),
-                            thickness=2,
+                            f"{conf:.2f}",
+                            (cx - 15, cy - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 255, 255),
+                            2,
                         )
-
-                        if hasattr(obb_data, "conf"):
-                            conf = obb_data.conf[i].cpu().item()
-                            cx = int(corners[:, 0].mean())
-                            cy = int(corners[:, 1].mean())
-                            cv2.putText(
-                                test_frame,
-                                f"{conf:.2f}",
-                                (cx - 15, cy - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.5,
-                                (0, 255, 255),
-                                2,
-                            )
 
                 # Draw detection centers and orientations
                 for i, m in enumerate(meas):
@@ -7908,8 +7910,7 @@ class MainWindow(QMainWindow):
             roi_npz_path = result.get("roi_npz_path")
         except Exception:
             pass
-        self.progress_bar.setVisible(False)
-        self.progress_label.setVisible(False)
+        self._refresh_progress_visibility()
         logger.info(f"Interpolated individual crops saved: {saved} (gaps: {gaps})")
         if mapping_path:
             logger.info(f"Interpolated mapping saved: {mapping_path}")
@@ -7921,6 +7922,7 @@ class MainWindow(QMainWindow):
         if self.interp_worker is not None and not self.interp_worker.isRunning():
             self.interp_worker.deleteLater()
             self.interp_worker = None
+            self._refresh_progress_visibility()
 
         if self._pending_finish_after_interp:
             self._pending_finish_after_interp = False
@@ -8799,8 +8801,8 @@ class MainWindow(QMainWindow):
         use_cached_detections = self.chk_use_cached_detections.isChecked()
 
         # Generate model-specific cache name
-        def get_cache_model_id() -> object:
-            """Generate a unique identifier for the current detection configuration."""
+        def get_inference_model_id() -> object:
+            """Generate an inference identity key shared by raw detection and TensorRT cache."""
             # Include resize factor in cache ID since detections are scale-dependent
             resize_factor = params.get("RESIZE_FACTOR", 1.0)
             resize_str = f"r{int(resize_factor * 100)}"
@@ -8859,16 +8861,11 @@ class MainWindow(QMainWindow):
                     fingerprint["mtime_ns"] = None
                 return fingerprint
 
-            # Common detection settings that affect detections for both methods.
+            # Common inference settings that affect detections for both methods.
             common_detection_keys = (
                 "DETECTION_METHOD",
                 "RESIZE_FACTOR",
                 "MAX_TARGETS",
-                "MAX_CONTOUR_MULTIPLIER",
-                "ENABLE_SIZE_FILTERING",
-                "MIN_OBJECT_SIZE",
-                "MAX_OBJECT_SIZE",
-                "ROI_MASK",
             )
 
             if detection_method == "yolo_obb":
@@ -8883,10 +8880,7 @@ class MainWindow(QMainWindow):
                     c if c.isalnum() or c in ("_", "-") else "_" for c in model_stem
                 )
 
-                yolo_detection_keys = (
-                    "YOLO_CONFIDENCE_THRESHOLD",
-                    "YOLO_IOU_THRESHOLD",
-                    "USE_CUSTOM_OBB_IOU_FILTERING",
+                yolo_inference_keys = (
                     "YOLO_TARGET_CLASSES",
                     "YOLO_DEVICE",
                     "ENABLE_TENSORRT",
@@ -8894,7 +8888,7 @@ class MainWindow(QMainWindow):
                 )
                 cache_params = {
                     "common": extract_hash_params(common_detection_keys),
-                    "yolo": extract_hash_params(yolo_detection_keys),
+                    "yolo": extract_hash_params(yolo_inference_keys),
                     "model": normalize_for_hash(model_fingerprint),
                 }
                 # Class order should not change cache identity.
@@ -8923,6 +8917,11 @@ class MainWindow(QMainWindow):
                 return f"yolo_{safe_model_stem}_{resize_str}_{h}"
 
             bg_detection_keys = (
+                "MAX_CONTOUR_MULTIPLIER",
+                "ENABLE_SIZE_FILTERING",
+                "MIN_OBJECT_SIZE",
+                "MAX_OBJECT_SIZE",
+                "ROI_MASK",
                 "BACKGROUND_PRIME_FRAMES",
                 "ENABLE_ADAPTIVE_BACKGROUND",
                 "BACKGROUND_LEARNING_RATE",
@@ -8958,10 +8957,10 @@ class MainWindow(QMainWindow):
             return f"bgsub_{resize_str}_{h}"
 
         base_name = os.path.splitext(video_path)[0]
-        model_id = get_cache_model_id()
-        # Share the exact detection hash with downstream detector code so
-        # TensorRT engine cache invalidation matches detection cache invalidation.
-        params["DETECTION_CACHE_MODEL_ID"] = model_id
+        model_id = get_inference_model_id()
+        # Share the exact inference hash with downstream detector code so
+        # TensorRT engine cache and raw detection cache are invalidated together.
+        params["INFERENCE_MODEL_ID"] = model_id
         base_prefix = os.path.basename(base_name) + "_detection_cache_"
 
         # Choose a writable directory for cache (prefer video dir, then CSV dir, else temp)
@@ -9093,7 +9092,7 @@ class MainWindow(QMainWindow):
             "YOLO_MODEL_PATH": yolo_path,
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
-            "USE_CUSTOM_OBB_IOU_FILTERING": self.chk_use_custom_obb_iou.isChecked(),
+            "USE_CUSTOM_OBB_IOU_FILTERING": True,
             "YOLO_TARGET_CLASSES": yolo_cls,
             "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
             "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[0]
@@ -9456,9 +9455,7 @@ class MainWindow(QMainWindow):
                 get_cfg("yolo_confidence_threshold", default=0.25)
             )
             self.spin_yolo_iou.setValue(get_cfg("yolo_iou_threshold", default=0.7))
-            self.chk_use_custom_obb_iou.setChecked(
-                get_cfg("use_custom_obb_iou_filtering", default=False)
-            )
+            self.chk_use_custom_obb_iou.setChecked(True)
             yolo_cls = get_cfg("yolo_target_classes", default=None)
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
@@ -10408,6 +10405,7 @@ class MainWindow(QMainWindow):
             self.dataset_worker = DatasetGenerationWorker(
                 video_path=video_path,
                 csv_path=csv_path,
+                detection_cache_path=self.current_detection_cache_path,
                 output_dir=output_dir,
                 dataset_name=dataset_name,
                 class_name=class_name,
@@ -10442,8 +10440,7 @@ class MainWindow(QMainWindow):
         self: object, dataset_dir: object, num_frames: object
     ) -> object:
         """Handle dataset generation completion."""
-        self.progress_bar.setVisible(False)
-        self.progress_label.setVisible(False)
+        self._refresh_progress_visibility()
 
         logger.info(f"Dataset generation complete: {dataset_dir}")
         logger.info(f"Frames exported: {num_frames}")
@@ -10462,8 +10459,7 @@ class MainWindow(QMainWindow):
 
     def on_dataset_error(self: object, error_message: object) -> object:
         """Handle dataset generation errors."""
-        self.progress_bar.setVisible(False)
-        self.progress_label.setVisible(False)
+        self._refresh_progress_visibility()
 
         logger.error(f"Dataset generation error: {error_message}")
         QMessageBox.critical(
@@ -10477,6 +10473,33 @@ class MainWindow(QMainWindow):
         if self.dataset_worker is not None and not self.dataset_worker.isRunning():
             self.dataset_worker.deleteLater()
             self.dataset_worker = None
+        self._refresh_progress_visibility()
+
+    def _is_worker_running(self, worker):
+        """Safely check whether a worker thread-like object is running."""
+        if worker is None:
+            return False
+        try:
+            return bool(worker.isRunning())
+        except Exception:
+            return False
+
+    def _has_active_progress_task(self) -> bool:
+        """Return True if any async task that owns progress UI is still active."""
+        return any(
+            [
+                self._is_worker_running(self.tracking_worker),
+                self._is_worker_running(getattr(self, "merge_worker", None)),
+                self._is_worker_running(self.dataset_worker),
+                self._is_worker_running(self.interp_worker),
+            ]
+        )
+
+    def _refresh_progress_visibility(self):
+        """Keep progress UI visible while any async tracking task is still running."""
+        has_active_task = self._has_active_progress_task()
+        self.progress_bar.setVisible(has_active_task)
+        self.progress_label.setVisible(has_active_task)
 
     def _cleanup_temporary_files(self):
         """Remove temporary files if cleanup is enabled."""

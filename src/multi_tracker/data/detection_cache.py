@@ -40,6 +40,7 @@ class DetectionCache:
         self._start_frame = start_frame
         self._end_frame = end_frame
         self._cached_frames = None
+        self._compatible = True
 
         if mode == "r" and self.cache_path.exists():
             logger.info(f"Loading detection cache from {self.cache_path}")
@@ -47,9 +48,29 @@ class DetectionCache:
             # Extract metadata
             if "metadata" in self._loaded_data:
                 metadata = self._loaded_data["metadata"].item()
+                cache_version = str(metadata.get("version", ""))
+                if cache_version != "2.0":
+                    logger.warning(
+                        f"Incompatible detection cache version '{cache_version}' "
+                        f"(expected '2.0'). Cache will be regenerated."
+                    )
+                    self._compatible = False
+                    self._loaded_data.close()
+                    self._loaded_data = None
+                    self._cached_frames = set()
+                    return
                 self._total_frames = metadata.get("total_frames", 0)
                 self._start_frame = metadata.get("start_frame", 0)
                 self._end_frame = metadata.get("end_frame", self._total_frames - 1)
+            else:
+                logger.warning(
+                    "Detection cache missing metadata. Cache will be regenerated."
+                )
+                self._compatible = False
+                self._loaded_data.close()
+                self._loaded_data = None
+                self._cached_frames = set()
+                return
             logger.info(
                 f"Cache loaded: {self._total_frames} frames (range: {self._start_frame}-{self._end_frame})"
             )
@@ -145,7 +166,8 @@ class DetectionCache:
                 "total_frames": self._total_frames,
                 "start_frame": self._start_frame,
                 "end_frame": self._end_frame,
-                "version": "1.1",
+                "version": "2.0",
+                "format": "raw_detections",
             }
         )
 
@@ -225,6 +247,10 @@ class DetectionCache:
     def get_total_frames(self: object) -> object:
         """Get total number of frames in cache."""
         return self._total_frames
+
+    def is_compatible(self):
+        """Return whether the loaded cache format is supported by current code."""
+        return self._compatible
 
     def get_frame_range(self: object) -> object:
         """Get the frame range stored in cache."""

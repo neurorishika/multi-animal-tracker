@@ -353,3 +353,25 @@ class TestFrameQualityScorer:
 
         # Should handle gracefully
         assert isinstance(score, (int, float))
+
+    def test_low_confidence_uses_frame_average_not_minimum(self):
+        """Low-confidence score should use average confidence across detections."""
+        params = {
+            "MAX_TARGETS": 4,
+            "DATASET_CONF_THRESHOLD": 0.5,
+            "METRIC_LOW_CONFIDENCE": True,
+            "METRIC_COUNT_MISMATCH": False,
+        }
+
+        scorer = FrameQualityScorer(params)
+
+        # One low outlier but high frame-average confidence.
+        detection_data = {
+            "confidences": [0.1, 0.9, 0.9, 0.9],
+            "count": 4,
+        }
+
+        score = scorer.score_frame(frame_id=0, detection_data=detection_data)
+
+        # Average is 0.7 (>0.5), so low-confidence metric should not trigger.
+        assert score == 0.0

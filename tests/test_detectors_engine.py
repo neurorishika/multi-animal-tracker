@@ -80,7 +80,7 @@ def test_create_detector_defaults_to_background_subtraction() -> None:
     assert isinstance(detector, mod.ObjectDetector)
 
 
-def test_tensorrt_engine_path_changes_with_model_identity_and_detection_id(
+def test_tensorrt_engine_path_follows_inference_model_id(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -119,7 +119,7 @@ def test_tensorrt_engine_path_changes_with_model_identity_and_detection_id(
         det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
         det.params = {
             "TENSORRT_MAX_BATCH_SIZE": 8,
-            "DETECTION_CACHE_MODEL_ID": model_id,
+            "INFERENCE_MODEL_ID": model_id,
         }
         det.device = "cuda:0"
         det.use_tensorrt = False
@@ -134,5 +134,91 @@ def test_tensorrt_engine_path_changes_with_model_identity_and_detection_id(
     path_b_id1 = build_engine_path(model_b, "id-A")
     path_a_id2 = build_engine_path(model_a, "id-B")
 
-    assert path_a_id1 != path_b_id1
+    # TensorRT cache key is intentionally aligned to inference identity.
+    # If INFERENCE_MODEL_ID is unchanged, engine path should be unchanged.
+    assert path_a_id1 == path_b_id1
     assert path_a_id1 != path_a_id2
+
+
+def test_yolo_raw_detection_cap_is_two_x_max_targets() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {"MAX_TARGETS": 6}
+    assert det._raw_detection_cap() == 12
+
+
+def test_filter_raw_detections_applies_conf_size_and_target_limit() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "YOLO_CONFIDENCE_THRESHOLD": 0.5,
+        "YOLO_IOU_THRESHOLD": 0.7,
+        "MAX_TARGETS": 2,
+        "ENABLE_SIZE_FILTERING": True,
+        "MIN_OBJECT_SIZE": 40.0,
+        "MAX_OBJECT_SIZE": 200.0,
+    }
+    det._shapely_warning_shown = False
+
+    meas = [
+        np.array([10.0, 10.0, 0.0], dtype=np.float32),
+        np.array([40.0, 40.0, 0.0], dtype=np.float32),
+        np.array([70.0, 70.0, 0.0], dtype=np.float32),
+        np.array([100.0, 100.0, 0.0], dtype=np.float32),
+    ]
+    sizes = [120.0, 80.0, 60.0, 20.0]
+    shapes = [(120.0, 1.2), (80.0, 1.1), (60.0, 1.0), (20.0, 1.0)]
+    confidences = [0.95, 0.8, 0.2, 0.9]
+    obb = [
+        np.array([[8, 8], [12, 8], [12, 12], [8, 12]], dtype=np.float32),
+        np.array([[38, 38], [42, 38], [42, 42], [38, 42]], dtype=np.float32),
+        np.array([[68, 68], [72, 68], [72, 72], [68, 72]], dtype=np.float32),
+        np.array([[98, 98], [102, 98], [102, 102], [98, 102]], dtype=np.float32),
+    ]
+    ids = [101.0, 102.0, 103.0, 104.0]
+
+    out = det.filter_raw_detections(
+        meas, sizes, shapes, confidences, obb, roi_mask=None, detection_ids=ids
+    )
+    out_meas, out_sizes, _, out_conf, _, out_ids = out
+
+    assert len(out_meas) == 2
+    assert out_sizes == [120.0, 80.0]
+    assert np.allclose(out_conf, [0.95, 0.8], rtol=1e-6, atol=1e-6)
+    assert out_ids == [101.0, 102.0]
+
+
+def test_filter_raw_detections_applies_roi_mask() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "YOLO_CONFIDENCE_THRESHOLD": 0.0,
+        "YOLO_IOU_THRESHOLD": 0.7,
+        "MAX_TARGETS": 4,
+        "ENABLE_SIZE_FILTERING": False,
+    }
+    det._shapely_warning_shown = False
+
+    roi = np.zeros((20, 20), dtype=np.uint8)
+    roi[:, :10] = 255
+
+    meas = [
+        np.array([5.0, 10.0, 0.0], dtype=np.float32),
+        np.array([15.0, 10.0, 0.0], dtype=np.float32),
+    ]
+    sizes = [50.0, 60.0]
+    shapes = [(50.0, 1.0), (60.0, 1.0)]
+    confidences = [0.6, 0.7]
+    obb = [
+        np.array([[4, 9], [6, 9], [6, 11], [4, 11]], dtype=np.float32),
+        np.array([[14, 9], [16, 9], [16, 11], [14, 11]], dtype=np.float32),
+    ]
+    ids = [1.0, 2.0]
+
+    out = det.filter_raw_detections(
+        meas, sizes, shapes, confidences, obb, roi_mask=roi, detection_ids=ids
+    )
+    _, out_sizes, _, out_conf, _, out_ids = out
+    assert out_sizes == [50.0]
+    assert np.allclose(out_conf, [0.6], rtol=1e-6, atol=1e-6)
+    assert out_ids == [1.0]
