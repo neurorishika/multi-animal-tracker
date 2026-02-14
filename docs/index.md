@@ -52,14 +52,14 @@ Welcome to the central documentation for:
 
 ```bash
 # Tracking GUI
-mat
-# or
 multianimaltracker
+# or
+mat
 
 # Pose labeling GUI
 posekit-labeler
 # or
-pkl
+pose
 ```
 
 ## Local Docs Workflow
