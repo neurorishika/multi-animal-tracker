@@ -1,5 +1,5 @@
 """
-SOTA Optimized Track Assigner.
+Optimized Track Assigner.
 Compatible with Vectorized Kalman Filter.
 Uses batch Mahalanobis distance and Numba-accelerated spatial assignment.
 """
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 @njit(cache=True, fastmath=True)
-def _compute_cost_matrix_sota(
+def _compute_cost_matrix_numba(
     N,
     M,
     meas_pos,
@@ -48,7 +48,7 @@ def _compute_cost_matrix_sota(
     Wasp,
     cull_threshold,
 ):
-    """SOTA Numba kernel using pre-calculated batch Inverse Covariances."""
+    """Numba kernel using pre-calculated batch Inverse Covariances."""
     cost = np.zeros((N, M), dtype=np.float32)
 
     for i in range(N):
@@ -89,7 +89,7 @@ def _compute_cost_matrix_sota(
 
 
 class TrackAssigner:
-    """Handles assignment of detections to tracks with SOTA optimizations."""
+    """Handles assignment of detections to tracks with optimizations."""
 
     def __init__(self, params, worker=None):
         self.params = params
@@ -145,7 +145,7 @@ class TrackAssigner:
                 )
             self._large_n_warning_shown = True
 
-        # SOTA: Get pre-calculated Inverse Innovation Covariances from Manager
+        # Get pre-calculated Inverse Innovation Covariances from Manager
         S_inv_batch = kf_manager.get_mahalanobis_matrices()
 
         # Pre-extract arrays for Numba (Avoids attribute access in loop)
@@ -193,8 +193,8 @@ class TrackAssigner:
             )
             return cost, spatial_candidates
 
-        # Default: Full SOTA Numba Matrix
-        cost = _compute_cost_matrix_sota(
+        # Default: Full Numba Matrix
+        cost = _compute_cost_matrix_numba(
             N,
             M,
             meas_pos,

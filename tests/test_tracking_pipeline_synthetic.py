@@ -18,7 +18,7 @@ assigner_mod = load_src_module(
 )
 
 
-def _compute_cost_matrix_sota_py(
+def _compute_cost_matrix_numba_py(
     N,
     M,
     meas_pos,
@@ -58,7 +58,7 @@ def _compute_cost_matrix_sota_py(
     return cost
 
 
-assigner_mod._compute_cost_matrix_sota = _compute_cost_matrix_sota_py
+assigner_mod._compute_cost_matrix_numba = _compute_cost_matrix_numba_py
 
 KalmanFilterManager = kalman_mod.KalmanFilterManager
 TrackAssigner = assigner_mod.TrackAssigner

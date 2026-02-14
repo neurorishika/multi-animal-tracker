@@ -67,6 +67,8 @@ class TrackingWorker(QThread):
         self.video_writer = None
         self.params_mutex = QMutex()
         self.parameters = {}
+        self.individual_properties_cache_path = None
+        self.individual_properties_id = ""
 
         # Stats tracking for FPS/ETA
         self.start_time = None
@@ -170,6 +172,430 @@ class TrackingWorker(QThread):
         """Emit current frame to GUI in RGB format."""
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.frame_signal.emit(rgb)
+
+    def _build_individual_properties_cache_path(
+        self, properties_id: str, start_frame: int, end_frame: int
+    ) -> Path:
+        """Build deterministic path for individual-properties cache artifact."""
+        if self.detection_cache_path:
+            base_dir = Path(self.detection_cache_path).parent
+        else:
+            base_dir = Path(self.video_path).parent
+        video_stem = Path(self.video_path).stem
+        fname = (
+            f"{video_stem}_individual_properties_{properties_id}_"
+            f"{int(start_frame)}_{int(end_frame)}.npz"
+        )
+        return base_dir / fname
+
+    def _extract_expanded_obb_crop(
+        self, frame: np.ndarray, corners: np.ndarray, padding_fraction: float
+    ):
+        """Extract axis-aligned crop around expanded OBB polygon.
+
+        Returns:
+            tuple[np.ndarray | None, tuple[int, int] | None]:
+                (crop, (x_min, y_min)) where offsets map crop-local -> frame-global.
+        """
+        if frame is None or corners is None:
+            return None, None
+        if corners.shape[0] < 4:
+            return None, None
+
+        frame_h, frame_w = frame.shape[:2]
+        centroid = corners.mean(axis=0)
+        expanded = corners.copy()
+        for i in range(4):
+            direction = corners[i] - centroid
+            expanded[i] = centroid + direction * (1.0 + padding_fraction)
+
+        expanded[:, 0] = np.clip(expanded[:, 0], 0, frame_w - 1)
+        expanded[:, 1] = np.clip(expanded[:, 1], 0, frame_h - 1)
+
+        x_min = max(0, int(np.floor(expanded[:, 0].min())))
+        x_max = min(frame_w, int(np.ceil(expanded[:, 0].max())) + 1)
+        y_min = max(0, int(np.floor(expanded[:, 1].min())))
+        y_max = min(frame_h, int(np.ceil(expanded[:, 1].max())) + 1)
+        if x_max <= x_min or y_max <= y_min:
+            return None, None
+
+        return frame[y_min:y_max, x_min:x_max].copy(), (x_min, y_min)
+
+    def _predict_pose_on_crops(
+        self,
+        pose_model,
+        crops,
+        model_device: str,
+        min_valid_conf: float,
+    ):
+        """Run pose model on crops and return per-crop summary + keypoints arrays."""
+        if not crops:
+            return []
+
+        results = pose_model.predict(
+            source=crops,
+            conf=1e-4,
+            iou=0.7,
+            max_det=1,
+            verbose=False,
+            device=model_device,
+        )
+
+        outputs = []
+        for result in results:
+            keypoints = getattr(result, "keypoints", None)
+            if keypoints is None:
+                outputs.append(
+                    {
+                        "keypoints": None,
+                        "mean_conf": 0.0,
+                        "valid_fraction": 0.0,
+                        "num_valid": 0,
+                        "num_keypoints": 0,
+                    }
+                )
+                continue
+
+            try:
+                xy = keypoints.xy
+                xy = xy.cpu().numpy() if hasattr(xy, "cpu") else np.asarray(xy)
+                conf = getattr(keypoints, "conf", None)
+                if conf is not None:
+                    conf = (
+                        conf.cpu().numpy() if hasattr(conf, "cpu") else np.asarray(conf)
+                    )
+            except Exception:
+                xy = np.empty((0, 0, 2), dtype=np.float32)
+                conf = None
+
+            if xy.ndim == 2:
+                xy = xy[None, :, :]
+            if conf is not None and conf.ndim == 1:
+                conf = conf[None, :]
+
+            if xy.size == 0:
+                outputs.append(
+                    {
+                        "keypoints": None,
+                        "mean_conf": 0.0,
+                        "valid_fraction": 0.0,
+                        "num_valid": 0,
+                        "num_keypoints": 0,
+                    }
+                )
+                continue
+
+            if conf is None:
+                conf = np.zeros((xy.shape[0], xy.shape[1]), dtype=np.float32)
+            mean_per_instance = np.nanmean(conf, axis=1)
+            best_idx = (
+                int(np.nanargmax(mean_per_instance)) if len(mean_per_instance) else 0
+            )
+            pred_xy = np.asarray(xy[best_idx], dtype=np.float32)
+            pred_conf = np.asarray(conf[best_idx], dtype=np.float32)
+            if pred_xy.ndim != 2 or pred_xy.shape[1] != 2:
+                outputs.append(
+                    {
+                        "keypoints": None,
+                        "mean_conf": 0.0,
+                        "valid_fraction": 0.0,
+                        "num_valid": 0,
+                        "num_keypoints": 0,
+                    }
+                )
+                continue
+
+            keypoints_arr = np.column_stack((pred_xy, pred_conf)).astype(np.float32)
+            if len(keypoints_arr) > 0:
+                valid_mask = keypoints_arr[:, 2] >= float(min_valid_conf)
+                mean_conf = float(np.nanmean(keypoints_arr[:, 2]))
+                valid_fraction = float(np.mean(valid_mask))
+                num_valid = int(np.sum(valid_mask))
+                num_keypoints = int(len(keypoints_arr))
+            else:
+                mean_conf = 0.0
+                valid_fraction = 0.0
+                num_valid = 0
+                num_keypoints = 0
+
+            outputs.append(
+                {
+                    "keypoints": keypoints_arr,
+                    "mean_conf": mean_conf,
+                    "valid_fraction": valid_fraction,
+                    "num_valid": num_valid,
+                    "num_keypoints": num_keypoints,
+                }
+            )
+
+        return outputs
+
+    def _precompute_individual_properties(
+        self,
+        detector,
+        params,
+        detection_cache,
+        start_frame,
+        end_frame,
+    ):
+        """
+        Precompute and cache per-detection individual properties for filtered detections.
+
+        Returns:
+            (cache_path, cache_hit)
+        """
+        from multi_tracker.core.identity.properties_cache import (
+            IndividualPropertiesCache,
+            compute_detection_hash,
+            compute_extractor_hash,
+            compute_filter_settings_hash,
+            compute_individual_properties_id,
+        )
+
+        pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
+        if not pose_enabled:
+            logger.info(
+                "Individual pipeline enabled but no extractor active; skipping properties precompute."
+            )
+            return None, True
+
+        if params.get("DETECTION_METHOD", "background_subtraction") != "yolo_obb":
+            raise RuntimeError(
+                "Individual properties precompute requires YOLO OBB detection mode."
+            )
+
+        detection_hash = compute_detection_hash(
+            params.get("INFERENCE_MODEL_ID", ""),
+            self.video_path,
+            start_frame,
+            end_frame,
+            detection_cache_version="2.0",
+        )
+        filter_hash = compute_filter_settings_hash(params)
+        extractor_hash = compute_extractor_hash(params)
+        properties_id = compute_individual_properties_id(
+            detection_hash, filter_hash, extractor_hash
+        )
+        cache_path = self._build_individual_properties_cache_path(
+            properties_id, start_frame, end_frame
+        )
+        self.individual_properties_id = str(properties_id)
+        self.individual_properties_cache_path = str(cache_path)
+        params["INDIVIDUAL_PROPERTIES_ID"] = properties_id
+        params["INDIVIDUAL_PROPERTIES_CACHE_PATH"] = str(cache_path)
+
+        if cache_path.exists():
+            existing = IndividualPropertiesCache(str(cache_path), mode="r")
+            try:
+                if existing.is_compatible():
+                    meta = existing.metadata or {}
+                    if (
+                        str(meta.get("individual_properties_id", "")) == properties_id
+                        and int(meta.get("start_frame", -1)) == int(start_frame)
+                        and int(meta.get("end_frame", -1)) == int(end_frame)
+                    ):
+                        logger.info(
+                            "Individual properties cache hit: %s", str(cache_path)
+                        )
+                        return str(cache_path), True
+            finally:
+                existing.close()
+
+        logger.info("=" * 80)
+        logger.info("PRECOMPUTE: Individual properties for filtered detections")
+        logger.info("=" * 80)
+
+        pose_model_path = str(params.get("POSE_MODEL_DIR", "")).strip()
+        if not pose_model_path:
+            raise RuntimeError("Pose extractor is enabled but model path is empty.")
+        pose_model_file = Path(pose_model_path).expanduser().resolve()
+        if not pose_model_file.exists():
+            raise RuntimeError(f"Pose model not found: {pose_model_file}")
+
+        from multi_tracker.core.identity.feature_runtime import create_pose_backend
+
+        pose_backend = create_pose_backend(params, out_root=str(cache_path.parent))
+
+        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
+        padding_fraction = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+
+        roi_mask = params.get("ROI_MASK", None)
+        if roi_mask is not None:
+            dims_cap = cv2.VideoCapture(self.video_path)
+            base_h = int(dims_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            base_w = int(dims_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            dims_cap.release()
+            target_w = max(1, int(base_w * resize_f))
+            target_h = max(1, int(base_h * resize_f))
+            if roi_mask.shape[1] != target_w or roi_mask.shape[0] != target_h:
+                roi_mask = cv2.resize(roi_mask, (target_w, target_h), cv2.INTER_NEAREST)
+
+        pose_cap = cv2.VideoCapture(self.video_path)
+        if not pose_cap.isOpened():
+            raise RuntimeError(
+                f"Failed to open video for pose precompute: {self.video_path}"
+            )
+        if start_frame > 0:
+            pose_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        cache_writer = IndividualPropertiesCache(str(cache_path), mode="w")
+        total_frames = max(1, end_frame - start_frame + 1)
+        precompute_start_ts = time.time()
+        try:
+            for rel_idx, frame_idx in enumerate(range(start_frame, end_frame + 1)):
+                (
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    raw_detection_ids,
+                ) = detection_cache.get_frame(frame_idx)
+
+                (
+                    meas,
+                    _sizes,
+                    _shapes,
+                    _confs,
+                    filtered_obb_corners,
+                    detection_ids,
+                ) = detector.filter_raw_detections(
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    roi_mask=roi_mask,
+                    detection_ids=raw_detection_ids,
+                )
+
+                ret, frame = pose_cap.read()
+                if not ret:
+                    raise RuntimeError(
+                        f"Failed to read frame {frame_idx} for individual precompute."
+                    )
+                if resize_f < 1.0:
+                    frame = cv2.resize(
+                        frame,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
+                    )
+
+                pose_mean_conf = []
+                pose_valid_fraction = []
+                pose_num_valid = []
+                pose_num_keypoints = []
+                pose_keypoints = []
+
+                if meas and filtered_obb_corners:
+                    crops = []
+                    crop_to_det = []
+                    pose_outputs = [{} for _ in range(len(meas))]
+                    crop_offsets = {}
+                    for det_idx, corners in enumerate(filtered_obb_corners):
+                        corners_arr = np.asarray(corners, dtype=np.float32)
+                        crop, crop_offset = self._extract_expanded_obb_crop(
+                            frame, corners_arr, padding_fraction
+                        )
+                        if crop is not None and crop.size > 0:
+                            crops.append(crop)
+                            crop_to_det.append(det_idx)
+                            crop_offsets[det_idx] = crop_offset
+
+                    if crops:
+                        pred_outputs = pose_backend.predict_crops(crops)
+                        for crop_idx, det_idx in enumerate(crop_to_det):
+                            if crop_idx < len(pred_outputs):
+                                out = pred_outputs[crop_idx]
+                                crop_offset = crop_offsets.get(det_idx)
+                                kpts = out.keypoints
+                                if (
+                                    kpts is not None
+                                    and crop_offset is not None
+                                    and len(kpts) > 0
+                                ):
+                                    x0, y0 = crop_offset
+                                    gkpts = np.asarray(kpts, dtype=np.float32).copy()
+                                    gkpts[:, 0] += float(x0)
+                                    gkpts[:, 1] += float(y0)
+                                else:
+                                    gkpts = kpts
+                                pose_outputs[det_idx] = {
+                                    "keypoints": gkpts,
+                                    "mean_conf": out.mean_conf,
+                                    "valid_fraction": out.valid_fraction,
+                                    "num_valid": out.num_valid,
+                                    "num_keypoints": out.num_keypoints,
+                                }
+
+                    for det_idx in range(len(meas)):
+                        out = pose_outputs[det_idx]
+                        pose_mean_conf.append(float(out.get("mean_conf", 0.0)))
+                        pose_valid_fraction.append(
+                            float(out.get("valid_fraction", 0.0))
+                        )
+                        pose_num_valid.append(int(out.get("num_valid", 0)))
+                        pose_num_keypoints.append(int(out.get("num_keypoints", 0)))
+                        pose_keypoints.append(out.get("keypoints", None))
+
+                cache_writer.add_frame(
+                    frame_idx,
+                    detection_ids,
+                    pose_mean_conf=pose_mean_conf,
+                    pose_valid_fraction=pose_valid_fraction,
+                    pose_num_valid=pose_num_valid,
+                    pose_num_keypoints=pose_num_keypoints,
+                    pose_keypoints=pose_keypoints,
+                )
+
+                processed_count = rel_idx + 1
+                if rel_idx % 10 == 0 or rel_idx == total_frames - 1:
+                    elapsed = max(1e-6, time.time() - precompute_start_ts)
+                    rate_fps = processed_count / elapsed
+                    remaining = max(0, total_frames - processed_count)
+                    eta = (remaining / rate_fps) if rate_fps > 1e-9 else 0.0
+                    pct = int((processed_count * 100) / total_frames)
+                    self.progress_signal.emit(
+                        pct,
+                        "Precomputing individual properties: "
+                        f"{processed_count}/{total_frames} "
+                        f"({rate_fps:.1f} fps, ETA {int(eta // 60):02d}:{int(eta % 60):02d})",
+                    )
+                    self.stats_signal.emit(
+                        {
+                            "phase": "individual_precompute",
+                            "fps": rate_fps,
+                            "elapsed": elapsed,
+                            "eta": eta,
+                        }
+                    )
+
+            cache_writer.save(
+                metadata={
+                    "individual_properties_id": properties_id,
+                    "detection_hash": detection_hash,
+                    "filter_settings_hash": filter_hash,
+                    "extractor_hash": extractor_hash,
+                    "pose_keypoint_names": list(
+                        getattr(pose_backend, "output_keypoint_names", []) or []
+                    ),
+                    "start_frame": int(start_frame),
+                    "end_frame": int(end_frame),
+                    "video_path": str(Path(self.video_path).expanduser().resolve()),
+                }
+            )
+            logger.info("Individual properties cache saved: %s", str(cache_path))
+        finally:
+            cache_writer.close()
+            pose_cap.release()
+            try:
+                pose_backend.close()
+            except Exception:
+                pass
+
+        return str(cache_path), False
 
     def _run_batched_detection_phase(
         self, cap, detection_cache, detector, params, start_frame, end_frame
@@ -449,10 +875,58 @@ class TrackingWorker(QThread):
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             logger.info(f"Seeking to start frame {start_frame}")
 
-        # Initialize individual dataset generator (supports both YOLO OBB and BG subtraction)
+        individual_pipeline_enabled = bool(
+            p.get(
+                "ENABLE_INDIVIDUAL_PIPELINE", p.get("ENABLE_IDENTITY_ANALYSIS", False)
+            )
+        )
+        individual_image_save_enabled = bool(
+            p.get(
+                "ENABLE_INDIVIDUAL_IMAGE_SAVE",
+                p.get("ENABLE_INDIVIDUAL_DATASET", False),
+            )
+        )
+
+        # Individual analysis is YOLO-only in this phase. Keep tracking behavior
+        # unchanged for background subtraction and skip analysis outputs there.
+        if individual_pipeline_enabled and detection_method != "yolo_obb":
+            msg = (
+                "Individual analysis requires YOLO OBB mode. "
+                "Background subtraction mode runs tracking without individual-analysis outputs."
+            )
+            logger.info(msg)
+            self.warning_signal.emit("Individual Analysis Disabled", msg)
+            individual_pipeline_enabled = False
+            individual_image_save_enabled = False
+
+        individual_precompute_enabled = bool(
+            individual_pipeline_enabled
+            and not self.backward_mode
+            and not self.preview_mode
+            and detection_method == "yolo_obb"
+            and p.get("ENABLE_POSE_EXTRACTOR", False)
+        )
+        if individual_precompute_enabled and not self.detection_cache_path:
+            logger.error(
+                "Individual precompute requires detection caching, but no detection cache path is configured."
+            )
+            cap.release()
+            self.finished_signal.emit(False, [], [])
+            return
+
+        # Individual precompute needs full raw detections before tracking starts.
+        # Force two-phase detection in YOLO mode so precompute can run on cached detections.
+        if individual_precompute_enabled and not use_batched_detection:
+            use_batched_detection = True
+            logger.info(
+                "Enabling batched YOLO prepass for individual-properties precompute."
+            )
+
+        # Initialize individual dataset generator for image persistence only.
         individual_generator = None
         if (
-            p.get("ENABLE_INDIVIDUAL_DATASET", False)
+            individual_pipeline_enabled
+            and individual_image_save_enabled
             and not self.backward_mode  # Only generate dataset in forward pass
             and not self.preview_mode  # Never generate in preview
         ):
@@ -508,7 +982,8 @@ class TrackingWorker(QThread):
             # Check if we should load existing cache
             cache_exists = os.path.exists(self.detection_cache_path)
             should_load_cache = self.backward_mode or (
-                self.use_cached_detections and cache_exists
+                (self.use_cached_detections or individual_precompute_enabled)
+                and cache_exists
             )
 
             if should_load_cache and cache_exists:
@@ -611,6 +1086,40 @@ class TrackingWorker(QThread):
             logger.info("=" * 80)
             logger.info("PHASE 2: Tracking and Visualization")
             logger.info("=" * 80)
+
+        if individual_precompute_enabled:
+            if detection_cache is None or not use_cached_detections:
+                logger.error(
+                    "Individual properties precompute requires cached raw detections."
+                )
+                if detection_cache:
+                    detection_cache.close()
+                cap.release()
+                if self.video_writer:
+                    self.video_writer.release()
+                self.finished_signal.emit(False, [], [])
+                return
+
+            try:
+                props_path, cache_hit = self._precompute_individual_properties(
+                    detector, p, detection_cache, start_frame, end_frame
+                )
+                if props_path:
+                    state = "hit" if cache_hit else "miss"
+                    logger.info("Individual properties cache %s: %s", state, props_path)
+            except Exception as exc:
+                logger.exception("Individual properties precompute failed.")
+                self.warning_signal.emit(
+                    "Individual Precompute Failed",
+                    f"Aborting tracking run because individual precompute failed:\n{exc}",
+                )
+                if detection_cache:
+                    detection_cache.close()
+                cap.release()
+                if self.video_writer:
+                    self.video_writer.release()
+                self.finished_signal.emit(False, [], [])
+                return
 
         # === 2. FRAME PROCESSING LOOP ===
         # Determine whether to use frame prefetcher

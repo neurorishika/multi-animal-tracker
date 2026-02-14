@@ -1,5 +1,5 @@
 """
-SOTA Biologically-Constrained Vectorized Kalman Filter.
+Biologically-Constrained Vectorized Kalman Filter.
 Features:
 1. Anisotropic Process Noise (Longitudinal vs. Lateral uncertainty)
 2. Velocity Damping (Friction) for stop-and-go behavior
@@ -43,7 +43,7 @@ def _predict_kernel(X, P, F, Q_base, q_long, q_lat):
         # 3. Covariance Prediction: P = FPF^T + Qi
         P[i] = F @ P[i] @ F.T + Qi
 
-        # 4. SOTA Stability: Variance Floor
+        # 4. Stability: Variance Floor
         # Prevents the filter from 'collapsing' during long pauses
         for j in range(5):
             if P[i, j, j] < 0.1:
@@ -142,7 +142,7 @@ class KalmanFilterManager:
 
         # 3. Process Noise Parameters
         q_sigma = params.get("KALMAN_NOISE_COVARIANCE", 0.03)
-        # SOTA: High noise forward, low noise sideways (anisotropic)
+        # High noise forward, low noise sideways (anisotropic)
         q_long_multiplier = params.get("KALMAN_LONGITUDINAL_NOISE_MULTIPLIER", 5.0)
         q_lat_multiplier = params.get("KALMAN_LATERAL_NOISE_MULTIPLIER", 0.1)
         self.q_long = q_sigma * q_long_multiplier

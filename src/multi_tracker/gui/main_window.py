@@ -12,6 +12,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import tempfile
 from collections import defaultdict
@@ -57,6 +58,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..core.identity.analysis import IndividualDatasetGenerator
+from ..core.identity.properties_export import (
+    POSE_SUMMARY_COLUMNS,
+    augment_trajectories_with_pose_cache,
+    build_pose_keypoint_labels,
+    flatten_pose_keypoints_row,
+    merge_interpolated_pose_df,
+    pose_wide_columns_for_labels,
+)
 from ..core.post.processing import (
     interpolate_trajectories,
     process_trajectories,
@@ -66,7 +75,7 @@ from ..core.tracking.worker import TrackingWorker
 from ..data.csv_writer import CSVWriterThread
 from ..data.detection_cache import DetectionCache
 from ..utils.geometry import fit_circle_to_points, wrap_angle_degs
-from ..utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
+from ..utils.gpu_utils import MPS_AVAILABLE, ROCM_AVAILABLE, TORCH_CUDA_AVAILABLE
 from .dialogs.train_yolo_dialog import TrainYoloDialog
 from .widgets.histograms import HistogramPanel
 
@@ -102,6 +111,7 @@ class MergeWorker(QThread):
 
     def run(self: object) -> object:
         """run method documentation."""
+        # pose_backend = None
         try:
             self.progress_signal.emit(10, "Preparing trajectories...")
 
@@ -269,6 +279,7 @@ class InterpolatedCropsWorker(QThread):
 
     def run(self: object) -> object:
         """run method documentation."""
+        pose_backend = None
         try:
             if not self.csv_path or not os.path.exists(self.csv_path):
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
@@ -311,10 +322,38 @@ class InterpolatedCropsWorker(QThread):
             )
             gen.enabled = True
 
+            pose_enabled = bool(self.params.get("ENABLE_POSE_EXTRACTOR", False))
+            pose_kpt_source_names = []
+            pose_kpt_labels = []
+            if pose_enabled:
+                from ..core.identity.feature_runtime import create_pose_backend
+
+                try:
+                    pose_backend = create_pose_backend(
+                        self.params, out_root=str(Path(output_dir).expanduser())
+                    )
+                    pose_kpt_source_names = list(
+                        getattr(pose_backend, "output_keypoint_names", []) or []
+                    )
+                    pose_kpt_labels = build_pose_keypoint_labels(
+                        pose_kpt_source_names, len(pose_kpt_source_names)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Interpolated pose analysis disabled (backend init failed): %s",
+                        exc,
+                    )
+                    pose_backend = None
+
             cap = cv2.VideoCapture(self.video_path)
             if not cap.isOpened():
                 if detection_cache:
                     detection_cache.close()
+                if pose_backend is not None:
+                    try:
+                        pose_backend.close()
+                    except Exception:
+                        pass
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
                 return
 
@@ -338,6 +377,7 @@ class InterpolatedCropsWorker(QThread):
             occluded_rows = 0
             interp_runs = 0
             interp_rows = []
+            interp_pose_rows = []
             roi_rows = []
             roi_corners = []
             frame_tasks = defaultdict(list)
@@ -472,6 +512,7 @@ class InterpolatedCropsWorker(QThread):
                     current_pos = f + 1
                     if not ret or frame is None:
                         continue
+                    frame_pose_tasks = []
                     for task in frame_tasks[f]:
                         filename = gen.save_interpolated_crop(
                             frame=frame,
@@ -523,6 +564,90 @@ class InterpolatedCropsWorker(QThread):
                                 }
                             )
                             roi_corners.append(corners)
+                            if pose_backend is not None:
+                                pose_crop = None
+                                pose_crop_info = None
+                                try:
+                                    pose_crop, pose_crop_info = (
+                                        gen._extract_obb_masked_crop(
+                                            frame,
+                                            corners,
+                                            frame.shape[0],
+                                            frame.shape[1],
+                                        )
+                                    )
+                                except Exception:
+                                    pose_crop = None
+                                    pose_crop_info = None
+                                if pose_crop is not None and pose_crop.size > 0:
+                                    frame_pose_tasks.append(
+                                        {
+                                            "task": task,
+                                            "filename": filename,
+                                            "crop": pose_crop,
+                                            "crop_info": pose_crop_info,
+                                        }
+                                    )
+
+                    if pose_backend is not None and frame_pose_tasks:
+                        pose_results = pose_backend.predict_crops(
+                            [entry["crop"] for entry in frame_pose_tasks]
+                        )
+                        for pidx, entry in enumerate(frame_pose_tasks):
+                            pose_out = (
+                                pose_results[pidx] if pidx < len(pose_results) else None
+                            )
+                            pose_mean_conf = 0.0
+                            pose_valid_fraction = 0.0
+                            pose_num_valid = 0
+                            pose_num_keypoints = 0
+                            pose_wide = {}
+                            if pose_out is not None:
+                                pose_mean_conf = float(
+                                    getattr(pose_out, "mean_conf", 0.0)
+                                )
+                                pose_valid_fraction = float(
+                                    getattr(pose_out, "valid_fraction", 0.0)
+                                )
+                                pose_num_valid = int(getattr(pose_out, "num_valid", 0))
+                                pose_num_keypoints = int(
+                                    getattr(pose_out, "num_keypoints", 0)
+                                )
+                                keypoints = getattr(pose_out, "keypoints", None)
+                                crop_info = entry.get("crop_info") or {}
+                                crop_bbox = crop_info.get("crop_bbox")
+                                if (
+                                    keypoints is not None
+                                    and crop_bbox is not None
+                                    and len(crop_bbox) >= 2
+                                    and len(keypoints) > 0
+                                ):
+                                    x0 = float(crop_bbox[0])
+                                    y0 = float(crop_bbox[1])
+                                    gkpts = np.asarray(
+                                        keypoints, dtype=np.float32
+                                    ).copy()
+                                    gkpts[:, 0] += x0
+                                    gkpts[:, 1] += y0
+                                    if len(gkpts) > len(pose_kpt_labels):
+                                        pose_kpt_labels = build_pose_keypoint_labels(
+                                            pose_kpt_source_names, len(gkpts)
+                                        )
+                                    pose_wide = flatten_pose_keypoints_row(
+                                        gkpts, pose_kpt_labels
+                                    )
+
+                            pose_row = {
+                                "frame_id": int(entry["task"]["frame_id"]),
+                                "trajectory_id": int(entry["task"]["traj_id"]),
+                                "filename": entry["filename"],
+                                "PoseMeanConf": pose_mean_conf,
+                                "PoseValidFraction": pose_valid_fraction,
+                                "PoseNumValid": pose_num_valid,
+                                "PoseNumKeypoints": pose_num_keypoints,
+                            }
+                            pose_row.update(pose_wide)
+                            interp_pose_rows.append(pose_row)
 
                     if idx % 25 == 0 or idx == total_frames:
                         progress = int((idx / total_frames) * 100)
@@ -539,6 +664,7 @@ class InterpolatedCropsWorker(QThread):
             mapping_path = None
             roi_csv_path = None
             roi_npz_path = None
+            pose_csv_path = None
             if interp_rows and gen.crops_dir is not None:
                 mapping_path = gen.crops_dir.parent / "interpolated_mapping.csv"
                 try:
@@ -624,7 +750,31 @@ class InterpolatedCropsWorker(QThread):
                     )
                 except Exception:
                     pass
+            if interp_pose_rows and gen.crops_dir is not None:
+                pose_csv_path = gen.crops_dir.parent / "interpolated_pose.csv"
+                try:
+                    pose_fieldnames = [
+                        "frame_id",
+                        "trajectory_id",
+                        "filename",
+                        *POSE_SUMMARY_COLUMNS,
+                        *pose_wide_columns_for_labels(pose_kpt_labels),
+                    ]
+                    with open(pose_csv_path, "w", newline="") as f:
+                        writer = csv.DictWriter(
+                            f,
+                            fieldnames=pose_fieldnames,
+                        )
+                        writer.writeheader()
+                        writer.writerows(interp_pose_rows)
+                except Exception:
+                    pose_csv_path = None
             gen.finalize()
+            if pose_backend is not None:
+                try:
+                    pose_backend.close()
+                except Exception:
+                    pass
             self.finished_signal.emit(
                 {
                     "saved": interp_saved,
@@ -632,9 +782,15 @@ class InterpolatedCropsWorker(QThread):
                     "mapping_path": str(mapping_path) if mapping_path else None,
                     "roi_csv_path": str(roi_csv_path) if roi_csv_path else None,
                     "roi_npz_path": str(roi_npz_path) if roi_npz_path else None,
+                    "pose_csv_path": str(pose_csv_path) if pose_csv_path else None,
                 }
             )
         except Exception:
+            if pose_backend is not None:
+                try:
+                    pose_backend.close()
+                except Exception:
+                    pass
             self.finished_signal.emit({"saved": 0, "gaps": 0})
 
 
@@ -1297,6 +1453,11 @@ class MainWindow(QMainWindow):
         self.session_log_handler = None  # Track current session log file handler
         self._individual_dataset_run_id = None
         self.current_detection_cache_path = None
+        self.current_individual_properties_cache_path = None
+        self.current_interpolated_pose_csv_path = None
+        self._pending_pose_export_csv_path = None
+        self._pending_video_csv_path = None
+        self._pending_video_generation = False
 
         # Preview frame for live image adjustments
         self.preview_frame_original = None  # Original frame without adjustments
@@ -3764,6 +3925,101 @@ class MainWindow(QMainWindow):
         self.lbl_arrow_length = QLabel("Arrow length (body lengths)")
         f_video.addRow(self.lbl_arrow_length, self.spin_arrow_length)
 
+        f_video.addRow(QLabel(""))  # Spacer
+        self.lbl_video_pose_settings = QLabel("<b>Pose Overlay Settings</b>")
+        f_video.addRow(self.lbl_video_pose_settings)
+
+        self.check_video_show_pose = QCheckBox("Show Pose Keypoints/Skeleton")
+        self.check_video_show_pose.setChecked(
+            bool(self.advanced_config.get("video_show_pose", True))
+        )
+        self.check_video_show_pose.setToolTip(
+            "Overlay pose keypoints/skeleton in exported video.\n"
+            "Requires pose inference to be enabled in Analyze Individuals."
+        )
+        f_video.addRow("", self.check_video_show_pose)
+
+        self.combo_video_pose_color_mode = QComboBox()
+        self.combo_video_pose_color_mode.addItems(["Track Color", "Fixed Color"])
+        color_mode = str(
+            self.advanced_config.get("video_pose_color_mode", "track")
+        ).strip()
+        self.combo_video_pose_color_mode.setCurrentIndex(
+            0 if color_mode == "track" else 1
+        )
+        self.combo_video_pose_color_mode.setToolTip(
+            "Pose color source for video overlay."
+        )
+        self.combo_video_pose_color_mode.currentIndexChanged.connect(
+            self._sync_video_pose_overlay_controls
+        )
+        self.lbl_video_pose_color_mode = QLabel("Pose color mode")
+        f_video.addRow(self.lbl_video_pose_color_mode, self.combo_video_pose_color_mode)
+
+        pose_color_row = QHBoxLayout()
+        self.btn_video_pose_color = QPushButton()
+        self.btn_video_pose_color.setMaximumWidth(60)
+        self.btn_video_pose_color.setMinimumHeight(28)
+        self.btn_video_pose_color.clicked.connect(self._select_video_pose_color)
+        self.lbl_video_pose_color = QLabel("")
+        pose_color_row.addWidget(self.btn_video_pose_color)
+        pose_color_row.addWidget(self.lbl_video_pose_color)
+        pose_color_row.addStretch()
+        pose_color_cfg = self.advanced_config.get("video_pose_color", [255, 255, 255])
+        if isinstance(pose_color_cfg, (list, tuple)) and len(pose_color_cfg) == 3:
+            self._video_pose_color = tuple(
+                int(max(0, min(255, float(v)))) for v in pose_color_cfg
+            )
+        else:
+            self._video_pose_color = (255, 255, 255)
+        self._update_video_pose_color_button()
+        self.lbl_video_pose_color_label = QLabel("Fixed pose color (BGR)")
+        f_video.addRow(self.lbl_video_pose_color_label, pose_color_row)
+
+        self.spin_video_pose_point_radius = QSpinBox()
+        self.spin_video_pose_point_radius.setRange(1, 20)
+        self.spin_video_pose_point_radius.setValue(
+            int(self.advanced_config.get("video_pose_point_radius", 3))
+        )
+        self.spin_video_pose_point_radius.setToolTip(
+            "Radius of rendered pose keypoints in pixels."
+        )
+        self.lbl_video_pose_point_radius = QLabel("Pose keypoint radius (px)")
+        f_video.addRow(
+            self.lbl_video_pose_point_radius, self.spin_video_pose_point_radius
+        )
+
+        self.spin_video_pose_point_thickness = QSpinBox()
+        self.spin_video_pose_point_thickness.setRange(-1, 10)
+        self.spin_video_pose_point_thickness.setValue(
+            int(self.advanced_config.get("video_pose_point_thickness", -1))
+        )
+        self.spin_video_pose_point_thickness.setToolTip(
+            "Keypoint circle thickness (-1 fills circles)."
+        )
+        self.lbl_video_pose_point_thickness = QLabel("Pose keypoint thickness")
+        f_video.addRow(
+            self.lbl_video_pose_point_thickness, self.spin_video_pose_point_thickness
+        )
+
+        self.spin_video_pose_line_thickness = QSpinBox()
+        self.spin_video_pose_line_thickness.setRange(1, 12)
+        self.spin_video_pose_line_thickness.setValue(
+            int(self.advanced_config.get("video_pose_line_thickness", 2))
+        )
+        self.spin_video_pose_line_thickness.setToolTip(
+            "Skeleton edge line thickness in pixels."
+        )
+        self.lbl_video_pose_line_thickness = QLabel("Pose skeleton thickness (px)")
+        f_video.addRow(
+            self.lbl_video_pose_line_thickness, self.spin_video_pose_line_thickness
+        )
+
+        self.lbl_video_pose_disabled_hint = self._create_help_label(
+            "Enable Pose Extraction in Analyze Individuals to edit pose overlay settings."
+        )
+        f_video.addRow("", self.lbl_video_pose_disabled_hint)
+
         vl_video.addLayout(f_video)
         vbox.addWidget(g_video)
 
@@ -3783,6 +4039,20 @@ class MainWindow(QMainWindow):
         self.lbl_text_scale.setVisible(False)
         self.spin_arrow_length.setVisible(False)
         self.lbl_arrow_length.setVisible(False)
+        self.lbl_video_pose_settings.setVisible(False)
+        self.check_video_show_pose.setVisible(False)
+        self.lbl_video_pose_color_mode.setVisible(False)
+        self.combo_video_pose_color_mode.setVisible(False)
+        self.lbl_video_pose_color_label.setVisible(False)
+        self.btn_video_pose_color.setVisible(False)
+        self.lbl_video_pose_color.setVisible(False)
+        self.lbl_video_pose_point_radius.setVisible(False)
+        self.spin_video_pose_point_radius.setVisible(False)
+        self.lbl_video_pose_point_thickness.setVisible(False)
+        self.spin_video_pose_point_thickness.setVisible(False)
+        self.lbl_video_pose_line_thickness.setVisible(False)
+        self.spin_video_pose_line_thickness.setVisible(False)
+        self.lbl_video_pose_disabled_hint.setVisible(False)
 
         # Histograms
         g_hist = QGroupBox("Which live metrics should be displayed?")
@@ -4109,16 +4379,16 @@ class MainWindow(QMainWindow):
         vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
         vl_ind_dataset.addWidget(
             self._create_help_label(
-                "Generate a clean dataset of isolated individuals during tracking.\n\n"
-                "• Extracts OBB-masked crops in real-time as tracking runs\n"
-                "• Only the detected animal (within OBB) is visible, rest is masked\n"
-                "• Perfect for training identity classifiers or pose models\n\n"
-                "Note: Only available when using YOLO OBB detection."
+                "Persist individual-analysis crop images to disk.\n\n"
+                "• This save option depends on Analyze Individuals pipeline being enabled\n"
+                "• Crops contain only the detected animal (OBB-masked)\n"
+                "• Intended for downstream labeling/training workflows\n\n"
+                "Note: Available only in YOLO OBB mode."
             )
         )
 
         self.chk_enable_individual_dataset = QCheckBox(
-            "Enable Real-time Individual Dataset Generation"
+            "Save Individual Analysis Images to Disk"
         )
         self.chk_enable_individual_dataset.setStyleSheet(
             "font-weight: bold; font-size: 13px; color: #4a9eff;"
@@ -4176,67 +4446,11 @@ class MainWindow(QMainWindow):
         )
         ind_output_layout.addRow("Save every N frames", self.spin_individual_interval)
 
-        self.chk_individual_interpolate = QCheckBox(
-            "Interpolate Occluded Frames After Tracking"
-        )
-        self.chk_individual_interpolate.setChecked(True)
-        self.chk_individual_interpolate.setToolTip(
-            "After tracking completes, fill occluded gaps by interpolating center/size/angle\n"
-            "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
-        )
-        ind_output_layout.addRow(
-            "Interpolate occluded frames", self.chk_individual_interpolate
-        )
-
-        # Padding fraction (only crop parameter needed - size is determined by OBB)
-        self.spin_individual_padding = QDoubleSpinBox()
-        self.spin_individual_padding.setRange(0.0, 0.5)
-        self.spin_individual_padding.setValue(0.1)
-        self.spin_individual_padding.setSingleStep(0.05)
-        self.spin_individual_padding.setDecimals(2)
-        self.spin_individual_padding.setToolTip(
-            "Padding around OBB bounding box as fraction of size.\n"
-            "0.1 = 10% padding on each side."
-        )
-        ind_output_layout.addRow(
-            "What padding fraction should be used?", self.spin_individual_padding
-        )
-
-        # Background color for masked regions
-        bg_color_layout = QHBoxLayout()
-
-        # Color display and picker button
-        self.btn_background_color = QPushButton()
-        self.btn_background_color.setMaximumWidth(60)
-        self.btn_background_color.setMinimumHeight(30)
-        self.btn_background_color.setToolTip("Click to choose background color")
-        self.btn_background_color.clicked.connect(
-            self._select_individual_background_color
-        )
-        self._background_color = (0, 0, 0)  # BGR: black
-
-        bg_color_layout.addWidget(self.btn_background_color)
-
-        # Compute median color button
-        self.btn_median_color = QPushButton("Use Median from Frame")
-        self.btn_median_color.setToolTip(
-            "Compute median color from the preview frame and use as background"
-        )
-        self.btn_median_color.clicked.connect(self._compute_median_background_color)
-        bg_color_layout.addWidget(self.btn_median_color)
-
-        bg_color_layout.addStretch()
-
-        # Color value display
-        self.lbl_background_color = QLabel("(0, 0, 0)")
-        self.lbl_background_color.setToolTip("Current background color in BGR format")
-        bg_color_layout.addWidget(self.lbl_background_color)
-
-        # Now update the button display with all widgets created
-        self._update_background_color_button()
-
-        ind_output_layout.addRow(
-            "Which background color should crops use?", bg_color_layout
+        vl_ind_dataset.addWidget(
+            self._create_help_label(
+                "Interpolation, padding, and crop background settings are configured in:\n"
+                "Analyze Individuals -> Individual Analysis Pipeline Settings"
+            )
         )
 
         vl_ind_dataset.addWidget(self.ind_output_group)
@@ -4301,16 +4515,18 @@ class MainWindow(QMainWindow):
         info_layout = QVBoxLayout(info_box)
         info_layout.addWidget(
             self._create_help_label(
-                "Process individual animals for identity classification and dataset generation.\n\n"
-                "• Real-time Identity: Classify individual animals during tracking (color tags, AprilTags)\n"
-                "• Real-time Dataset: Generate OBB-masked crops during YOLO tracking for pose/identity training"
+                "Run the individual-analysis pipeline during tracking.\n\n"
+                "• Computes per-detection individual properties for filtered detections\n"
+                "• Supports pose extraction (YOLO/SLEAP) with reusable caches\n"
+                "• Individual analysis is available only in YOLO OBB mode\n"
+                "• Background-subtraction mode is intended for YOLO bootstrap dataset creation"
             )
         )
         form.addWidget(info_box)
 
         # Main Enable Checkbox
         self.chk_enable_individual_analysis = QCheckBox(
-            "Enable Real-time Identity Classification"
+            "Enable Individual Analysis Pipeline (YOLO OBB only)"
         )
         self.chk_enable_individual_analysis.setStyleSheet(
             "font-weight: bold; font-size: 13px; color: #4a9eff;"
@@ -4319,6 +4535,13 @@ class MainWindow(QMainWindow):
             self._on_individual_analysis_toggled
         )
         form.addWidget(self.chk_enable_individual_analysis)
+
+        self.lbl_individual_yolo_only_notice = self._create_help_label(
+            "Individual analysis requires YOLO OBB mode.\n"
+            "Switch detection method to YOLO OBB to enable this pipeline."
+        )
+        self.lbl_individual_yolo_only_notice.setVisible(False)
+        form.addWidget(self.lbl_individual_yolo_only_notice)
 
         # Identity Classification Section
         self.g_identity = QGroupBox("Should identity classification run in real time?")
@@ -4458,12 +4681,191 @@ class MainWindow(QMainWindow):
 
         form.addWidget(self.g_identity)
 
+        # Hide legacy identity skeleton UI while keeping controls available for
+        # backward-compatible config load/save paths.
+        self.g_identity.setVisible(False)
+
+        self.g_individual_pipeline_common = QGroupBox(
+            "Individual Analysis Pipeline Settings"
+        )
+        fl_common = QFormLayout(self.g_individual_pipeline_common)
+
+        self.chk_individual_interpolate = QCheckBox(
+            "Interpolate Occluded Frames After Tracking"
+        )
+        self.chk_individual_interpolate.setChecked(True)
+        self.chk_individual_interpolate.setToolTip(
+            "After tracking completes, fill occluded gaps by interpolating center/size/angle\n"
+            "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
+        )
+        fl_common.addRow("Interpolate occluded frames", self.chk_individual_interpolate)
+
+        self.spin_individual_padding = QDoubleSpinBox()
+        self.spin_individual_padding.setRange(0.0, 0.5)
+        self.spin_individual_padding.setValue(0.1)
+        self.spin_individual_padding.setSingleStep(0.05)
+        self.spin_individual_padding.setDecimals(2)
+        self.spin_individual_padding.setToolTip(
+            "Padding around OBB bounding box as fraction of size.\n"
+            "0.1 = 10% padding on each side."
+        )
+        fl_common.addRow("Crop padding fraction", self.spin_individual_padding)
+
+        bg_color_layout = QHBoxLayout()
+        self.btn_background_color = QPushButton()
+        self.btn_background_color.setMaximumWidth(60)
+        self.btn_background_color.setMinimumHeight(30)
+        self.btn_background_color.setToolTip("Click to choose background color")
+        self.btn_background_color.clicked.connect(
+            self._select_individual_background_color
+        )
+        self._background_color = (0, 0, 0)  # BGR
+        bg_color_layout.addWidget(self.btn_background_color)
+
+        self.btn_median_color = QPushButton("Use Median from Frame")
+        self.btn_median_color.setToolTip(
+            "Compute median color from the preview frame and use as background"
+        )
+        self.btn_median_color.clicked.connect(self._compute_median_background_color)
+        bg_color_layout.addWidget(self.btn_median_color)
+        bg_color_layout.addStretch()
+
+        self.lbl_background_color = QLabel("(0, 0, 0)")
+        self.lbl_background_color.setToolTip("Current background color in BGR format")
+        bg_color_layout.addWidget(self.lbl_background_color)
+        self._update_background_color_button()
+        fl_common.addRow("Crop background color", bg_color_layout)
+
+        form.addWidget(self.g_individual_pipeline_common)
+
+        self.g_pose_runtime = QGroupBox("Pose Extraction Settings")
+        vl_pose = QVBoxLayout(self.g_pose_runtime)
+        vl_pose.addWidget(
+            self._create_help_label(
+                "Minimum runtime pose settings used by the individual-analysis pipeline."
+            )
+        )
+        fl_pose = QFormLayout(None)
+        fl_pose.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.chk_enable_pose_extractor = QCheckBox("Enable Pose Extraction")
+        self.chk_enable_pose_extractor.setChecked(False)
+        self.chk_enable_pose_extractor.toggled.connect(
+            self._sync_video_pose_overlay_controls
+        )
+        fl_pose.addRow(self.chk_enable_pose_extractor)
+
+        self.combo_pose_model_type = QComboBox()
+        self.combo_pose_model_type.addItems(["YOLO", "SLEAP"])
+        self.combo_pose_model_type.setToolTip("Pose backend for individual analysis.")
+        self.combo_pose_model_type.currentIndexChanged.connect(
+            self._sync_pose_backend_ui
+        )
+        fl_pose.addRow("Pose model type", self.combo_pose_model_type)
+
+        h_pose_model = QHBoxLayout()
+        self.line_pose_model_dir = QLineEdit()
+        self.line_pose_model_dir.setPlaceholderText("Select pose model path...")
+        self.btn_browse_pose_model_dir = QPushButton("Browse...")
+        self.btn_browse_pose_model_dir.clicked.connect(self._select_pose_model_dir)
+        h_pose_model.addWidget(self.line_pose_model_dir)
+        h_pose_model.addWidget(self.btn_browse_pose_model_dir)
+        fl_pose.addRow("Pose model path", h_pose_model)
+
+        self.spin_pose_min_kpt_conf_valid = QDoubleSpinBox()
+        self.spin_pose_min_kpt_conf_valid.setRange(0.0, 1.0)
+        self.spin_pose_min_kpt_conf_valid.setSingleStep(0.05)
+        self.spin_pose_min_kpt_conf_valid.setDecimals(2)
+        self.spin_pose_min_kpt_conf_valid.setValue(0.2)
+        self.spin_pose_min_kpt_conf_valid.setToolTip(
+            "Minimum per-keypoint confidence to consider a keypoint valid."
+        )
+        fl_pose.addRow("Min keypoint confidence", self.spin_pose_min_kpt_conf_valid)
+
+        h_pose_skeleton = QHBoxLayout()
+        self.line_pose_skeleton_file = QLineEdit()
+        self.line_pose_skeleton_file.setPlaceholderText(
+            "Select skeleton JSON (keypoint_names + skeleton_edges)..."
+        )
+        default_skeleton = str(
+            self.advanced_config.get("pose_skeleton_file", "")
+        ).strip()
+        if not default_skeleton:
+            candidate = (
+                Path(__file__).resolve().parents[3]
+                / "configs"
+                / "skeletons"
+                / "ooceraea_biroi.json"
+            )
+            if candidate.exists():
+                default_skeleton = str(candidate)
+        if default_skeleton:
+            self.line_pose_skeleton_file.setText(default_skeleton)
+        self.btn_browse_pose_skeleton_file = QPushButton("Browse...")
+        self.btn_browse_pose_skeleton_file.clicked.connect(
+            self._select_pose_skeleton_file
+        )
+        h_pose_skeleton.addWidget(self.line_pose_skeleton_file)
+        h_pose_skeleton.addWidget(self.btn_browse_pose_skeleton_file)
+        fl_pose.addRow("Skeleton file", h_pose_skeleton)
+
+        self.line_pose_ignore_keypoints = QLineEdit()
+        self.line_pose_ignore_keypoints.setPlaceholderText("e.g. 0,2,left_antenna")
+        self.line_pose_ignore_keypoints.setToolTip(
+            "Comma-separated keypoint indices and/or names to ignore in outputs."
+        )
+        fl_pose.addRow("Ignore keypoints", self.line_pose_ignore_keypoints)
+
+        vl_pose.addLayout(fl_pose)
+
+        self.g_pose_sleap_runtime = QGroupBox("SLEAP Runtime Settings")
+        fl_sleap = QFormLayout(self.g_pose_sleap_runtime)
+
+        h_sleap_env = QHBoxLayout()
+        self.combo_pose_sleap_env = QComboBox()
+        self.combo_pose_sleap_env.setToolTip(
+            "Conda environment name must start with 'sleap'."
+        )
+        h_sleap_env.addWidget(self.combo_pose_sleap_env, 1)
+        self.btn_refresh_pose_sleap_envs = QPushButton("Refresh")
+        self.btn_refresh_pose_sleap_envs.setToolTip("Refresh SLEAP conda envs list")
+        self.btn_refresh_pose_sleap_envs.clicked.connect(self._refresh_pose_sleap_envs)
+        h_sleap_env.addWidget(self.btn_refresh_pose_sleap_envs)
+        fl_sleap.addRow("SLEAP env", h_sleap_env)
+
+        self.combo_pose_sleap_device = QComboBox()
+        self._populate_pose_sleap_device_options()
+        fl_sleap.addRow("SLEAP device", self.combo_pose_sleap_device)
+
+        self.spin_pose_sleap_batch = QSpinBox()
+        self.spin_pose_sleap_batch.setRange(1, 256)
+        self.spin_pose_sleap_batch.setValue(
+            int(self.advanced_config.get("pose_sleap_batch", 4))
+        )
+        self.spin_pose_sleap_batch.setToolTip("Batch size for SLEAP inference service.")
+        fl_sleap.addRow("SLEAP batch size", self.spin_pose_sleap_batch)
+
+        fl_sleap.addRow(
+            "",
+            self._create_help_label(
+                "SLEAP max instances is fixed to 1 (one crop per detection)."
+            ),
+        )
+
+        vl_pose.addWidget(self.g_pose_sleap_runtime)
+        form.addWidget(self.g_pose_runtime)
+
+        self._refresh_pose_sleap_envs()
+
         form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
         # Initially disable all controls
         self.g_identity.setEnabled(False)
+        self.g_pose_runtime.setEnabled(False)
+        self._sync_pose_backend_ui()
+        self._sync_individual_analysis_mode_ui()
 
     def _on_dataset_generation_toggled(self, enabled):
         """Enable/disable dataset generation controls."""
@@ -4774,9 +5176,7 @@ class MainWindow(QMainWindow):
 
     def _on_individual_analysis_toggled(self, state):
         """Enable/disable individual analysis controls."""
-        # Directly check checkbox state for reliability
-        enabled = self.chk_enable_individual_analysis.isChecked()
-        self.g_identity.setEnabled(enabled)
+        self._sync_individual_analysis_mode_ui()
 
     def _on_identity_method_changed(self, index):
         """Update identity configuration stack when method changes."""
@@ -4852,12 +5252,249 @@ class MainWindow(QMainWindow):
 
     def _on_individual_dataset_toggled(self, enabled):
         """Enable/disable individual dataset generation controls."""
-        # Hide/show individual dataset configuration group and info label
-        self.ind_output_group.setVisible(enabled)
-        self.lbl_individual_info.setVisible(enabled)
+        self._sync_individual_analysis_mode_ui()
 
-        # Also control enable state
-        self.ind_output_group.setEnabled(enabled)
+    def _select_pose_model_dir(self):
+        """Select a pose model file/directory depending on backend."""
+        backend = self.combo_pose_model_type.currentText().strip().lower()
+        start = self.line_pose_model_dir.text().strip() or str(Path.home())
+
+        if backend == "sleap":
+            selected = QFileDialog.getExistingDirectory(
+                self, "Select SLEAP Model Directory", start
+            )
+            if selected:
+                self.line_pose_model_dir.setText(selected)
+            return
+
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select YOLO Pose Weights",
+            start,
+            "PyTorch Weights (*.pt);;All Files (*)",
+        )
+        if selected:
+            self.line_pose_model_dir.setText(selected)
+
+    def _select_pose_skeleton_file(self):
+        """Select pose skeleton JSON file."""
+        start = self.line_pose_skeleton_file.text().strip() or str(Path.home())
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Pose Skeleton JSON",
+            start,
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if selected:
+            self.line_pose_skeleton_file.setText(selected)
+
+    def _parse_pose_ignore_keypoints(self):
+        """Parse keypoints to ignore (names and/or indices)."""
+        raw = self.line_pose_ignore_keypoints.text().strip()
+        if not raw:
+            return []
+        out = []
+        for token in raw.split(","):
+            t = token.strip()
+            if not t:
+                continue
+            try:
+                out.append(int(t))
+            except ValueError:
+                out.append(t)
+        return out
+
+    def _refresh_pose_sleap_envs(self):
+        """Refresh conda environments starting with 'sleap'."""
+        if not hasattr(self, "combo_pose_sleap_env"):
+            return
+
+        self.combo_pose_sleap_env.clear()
+        self.combo_pose_sleap_env.setEnabled(True)
+        envs = []
+        preferred = str(self.advanced_config.get("pose_sleap_env", "sleap")).strip()
+        try:
+            import subprocess
+
+            res = subprocess.run(
+                ["conda", "env", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    name = parts[0].strip()
+                    if name.lower().startswith("sleap"):
+                        envs.append(name)
+        except Exception:
+            envs = []
+
+        if not envs:
+            self.combo_pose_sleap_env.addItem("No sleap envs found")
+            self.combo_pose_sleap_env.setEnabled(False)
+            return
+
+        self.combo_pose_sleap_env.addItems(envs)
+        if preferred and preferred in envs:
+            self.combo_pose_sleap_env.setCurrentText(preferred)
+
+    def _selected_pose_sleap_env(self):
+        """Return valid selected SLEAP env name or default."""
+        if not hasattr(self, "combo_pose_sleap_env"):
+            return "sleap"
+        txt = self.combo_pose_sleap_env.currentText().strip()
+        if not txt or txt.lower().startswith("no sleap envs"):
+            return "sleap"
+        return txt
+
+    def _populate_pose_sleap_device_options(self):
+        """Populate SLEAP device options using gpu_utils availability flags."""
+        if not hasattr(self, "combo_pose_sleap_device"):
+            return
+        self.combo_pose_sleap_device.clear()
+        opts = ["auto", "cpu"]
+        if MPS_AVAILABLE:
+            opts.append("mps")
+        if TORCH_CUDA_AVAILABLE or ROCM_AVAILABLE:
+            opts.extend(["cuda", "cuda:0"])
+        self.combo_pose_sleap_device.addItems(opts)
+        default_sleap_device = str(
+            self.advanced_config.get("pose_sleap_device", "auto")
+        ).strip()
+        idx = self.combo_pose_sleap_device.findText(default_sleap_device)
+        if idx >= 0:
+            self.combo_pose_sleap_device.setCurrentIndex(idx)
+
+    def _sync_pose_backend_ui(self):
+        """Show/hide backend-specific pose controls."""
+        if not hasattr(self, "combo_pose_model_type"):
+            return
+        backend = self.combo_pose_model_type.currentText().strip().lower()
+        is_sleap = backend == "sleap"
+        if hasattr(self, "g_pose_sleap_runtime"):
+            self.g_pose_sleap_runtime.setVisible(is_sleap)
+            self.g_pose_sleap_runtime.setEnabled(
+                is_sleap and self._is_individual_pipeline_enabled()
+            )
+        if hasattr(self, "line_pose_model_dir"):
+            if is_sleap:
+                self.line_pose_model_dir.setPlaceholderText(
+                    "Select SLEAP model directory..."
+                )
+            else:
+                self.line_pose_model_dir.setPlaceholderText(
+                    "Select YOLO pose weights (.pt)..."
+                )
+
+    def _is_pose_inference_enabled(self) -> bool:
+        """Return whether pose inference is actively enabled for the run."""
+        return bool(
+            self._is_individual_pipeline_enabled()
+            and hasattr(self, "chk_enable_pose_extractor")
+            and self.chk_enable_pose_extractor.isChecked()
+        )
+
+    def _sync_video_pose_overlay_controls(self, *_args):
+        """Gate pose video overlay controls based on pose inference enable state."""
+        has_controls = hasattr(self, "check_video_show_pose") and hasattr(
+            self, "combo_video_pose_color_mode"
+        )
+        if not has_controls:
+            return
+
+        video_visible = bool(
+            hasattr(self, "check_video_output") and self.check_video_output.isChecked()
+        )
+        pose_enabled = self._is_pose_inference_enabled()
+        enabled = video_visible and pose_enabled
+
+        self.check_video_show_pose.setEnabled(enabled)
+        self.combo_video_pose_color_mode.setEnabled(enabled)
+        self.spin_video_pose_point_radius.setEnabled(enabled)
+        self.spin_video_pose_point_thickness.setEnabled(enabled)
+        self.spin_video_pose_line_thickness.setEnabled(enabled)
+
+        fixed_color_mode = self.combo_video_pose_color_mode.currentIndex() == 1
+        self.btn_video_pose_color.setEnabled(enabled and fixed_color_mode)
+
+        if enabled:
+            self.lbl_video_pose_disabled_hint.setText(
+                "Pose overlay will use keypoints from pose-augmented tracking output."
+            )
+        else:
+            self.lbl_video_pose_disabled_hint.setText(
+                "Enable Pose Extraction in Analyze Individuals to edit pose overlay settings."
+            )
+
+    def _is_yolo_detection_mode(self) -> bool:
+        """Return True when current detection mode is YOLO OBB."""
+        if not hasattr(self, "combo_detection_method"):
+            return False
+        return self.combo_detection_method.currentIndex() == 1
+
+    def _is_individual_pipeline_enabled(self) -> bool:
+        """Return effective runtime state for individual analysis pipeline."""
+        if not hasattr(self, "chk_enable_individual_analysis"):
+            return False
+        return bool(
+            self.chk_enable_individual_analysis.isChecked()
+            and self._is_yolo_detection_mode()
+        )
+
+    def _is_individual_image_save_enabled(self) -> bool:
+        """Return effective runtime state for saving individual crops."""
+        if not hasattr(self, "chk_enable_individual_dataset"):
+            return False
+        return bool(
+            self.chk_enable_individual_dataset.isChecked()
+            and self._is_individual_pipeline_enabled()
+        )
+
+    def _sync_individual_analysis_mode_ui(self):
+        """Enforce YOLO-only pipeline and run/save dependency in UI."""
+        has_analyze_toggle = hasattr(self, "chk_enable_individual_analysis")
+        has_save_toggle = hasattr(self, "chk_enable_individual_dataset")
+        is_yolo = self._is_yolo_detection_mode()
+
+        if has_analyze_toggle:
+            # Pipeline can only be enabled in YOLO mode.
+            if not is_yolo and self.chk_enable_individual_analysis.isChecked():
+                self.chk_enable_individual_analysis.blockSignals(True)
+                self.chk_enable_individual_analysis.setChecked(False)
+                self.chk_enable_individual_analysis.blockSignals(False)
+            self.chk_enable_individual_analysis.setEnabled(is_yolo)
+
+        pipeline_enabled = self._is_individual_pipeline_enabled()
+
+        if hasattr(self, "lbl_individual_yolo_only_notice"):
+            self.lbl_individual_yolo_only_notice.setVisible(not is_yolo)
+
+        if hasattr(self, "g_pose_runtime"):
+            self.g_pose_runtime.setEnabled(pipeline_enabled)
+        if hasattr(self, "g_individual_pipeline_common"):
+            self.g_individual_pipeline_common.setEnabled(pipeline_enabled)
+        self._sync_pose_backend_ui()
+
+        if has_save_toggle:
+            if not pipeline_enabled and self.chk_enable_individual_dataset.isChecked():
+                self.chk_enable_individual_dataset.blockSignals(True)
+                self.chk_enable_individual_dataset.setChecked(False)
+                self.chk_enable_individual_dataset.blockSignals(False)
+            self.chk_enable_individual_dataset.setEnabled(pipeline_enabled)
+
+        save_enabled = self._is_individual_image_save_enabled()
+        if hasattr(self, "ind_output_group"):
+            self.ind_output_group.setVisible(save_enabled)
+            self.ind_output_group.setEnabled(save_enabled)
+        if hasattr(self, "lbl_individual_info"):
+            self.lbl_individual_info.setVisible(save_enabled)
+        self._sync_video_pose_overlay_controls()
 
     def _select_individual_background_color(self):
         """Open color picker for individual dataset background color."""
@@ -4873,6 +5510,27 @@ class MainWindow(QMainWindow):
             # Convert RGB back to BGR for OpenCV
             self._background_color = (color.blue(), color.green(), color.red())
             self._update_background_color_button()
+
+    def _select_video_pose_color(self):
+        """Open color picker for fixed pose overlay color (BGR)."""
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QColorDialog
+
+        b, g, r = self._video_pose_color
+        initial_color = QColor(r, g, b)
+        color = QColorDialog.getColor(initial_color, self, "Choose Pose Overlay Color")
+        if color.isValid():
+            self._video_pose_color = (color.blue(), color.green(), color.red())
+            self._update_video_pose_color_button()
+
+    def _update_video_pose_color_button(self):
+        """Update fixed pose-color preview button and text label."""
+        b, g, r = self._video_pose_color
+        self.btn_video_pose_color.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); "
+            f"border: 1px solid #333; border-radius: 2px;"
+        )
+        self.lbl_video_pose_color.setText(f"{self._video_pose_color}")
 
     def _update_background_color_button(self):
         """Update the color button display and label."""
@@ -5626,10 +6284,25 @@ class MainWindow(QMainWindow):
         self.lbl_text_scale.setVisible(checked)
         self.spin_arrow_length.setVisible(checked)
         self.lbl_arrow_length.setVisible(checked)
+        self.lbl_video_pose_settings.setVisible(checked)
+        self.check_video_show_pose.setVisible(checked)
+        self.lbl_video_pose_color_mode.setVisible(checked)
+        self.combo_video_pose_color_mode.setVisible(checked)
+        self.lbl_video_pose_color_label.setVisible(checked)
+        self.btn_video_pose_color.setVisible(checked)
+        self.lbl_video_pose_color.setVisible(checked)
+        self.lbl_video_pose_point_radius.setVisible(checked)
+        self.spin_video_pose_point_radius.setVisible(checked)
+        self.lbl_video_pose_point_thickness.setVisible(checked)
+        self.spin_video_pose_point_thickness.setVisible(checked)
+        self.lbl_video_pose_line_thickness.setVisible(checked)
+        self.spin_video_pose_line_thickness.setVisible(checked)
+        self.lbl_video_pose_disabled_hint.setVisible(checked)
 
         # Also control enable state
         self.btn_video_out.setEnabled(checked)
         self.video_out_line.setEnabled(checked)
+        self._sync_video_pose_overlay_controls()
 
     def _update_preview_display(self):
         """Update the video display with current brightness/contrast/gamma settings."""
@@ -6834,8 +7507,8 @@ class MainWindow(QMainWindow):
 
     def on_detection_method_changed(self: object, index: object) -> object:
         """on_detection_method_changed method documentation."""
-        # In new UI, this is handled by StackedWidget, but we keep this for compatibility logic
-        pass
+        # Keep compatibility hook and synchronize YOLO-only individual-analysis controls.
+        self._sync_individual_analysis_mode_ui()
 
     def _sanitize_model_token(self, text: object) -> object:
         """Sanitize model metadata token for safe filename use."""
@@ -7224,6 +7897,11 @@ class MainWindow(QMainWindow):
 
             self._individual_dataset_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.current_detection_cache_path = None
+            self.current_individual_properties_cache_path = None
+            self.current_interpolated_pose_csv_path = None
+            self._pending_pose_export_csv_path = None
+            self._pending_video_csv_path = None
+            self._pending_video_generation = False
 
         self.start_tracking(preview_mode=False)
 
@@ -7249,6 +7927,11 @@ class MainWindow(QMainWindow):
         self.btn_preview.setEnabled(True)
         self._individual_dataset_run_id = None
         self.current_detection_cache_path = None
+        self.current_individual_properties_cache_path = None
+        self.current_interpolated_pose_csv_path = None
+        self._pending_pose_export_csv_path = None
+        self._pending_video_csv_path = None
+        self._pending_video_generation = False
 
         # Hide stats labels when tracking stops
         self.label_current_fps.setVisible(False)
@@ -7659,9 +8342,15 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def on_stats_update(self: object, stats: object) -> object:
         """Update real-time tracking statistics."""
+        phase = str(stats.get("phase", "tracking"))
+        is_precompute = phase == "individual_precompute"
+
         # Update FPS
         if "fps" in stats:
-            self.label_current_fps.setText(f"FPS: {stats['fps']:.1f}")
+            if is_precompute:
+                self.label_current_fps.setText(f"Precompute Rate: {stats['fps']:.1f}/s")
+            else:
+                self.label_current_fps.setText(f"FPS: {stats['fps']:.1f}")
             self.label_current_fps.setVisible(True)
 
         # Update elapsed time
@@ -7674,7 +8363,10 @@ class MainWindow(QMainWindow):
                 elapsed_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
             else:
                 elapsed_str = f"{minutes:02d}:{seconds:02d}"
-            self.label_elapsed_time.setText(f"Elapsed: {elapsed_str}")
+            if is_precompute:
+                self.label_elapsed_time.setText(f"Precompute Elapsed: {elapsed_str}")
+            else:
+                self.label_elapsed_time.setText(f"Elapsed: {elapsed_str}")
             self.label_elapsed_time.setVisible(True)
 
         # Update ETA
@@ -7688,9 +8380,15 @@ class MainWindow(QMainWindow):
                     eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
                 else:
                     eta_str = f"{minutes:02d}:{seconds:02d}"
-                self.label_eta.setText(f"ETA: {eta_str}")
+                if is_precompute:
+                    self.label_eta.setText(f"Precompute ETA: {eta_str}")
+                else:
+                    self.label_eta.setText(f"ETA: {eta_str}")
             else:
-                self.label_eta.setText("ETA: calculating...")
+                if is_precompute:
+                    self.label_eta.setText("Precompute ETA: calculating...")
+                else:
+                    self.label_eta.setText("ETA: calculating...")
             self.label_eta.setVisible(True)
 
     @Slot(np.ndarray)
@@ -7902,12 +8600,14 @@ class MainWindow(QMainWindow):
         mapping_path = None
         roi_csv_path = None
         roi_npz_path = None
+        pose_csv_path = None
         try:
             saved = int(result.get("saved", 0))
             gaps = int(result.get("gaps", 0))
             mapping_path = result.get("mapping_path")
             roi_csv_path = result.get("roi_csv_path")
             roi_npz_path = result.get("roi_npz_path")
+            pose_csv_path = result.get("pose_csv_path")
         except Exception:
             pass
         self._refresh_progress_visibility()
@@ -7918,15 +8618,21 @@ class MainWindow(QMainWindow):
             logger.info(f"Interpolated ROIs CSV saved: {roi_csv_path}")
         if roi_npz_path:
             logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
+        if pose_csv_path:
+            self.current_interpolated_pose_csv_path = pose_csv_path
+            logger.info(f"Interpolated pose CSV saved: {pose_csv_path}")
 
         if self.interp_worker is not None and not self.interp_worker.isRunning():
             self.interp_worker.deleteLater()
             self.interp_worker = None
             self._refresh_progress_visibility()
 
+        if self._pending_pose_export_csv_path:
+            self._export_pose_augmented_csv(self._pending_pose_export_csv_path)
+
         if self._pending_finish_after_interp:
             self._pending_finish_after_interp = False
-            self._finalize_tracking_session_ui()
+            self._run_pending_video_generation_or_finalize()
 
     def on_merge_error(self: object, error_message: object) -> object:
         """Handle merge errors."""
@@ -7955,22 +8661,20 @@ class MainWindow(QMainWindow):
                     self.temporary_files.append(raw_csv_path)
                 logger.info(f"✓ Merged trajectory data saved to: {merged_csv_path}")
 
-        # Generate video from post-processed trajectories if enabled
-        if self.check_video_output.isChecked() and self.video_out_line.text():
-            self._generate_video_from_trajectories(
-                resolved_trajectories, merged_csv_path
-            )
-        else:
-            # Complete the tracking session without video generation
-            self._finish_tracking_session(final_csv_path=merged_csv_path)
+        # Complete session pipeline. Video generation is deferred to the very end
+        # after pose export and interpolated individual analysis complete.
+        self._finish_tracking_session(final_csv_path=merged_csv_path)
 
-    def _generate_video_from_trajectories(self, trajectories_df, csv_path=None):
+    def _generate_video_from_trajectories(
+        self, trajectories_df, csv_path=None, finalize_on_complete=True
+    ):
         """
         Generate annotated video from post-processed trajectories.
 
         Args:
             trajectories_df: DataFrame with merged/interpolated trajectories
             csv_path: Path to the CSV file (optional, for logging)
+            finalize_on_complete: If True, continue full finish pipeline after render.
         """
         logger.info("=" * 80)
         logger.info("Generating video from post-processed trajectories...")
@@ -7986,16 +8690,22 @@ class MainWindow(QMainWindow):
         video_path = self.file_line.text()
         output_path = self.video_out_line.text()
 
+        def _complete_after_video():
+            if finalize_on_complete:
+                self._finish_tracking_session(final_csv_path=csv_path)
+            else:
+                self._finalize_tracking_session_ui()
+
         if not video_path or not output_path:
             logger.error("Video input or output path not specified")
-            self._finish_tracking_session()
+            _complete_after_video()
             return
 
         # Open video
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             logger.error(f"Failed to open video: {video_path}")
-            self._finish_tracking_session()
+            _complete_after_video()
             return
 
         # Get video properties
@@ -8011,7 +8721,7 @@ class MainWindow(QMainWindow):
         if not out.isOpened():
             logger.error(f"Failed to create output video: {output_path}")
             cap.release()
-            self._finish_tracking_session()
+            _complete_after_video()
             return
 
         logger.info(f"Writing video: {frame_width}x{frame_height} @ {fps} FPS")
@@ -8037,7 +8747,7 @@ class MainWindow(QMainWindow):
             logger.error("Invalid frame range for video generation.")
             cap.release()
             out.release()
-            self._finish_tracking_session(final_csv_path=csv_path)
+            _complete_after_video()
             return
 
         # Seek once to the tracked start frame so we don't write unrelated frames.
@@ -8058,6 +8768,7 @@ class MainWindow(QMainWindow):
         marker_size = self.spin_marker_size.value()
         text_scale = self.spin_text_scale.value()
         arrow_length = self.spin_arrow_length.value()
+        advanced_config = params.get("ADVANCED_CONFIG", {})
 
         # NOTE: Trajectories in merged CSV are already scaled to original coordinates
         # (see MergeWorker line ~173: coordinates divided by resize_factor)
@@ -8070,6 +8781,93 @@ class MainWindow(QMainWindow):
         arrow_len = int(arrow_length * reference_body_size)
         text_size = 0.5 * text_scale
         marker_thickness = max(2, int(0.15 * reference_body_size))
+        pose_point_radius = int(
+            max(
+                1,
+                advanced_config.get(
+                    "video_pose_point_radius", max(2, marker_radius // 3)
+                ),
+            )
+        )
+        pose_point_thickness = int(
+            advanced_config.get("video_pose_point_thickness", -1)
+        )
+        pose_line_thickness = int(
+            max(1, advanced_config.get("video_pose_line_thickness", 2))
+        )
+        pose_color_mode = (
+            str(advanced_config.get("video_pose_color_mode", "track")).strip().lower()
+        )
+        pose_fixed_color_raw = advanced_config.get("video_pose_color", [255, 255, 255])
+        if (
+            isinstance(pose_fixed_color_raw, (list, tuple))
+            and len(pose_fixed_color_raw) == 3
+        ):
+            try:
+                pose_fixed_color = tuple(
+                    int(max(0, min(255, float(v)))) for v in pose_fixed_color_raw
+                )
+            except Exception:
+                pose_fixed_color = (255, 255, 255)
+        else:
+            pose_fixed_color = (255, 255, 255)
+        pose_min_conf = float(params.get("POSE_MIN_KPT_CONF_VALID", 0.2))
+        pose_edges = []
+        pose_column_triplets = []
+        show_pose = bool(advanced_config.get("video_show_pose", True))
+        pose_col_pattern = re.compile(r"^PoseKpt_(.+)_(X|Y|Conf)$")
+        pose_labels_available = {}
+        for col in trajectories_df.columns:
+            m = pose_col_pattern.match(str(col))
+            if m is None:
+                continue
+            label = m.group(1)
+            axis = m.group(2)
+            pose_labels_available.setdefault(label, set()).add(axis)
+        if not pose_labels_available:
+            show_pose = False
+        if show_pose:
+            skeleton_names = []
+            skeleton_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
+            if skeleton_file and os.path.exists(skeleton_file):
+                try:
+                    with open(skeleton_file, "r", encoding="utf-8") as f:
+                        skeleton_data = json.load(f)
+                    names_raw = skeleton_data.get(
+                        "keypoint_names", skeleton_data.get("keypoints", [])
+                    )
+                    skeleton_names = [str(n) for n in names_raw]
+                    raw_edges = skeleton_data.get(
+                        "skeleton_edges", skeleton_data.get("edges", [])
+                    )
+                    for edge in raw_edges:
+                        if isinstance(edge, (list, tuple)) and len(edge) >= 2:
+                            try:
+                                pose_edges.append((int(edge[0]), int(edge[1])))
+                            except Exception:
+                                continue
+                except Exception:
+                    pose_edges = []
+            ordered_labels = build_pose_keypoint_labels(
+                skeleton_names, len(skeleton_names)
+            )
+            # Add any extra labels present in CSV but absent from skeleton.
+            extras = sorted(
+                [l for l in pose_labels_available.keys() if l not in ordered_labels]
+            )
+            ordered_labels.extend(extras)
+            for label in ordered_labels:
+                axes = pose_labels_available.get(label, set())
+                if {"X", "Y", "Conf"}.issubset(axes):
+                    pose_column_triplets.append(
+                        (
+                            f"PoseKpt_{label}_X",
+                            f"PoseKpt_{label}_Y",
+                            f"PoseKpt_{label}_Conf",
+                        )
+                    )
+            if not pose_column_triplets:
+                show_pose = False
 
         # Build lookup for trajectories by frame and track
         traj_by_frame = {}
@@ -8203,6 +9001,80 @@ class MainWindow(QMainWindow):
                         tipLength=0.3,
                     )
 
+                # Draw pose keypoints/skeleton from pose-augmented CSV (global coords).
+                if show_pose and pose_column_triplets:
+                    kpts_arr = np.full(
+                        (len(pose_column_triplets), 3), np.nan, dtype=np.float32
+                    )
+                    for k_idx, (x_col, y_col, c_col) in enumerate(pose_column_triplets):
+                        try:
+                            x_kp = float(traj.get(x_col))
+                            y_kp = float(traj.get(y_col))
+                            c_kp = float(traj.get(c_col))
+                        except Exception:
+                            continue
+                        if np.isnan(x_kp) or np.isnan(y_kp) or np.isnan(c_kp):
+                            continue
+                        kpts_arr[k_idx, 0] = x_kp
+                        kpts_arr[k_idx, 1] = y_kp
+                        kpts_arr[k_idx, 2] = c_kp
+
+                    valid_mask = ~np.isnan(kpts_arr[:, 2])
+                    if np.any(valid_mask):
+                        pose_color = (
+                            color if pose_color_mode == "track" else pose_fixed_color
+                        )
+                        if pose_edges:
+                            for e0, e1 in pose_edges:
+                                if e0 < 0 or e1 < 0:
+                                    continue
+                                if e0 >= len(kpts_arr) or e1 >= len(kpts_arr):
+                                    continue
+                                if (
+                                    np.isnan(kpts_arr[e0, 2])
+                                    or np.isnan(kpts_arr[e1, 2])
+                                    or np.isnan(kpts_arr[e0, 0])
+                                    or np.isnan(kpts_arr[e0, 1])
+                                    or np.isnan(kpts_arr[e1, 0])
+                                    or np.isnan(kpts_arr[e1, 1])
+                                ):
+                                    continue
+                                if (
+                                    float(kpts_arr[e0, 2]) < pose_min_conf
+                                    or float(kpts_arr[e1, 2]) < pose_min_conf
+                                ):
+                                    continue
+                                p0 = (
+                                    int(round(float(kpts_arr[e0, 0]))),
+                                    int(round(float(kpts_arr[e0, 1]))),
+                                )
+                                p1 = (
+                                    int(round(float(kpts_arr[e1, 0]))),
+                                    int(round(float(kpts_arr[e1, 1]))),
+                                )
+                                cv2.line(
+                                    frame,
+                                    p0,
+                                    p1,
+                                    pose_color,
+                                    pose_line_thickness,
+                                )
+                        for x_kp, y_kp, c_kp in kpts_arr:
+                            if (
+                                np.isnan(x_kp)
+                                or np.isnan(y_kp)
+                                or np.isnan(c_kp)
+                                or float(c_kp) < pose_min_conf
+                            ):
+                                continue
+                            cv2.circle(
+                                frame,
+                                (int(round(float(x_kp))), int(round(float(y_kp)))),
+                                pose_point_radius,
+                                pose_color,
+                                pose_point_thickness,
+                            )
+
             # Write frame
             out.write(frame)
 
@@ -8219,8 +9091,7 @@ class MainWindow(QMainWindow):
         logger.info(f"✓ Video saved to: {output_path}")
         logger.info("=" * 80)
 
-        # Now finish tracking session
-        self._finish_tracking_session(final_csv_path=csv_path)
+        _complete_after_video()
 
     @Slot(bool, list, list)
     def on_tracking_finished(
@@ -8260,6 +9131,19 @@ class MainWindow(QMainWindow):
                 )
             gc.collect()
             return  # Exit early - no post-processing, no backward tracking for preview
+
+        worker_props_path = ""
+        if self.tracking_worker is not None:
+            worker_props_path = str(
+                getattr(self.tracking_worker, "individual_properties_cache_path", "")
+                or ""
+            ).strip()
+        if worker_props_path:
+            self.current_individual_properties_cache_path = worker_props_path
+            logger.info(
+                "Using individual properties cache for export: %s",
+                worker_props_path,
+            )
 
         if finished_normally:
             logger.info("Tracking completed successfully.")
@@ -8390,39 +9274,10 @@ class MainWindow(QMainWindow):
                         ):
                             self.temporary_files.append(raw_csv_path)
 
-                    # Generate video from post-processed trajectories if enabled
-                    if (
-                        self.check_video_output.isChecked()
-                        and self.video_out_line.text()
-                    ):
-                        self._generate_video_from_trajectories(
-                            processed_trajectories, final_csv_path
-                        )
-                        # _generate_video_from_trajectories() calls
-                        # _finish_tracking_session(), which already handles dataset
-                        # generation and cleanup. Avoid running post-finish logic twice.
-                        return
-
-                    # Generate dataset if enabled (BEFORE cleanup so files are still available)
-                    if self.chk_enable_dataset_gen.isChecked():
-                        self._generate_training_dataset(
-                            override_csv_path=final_csv_path
-                        )
-
-                    # Interpolate occlusions for individual dataset (post-pass)
-                    if self.chk_enable_individual_dataset.isChecked():
-                        self._generate_interpolated_individual_crops(final_csv_path)
-
-                    # Clean up session logging - forward-only tracking complete
-                    self._cleanup_session_logging()
-                    self._cleanup_temporary_files()
-
-                    # Hide stats labels
-                    self.label_current_fps.setVisible(False)
-                    self.label_elapsed_time.setVisible(False)
-                    self.label_eta.setVisible(False)
-                    self._set_ui_controls_enabled(True)
-                    logger.info("✓ Tracking complete.")
+                    # Complete session pipeline. Video generation is deferred to
+                    # the final step after pose export + interpolation.
+                    self._finish_tracking_session(final_csv_path=final_csv_path)
+                    return
             else:
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
@@ -8479,28 +9334,164 @@ class MainWindow(QMainWindow):
                     # Pass the correct CSV path based on what we processed
                     self._finish_tracking_session(final_csv_path=processed_csv_path)
 
+    def _is_pose_export_enabled(self) -> bool:
+        """Return True when pose extraction export should be produced."""
+        return bool(
+            self._is_individual_pipeline_enabled()
+            and hasattr(self, "chk_enable_pose_extractor")
+            and self.chk_enable_pose_extractor.isChecked()
+            and self._is_yolo_detection_mode()
+        )
+
+    def _export_pose_augmented_csv(self, final_csv_path):
+        """Write a pose-augmented trajectories CSV next to the final CSV."""
+        if not final_csv_path or not os.path.exists(final_csv_path):
+            return None
+        if not self._is_pose_export_enabled():
+            return None
+
+        cache_path = str(self.current_individual_properties_cache_path or "").strip()
+        cache_available = bool(cache_path and os.path.exists(cache_path))
+        interp_pose_path = str(self.current_interpolated_pose_csv_path or "").strip()
+        interp_available = bool(interp_pose_path and os.path.exists(interp_pose_path))
+        if not cache_available and not interp_available:
+            logger.warning(
+                "Pose export skipped: no pose sources found (cache=%s, interpolated=%s).",
+                cache_path or "<empty>",
+                interp_pose_path or "<empty>",
+            )
+            return None
+
+        try:
+            trajectories_df = pd.read_csv(final_csv_path)
+        except Exception:
+            logger.exception(
+                "Pose export skipped: failed to load trajectories CSV: %s",
+                final_csv_path,
+            )
+            return None
+
+        try:
+            with_pose_df = trajectories_df
+            if cache_available:
+                with_pose_df = augment_trajectories_with_pose_cache(
+                    with_pose_df, cache_path
+                )
+            if interp_available:
+                interp_pose_df = pd.read_csv(interp_pose_path)
+                with_pose_df = merge_interpolated_pose_df(with_pose_df, interp_pose_df)
+        except Exception:
+            logger.exception(
+                "Pose export skipped: failed while merging pose sources (cache=%s, interpolated=%s)",
+                cache_path or "<empty>",
+                interp_pose_path or "<empty>",
+            )
+            return None
+
+        if with_pose_df is None or with_pose_df.empty:
+            logger.warning(
+                "Pose export skipped: merged pose dataframe is empty for %s",
+                final_csv_path,
+            )
+            return None
+
+        base, ext = os.path.splitext(final_csv_path)
+        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
+        try:
+            with_pose_df.to_csv(with_pose_path, index=False)
+        except Exception:
+            logger.exception("Failed to save pose-augmented CSV to: %s", with_pose_path)
+            return None
+
+        logger.info("Pose-augmented trajectories saved to: %s", with_pose_path)
+        return with_pose_path
+
+    def _load_video_trajectories(self, final_csv_path):
+        """Load best available trajectories for video generation (prefers pose-augmented CSV)."""
+        if not final_csv_path:
+            return None, None
+        base, ext = os.path.splitext(final_csv_path)
+        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
+        candidate = with_pose_path if os.path.exists(with_pose_path) else final_csv_path
+        if not os.path.exists(candidate):
+            return None, None
+        try:
+            return pd.read_csv(candidate), candidate
+        except Exception:
+            logger.exception("Failed to load video trajectories from: %s", candidate)
+            return None, None
+
+    def _run_pending_video_generation_or_finalize(self):
+        """Run video generation if queued; otherwise finalize UI/session cleanup."""
+        csv_path = self._pending_video_csv_path
+        should_render_video = bool(self._pending_video_generation and csv_path)
+        self._pending_video_generation = False
+        self._pending_video_csv_path = None
+        self._pending_pose_export_csv_path = None
+
+        if should_render_video:
+            trajectories_df, loaded_path = self._load_video_trajectories(csv_path)
+            if trajectories_df is None or trajectories_df.empty:
+                logger.warning(
+                    "Skipping final video generation: no trajectories loaded from %s",
+                    csv_path,
+                )
+                self._finalize_tracking_session_ui()
+                return
+            logger.info(
+                "Final video rendering uses trajectories from: %s",
+                loaded_path or csv_path,
+            )
+            self._generate_video_from_trajectories(
+                trajectories_df,
+                csv_path=csv_path,
+                finalize_on_complete=False,
+            )
+            return
+
+        self._finalize_tracking_session_ui()
+
     def _finish_tracking_session(self, final_csv_path=None):
         """Complete tracking session cleanup and UI updates."""
         # Hide progress elements
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
 
+        if final_csv_path:
+            self._pending_pose_export_csv_path = final_csv_path
+            self._export_pose_augmented_csv(final_csv_path)
+
+        self._pending_video_csv_path = final_csv_path
+        self._pending_video_generation = bool(
+            final_csv_path
+            and self.check_video_output.isChecked()
+            and self.video_out_line.text().strip()
+        )
+
         # Generate dataset if enabled (BEFORE cleanup so files are still available)
         if self.chk_enable_dataset_gen.isChecked():
             self._generate_training_dataset(override_csv_path=final_csv_path)
 
         # Interpolate occlusions for individual dataset (post-pass)
-        if self.chk_enable_individual_dataset.isChecked():
+        if self._is_individual_image_save_enabled():
             started = self._generate_interpolated_individual_crops(final_csv_path)
             if started:
                 # Hold final UI/session completion until interpolation finishes.
                 self._pending_finish_after_interp = True
                 return
 
-        self._finalize_tracking_session_ui()
+        self._run_pending_video_generation_or_finalize()
 
     def _finalize_tracking_session_ui(self):
         """Finalize session cleanup and return UI to idle state."""
+        self._pending_pose_export_csv_path = None
+        self._pending_video_csv_path = None
+        self._pending_video_generation = False
+        # Force-clear progress UI at terminal session state.
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Ready")
         # Clean up session logging
         self._cleanup_session_logging()
         self._cleanup_temporary_files()
@@ -8551,6 +9542,7 @@ class MainWindow(QMainWindow):
                 self.interp_worker.deleteLater()
                 self.interp_worker = None
 
+            self.current_interpolated_pose_csv_path = None
             self.interp_worker = InterpolatedCropsWorker(
                 target_csv,
                 video_path,
@@ -9080,6 +10072,27 @@ class MainWindow(QMainWindow):
             "auto" if self.combo_yolo_batch_mode.currentIndex() == 0 else "manual"
         )
         advanced_config["yolo_manual_batch_size"] = self.spin_yolo_batch_size.value()
+        advanced_config["video_show_pose"] = self.check_video_show_pose.isChecked()
+        advanced_config["video_pose_point_radius"] = (
+            self.spin_video_pose_point_radius.value()
+        )
+        advanced_config["video_pose_point_thickness"] = (
+            self.spin_video_pose_point_thickness.value()
+        )
+        advanced_config["video_pose_line_thickness"] = (
+            self.spin_video_pose_line_thickness.value()
+        )
+        advanced_config["video_pose_color_mode"] = (
+            "track" if self.combo_video_pose_color_mode.currentIndex() == 0 else "fixed"
+        )
+        advanced_config["video_pose_color"] = [
+            int(self._video_pose_color[0]),
+            int(self._video_pose_color[1]),
+            int(self._video_pose_color[2]),
+        ]
+
+        individual_pipeline_enabled = self._is_individual_pipeline_enabled()
+        individual_image_save_enabled = self._is_individual_image_save_enabled()
 
         return {
             "ADVANCED_CONFIG": advanced_config,  # Include advanced config for batch optimization
@@ -9207,7 +10220,8 @@ class MainWindow(QMainWindow):
             "METRIC_TRACK_LOSS": self.chk_metric_track_loss.isChecked(),
             "METRIC_HIGH_UNCERTAINTY": self.chk_metric_high_uncertainty.isChecked(),
             # Individual analysis parameters
-            "ENABLE_IDENTITY_ANALYSIS": self.chk_enable_individual_analysis.isChecked(),
+            "ENABLE_IDENTITY_ANALYSIS": individual_pipeline_enabled,
+            "ENABLE_INDIVIDUAL_PIPELINE": individual_pipeline_enabled,
             "IDENTITY_METHOD": self.combo_identity_method.currentText()
             .lower()
             .replace(" ", "_")
@@ -9220,8 +10234,20 @@ class MainWindow(QMainWindow):
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
+            "ENABLE_POSE_EXTRACTOR": self.chk_enable_pose_extractor.isChecked(),
+            "POSE_MODEL_TYPE": self.combo_pose_model_type.currentText().strip().lower(),
+            "POSE_MODEL_DIR": self.line_pose_model_dir.text().strip(),
+            "POSE_MIN_KPT_CONF_VALID": self.spin_pose_min_kpt_conf_valid.value(),
+            "POSE_SKELETON_FILE": self.line_pose_skeleton_file.text().strip(),
+            "POSE_IGNORE_KEYPOINTS": self._parse_pose_ignore_keypoints(),
+            "POSE_SLEAP_ENV": self._selected_pose_sleap_env(),
+            "POSE_SLEAP_DEVICE": self.combo_pose_sleap_device.currentText().strip()
+            or "auto",
+            "POSE_SLEAP_BATCH": self.spin_pose_sleap_batch.value(),
+            "POSE_SLEAP_MAX_INSTANCES": 1,
             # Real-time Individual Dataset Generation parameters
-            "ENABLE_INDIVIDUAL_DATASET": self.chk_enable_individual_dataset.isChecked(),
+            "ENABLE_INDIVIDUAL_DATASET": individual_image_save_enabled,
+            "ENABLE_INDIVIDUAL_IMAGE_SAVE": individual_image_save_enabled,
             "INDIVIDUAL_DATASET_NAME": self.line_individual_dataset_name.text().strip()
             or "individual_dataset",
             "INDIVIDUAL_DATASET_OUTPUT_DIR": self.line_individual_output.text(),
@@ -9651,6 +10677,59 @@ class MainWindow(QMainWindow):
             self.spin_marker_size.setValue(get_cfg("video_marker_size", default=0.3))
             self.spin_text_scale.setValue(get_cfg("video_text_scale", default=0.5))
             self.spin_arrow_length.setValue(get_cfg("video_arrow_length", default=0.7))
+            self.check_video_show_pose.setChecked(
+                get_cfg(
+                    "video_show_pose",
+                    default=bool(self.advanced_config.get("video_show_pose", True)),
+                )
+            )
+            pose_color_mode = str(
+                get_cfg(
+                    "video_pose_color_mode",
+                    default=self.advanced_config.get("video_pose_color_mode", "track"),
+                )
+            ).strip()
+            self.combo_video_pose_color_mode.setCurrentIndex(
+                0 if pose_color_mode == "track" else 1
+            )
+            self.spin_video_pose_point_radius.setValue(
+                int(
+                    get_cfg(
+                        "video_pose_point_radius",
+                        default=self.advanced_config.get("video_pose_point_radius", 3),
+                    )
+                )
+            )
+            self.spin_video_pose_point_thickness.setValue(
+                int(
+                    get_cfg(
+                        "video_pose_point_thickness",
+                        default=self.advanced_config.get(
+                            "video_pose_point_thickness", -1
+                        ),
+                    )
+                )
+            )
+            self.spin_video_pose_line_thickness.setValue(
+                int(
+                    get_cfg(
+                        "video_pose_line_thickness",
+                        default=self.advanced_config.get(
+                            "video_pose_line_thickness", 2
+                        ),
+                    )
+                )
+            )
+            pose_color = get_cfg(
+                "video_pose_color",
+                default=self.advanced_config.get("video_pose_color", [255, 255, 255]),
+            )
+            if isinstance(pose_color, (list, tuple)) and len(pose_color) == 3:
+                self._video_pose_color = tuple(
+                    int(max(0, min(255, float(v)))) for v in pose_color
+                )
+                self._update_video_pose_color_button()
+            self._sync_video_pose_overlay_controls()
 
             # === REAL-TIME ANALYTICS ===
             self.enable_histograms.setChecked(
@@ -9742,9 +10821,12 @@ class MainWindow(QMainWindow):
             )
 
             # === INDIVIDUAL ANALYSIS ===
-            self.chk_enable_individual_analysis.setChecked(
-                get_cfg("enable_identity_analysis", default=False)
+            pipeline_enabled = get_cfg(
+                "enable_individual_pipeline",
+                "enable_identity_analysis",
+                default=False,
             )
+            self.chk_enable_individual_analysis.setChecked(bool(pipeline_enabled))
             method_map = {
                 "none_disabled": 0,
                 "color_tags_yolo": 1,
@@ -9808,9 +10890,50 @@ class MainWindow(QMainWindow):
                 get_cfg("apriltag_decimate", default=1.0)
             )
 
+            self.chk_enable_pose_extractor.setChecked(
+                get_cfg("enable_pose_extractor", default=False)
+            )
+            pose_backend = (
+                str(get_cfg("pose_model_type", default="yolo")).strip().upper()
+            )
+            pose_backend_idx = self.combo_pose_model_type.findText(pose_backend)
+            if pose_backend_idx >= 0:
+                self.combo_pose_model_type.setCurrentIndex(pose_backend_idx)
+            self.line_pose_model_dir.setText(get_cfg("pose_model_dir", default=""))
+            self.spin_pose_min_kpt_conf_valid.setValue(
+                get_cfg("pose_min_kpt_conf_valid", default=0.2)
+            )
+            self.line_pose_skeleton_file.setText(
+                get_cfg("pose_skeleton_file", default="")
+            )
+            ignore_kpts = get_cfg("pose_ignore_keypoints", default=[])
+            if isinstance(ignore_kpts, (list, tuple)):
+                self.line_pose_ignore_keypoints.setText(
+                    ",".join(str(v) for v in ignore_kpts)
+                )
+            elif isinstance(ignore_kpts, str):
+                self.line_pose_ignore_keypoints.setText(ignore_kpts)
+            else:
+                self.line_pose_ignore_keypoints.setText("")
+            self.advanced_config["pose_sleap_env"] = str(
+                get_cfg("pose_sleap_env", default="sleap")
+            )
+            self._refresh_pose_sleap_envs()
+            sleap_device = str(get_cfg("pose_sleap_device", default="auto")).strip()
+            sleap_dev_idx = self.combo_pose_sleap_device.findText(sleap_device)
+            if sleap_dev_idx >= 0:
+                self.combo_pose_sleap_device.setCurrentIndex(sleap_dev_idx)
+            self.spin_pose_sleap_batch.setValue(
+                int(get_cfg("pose_sleap_batch", default=4))
+            )
+
             # === REAL-TIME INDIVIDUAL DATASET ===
             self.chk_enable_individual_dataset.setChecked(
-                get_cfg("enable_individual_dataset", default=False)
+                get_cfg(
+                    "enable_individual_image_save",
+                    "enable_individual_dataset",
+                    default=False,
+                )
             )
             self.line_individual_dataset_name.setText(
                 get_cfg("individual_dataset_name", default="individual_dataset")
@@ -9838,6 +10961,7 @@ class MainWindow(QMainWindow):
             if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
                 self._background_color = tuple(bg_color)
             self._update_background_color_button()
+            self._sync_individual_analysis_mode_ui()
 
             # === ROI ===
             self.roi_shapes = cfg.get("roi_shapes", [])
@@ -10067,6 +11191,20 @@ class MainWindow(QMainWindow):
                 "video_marker_size": self.spin_marker_size.value(),
                 "video_text_scale": self.spin_text_scale.value(),
                 "video_arrow_length": self.spin_arrow_length.value(),
+                "video_show_pose": self.check_video_show_pose.isChecked(),
+                "video_pose_color_mode": (
+                    "track"
+                    if self.combo_video_pose_color_mode.currentIndex() == 0
+                    else "fixed"
+                ),
+                "video_pose_color": [
+                    int(self._video_pose_color[0]),
+                    int(self._video_pose_color[1]),
+                    int(self._video_pose_color[2]),
+                ],
+                "video_pose_point_radius": self.spin_video_pose_point_radius.value(),
+                "video_pose_point_thickness": self.spin_video_pose_point_thickness.value(),
+                "video_pose_line_thickness": self.spin_video_pose_line_thickness.value(),
                 # === REAL-TIME ANALYTICS ===
                 "enable_histograms": self.enable_histograms.isChecked(),
                 "histogram_history_frames": self.spin_histogram_history.value(),
@@ -10118,7 +11256,8 @@ class MainWindow(QMainWindow):
                 "metric_track_loss": self.chk_metric_track_loss.isChecked(),
                 "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
                 # === INDIVIDUAL ANALYSIS ===
-                "enable_identity_analysis": self.chk_enable_individual_analysis.isChecked(),
+                "enable_identity_analysis": self._is_individual_pipeline_enabled(),
+                "enable_individual_pipeline": self._is_individual_pipeline_enabled(),
                 "identity_method": self.combo_identity_method.currentText()
                 .lower()
                 .replace(" ", "_")
@@ -10148,8 +11287,22 @@ class MainWindow(QMainWindow):
             {
                 "apriltag_family": self.combo_apriltag_family.currentText(),
                 "apriltag_decimate": self.spin_apriltag_decimate.value(),
+                "enable_pose_extractor": self.chk_enable_pose_extractor.isChecked(),
+                "pose_model_type": self.combo_pose_model_type.currentText()
+                .strip()
+                .lower(),
+                "pose_model_dir": self.line_pose_model_dir.text().strip(),
+                "pose_min_kpt_conf_valid": self.spin_pose_min_kpt_conf_valid.value(),
+                "pose_skeleton_file": self.line_pose_skeleton_file.text().strip(),
+                "pose_ignore_keypoints": self._parse_pose_ignore_keypoints(),
+                "pose_sleap_env": self._selected_pose_sleap_env(),
+                "pose_sleap_device": self.combo_pose_sleap_device.currentText().strip()
+                or "auto",
+                "pose_sleap_batch": self.spin_pose_sleap_batch.value(),
+                "pose_sleap_max_instances": 1,
                 # === REAL-TIME INDIVIDUAL DATASET ===
-                "enable_individual_dataset": self.chk_enable_individual_dataset.isChecked(),
+                "enable_individual_dataset": self._is_individual_image_save_enabled(),
+                "enable_individual_image_save": self._is_individual_image_save_enabled(),
                 "individual_dataset_name": self.line_individual_dataset_name.text().strip()
                 or "individual_dataset",
                 "individual_output_format": self.combo_individual_format.currentText().lower(),
