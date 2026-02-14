@@ -841,9 +841,8 @@ def resolve_trajectories(
     for i, traj in enumerate(backward_trajs):
         df = _convert_trajectory_to_dataframe(traj, f"backward_{i}")
         if len(df) >= MIN_LENGTH:
-            # No frame adjustment needed - tracking worker now saves actual frame indices
-            # Rotate theta by 180 degrees for backward trajectories
-            df["Theta"] = (df["Theta"] + np.pi) % (2 * np.pi)
+            # No frame adjustment or extra theta flipping needed.
+            # Backward fallback correction is now applied at tracking write-time.
             df["_source"] = "backward"
             backward_dfs.append(df)
 
@@ -1144,7 +1143,7 @@ def _average_trajectory_rows(r1, r2):
     if "Theta" in r1 and "Theta" in r2:
         t1, t2 = r1.get("Theta"), r2.get("Theta")
         if not pd.isna(t1) and not pd.isna(t2):
-            result["Theta"] = _circular_mean([t1, t2])
+            result["Theta"] = _merge_angle_mean(float(t1), float(t2))
         elif pd.isna(t1):
             result["Theta"] = t2
 
@@ -2207,6 +2206,32 @@ def _circular_mean(values):
     return np.arctan2(sin_sum, cos_sum) % (2 * np.pi)
 
 
+def _angle_diff_rad(theta_a: float, theta_b: float) -> float:
+    """Shortest signed angular difference (theta_a - theta_b), in [-pi, pi]."""
+    return float(np.arctan2(np.sin(theta_a - theta_b), np.cos(theta_a - theta_b)))
+
+
+def _merge_angle_mean(theta_a: float, theta_b: float) -> float:
+    """
+    Average two angles for trajectory merge while handling 180-degree OBB ambiguity.
+
+    During forward/backward merge, one branch can report theta and the other theta+pi
+    for the same body axis. Plain circular mean of such pairs yields orthogonal
+    artifacts (~+/-90 deg). We collapse this ambiguity before averaging.
+    """
+    two_pi = 2.0 * np.pi
+    a = float(theta_a) % two_pi
+    b = float(theta_b) % two_pi
+
+    direct_delta = abs(_angle_diff_rad(b, a))
+    flipped_b = (b + np.pi) % two_pi
+    flipped_delta = abs(_angle_diff_rad(flipped_b, a))
+    if flipped_delta + 1e-12 < direct_delta:
+        b = flipped_b
+
+    return (a + 0.5 * _angle_diff_rad(b, a)) % two_pi
+
+
 def _clean_trajectory(traj_df):
     """
     Clean a trajectory DataFrame by:
@@ -2336,7 +2361,9 @@ def _merge_trajectories(traj1, traj2, distance_threshold=None):
                 if state1 == "active" and state2 == "active":
                     merged_row["X"] = (row1["X"] + row2["X"]) / 2
                     merged_row["Y"] = (row1["Y"] + row2["Y"]) / 2
-                    merged_row["Theta"] = _circular_mean([row1["Theta"], row2["Theta"]])
+                    merged_row["Theta"] = _merge_angle_mean(
+                        float(row1["Theta"]), float(row2["Theta"])
+                    )
                     merged_row["State"] = "active"
                     # Average confidence metrics
                     for col in confidence_cols:

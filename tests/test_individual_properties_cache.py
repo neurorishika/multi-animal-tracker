@@ -52,6 +52,18 @@ def test_hashes_change_when_expected(tmp_path: Path) -> None:
     ext_hash_2 = mod.compute_extractor_hash(params_model_changed)
     assert ext_hash_1 != ext_hash_2
 
+    params_ignore_changed = dict(params)
+    params_ignore_changed["POSE_IGNORE_KEYPOINTS"] = ["head"]
+    assert mod.compute_extractor_hash(params_ignore_changed) == ext_hash_1
+
+    params_ant_changed = dict(params)
+    params_ant_changed["POSE_DIRECTION_ANTERIOR_KEYPOINTS"] = ["head"]
+    assert mod.compute_extractor_hash(params_ant_changed) == ext_hash_1
+
+    params_post_changed = dict(params)
+    params_post_changed["POSE_DIRECTION_POSTERIOR_KEYPOINTS"] = ["tail"]
+    assert mod.compute_extractor_hash(params_post_changed) == ext_hash_1
+
     props_id_1 = mod.compute_individual_properties_id(
         det_hash_1, filter_hash_1, ext_hash_1
     )

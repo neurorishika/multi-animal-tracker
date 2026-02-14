@@ -83,7 +83,6 @@ class YoloPoseBackend(BasePoseBackend):
         model_path: str,
         device: str = "cpu",
         min_valid_conf: float = 0.2,
-        ignore_keypoints: Optional[Sequence[Any]] = None,
         keypoint_names: Optional[Sequence[str]] = None,
     ):
         from ultralytics import YOLO
@@ -91,11 +90,8 @@ class YoloPoseBackend(BasePoseBackend):
         self.model_path = str(Path(model_path).expanduser().resolve())
         self.device = device
         self.min_valid_conf = float(min_valid_conf)
-        self.ignore_keypoints = list(ignore_keypoints or [])
         self.keypoint_names = [str(v) for v in (keypoint_names or [])]
-        self.output_keypoint_names = _filter_keypoint_names(
-            self.keypoint_names, self.ignore_keypoints
-        )
+        self.output_keypoint_names = list(self.keypoint_names)
         self.model = YOLO(self.model_path)
         self.model.to(self.device)
 
@@ -152,11 +148,6 @@ class YoloPoseBackend(BasePoseBackend):
                 continue
 
             kpts = np.column_stack((pred_xy, pred_conf)).astype(np.float32)
-            kpts = _apply_ignore_keypoints(
-                kpts,
-                self.ignore_keypoints,
-                self.keypoint_names,
-            )
             outputs.append(_summarize_keypoints(kpts, self.min_valid_conf))
 
         return outputs
@@ -175,7 +166,6 @@ class SleapPoseBackend(BasePoseBackend):
         sleap_device: str = "auto",
         sleap_batch: int = 4,
         skeleton_edges: Optional[Sequence[Sequence[int]]] = None,
-        ignore_keypoints: Optional[Sequence[Any]] = None,
     ):
         from multi_tracker.posekit.pose_inference import PoseInferenceService
 
@@ -187,10 +177,7 @@ class SleapPoseBackend(BasePoseBackend):
         self.sleap_device = str(sleap_device)
         self.sleap_batch = int(sleap_batch)
         self.sleap_max_instances = 1
-        self.ignore_keypoints = list(ignore_keypoints or [])
-        self.output_keypoint_names = _filter_keypoint_names(
-            self.keypoint_names, self.ignore_keypoints
-        )
+        self.output_keypoint_names = list(self.keypoint_names)
         self.skeleton_edges = (
             [tuple(int(v) for v in e[:2]) for e in skeleton_edges]
             if skeleton_edges
@@ -252,11 +239,6 @@ class SleapPoseBackend(BasePoseBackend):
             if arr.ndim != 2 or arr.shape[1] != 3:
                 outputs.append(_empty_pose_result())
                 continue
-            arr = _apply_ignore_keypoints(
-                arr,
-                self.ignore_keypoints,
-                self.keypoint_names,
-            )
             outputs.append(_summarize_keypoints(arr, self.min_valid_conf))
 
         return outputs
@@ -384,7 +366,6 @@ def create_pose_backend(params: Dict[str, Any], out_root: str) -> BasePoseBacken
     backend = str(params.get("POSE_MODEL_TYPE", "yolo")).strip().lower()
     model_path = str(params.get("POSE_MODEL_DIR", "")).strip()
     min_valid_conf = float(params.get("POSE_MIN_KPT_CONF_VALID", 0.2))
-    ignore_keypoints = _parse_ignore_keypoints(params.get("POSE_IGNORE_KEYPOINTS", []))
     skeleton_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
     skeleton_names, skeleton_edges = _load_skeleton_from_json(skeleton_file)
     if not model_path:
@@ -396,7 +377,6 @@ def create_pose_backend(params: Dict[str, Any], out_root: str) -> BasePoseBacken
             model_path=model_path,
             device=device,
             min_valid_conf=min_valid_conf,
-            ignore_keypoints=ignore_keypoints,
             keypoint_names=skeleton_names,
         )
 
@@ -414,7 +394,6 @@ def create_pose_backend(params: Dict[str, Any], out_root: str) -> BasePoseBacken
             sleap_device=str(params.get("POSE_SLEAP_DEVICE", "auto")),
             sleap_batch=int(params.get("POSE_SLEAP_BATCH", 4)),
             skeleton_edges=skeleton_edges,
-            ignore_keypoints=ignore_keypoints,
         )
 
     raise RuntimeError(f"Unsupported pose backend: {backend}")

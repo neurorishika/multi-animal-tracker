@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -68,6 +68,89 @@ def pose_wide_columns_for_labels(labels: Sequence[str]) -> List[str]:
     return cols
 
 
+def _parse_ignore_keypoint_tokens(ignore_keypoints: Any) -> List[Any]:
+    if ignore_keypoints is None:
+        return []
+    if isinstance(ignore_keypoints, str):
+        out: List[Any] = []
+        for token in ignore_keypoints.split(","):
+            t = token.strip()
+            if not t:
+                continue
+            try:
+                out.append(int(t))
+            except ValueError:
+                out.append(t)
+        return out
+    if isinstance(ignore_keypoints, (list, tuple, set)):
+        out: List[Any] = []
+        for value in ignore_keypoints:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            try:
+                out.append(int(text))
+            except ValueError:
+                out.append(text)
+        return out
+    return []
+
+
+def _resolve_ignored_keypoint_indices(
+    ignore_keypoints: Any, keypoint_names: Optional[Sequence[str]]
+) -> Set[int]:
+    tokens = _parse_ignore_keypoint_tokens(ignore_keypoints)
+    if not tokens:
+        return set()
+    names = [str(v) for v in (keypoint_names or [])]
+    name_to_idx = {name.lower(): idx for idx, name in enumerate(names)}
+    ignore_idxs: Set[int] = set()
+    for token in tokens:
+        if isinstance(token, int):
+            ignore_idxs.add(int(token))
+            continue
+        idx = name_to_idx.get(str(token).strip().lower())
+        if idx is not None:
+            ignore_idxs.add(int(idx))
+    return ignore_idxs
+
+
+def _apply_ignore_to_keypoints(
+    keypoints: np.ndarray, ignore_indices: Set[int]
+) -> np.ndarray:
+    arr = np.asarray(keypoints, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        return np.zeros((0, 3), dtype=np.float32)
+    if not ignore_indices:
+        return arr
+    keep = [i for i in range(len(arr)) if i not in ignore_indices]
+    if not keep:
+        return np.zeros((0, 3), dtype=np.float32)
+    return np.asarray(arr[keep], dtype=np.float32)
+
+
+def _filter_labels_for_ignore(
+    labels: Sequence[str],
+    keypoint_names: Optional[Sequence[str]],
+    ignore_indices: Set[int],
+) -> Tuple[List[str], Set[int]]:
+    if not labels:
+        return [], set()
+    if not ignore_indices:
+        return list(labels), set()
+
+    # Indices align with pose keypoint index order.
+    dropped_label_indices = {
+        idx for idx in ignore_indices if 0 <= int(idx) < len(labels)
+    }
+    filtered = [
+        label for idx, label in enumerate(labels) if idx not in dropped_label_indices
+    ]
+    return filtered, dropped_label_indices
+
+
 def flatten_pose_keypoints_row(
     keypoints: Any, labels: Sequence[str]
 ) -> Dict[str, float]:
@@ -94,10 +177,12 @@ def flatten_pose_keypoints_row(
 def build_pose_lookup_dataframe(
     cache: IndividualPropertiesCache,
     keypoint_names: Optional[Sequence[str]] = None,
+    ignore_keypoints: Any = None,
 ) -> pd.DataFrame:
     """Flatten cache entries into frame+detection keyed wide pose rows."""
     entries: List[Dict[str, Any]] = []
     max_keypoints = 0
+    ignore_indices = _resolve_ignored_keypoint_indices(ignore_keypoints, keypoint_names)
 
     for frame_idx in cache.get_cached_frames():
         frame = cache.get_frame(int(frame_idx))
@@ -121,8 +206,7 @@ def build_pose_lookup_dataframe(
             except Exception:
                 continue
             kpts = np.asarray(keypoints[idx], dtype=np.float32)
-            if kpts.ndim != 2 or kpts.shape[1] != 3:
-                kpts = np.zeros((0, 3), dtype=np.float32)
+            kpts = _apply_ignore_to_keypoints(kpts, ignore_indices)
             max_keypoints = max(max_keypoints, int(len(kpts)))
             entries.append(
                 {
@@ -137,6 +221,9 @@ def build_pose_lookup_dataframe(
             )
 
     labels = build_pose_keypoint_labels(keypoint_names, max_keypoints)
+    labels, ignored_label_indices = _filter_labels_for_ignore(
+        labels, keypoint_names, ignore_indices
+    )
     keypoint_cols = pose_wide_columns_for_labels(labels)
     if not entries:
         return pd.DataFrame(
@@ -229,7 +316,9 @@ def augment_trajectories_with_pose_df(
 
 
 def augment_trajectories_with_pose_cache(
-    trajectories_df: pd.DataFrame, cache_path: str
+    trajectories_df: pd.DataFrame,
+    cache_path: str,
+    ignore_keypoints: Any = None,
 ) -> pd.DataFrame:
     """Load properties cache and merge wide pose columns into trajectory rows."""
     cache = IndividualPropertiesCache(cache_path, mode="r")
@@ -241,7 +330,11 @@ def augment_trajectories_with_pose_cache(
         names = cache.metadata.get("pose_keypoint_names", [])
         if not isinstance(names, (list, tuple)):
             names = []
-        lookup = build_pose_lookup_dataframe(cache, keypoint_names=names)
+        lookup = build_pose_lookup_dataframe(
+            cache,
+            keypoint_names=names,
+            ignore_keypoints=ignore_keypoints,
+        )
     finally:
         cache.close()
     return augment_trajectories_with_pose_df(trajectories_df, lookup)

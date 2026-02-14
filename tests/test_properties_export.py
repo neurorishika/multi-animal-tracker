@@ -91,6 +91,41 @@ def test_augment_trajectories_with_pose_cache_requires_detection_columns(tmp_pat
     assert list(out.columns) == list(trajectories.columns)
 
 
+def test_augment_trajectories_with_pose_cache_applies_ignore_posthoc(tmp_path):
+    cache_path = tmp_path / "props_ignore.npz"
+    writer = IndividualPropertiesCache(str(cache_path), mode="w")
+    writer.add_frame(
+        3,
+        [301.0],
+        pose_mean_conf=[0.8],
+        pose_valid_fraction=[1.0],
+        pose_num_valid=[2],
+        pose_num_keypoints=[2],
+        pose_keypoints=[np.array([[11, 12, 0.9], [13, 14, 0.7]], dtype=np.float32)],
+    )
+    writer.save(
+        metadata={
+            "individual_properties_id": "abc",
+            "pose_keypoint_names": ["head", "tail"],
+        }
+    )
+    writer.close()
+
+    trajectories = pd.DataFrame(
+        [{"FrameID": 3, "DetectionID": 301, "TrajectoryID": 1, "X": 1, "Y": 2}]
+    )
+    out = augment_trajectories_with_pose_cache(
+        trajectories,
+        str(cache_path),
+        ignore_keypoints=["tail"],
+    )
+
+    assert "PoseKpt_head_X" in out.columns
+    assert "PoseKpt_tail_X" not in out.columns
+    assert out.iloc[0]["PoseKpt_head_X"] == pytest.approx(11.0)
+    assert out.iloc[0]["PoseKpt_head_Conf"] == pytest.approx(0.9)
+
+
 def test_merge_interpolated_pose_fills_only_missing_detection_pose():
     trajectories = pd.DataFrame(
         [

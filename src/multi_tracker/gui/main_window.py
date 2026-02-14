@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -3937,6 +3938,9 @@ class MainWindow(QMainWindow):
             "Overlay pose keypoints/skeleton in exported video.\n"
             "Requires pose inference to be enabled in Analyze Individuals."
         )
+        self.check_video_show_pose.toggled.connect(
+            self._sync_video_pose_overlay_controls
+        )
         f_video.addRow("", self.check_video_show_pose)
 
         self.combo_video_pose_color_mode = QComboBox()
@@ -4805,16 +4809,51 @@ class MainWindow(QMainWindow):
         self.btn_browse_pose_skeleton_file.clicked.connect(
             self._select_pose_skeleton_file
         )
+        self.line_pose_skeleton_file.textChanged.connect(
+            self._refresh_pose_direction_keypoint_lists
+        )
         h_pose_skeleton.addWidget(self.line_pose_skeleton_file)
         h_pose_skeleton.addWidget(self.btn_browse_pose_skeleton_file)
         fl_pose.addRow("Skeleton file", h_pose_skeleton)
 
-        self.line_pose_ignore_keypoints = QLineEdit()
-        self.line_pose_ignore_keypoints.setPlaceholderText("e.g. 0,2,left_antenna")
-        self.line_pose_ignore_keypoints.setToolTip(
-            "Comma-separated keypoint indices and/or names to ignore in outputs."
+        self.list_pose_ignore_keypoints = QListWidget()
+        self.list_pose_ignore_keypoints.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
         )
-        fl_pose.addRow("Ignore keypoints", self.line_pose_ignore_keypoints)
+        self.list_pose_ignore_keypoints.setMinimumHeight(96)
+        self.list_pose_ignore_keypoints.setToolTip(
+            "Select keypoints to ignore in pose export and orientation logic."
+        )
+        fl_pose.addRow("Ignore keypoints", self.list_pose_ignore_keypoints)
+
+        self.list_pose_direction_anterior = QListWidget()
+        self.list_pose_direction_anterior.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
+        )
+        self.list_pose_direction_anterior.setMinimumHeight(96)
+        self.list_pose_direction_anterior.setToolTip(
+            "Select anterior keypoints from skeleton keypoint list."
+        )
+        fl_pose.addRow("Anterior keypoints", self.list_pose_direction_anterior)
+
+        self.list_pose_direction_posterior = QListWidget()
+        self.list_pose_direction_posterior.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
+        )
+        self.list_pose_direction_posterior.setMinimumHeight(96)
+        self.list_pose_direction_posterior.setToolTip(
+            "Select posterior keypoints from skeleton keypoint list."
+        )
+        fl_pose.addRow("Posterior keypoints", self.list_pose_direction_posterior)
+        self.list_pose_ignore_keypoints.itemSelectionChanged.connect(
+            lambda: self._on_pose_keypoint_group_changed("ignore")
+        )
+        self.list_pose_direction_anterior.itemSelectionChanged.connect(
+            lambda: self._on_pose_keypoint_group_changed("anterior")
+        )
+        self.list_pose_direction_posterior.itemSelectionChanged.connect(
+            lambda: self._on_pose_keypoint_group_changed("posterior")
+        )
 
         vl_pose.addLayout(fl_pose)
 
@@ -4864,6 +4903,7 @@ class MainWindow(QMainWindow):
         # Initially disable all controls
         self.g_identity.setEnabled(False)
         self.g_pose_runtime.setEnabled(False)
+        self._refresh_pose_direction_keypoint_lists()
         self._sync_pose_backend_ui()
         self._sync_individual_analysis_mode_ui()
 
@@ -5288,13 +5328,186 @@ class MainWindow(QMainWindow):
         if selected:
             self.line_pose_skeleton_file.setText(selected)
 
-    def _parse_pose_ignore_keypoints(self):
-        """Parse keypoints to ignore (names and/or indices)."""
-        raw = self.line_pose_ignore_keypoints.text().strip()
+    def _load_pose_skeleton_keypoint_names(self):
+        """Load keypoint names from selected skeleton JSON."""
+        skeleton_file = self.line_pose_skeleton_file.text().strip()
+        if not skeleton_file:
+            return []
+        try:
+            path = Path(skeleton_file).expanduser().resolve()
+            if not path.exists():
+                return []
+            data = json.loads(path.read_text(encoding="utf-8"))
+            raw = data.get("keypoint_names", data.get("keypoints", []))
+            names = [str(v).strip() for v in raw if str(v).strip()]
+            return names
+        except Exception:
+            return []
+
+    def _selected_pose_group_keypoints(self, list_widget):
+        """Return selected keypoint names for a pose direction list widget."""
+        if list_widget is None:
+            return []
+        return [
+            item.text().strip()
+            for item in list_widget.selectedItems()
+            if item.text().strip()
+        ]
+
+    def _set_pose_group_selection(self, list_widget, values):
+        """Select keypoints in list widget from config-provided values."""
+        if list_widget is None:
+            return
+        tokens = self._parse_pose_keypoint_tokens(values)
+        if not tokens:
+            return
+        items_by_name = {}
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            items_by_name[item.text().strip().lower()] = item
+        for tok in tokens:
+            if isinstance(tok, int):
+                if 0 <= tok < list_widget.count():
+                    list_widget.item(tok).setSelected(True)
+                continue
+            item = items_by_name.get(str(tok).strip().lower())
+            if item is not None:
+                item.setSelected(True)
+
+    def _apply_pose_keypoint_selection_set(self, list_widget, selected_names):
+        """Set list selection to exact keypoint-name set."""
+        if list_widget is None:
+            return
+        target = {str(v).strip().lower() for v in selected_names if str(v).strip()}
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            item_name = item.text().strip().lower()
+            item.setSelected(item_name in target)
+
+    def _set_pose_keypoints_enabled(self, list_widget, disabled_names):
+        """Disable keypoints in a list by name while preserving others."""
+        if list_widget is None:
+            return
+        disabled = {str(v).strip().lower() for v in disabled_names if str(v).strip()}
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            item_name = item.text().strip().lower()
+            flags = item.flags()
+            if item_name in disabled:
+                item.setSelected(False)
+                item.setFlags(flags & ~Qt.ItemIsEnabled)
+            else:
+                item.setFlags(flags | Qt.ItemIsEnabled)
+
+    def _apply_pose_keypoint_selection_constraints(self, changed_group="ignore"):
+        """Enforce exclusivity across ignore/anterior/posterior keypoint selections."""
+        ignore_list = getattr(self, "list_pose_ignore_keypoints", None)
+        ant_list = getattr(self, "list_pose_direction_anterior", None)
+        post_list = getattr(self, "list_pose_direction_posterior", None)
+        if ignore_list is None or ant_list is None or post_list is None:
+            return
+
+        ignore = {
+            k.lower()
+            for k in self._selected_pose_group_keypoints(ignore_list)
+            if k.strip()
+        }
+        anterior = {
+            k.lower()
+            for k in self._selected_pose_group_keypoints(ant_list)
+            if k.strip()
+        }
+        posterior = {
+            k.lower()
+            for k in self._selected_pose_group_keypoints(post_list)
+            if k.strip()
+        }
+
+        # Ignore selection always wins over directional groups.
+        anterior -= ignore
+        posterior -= ignore
+
+        # Anterior/posterior remain mutually exclusive. The changed group wins.
+        if changed_group == "posterior":
+            anterior -= posterior
+        else:
+            posterior -= anterior
+
+        ant_list.blockSignals(True)
+        post_list.blockSignals(True)
+        self._apply_pose_keypoint_selection_set(ant_list, anterior)
+        self._apply_pose_keypoint_selection_set(post_list, posterior)
+        self._set_pose_keypoints_enabled(ant_list, ignore)
+        self._set_pose_keypoints_enabled(post_list, ignore)
+        ant_list.blockSignals(False)
+        post_list.blockSignals(False)
+
+    def _on_pose_keypoint_group_changed(self, changed_group):
+        """Handle keypoint group updates and keep list constraints synchronized."""
+        self._apply_pose_keypoint_selection_constraints(changed_group)
+
+    def _refresh_pose_direction_keypoint_lists(self):
+        """Populate ignore/anterior/posterior keypoint pickers from skeleton file."""
+        if (
+            not hasattr(self, "list_pose_ignore_keypoints")
+            or not hasattr(self, "list_pose_direction_anterior")
+            or not hasattr(self, "list_pose_direction_posterior")
+        ):
+            return
+
+        prev_ignore = self._selected_pose_group_keypoints(
+            self.list_pose_ignore_keypoints
+        )
+        prev_anterior = self._selected_pose_group_keypoints(
+            self.list_pose_direction_anterior
+        )
+        prev_posterior = self._selected_pose_group_keypoints(
+            self.list_pose_direction_posterior
+        )
+        names = self._load_pose_skeleton_keypoint_names()
+
+        self.list_pose_ignore_keypoints.blockSignals(True)
+        self.list_pose_direction_anterior.blockSignals(True)
+        self.list_pose_direction_posterior.blockSignals(True)
+        self.list_pose_ignore_keypoints.clear()
+        self.list_pose_direction_anterior.clear()
+        self.list_pose_direction_posterior.clear()
+        self.list_pose_ignore_keypoints.addItems(names)
+        self.list_pose_direction_anterior.addItems(names)
+        self.list_pose_direction_posterior.addItems(names)
+        self._set_pose_group_selection(self.list_pose_ignore_keypoints, prev_ignore)
+        self._set_pose_group_selection(self.list_pose_direction_anterior, prev_anterior)
+        self._set_pose_group_selection(
+            self.list_pose_direction_posterior, prev_posterior
+        )
+        enabled = len(names) > 0
+        self.list_pose_ignore_keypoints.setEnabled(enabled)
+        self.list_pose_direction_anterior.setEnabled(enabled)
+        self.list_pose_direction_posterior.setEnabled(enabled)
+        self.list_pose_ignore_keypoints.blockSignals(False)
+        self.list_pose_direction_anterior.blockSignals(False)
+        self.list_pose_direction_posterior.blockSignals(False)
+        self._apply_pose_keypoint_selection_constraints("ignore")
+
+    def _parse_pose_keypoint_tokens(self, raw):
+        """Parse comma-separated keypoint names and/or indices."""
         if not raw:
             return []
+        if isinstance(raw, (list, tuple, set)):
+            tokens = []
+            for value in raw:
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if not text:
+                    continue
+                try:
+                    tokens.append(int(text))
+                except ValueError:
+                    tokens.append(text)
+            return tokens
         out = []
-        for token in raw.split(","):
+        for token in str(raw).split(","):
             t = token.strip()
             if not t:
                 continue
@@ -5303,6 +5516,24 @@ class MainWindow(QMainWindow):
             except ValueError:
                 out.append(t)
         return out
+
+    def _parse_pose_ignore_keypoints(self):
+        """Parse keypoints to ignore from list selection."""
+        return self._selected_pose_group_keypoints(
+            getattr(self, "list_pose_ignore_keypoints", None)
+        )
+
+    def _parse_pose_direction_anterior_keypoints(self):
+        """Parse anterior keypoint group from list selection."""
+        return self._selected_pose_group_keypoints(
+            getattr(self, "list_pose_direction_anterior", None)
+        )
+
+    def _parse_pose_direction_posterior_keypoints(self):
+        """Parse posterior keypoint group from list selection."""
+        return self._selected_pose_group_keypoints(
+            getattr(self, "list_pose_direction_posterior", None)
+        )
 
     def _refresh_pose_sleap_envs(self):
         """Refresh conda environments starting with 'sleap'."""
@@ -5412,17 +5643,34 @@ class MainWindow(QMainWindow):
             hasattr(self, "check_video_output") and self.check_video_output.isChecked()
         )
         pose_enabled = self._is_pose_inference_enabled()
-        enabled = video_visible and pose_enabled
+        enabled = bool(video_visible and pose_enabled)
 
         self.check_video_show_pose.setEnabled(enabled)
-        self.combo_video_pose_color_mode.setEnabled(enabled)
-        self.spin_video_pose_point_radius.setEnabled(enabled)
-        self.spin_video_pose_point_thickness.setEnabled(enabled)
-        self.spin_video_pose_line_thickness.setEnabled(enabled)
-
+        show_pose = bool(enabled and self.check_video_show_pose.isChecked())
         fixed_color_mode = self.combo_video_pose_color_mode.currentIndex() == 1
-        self.btn_video_pose_color.setEnabled(enabled and fixed_color_mode)
 
+        # Show detailed controls only when pose overlay is on.
+        self.lbl_video_pose_color_mode.setVisible(show_pose)
+        self.combo_video_pose_color_mode.setVisible(show_pose)
+        self.lbl_video_pose_point_radius.setVisible(show_pose)
+        self.spin_video_pose_point_radius.setVisible(show_pose)
+        self.lbl_video_pose_point_thickness.setVisible(show_pose)
+        self.spin_video_pose_point_thickness.setVisible(show_pose)
+        self.lbl_video_pose_line_thickness.setVisible(show_pose)
+        self.spin_video_pose_line_thickness.setVisible(show_pose)
+
+        show_fixed_color = bool(show_pose and fixed_color_mode)
+        self.lbl_video_pose_color_label.setVisible(show_fixed_color)
+        self.btn_video_pose_color.setVisible(show_fixed_color)
+        self.lbl_video_pose_color.setVisible(show_fixed_color)
+
+        self.combo_video_pose_color_mode.setEnabled(show_pose)
+        self.spin_video_pose_point_radius.setEnabled(show_pose)
+        self.spin_video_pose_point_thickness.setEnabled(show_pose)
+        self.spin_video_pose_line_thickness.setEnabled(show_pose)
+        self.btn_video_pose_color.setEnabled(show_fixed_color)
+
+        self.lbl_video_pose_disabled_hint.setVisible(video_visible)
         if enabled:
             self.lbl_video_pose_disabled_hint.setText(
                 "Pose overlay will use keypoints from pose-augmented tracking output."
@@ -5454,6 +5702,24 @@ class MainWindow(QMainWindow):
         return bool(
             self.chk_enable_individual_dataset.isChecked()
             and self._is_individual_pipeline_enabled()
+        )
+
+    def _should_run_interpolated_postpass(self) -> bool:
+        """
+        Return True when interpolated post-pass should run.
+
+        We run this pass when interpolation is enabled and either:
+        - individual crop saving is enabled, or
+        - pose export is enabled (to fill occluded-frame pose rows in final CSV).
+        """
+        if not hasattr(self, "chk_individual_interpolate"):
+            return False
+        if not self.chk_individual_interpolate.isChecked():
+            return False
+        if not self._is_individual_pipeline_enabled():
+            return False
+        return bool(
+            self._is_individual_image_save_enabled() or self._is_pose_export_enabled()
         )
 
     def _sync_individual_analysis_mode_ui(self):
@@ -8903,13 +9169,30 @@ class MainWindow(QMainWindow):
                     if colors and track_id < len(colors):
                         color = colors[track_id]
                     else:
-                        default_colors = [
-                            (0, 255, 0),
-                            (255, 0, 0),
-                            (0, 0, 255),
-                            (255, 255, 0),
+                        # Use matplotlib's category20 colormap (BGR format for OpenCV)
+                        category20_colors = [
+                            (127, 127, 31),
+                            (188, 189, 34),
+                            (140, 86, 75),
+                            (255, 127, 14),
+                            (214, 39, 40),
+                            (255, 152, 150),
+                            (197, 176, 213),
+                            (148, 103, 189),
+                            (196, 156, 148),
+                            (227, 119, 194),
+                            (199, 199, 199),
+                            (140, 140, 140),
+                            (23, 190, 207),
+                            (158, 218, 229),
+                            (57, 59, 121),
+                            (82, 84, 163),
+                            (107, 110, 207),
+                            (156, 158, 222),
+                            (99, 121, 57),
+                            (140, 162, 82),
                         ]
-                        color = default_colors[track_id % len(default_colors)]
+                        color = category20_colors[track_id % len(category20_colors)]
 
                     # Get trail points (past N frames based on duration in seconds)
                     trail_points = []
@@ -8962,13 +9245,30 @@ class MainWindow(QMainWindow):
                 if colors and track_id < len(colors):
                     color = colors[track_id]
                 else:
-                    default_colors = [
-                        (0, 255, 0),
-                        (255, 0, 0),
-                        (0, 0, 255),
-                        (255, 255, 0),
+                    # Use matplotlib's category20 colormap (BGR format for OpenCV)
+                    category20_colors = [
+                        (127, 127, 31),
+                        (188, 189, 34),
+                        (140, 86, 75),
+                        (255, 127, 14),
+                        (214, 39, 40),
+                        (255, 152, 150),
+                        (197, 176, 213),
+                        (148, 103, 189),
+                        (196, 156, 148),
+                        (227, 119, 194),
+                        (199, 199, 199),
+                        (140, 140, 140),
+                        (23, 190, 207),
+                        (158, 218, 229),
+                        (57, 59, 121),
+                        (82, 84, 163),
+                        (107, 110, 207),
+                        (156, 158, 222),
+                        (99, 121, 57),
+                        (140, 162, 82),
                     ]
-                    color = default_colors[track_id % len(default_colors)]
+                    color = category20_colors[track_id % len(category20_colors)]
 
                 # Draw circle at position
                 cv2.circle(frame, (cx, cy), marker_radius, color, marker_thickness)
@@ -9375,7 +9675,9 @@ class MainWindow(QMainWindow):
             with_pose_df = trajectories_df
             if cache_available:
                 with_pose_df = augment_trajectories_with_pose_cache(
-                    with_pose_df, cache_path
+                    with_pose_df,
+                    cache_path,
+                    ignore_keypoints=self._parse_pose_ignore_keypoints(),
                 )
             if interp_available:
                 interp_pose_df = pd.read_csv(interp_pose_path)
@@ -9472,8 +9774,9 @@ class MainWindow(QMainWindow):
         if self.chk_enable_dataset_gen.isChecked():
             self._generate_training_dataset(override_csv_path=final_csv_path)
 
-        # Interpolate occlusions for individual dataset (post-pass)
-        if self._is_individual_image_save_enabled():
+        # Interpolate occlusions for individual analysis (post-pass).
+        # This also powers pose enrichment on occluded frames in final CSV.
+        if self._should_run_interpolated_postpass():
             started = self._generate_interpolated_individual_crops(final_csv_path)
             if started:
                 # Hold final UI/session completion until interpolation finishes.
@@ -9527,6 +9830,23 @@ class MainWindow(QMainWindow):
                 return False
 
             params = self.get_parameters_dict()
+            output_dir = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
+            if not output_dir:
+                # Keep interpolated analysis available even when image-save toggle is off.
+                csv_dir = os.path.dirname(target_csv) if target_csv else ""
+                fallback_output = (
+                    os.path.join(csv_dir, "training_data") if csv_dir else ""
+                )
+                if fallback_output:
+                    try:
+                        os.makedirs(fallback_output, exist_ok=True)
+                    except Exception:
+                        pass
+                    params["INDIVIDUAL_DATASET_OUTPUT_DIR"] = fallback_output
+                    logger.info(
+                        "Interpolated analysis output dir not set; using fallback: %s",
+                        fallback_output,
+                    )
 
             self.progress_bar.setVisible(True)
             self.progress_label.setVisible(True)
@@ -10240,11 +10560,16 @@ class MainWindow(QMainWindow):
             "POSE_MIN_KPT_CONF_VALID": self.spin_pose_min_kpt_conf_valid.value(),
             "POSE_SKELETON_FILE": self.line_pose_skeleton_file.text().strip(),
             "POSE_IGNORE_KEYPOINTS": self._parse_pose_ignore_keypoints(),
+            "POSE_DIRECTION_ANTERIOR_KEYPOINTS": self._parse_pose_direction_anterior_keypoints(),
+            "POSE_DIRECTION_POSTERIOR_KEYPOINTS": self._parse_pose_direction_posterior_keypoints(),
             "POSE_SLEAP_ENV": self._selected_pose_sleap_env(),
             "POSE_SLEAP_DEVICE": self.combo_pose_sleap_device.currentText().strip()
             or "auto",
             "POSE_SLEAP_BATCH": self.spin_pose_sleap_batch.value(),
             "POSE_SLEAP_MAX_INSTANCES": 1,
+            "INDIVIDUAL_PROPERTIES_CACHE_PATH": str(
+                self.current_individual_properties_cache_path or ""
+            ).strip(),
             # Real-time Individual Dataset Generation parameters
             "ENABLE_INDIVIDUAL_DATASET": individual_image_save_enabled,
             "ENABLE_INDIVIDUAL_IMAGE_SAVE": individual_image_save_enabled,
@@ -10906,15 +11231,16 @@ class MainWindow(QMainWindow):
             self.line_pose_skeleton_file.setText(
                 get_cfg("pose_skeleton_file", default="")
             )
+            self._refresh_pose_direction_keypoint_lists()
             ignore_kpts = get_cfg("pose_ignore_keypoints", default=[])
-            if isinstance(ignore_kpts, (list, tuple)):
-                self.line_pose_ignore_keypoints.setText(
-                    ",".join(str(v) for v in ignore_kpts)
-                )
-            elif isinstance(ignore_kpts, str):
-                self.line_pose_ignore_keypoints.setText(ignore_kpts)
-            else:
-                self.line_pose_ignore_keypoints.setText("")
+            self._set_pose_group_selection(self.list_pose_ignore_keypoints, ignore_kpts)
+            ant_kpts = get_cfg("pose_direction_anterior_keypoints", default=[])
+            self._set_pose_group_selection(self.list_pose_direction_anterior, ant_kpts)
+            post_kpts = get_cfg("pose_direction_posterior_keypoints", default=[])
+            self._set_pose_group_selection(
+                self.list_pose_direction_posterior, post_kpts
+            )
+            self._apply_pose_keypoint_selection_constraints("ignore")
             self.advanced_config["pose_sleap_env"] = str(
                 get_cfg("pose_sleap_env", default="sleap")
             )
@@ -11295,6 +11621,8 @@ class MainWindow(QMainWindow):
                 "pose_min_kpt_conf_valid": self.spin_pose_min_kpt_conf_valid.value(),
                 "pose_skeleton_file": self.line_pose_skeleton_file.text().strip(),
                 "pose_ignore_keypoints": self._parse_pose_ignore_keypoints(),
+                "pose_direction_anterior_keypoints": self._parse_pose_direction_anterior_keypoints(),
+                "pose_direction_posterior_keypoints": self._parse_pose_direction_posterior_keypoints(),
                 "pose_sleap_env": self._selected_pose_sleap_env(),
                 "pose_sleap_device": self.combo_pose_sleap_device.currentText().strip()
                 or "auto",

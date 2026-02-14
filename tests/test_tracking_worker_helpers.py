@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import types
 
+import numpy as np
+
 from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
 
@@ -175,3 +177,77 @@ def test_forward_frame_iterator_sync_and_prefetch_paths() -> None:
     )
     assert prefetch_rows == [("a", 1), ("b", 2)]
     assert worker.frame_prefetcher is None
+
+
+def test_collapse_obb_axis_theta_chooses_nearest_branch() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    theta_axis = np.deg2rad(12.0)
+    reference = np.deg2rad(205.0)
+    collapsed = worker._collapse_obb_axis_theta(theta_axis, reference)
+    expected = (theta_axis + np.pi) % (2 * np.pi)
+    diff = ((collapsed - expected + np.pi) % (2 * np.pi)) - np.pi
+    assert abs(float(diff)) < 1e-6
+
+
+def test_pose_heading_from_keypoints_uses_weighted_centroids() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    keypoints = np.array(
+        [
+            [9.0, 0.0, 0.9],  # anterior
+            [11.0, 0.0, 0.8],  # anterior
+            [0.0, 0.0, 0.7],  # posterior
+            [0.0, 1.0, 0.1],  # posterior but below threshold
+        ],
+        dtype=np.float32,
+    )
+    theta = worker._compute_pose_heading_from_keypoints(
+        keypoints=keypoints,
+        anterior_indices=[0, 1],
+        posterior_indices=[2, 3],
+        min_valid_conf=0.2,
+    )
+    assert theta is not None
+    assert abs(float(theta)) < 1e-6
+
+    theta_none = worker._compute_pose_heading_from_keypoints(
+        keypoints=keypoints,
+        anterior_indices=[3],  # low confidence only
+        posterior_indices=[2],
+        min_valid_conf=0.2,
+    )
+    assert theta_none is None
+
+
+def test_resolve_pose_group_indices_accepts_names_and_indices() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    names = ["head", "thorax", "abdomen"]
+    idxs = worker._resolve_pose_group_indices(["head", 2, "HEAD", "missing"], names)
+    assert idxs == [0, 2]
+
+
+def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    worker.backward_mode = True
+    base_theta = worker._normalize_theta(np.deg2rad(35.0))
+
+    motion_theta_out = (base_theta + np.pi) % (2 * np.pi)
+    pose_theta_out = base_theta
+
+    expected_motion = worker._normalize_theta(np.deg2rad(215.0))
+    diff_motion = (
+        (float(motion_theta_out) - float(expected_motion) + np.pi) % (2 * np.pi)
+    ) - np.pi
+    assert abs(float(diff_motion)) < 1e-6
+
+    diff_pose = (
+        (float(pose_theta_out) - float(base_theta) + np.pi) % (2 * np.pi)
+    ) - np.pi
+    assert abs(float(diff_pose)) < 1e-6

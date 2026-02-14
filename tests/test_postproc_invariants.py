@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -72,3 +73,67 @@ def test_normalization_is_deterministic(case_name: str) -> None:
     first = normalize_output(actual)
     second = normalize_output(actual)
     assert first.equals(second)
+
+
+def test_merge_theta_avoids_orthogonal_artifact_for_pi_ambiguous_pairs() -> None:
+    forward = pd.DataFrame(
+        [
+            {
+                "TrajectoryID": 0,
+                "FrameID": 0,
+                "X": 10.0,
+                "Y": 10.0,
+                "Theta": 0.0,
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 0,
+                "FrameID": 1,
+                "X": 12.0,
+                "Y": 10.0,
+                "Theta": 0.0,
+                "State": "active",
+            },
+        ]
+    )
+    backward = pd.DataFrame(
+        [
+            {
+                "TrajectoryID": 0,
+                "FrameID": 0,
+                "X": 10.1,
+                "Y": 10.0,
+                "Theta": float(np.pi),
+                "State": "active",
+            },
+            {
+                "TrajectoryID": 0,
+                "FrameID": 1,
+                "X": 12.1,
+                "Y": 10.0,
+                "Theta": float(np.pi),
+                "State": "active",
+            },
+        ]
+    )
+    params = {
+        "AGREEMENT_DISTANCE": 5.0,
+        "MIN_OVERLAP_FRAMES": 1,
+        "MIN_TRAJECTORY_LENGTH": 1,
+    }
+
+    actual = run_resolve_trajectories(
+        {"forward": forward, "backward": backward}, params
+    )
+    assert not actual.empty
+
+    theta = actual["Theta"].dropna().to_numpy(dtype=float)
+    assert theta.size > 0
+
+    # Treat theta as axis-valued for this invariant: result should align to 0/pi,
+    # not collapse to orthogonal pi/2.
+    dist_to_axis = np.minimum(
+        np.abs(np.arctan2(np.sin(theta), np.cos(theta))),
+        np.abs(np.arctan2(np.sin(theta - np.pi), np.cos(theta - np.pi))),
+    )
+    assert float(np.max(dist_to_axis)) < 1e-6

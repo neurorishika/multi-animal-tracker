@@ -47,6 +47,7 @@ def _compute_cost_matrix_numba(
     Wa,
     Wasp,
     cull_threshold,
+    meas_ori_directed,
 ):
     """Numba kernel using pre-calculated batch Inverse Covariances."""
     cost = np.zeros((N, M), dtype=np.float32)
@@ -78,6 +79,11 @@ def _compute_cost_matrix_numba(
             odiff = abs(pred_ori[i] - meas_ori[j])
             if odiff > np.pi:
                 odiff = 2 * np.pi - odiff
+            # OBB theta is an axis (0/180 equivalent) unless pose provides directed heading.
+            if meas_ori_directed[j] == 0:
+                alt = np.pi - odiff
+                if alt < odiff:
+                    odiff = alt
 
             # 3. Shape Costs
             area_diff = abs(shapes_area[j] - prev_areas[i])
@@ -116,6 +122,7 @@ class TrackAssigner:
         shapes: List[Tuple[float, float]],
         kf_manager: Any,
         last_shape_info: List[Any],
+        meas_ori_directed: np.ndarray | None = None,
     ) -> Tuple[np.ndarray, Dict[int, List[int]]]:
         """
         Computes cost matrix. Compatible with Vectorized Kalman Filter.
@@ -151,6 +158,17 @@ class TrackAssigner:
         # Pre-extract arrays for Numba (Avoids attribute access in loop)
         meas_pos = np.array([m[:2] for m in measurements], dtype=np.float32)
         meas_ori = np.array([m[2] for m in measurements], dtype=np.float32)
+        if meas_ori_directed is None:
+            meas_ori_directed_arr = np.zeros(M, dtype=np.uint8)
+        else:
+            meas_ori_directed_arr = np.asarray(meas_ori_directed, dtype=np.uint8)
+            if len(meas_ori_directed_arr) != M:
+                logger.warning(
+                    "meas_ori_directed length mismatch (%d != %d); falling back to axis mode.",
+                    len(meas_ori_directed_arr),
+                    M,
+                )
+                meas_ori_directed_arr = np.zeros(M, dtype=np.uint8)
         pred_pos = predictions[:, :2]  # Predictions are already (N, 3)
         pred_ori = predictions[:, 2]
 
@@ -190,6 +208,7 @@ class TrackAssigner:
                 S_inv_batch,
                 p,
                 spatial_candidates,
+                meas_ori_directed_arr,
             )
             return cost, spatial_candidates
 
@@ -212,6 +231,7 @@ class TrackAssigner:
             p["W_AREA"],
             p["W_ASPECT"],
             cull_threshold,
+            meas_ori_directed_arr,
         )
 
         return cost, {}
@@ -355,6 +375,7 @@ class TrackAssigner:
         S_inv,
         p,
         candidates,
+        meas_ori_directed,
     ):
         """Python fallback for spatial optimization."""
         cost = np.full((N, M), 1e6, dtype=np.float32)
@@ -378,6 +399,8 @@ class TrackAssigner:
                 odiff = abs(pred_ori[r] - meas_ori[c])
                 if odiff > np.pi:
                     odiff = 2 * np.pi - odiff
+                if meas_ori_directed[c] == 0:
+                    odiff = min(odiff, np.pi - odiff)
 
                 cost[r, c] = (
                     Wp * pos_c

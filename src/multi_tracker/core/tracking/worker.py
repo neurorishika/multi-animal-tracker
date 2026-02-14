@@ -330,6 +330,161 @@ class TrackingWorker(QThread):
 
         return outputs
 
+    @staticmethod
+    def _normalize_theta(theta):
+        """Normalize radians to [0, 2*pi)."""
+        try:
+            value = float(theta)
+        except Exception:
+            value = 0.0
+        return value % (2 * math.pi)
+
+    @staticmethod
+    def _circular_abs_diff_rad(theta_a, theta_b):
+        """Return absolute circular difference in radians in [0, pi]."""
+        a = float(theta_a)
+        b = float(theta_b)
+        d = (a - b + math.pi) % (2 * math.pi) - math.pi
+        return abs(d)
+
+    def _collapse_obb_axis_theta(self, theta_axis, reference_theta):
+        """
+        Resolve 180-degree OBB ambiguity by picking theta or theta+pi nearest reference.
+        """
+        theta0 = self._normalize_theta(theta_axis)
+        theta1 = self._normalize_theta(theta0 + math.pi)
+        if reference_theta is None:
+            return theta0
+        try:
+            ref = float(reference_theta)
+            if not np.isfinite(ref):
+                return theta0
+            ref = self._normalize_theta(ref)
+        except Exception:
+            return theta0
+        d0 = self._circular_abs_diff_rad(theta0, ref)
+        d1 = self._circular_abs_diff_rad(theta1, ref)
+        return theta0 if d0 <= d1 else theta1
+
+    @staticmethod
+    def _parse_pose_group_tokens(raw_spec):
+        """Parse keypoint group spec from list/tuple/string into tokens."""
+        if raw_spec is None:
+            return []
+        if isinstance(raw_spec, str):
+            raw_tokens = raw_spec.split(",")
+        elif isinstance(raw_spec, (list, tuple)):
+            raw_tokens = list(raw_spec)
+        else:
+            raw_tokens = [raw_spec]
+
+        tokens = []
+        for token in raw_tokens:
+            t = str(token).strip()
+            if not t:
+                continue
+            try:
+                tokens.append(int(t))
+            except Exception:
+                tokens.append(t)
+        return tokens
+
+    def _resolve_pose_group_indices(self, raw_spec, keypoint_names):
+        """Resolve keypoint group names/indices to deduplicated index list."""
+        names = [str(v) for v in (keypoint_names or [])]
+        tokens = self._parse_pose_group_tokens(raw_spec)
+        if not tokens:
+            return []
+
+        lower_map = {name.lower(): idx for idx, name in enumerate(names)}
+        indices = []
+        seen = set()
+        for tok in tokens:
+            idx = None
+            if isinstance(tok, int):
+                if 0 <= tok < len(names):
+                    idx = int(tok)
+            else:
+                idx = lower_map.get(str(tok).strip().lower(), None)
+            if idx is None or idx in seen:
+                continue
+            seen.add(idx)
+            indices.append(idx)
+        return indices
+
+    def _compute_pose_heading_from_keypoints(
+        self,
+        keypoints,
+        anterior_indices,
+        posterior_indices,
+        min_valid_conf,
+    ):
+        """
+        Estimate directed heading (posterior -> anterior) from pose keypoints.
+
+        Returns None if either group has no valid keypoints above min_valid_conf.
+        """
+        if keypoints is None:
+            return None
+        arr = np.asarray(keypoints, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+            return None
+
+        def weighted_centroid(indices):
+            pts = []
+            weights = []
+            for idx in indices:
+                if idx < 0 or idx >= len(arr):
+                    continue
+                x, y, conf = arr[idx]
+                if (
+                    not np.isfinite(x)
+                    or not np.isfinite(y)
+                    or not np.isfinite(conf)
+                    or float(conf) < float(min_valid_conf)
+                ):
+                    continue
+                pts.append((float(x), float(y)))
+                weights.append(max(1e-6, float(conf)))
+            if not pts:
+                return None
+            pts_arr = np.asarray(pts, dtype=np.float64)
+            w_arr = np.asarray(weights, dtype=np.float64)
+            cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+            cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+            return cx, cy
+
+        ant = weighted_centroid(anterior_indices)
+        post = weighted_centroid(posterior_indices)
+        if ant is None or post is None:
+            return None
+
+        dx = ant[0] - post[0]
+        dy = ant[1] - post[1]
+        if not np.isfinite(dx) or not np.isfinite(dy):
+            return None
+        return self._normalize_theta(math.atan2(dy, dx))
+
+    def _build_pose_detection_keypoint_map(self, pose_props_cache, frame_idx):
+        """Build detection_id -> pose_keypoints map for one frame from cache."""
+        if pose_props_cache is None:
+            return {}
+        try:
+            frame = pose_props_cache.get_frame(int(frame_idx))
+        except Exception:
+            return {}
+        ids = frame.get("detection_ids", [])
+        keypoints = frame.get("pose_keypoints", [])
+        n = min(len(ids), len(keypoints))
+        out = {}
+        for i in range(n):
+            try:
+                det_id = int(ids[i])
+            except Exception:
+                continue
+            out[det_id] = keypoints[i]
+        return out
+
     def _precompute_individual_properties(
         self,
         detector,
@@ -560,8 +715,7 @@ class TrackingWorker(QThread):
                     self.progress_signal.emit(
                         pct,
                         "Precomputing individual properties: "
-                        f"{processed_count}/{total_frames} "
-                        f"({rate_fps:.1f} fps, ETA {int(eta // 60):02d}:{int(eta % 60):02d})",
+                        f"{processed_count}/{total_frames} ",
                     )
                     self.stats_signal.emit(
                         {
@@ -1121,6 +1275,67 @@ class TrackingWorker(QThread):
                 self.finished_signal.emit(False, [], [])
                 return
 
+        # Optional pose-properties reader for directional orientation override.
+        pose_props_cache = None
+        pose_direction_enabled = False
+        pose_direction_applied_count = 0
+        pose_direction_fallback_count = 0
+        pose_direction_anterior_indices = []
+        pose_direction_posterior_indices = []
+        pose_keypoint_names = []
+        pose_min_valid_conf = float(p.get("POSE_MIN_KPT_CONF_VALID", 0.2))
+        pose_frame_keypoints_map = {}
+        pose_frame_keypoints_map_frame = None
+
+        pose_cache_candidate = str(
+            self.individual_properties_cache_path
+            or p.get("INDIVIDUAL_PROPERTIES_CACHE_PATH", "")
+            or ""
+        ).strip()
+        pose_extractor_enabled = bool(p.get("ENABLE_POSE_EXTRACTOR", False))
+        if (
+            pose_extractor_enabled
+            and detection_method == "yolo_obb"
+            and pose_cache_candidate
+            and os.path.exists(pose_cache_candidate)
+        ):
+            from multi_tracker.core.identity.properties_cache import (
+                IndividualPropertiesCache,
+            )
+
+            pose_props_cache = IndividualPropertiesCache(pose_cache_candidate, mode="r")
+            if not pose_props_cache.is_compatible():
+                logger.warning(
+                    "Pose direction override disabled: incompatible properties cache: %s",
+                    pose_cache_candidate,
+                )
+                pose_props_cache.close()
+                pose_props_cache = None
+            else:
+                names = pose_props_cache.metadata.get("pose_keypoint_names", [])
+                if isinstance(names, (list, tuple)):
+                    pose_keypoint_names = [str(v) for v in names]
+                pose_direction_anterior_indices = self._resolve_pose_group_indices(
+                    p.get("POSE_DIRECTION_ANTERIOR_KEYPOINTS", []), pose_keypoint_names
+                )
+                pose_direction_posterior_indices = self._resolve_pose_group_indices(
+                    p.get("POSE_DIRECTION_POSTERIOR_KEYPOINTS", []), pose_keypoint_names
+                )
+                if (
+                    len(pose_direction_anterior_indices) > 0
+                    and len(pose_direction_posterior_indices) > 0
+                ):
+                    pose_direction_enabled = True
+                    logger.info(
+                        "Pose direction override enabled: anterior=%s, posterior=%s",
+                        pose_direction_anterior_indices,
+                        pose_direction_posterior_indices,
+                    )
+                else:
+                    logger.info(
+                        "Pose direction override disabled: define both anterior/posterior keypoint groups."
+                    )
+
         # === 2. FRAME PROCESSING LOOP ===
         # Determine whether to use frame prefetcher
         # Enable for forward passes where we're not batching detection (to avoid double buffering)
@@ -1274,6 +1489,7 @@ class TrackingWorker(QThread):
             raw_detection_ids = []
             filtered_obb_corners = []
             detection_confidences = []
+            pose_directed_mask = np.zeros(0, dtype=np.uint8)
             raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = (
                 [],
                 [],
@@ -1446,6 +1662,37 @@ class TrackingWorker(QThread):
 
             profile_times["detection"] += time.time() - detect_start
 
+            # Optional pose-based direction override on filtered detections.
+            if pose_direction_enabled and meas and detection_ids:
+                if pose_frame_keypoints_map_frame != actual_frame_index:
+                    pose_frame_keypoints_map = self._build_pose_detection_keypoint_map(
+                        pose_props_cache, actual_frame_index
+                    )
+                    pose_frame_keypoints_map_frame = actual_frame_index
+
+                pose_directed_mask = np.zeros(len(meas), dtype=np.uint8)
+                n_det = min(len(meas), len(detection_ids))
+                for det_idx in range(n_det):
+                    try:
+                        det_id = int(detection_ids[det_idx])
+                    except Exception:
+                        continue
+                    keypoints = pose_frame_keypoints_map.get(det_id)
+                    pose_theta = self._compute_pose_heading_from_keypoints(
+                        keypoints,
+                        pose_direction_anterior_indices,
+                        pose_direction_posterior_indices,
+                        pose_min_valid_conf,
+                    )
+                    if pose_theta is None:
+                        continue
+                    m = np.asarray(meas[det_idx], dtype=np.float32).copy()
+                    if len(m) < 3:
+                        continue
+                    m[2] = np.float32(pose_theta)
+                    meas[det_idx] = m
+                    pose_directed_mask[det_idx] = 1
+
             if len(meas) >= params.get("MIN_DETECTIONS_TO_START", 1):
                 detection_counts += 1
             else:
@@ -1486,7 +1733,17 @@ class TrackingWorker(QThread):
 
                 # The Assigner now takes the kf_manager directly to access X and S_inv
                 cost, spatial_candidates = assigner.compute_cost_matrix(
-                    N, meas, preds, shapes, self.kf_manager, last_shape_info
+                    N,
+                    meas,
+                    preds,
+                    shapes,
+                    self.kf_manager,
+                    last_shape_info,
+                    meas_ori_directed=(
+                        pose_directed_mask
+                        if len(pose_directed_mask) == len(meas)
+                        else None
+                    ),
                 )
 
                 rows, cols, free_dets, next_id, high_cost_tracks = (
@@ -1537,10 +1794,34 @@ class TrackingWorker(QThread):
                 # --- KF Update & State Update ---
                 avg_cost = 0.0
                 for r, c in zip(rows, cols):
-                    # Vectorized manager handles the reshaping and indexing internally
-                    self.kf_manager.correct(r, meas[c])
+                    x = float(meas[c][0])
+                    y = float(meas[c][1])
+                    measured_theta = float(meas[c][2])
+                    pose_directed = bool(
+                        c < len(pose_directed_mask) and pose_directed_mask[c] == 1
+                    )
 
-                    x, y, theta = meas[c]
+                    if pose_directed:
+                        theta_for_tracking = self._normalize_theta(measured_theta)
+                        pose_direction_applied_count += 1
+                    else:
+                        reference_theta = orientation_last[r]
+                        if reference_theta is None:
+                            try:
+                                reference_theta = float(preds[r, 2])
+                            except Exception:
+                                reference_theta = None
+                        theta_for_tracking = self._collapse_obb_axis_theta(
+                            measured_theta, reference_theta
+                        )
+                        pose_direction_fallback_count += 1
+
+                    # Vectorized manager handles the reshaping and indexing internally
+                    corrected_meas = np.asarray(
+                        [x, y, theta_for_tracking], dtype=np.float32
+                    )
+                    self.kf_manager.correct(r, corrected_meas)
+
                     tracking_continuity[r] += 1
                     position_deques[r].append((x, y))
                     speed = (
@@ -1552,12 +1833,22 @@ class TrackingWorker(QThread):
                         else 0
                     )
                     orientation_last[r] = self._smooth_orientation(
-                        r, theta, speed, params, orientation_last, position_deques
+                        r,
+                        theta_for_tracking,
+                        speed,
+                        params,
+                        orientation_last,
+                        position_deques,
                     )
                     last_shape_info[r] = shapes[c]
 
+                    theta_out = orientation_last[r]
+                    # Backward fallback orientation historically needs a 180-degree correction.
+                    if self.backward_mode and not pose_directed:
+                        theta_out = (theta_out + np.pi) % (2 * np.pi)
+
                     # Update trajectory with actual frame index
-                    pt = (int(x), int(y), orientation_last[r], actual_frame_index)
+                    pt = (int(x), int(y), theta_out, actual_frame_index)
                     self.trajectories_full[r].append(pt)
                     trajectories_pruned[r].append(pt)
 
@@ -1603,7 +1894,7 @@ class TrackingWorker(QThread):
                     # Populate histogram lists (this part is correct)
                     hist_velocities.append(speed)
                     hist_sizes.append(sizes[c])
-                    hist_orientations.append(orientation_last[r])
+                    hist_orientations.append(theta_out)
                     hist_costs.append(current_cost)
 
                 # --- CSV for Unmatched & Final Respawn (Identical to Original) ---
@@ -1952,6 +2243,12 @@ class TrackingWorker(QThread):
         if self.video_writer:
             self.video_writer.release()
 
+        if pose_props_cache is not None:
+            try:
+                pose_props_cache.close()
+            except Exception:
+                pass
+
         # Save or close detection cache
         if detection_cache:
             if not self.backward_mode and not use_cached_detections:
@@ -1968,6 +2265,13 @@ class TrackingWorker(QThread):
             dataset_path = individual_generator.finalize()
             if dataset_path:
                 logger.info(f"Individual dataset saved to: {dataset_path}")
+
+        if pose_direction_enabled:
+            logger.info(
+                "Pose direction summary: applied=%d, fallback=%d",
+                int(pose_direction_applied_count),
+                int(pose_direction_fallback_count),
+            )
 
         logger.info("Tracking worker finished. Emitting raw trajectory data.")
 

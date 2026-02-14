@@ -28,6 +28,7 @@ def _compute_cost_matrix_numba_py(
     Wa,
     Wasp,
     cull_threshold,
+    meas_ori_directed,
 ):
     cost = np.zeros((N, M), dtype=np.float32)
     for i in range(N):
@@ -44,6 +45,8 @@ def _compute_cost_matrix_numba_py(
             odiff = abs(pred_ori[i] - meas_ori[j])
             if odiff > np.pi:
                 odiff = 2 * np.pi - odiff
+            if meas_ori_directed[j] == 0:
+                odiff = min(odiff, np.pi - odiff)
             area_diff = abs(shapes_area[j] - prev_areas[i])
             asp_diff = abs(shapes_asp[j] - prev_asps[i])
             cost[i, j] = Wp * pos_dist + Wo * odiff + Wa * area_diff + Wasp * asp_diff
@@ -148,3 +151,50 @@ def test_assign_tracks_respawns_lost_track_when_valid_detection_exists() -> None
     assert free_dets == []
     assert next_id == 3
     assert trajectory_ids[1] == 2
+
+
+def test_orientation_cost_uses_axis_equivalence_by_default() -> None:
+    assigner = TrackAssigner(_params())
+    kf = _DummyKF(1)
+    predictions = np.array([[20.0, 20.0, 0.1]], dtype=np.float32)
+    measurements = [
+        np.array([20.0, 20.0, 0.1], dtype=np.float32),
+        np.array([20.0, 20.0, 0.1 + np.pi], dtype=np.float32),
+    ]
+    shapes = [(30.0, 1.2), (30.0, 1.2)]
+    last_shape_info = [(30.0, 1.2)]
+
+    cost, _ = assigner.compute_cost_matrix(
+        N=1,
+        measurements=measurements,
+        predictions=predictions,
+        shapes=shapes,
+        kf_manager=kf,
+        last_shape_info=last_shape_info,
+    )
+
+    assert abs(float(cost[0, 0]) - float(cost[0, 1])) < 1e-6
+
+
+def test_orientation_cost_respects_directed_measurements_when_flagged() -> None:
+    assigner = TrackAssigner(_params())
+    kf = _DummyKF(1)
+    predictions = np.array([[20.0, 20.0, 0.1]], dtype=np.float32)
+    measurements = [
+        np.array([20.0, 20.0, 0.1], dtype=np.float32),
+        np.array([20.0, 20.0, 0.1 + np.pi], dtype=np.float32),
+    ]
+    shapes = [(30.0, 1.2), (30.0, 1.2)]
+    last_shape_info = [(30.0, 1.2)]
+
+    cost, _ = assigner.compute_cost_matrix(
+        N=1,
+        measurements=measurements,
+        predictions=predictions,
+        shapes=shapes,
+        kf_manager=kf,
+        last_shape_info=last_shape_info,
+        meas_ori_directed=np.array([1, 1], dtype=np.uint8),
+    )
+
+    assert float(cost[0, 0]) < float(cost[0, 1])

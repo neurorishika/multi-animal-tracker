@@ -75,23 +75,20 @@ def test_yolo_backend_uses_canonical_output_schema(monkeypatch) -> None:
         model_path="fake.pt",
         device="cpu",
         min_valid_conf=0.2,
-        ignore_keypoints=[1],
         keypoint_names=["head", "tail"],
     )
 
     crops = [np.zeros((8, 8, 3), dtype=np.uint8), np.zeros((6, 6, 3), dtype=np.uint8)]
     out = backend.predict_crops(crops)
     assert len(out) == 2
-    assert out[0].num_keypoints == 1
+    assert out[0].num_keypoints == 2
     assert out[0].num_valid == 1
-    assert np.isclose(out[0].mean_conf, 0.9)
-    assert np.isclose(out[0].valid_fraction, 1.0)
-    assert out[0].keypoints.shape == (1, 3)
+    assert np.isclose(out[0].mean_conf, 0.5)
+    assert np.isclose(out[0].valid_fraction, 0.5)
+    assert out[0].keypoints.shape == (2, 3)
 
 
-def test_sleap_factory_uses_skeleton_file_and_ignore(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_sleap_factory_uses_skeleton_file(tmp_path: Path, monkeypatch) -> None:
     mod = _load_feature_runtime_module()
     monkeypatch.setitem(
         sys.modules,
@@ -111,12 +108,10 @@ def test_sleap_factory_uses_skeleton_file_and_ignore(
             "POSE_MODEL_TYPE": "sleap",
             "POSE_MODEL_DIR": str(model_dir),
             "POSE_SKELETON_FILE": str(skeleton_file),
-            "POSE_IGNORE_KEYPOINTS": ["thorax"],
             "POSE_MIN_KPT_CONF_VALID": 0.2,
         },
         out_root=str(tmp_path),
     )
     assert isinstance(backend, mod.SleapPoseBackend)
     assert backend.keypoint_names == ["head", "thorax", "abdomen"]
-    assert backend.ignore_keypoints == ["thorax"]
     backend.close()

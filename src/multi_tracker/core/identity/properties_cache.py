@@ -131,13 +131,11 @@ def compute_extractor_hash(params: Dict[str, Any]) -> str:
     pose_model_type = str(params.get("POSE_MODEL_TYPE", "yolo")).strip().lower()
     pose_model_dir = str(params.get("POSE_MODEL_DIR", "")).strip()
     pose_skeleton_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
-    pose_ignore_keypoints = params.get("POSE_IGNORE_KEYPOINTS", [])
     payload = {
         "schema_version": SCHEMA_VERSION,
         "enable_pose_extractor": pose_enabled,
         "pose_model_type": pose_model_type,
         "pose_min_kpt_conf_valid": params.get("POSE_MIN_KPT_CONF_VALID", 0.2),
-        "pose_ignore_keypoints": pose_ignore_keypoints,
         "pose_skeleton_file": (
             _file_fingerprint(pose_skeleton_file) if pose_skeleton_file else None
         ),
