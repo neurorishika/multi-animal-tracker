@@ -76,7 +76,13 @@ from ..core.tracking.worker import TrackingWorker
 from ..data.csv_writer import CSVWriterThread
 from ..data.detection_cache import DetectionCache
 from ..utils.geometry import fit_circle_to_points, wrap_angle_degs
-from ..utils.gpu_utils import MPS_AVAILABLE, ROCM_AVAILABLE, TORCH_CUDA_AVAILABLE
+from ..utils.gpu_utils import (
+    MPS_AVAILABLE,
+    ROCM_AVAILABLE,
+    TENSORRT_AVAILABLE,
+    TORCH_CUDA_AVAILABLE,
+    get_pose_runtime_options,
+)
 from .dialogs.train_yolo_dialog import TrainYoloDialog
 from .widgets.histograms import HistogramPanel
 
@@ -109,11 +115,21 @@ class MergeWorker(QThread):
         self.resize_factor = resize_factor
         self.interp_method = interp_method
         self.max_gap = max_gap
+        self._stop_requested = False
+
+    def stop(self):
+        """Request cooperative cancellation."""
+        self._stop_requested = True
+
+    def _should_stop(self) -> bool:
+        return bool(self._stop_requested or self.isInterruptionRequested())
 
     def run(self: object) -> object:
         """run method documentation."""
         # pose_backend = None
         try:
+            if self._should_stop():
+                return
             self.progress_signal.emit(10, "Preparing trajectories...")
 
             # Convert DataFrames to list of DataFrames (one per trajectory)
@@ -126,6 +142,8 @@ class MergeWorker(QThread):
             forward_prepared = prepare_trajs_for_merge(self.forward_trajs)
             backward_prepared = prepare_trajs_for_merge(self.backward_trajs)
 
+            if self._should_stop():
+                return
             self.progress_signal.emit(30, "Resolving trajectory conflicts...")
 
             resolved_trajectories = resolve_trajectories(
@@ -134,6 +152,8 @@ class MergeWorker(QThread):
                 params=self.params,
             )
 
+            if self._should_stop():
+                return
             self.progress_signal.emit(60, "Converting to DataFrame...")
 
             # Convert resolved trajectories to DataFrame
@@ -178,6 +198,8 @@ class MergeWorker(QThread):
                         max_gap=self.max_gap,
                     )
 
+            if self._should_stop():
+                return
             self.progress_signal.emit(90, "Scaling to original space...")
 
             # Scale coordinates back to original video space
@@ -204,8 +226,9 @@ class MergeWorker(QThread):
                     f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
                 )
 
-            self.progress_signal.emit(100, "Merge complete!")
-            self.finished_signal.emit(resolved_trajectories)
+            if not self._should_stop():
+                self.progress_signal.emit(100, "Merge complete!")
+                self.finished_signal.emit(resolved_trajectories)
 
         except Exception as e:
             logger.exception("Error during trajectory merging")
@@ -224,6 +247,14 @@ class InterpolatedCropsWorker(QThread):
         self.video_path = video_path
         self.detection_cache_path = detection_cache_path
         self.params = params
+        self._stop_requested = False
+
+    def stop(self):
+        """Request cooperative cancellation."""
+        self._stop_requested = True
+
+    def _should_stop(self) -> bool:
+        return bool(self._stop_requested or self.isInterruptionRequested())
 
     @staticmethod
     def _interp_angle(theta_start, theta_end, t):
@@ -281,7 +312,11 @@ class InterpolatedCropsWorker(QThread):
     def run(self: object) -> object:
         """run method documentation."""
         pose_backend = None
+        detection_cache = None
+        cap = None
         try:
+            if self._should_stop():
+                return
             if not self.csv_path or not os.path.exists(self.csv_path):
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
                 return
@@ -311,17 +346,25 @@ class InterpolatedCropsWorker(QThread):
             position_scale = 1.0
             size_scale = 1.0 / resize_factor if resize_factor else 1.0
 
-            detection_cache = None
             if self.detection_cache_path and os.path.exists(self.detection_cache_path):
                 detection_cache = DetectionCache(self.detection_cache_path, mode="r")
 
+            # Respect runtime save toggle: if disabled, run interpolation/pose without writing
+            # interpolated crops or related metadata artifacts to disk.
+            save_interpolated_outputs = bool(
+                self.params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
+            )
+            gen_params = dict(self.params or {})
+            gen_params["ENABLE_INDIVIDUAL_DATASET"] = save_interpolated_outputs
+            gen_params["ENABLE_INDIVIDUAL_IMAGE_SAVE"] = save_interpolated_outputs
+
             gen = IndividualDatasetGenerator(
-                self.params,
+                gen_params,
                 output_dir,
                 Path(self.video_path).stem,
                 self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
             )
-            gen.enabled = True
+            gen.enabled = save_interpolated_outputs
 
             pose_enabled = bool(self.params.get("ENABLE_POSE_EXTRACTOR", False))
             pose_kpt_source_names = []
@@ -348,13 +391,6 @@ class InterpolatedCropsWorker(QThread):
 
             cap = cv2.VideoCapture(self.video_path)
             if not cap.isOpened():
-                if detection_cache:
-                    detection_cache.close()
-                if pose_backend is not None:
-                    try:
-                        pose_backend.close()
-                    except Exception:
-                        pass
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
                 return
 
@@ -388,6 +424,8 @@ class InterpolatedCropsWorker(QThread):
                 return
 
             for traj_id, group in df.groupby("TrajectoryID"):
+                if self._should_stop():
+                    return
                 group = group.sort_values("FrameID").reset_index(drop=True)
                 states = group["State"].astype(str).str.strip().str.lower()
                 # Treat any value containing 'occluded' as occluded
@@ -399,6 +437,8 @@ class InterpolatedCropsWorker(QThread):
                 last_valid_idx = None
                 i = 0
                 while i < len(group):
+                    if self._should_stop():
+                        return
                     if states[i] != "occluded":
                         if not pd.isna(group.at[i, "X"]) and not pd.isna(
                             group.at[i, "Y"]
@@ -460,6 +500,8 @@ class InterpolatedCropsWorker(QThread):
                         h1 = h1 or ref_size * 0.8
 
                     for k in range(i, j):
+                        if self._should_stop():
+                            return
                         row = group.iloc[k]
                         f = int(row["FrameID"])
                         t = (f - f0) / (f1 - f0)
@@ -507,6 +549,8 @@ class InterpolatedCropsWorker(QThread):
                 total_frames = len(needed_frames)
                 current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
                 for idx, f in enumerate(needed_frames, start=1):
+                    if self._should_stop():
+                        return
                     if f != current_pos:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, f)
                     ret, frame = cap.read()
@@ -515,28 +559,30 @@ class InterpolatedCropsWorker(QThread):
                         continue
                     frame_pose_tasks = []
                     for task in frame_tasks[f]:
-                        filename = gen.save_interpolated_crop(
-                            frame=frame,
-                            frame_id=task["frame_id"],
-                            cx=task["cx"],
-                            cy=task["cy"],
-                            w=task["w"],
-                            h=task["h"],
-                            theta=task["theta"],
-                            traj_id=task["traj_id"],
-                            interp_from=task["interp_from"],
-                            interp_index=task["interp_index"],
-                            interp_total=task["interp_total"],
+                        filename = ""
+                        corners = gen.ellipse_to_obb_corners(
+                            task["cx"],
+                            task["cy"],
+                            task["w"],
+                            task["h"],
+                            task["theta"],
                         )
-                        if filename:
-                            interp_saved += 1
-                            corners = gen.ellipse_to_obb_corners(
-                                task["cx"],
-                                task["cy"],
-                                task["w"],
-                                task["h"],
-                                task["theta"],
+                        if save_interpolated_outputs:
+                            filename = gen.save_interpolated_crop(
+                                frame=frame,
+                                frame_id=task["frame_id"],
+                                cx=task["cx"],
+                                cy=task["cy"],
+                                w=task["w"],
+                                h=task["h"],
+                                theta=task["theta"],
+                                traj_id=task["traj_id"],
+                                interp_from=task["interp_from"],
+                                interp_index=task["interp_index"],
+                                interp_total=task["interp_total"],
                             )
+                        if save_interpolated_outputs and filename:
+                            interp_saved += 1
                             interp_rows.append(
                                 {
                                     "frame_id": int(task["frame_id"]),
@@ -565,32 +611,34 @@ class InterpolatedCropsWorker(QThread):
                                 }
                             )
                             roi_corners.append(corners)
-                            if pose_backend is not None:
+                        if pose_backend is not None:
+                            pose_crop = None
+                            pose_crop_info = None
+                            try:
+                                pose_crop, pose_crop_info = (
+                                    gen._extract_obb_masked_crop(
+                                        frame,
+                                        corners,
+                                        frame.shape[0],
+                                        frame.shape[1],
+                                    )
+                                )
+                            except Exception:
                                 pose_crop = None
                                 pose_crop_info = None
-                                try:
-                                    pose_crop, pose_crop_info = (
-                                        gen._extract_obb_masked_crop(
-                                            frame,
-                                            corners,
-                                            frame.shape[0],
-                                            frame.shape[1],
-                                        )
-                                    )
-                                except Exception:
-                                    pose_crop = None
-                                    pose_crop_info = None
-                                if pose_crop is not None and pose_crop.size > 0:
-                                    frame_pose_tasks.append(
-                                        {
-                                            "task": task,
-                                            "filename": filename,
-                                            "crop": pose_crop,
-                                            "crop_info": pose_crop_info,
-                                        }
-                                    )
+                            if pose_crop is not None and pose_crop.size > 0:
+                                frame_pose_tasks.append(
+                                    {
+                                        "task": task,
+                                        "filename": filename,
+                                        "crop": pose_crop,
+                                        "crop_info": pose_crop_info,
+                                    }
+                                )
 
                     if pose_backend is not None and frame_pose_tasks:
+                        if self._should_stop():
+                            return
                         pose_results = pose_backend.predict_crops(
                             [entry["crop"] for entry in frame_pose_tasks]
                         )
@@ -659,14 +707,11 @@ class InterpolatedCropsWorker(QThread):
                         del frame
                         gc.collect()
 
-            cap.release()
-            if detection_cache:
-                detection_cache.close()
             mapping_path = None
             roi_csv_path = None
             roi_npz_path = None
             pose_csv_path = None
-            if interp_rows and gen.crops_dir is not None:
+            if save_interpolated_outputs and interp_rows and gen.crops_dir is not None:
                 mapping_path = gen.crops_dir.parent / "interpolated_mapping.csv"
                 try:
                     with open(mapping_path, "w", newline="") as f:
@@ -686,7 +731,7 @@ class InterpolatedCropsWorker(QThread):
                         writer.writerows(interp_rows)
                 except Exception:
                     pass
-            if roi_rows and gen.crops_dir is not None:
+            if save_interpolated_outputs and roi_rows and gen.crops_dir is not None:
                 roi_csv_path = gen.crops_dir.parent / "interpolated_rois.csv"
                 try:
                     with open(roi_csv_path, "w", newline="") as f:
@@ -751,7 +796,11 @@ class InterpolatedCropsWorker(QThread):
                     )
                 except Exception:
                     pass
-            if interp_pose_rows and gen.crops_dir is not None:
+            if (
+                save_interpolated_outputs
+                and interp_pose_rows
+                and gen.crops_dir is not None
+            ):
                 pose_csv_path = gen.crops_dir.parent / "interpolated_pose.csv"
                 try:
                     pose_fieldnames = [
@@ -770,29 +819,42 @@ class InterpolatedCropsWorker(QThread):
                         writer.writerows(interp_pose_rows)
                 except Exception:
                     pose_csv_path = None
-            gen.finalize()
-            if pose_backend is not None:
-                try:
-                    pose_backend.close()
-                except Exception:
-                    pass
-            self.finished_signal.emit(
-                {
-                    "saved": interp_saved,
-                    "gaps": interp_gaps,
-                    "mapping_path": str(mapping_path) if mapping_path else None,
-                    "roi_csv_path": str(roi_csv_path) if roi_csv_path else None,
-                    "roi_npz_path": str(roi_npz_path) if roi_npz_path else None,
-                    "pose_csv_path": str(pose_csv_path) if pose_csv_path else None,
-                }
-            )
+            if save_interpolated_outputs:
+                gen.finalize()
+            if not self._should_stop():
+                self.finished_signal.emit(
+                    {
+                        "saved": interp_saved,
+                        "gaps": interp_gaps,
+                        "mapping_path": str(mapping_path) if mapping_path else None,
+                        "roi_csv_path": str(roi_csv_path) if roi_csv_path else None,
+                        "roi_npz_path": str(roi_npz_path) if roi_npz_path else None,
+                        "pose_csv_path": str(pose_csv_path) if pose_csv_path else None,
+                        "pose_rows": (
+                            interp_pose_rows
+                            if (interp_pose_rows and not save_interpolated_outputs)
+                            else None
+                        ),
+                    }
+                )
         except Exception:
+            self.finished_signal.emit({"saved": 0, "gaps": 0})
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            if detection_cache is not None:
+                try:
+                    detection_cache.close()
+                except Exception:
+                    pass
             if pose_backend is not None:
                 try:
                     pose_backend.close()
                 except Exception:
                     pass
-            self.finished_signal.emit({"saved": 0, "gaps": 0})
 
 
 class DatasetGenerationWorker(QThread):
@@ -828,12 +890,23 @@ class DatasetGenerationWorker(QThread):
         self.diversity_window = diversity_window
         self.include_context = include_context
         self.probabilistic = probabilistic
+        self._stop_requested = False
+
+    def stop(self):
+        """Request cooperative cancellation."""
+        self._stop_requested = True
+
+    def _should_stop(self) -> bool:
+        return bool(self._stop_requested or self.isInterruptionRequested())
 
     def run(self: object) -> object:
         """run method documentation."""
+        detection_cache = None
         try:
             from ..data.dataset_generation import FrameQualityScorer, export_dataset
 
+            if self._should_stop():
+                return
             self.progress_signal.emit(5, "Initializing dataset generation...")
 
             # Load tracking CSV to compute quality scores
@@ -843,7 +916,6 @@ class DatasetGenerationWorker(QThread):
             # Initialize quality scorer
             self.progress_signal.emit(15, "Initializing quality scorer...")
             scorer = FrameQualityScorer(self.params)
-            detection_cache = None
             if self.detection_cache_path and os.path.exists(self.detection_cache_path):
                 try:
                     detection_cache = DetectionCache(
@@ -861,6 +933,8 @@ class DatasetGenerationWorker(QThread):
             total_unique = len(unique_frames)
 
             for idx, frame_id in enumerate(unique_frames):
+                if self._should_stop():
+                    return
                 if idx % 100 == 0:  # Update progress every 100 frames
                     progress = 20 + int((idx / total_unique) * 30)
                     self.progress_signal.emit(
@@ -903,9 +977,8 @@ class DatasetGenerationWorker(QThread):
 
                 scorer.score_frame(frame_id, detection_data, tracking_data)
 
-            if detection_cache is not None:
-                detection_cache.close()
-
+            if self._should_stop():
+                return
             # Select worst frames with diversity
             self.progress_signal.emit(50, "Selecting challenging frames...")
             selected_frames = scorer.get_worst_frames(
@@ -918,6 +991,8 @@ class DatasetGenerationWorker(QThread):
 
             # Export dataset
             self.progress_signal.emit(60, f"Exporting {len(selected_frames)} frames...")
+            if self._should_stop():
+                return
             dataset_dir = export_dataset(
                 video_path=self.video_path,
                 csv_path=self.csv_path,
@@ -929,12 +1004,19 @@ class DatasetGenerationWorker(QThread):
                 include_context=self.include_context,
             )
 
-            self.progress_signal.emit(100, "Dataset generation complete!")
-            self.finished_signal.emit(dataset_dir, len(selected_frames))
+            if not self._should_stop():
+                self.progress_signal.emit(100, "Dataset generation complete!")
+                self.finished_signal.emit(dataset_dir, len(selected_frames))
 
         except Exception as e:
             logger.exception("Error during dataset generation")
             self.error_signal.emit(str(e))
+        finally:
+            if detection_cache is not None:
+                try:
+                    detection_cache.close()
+                except Exception:
+                    pass
 
 
 def get_video_config_path(video_path: object) -> object:
@@ -965,6 +1047,71 @@ def get_models_directory() -> object:
     os.makedirs(models_dir, exist_ok=True)
 
     return models_dir
+
+
+def get_pose_models_directory(backend: str | None = None) -> object:
+    """
+    Get the local pose-model repository directory.
+
+    Layout:
+      models/YOLO-pose/
+      models/SLEAP/
+    """
+    project_root = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
+    models_root = os.path.join(project_root, "models")
+    os.makedirs(models_root, exist_ok=True)
+    if not backend:
+        return models_root
+    key = str(backend or "").strip().lower()
+    backend_dirname = "SLEAP" if key == "sleap" else "YOLO-pose"
+    backend_dir = os.path.join(models_root, backend_dirname)
+    os.makedirs(backend_dir, exist_ok=True)
+    return backend_dir
+
+
+def resolve_pose_model_path(model_path: object, backend: str | None = None) -> object:
+    """Resolve a pose model path (relative or absolute) to an absolute path when possible."""
+    if not model_path:
+        return model_path
+
+    path_str = str(model_path).strip()
+    if os.path.isabs(path_str) and os.path.exists(path_str):
+        return path_str
+
+    candidates = []
+    models_root = get_pose_models_directory()
+    candidates.append(os.path.join(models_root, path_str))
+    if backend:
+        candidates.append(os.path.join(get_pose_models_directory(backend), path_str))
+    # Backward compatibility with older models/pose/{yolo,sleap} layout.
+    legacy_pose_root = os.path.join(models_root, "pose")
+    candidates.append(os.path.join(legacy_pose_root, path_str))
+    if backend:
+        legacy_backend = "sleap" if str(backend).strip().lower() == "sleap" else "yolo"
+        candidates.append(os.path.join(legacy_pose_root, legacy_backend, path_str))
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    if os.path.exists(path_str):
+        return os.path.abspath(path_str)
+    return path_str
+
+
+def make_pose_model_path_relative(model_path: object) -> object:
+    """Convert absolute pose-model paths under models/ into relative paths."""
+    if not model_path or not os.path.isabs(str(model_path)):
+        return model_path
+    pose_root = get_pose_models_directory()
+    try:
+        rel_path = os.path.relpath(str(model_path), pose_root)
+        if not rel_path.startswith(".."):
+            return rel_path
+    except (ValueError, TypeError):
+        pass
+    return model_path
 
 
 def resolve_model_path(model_path: object) -> object:
@@ -1445,6 +1592,7 @@ class MainWindow(QMainWindow):
         self.current_worker = None
 
         self.tracking_worker = None
+        self.merge_worker = None
         self.csv_writer_thread = None
         self.dataset_worker = None
         self.interp_worker = None
@@ -1456,6 +1604,7 @@ class MainWindow(QMainWindow):
         self.current_detection_cache_path = None
         self.current_individual_properties_cache_path = None
         self.current_interpolated_pose_csv_path = None
+        self.current_interpolated_pose_df = None
         self._pending_pose_export_csv_path = None
         self._pending_video_csv_path = None
         self._pending_video_generation = False
@@ -1493,6 +1642,7 @@ class MainWindow(QMainWindow):
         self._ui_state = "idle"
         self._saved_widget_enabled_states = {}
         self._pending_finish_after_interp = False
+        self._stop_all_requested = False
 
         # Advanced configuration (for power users)
         self.advanced_config = self._load_advanced_config()
@@ -2861,8 +3011,6 @@ class MainWindow(QMainWindow):
         f_gpu.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         # TensorRT Optimization
-        from ..utils.gpu_utils import TENSORRT_AVAILABLE
-
         self.chk_enable_tensorrt = QCheckBox("Enable TensorRT (NVIDIA Only)")
         self.chk_enable_tensorrt.setChecked(False)
         self.chk_enable_tensorrt.setEnabled(TENSORRT_AVAILABLE)
@@ -4751,6 +4899,7 @@ class MainWindow(QMainWindow):
         )
         fl_pose = QFormLayout(None)
         fl_pose.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.form_pose_runtime = fl_pose
 
         self.chk_enable_pose_extractor = QCheckBox("Enable Pose Extraction")
         self.chk_enable_pose_extractor.setChecked(False)
@@ -4767,14 +4916,42 @@ class MainWindow(QMainWindow):
         )
         fl_pose.addRow("Pose model type", self.combo_pose_model_type)
 
+        self.combo_pose_runtime_flavor = QComboBox()
+        self.combo_pose_runtime_flavor.setToolTip(
+            "Pose runtime implementation.\n"
+            "Auto/Native uses default backend runtime.\n"
+            "ONNX/TensorRT uses exported model path when provided."
+        )
+        self._populate_pose_runtime_flavor_options(backend="yolo")
+        self.combo_pose_runtime_flavor.currentIndexChanged.connect(
+            self._sync_pose_backend_ui
+        )
+        fl_pose.addRow("Pose runtime", self.combo_pose_runtime_flavor)
+
         h_pose_model = QHBoxLayout()
         self.line_pose_model_dir = QLineEdit()
         self.line_pose_model_dir.setPlaceholderText("Select pose model path...")
+        self.line_pose_model_dir.textChanged.connect(
+            self._on_pose_model_dir_text_changed
+        )
         self.btn_browse_pose_model_dir = QPushButton("Browse...")
         self.btn_browse_pose_model_dir.clicked.connect(self._select_pose_model_dir)
         h_pose_model.addWidget(self.line_pose_model_dir)
         h_pose_model.addWidget(self.btn_browse_pose_model_dir)
         fl_pose.addRow("Pose model path", h_pose_model)
+
+        h_pose_export = QHBoxLayout()
+        self.line_pose_exported_model_path = QLineEdit()
+        self.line_pose_exported_model_path.setPlaceholderText(
+            "Optional exported model path (.onnx/.engine or exported SLEAP dir)..."
+        )
+        self.btn_browse_pose_exported_model_path = QPushButton("Browse...")
+        self.btn_browse_pose_exported_model_path.clicked.connect(
+            self._select_pose_exported_model_path
+        )
+        h_pose_export.addWidget(self.line_pose_exported_model_path)
+        h_pose_export.addWidget(self.btn_browse_pose_exported_model_path)
+        fl_pose.addRow("Exported model path", h_pose_export)
 
         self.spin_pose_min_kpt_conf_valid = QDoubleSpinBox()
         self.spin_pose_min_kpt_conf_valid.setRange(0.0, 1.0)
@@ -4785,6 +4962,16 @@ class MainWindow(QMainWindow):
             "Minimum per-keypoint confidence to consider a keypoint valid."
         )
         fl_pose.addRow("Min keypoint confidence", self.spin_pose_min_kpt_conf_valid)
+
+        self.spin_pose_batch = QSpinBox()
+        self.spin_pose_batch.setRange(1, 256)
+        self.spin_pose_batch.setValue(
+            int(self.advanced_config.get("pose_batch_size", 4))
+        )
+        self.spin_pose_batch.setToolTip(
+            "Shared batch size for pose inference across YOLO and SLEAP backends."
+        )
+        fl_pose.addRow("Pose batch size", self.spin_pose_batch)
 
         h_pose_skeleton = QHBoxLayout()
         self.line_pose_skeleton_file = QLineEdit()
@@ -4820,31 +5007,59 @@ class MainWindow(QMainWindow):
         self.list_pose_ignore_keypoints.setSelectionMode(
             QListWidget.SelectionMode.MultiSelection
         )
-        self.list_pose_ignore_keypoints.setMinimumHeight(96)
+        self.list_pose_ignore_keypoints.setMinimumHeight(110)
+        self.list_pose_ignore_keypoints.setMaximumHeight(140)
         self.list_pose_ignore_keypoints.setToolTip(
             "Select keypoints to ignore in pose export and orientation logic."
         )
-        fl_pose.addRow("Ignore keypoints", self.list_pose_ignore_keypoints)
 
         self.list_pose_direction_anterior = QListWidget()
         self.list_pose_direction_anterior.setSelectionMode(
             QListWidget.SelectionMode.MultiSelection
         )
-        self.list_pose_direction_anterior.setMinimumHeight(96)
+        self.list_pose_direction_anterior.setMinimumHeight(110)
+        self.list_pose_direction_anterior.setMaximumHeight(140)
         self.list_pose_direction_anterior.setToolTip(
             "Select anterior keypoints from skeleton keypoint list."
         )
-        fl_pose.addRow("Anterior keypoints", self.list_pose_direction_anterior)
 
         self.list_pose_direction_posterior = QListWidget()
         self.list_pose_direction_posterior.setSelectionMode(
             QListWidget.SelectionMode.MultiSelection
         )
-        self.list_pose_direction_posterior.setMinimumHeight(96)
+        self.list_pose_direction_posterior.setMinimumHeight(110)
+        self.list_pose_direction_posterior.setMaximumHeight(140)
         self.list_pose_direction_posterior.setToolTip(
             "Select posterior keypoints from skeleton keypoint list."
         )
-        fl_pose.addRow("Posterior keypoints", self.list_pose_direction_posterior)
+
+        pose_kpt_groups_widget = QWidget()
+        pose_kpt_groups_layout = QHBoxLayout(pose_kpt_groups_widget)
+        pose_kpt_groups_layout.setContentsMargins(0, 0, 0, 0)
+        pose_kpt_groups_layout.setSpacing(8)
+
+        ignore_col = QVBoxLayout()
+        ignore_label = QLabel("Ignore")
+        ignore_label.setStyleSheet("font-weight: bold;")
+        ignore_col.addWidget(ignore_label)
+        ignore_col.addWidget(self.list_pose_ignore_keypoints)
+        pose_kpt_groups_layout.addLayout(ignore_col, 1)
+
+        anterior_col = QVBoxLayout()
+        anterior_label = QLabel("Anterior")
+        anterior_label.setStyleSheet("font-weight: bold;")
+        anterior_col.addWidget(anterior_label)
+        anterior_col.addWidget(self.list_pose_direction_anterior)
+        pose_kpt_groups_layout.addLayout(anterior_col, 1)
+
+        posterior_col = QVBoxLayout()
+        posterior_label = QLabel("Posterior")
+        posterior_label.setStyleSheet("font-weight: bold;")
+        posterior_col.addWidget(posterior_label)
+        posterior_col.addWidget(self.list_pose_direction_posterior)
+        pose_kpt_groups_layout.addLayout(posterior_col, 1)
+
+        fl_pose.addRow("Keypoint groups", pose_kpt_groups_widget)
         self.list_pose_ignore_keypoints.itemSelectionChanged.connect(
             lambda: self._on_pose_keypoint_group_changed("ignore")
         )
@@ -4854,11 +5069,6 @@ class MainWindow(QMainWindow):
         self.list_pose_direction_posterior.itemSelectionChanged.connect(
             lambda: self._on_pose_keypoint_group_changed("posterior")
         )
-
-        vl_pose.addLayout(fl_pose)
-
-        self.g_pose_sleap_runtime = QGroupBox("SLEAP Runtime Settings")
-        fl_sleap = QFormLayout(self.g_pose_sleap_runtime)
 
         h_sleap_env = QHBoxLayout()
         self.combo_pose_sleap_env = QComboBox()
@@ -4870,28 +5080,11 @@ class MainWindow(QMainWindow):
         self.btn_refresh_pose_sleap_envs.setToolTip("Refresh SLEAP conda envs list")
         self.btn_refresh_pose_sleap_envs.clicked.connect(self._refresh_pose_sleap_envs)
         h_sleap_env.addWidget(self.btn_refresh_pose_sleap_envs)
-        fl_sleap.addRow("SLEAP env", h_sleap_env)
+        self.pose_sleap_env_row_widget = QWidget()
+        self.pose_sleap_env_row_widget.setLayout(h_sleap_env)
+        fl_pose.addRow("SLEAP env", self.pose_sleap_env_row_widget)
 
-        self.combo_pose_sleap_device = QComboBox()
-        self._populate_pose_sleap_device_options()
-        fl_sleap.addRow("SLEAP device", self.combo_pose_sleap_device)
-
-        self.spin_pose_sleap_batch = QSpinBox()
-        self.spin_pose_sleap_batch.setRange(1, 256)
-        self.spin_pose_sleap_batch.setValue(
-            int(self.advanced_config.get("pose_sleap_batch", 4))
-        )
-        self.spin_pose_sleap_batch.setToolTip("Batch size for SLEAP inference service.")
-        fl_sleap.addRow("SLEAP batch size", self.spin_pose_sleap_batch)
-
-        fl_sleap.addRow(
-            "",
-            self._create_help_label(
-                "SLEAP max instances is fixed to 1 (one crop per detection)."
-            ),
-        )
-
-        vl_pose.addWidget(self.g_pose_sleap_runtime)
+        vl_pose.addLayout(fl_pose)
         form.addWidget(self.g_pose_runtime)
 
         self._refresh_pose_sleap_envs()
@@ -5294,17 +5487,85 @@ class MainWindow(QMainWindow):
         """Enable/disable individual dataset generation controls."""
         self._sync_individual_analysis_mode_ui()
 
+    def _ensure_pose_model_path_store(self):
+        if not hasattr(self, "_pose_model_path_by_backend"):
+            self._pose_model_path_by_backend = {"yolo": "", "sleap": ""}
+
+    def _current_pose_backend_key(self):
+        if not hasattr(self, "combo_pose_model_type"):
+            return "yolo"
+        backend = self.combo_pose_model_type.currentText().strip().lower()
+        return "sleap" if backend == "sleap" else "yolo"
+
+    def _pose_model_path_for_backend(self, backend=None):
+        self._ensure_pose_model_path_store()
+        key = (backend or self._current_pose_backend_key()).strip().lower()
+        key = "sleap" if key == "sleap" else "yolo"
+        return str(self._pose_model_path_by_backend.get(key, "")).strip()
+
+    def _set_pose_model_path_for_backend(self, path, backend=None, update_line=False):
+        self._ensure_pose_model_path_store()
+        key = (backend or self._current_pose_backend_key()).strip().lower()
+        key = "sleap" if key == "sleap" else "yolo"
+        value = str(path or "").strip()
+        if value:
+            resolved = str(resolve_pose_model_path(value, backend=key)).strip()
+            if resolved and os.path.exists(resolved):
+                value = str(make_pose_model_path_relative(os.path.abspath(resolved)))
+        self._pose_model_path_by_backend[key] = value
+        if update_line and hasattr(self, "line_pose_model_dir"):
+            self.line_pose_model_dir.blockSignals(True)
+            self.line_pose_model_dir.setText(value)
+            self.line_pose_model_dir.blockSignals(False)
+
+    def _on_pose_model_dir_text_changed(self, text):
+        self._set_pose_model_path_for_backend(
+            text, backend=self._current_pose_backend_key()
+        )
+
     def _select_pose_model_dir(self):
         """Select a pose model file/directory depending on backend."""
         backend = self.combo_pose_model_type.currentText().strip().lower()
-        start = self.line_pose_model_dir.text().strip() or str(Path.home())
+        backend_key = "sleap" if backend == "sleap" else "yolo"
+        current = self._pose_model_path_for_backend(backend)
+        if current:
+            resolved_current = str(resolve_pose_model_path(current, backend=backend))
+            if os.path.isdir(resolved_current):
+                start = resolved_current
+            else:
+                start = os.path.dirname(resolved_current) or str(Path.home())
+        else:
+            start = get_pose_models_directory(backend_key)
 
         if backend == "sleap":
             selected = QFileDialog.getExistingDirectory(
                 self, "Select SLEAP Model Directory", start
             )
             if selected:
-                self.line_pose_model_dir.setText(selected)
+                selected_abs = os.path.abspath(selected)
+                pose_root = get_pose_models_directory(backend_key)
+                try:
+                    rel_path = os.path.relpath(selected_abs, pose_root)
+                    is_in_repo = not rel_path.startswith("..")
+                except (ValueError, TypeError):
+                    is_in_repo = False
+
+                if is_in_repo:
+                    final_path = make_pose_model_path_relative(selected_abs)
+                else:
+                    final_path = self._import_pose_model_to_repository(
+                        selected_abs, backend=backend_key
+                    )
+                    if not final_path:
+                        return
+                    QMessageBox.information(
+                        self,
+                        "Model Imported",
+                        f"SLEAP model imported to repository as:\n{final_path}",
+                    )
+                self._set_pose_model_path_for_backend(
+                    final_path, backend=backend, update_line=True
+                )
             return
 
         selected, _ = QFileDialog.getOpenFileName(
@@ -5314,7 +5575,184 @@ class MainWindow(QMainWindow):
             "PyTorch Weights (*.pt);;All Files (*)",
         )
         if selected:
-            self.line_pose_model_dir.setText(selected)
+            selected_abs = os.path.abspath(selected)
+            pose_root = get_pose_models_directory(backend_key)
+            try:
+                rel_path = os.path.relpath(selected_abs, pose_root)
+                is_in_repo = not rel_path.startswith("..")
+            except (ValueError, TypeError):
+                is_in_repo = False
+
+            if is_in_repo:
+                final_path = make_pose_model_path_relative(selected_abs)
+            else:
+                final_path = self._import_pose_model_to_repository(
+                    selected_abs, backend=backend_key
+                )
+                if not final_path:
+                    return
+                QMessageBox.information(
+                    self,
+                    "Model Imported",
+                    f"Pose model imported to repository as:\n{final_path}",
+                )
+            self._set_pose_model_path_for_backend(
+                final_path, backend=backend, update_line=True
+            )
+
+    def _import_pose_model_to_repository(self, source_path, backend="yolo"):
+        """Copy a selected pose model into models/{YOLO-pose|SLEAP} and return relative path."""
+        src = str(source_path or "").strip()
+        if not src or not os.path.exists(src):
+            return None
+
+        backend_key = "sleap" if str(backend).strip().lower() == "sleap" else "yolo"
+        dest_dir = get_pose_models_directory(backend_key)
+
+        try:
+            src_path = Path(src).expanduser().resolve()
+        except Exception:
+            src_path = Path(src)
+
+        # Metadata collection (same style as YOLO OBB import dialog).
+        now_preview = datetime.now()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Pose Model Metadata")
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_form = QFormLayout()
+
+        stem_tokens = [t for t in src_path.stem.replace("-", "_").split("_") if t]
+        default_species = (
+            self._sanitize_model_token(stem_tokens[0]) if stem_tokens else "species"
+        )
+        default_info = (
+            self._sanitize_model_token("_".join(stem_tokens[1:]))
+            if len(stem_tokens) > 1
+            else "model"
+        )
+
+        size_combo = None
+        type_line = None
+        if backend_key == "yolo":
+            size_combo = QComboBox(dlg)
+            size_combo.addItems(
+                ["26n", "26s", "26m", "26l", "26x", "custom", "unknown"]
+            )
+            size_combo.setCurrentText("26s")
+            dlg_form.addRow("YOLO model size:", size_combo)
+        else:
+            default_type = self._sanitize_model_token(src_path.name) or "sleap_model"
+            type_line = QLineEdit(default_type, dlg)
+            type_line.setPlaceholderText("model-type")
+            dlg_form.addRow("Model type:", type_line)
+
+        species_line = QLineEdit(default_species, dlg)
+        species_line.setPlaceholderText("species")
+        dlg_form.addRow("Model species:", species_line)
+
+        info_line = QLineEdit(default_info, dlg)
+        info_line.setPlaceholderText("model-info")
+        dlg_form.addRow("Model info:", info_line)
+
+        ts_label = QLabel(now_preview.isoformat(timespec="seconds"), dlg)
+        ts_label.setToolTip("Timestamp applied when model is added to repository")
+        dlg_form.addRow("Added timestamp:", ts_label)
+
+        dlg_layout.addLayout(dlg_form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+
+        model_species = self._sanitize_model_token(species_line.text())
+        model_info = self._sanitize_model_token(info_line.text())
+        if not model_species or not model_info:
+            QMessageBox.warning(
+                self,
+                "Invalid Metadata",
+                "Species and model info must both be provided.",
+            )
+            return None
+
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d-%H%M%S")
+        if backend_key == "sleap":
+            model_type = (
+                self._sanitize_model_token(type_line.text()) if type_line else ""
+            )
+            if not model_type:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Metadata",
+                    "SLEAP model type must be provided.",
+                )
+                return None
+            target_name = f"{timestamp}_{model_type}_{model_species}_{model_info}"
+            dest_path = Path(dest_dir) / target_name
+            counter = 1
+            while dest_path.exists():
+                dest_path = Path(dest_dir) / f"{target_name}_{counter}"
+                counter += 1
+            try:
+                shutil.copytree(src_path, dest_path)
+            except Exception as exc:
+                logger.error("Failed to copy SLEAP model directory: %s", exc)
+                QMessageBox.warning(
+                    self,
+                    "Import Failed",
+                    f"Could not import SLEAP model directory:\n{exc}",
+                )
+                return None
+            return make_pose_model_path_relative(str(dest_path))
+
+        model_size = size_combo.currentText().strip() if size_combo else "unknown"
+        model_size = self._sanitize_model_token(model_size) or "unknown"
+        ext = src_path.suffix or ".pt"
+        target_name = f"{timestamp}_{model_size}_{model_species}_{model_info}{ext}"
+        dest_path = Path(dest_dir) / target_name
+        counter = 1
+        while dest_path.exists():
+            dest_path = (
+                Path(dest_dir)
+                / f"{timestamp}_{model_size}_{model_species}_{model_info}_{counter}{ext}"
+            )
+            counter += 1
+        try:
+            shutil.copy2(src_path, dest_path)
+        except Exception as exc:
+            logger.error("Failed to copy pose model: %s", exc)
+            QMessageBox.warning(
+                self,
+                "Import Failed",
+                f"Could not import pose model:\n{exc}",
+            )
+            return None
+        return make_pose_model_path_relative(str(dest_path))
+
+    def _select_pose_exported_model_path(self):
+        """Select optional exported pose model path for ONNX/TensorRT runtimes."""
+        backend = self.combo_pose_model_type.currentText().strip().lower()
+        start = self.line_pose_exported_model_path.text().strip() or str(Path.home())
+
+        if backend == "sleap":
+            selected = QFileDialog.getExistingDirectory(
+                self, "Select Exported SLEAP Model Directory", start
+            )
+            if selected:
+                self.line_pose_exported_model_path.setText(selected)
+            return
+
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Exported YOLO Model",
+            start,
+            "Exported Models (*.onnx *.engine);;All Files (*)",
+        )
+        if selected:
+            self.line_pose_exported_model_path.setText(selected)
 
     def _select_pose_skeleton_file(self):
         """Select pose skeleton JSON file."""
@@ -5602,26 +6040,120 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.combo_pose_sleap_device.setCurrentIndex(idx)
 
+    def _pose_runtime_options_for_backend(self, backend: str):
+        return get_pose_runtime_options(backend)
+
+    def _populate_pose_runtime_flavor_options(
+        self, backend: str, preferred: str | None = None
+    ):
+        if not hasattr(self, "combo_pose_runtime_flavor"):
+            return
+        combo = self.combo_pose_runtime_flavor
+        selected = (
+            str(preferred or self._selected_pose_runtime_flavor() or "auto")
+            .strip()
+            .lower()
+        )
+        options = self._pose_runtime_options_for_backend(backend)
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = "auto"
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _selected_pose_runtime_flavor(self) -> str:
+        if not hasattr(self, "combo_pose_runtime_flavor"):
+            return "auto"
+        data = self.combo_pose_runtime_flavor.currentData()
+        if data:
+            return str(data).strip().lower()
+        txt = self.combo_pose_runtime_flavor.currentText().strip().lower()
+        txt_norm = txt.replace(" ", "_").replace("-", "_")
+        if txt_norm.startswith("onnx") and "rocm" in txt_norm:
+            return "onnx_rocm"
+        if txt_norm.startswith("onnx") and "cuda" in txt_norm:
+            return "onnx_cuda"
+        if txt_norm.startswith("onnx"):
+            return "onnx_cpu"
+        if txt_norm.startswith("tensorrt") and "cuda" in txt_norm:
+            return "tensorrt_cuda"
+        if txt_norm.startswith("tensorrt"):
+            return "tensorrt_cuda"
+        if txt_norm.startswith("native") and "mps" in txt_norm:
+            return "mps"
+        if txt_norm.startswith("native") and "cuda" in txt_norm:
+            return "cuda"
+        if txt_norm.startswith("native") and "rocm" in txt_norm:
+            return "rocm"
+        if txt_norm.startswith("native"):
+            return "cpu"
+        return "auto"
+
+    def _set_form_row_visible(self, form_layout, field_widget, visible: bool):
+        """Show/hide a QFormLayout row by field widget."""
+        if form_layout is None or field_widget is None:
+            return
+        label = form_layout.labelForField(field_widget)
+        if label is not None:
+            label.setVisible(bool(visible))
+        field_widget.setVisible(bool(visible))
+
     def _sync_pose_backend_ui(self):
         """Show/hide backend-specific pose controls."""
         if not hasattr(self, "combo_pose_model_type"):
             return
         backend = self.combo_pose_model_type.currentText().strip().lower()
+        self._populate_pose_runtime_flavor_options(backend=backend)
         is_sleap = backend == "sleap"
-        if hasattr(self, "g_pose_sleap_runtime"):
-            self.g_pose_sleap_runtime.setVisible(is_sleap)
-            self.g_pose_sleap_runtime.setEnabled(
-                is_sleap and self._is_individual_pipeline_enabled()
+        runtime_flavor = self._selected_pose_runtime_flavor()
+        uses_exported_model = runtime_flavor.startswith(
+            "onnx"
+        ) or runtime_flavor.startswith("tensorrt")
+        if hasattr(self, "form_pose_runtime") and hasattr(
+            self, "pose_sleap_env_row_widget"
+        ):
+            self._set_form_row_visible(
+                self.form_pose_runtime, self.pose_sleap_env_row_widget, is_sleap
             )
+        if hasattr(self, "line_pose_exported_model_path"):
+            self.line_pose_exported_model_path.setVisible(True)
+            self.btn_browse_pose_exported_model_path.setVisible(True)
+            if is_sleap:
+                self.line_pose_exported_model_path.setPlaceholderText(
+                    "Optional exported SLEAP model directory for ONNX/TensorRT."
+                )
+            else:
+                self.line_pose_exported_model_path.setPlaceholderText(
+                    "Optional exported YOLO model (.onnx/.engine)."
+                )
+            if not uses_exported_model:
+                self.line_pose_exported_model_path.setToolTip(
+                    "Used when runtime is ONNX or TensorRT."
+                )
+            else:
+                self.line_pose_exported_model_path.setToolTip(
+                    "Exported model path used for selected runtime flavor."
+                )
         if hasattr(self, "line_pose_model_dir"):
             if is_sleap:
                 self.line_pose_model_dir.setPlaceholderText(
-                    "Select SLEAP model directory..."
+                    "Select SLEAP model directory (copied into models/SLEAP)..."
                 )
             else:
                 self.line_pose_model_dir.setPlaceholderText(
-                    "Select YOLO pose weights (.pt)..."
+                    "Select YOLO pose weights (.pt, copied into models/YOLO-pose)..."
                 )
+            # Keep backend-specific pose paths independent.
+            self._set_pose_model_path_for_backend(
+                self._pose_model_path_for_backend(backend),
+                backend=backend,
+                update_line=True,
+            )
 
     def _is_pose_inference_enabled(self) -> bool:
         """Return whether pose inference is actively enabled for the run."""
@@ -8165,18 +8697,131 @@ class MainWindow(QMainWindow):
             self.current_detection_cache_path = None
             self.current_individual_properties_cache_path = None
             self.current_interpolated_pose_csv_path = None
+            self.current_interpolated_pose_df = None
             self._pending_pose_export_csv_path = None
             self._pending_video_csv_path = None
             self._pending_video_generation = False
 
         self.start_tracking(preview_mode=False)
 
+    def _request_qthread_stop(
+        self,
+        worker,
+        worker_name: str,
+        *,
+        timeout_ms: int = 1500,
+        force_terminate: bool = True,
+    ) -> None:
+        """Stop a QThread cooperatively, then force terminate if needed."""
+        if worker is None:
+            return
+        try:
+            if not worker.isRunning():
+                return
+        except Exception:
+            return
+
+        try:
+            if hasattr(worker, "stop"):
+                worker.stop()
+        except Exception:
+            logger.debug("Failed to call stop() on %s", worker_name, exc_info=True)
+
+        try:
+            worker.requestInterruption()
+        except Exception:
+            pass
+
+        stopped = False
+        try:
+            stopped = bool(worker.wait(int(timeout_ms)))
+        except Exception:
+            stopped = False
+
+        if stopped:
+            logger.info("%s stopped.", worker_name)
+            return
+
+        if not force_terminate:
+            logger.warning(
+                "%s did not stop within %d ms (cooperative stop only).",
+                worker_name,
+                int(timeout_ms),
+            )
+            return
+
+        logger.warning(
+            "%s did not stop cooperatively; forcing terminate().", worker_name
+        )
+        try:
+            worker.terminate()
+        except Exception:
+            logger.debug("terminate() failed for %s", worker_name, exc_info=True)
+        try:
+            worker.wait(max(500, int(timeout_ms)))
+        except Exception:
+            pass
+
+    def _stop_csv_writer(self, timeout_sec: float = 2.0) -> None:
+        """Stop background CSV writer thread safely without indefinite blocking."""
+        writer = self.csv_writer_thread
+        if writer is None:
+            return
+        try:
+            writer.stop()
+        except Exception:
+            logger.debug("Failed to request CSV writer stop.", exc_info=True)
+        try:
+            if writer.is_alive():
+                writer.join(timeout=timeout_sec)
+                if writer.is_alive():
+                    logger.warning("CSV writer did not stop within %.1fs.", timeout_sec)
+        except Exception:
+            logger.debug("Failed to join CSV writer thread.", exc_info=True)
+        finally:
+            self.csv_writer_thread = None
+
+    def _cleanup_thread_reference(self, attr_name: str) -> None:
+        """Delete finished QThread references safely."""
+        worker = getattr(self, attr_name, None)
+        if worker is None:
+            return
+        try:
+            running = bool(worker.isRunning())
+        except Exception:
+            running = False
+        if not running:
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
+            setattr(self, attr_name, None)
+
     def stop_tracking(self: object) -> object:
         """stop_tracking method documentation."""
-        if self.tracking_worker and self.tracking_worker.isRunning():
-            self.tracking_worker.stop()
-            self.progress_bar.setVisible(False)
-            self.progress_label.setVisible(False)
+        self._stop_all_requested = True
+        self._pending_finish_after_interp = False
+        self._pending_pose_export_csv_path = None
+        self._pending_video_csv_path = None
+        self._pending_video_generation = False
+
+        # Stop all active workers and subprocess-like threads.
+        self._request_qthread_stop(
+            getattr(self, "merge_worker", None), "MergeWorker", timeout_ms=1200
+        )
+        self._request_qthread_stop(self.dataset_worker, "DatasetGenerationWorker")
+        self._request_qthread_stop(self.interp_worker, "InterpolatedCropsWorker")
+        self._request_qthread_stop(self.tracking_worker, "TrackingWorker")
+        self._stop_csv_writer()
+
+        self._cleanup_thread_reference("merge_worker")
+        self._cleanup_thread_reference("dataset_worker")
+        self._cleanup_thread_reference("interp_worker")
+
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Ready")
         self._set_ui_controls_enabled(True)
         # Ensure UI state is restored after stopping
         if self.current_video_path:
@@ -8195,9 +8840,7 @@ class MainWindow(QMainWindow):
         self.current_detection_cache_path = None
         self.current_individual_properties_cache_path = None
         self.current_interpolated_pose_csv_path = None
-        self._pending_pose_export_csv_path = None
-        self._pending_video_csv_path = None
-        self._pending_video_generation = False
+        self.current_interpolated_pose_df = None
 
         # Hide stats labels when tracking stops
         self.label_current_fps.setVisible(False)
@@ -8206,6 +8849,7 @@ class MainWindow(QMainWindow):
 
         # Reset tracking frame size
         self._tracking_frame_size = None
+        self._cleanup_session_logging()
 
     def _set_ui_controls_enabled(self, enabled: bool):
         if enabled:
@@ -8537,12 +9181,38 @@ class MainWindow(QMainWindow):
         self: object, percentage: object, status_text: object
     ) -> object:
         """on_progress_update method documentation."""
+        if self._stop_all_requested:
+            return
         self.progress_bar.setValue(percentage)
         self.progress_label.setText(status_text)
+
+    @Slot(str)
+    def on_pose_exported_model_resolved(self, artifact_path: str) -> None:
+        """Update pose exported-model UI/config when runtime resolves an artifact path."""
+        if self._stop_all_requested:
+            return
+        path = str(artifact_path or "").strip()
+        if not path:
+            return
+        if hasattr(self, "line_pose_exported_model_path"):
+            current = self.line_pose_exported_model_path.text().strip()
+            if current == path:
+                return
+            self.line_pose_exported_model_path.setText(path)
+        logger.info("Pose runtime resolved exported model artifact: %s", path)
+        try:
+            # Persist immediately so subsequent runs reuse the same artifact path.
+            self.save_config()
+        except Exception:
+            logger.debug(
+                "Failed to persist resolved pose exported model path.", exc_info=True
+            )
 
     @Slot(str, str)
     def on_tracking_warning(self: object, title: object, message: object) -> object:
         """Display tracking warnings in the UI."""
+        if self._stop_all_requested:
+            return
         QMessageBox.information(self, title, message)
 
     def show_gpu_info(self: object) -> object:
@@ -8608,6 +9278,8 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def on_stats_update(self: object, stats: object) -> object:
         """Update real-time tracking statistics."""
+        if self._stop_all_requested:
+            return
         phase = str(stats.get("phase", "tracking"))
         is_precompute = phase == "individual_precompute"
 
@@ -8793,6 +9465,8 @@ class MainWindow(QMainWindow):
 
     def merge_and_save_trajectories(self: object) -> object:
         """merge_and_save_trajectories method documentation."""
+        if self._stop_all_requested:
+            return
         logger.info("=" * 80)
         logger.info("Starting trajectory merging process...")
         logger.info("=" * 80)
@@ -8857,16 +9531,45 @@ class MainWindow(QMainWindow):
 
     def on_merge_progress(self: object, value: object, message: object) -> object:
         """Update progress bar during merge."""
+        if self._stop_all_requested:
+            return
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.merge_worker is not None
+            and sender is not self.merge_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
 
     def _on_interpolated_crops_finished(self, result):
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.interp_worker is not None
+            and sender is not self.interp_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            self._cleanup_thread_reference("interp_worker")
+            self._refresh_progress_visibility()
+            return
         saved = 0
         gaps = 0
         mapping_path = None
         roi_csv_path = None
         roi_npz_path = None
         pose_csv_path = None
+        pose_rows = None
         try:
             saved = int(result.get("saved", 0))
             gaps = int(result.get("gaps", 0))
@@ -8874,6 +9577,7 @@ class MainWindow(QMainWindow):
             roi_csv_path = result.get("roi_csv_path")
             roi_npz_path = result.get("roi_npz_path")
             pose_csv_path = result.get("pose_csv_path")
+            pose_rows = result.get("pose_rows")
         except Exception:
             pass
         self._refresh_progress_visibility()
@@ -8886,12 +9590,21 @@ class MainWindow(QMainWindow):
             logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
         if pose_csv_path:
             self.current_interpolated_pose_csv_path = pose_csv_path
+            self.current_interpolated_pose_df = None
             logger.info(f"Interpolated pose CSV saved: {pose_csv_path}")
+        elif pose_rows:
+            try:
+                self.current_interpolated_pose_df = pd.DataFrame(pose_rows)
+                self.current_interpolated_pose_csv_path = None
+                logger.info(
+                    "Interpolated pose rows kept in-memory: %d",
+                    len(self.current_interpolated_pose_df),
+                )
+            except Exception:
+                self.current_interpolated_pose_df = None
 
-        if self.interp_worker is not None and not self.interp_worker.isRunning():
-            self.interp_worker.deleteLater()
-            self.interp_worker = None
-            self._refresh_progress_visibility()
+        self._cleanup_thread_reference("interp_worker")
+        self._refresh_progress_visibility()
 
         if self._pending_pose_export_csv_path:
             self._export_pose_augmented_csv(self._pending_pose_export_csv_path)
@@ -8902,6 +9615,21 @@ class MainWindow(QMainWindow):
 
     def on_merge_error(self: object, error_message: object) -> object:
         """Handle merge errors."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.merge_worker is not None
+            and sender is not self.merge_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("merge_worker")
+        if self._stop_all_requested:
+            self._refresh_progress_visibility()
+            return
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
         QMessageBox.critical(
@@ -8911,6 +9639,21 @@ class MainWindow(QMainWindow):
 
     def on_merge_finished(self: object, resolved_trajectories: object) -> object:
         """Handle completion of trajectory merging."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.merge_worker is not None
+            and sender is not self.merge_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("merge_worker")
+        if self._stop_all_requested:
+            self._refresh_progress_visibility()
+            return
         self.progress_label.setText("Saving merged trajectories...")
 
         raw_csv_path = self.csv_line.text()
@@ -9398,12 +10141,31 @@ class MainWindow(QMainWindow):
         self: object, finished_normally: object, fps_list: object, full_traj: object
     ) -> object:
         """on_tracking_finished method documentation."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.tracking_worker is not None
+            and sender is not self.tracking_worker
+        ):
+            logger.debug(
+                "Ignoring stale tracking finished signal from previous worker."
+            )
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
 
-        if self.csv_writer_thread:
-            self.csv_writer_thread.stop()
-            self.csv_writer_thread.join()
+        self._stop_csv_writer()
+
+        if self._stop_all_requested:
+            logger.info("Tracking stop requested; skipping post-processing pipeline.")
+            self._cleanup_thread_reference("tracking_worker")
+            self._refresh_progress_visibility()
+            gc.collect()
+            return
 
         # Check if this was preview mode
         was_preview_mode = self.btn_preview.isChecked()
@@ -9654,11 +10416,17 @@ class MainWindow(QMainWindow):
         cache_available = bool(cache_path and os.path.exists(cache_path))
         interp_pose_path = str(self.current_interpolated_pose_csv_path or "").strip()
         interp_available = bool(interp_pose_path and os.path.exists(interp_pose_path))
-        if not cache_available and not interp_available:
+        interp_pose_df_mem = getattr(self, "current_interpolated_pose_df", None)
+        interp_mem_available = (
+            isinstance(interp_pose_df_mem, pd.DataFrame)
+            and not interp_pose_df_mem.empty
+        )
+        if not cache_available and not interp_available and not interp_mem_available:
             logger.warning(
-                "Pose export skipped: no pose sources found (cache=%s, interpolated=%s).",
+                "Pose export skipped: no pose sources found (cache=%s, interpolated=%s, in_memory=%s).",
                 cache_path or "<empty>",
                 interp_pose_path or "<empty>",
+                bool(interp_mem_available),
             )
             return None
 
@@ -9682,6 +10450,10 @@ class MainWindow(QMainWindow):
             if interp_available:
                 interp_pose_df = pd.read_csv(interp_pose_path)
                 with_pose_df = merge_interpolated_pose_df(with_pose_df, interp_pose_df)
+            elif interp_mem_available:
+                with_pose_df = merge_interpolated_pose_df(
+                    with_pose_df, interp_pose_df_mem
+                )
         except Exception:
             logger.exception(
                 "Pose export skipped: failed while merging pose sources (cache=%s, interpolated=%s)",
@@ -9725,6 +10497,9 @@ class MainWindow(QMainWindow):
 
     def _run_pending_video_generation_or_finalize(self):
         """Run video generation if queued; otherwise finalize UI/session cleanup."""
+        if self._stop_all_requested:
+            self._finalize_tracking_session_ui()
+            return
         csv_path = self._pending_video_csv_path
         should_render_video = bool(self._pending_video_generation and csv_path)
         self._pending_video_generation = False
@@ -9755,6 +10530,9 @@ class MainWindow(QMainWindow):
 
     def _finish_tracking_session(self, final_csv_path=None):
         """Complete tracking session cleanup and UI updates."""
+        if self._stop_all_requested:
+            self._finalize_tracking_session_ui()
+            return
         # Hide progress elements
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -9790,6 +10568,7 @@ class MainWindow(QMainWindow):
         self._pending_pose_export_csv_path = None
         self._pending_video_csv_path = None
         self._pending_video_generation = False
+        self.current_interpolated_pose_df = None
         # Force-clear progress UI at terminal session state.
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -9814,6 +10593,8 @@ class MainWindow(QMainWindow):
     def _generate_interpolated_individual_crops(self, csv_path):
         """Post-pass interpolation for occluded segments in individual dataset."""
         try:
+            if self._stop_all_requested:
+                return False
             if not self.chk_individual_interpolate.isChecked():
                 return False
 
@@ -9863,6 +10644,7 @@ class MainWindow(QMainWindow):
                 self.interp_worker = None
 
             self.current_interpolated_pose_csv_path = None
+            self.current_interpolated_pose_df = None
             self.interp_worker = InterpolatedCropsWorker(
                 target_csv,
                 video_path,
@@ -9961,6 +10743,8 @@ class MainWindow(QMainWindow):
 
     def start_backward_tracking(self: object) -> object:
         """start_backward_tracking method documentation."""
+        if self._stop_all_requested:
+            return
         logger.info("=" * 80)
         logger.info("Starting backward tracking pass (using cached detections)...")
         logger.info("=" * 80)
@@ -10002,6 +10786,8 @@ class MainWindow(QMainWindow):
         """start_preview_on_video method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+        self._stop_all_requested = False
+        self._pending_finish_after_interp = False
 
         # Stop video playback if active
         if self.is_playing:
@@ -10028,6 +10814,9 @@ class MainWindow(QMainWindow):
         self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
         self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
+        self.tracking_worker.pose_exported_model_resolved_signal.connect(
+            self.on_pose_exported_model_resolved
+        )
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
@@ -10044,6 +10833,8 @@ class MainWindow(QMainWindow):
         """start_tracking_on_video method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+        self._stop_all_requested = False
+        self._pending_finish_after_interp = False
 
         # Stop video playback if active
         if self.is_playing:
@@ -10311,6 +11102,9 @@ class MainWindow(QMainWindow):
         self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
         self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
+        self.tracking_worker.pose_exported_model_resolved_signal.connect(
+            self.on_pose_exported_model_resolved
+        )
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
@@ -10556,16 +11350,24 @@ class MainWindow(QMainWindow):
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
             "ENABLE_POSE_EXTRACTOR": self.chk_enable_pose_extractor.isChecked(),
             "POSE_MODEL_TYPE": self.combo_pose_model_type.currentText().strip().lower(),
-            "POSE_MODEL_DIR": self.line_pose_model_dir.text().strip(),
+            "POSE_MODEL_DIR": resolve_pose_model_path(
+                self._pose_model_path_for_backend(
+                    self.combo_pose_model_type.currentText().strip().lower()
+                ),
+                backend=self.combo_pose_model_type.currentText().strip().lower(),
+            ),
+            "POSE_RUNTIME_FLAVOR": self._selected_pose_runtime_flavor(),
+            "POSE_EXPORTED_MODEL_PATH": self.line_pose_exported_model_path.text().strip(),
             "POSE_MIN_KPT_CONF_VALID": self.spin_pose_min_kpt_conf_valid.value(),
             "POSE_SKELETON_FILE": self.line_pose_skeleton_file.text().strip(),
             "POSE_IGNORE_KEYPOINTS": self._parse_pose_ignore_keypoints(),
             "POSE_DIRECTION_ANTERIOR_KEYPOINTS": self._parse_pose_direction_anterior_keypoints(),
             "POSE_DIRECTION_POSTERIOR_KEYPOINTS": self._parse_pose_direction_posterior_keypoints(),
+            "POSE_YOLO_BATCH": self.spin_pose_batch.value(),
+            "POSE_BATCH_SIZE": self.spin_pose_batch.value(),
             "POSE_SLEAP_ENV": self._selected_pose_sleap_env(),
-            "POSE_SLEAP_DEVICE": self.combo_pose_sleap_device.currentText().strip()
-            or "auto",
-            "POSE_SLEAP_BATCH": self.spin_pose_sleap_batch.value(),
+            "POSE_SLEAP_DEVICE": "auto",
+            "POSE_SLEAP_BATCH": self.spin_pose_batch.value(),
             "POSE_SLEAP_MAX_INSTANCES": 1,
             "INDIVIDUAL_PROPERTIES_CACHE_PATH": str(
                 self.current_individual_properties_cache_path or ""
@@ -11224,7 +12026,32 @@ class MainWindow(QMainWindow):
             pose_backend_idx = self.combo_pose_model_type.findText(pose_backend)
             if pose_backend_idx >= 0:
                 self.combo_pose_model_type.setCurrentIndex(pose_backend_idx)
-            self.line_pose_model_dir.setText(get_cfg("pose_model_dir", default=""))
+            yolo_pose_model = str(get_cfg("pose_yolo_model_dir", default="")).strip()
+            sleap_pose_model = str(get_cfg("pose_sleap_model_dir", default="")).strip()
+            legacy_pose_model = str(get_cfg("pose_model_dir", default="")).strip()
+            if not yolo_pose_model and pose_backend.lower() == "yolo":
+                yolo_pose_model = legacy_pose_model
+            if not sleap_pose_model and pose_backend.lower() == "sleap":
+                sleap_pose_model = legacy_pose_model
+            self._set_pose_model_path_for_backend(yolo_pose_model, backend="yolo")
+            self._set_pose_model_path_for_backend(sleap_pose_model, backend="sleap")
+            self._set_pose_model_path_for_backend(
+                self._pose_model_path_for_backend(
+                    self.combo_pose_model_type.currentText().strip().lower()
+                ),
+                backend=self.combo_pose_model_type.currentText().strip().lower(),
+                update_line=True,
+            )
+            pose_runtime_flavor = (
+                str(get_cfg("pose_runtime_flavor", default="auto")).strip().lower()
+            )
+            self._populate_pose_runtime_flavor_options(
+                backend=self.combo_pose_model_type.currentText().strip().lower(),
+                preferred=pose_runtime_flavor,
+            )
+            self.line_pose_exported_model_path.setText(
+                get_cfg("pose_exported_model_path", default="")
+            )
             self.spin_pose_min_kpt_conf_valid.setValue(
                 get_cfg("pose_min_kpt_conf_valid", default=0.2)
             )
@@ -11245,13 +12072,16 @@ class MainWindow(QMainWindow):
                 get_cfg("pose_sleap_env", default="sleap")
             )
             self._refresh_pose_sleap_envs()
-            sleap_device = str(get_cfg("pose_sleap_device", default="auto")).strip()
-            sleap_dev_idx = self.combo_pose_sleap_device.findText(sleap_device)
-            if sleap_dev_idx >= 0:
-                self.combo_pose_sleap_device.setCurrentIndex(sleap_dev_idx)
-            self.spin_pose_sleap_batch.setValue(
-                int(get_cfg("pose_sleap_batch", default=4))
+            shared_pose_batch = int(
+                get_cfg(
+                    "pose_batch_size",
+                    default=get_cfg(
+                        "pose_yolo_batch",
+                        default=get_cfg("pose_sleap_batch", default=4),
+                    ),
+                )
             )
+            self.spin_pose_batch.setValue(shared_pose_batch)
 
             # === REAL-TIME INDIVIDUAL DATASET ===
             self.chk_enable_individual_dataset.setChecked(
@@ -11617,16 +12447,29 @@ class MainWindow(QMainWindow):
                 "pose_model_type": self.combo_pose_model_type.currentText()
                 .strip()
                 .lower(),
-                "pose_model_dir": self.line_pose_model_dir.text().strip(),
+                "pose_model_dir": make_pose_model_path_relative(
+                    self._pose_model_path_for_backend(
+                        self.combo_pose_model_type.currentText().strip().lower()
+                    )
+                ),
+                "pose_yolo_model_dir": make_pose_model_path_relative(
+                    self._pose_model_path_for_backend("yolo")
+                ),
+                "pose_sleap_model_dir": make_pose_model_path_relative(
+                    self._pose_model_path_for_backend("sleap")
+                ),
+                "pose_runtime_flavor": self._selected_pose_runtime_flavor(),
+                "pose_exported_model_path": self.line_pose_exported_model_path.text().strip(),
                 "pose_min_kpt_conf_valid": self.spin_pose_min_kpt_conf_valid.value(),
                 "pose_skeleton_file": self.line_pose_skeleton_file.text().strip(),
                 "pose_ignore_keypoints": self._parse_pose_ignore_keypoints(),
                 "pose_direction_anterior_keypoints": self._parse_pose_direction_anterior_keypoints(),
                 "pose_direction_posterior_keypoints": self._parse_pose_direction_posterior_keypoints(),
+                "pose_batch_size": self.spin_pose_batch.value(),
+                "pose_yolo_batch": self.spin_pose_batch.value(),
                 "pose_sleap_env": self._selected_pose_sleap_env(),
-                "pose_sleap_device": self.combo_pose_sleap_device.currentText().strip()
-                or "auto",
-                "pose_sleap_batch": self.spin_pose_sleap_batch.value(),
+                "pose_sleap_device": "auto",
+                "pose_sleap_batch": self.spin_pose_batch.value(),
                 "pose_sleap_max_instances": 1,
                 # === REAL-TIME INDIVIDUAL DATASET ===
                 "enable_individual_dataset": self._is_individual_image_save_enabled(),
@@ -11809,6 +12652,8 @@ class MainWindow(QMainWindow):
     def _generate_training_dataset(self, override_csv_path=None):
         """Generate training dataset from tracking results for active learning."""
         try:
+            if self._stop_all_requested:
+                return
             logger.info("Starting training dataset generation...")
 
             # Prevent launching overlapping dataset threads; this can lead to
@@ -11914,6 +12759,19 @@ class MainWindow(QMainWindow):
 
     def on_dataset_progress(self: object, value: object, message: object) -> object:
         """Update progress bar during dataset generation."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.dataset_worker is not None
+            and sender is not self.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            return
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
 
@@ -11921,6 +12779,21 @@ class MainWindow(QMainWindow):
         self: object, dataset_dir: object, num_frames: object
     ) -> object:
         """Handle dataset generation completion."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.dataset_worker is not None
+            and sender is not self.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            self._cleanup_thread_reference("dataset_worker")
+            self._refresh_progress_visibility()
+            return
         self._refresh_progress_visibility()
 
         logger.info(f"Dataset generation complete: {dataset_dir}")
@@ -11940,6 +12813,21 @@ class MainWindow(QMainWindow):
 
     def on_dataset_error(self: object, error_message: object) -> object:
         """Handle dataset generation errors."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.dataset_worker is not None
+            and sender is not self.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            self._cleanup_thread_reference("dataset_worker")
+            self._refresh_progress_visibility()
+            return
         self._refresh_progress_visibility()
 
         logger.error(f"Dataset generation error: {error_message}")
@@ -11951,9 +12839,18 @@ class MainWindow(QMainWindow):
 
     def _on_dataset_worker_thread_finished(self):
         """Release completed dataset worker safely."""
-        if self.dataset_worker is not None and not self.dataset_worker.isRunning():
-            self.dataset_worker.deleteLater()
-            self.dataset_worker = None
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.dataset_worker is not None
+            and sender is not self.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("dataset_worker")
         self._refresh_progress_visibility()
 
     def _is_worker_running(self, worker):

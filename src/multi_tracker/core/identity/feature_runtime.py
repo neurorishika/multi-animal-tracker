@@ -1,72 +1,45 @@
 """
-Unified runtime adapters for per-detection individual feature inference.
+Compatibility layer for pose runtime backends.
 
-This module presents a common outward interface for different pose backends
-(currently YOLO and SLEAP) so tracking-side code can be shared.
+Historically this module implemented concrete YOLO/SLEAP runtime classes.
+It now delegates to shared runtime modules while preserving the public API used
+by MAT workers and tests.
 """
 
 from __future__ import annotations
 
-import json
-import logging
-import uuid
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-import cv2
 import numpy as np
 
-logger = logging.getLogger(__name__)
-
-
-class PoseResult:
-    """Canonical pose output for one detection crop."""
-
-    def __init__(
-        self,
-        keypoints: Optional[np.ndarray],
-        mean_conf: float,
-        valid_fraction: float,
-        num_valid: int,
-        num_keypoints: int,
-    ):
-        self.keypoints = keypoints
-        self.mean_conf = mean_conf
-        self.valid_fraction = valid_fraction
-        self.num_valid = num_valid
-        self.num_keypoints = num_keypoints
-
-
-def _empty_pose_result() -> PoseResult:
-    return PoseResult(
-        keypoints=None,
-        mean_conf=0.0,
-        valid_fraction=0.0,
-        num_valid=0,
-        num_keypoints=0,
+try:
+    from .runtime_api import (
+        PoseResult,
+        SleapServiceBackend,
+        YoloNativeBackend,
+        build_runtime_config,
     )
-
-
-def _summarize_keypoints(
-    keypoints: Optional[np.ndarray], min_valid_conf: float
-) -> PoseResult:
-    if keypoints is None:
-        return _empty_pose_result()
-    arr = np.asarray(keypoints, dtype=np.float32)
-    if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
-        return _empty_pose_result()
-    valid_mask = arr[:, 2] >= float(min_valid_conf)
-    return PoseResult(
-        keypoints=arr,
-        mean_conf=float(np.nanmean(arr[:, 2])),
-        valid_fraction=float(np.mean(valid_mask)),
-        num_valid=int(np.sum(valid_mask)),
-        num_keypoints=int(len(arr)),
+    from .runtime_manager import InferenceRuntimeManager
+except Exception:
+    # Support direct module loading in tests.
+    from multi_tracker.core.identity.runtime_api import (  # type: ignore
+        PoseResult,
+        SleapServiceBackend,
+        YoloNativeBackend,
+        build_runtime_config,
+    )
+    from multi_tracker.core.identity.runtime_manager import (  # type: ignore
+        InferenceRuntimeManager,
     )
 
 
 class BasePoseBackend:
     """Shared pose backend interface for runtime inference on detection crops."""
+
+    output_keypoint_names: List[str]
+
+    def warmup(self) -> None:
+        return None
 
     def predict_crops(self, crops: Sequence[np.ndarray]) -> List[PoseResult]:
         raise NotImplementedError
@@ -74,9 +47,60 @@ class BasePoseBackend:
     def close(self) -> None:
         return None
 
+    def resolved_artifact_path(self) -> Optional[str]:
+        return None
 
-class YoloPoseBackend(BasePoseBackend):
-    """YOLO pose runtime adapter."""
+
+class _BackendAdapter(BasePoseBackend):
+    """Adapter from runtime_api backend protocol to legacy feature_runtime API."""
+
+    def __init__(self, backend, manager: Optional[InferenceRuntimeManager] = None):
+        self._backend = backend
+        self._manager = manager
+        self.output_keypoint_names = list(
+            getattr(self._backend, "output_keypoint_names", []) or []
+        )
+        # Backward-compatible alias used by existing tests/callers.
+        self.keypoint_names = list(self.output_keypoint_names)
+
+    @classmethod
+    def from_runtime(cls, backend, manager: Optional[InferenceRuntimeManager] = None):
+        obj = cls.__new__(cls)
+        _BackendAdapter.__init__(obj, backend=backend, manager=manager)
+        return obj
+
+    def warmup(self) -> None:
+        if self._manager is not None:
+            self._manager.warmup()
+        else:
+            self._backend.warmup()
+
+    def predict_crops(self, crops: Sequence[np.ndarray]) -> List[PoseResult]:
+        return self._backend.predict_batch(crops)
+
+    def close(self) -> None:
+        if self._manager is not None:
+            self._manager.close()
+        else:
+            self._backend.close()
+
+    def resolved_artifact_path(self) -> Optional[str]:
+        candidates = [
+            getattr(self._backend, "exported_model_path", None),
+            getattr(self._backend, "model_path", None),
+        ]
+        for value in candidates:
+            if not value:
+                continue
+            try:
+                return str(value)
+            except Exception:
+                continue
+        return None
+
+
+class YoloPoseBackend(_BackendAdapter):
+    """YOLO pose runtime adapter (legacy constructor preserved)."""
 
     def __init__(
         self,
@@ -85,76 +109,17 @@ class YoloPoseBackend(BasePoseBackend):
         min_valid_conf: float = 0.2,
         keypoint_names: Optional[Sequence[str]] = None,
     ):
-        from ultralytics import YOLO
-
-        self.model_path = str(Path(model_path).expanduser().resolve())
-        self.device = device
-        self.min_valid_conf = float(min_valid_conf)
-        self.keypoint_names = [str(v) for v in (keypoint_names or [])]
-        self.output_keypoint_names = list(self.keypoint_names)
-        self.model = YOLO(self.model_path)
-        self.model.to(self.device)
-
-    def predict_crops(self, crops: Sequence[np.ndarray]) -> List[PoseResult]:
-        if not crops:
-            return []
-        results = self.model.predict(
-            source=list(crops),
-            conf=1e-4,
-            iou=0.7,
-            max_det=1,
-            verbose=False,
-            device=self.device,
+        backend = YoloNativeBackend(
+            model_path=model_path,
+            device=device,
+            min_valid_conf=min_valid_conf,
+            keypoint_names=keypoint_names,
         )
-
-        outputs: List[PoseResult] = []
-        for result in results:
-            keypoints = getattr(result, "keypoints", None)
-            if keypoints is None:
-                outputs.append(_empty_pose_result())
-                continue
-
-            try:
-                xy = keypoints.xy
-                xy = xy.cpu().numpy() if hasattr(xy, "cpu") else np.asarray(xy)
-                conf = getattr(keypoints, "conf", None)
-                if conf is not None:
-                    conf = (
-                        conf.cpu().numpy() if hasattr(conf, "cpu") else np.asarray(conf)
-                    )
-            except Exception:
-                outputs.append(_empty_pose_result())
-                continue
-
-            if xy.ndim == 2:
-                xy = xy[None, :, :]
-            if conf is not None and conf.ndim == 1:
-                conf = conf[None, :]
-
-            if xy.size == 0:
-                outputs.append(_empty_pose_result())
-                continue
-
-            if conf is None:
-                conf = np.zeros((xy.shape[0], xy.shape[1]), dtype=np.float32)
-            mean_per_instance = np.nanmean(conf, axis=1)
-            best_idx = (
-                int(np.nanargmax(mean_per_instance)) if len(mean_per_instance) else 0
-            )
-            pred_xy = np.asarray(xy[best_idx], dtype=np.float32)
-            pred_conf = np.asarray(conf[best_idx], dtype=np.float32)
-            if pred_xy.ndim != 2 or pred_xy.shape[1] != 2:
-                outputs.append(_empty_pose_result())
-                continue
-
-            kpts = np.column_stack((pred_xy, pred_conf)).astype(np.float32)
-            outputs.append(_summarize_keypoints(kpts, self.min_valid_conf))
-
-        return outputs
+        super().__init__(backend, manager=None)
 
 
-class SleapPoseBackend(BasePoseBackend):
-    """SLEAP runtime adapter via PoseInferenceService."""
+class SleapPoseBackend(_BackendAdapter):
+    """SLEAP runtime adapter via PoseInferenceService (legacy constructor preserved)."""
 
     def __init__(
         self,
@@ -167,90 +132,18 @@ class SleapPoseBackend(BasePoseBackend):
         sleap_batch: int = 4,
         skeleton_edges: Optional[Sequence[Sequence[int]]] = None,
     ):
-        from multi_tracker.posekit.pose_inference import PoseInferenceService
-
-        self.model_dir = Path(model_dir).expanduser().resolve()
-        self.out_root = Path(out_root).expanduser().resolve()
-        self.keypoint_names = list(keypoint_names)
-        self.min_valid_conf = float(min_valid_conf)
-        self.sleap_env = str(sleap_env)
-        self.sleap_device = str(sleap_device)
-        self.sleap_batch = int(sleap_batch)
-        self.sleap_max_instances = 1
-        self.output_keypoint_names = list(self.keypoint_names)
-        self.skeleton_edges = (
-            [tuple(int(v) for v in e[:2]) for e in skeleton_edges]
-            if skeleton_edges
-            else []
+        backend = SleapServiceBackend(
+            model_dir=model_dir,
+            out_root=out_root,
+            keypoint_names=keypoint_names,
+            min_valid_conf=min_valid_conf,
+            sleap_env=sleap_env,
+            sleap_device=sleap_device,
+            sleap_batch=sleap_batch,
+            sleap_max_instances=1,
+            skeleton_edges=skeleton_edges,
         )
-        self._infer = PoseInferenceService(
-            self.out_root, self.keypoint_names, self.skeleton_edges
-        )
-        self._tmp_root = (
-            self.out_root / "posekit" / "tmp" / f"mat_runtime_{uuid.uuid4().hex}"
-        )
-        self._tmp_root.mkdir(parents=True, exist_ok=True)
-
-    def predict_crops(self, crops: Sequence[np.ndarray]) -> List[PoseResult]:
-        if not crops:
-            return []
-
-        paths: List[Path] = []
-        for i, crop in enumerate(crops):
-            p = self._tmp_root / f"crop_{i:06d}.png"
-            ok = cv2.imwrite(str(p), crop)
-            if not ok:
-                paths.append(Path("__invalid__"))
-            else:
-                paths.append(p)
-
-        valid_paths = [p for p in paths if p.exists()]
-        preds: Dict[str, List[Any]] = {}
-        if valid_paths:
-            pred_map, err = self._infer.predict(
-                model_path=self.model_dir,
-                image_paths=valid_paths,
-                device="auto",
-                imgsz=640,
-                conf=1e-4,
-                batch=max(1, self.sleap_batch),
-                backend="sleap",
-                sleap_env=self.sleap_env,
-                sleap_device=self.sleap_device,
-                sleap_batch=max(1, self.sleap_batch),
-                sleap_max_instances=max(1, self.sleap_max_instances),
-            )
-            if pred_map is None:
-                raise RuntimeError(err or "SLEAP inference failed.")
-            preds = pred_map
-
-        outputs: List[PoseResult] = []
-        for p in paths:
-            if not p.exists():
-                outputs.append(_empty_pose_result())
-                continue
-            pred = preds.get(str(p))
-            if pred is None:
-                pred = preds.get(str(p.resolve()))
-            if not pred:
-                outputs.append(_empty_pose_result())
-                continue
-            arr = np.asarray(pred, dtype=np.float32)
-            if arr.ndim != 2 or arr.shape[1] != 3:
-                outputs.append(_empty_pose_result())
-                continue
-            outputs.append(_summarize_keypoints(arr, self.min_valid_conf))
-
-        return outputs
-
-    def close(self) -> None:
-        if self._tmp_root.exists():
-            try:
-                for p in self._tmp_root.glob("*.png"):
-                    p.unlink(missing_ok=True)
-                self._tmp_root.rmdir()
-            except Exception:
-                pass
+        super().__init__(backend, manager=None)
 
 
 def _parse_ignore_keypoints(raw: Any) -> List[Any]:
@@ -276,29 +169,6 @@ def _parse_ignore_keypoints(raw: Any) -> List[Any]:
                 out.append(str(v))
         return out
     return []
-
-
-def _load_skeleton_from_json(path_str: str):
-    if not path_str:
-        return [], []
-    p = Path(path_str).expanduser().resolve()
-    if not p.exists() or not p.is_file():
-        raise RuntimeError(f"Skeleton file not found: {p}")
-    data = json.loads(p.read_text(encoding="utf-8"))
-
-    names_raw = data.get("keypoint_names", data.get("keypoints", []))
-    edges_raw = data.get("skeleton_edges", data.get("edges", []))
-
-    names = [str(v).strip() for v in names_raw if str(v).strip()]
-    edges = []
-    for edge in edges_raw:
-        if not isinstance(edge, (list, tuple)) or len(edge) < 2:
-            continue
-        try:
-            edges.append((int(edge[0]), int(edge[1])))
-        except Exception:
-            continue
-    return names, edges
 
 
 def _apply_ignore_keypoints(
@@ -362,38 +232,18 @@ def _filter_keypoint_names(
 
 
 def create_pose_backend(params: Dict[str, Any], out_root: str) -> BasePoseBackend:
-    """Factory for unified pose backend adapters."""
-    backend = str(params.get("POSE_MODEL_TYPE", "yolo")).strip().lower()
-    model_path = str(params.get("POSE_MODEL_DIR", "")).strip()
-    min_valid_conf = float(params.get("POSE_MIN_KPT_CONF_VALID", 0.2))
-    skeleton_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
-    skeleton_names, skeleton_edges = _load_skeleton_from_json(skeleton_file)
-    if not model_path:
-        raise RuntimeError("Pose model path is empty.")
+    """
+    Factory for unified pose backend adapters.
 
-    if backend == "yolo":
-        device = str(params.get("YOLO_DEVICE", "cpu"))
-        return YoloPoseBackend(
-            model_path=model_path,
-            device=device,
-            min_valid_conf=min_valid_conf,
-            keypoint_names=skeleton_names,
-        )
-
-    if backend == "sleap":
-        if not skeleton_names:
-            raise RuntimeError(
-                "SLEAP pose backend requires a skeleton JSON with keypoint_names."
-            )
-        return SleapPoseBackend(
-            model_dir=model_path,
-            out_root=out_root,
-            keypoint_names=skeleton_names,
-            min_valid_conf=min_valid_conf,
-            sleap_env=str(params.get("POSE_SLEAP_ENV", "sleap")),
-            sleap_device=str(params.get("POSE_SLEAP_DEVICE", "auto")),
-            sleap_batch=int(params.get("POSE_SLEAP_BATCH", 4)),
-            skeleton_edges=skeleton_edges,
-        )
-
-    raise RuntimeError(f"Unsupported pose backend: {backend}")
+    This now routes through runtime_manager/runtime_api so all callers share the
+    same selection and lifecycle behavior.
+    """
+    manager = InferenceRuntimeManager(session_name="pose_runtime")
+    config = build_runtime_config(params, out_root=out_root)
+    backend = manager.create_backend(config)
+    if str(config.backend_family).lower() == "sleap":
+        adapter = SleapPoseBackend.from_runtime(backend, manager=manager)
+    else:
+        adapter = YoloPoseBackend.from_runtime(backend, manager=manager)
+    adapter.warmup()
+    return adapter

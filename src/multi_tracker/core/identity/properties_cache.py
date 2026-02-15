@@ -130,14 +130,22 @@ def compute_extractor_hash(params: Dict[str, Any]) -> str:
     pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
     pose_model_type = str(params.get("POSE_MODEL_TYPE", "yolo")).strip().lower()
     pose_model_dir = str(params.get("POSE_MODEL_DIR", "")).strip()
+    pose_runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "auto")).strip().lower()
+    pose_exported_model_path = str(params.get("POSE_EXPORTED_MODEL_PATH", "")).strip()
     pose_skeleton_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
     payload = {
         "schema_version": SCHEMA_VERSION,
         "enable_pose_extractor": pose_enabled,
         "pose_model_type": pose_model_type,
+        "pose_runtime_flavor": pose_runtime_flavor,
         "pose_min_kpt_conf_valid": params.get("POSE_MIN_KPT_CONF_VALID", 0.2),
         "pose_skeleton_file": (
             _file_fingerprint(pose_skeleton_file) if pose_skeleton_file else None
+        ),
+        "pose_exported_model": (
+            _file_fingerprint(pose_exported_model_path)
+            if pose_exported_model_path
+            else None
         ),
     }
     if pose_model_type == "sleap":

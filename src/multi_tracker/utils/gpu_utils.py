@@ -12,6 +12,8 @@ Import this module to check GPU availability:
 """
 
 import logging
+import sys
+from importlib.util import find_spec
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +83,47 @@ except ImportError:
     TENSORRT_AVAILABLE = False
     trt = None
 
+# ONNX Runtime availability and provider capabilities.
+try:
+    import onnxruntime as ort
+
+    ONNXRUNTIME_AVAILABLE = True
+    try:
+        ONNXRUNTIME_PROVIDERS = list(ort.get_available_providers() or [])
+    except Exception:
+        ONNXRUNTIME_PROVIDERS = []
+except ImportError:
+    ONNXRUNTIME_AVAILABLE = False
+    ONNXRUNTIME_PROVIDERS = []
+    ort = None
+
+ONNXRUNTIME_CPU_AVAILABLE = ONNXRUNTIME_AVAILABLE and (
+    not ONNXRUNTIME_PROVIDERS or "CPUExecutionProvider" in ONNXRUNTIME_PROVIDERS
+)
+ONNXRUNTIME_CUDA_AVAILABLE = ONNXRUNTIME_AVAILABLE and any(
+    p in ONNXRUNTIME_PROVIDERS
+    for p in ("CUDAExecutionProvider", "TensorrtExecutionProvider")
+)
+ONNXRUNTIME_ROCM_AVAILABLE = ONNXRUNTIME_AVAILABLE and (
+    "ROCMExecutionProvider" in ONNXRUNTIME_PROVIDERS
+)
+
+
+def _module_exists(module_name: str) -> bool:
+    try:
+        return find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+# SLEAP exported-runtime capabilities.
+SLEAP_NN_EXPORT_AVAILABLE = bool(
+    _module_exists("sleap_nn.export.predictors")
+    and _module_exists("sleap_nn.export.metadata")
+)
+SLEAP_RUNTIME_ONNX_AVAILABLE = SLEAP_NN_EXPORT_AVAILABLE and ONNXRUNTIME_AVAILABLE
+SLEAP_RUNTIME_TENSORRT_AVAILABLE = SLEAP_NN_EXPORT_AVAILABLE and TENSORRT_AVAILABLE
+
 # Summary flags
 GPU_AVAILABLE = CUDA_AVAILABLE or MPS_AVAILABLE
 ANY_ACCELERATION = GPU_AVAILABLE or NUMBA_AVAILABLE
@@ -100,6 +143,14 @@ def get_device_info() -> object:
         "torch_available": TORCH_AVAILABLE,
         "torch_cuda_available": TORCH_CUDA_AVAILABLE,
         "tensorrt_available": TENSORRT_AVAILABLE,
+        "onnxruntime_available": ONNXRUNTIME_AVAILABLE,
+        "onnxruntime_providers": list(ONNXRUNTIME_PROVIDERS),
+        "onnxruntime_cpu_available": ONNXRUNTIME_CPU_AVAILABLE,
+        "onnxruntime_cuda_available": ONNXRUNTIME_CUDA_AVAILABLE,
+        "onnxruntime_rocm_available": ONNXRUNTIME_ROCM_AVAILABLE,
+        "sleap_nn_export_available": SLEAP_NN_EXPORT_AVAILABLE,
+        "sleap_runtime_onnx_available": SLEAP_RUNTIME_ONNX_AVAILABLE,
+        "sleap_runtime_tensorrt_available": SLEAP_RUNTIME_TENSORRT_AVAILABLE,
         "numba_available": NUMBA_AVAILABLE,
         "gpu_available": GPU_AVAILABLE,
         "any_acceleration": ANY_ACCELERATION,
@@ -129,6 +180,12 @@ def get_device_info() -> object:
     if TENSORRT_AVAILABLE and trt is not None:
         try:
             info["tensorrt_version"] = trt.__version__
+        except Exception:
+            pass
+
+    if ONNXRUNTIME_AVAILABLE and ort is not None:
+        try:
+            info["onnxruntime_version"] = ort.__version__
         except Exception:
             pass
 
@@ -201,6 +258,18 @@ def log_device_info() -> object:
     else:
         logger.info("✗ TensorRT (NVIDIA): Not available")
 
+    if info["onnxruntime_available"]:
+        providers = ", ".join(info.get("onnxruntime_providers", [])) or "unknown"
+        logger.info("✓ ONNX Runtime: Available")
+        logger.info(f"  Providers: {providers}")
+    else:
+        logger.info("✗ ONNX Runtime: Not available")
+
+    if info["sleap_nn_export_available"]:
+        logger.info("✓ SLEAP export predictors: Available")
+    else:
+        logger.info("✗ SLEAP export predictors: Not available")
+
     if info["numba_available"]:
         logger.info("✓ Numba JIT: Available")
     else:
@@ -248,6 +317,67 @@ def get_optimal_device(enable_gpu: object = True, prefer_cuda: object = True) ->
     return "cpu", None
 
 
+def get_pose_runtime_options(backend_family: str = "yolo"):
+    """
+    Return runtime options for pose inference as list[(label, value)].
+
+    Values are normalized ids consumed by runtime_api, e.g.:
+    - auto
+    - cpu / mps / cuda / rocm
+    - onnx_cpu / onnx_cuda
+    - tensorrt_cuda
+    """
+    backend = str(backend_family or "yolo").strip().lower()
+    is_mac = sys.platform == "darwin"
+    options = [("Auto", "auto")]
+
+    supports_onnx = (
+        ONNXRUNTIME_AVAILABLE if backend != "sleap" else SLEAP_RUNTIME_ONNX_AVAILABLE
+    )
+    supports_tensorrt = (
+        TENSORRT_AVAILABLE if backend != "sleap" else SLEAP_RUNTIME_TENSORRT_AVAILABLE
+    )
+    cuda_like = CUDA_AVAILABLE or TORCH_CUDA_AVAILABLE
+
+    if is_mac:
+        # macOS: expose CPU/MPS native options and ONNX CPU only.
+        if MPS_AVAILABLE:
+            options.append(("MPS", "mps"))
+        options.append(("CPU", "cpu"))
+        if supports_onnx:
+            options.append(("ONNX (CPU)", "onnx_cpu"))
+    else:
+        options.append(("CPU", "cpu"))
+        if TORCH_CUDA_AVAILABLE and not ROCM_AVAILABLE:
+            options.append(("CUDA", "cuda"))
+        if ROCM_AVAILABLE:
+            options.append(("ROCm", "rocm"))
+
+        if supports_onnx:
+            options.append(("ONNX (CPU)", "onnx_cpu"))
+            if (
+                ONNXRUNTIME_CUDA_AVAILABLE
+                and TORCH_CUDA_AVAILABLE
+                and not ROCM_AVAILABLE
+            ):
+                options.append(("ONNX (CUDA)", "onnx_cuda"))
+            if ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE:
+                options.append(("ONNX (ROCm)", "onnx_rocm"))
+
+        if supports_tensorrt and cuda_like:
+            options.append(("TensorRT (CUDA)", "tensorrt_cuda"))
+
+    # Deduplicate by value while preserving order.
+    seen = set()
+    deduped = []
+    for label, value in options:
+        if value in seen:
+            continue
+        seen.add(value)
+        deduped.append((label, value))
+    return deduped
+
+
 # Export all availability flags and utilities
 __all__ = [
     # Flags
@@ -258,6 +388,14 @@ __all__ = [
     "CUPY_AVAILABLE",
     "TORCH_AVAILABLE",
     "TENSORRT_AVAILABLE",
+    "ONNXRUNTIME_AVAILABLE",
+    "ONNXRUNTIME_PROVIDERS",
+    "ONNXRUNTIME_CPU_AVAILABLE",
+    "ONNXRUNTIME_CUDA_AVAILABLE",
+    "ONNXRUNTIME_ROCM_AVAILABLE",
+    "SLEAP_NN_EXPORT_AVAILABLE",
+    "SLEAP_RUNTIME_ONNX_AVAILABLE",
+    "SLEAP_RUNTIME_TENSORRT_AVAILABLE",
     "NUMBA_AVAILABLE",
     "GPU_AVAILABLE",
     "ANY_ACCELERATION",
@@ -269,8 +407,10 @@ __all__ = [
     "njit",
     "prange",
     "trt",
+    "ort",
     # Functions
     "get_device_info",
     "log_device_info",
     "get_optimal_device",
+    "get_pose_runtime_options",
 ]

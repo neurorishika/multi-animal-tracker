@@ -56,7 +56,6 @@ try:
         EvaluationDashboardDialog,
         SmartSelectDialog,
         TrainingRunnerDialog,
-        get_available_devices,
     )
     from .pose_label_extensions import (
         CrashSafeWriter,
@@ -91,7 +90,6 @@ except ImportError:
         TrainingRunnerDialog,
         EvaluationDashboardDialog,
         ActiveLearningDialog,
-        get_available_devices,
     )
 
 from PySide6.QtCore import (
@@ -345,6 +343,7 @@ class PosePredictWorker(QObject):
 
     finished = Signal(list)
     failed = Signal(str)
+    resolved_exported_model_signal = Signal(str)
 
     def __init__(
         self,
@@ -354,9 +353,12 @@ class PosePredictWorker(QObject):
         keypoint_names: List[str],
         skeleton_edges: Optional[List[Tuple[int, int]]] = None,
         backend: str = "yolo",
+        runtime_flavor: str = "auto",
+        exported_model_path: Optional[Path] = None,
         device: str = "auto",
         imgsz: int = 640,
         conf: float = 0.25,
+        yolo_batch: int = 4,
         sleap_env: Optional[str] = None,
         sleap_device: str = "auto",
         sleap_batch: int = 4,
@@ -370,14 +372,29 @@ class PosePredictWorker(QObject):
         self.skeleton_edges = list(skeleton_edges or [])
         self.num_kpts = len(self.keypoint_names)
         self.backend = (backend or "yolo").lower()
+        self.runtime_flavor = (runtime_flavor or "auto").lower()
+        self.exported_model_path = (
+            Path(exported_model_path) if exported_model_path else None
+        )
         self.device = device
         self.imgsz = int(imgsz)
         self.conf = float(conf)
+        self.yolo_batch = int(max(1, yolo_batch))
         self.sleap_env = sleap_env
         self.sleap_device = sleap_device
         self.sleap_batch = int(sleap_batch)
         # Enforce single-instance predictions for PoseKit.
         self.sleap_max_instances = 1
+
+    def _resolved_runtime_artifact_path(self, backend_obj: Any) -> str:
+        runtime = str(self.runtime_flavor or "").strip().lower()
+        if not (runtime.startswith("onnx") or runtime.startswith("tensorrt")):
+            return ""
+        for attr in ("exported_model_path", "model_path"):
+            value = getattr(backend_obj, attr, None)
+            if value:
+                return str(value)
+        return ""
 
     def _extract_best_prediction(
         self, result: Any
@@ -418,6 +435,7 @@ class PosePredictWorker(QObject):
         best = int(np.argmax(scores)) if len(scores) > 0 else 0
         pred_xy = xy[best]
         pred_conf = conf[best] if conf is not None else np.zeros((self.num_kpts,))
+        pred_conf = np.clip(np.asarray(pred_conf, dtype=np.float32), 0.0, 1.0)
 
         if pred_xy.shape[0] != self.num_kpts:
             num = min(pred_xy.shape[0], self.num_kpts)
@@ -442,6 +460,69 @@ class PosePredictWorker(QObject):
             if cached is not None:
                 self.finished.emit(cached)
                 return
+
+            # Preferred path: shared runtime API.
+            try:
+                from multi_tracker.core.identity.runtime_api import (
+                    build_runtime_config,
+                    create_pose_backend_from_config,
+                )
+
+                params = {
+                    "POSE_MODEL_TYPE": self.backend,
+                    "POSE_MODEL_DIR": str(self.model_path),
+                    "POSE_RUNTIME_FLAVOR": self.runtime_flavor,
+                    "POSE_EXPORTED_MODEL_PATH": (
+                        str(self.exported_model_path)
+                        if self.exported_model_path is not None
+                        else ""
+                    ),
+                    "POSE_MIN_KPT_CONF_VALID": 0.0,
+                    "POSE_YOLO_BATCH": self.yolo_batch,
+                    "POSE_BATCH_SIZE": self.yolo_batch,
+                    "POSE_YOLO_CONF": float(self.conf),
+                    "POSE_SLEAP_ENV": self.sleap_env or "sleap",
+                    "POSE_SLEAP_DEVICE": self.sleap_device or "auto",
+                    "POSE_SLEAP_BATCH": int(max(1, self.sleap_batch)),
+                    "POSE_SLEAP_MAX_INSTANCES": 1,
+                }
+                cfg = build_runtime_config(
+                    params=params,
+                    out_root=str(self.out_root),
+                    keypoint_names_override=self.keypoint_names,
+                    skeleton_edges_override=self.skeleton_edges,
+                )
+                backend = create_pose_backend_from_config(cfg)
+                resolved_path = self._resolved_runtime_artifact_path(backend)
+                if resolved_path:
+                    self.resolved_exported_model_signal.emit(resolved_path)
+                try:
+                    backend.warmup()
+                    img = cv2.imread(str(self.image_path))
+                    if img is None:
+                        raise RuntimeError(f"Failed to read image: {self.image_path}")
+                    out = backend.predict_batch([img])
+                    pose = out[0] if out else None
+                    if pose is None or pose.keypoints is None:
+                        self.finished.emit([])
+                    else:
+                        arr = np.asarray(pose.keypoints, dtype=np.float32)
+                        self.finished.emit(
+                            [(float(x), float(y), float(c)) for x, y, c in arr.tolist()]
+                        )
+                    return
+                finally:
+                    try:
+                        backend.close()
+                    except Exception:
+                        pass
+            except Exception:
+                # Fallback to legacy PoseInferenceService path.
+                logger.debug(
+                    "Shared runtime predict path failed; falling back to legacy path.",
+                    exc_info=True,
+                )
+
             preds_map, err = infer.predict(
                 self.model_path,
                 [self.image_path],
@@ -477,6 +558,7 @@ class BulkPosePredictWorker(QObject):
     progress = Signal(int, int)
     finished = Signal(dict)
     failed = Signal(str)
+    resolved_exported_model_signal = Signal(str)
 
     def __init__(
         self,
@@ -486,6 +568,8 @@ class BulkPosePredictWorker(QObject):
         keypoint_names: List[str],
         skeleton_edges: Optional[List[Tuple[int, int]]] = None,
         backend: str = "yolo",
+        runtime_flavor: str = "auto",
+        exported_model_path: Optional[Path] = None,
         device: str = "auto",
         imgsz: int = 640,
         conf: float = 0.25,
@@ -502,6 +586,10 @@ class BulkPosePredictWorker(QObject):
         self.keypoint_names = list(keypoint_names)
         self.skeleton_edges = list(skeleton_edges or [])
         self.backend = (backend or "yolo").lower()
+        self.runtime_flavor = (runtime_flavor or "auto").lower()
+        self.exported_model_path = (
+            Path(exported_model_path) if exported_model_path else None
+        )
         self.device = device
         self.imgsz = int(imgsz)
         self.conf = float(conf)
@@ -513,6 +601,16 @@ class BulkPosePredictWorker(QObject):
         self.sleap_max_instances = 1
         self._cancel = False
 
+    def _resolved_runtime_artifact_path(self, backend_obj: Any) -> str:
+        runtime = str(self.runtime_flavor or "").strip().lower()
+        if not (runtime.startswith("onnx") or runtime.startswith("tensorrt")):
+            return ""
+        for attr in ("exported_model_path", "model_path"):
+            value = getattr(backend_obj, attr, None)
+            if value:
+                return str(value)
+        return ""
+
     def cancel(self) -> None:
         """Request cancellation for the running prediction batch."""
         self._cancel = True
@@ -523,6 +621,95 @@ class BulkPosePredictWorker(QObject):
             infer = PoseInferenceService(
                 self.out_root, self.keypoint_names, self.skeleton_edges
             )
+
+            # Preferred path: shared runtime API with chunked image loading.
+            try:
+                from multi_tracker.core.identity.runtime_api import (
+                    build_runtime_config,
+                    create_pose_backend_from_config,
+                )
+
+                params = {
+                    "POSE_MODEL_TYPE": self.backend,
+                    "POSE_MODEL_DIR": str(self.model_path),
+                    "POSE_RUNTIME_FLAVOR": self.runtime_flavor,
+                    "POSE_EXPORTED_MODEL_PATH": (
+                        str(self.exported_model_path)
+                        if self.exported_model_path is not None
+                        else ""
+                    ),
+                    "POSE_MIN_KPT_CONF_VALID": 0.0,
+                    "POSE_YOLO_BATCH": int(max(1, self.batch)),
+                    "POSE_BATCH_SIZE": int(max(1, self.batch)),
+                    "POSE_SLEAP_ENV": self.sleap_env or "sleap",
+                    "POSE_SLEAP_DEVICE": self.sleap_device or "auto",
+                    "POSE_SLEAP_BATCH": int(max(1, self.sleap_batch)),
+                    "POSE_SLEAP_MAX_INSTANCES": 1,
+                    "POSE_YOLO_CONF": float(self.conf),
+                }
+                cfg = build_runtime_config(
+                    params=params,
+                    out_root=str(self.out_root),
+                    keypoint_names_override=self.keypoint_names,
+                    skeleton_edges_override=self.skeleton_edges,
+                )
+                backend = create_pose_backend_from_config(cfg)
+                resolved_path = self._resolved_runtime_artifact_path(backend)
+                if resolved_path:
+                    self.resolved_exported_model_signal.emit(resolved_path)
+                try:
+                    backend.warmup()
+                    preds: Dict[str, List[Tuple[float, float, float]]] = {}
+                    total = len(self.image_paths)
+                    done = 0
+                    chunk_size = (
+                        int(max(1, self.sleap_batch))
+                        if self.backend == "sleap"
+                        else int(max(1, self.batch))
+                    )
+
+                    for i in range(0, total, chunk_size):
+                        if self._cancel:
+                            self.failed.emit("Canceled.")
+                            return
+                        chunk_paths = self.image_paths[i : i + chunk_size]
+                        images = []
+                        valid_paths = []
+                        for p in chunk_paths:
+                            img = cv2.imread(str(p))
+                            if img is None:
+                                preds[str(p)] = []
+                                continue
+                            images.append(img)
+                            valid_paths.append(p)
+                        if images:
+                            out = backend.predict_batch(images)
+                            for j, p in enumerate(valid_paths):
+                                pose = out[j] if j < len(out) else None
+                                if pose is None or pose.keypoints is None:
+                                    preds[str(p)] = []
+                                    continue
+                                arr = np.asarray(pose.keypoints, dtype=np.float32)
+                                preds[str(p)] = [
+                                    (float(x), float(y), float(c))
+                                    for x, y, c in arr.tolist()
+                                ]
+                        done += len(chunk_paths)
+                        self.progress.emit(done, total)
+
+                    self.finished.emit(preds)
+                    return
+                finally:
+                    try:
+                        backend.close()
+                    except Exception:
+                        pass
+            except Exception:
+                logger.debug(
+                    "Shared runtime bulk path failed; falling back to legacy path.",
+                    exc_info=True,
+                )
+
             preds, err = infer.predict(
                 self.model_path,
                 self.image_paths,
@@ -1766,7 +1953,7 @@ class FrameListDelegate(QStyledItemDelegate):
 
         text = index.data(Qt.DisplayRole) or ""
         conf_val = index.data(self.CONF_ROLE)
-        conf_text = "" if conf_val in (None, "") else f"{float(conf_val):.3f}"
+        conf_text = "" if conf_val in (None, "") else f"{float(conf_val):.4f}"
         kpt_val = index.data(self.KP_COUNT_ROLE)
         kpt_text = "" if kpt_val in (None, "") else f"k{int(kpt_val)}"
         cluster_val = index.data(self.CLUSTER_ROLE)
@@ -2460,6 +2647,7 @@ class MainWindow(QMainWindow):
         self._pred_worker: Optional[PosePredictWorker] = None
         self._bulk_pred_thread: Optional[QThread] = None
         self._bulk_pred_worker: Optional[BulkPosePredictWorker] = None
+        self._bulk_prediction_locked = False
         self._sleap_service_thread: Optional[QThread] = None
         self._sleap_service_worker: Optional[SleapServiceWorker] = None
         self.show_predictions = True
@@ -2767,6 +2955,28 @@ class MainWindow(QMainWindow):
         backend_row.addWidget(self.combo_pred_backend, 1)
         model_layout.addLayout(backend_row)
 
+        runtime_row = QHBoxLayout()
+        runtime_row.addWidget(QLabel("Runtime"))
+        self.combo_pred_runtime = QComboBox()
+        self.combo_pred_runtime.setToolTip(
+            "Inference runtime flavor.\n"
+            "ONNX/TensorRT uses exported model path when provided."
+        )
+        self._populate_pred_runtime_options("yolo")
+        runtime_row.addWidget(self.combo_pred_runtime, 1)
+        model_layout.addLayout(runtime_row)
+
+        exported_row = QHBoxLayout()
+        exported_row.addWidget(QLabel("Exported model"))
+        self.pred_exported_edit = QLineEdit("")
+        self.pred_exported_edit.setPlaceholderText(
+            "Optional exported model path (.onnx/.engine or exported SLEAP dir)"
+        )
+        self.btn_pred_exported = QPushButton("Browse…")
+        exported_row.addWidget(self.pred_exported_edit, 1)
+        exported_row.addWidget(self.btn_pred_exported)
+        model_layout.addLayout(exported_row)
+
         pred_conf_row = QHBoxLayout()
         pred_conf_row.addWidget(
             QLabel("What minimum prediction confidence should be shown/applied?")
@@ -2780,6 +2990,17 @@ class MainWindow(QMainWindow):
         )
         pred_conf_row.addWidget(self.sp_pred_conf)
         model_layout.addLayout(pred_conf_row)
+
+        batch_row = QHBoxLayout()
+        batch_row.addWidget(QLabel("Batch size"))
+        self.spin_pred_batch = QSpinBox()
+        self.spin_pred_batch.setRange(1, 256)
+        self.spin_pred_batch.setValue(16)
+        self.spin_pred_batch.setToolTip(
+            "Shared batch size for dataset prediction across YOLO and SLEAP backends."
+        )
+        batch_row.addWidget(self.spin_pred_batch)
+        model_layout.addLayout(batch_row)
 
         # YOLO settings
         self.yolo_pred_widget = QWidget()
@@ -2823,10 +3044,6 @@ class MainWindow(QMainWindow):
         model_row.addWidget(self.btn_sleap_model)
         model_row.addWidget(self.btn_sleap_model_latest)
         sleap_layout.addRow("Model directory", model_row)
-
-        self.combo_sleap_device = QComboBox()
-        self.combo_sleap_device.addItems(get_available_devices())
-        sleap_layout.addRow("Device", self.combo_sleap_device)
 
         sleap_btns = QHBoxLayout()
         self.btn_sleap_start = QPushButton("Start SLEAP Service")
@@ -2990,7 +3207,9 @@ class MainWindow(QMainWindow):
         self.btn_clear_pred_cache.clicked.connect(self._clear_prediction_cache)
         self.btn_pred_weights.clicked.connect(self._browse_pred_weights)
         self.btn_pred_weights_latest.clicked.connect(self._use_latest_pred_weights)
+        self.btn_pred_exported.clicked.connect(self._browse_pred_exported_model)
         self.combo_pred_backend.currentTextChanged.connect(self._update_pred_backend_ui)
+        self.combo_pred_runtime.currentTextChanged.connect(self._update_pred_backend_ui)
         self.btn_sleap_refresh.clicked.connect(self._refresh_sleap_envs)
         self.btn_sleap_model.clicked.connect(self._browse_sleap_model_dir)
         self.btn_sleap_model_latest.clicked.connect(self._use_latest_sleap_model)
@@ -3015,7 +3234,6 @@ class MainWindow(QMainWindow):
 
         # Load UI settings now that all widgets are created
         self._refresh_sleap_envs()
-        self._sleap_batch_predict = 4
         self._load_ui_settings()
         self._update_pred_backend_ui()
         app = QApplication.instance()
@@ -3224,10 +3442,11 @@ class MainWindow(QMainWindow):
             "pred_conf": float(self.sp_pred_conf.value()),
             "pred_weights": self.pred_weights_edit.text().strip(),
             "pred_backend": self.combo_pred_backend.currentText().strip(),
+            "pred_runtime": self._pred_runtime_flavor(),
+            "pred_exported_model": self.pred_exported_edit.text().strip(),
+            "pred_batch": int(self.spin_pred_batch.value()),
             "sleap_env": self.combo_sleap_env.currentText().strip(),
             "sleap_model_dir": self.sleap_model_edit.text().strip(),
-            "sleap_device": self.combo_sleap_device.currentText().strip(),
-            "sleap_batch_predict": int(getattr(self, "_sleap_batch_predict", 4)),
             "show_predictions": bool(self.cb_show_preds.isChecked()),
             "show_pred_conf": bool(self.cb_show_pred_conf.isChecked()),
         }
@@ -3268,6 +3487,23 @@ class MainWindow(QMainWindow):
                 backend = str(settings["pred_backend"])
                 if backend:
                     self.combo_pred_backend.setCurrentText(backend)
+            if "pred_runtime" in settings:
+                runtime = str(settings["pred_runtime"]).strip()
+                if runtime:
+                    self._populate_pred_runtime_options(
+                        self._pred_backend(), preferred=runtime
+                    )
+            if "pred_exported_model" in settings:
+                self.pred_exported_edit.setText(str(settings["pred_exported_model"]))
+            if "pred_batch" in settings:
+                self.spin_pred_batch.setValue(int(settings["pred_batch"]))
+            elif "pred_yolo_batch" in settings:
+                self.spin_pred_batch.setValue(int(settings["pred_yolo_batch"]))
+            elif "sleap_batch_predict" in settings:
+                self.spin_pred_batch.setValue(int(settings["sleap_batch_predict"]))
+            elif "sleap_batch" in settings:
+                # Backwards compatibility for older settings key.
+                self.spin_pred_batch.setValue(int(settings["sleap_batch"]))
             if "sleap_env" in settings:
                 self._sleap_env_pref = str(settings["sleap_env"]).strip()
                 if self._sleap_env_pref:
@@ -3278,13 +3514,6 @@ class MainWindow(QMainWindow):
                         self.combo_sleap_env.setCurrentText(self._sleap_env_pref)
             if "sleap_model_dir" in settings:
                 self.sleap_model_edit.setText(str(settings["sleap_model_dir"]))
-            if "sleap_device" in settings:
-                self.combo_sleap_device.setCurrentText(str(settings["sleap_device"]))
-            if "sleap_batch_predict" in settings:
-                self._sleap_batch_predict = int(settings["sleap_batch_predict"])
-            elif "sleap_batch" in settings:
-                # Backwards compatibility for older settings key.
-                self._sleap_batch_predict = int(settings["sleap_batch"])
             if "show_predictions" in settings:
                 self.cb_show_preds.setChecked(bool(settings["show_predictions"]))
                 self.show_predictions = bool(self.cb_show_preds.isChecked())
@@ -3816,11 +4045,24 @@ class MainWindow(QMainWindow):
         except Exception:
             sig = None
         conf_thr = self._pred_conf_default()
-        return f"{backend}|{model}|{sig}|thr={conf_thr:.6f}"
+        runtime = self._pred_runtime_flavor()
+        exported_model = self._get_pred_exported_model_silent()
+        exported_sig = None
+        if exported_model is not None:
+            try:
+                stat = exported_model.stat()
+                token = f"{exported_model.resolve()}|{stat.st_mtime_ns}|{stat.st_size}"
+            except OSError:
+                token = str(exported_model)
+            exported_sig = hashlib.sha1(token.encode("utf-8")).hexdigest()[:12]
+        return (
+            f"{backend}|{model}|{sig}|runtime={runtime}|"
+            f"exported={exported_sig}|thr={conf_thr:.6f}"
+        )
 
     def _current_pred_cache_key(self) -> Optional[str]:
-        model = self._get_pred_model_silent()
         backend = self._pred_backend()
+        model = self._pred_cache_model(self._get_pred_model_silent(), backend)
         return self._pred_cache_key_for(model, backend)
 
     def _ensure_pred_conf_cache(self) -> None:
@@ -3841,6 +4083,13 @@ class MainWindow(QMainWindow):
             self._pred_kpt_count_map = {}
             return
         backend = self._pred_backend()
+        model = self._pred_cache_model(model, backend)
+        if model is None:
+            self._pred_conf_cache_key = None
+            self._pred_conf_map = {}
+            self._pred_conf_complete = False
+            self._pred_kpt_count_map = {}
+            return
         preds_cache = self.infer.load_cache(model, backend=backend)
         self._pred_conf_cache_key = key
         conf_map, kpt_map = self._build_pred_stats_maps(preds_cache)
@@ -3855,9 +4104,11 @@ class MainWindow(QMainWindow):
         kpt_map: Dict[str, Optional[int]] = {}
         conf_thr = self._pred_conf_default()
         for path, pred_list in preds_cache.items():
-            confs = [
-                float(p[2]) for p in pred_list if len(p) >= 3 and np.isfinite(p[2])
-            ]
+            confs = []
+            for p in pred_list:
+                if len(p) < 3 or not np.isfinite(p[2]):
+                    continue
+                confs.append(float(np.clip(p[2], 0.0, 1.0)))
             val = float(np.mean(confs)) if confs else None
             if confs:
                 kpt_count = int(sum(1 for c in confs if c > conf_thr))
@@ -3895,9 +4146,11 @@ class MainWindow(QMainWindow):
             self._pred_kpt_count_map = {}
         conf_thr = self._pred_conf_default()
         for path, pred_list in preds.items():
-            confs = [
-                float(p[2]) for p in pred_list if len(p) >= 3 and np.isfinite(p[2])
-            ]
+            confs = []
+            for p in pred_list:
+                if len(p) < 3 or not np.isfinite(p[2]):
+                    continue
+                confs.append(float(np.clip(p[2], 0.0, 1.0)))
             val = float(np.mean(confs)) if confs else None
             if confs:
                 kpt_count = int(sum(1 for c in confs if c > conf_thr))
@@ -5566,6 +5819,35 @@ class MainWindow(QMainWindow):
         except Exception:
             return "yolo"
 
+    def _pred_runtime_options_for_backend(self, backend: str) -> List[Tuple[str, str]]:
+        try:
+            from multi_tracker.utils.gpu_utils import get_pose_runtime_options
+
+            return get_pose_runtime_options(backend)
+        except Exception:
+            return [("Auto", "auto"), ("CPU", "cpu")]
+
+    def _populate_pred_runtime_options(
+        self, backend: str, preferred: Optional[str] = None
+    ):
+        if not hasattr(self, "combo_pred_runtime"):
+            return
+        combo = self.combo_pred_runtime
+        selected = (
+            str(preferred or self._pred_runtime_flavor() or "auto").strip().lower()
+        )
+        options = self._pred_runtime_options_for_backend(backend)
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = "auto"
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
     def _set_sleap_status(self, text: str, visible: Optional[bool] = None):
         if not hasattr(self, "status_sleap"):
             return
@@ -5584,13 +5866,79 @@ class MainWindow(QMainWindow):
         self.status_progress.setValue(0)
         self.status_progress.setVisible(False)
 
+    def _set_bulk_prediction_locked(self, locked: bool) -> None:
+        """Block interactive UI controls while dataset prediction is running."""
+        self._bulk_prediction_locked = bool(locked)
+        enabled = not self._bulk_prediction_locked
+        widget_names = [
+            "list_widget",
+            "labeling_list",
+            "search_edit",
+            "combo_pred_backend",
+            "combo_pred_runtime",
+            "pred_exported_edit",
+            "btn_pred_exported",
+            "sp_pred_conf",
+            "spin_pred_batch",
+            "pred_weights_edit",
+            "btn_pred_weights",
+            "btn_pred_weights_latest",
+            "combo_sleap_env",
+            "btn_sleap_refresh",
+            "sleap_model_edit",
+            "btn_sleap_model",
+            "btn_sleap_model_latest",
+            "btn_sleap_start",
+            "btn_sleap_stop",
+            "btn_predict",
+            "btn_predict_bulk",
+            "btn_apply_preds",
+            "btn_clear_pred_cache",
+        ]
+        for name in widget_names:
+            w = getattr(self, name, None)
+            if w is not None:
+                w.setEnabled(enabled)
+        if hasattr(self, "menuBar") and self.menuBar() is not None:
+            self.menuBar().setEnabled(enabled)
+        if self._bulk_prediction_locked:
+            self.statusBar().showMessage(
+                "Predicting dataset: controls are locked until completion."
+            )
+        else:
+            self._update_pred_backend_ui()
+
     def _update_pred_backend_ui(self):
+        if self._bulk_prediction_locked:
+            return
         backend = self._pred_backend()
+        self._populate_pred_runtime_options(
+            backend=backend, preferred=self._pred_runtime_flavor()
+        )
         is_sleap = backend == "sleap"
+        runtime_flavor = self._pred_runtime_flavor()
+        uses_exported = runtime_flavor.startswith("onnx") or runtime_flavor.startswith(
+            "tensorrt"
+        )
         if hasattr(self, "yolo_pred_widget"):
             self.yolo_pred_widget.setVisible(not is_sleap)
         if hasattr(self, "sleap_pred_widget"):
             self.sleap_pred_widget.setVisible(is_sleap)
+        if hasattr(self, "pred_exported_edit") and hasattr(self, "btn_pred_exported"):
+            self.pred_exported_edit.setVisible(uses_exported)
+            self.btn_pred_exported.setVisible(uses_exported)
+            if is_sleap:
+                self.pred_exported_edit.setPlaceholderText(
+                    "Exported SLEAP model directory for ONNX/TensorRT runtime"
+                )
+            elif runtime_flavor.startswith("tensorrt"):
+                self.pred_exported_edit.setPlaceholderText(
+                    "Exported YOLO TensorRT engine (.engine)"
+                )
+            else:
+                self.pred_exported_edit.setPlaceholderText(
+                    "Exported YOLO ONNX model (.onnx)"
+                )
         if is_sleap:
             running = PoseInferenceService.sleap_service_running()
             self._set_sleap_status(
@@ -5895,14 +6243,127 @@ class MainWindow(QMainWindow):
             )
 
     def _get_pred_model_or_prompt(self) -> Optional[Path]:
-        if self._pred_backend() == "sleap":
+        backend = self._pred_backend()
+        runtime = self._pred_runtime_flavor()
+        if backend == "sleap":
             return self._get_sleap_model_or_prompt()
+        if runtime.startswith("onnx") or runtime.startswith("tensorrt"):
+            exported = self._get_pred_exported_model_silent()
+            if exported is not None:
+                return exported
         return self._get_pred_weights_or_prompt()
 
     def _get_pred_model_silent(self) -> Optional[Path]:
-        if self._pred_backend() == "sleap":
+        backend = self._pred_backend()
+        runtime = self._pred_runtime_flavor()
+        if backend == "sleap":
             return self._get_sleap_model_silent()
+        if runtime.startswith("onnx") or runtime.startswith("tensorrt"):
+            exported = self._get_pred_exported_model_silent()
+            if exported is not None:
+                return exported
         return self._get_pred_weights_silent()
+
+    def _pred_runtime_flavor(self) -> str:
+        if hasattr(self, "combo_pred_runtime"):
+            data = self.combo_pred_runtime.currentData()
+            if data:
+                return str(data).strip().lower()
+        try:
+            txt = self.combo_pred_runtime.currentText().strip().lower()
+            txt_norm = txt.replace(" ", "_").replace("-", "_")
+            if txt_norm.startswith("onnx") and "rocm" in txt_norm:
+                return "onnx_rocm"
+            if txt_norm.startswith("onnx") and "cuda" in txt_norm:
+                return "onnx_cuda"
+            if txt_norm.startswith("onnx"):
+                return "onnx_cpu"
+            if txt_norm.startswith("tensorrt") and "cuda" in txt_norm:
+                return "tensorrt_cuda"
+            if txt_norm.startswith("tensorrt"):
+                return "tensorrt_cuda"
+            if txt_norm.startswith("native") and "mps" in txt_norm:
+                return "mps"
+            if txt_norm.startswith("native") and "cuda" in txt_norm:
+                return "cuda"
+            if txt_norm.startswith("native") and "rocm" in txt_norm:
+                return "rocm"
+            if txt_norm.startswith("native"):
+                return "cpu"
+        except Exception:
+            pass
+        return "auto"
+
+    def _browse_pred_exported_model(self):
+        backend = self._pred_backend()
+        runtime = self._pred_runtime_flavor()
+        start = self.pred_exported_edit.text().strip() or str(self.project.out_root)
+        if backend == "sleap":
+            path = QFileDialog.getExistingDirectory(
+                self, "Select exported SLEAP model directory", start
+            )
+            if path:
+                self.pred_exported_edit.setText(path)
+            return
+
+        if runtime.startswith("onnx"):
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select exported YOLO ONNX model",
+                start,
+                "ONNX models (*.onnx);;All files (*)",
+            )
+        elif runtime.startswith("tensorrt"):
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select exported YOLO TensorRT engine",
+                start,
+                "TensorRT engines (*.engine);;All files (*)",
+            )
+        else:
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select exported YOLO model",
+                start,
+                "Exported models (*.onnx *.engine);;All files (*)",
+            )
+        if file_path:
+            self.pred_exported_edit.setText(file_path)
+
+    def _get_pred_exported_model_silent(self) -> Optional[Path]:
+        txt = self.pred_exported_edit.text().strip()
+        if not txt:
+            return None
+        p = Path(txt).expanduser().resolve()
+        if p.exists():
+            return p
+        return None
+
+    def _get_pred_exported_model_or_prompt(self) -> Optional[Path]:
+        path = self._get_pred_exported_model_silent()
+        if path is not None:
+            return path
+        self._browse_pred_exported_model()
+        return self._get_pred_exported_model_silent()
+
+    def _pred_cache_model(
+        self,
+        model: Optional[Path],
+        backend: str,
+        runtime_flavor: Optional[str] = None,
+        exported_model: Optional[Path] = None,
+    ) -> Optional[Path]:
+        if model is None:
+            return None
+        runtime = (runtime_flavor or self._pred_runtime_flavor()).strip().lower()
+        if backend == "yolo" and (
+            runtime.startswith("onnx") or runtime.startswith("tensorrt")
+        ):
+            if exported_model is None:
+                exported_model = self._get_pred_exported_model_silent()
+            if exported_model is not None:
+                return exported_model
+        return model
 
     def _browse_pred_weights(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select pose weights", "", "*.pt")
@@ -5949,10 +6410,10 @@ class MainWindow(QMainWindow):
     ) -> Tuple[Optional[List[Keypoint]], Optional[List[float]]]:
         if not self.show_predictions:
             return None, None
-        model = self._get_pred_model_silent()
+        backend = self._pred_backend()
+        model = self._pred_cache_model(self._get_pred_model_silent(), backend)
         if not model:
             return None, None
-        backend = self._pred_backend()
         preds = self._get_pred_for_frame(
             model, self.image_paths[self.current_index], backend=backend
         )
@@ -6069,11 +6530,19 @@ class MainWindow(QMainWindow):
             self._last_pred_conf = None
         else:
             self._last_pred_conf = self._pred_conf_default()
-        self._last_pred_model = model
+        runtime_flavor = self._pred_runtime_flavor()
+        exported_model_path = self._get_pred_exported_model_silent()
+        cache_model = self._pred_cache_model(
+            model,
+            backend,
+            runtime_flavor=runtime_flavor,
+            exported_model=exported_model_path,
+        )
+        self._last_pred_model = cache_model
         self._last_pred_backend = backend
 
         cached = self._get_pred_for_frame(
-            model, self.image_paths[self.current_index], backend=backend
+            cache_model, self.image_paths[self.current_index], backend=backend
         )
         if cached is not None:
             self._on_pred_finished(cached)
@@ -6094,16 +6563,22 @@ class MainWindow(QMainWindow):
             keypoint_names=self.project.keypoint_names,
             skeleton_edges=self.project.skeleton_edges,
             backend=backend,
+            runtime_flavor=runtime_flavor,
+            exported_model_path=exported_model_path,
             device="auto",
             imgsz=640,
             conf=self._last_pred_conf or 0.0,
+            yolo_batch=int(self.spin_pred_batch.value()),
             sleap_env=sleap_env,
-            sleap_device=self.combo_sleap_device.currentText().strip(),
-            sleap_batch=1,
+            sleap_device="auto",
+            sleap_batch=int(self.spin_pred_batch.value()),
             sleap_max_instances=1,
         )
         self._pred_worker.moveToThread(self._pred_thread)
         self._pred_thread.started.connect(self._pred_worker.run)
+        self._pred_worker.resolved_exported_model_signal.connect(
+            self._on_pred_exported_model_resolved
+        )
         self._pred_worker.finished.connect(self._on_pred_finished)
         self._pred_worker.failed.connect(self._on_pred_failed)
         self._pred_worker.finished.connect(self._pred_thread.quit)
@@ -6161,9 +6636,23 @@ class MainWindow(QMainWindow):
             self._clear_progress()
         QMessageBox.warning(self, "Prediction failed", msg)
 
+    def _on_pred_exported_model_resolved(self, path: str):
+        resolved = str(path or "").strip()
+        if not resolved:
+            return
+        if hasattr(self, "pred_exported_edit"):
+            current = self.pred_exported_edit.text().strip()
+            if current == resolved:
+                return
+            self.pred_exported_edit.setText(resolved)
+        self.statusBar().showMessage(
+            f"Using exported runtime model: {Path(resolved).name}", 4000
+        )
+        self._save_ui_settings()
+
     def _clear_prediction_cache(self):
         backend = self._pred_backend()
-        model = self._get_pred_model_silent()
+        model = self._pred_cache_model(self._get_pred_model_silent(), backend)
         if model:
             removed = self.infer.clear_cache(model, backend=backend)
             self.statusBar().showMessage(
@@ -6199,7 +6688,7 @@ class MainWindow(QMainWindow):
 
     def _adopt_prediction_kpt(self, kpt_idx: int, x: float, y: float):
         backend = self._pred_backend()
-        model = self._get_pred_model_or_prompt()
+        model = self._pred_cache_model(self._get_pred_model_or_prompt(), backend)
         preds = None
         if model:
             preds = self.infer.get_cached_pred(
@@ -6261,7 +6750,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No frame", "Select a frame first.")
             return
         backend = self._pred_backend()
-        model = self._get_pred_model_or_prompt()
+        model = self._pred_cache_model(self._get_pred_model_or_prompt(), backend)
         if not model:
             return
         preds = self.infer.get_cached_pred(
@@ -6294,6 +6783,8 @@ class MainWindow(QMainWindow):
 
     def predict_dataset(self: object) -> object:
         """predict_dataset method documentation."""
+        if self._bulk_prediction_locked:
+            return
         if not self.image_paths:
             QMessageBox.information(self, "No frames", "No images loaded.")
             return
@@ -6343,55 +6834,58 @@ class MainWindow(QMainWindow):
         if backend != "sleap":
             self.statusBar().showMessage(f"Predicting dataset… ({model.name})")
         self.btn_predict_bulk.setEnabled(False)
+        self._set_bulk_prediction_locked(True)
         if backend == "sleap":
             if PoseInferenceService.sleap_service_running():
                 self._set_sleap_status("SLEAP: running", visible=True)
 
-        self._last_pred_model = model
-        self._last_pred_backend = backend
-        sleap_batch = 4
-        if backend == "sleap":
-            default_batch = int(getattr(self, "_sleap_batch_predict", 4))
-            batch_val, ok = QInputDialog.getInt(
-                self,
-                "SLEAP Batch Size",
-                "Batch size:",
-                default_batch,
-                1,
-                512,
-                1,
-            )
-            if not ok:
-                self.btn_predict_bulk.setEnabled(True)
-                return
-            self._sleap_batch_predict = int(batch_val)
-            sleap_batch = self._sleap_batch_predict
-        self._bulk_pred_thread = QThread()
-        self._bulk_pred_worker = BulkPosePredictWorker(
-            model_path=model,
-            image_paths=paths,
-            out_root=self.project.out_root,
-            keypoint_names=self.project.keypoint_names,
-            skeleton_edges=self.project.skeleton_edges,
-            backend=backend,
-            device="auto",
-            imgsz=640,
-            conf=self._pred_conf_default() if backend == "yolo" else 0.0,
-            batch=16,
-            sleap_env=sleap_env,
-            sleap_device=self.combo_sleap_device.currentText().strip(),
-            sleap_batch=int(sleap_batch),
-            sleap_max_instances=1,
+        runtime_flavor = self._pred_runtime_flavor()
+        exported_model_path = self._get_pred_exported_model_silent()
+        cache_model = self._pred_cache_model(
+            model,
+            backend,
+            runtime_flavor=runtime_flavor,
+            exported_model=exported_model_path,
         )
-        self._bulk_pred_worker.moveToThread(self._bulk_pred_thread)
-        self._bulk_pred_thread.started.connect(self._bulk_pred_worker.run)
-        self._bulk_pred_worker.progress.connect(self._on_bulk_pred_progress)
-        self._bulk_pred_worker.finished.connect(self._on_bulk_pred_finished)
-        self._bulk_pred_worker.failed.connect(self._on_bulk_pred_failed)
-        self._bulk_pred_worker.finished.connect(self._bulk_pred_thread.quit)
-        self._bulk_pred_worker.failed.connect(self._bulk_pred_thread.quit)
-        self._bulk_pred_thread.finished.connect(self._bulk_pred_thread.deleteLater)
-        self._bulk_pred_thread.start()
+        self._last_pred_model = cache_model
+        self._last_pred_backend = backend
+        pred_batch = int(self.spin_pred_batch.value())
+        try:
+            self._bulk_pred_thread = QThread()
+            self._bulk_pred_worker = BulkPosePredictWorker(
+                model_path=model,
+                image_paths=paths,
+                out_root=self.project.out_root,
+                keypoint_names=self.project.keypoint_names,
+                skeleton_edges=self.project.skeleton_edges,
+                backend=backend,
+                runtime_flavor=runtime_flavor,
+                exported_model_path=exported_model_path,
+                device="auto",
+                imgsz=640,
+                conf=self._pred_conf_default() if backend == "yolo" else 0.0,
+                batch=pred_batch,
+                sleap_env=sleap_env,
+                sleap_device="auto",
+                sleap_batch=int(pred_batch),
+                sleap_max_instances=1,
+            )
+            self._bulk_pred_worker.moveToThread(self._bulk_pred_thread)
+            self._bulk_pred_thread.started.connect(self._bulk_pred_worker.run)
+            self._bulk_pred_worker.resolved_exported_model_signal.connect(
+                self._on_pred_exported_model_resolved
+            )
+            self._bulk_pred_worker.progress.connect(self._on_bulk_pred_progress)
+            self._bulk_pred_worker.finished.connect(self._on_bulk_pred_finished)
+            self._bulk_pred_worker.failed.connect(self._on_bulk_pred_failed)
+            self._bulk_pred_worker.finished.connect(self._bulk_pred_thread.quit)
+            self._bulk_pred_worker.failed.connect(self._bulk_pred_thread.quit)
+            self._bulk_pred_thread.finished.connect(self._bulk_pred_thread.deleteLater)
+            self._bulk_pred_thread.start()
+        except Exception as e:
+            self._set_bulk_prediction_locked(False)
+            self.btn_predict_bulk.setEnabled(True)
+            QMessageBox.warning(self, "Prediction failed", str(e))
 
     def _on_bulk_pred_progress(self, done: int, total: int):
         if total > 0:
@@ -6408,6 +6902,9 @@ class MainWindow(QMainWindow):
         self, preds: Dict[str, List[Tuple[float, float, float]]]
     ):
         self.btn_predict_bulk.setEnabled(True)
+        self._set_bulk_prediction_locked(False)
+        self._bulk_pred_worker = None
+        self._bulk_pred_thread = None
         self._clear_progress()
         self.statusBar().showMessage("Predictions cached.", 2000)
         if getattr(self, "_last_pred_backend", "yolo") == "sleap":
@@ -6447,6 +6944,9 @@ class MainWindow(QMainWindow):
 
     def _on_bulk_pred_failed(self, msg: str):
         self.btn_predict_bulk.setEnabled(True)
+        self._set_bulk_prediction_locked(False)
+        self._bulk_pred_worker = None
+        self._bulk_pred_thread = None
         self._clear_progress()
         self.statusBar().showMessage("Prediction failed.", 2000)
         if getattr(self, "_last_pred_backend", "yolo") == "sleap":

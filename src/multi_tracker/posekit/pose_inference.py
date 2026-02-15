@@ -437,6 +437,7 @@ def _run_pose_predict_subprocess(
         "    best=int(np.argmax(scores)) if len(scores)>0 else 0\n"
         "    pred_xy=xy[best]\n"
         "    pred_conf=conf[best] if conf is not None else np.zeros((pred_xy.shape[0],),dtype=np.float32)\n"
+        "    pred_conf=np.clip(np.asarray(pred_conf,dtype=np.float32),0.0,1.0)\n"
         "    pts=[]\n"
         "    for j in range(pred_xy.shape[0]):\n"
         "      c=float(pred_conf[j]) if j < len(pred_conf) else 0.0\n"

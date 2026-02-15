@@ -44,6 +44,7 @@ class TrackingWorker(QThread):
     histogram_data_signal = Signal(dict)
     stats_signal = Signal(dict)  # Real-time FPS/ETA stats
     warning_signal = Signal(str, str)  # (title, message) for UI warnings
+    pose_exported_model_resolved_signal = Signal(str)
 
     def __init__(
         self,
@@ -538,6 +539,8 @@ class TrackingWorker(QThread):
         self.individual_properties_cache_path = str(cache_path)
         params["INDIVIDUAL_PROPERTIES_ID"] = properties_id
         params["INDIVIDUAL_PROPERTIES_CACHE_PATH"] = str(cache_path)
+        if self._stop_requested:
+            return "", False
 
         if cache_path.exists():
             existing = IndividualPropertiesCache(str(cache_path), mode="r")
@@ -552,6 +555,10 @@ class TrackingWorker(QThread):
                         logger.info(
                             "Individual properties cache hit: %s", str(cache_path)
                         )
+                        self.progress_signal.emit(
+                            100,
+                            "Individual precompute cache hit: reusing existing properties.",
+                        )
                         return str(cache_path), True
             finally:
                 existing.close()
@@ -559,6 +566,10 @@ class TrackingWorker(QThread):
         logger.info("=" * 80)
         logger.info("PRECOMPUTE: Individual properties for filtered detections")
         logger.info("=" * 80)
+        self.progress_signal.emit(
+            0,
+            "Precompute: initializing pose runtime and validating model...",
+        )
 
         pose_model_path = str(params.get("POSE_MODEL_DIR", "")).strip()
         if not pose_model_path:
@@ -569,7 +580,34 @@ class TrackingWorker(QThread):
 
         from multi_tracker.core.identity.feature_runtime import create_pose_backend
 
+        runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "auto")).strip().lower()
+        backend_family = str(params.get("POSE_MODEL_TYPE", "yolo")).strip().lower()
+        runtime_device = (
+            str(params.get("POSE_SLEAP_DEVICE", "auto")).strip()
+            if backend_family == "sleap"
+            else str(params.get("YOLO_DEVICE", "auto")).strip()
+        )
+        self.progress_signal.emit(
+            0,
+            "Precompute: loading pose backend "
+            f"({backend_family}/{runtime_flavor} on {runtime_device})...",
+        )
         pose_backend = create_pose_backend(params, out_root=str(cache_path.parent))
+        if runtime_flavor.startswith("onnx") or runtime_flavor.startswith("tensorrt"):
+            try:
+                resolved_artifact = str(
+                    pose_backend.resolved_artifact_path()  # type: ignore[attr-defined]
+                    or ""
+                ).strip()
+            except Exception:
+                resolved_artifact = ""
+            if resolved_artifact:
+                params["POSE_EXPORTED_MODEL_PATH"] = resolved_artifact
+                self.pose_exported_model_resolved_signal.emit(resolved_artifact)
+        self.progress_signal.emit(
+            1,
+            "Precompute: pose backend ready, reading frames...",
+        )
 
         resize_f = float(params.get("RESIZE_FACTOR", 1.0))
         padding_fraction = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
@@ -596,8 +634,18 @@ class TrackingWorker(QThread):
         cache_writer = IndividualPropertiesCache(str(cache_path), mode="w")
         total_frames = max(1, end_frame - start_frame + 1)
         precompute_start_ts = time.time()
+        total_filtered_detections = 0
+        total_predicted_crops = 0
+        cancelled = False
+        self.progress_signal.emit(
+            1,
+            f"Precompute: processing {total_frames} frame(s) of filtered detections...",
+        )
         try:
             for rel_idx, frame_idx in enumerate(range(start_frame, end_frame + 1)):
+                if self._stop_requested:
+                    cancelled = True
+                    break
                 (
                     raw_meas,
                     raw_sizes,
@@ -645,6 +693,7 @@ class TrackingWorker(QThread):
                 pose_keypoints = []
 
                 if meas and filtered_obb_corners:
+                    total_filtered_detections += int(len(meas))
                     crops = []
                     crop_to_det = []
                     pose_outputs = [{} for _ in range(len(meas))]
@@ -660,6 +709,10 @@ class TrackingWorker(QThread):
                             crop_offsets[det_idx] = crop_offset
 
                     if crops:
+                        if self._stop_requested:
+                            cancelled = True
+                            break
+                        total_predicted_crops += int(len(crops))
                         pred_outputs = pose_backend.predict_crops(crops)
                         for crop_idx, det_idx in enumerate(crop_to_det):
                             if crop_idx < len(pred_outputs):
@@ -714,7 +767,7 @@ class TrackingWorker(QThread):
                     pct = int((processed_count * 100) / total_frames)
                     self.progress_signal.emit(
                         pct,
-                        "Precomputing individual properties: "
+                        "Precompute individual properties: "
                         f"{processed_count}/{total_frames} ",
                     )
                     self.stats_signal.emit(
@@ -725,6 +778,11 @@ class TrackingWorker(QThread):
                             "eta": eta,
                         }
                     )
+
+            if cancelled or self._stop_requested:
+                logger.info("Individual properties precompute cancelled.")
+                self.progress_signal.emit(0, "Precompute cancelled.")
+                return "", False
 
             cache_writer.save(
                 metadata={
@@ -741,6 +799,10 @@ class TrackingWorker(QThread):
                 }
             )
             logger.info("Individual properties cache saved: %s", str(cache_path))
+            self.progress_signal.emit(
+                100,
+                "Precompute complete: individual properties cache saved.",
+            )
         finally:
             cache_writer.close()
             pose_cap.release()
@@ -831,6 +893,8 @@ class TrackingWorker(QThread):
             batch_start_idx = frame_idx
 
             for _ in range(batch_size):
+                if self._stop_requested:
+                    break
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -856,6 +920,9 @@ class TrackingWorker(QThread):
             if not batch_frames:
                 break  # No more frames
 
+            if self._stop_requested:
+                break
+
             # Run batched detection
             batch_count += 1
             logger.info(
@@ -863,8 +930,35 @@ class TrackingWorker(QThread):
             )
 
             # Progress callback for within-batch updates
-            def progress_cb(current, total, msg):
-                pass  # Could add finer-grained progress here if needed
+            def progress_cb(
+                current,
+                total,
+                msg,
+                _batch_start=batch_start_idx,
+                _batch_num=batch_count,
+                _total_batches=total_batches,
+            ):
+                if self._stop_requested:
+                    return
+                if total <= 0:
+                    return
+                # Keep UI responsive without flooding signals.
+                if current != total and current % 10 != 0:
+                    return
+                batch_fraction = float(current) / float(total)
+                overall_processed = _batch_start + current
+                overall_pct = (
+                    int((overall_processed * 100) / total_frames)
+                    if total_frames > 0
+                    else 0
+                )
+                self.progress_signal.emit(
+                    overall_pct,
+                    "Detecting objects: "
+                    f"batch {_batch_num}/{_total_batches}, "
+                    f"within-batch {int(batch_fraction * 100)}% "
+                    f"({current}/{total})",
+                )
 
             batch_results = detector.detect_objects_batched(
                 batch_frames,

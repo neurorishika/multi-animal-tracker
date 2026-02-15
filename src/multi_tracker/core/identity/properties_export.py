@@ -166,7 +166,7 @@ def flatten_pose_keypoints_row(
         if idx < len(arr):
             row[x_col] = float(arr[idx, 0])
             row[y_col] = float(arr[idx, 1])
-            row[c_col] = float(arr[idx, 2])
+            row[c_col] = float(np.clip(arr[idx, 2], 0.0, 1.0))
         else:
             row[x_col] = np.nan
             row[y_col] = np.nan
@@ -212,8 +212,8 @@ def build_pose_lookup_dataframe(
                 {
                     "_pose_frame_id": int(frame_idx),
                     "_pose_detection_id": det_id_int,
-                    "PoseMeanConf": float(mean_conf[idx]),
-                    "PoseValidFraction": float(valid_fraction[idx]),
+                    "PoseMeanConf": float(np.clip(mean_conf[idx], 0.0, 1.0)),
+                    "PoseValidFraction": float(np.clip(valid_fraction[idx], 0.0, 1.0)),
                     "PoseNumValid": int(num_valid[idx]),
                     "PoseNumKeypoints": int(num_keypoints[idx]),
                     "_pose_keypoints": kpts,
