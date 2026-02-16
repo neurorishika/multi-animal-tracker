@@ -72,6 +72,14 @@ from ..core.post.processing import (
     process_trajectories,
     resolve_trajectories,
 )
+from ..core.runtime.compute_runtime import (
+    CANONICAL_RUNTIMES,
+    allowed_runtimes_for_pipelines,
+    derive_detection_runtime_settings,
+    derive_pose_runtime_settings,
+    infer_compute_runtime_from_legacy,
+    runtime_label,
+)
 from ..core.tracking.worker import TrackingWorker
 from ..data.csv_writer import CSVWriterThread
 from ..data.detection_cache import DetectionCache
@@ -81,7 +89,6 @@ from ..utils.gpu_utils import (
     ROCM_AVAILABLE,
     TENSORRT_AVAILABLE,
     TORCH_CUDA_AVAILABLE,
-    get_pose_runtime_options,
 )
 from .dialogs.train_yolo_dialog import TrainYoloDialog
 from .widgets.histograms import HistogramPanel
@@ -2353,6 +2360,19 @@ class MainWindow(QMainWindow):
             "How much should frames be downscaled before processing?", self.spin_resize
         )
 
+        self.combo_compute_runtime = QComboBox()
+        self.combo_compute_runtime.setToolTip(
+            "Global compute runtime for detection and pose.\n"
+            "Only runtimes compatible with all enabled pipelines are shown."
+        )
+        self.combo_compute_runtime.currentIndexChanged.connect(
+            self._on_runtime_context_changed
+        )
+        fl_sys.addRow(
+            "Which compute runtime should be used globally?",
+            self.combo_compute_runtime,
+        )
+
         self.check_save_confidence = QCheckBox("Save confidence metrics (slower)")
         self.check_save_confidence.setChecked(True)
         self.check_save_confidence.setToolTip(
@@ -2481,6 +2501,8 @@ class MainWindow(QMainWindow):
         form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
+        self._populate_compute_runtime_options(preferred="cpu")
+        self._on_runtime_context_changed()
 
     def setup_detection_ui(self: object) -> object:
         """Tab 2: Detection - Method, Image Proc, Algo specific."""
@@ -2514,7 +2536,7 @@ class MainWindow(QMainWindow):
             "Which detection method should be used?", self.combo_detection_method
         )
 
-        # Device selection (shared between both detection methods)
+        # Legacy device selection (hidden; derived from canonical runtime).
         self.combo_device = QComboBox()
         device_options = ["auto", "cpu"]
         device_tooltip_parts = [
@@ -2542,6 +2564,10 @@ class MainWindow(QMainWindow):
         self.combo_device.addItems(device_options)
         self.combo_device.setToolTip("\n".join(device_tooltip_parts))
         f_method.addRow("Which compute device should run detection?", self.combo_device)
+        device_label = f_method.labelForField(self.combo_device)
+        if device_label is not None:
+            device_label.setVisible(False)
+        self.combo_device.setVisible(False)
 
         l_method_outer.addLayout(f_method)
         vbox.addWidget(g_method)
@@ -3086,6 +3112,9 @@ class MainWindow(QMainWindow):
             "Larger = faster but uses more GPU memory.\n"
             "Typical values: 8-32 depending on GPU."
         )
+        self.spin_yolo_batch_size.valueChanged.connect(
+            self._on_yolo_manual_batch_size_changed
+        )
         self.lbl_yolo_batch_size = QLabel("Manual batch size")
         f_gpu.addRow(self.lbl_yolo_batch_size, self.spin_yolo_batch_size)
 
@@ -3093,6 +3122,7 @@ class MainWindow(QMainWindow):
         l_yolo.addWidget(self.g_gpu_accel)
 
         # Set initial visibility for TensorRT widgets
+        self.chk_enable_tensorrt.setVisible(False)
         self.spin_tensorrt_batch.setVisible(False)
         self.lbl_tensorrt_batch.setVisible(False)
 
@@ -3958,6 +3988,7 @@ class MainWindow(QMainWindow):
         self.chk_cleanup_temp_files.setToolTip(
             "Automatically delete temporary files after successful tracking:\n"
             "• Intermediate CSV files (*_forward.csv, *_backward.csv)\n"
+            "• Pose inference cache (posekit/ directory)\n"
             "Keeps only final merged/processed output files."
         )
         f_pp.addRow("", self.chk_cleanup_temp_files)
@@ -4906,6 +4937,7 @@ class MainWindow(QMainWindow):
         self.chk_enable_pose_extractor.toggled.connect(
             self._sync_video_pose_overlay_controls
         )
+        self.chk_enable_pose_extractor.toggled.connect(self._on_runtime_context_changed)
         fl_pose.addRow(self.chk_enable_pose_extractor)
 
         self.combo_pose_model_type = QComboBox()
@@ -4920,13 +4952,14 @@ class MainWindow(QMainWindow):
         self.combo_pose_runtime_flavor.setToolTip(
             "Pose runtime implementation.\n"
             "Auto/Native uses default backend runtime.\n"
-            "ONNX/TensorRT uses exported model path when provided."
+            "ONNX/TensorRT artifacts are exported and reused automatically."
         )
         self._populate_pose_runtime_flavor_options(backend="yolo")
         self.combo_pose_runtime_flavor.currentIndexChanged.connect(
             self._sync_pose_backend_ui
         )
         fl_pose.addRow("Pose runtime", self.combo_pose_runtime_flavor)
+        self._set_form_row_visible(fl_pose, self.combo_pose_runtime_flavor, False)
 
         h_pose_model = QHBoxLayout()
         self.line_pose_model_dir = QLineEdit()
@@ -4939,19 +4972,6 @@ class MainWindow(QMainWindow):
         h_pose_model.addWidget(self.line_pose_model_dir)
         h_pose_model.addWidget(self.btn_browse_pose_model_dir)
         fl_pose.addRow("Pose model path", h_pose_model)
-
-        h_pose_export = QHBoxLayout()
-        self.line_pose_exported_model_path = QLineEdit()
-        self.line_pose_exported_model_path.setPlaceholderText(
-            "Optional exported model path (.onnx/.engine or exported SLEAP dir)..."
-        )
-        self.btn_browse_pose_exported_model_path = QPushButton("Browse...")
-        self.btn_browse_pose_exported_model_path.clicked.connect(
-            self._select_pose_exported_model_path
-        )
-        h_pose_export.addWidget(self.line_pose_exported_model_path)
-        h_pose_export.addWidget(self.btn_browse_pose_exported_model_path)
-        fl_pose.addRow("Exported model path", h_pose_export)
 
         self.spin_pose_min_kpt_conf_valid = QDoubleSpinBox()
         self.spin_pose_min_kpt_conf_valid.setRange(0.0, 1.0)
@@ -5084,10 +5104,31 @@ class MainWindow(QMainWindow):
         self.pose_sleap_env_row_widget.setLayout(h_sleap_env)
         fl_pose.addRow("SLEAP env", self.pose_sleap_env_row_widget)
 
+        self.chk_sleap_experimental_features = QCheckBox("Allow experimental features")
+        self.chk_sleap_experimental_features.setChecked(False)
+        self.chk_sleap_experimental_features.setToolTip(
+            "Enable experimental SLEAP features (ONNX/TensorRT runtimes).\n"
+            "When disabled, ONNX/TensorRT runtime selections will revert to native runtime.\n"
+            "Experimental features may have stability or accuracy issues."
+        )
+        self.chk_sleap_experimental_features.stateChanged.connect(
+            self._on_sleap_experimental_toggled
+        )
+        self.pose_sleap_experimental_row_widget = QWidget()
+        sleap_exp_layout = QHBoxLayout()
+        sleap_exp_layout.setContentsMargins(0, 0, 0, 0)
+        sleap_exp_layout.addWidget(self.chk_sleap_experimental_features)
+        sleap_exp_layout.addStretch()
+        self.pose_sleap_experimental_row_widget.setLayout(sleap_exp_layout)
+        fl_pose.addRow("", self.pose_sleap_experimental_row_widget)
+
         vl_pose.addLayout(fl_pose)
         form.addWidget(self.g_pose_runtime)
 
         self._refresh_pose_sleap_envs()
+        self._set_form_row_visible(
+            fl_pose, self.pose_sleap_experimental_row_widget, False
+        )
 
         form.addStretch()
         scroll.setWidget(content)
@@ -5732,28 +5773,6 @@ class MainWindow(QMainWindow):
             return None
         return make_pose_model_path_relative(str(dest_path))
 
-    def _select_pose_exported_model_path(self):
-        """Select optional exported pose model path for ONNX/TensorRT runtimes."""
-        backend = self.combo_pose_model_type.currentText().strip().lower()
-        start = self.line_pose_exported_model_path.text().strip() or str(Path.home())
-
-        if backend == "sleap":
-            selected = QFileDialog.getExistingDirectory(
-                self, "Select Exported SLEAP Model Directory", start
-            )
-            if selected:
-                self.line_pose_exported_model_path.setText(selected)
-            return
-
-        selected, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Exported YOLO Model",
-            start,
-            "Exported Models (*.onnx *.engine);;All Files (*)",
-        )
-        if selected:
-            self.line_pose_exported_model_path.setText(selected)
-
     def _select_pose_skeleton_file(self):
         """Select pose skeleton JSON file."""
         start = self.line_pose_skeleton_file.text().strip() or str(Path.home())
@@ -6022,6 +6041,39 @@ class MainWindow(QMainWindow):
             return "sleap"
         return txt
 
+    def _sleap_experimental_features_enabled(self):
+        """Return True if SLEAP experimental features (ONNX/TensorRT) are allowed."""
+        if not hasattr(self, "chk_sleap_experimental_features"):
+            return False
+        return self.chk_sleap_experimental_features.isChecked()
+
+    def _on_sleap_experimental_toggled(self):
+        """Handle experimental features checkbox toggle."""
+        if not hasattr(self, "combo_pose_runtime_flavor"):
+            return
+        # Refresh runtime options to show warning if needed
+        backend = (
+            self.combo_pose_model_type.currentText().strip().lower()
+            if hasattr(self, "combo_pose_model_type")
+            else "yolo"
+        )
+        if backend == "sleap":
+            current_flavor = self._selected_pose_runtime_flavor()
+            if (
+                current_flavor in ("onnx", "tensorrt")
+                and not self._sleap_experimental_features_enabled()
+            ):
+                # Show warning that runtime will revert to native
+                from PyQt5.QtWidgets import QMessageBox
+
+                QMessageBox.warning(
+                    self,
+                    "Experimental Features Disabled",
+                    f"SLEAP {current_flavor.upper()} runtime is experimental.\\n"
+                    "With experimental features disabled, the runtime will revert to native.\\n\\n"
+                    "To use ONNX/TensorRT for SLEAP, enable experimental features.",
+                )
+
     def _populate_pose_sleap_device_options(self):
         """Populate SLEAP device options using gpu_utils availability flags."""
         if not hasattr(self, "combo_pose_sleap_device"):
@@ -6040,8 +6092,109 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.combo_pose_sleap_device.setCurrentIndex(idx)
 
+    def _runtime_pipelines_for_current_ui(self):
+        pipelines = []
+        if self._is_yolo_detection_mode():
+            pipelines.append("yolo_obb_detection")
+        if self._is_pose_inference_enabled():
+            backend = self.combo_pose_model_type.currentText().strip().lower()
+            if backend == "sleap":
+                pipelines.append("sleap_pose")
+            else:
+                pipelines.append("yolo_pose")
+        return pipelines
+
+    def _compute_runtime_options_for_current_ui(self):
+        allowed = allowed_runtimes_for_pipelines(
+            self._runtime_pipelines_for_current_ui()
+        )
+        if not allowed:
+            allowed = ["cpu"]
+        return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
+
+    def _populate_compute_runtime_options(self, preferred: str | None = None):
+        if not hasattr(self, "combo_compute_runtime"):
+            return
+        combo = self.combo_compute_runtime
+        selected = (
+            str(preferred or self._selected_compute_runtime() or "cpu").strip().lower()
+        )
+        options = self._compute_runtime_options_for_current_ui()
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = values[0] if values else "cpu"
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _selected_compute_runtime(self) -> str:
+        if not hasattr(self, "combo_compute_runtime"):
+            return "cpu"
+        data = self.combo_compute_runtime.currentData()
+        if data:
+            return str(data).strip().lower()
+        txt = self.combo_compute_runtime.currentText().strip().lower()
+        if txt in CANONICAL_RUNTIMES:
+            return txt
+        return "cpu"
+
+    def _runtime_requires_fixed_yolo_batch(self, runtime: str | None = None) -> bool:
+        rt = str(runtime or self._selected_compute_runtime() or "").strip().lower()
+        return rt == "tensorrt" or rt.startswith("onnx")
+
+    def _on_runtime_context_changed(self, *_args):
+        previous = self._selected_compute_runtime()
+        self._populate_compute_runtime_options(preferred=previous)
+        selected_runtime = self._selected_compute_runtime()
+        # Keep hidden legacy controls synchronized for compatibility paths.
+        derived = derive_detection_runtime_settings(selected_runtime)
+        if hasattr(self, "combo_device"):
+            idx = self.combo_device.findText(
+                str(derived.get("yolo_device", "cpu")), Qt.MatchStartsWith
+            )
+            if idx >= 0:
+                self.combo_device.setCurrentIndex(idx)
+        if hasattr(self, "chk_enable_tensorrt"):
+            self.chk_enable_tensorrt.setChecked(
+                bool(derived.get("enable_tensorrt", False))
+            )
+        if (
+            self._runtime_requires_fixed_yolo_batch(selected_runtime)
+            and hasattr(self, "combo_yolo_batch_mode")
+            and hasattr(self, "spin_yolo_batch_size")
+            and hasattr(self, "chk_enable_yolo_batching")
+        ):
+            self.chk_enable_yolo_batching.setChecked(True)
+            self.chk_enable_yolo_batching.setEnabled(False)
+            self.combo_yolo_batch_mode.setCurrentIndex(1)  # Manual
+            self.combo_yolo_batch_mode.setEnabled(False)
+            self.spin_yolo_batch_size.setEnabled(True)
+            if hasattr(self, "spin_tensorrt_batch"):
+                self.spin_tensorrt_batch.setValue(self.spin_yolo_batch_size.value())
+        elif hasattr(self, "combo_yolo_batch_mode") and hasattr(
+            self, "chk_enable_yolo_batching"
+        ):
+            self.chk_enable_yolo_batching.setEnabled(True)
+            self.combo_yolo_batch_mode.setEnabled(
+                self.chk_enable_yolo_batching.isChecked()
+            )
+            self._on_yolo_batch_mode_changed(self.combo_yolo_batch_mode.currentIndex())
+        if hasattr(self, "combo_pose_model_type"):
+            self._populate_pose_runtime_flavor_options(
+                backend=self.combo_pose_model_type.currentText().strip().lower(),
+                preferred=self._selected_pose_runtime_flavor(),
+            )
+
     def _pose_runtime_options_for_backend(self, backend: str):
-        return get_pose_runtime_options(backend)
+        derived = derive_pose_runtime_settings(
+            self._selected_compute_runtime(), backend_family=backend
+        )
+        flavor = str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
+        return [(runtime_label(self._selected_compute_runtime()), flavor)]
 
     def _populate_pose_runtime_flavor_options(
         self, backend: str, preferred: str | None = None
@@ -6057,7 +6210,7 @@ class MainWindow(QMainWindow):
         options = self._pose_runtime_options_for_backend(backend)
         values = [value for _label, value in options]
         if selected not in values:
-            selected = "auto"
+            selected = values[0] if values else "cpu"
         combo.blockSignals(True)
         combo.clear()
         for label, value in options:
@@ -6067,32 +6220,15 @@ class MainWindow(QMainWindow):
         combo.blockSignals(False)
 
     def _selected_pose_runtime_flavor(self) -> str:
-        if not hasattr(self, "combo_pose_runtime_flavor"):
-            return "auto"
-        data = self.combo_pose_runtime_flavor.currentData()
-        if data:
-            return str(data).strip().lower()
-        txt = self.combo_pose_runtime_flavor.currentText().strip().lower()
-        txt_norm = txt.replace(" ", "_").replace("-", "_")
-        if txt_norm.startswith("onnx") and "rocm" in txt_norm:
-            return "onnx_rocm"
-        if txt_norm.startswith("onnx") and "cuda" in txt_norm:
-            return "onnx_cuda"
-        if txt_norm.startswith("onnx"):
-            return "onnx_cpu"
-        if txt_norm.startswith("tensorrt") and "cuda" in txt_norm:
-            return "tensorrt_cuda"
-        if txt_norm.startswith("tensorrt"):
-            return "tensorrt_cuda"
-        if txt_norm.startswith("native") and "mps" in txt_norm:
-            return "mps"
-        if txt_norm.startswith("native") and "cuda" in txt_norm:
-            return "cuda"
-        if txt_norm.startswith("native") and "rocm" in txt_norm:
-            return "rocm"
-        if txt_norm.startswith("native"):
-            return "cpu"
-        return "auto"
+        backend = (
+            self.combo_pose_model_type.currentText().strip().lower()
+            if hasattr(self, "combo_pose_model_type")
+            else "yolo"
+        )
+        derived = derive_pose_runtime_settings(
+            self._selected_compute_runtime(), backend_family=backend
+        )
+        return str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
 
     def _set_form_row_visible(self, form_layout, field_widget, visible: bool):
         """Show/hide a QFormLayout row by field widget."""
@@ -6110,35 +6246,20 @@ class MainWindow(QMainWindow):
         backend = self.combo_pose_model_type.currentText().strip().lower()
         self._populate_pose_runtime_flavor_options(backend=backend)
         is_sleap = backend == "sleap"
-        runtime_flavor = self._selected_pose_runtime_flavor()
-        uses_exported_model = runtime_flavor.startswith(
-            "onnx"
-        ) or runtime_flavor.startswith("tensorrt")
         if hasattr(self, "form_pose_runtime") and hasattr(
             self, "pose_sleap_env_row_widget"
         ):
             self._set_form_row_visible(
                 self.form_pose_runtime, self.pose_sleap_env_row_widget, is_sleap
             )
-        if hasattr(self, "line_pose_exported_model_path"):
-            self.line_pose_exported_model_path.setVisible(True)
-            self.btn_browse_pose_exported_model_path.setVisible(True)
-            if is_sleap:
-                self.line_pose_exported_model_path.setPlaceholderText(
-                    "Optional exported SLEAP model directory for ONNX/TensorRT."
-                )
-            else:
-                self.line_pose_exported_model_path.setPlaceholderText(
-                    "Optional exported YOLO model (.onnx/.engine)."
-                )
-            if not uses_exported_model:
-                self.line_pose_exported_model_path.setToolTip(
-                    "Used when runtime is ONNX or TensorRT."
-                )
-            else:
-                self.line_pose_exported_model_path.setToolTip(
-                    "Exported model path used for selected runtime flavor."
-                )
+        if hasattr(self, "form_pose_runtime") and hasattr(
+            self, "pose_sleap_experimental_row_widget"
+        ):
+            self._set_form_row_visible(
+                self.form_pose_runtime,
+                self.pose_sleap_experimental_row_widget,
+                is_sleap,
+            )
         if hasattr(self, "line_pose_model_dir"):
             if is_sleap:
                 self.line_pose_model_dir.setPlaceholderText(
@@ -6154,6 +6275,7 @@ class MainWindow(QMainWindow):
                 backend=backend,
                 update_line=True,
             )
+        self._on_runtime_context_changed()
 
     def _is_pose_inference_enabled(self) -> bool:
         """Return whether pose inference is actively enabled for the run."""
@@ -6293,6 +6415,7 @@ class MainWindow(QMainWindow):
         if hasattr(self, "lbl_individual_info"):
             self.lbl_individual_info.setVisible(save_enabled)
         self._sync_video_pose_overlay_controls()
+        self._on_runtime_context_changed()
 
     def _select_individual_background_color(self):
         """Open color picker for individual dataset background color."""
@@ -6395,6 +6518,20 @@ class MainWindow(QMainWindow):
 
     def _on_yolo_batching_toggled(self, state):
         """Enable/disable YOLO batching controls based on checkbox."""
+        if self._runtime_requires_fixed_yolo_batch():
+            # TensorRT/ONNX runtimes require explicit fixed batch size.
+            if not self.chk_enable_yolo_batching.isChecked():
+                self.chk_enable_yolo_batching.setChecked(True)
+            self.chk_enable_yolo_batching.setEnabled(False)
+            self.combo_yolo_batch_mode.setVisible(True)
+            self.lbl_yolo_batch_mode.setVisible(True)
+            self.spin_yolo_batch_size.setVisible(True)
+            self.lbl_yolo_batch_size.setVisible(True)
+            self.combo_yolo_batch_mode.setCurrentIndex(1)
+            self.combo_yolo_batch_mode.setEnabled(False)
+            self.spin_yolo_batch_size.setEnabled(True)
+            return
+
         # Directly check checkbox state for reliability
         enabled = self.chk_enable_yolo_batching.isChecked()
 
@@ -6410,8 +6547,21 @@ class MainWindow(QMainWindow):
         manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
         self.spin_yolo_batch_size.setEnabled(enabled and manual_mode)
 
+    def _on_yolo_manual_batch_size_changed(self, value: int):
+        """Keep legacy fixed-batch field synchronized for fixed runtimes."""
+        if self._runtime_requires_fixed_yolo_batch() and hasattr(
+            self, "spin_tensorrt_batch"
+        ):
+            self.spin_tensorrt_batch.setValue(int(value))
+
     def _on_yolo_batch_mode_changed(self, index):
         """Show/hide manual batch size based on selected mode."""
+        if self._runtime_requires_fixed_yolo_batch():
+            # TensorRT/ONNX runtimes require explicit fixed batch size.
+            if self.combo_yolo_batch_mode.currentIndex() != 1:
+                self.combo_yolo_batch_mode.setCurrentIndex(1)
+            self.spin_yolo_batch_size.setEnabled(True)
+            return
         # index 0 = Auto, index 1 = Manual
         is_manual = index == 1
         batching_enabled = self.chk_enable_yolo_batching.isChecked()
@@ -6419,6 +6569,13 @@ class MainWindow(QMainWindow):
 
     def _on_tensorrt_toggled(self, state):
         """Enable/disable TensorRT batch size control based on checkbox."""
+        # TensorRT toggles are now derived from canonical compute runtime.
+        # Keep legacy widgets hidden from UI.
+        if not self.chk_enable_tensorrt.isVisible():
+            self.spin_tensorrt_batch.setVisible(False)
+            self.lbl_tensorrt_batch.setVisible(False)
+            return
+
         # Directly check checkbox state for reliability
         enabled = self.chk_enable_tensorrt.isChecked()
 
@@ -6486,6 +6643,7 @@ class MainWindow(QMainWindow):
         # Refresh preview to show correct mode
         self._update_preview_display()
         self.on_detection_method_changed(index)
+        self._on_runtime_context_changed()
 
     def select_file(self: object) -> object:
         """Select video file via file dialog."""
@@ -7475,6 +7633,16 @@ class MainWindow(QMainWindow):
                     min_size_px2 = 0
                     max_size_px2 = float("inf")
 
+                runtime_detection = derive_detection_runtime_settings(
+                    self._selected_compute_runtime()
+                )
+                trt_batch_size = (
+                    self.spin_yolo_batch_size.value()
+                    if self._runtime_requires_fixed_yolo_batch(
+                        self._selected_compute_runtime()
+                    )
+                    else self.spin_tensorrt_batch.value()
+                )
                 yolo_params = {
                     "YOLO_MODEL_PATH": resolve_model_path(
                         self._get_selected_yolo_model_path()
@@ -7490,15 +7658,11 @@ class MainWindow(QMainWindow):
                         if self.line_yolo_classes.text().strip()
                         else None
                     ),
-                    "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
-                    "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[
-                        0
-                    ]
-                    != "cpu",
-                    # Disable TensorRT for preview - it's optimized for batch processing
-                    # Preview processes one frame at a time, so TensorRT overhead isn't worth it
-                    "ENABLE_TENSORRT": False,
-                    "TENSORRT_MAX_BATCH_SIZE": self.spin_tensorrt_batch.value(),
+                    "YOLO_DEVICE": runtime_detection["yolo_device"],
+                    "ENABLE_GPU_BACKGROUND": runtime_detection["enable_gpu_background"],
+                    "ENABLE_TENSORRT": runtime_detection["enable_tensorrt"],
+                    "ENABLE_ONNX_RUNTIME": runtime_detection["enable_onnx_runtime"],
+                    "TENSORRT_MAX_BATCH_SIZE": trt_batch_size,
                     "MAX_TARGETS": self.spin_max_targets.value(),
                     "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
                     "ENABLE_SIZE_FILTERING": use_size_filtering,  # Use the user's choice
@@ -9194,18 +9358,14 @@ class MainWindow(QMainWindow):
         path = str(artifact_path or "").strip()
         if not path:
             return
-        if hasattr(self, "line_pose_exported_model_path"):
-            current = self.line_pose_exported_model_path.text().strip()
-            if current == path:
-                return
-            self.line_pose_exported_model_path.setText(path)
         logger.info("Pose runtime resolved exported model artifact: %s", path)
         try:
-            # Persist immediately so subsequent runs reuse the same artifact path.
-            self.save_config()
+            # Persist run metadata immediately.
+            self.save_config(prompt_if_exists=False)
         except Exception:
             logger.debug(
-                "Failed to persist resolved pose exported model path.", exc_info=True
+                "Failed to persist resolved pose runtime artifact metadata.",
+                exc_info=True,
             )
 
     @Slot(str, str)
@@ -10442,10 +10602,12 @@ class MainWindow(QMainWindow):
         try:
             with_pose_df = trajectories_df
             if cache_available:
+                min_valid_conf = float(self.spin_pose_min_kpt_conf_valid.value())
                 with_pose_df = augment_trajectories_with_pose_cache(
                     with_pose_df,
                     cache_path,
                     ignore_keypoints=self._parse_pose_ignore_keypoints(),
+                    min_valid_conf=min_valid_conf,
                 )
             if interp_available:
                 interp_pose_df = pd.read_csv(interp_pose_path)
@@ -10969,6 +11131,7 @@ class MainWindow(QMainWindow):
                 "DETECTION_METHOD",
                 "RESIZE_FACTOR",
                 "MAX_TARGETS",
+                "COMPUTE_RUNTIME",
             )
 
             if detection_method == "yolo_obb":
@@ -10993,6 +11156,8 @@ class MainWindow(QMainWindow):
                     "common": extract_hash_params(common_detection_keys),
                     "yolo": extract_hash_params(yolo_inference_keys),
                     "model": normalize_for_hash(model_fingerprint),
+                    # Bump when raw detection extraction/filtering semantics change.
+                    "raw_detection_cache_version": 3,
                 }
                 # Class order should not change cache identity.
                 classes = cache_params["yolo"].get("YOLO_TARGET_CLASSES")
@@ -11207,6 +11372,17 @@ class MainWindow(QMainWindow):
 
         individual_pipeline_enabled = self._is_individual_pipeline_enabled()
         individual_image_save_enabled = self._is_individual_image_save_enabled()
+        compute_runtime = self._selected_compute_runtime()
+        runtime_detection = derive_detection_runtime_settings(compute_runtime)
+        trt_batch_size = (
+            self.spin_yolo_batch_size.value()
+            if self._runtime_requires_fixed_yolo_batch(compute_runtime)
+            else self.spin_tensorrt_batch.value()
+        )
+        pose_backend_family = self.combo_pose_model_type.currentText().strip().lower()
+        runtime_pose = derive_pose_runtime_settings(
+            compute_runtime, backend_family=pose_backend_family
+        )
 
         return {
             "ADVANCED_CONFIG": advanced_config,  # Include advanced config for batch optimization
@@ -11221,11 +11397,12 @@ class MainWindow(QMainWindow):
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
             "USE_CUSTOM_OBB_IOU_FILTERING": True,
             "YOLO_TARGET_CLASSES": yolo_cls,
-            "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
-            "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[0]
-            != "cpu",
-            "ENABLE_TENSORRT": self.chk_enable_tensorrt.isChecked(),
-            "TENSORRT_MAX_BATCH_SIZE": self.spin_tensorrt_batch.value(),
+            "COMPUTE_RUNTIME": compute_runtime,
+            "YOLO_DEVICE": runtime_detection["yolo_device"],
+            "ENABLE_GPU_BACKGROUND": runtime_detection["enable_gpu_background"],
+            "ENABLE_TENSORRT": runtime_detection["enable_tensorrt"],
+            "ENABLE_ONNX_RUNTIME": runtime_detection["enable_onnx_runtime"],
+            "TENSORRT_MAX_BATCH_SIZE": trt_batch_size,
             "MAX_TARGETS": N,
             "THRESHOLD_VALUE": self.spin_threshold.value(),
             "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
@@ -11356,8 +11533,8 @@ class MainWindow(QMainWindow):
                 ),
                 backend=self.combo_pose_model_type.currentText().strip().lower(),
             ),
-            "POSE_RUNTIME_FLAVOR": self._selected_pose_runtime_flavor(),
-            "POSE_EXPORTED_MODEL_PATH": self.line_pose_exported_model_path.text().strip(),
+            "POSE_RUNTIME_FLAVOR": runtime_pose["pose_runtime_flavor"],
+            "POSE_EXPORTED_MODEL_PATH": "",
             "POSE_MIN_KPT_CONF_VALID": self.spin_pose_min_kpt_conf_valid.value(),
             "POSE_SKELETON_FILE": self.line_pose_skeleton_file.text().strip(),
             "POSE_IGNORE_KEYPOINTS": self._parse_pose_ignore_keypoints(),
@@ -11366,9 +11543,10 @@ class MainWindow(QMainWindow):
             "POSE_YOLO_BATCH": self.spin_pose_batch.value(),
             "POSE_BATCH_SIZE": self.spin_pose_batch.value(),
             "POSE_SLEAP_ENV": self._selected_pose_sleap_env(),
-            "POSE_SLEAP_DEVICE": "auto",
+            "POSE_SLEAP_DEVICE": runtime_pose["pose_sleap_device"],
             "POSE_SLEAP_BATCH": self.spin_pose_batch.value(),
             "POSE_SLEAP_MAX_INSTANCES": 1,
+            "POSE_SLEAP_EXPERIMENTAL_FEATURES": self._sleap_experimental_features_enabled(),
             "INDIVIDUAL_PROPERTIES_CACHE_PATH": str(
                 self.current_individual_properties_cache_path or ""
             ).strip(),
@@ -11613,24 +11791,45 @@ class MainWindow(QMainWindow):
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
 
-            # Device selection (skip in preset mode)
-            if not preset_mode:
-                yolo_dev = get_cfg("yolo_device", default="auto")
-                idx = self.combo_device.findText(yolo_dev, Qt.MatchStartsWith)
-                if idx >= 0:
-                    self.combo_device.setCurrentIndex(idx)
-
-            # TensorRT
-            self.chk_enable_tensorrt.setChecked(
-                get_cfg("enable_tensorrt", default=False)
+            compute_runtime_cfg = (
+                str(
+                    get_cfg(
+                        "compute_runtime",
+                        default=infer_compute_runtime_from_legacy(
+                            yolo_device=str(get_cfg("yolo_device", default="auto")),
+                            enable_tensorrt=bool(
+                                get_cfg("enable_tensorrt", default=False)
+                            ),
+                            pose_runtime_flavor=str(
+                                get_cfg("pose_runtime_flavor", default="auto")
+                            ),
+                        ),
+                    )
+                )
+                .strip()
+                .lower()
             )
+            self._populate_compute_runtime_options(preferred=compute_runtime_cfg)
+            self._on_runtime_context_changed()
+
+            # TensorRT batch size is still configurable (runtime-derived usage).
             self.spin_tensorrt_batch.setValue(
                 get_cfg("tensorrt_max_batch_size", default=16)
             )
-            # Update TensorRT batch spinner state based on checkbox
-            tensorrt_enabled = self.chk_enable_tensorrt.isChecked()
-            self.spin_tensorrt_batch.setEnabled(tensorrt_enabled)
-            self.lbl_tensorrt_batch.setEnabled(tensorrt_enabled)
+            self.spin_tensorrt_batch.setEnabled(
+                bool(
+                    derive_detection_runtime_settings(self._selected_compute_runtime())[
+                        "enable_tensorrt"
+                    ]
+                )
+            )
+            self.lbl_tensorrt_batch.setEnabled(
+                bool(
+                    derive_detection_runtime_settings(self._selected_compute_runtime())[
+                        "enable_tensorrt"
+                    ]
+                )
+            )
 
             # YOLO Batching settings
             self.chk_enable_yolo_batching.setChecked(
@@ -11641,11 +11840,8 @@ class MainWindow(QMainWindow):
             self.spin_yolo_batch_size.setValue(
                 get_cfg("yolo_manual_batch_size", default=16)
             )
-            # Update spinner enabled state based on loaded checkbox and combo box values
-            batching_enabled = self.chk_enable_yolo_batching.isChecked()
-            is_manual = self.combo_yolo_batch_mode.currentIndex() == 1
-            self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
-            self.combo_yolo_batch_mode.setEnabled(batching_enabled)
+            # Re-apply runtime-derived constraints (e.g., TensorRT => manual batch mode).
+            self._on_runtime_context_changed()
 
             # === CORE TRACKING ===
             self.spin_max_targets.setValue(get_cfg("max_targets", default=4))
@@ -12042,15 +12238,13 @@ class MainWindow(QMainWindow):
                 backend=self.combo_pose_model_type.currentText().strip().lower(),
                 update_line=True,
             )
-            pose_runtime_flavor = (
-                str(get_cfg("pose_runtime_flavor", default="auto")).strip().lower()
-            )
+            pose_runtime_flavor = derive_pose_runtime_settings(
+                self._selected_compute_runtime(),
+                backend_family=self.combo_pose_model_type.currentText().strip().lower(),
+            )["pose_runtime_flavor"]
             self._populate_pose_runtime_flavor_options(
                 backend=self.combo_pose_model_type.currentText().strip().lower(),
                 preferred=pose_runtime_flavor,
-            )
-            self.line_pose_exported_model_path.setText(
-                get_cfg("pose_exported_model_path", default="")
             )
             self.spin_pose_min_kpt_conf_valid.setValue(
                 get_cfg("pose_min_kpt_conf_valid", default=0.2)
@@ -12072,6 +12266,10 @@ class MainWindow(QMainWindow):
                 get_cfg("pose_sleap_env", default="sleap")
             )
             self._refresh_pose_sleap_envs()
+            if hasattr(self, "chk_sleap_experimental_features"):
+                self.chk_sleap_experimental_features.setChecked(
+                    get_cfg("pose_sleap_experimental_features", default=False)
+                )
             shared_pose_batch = int(
                 get_cfg(
                     "pose_batch_size",
@@ -12156,6 +12354,7 @@ class MainWindow(QMainWindow):
         preset_path: object = None,
         preset_name: object = None,
         preset_description: object = None,
+        prompt_if_exists: bool = True,
     ) -> object:
         """Save current configuration to JSON file.
 
@@ -12164,6 +12363,7 @@ class MainWindow(QMainWindow):
             preset_path: If provided, save directly to this path without prompting
             preset_name: Name for the preset (only used in preset_mode)
             preset_description: Description for the preset (only used in preset_mode)
+            prompt_if_exists: If False, overwrite default config path without interactive replace dialog.
 
         Returns:
             bool: True if config was saved successfully, False if cancelled or failed
@@ -12212,6 +12412,12 @@ class MainWindow(QMainWindow):
                     ),
                 }
             )
+
+        compute_runtime = self._selected_compute_runtime()
+        pose_runtime_derived = derive_pose_runtime_settings(
+            compute_runtime,
+            backend_family=self.combo_pose_model_type.currentText().strip().lower(),
+        )
 
         cfg.update(
             {
@@ -12272,16 +12478,22 @@ class MainWindow(QMainWindow):
             cfg["yolo_model_info"] = yolo_meta.get("model_info", "")
             cfg["yolo_model_added_at"] = yolo_meta.get("added_at", "")
 
-        # === DEVICE-SPECIFIC SETTINGS ===
-        # Skip device selection when saving as preset
+        # === COMPUTE RUNTIME ===
+        runtime_detection = derive_detection_runtime_settings(compute_runtime)
+        cfg["compute_runtime"] = compute_runtime
+        # Keep legacy fields writable for backward compatibility.
         if not preset_mode:
-            cfg["yolo_device"] = self.combo_device.currentText().split(" ")[0]
+            cfg["yolo_device"] = runtime_detection["yolo_device"]
 
         cfg.update(
             {
                 # TensorRT
-                "enable_tensorrt": self.chk_enable_tensorrt.isChecked(),
-                "tensorrt_max_batch_size": self.spin_tensorrt_batch.value(),
+                "enable_tensorrt": runtime_detection["enable_tensorrt"],
+                "tensorrt_max_batch_size": (
+                    self.spin_yolo_batch_size.value()
+                    if self._runtime_requires_fixed_yolo_batch(compute_runtime)
+                    else self.spin_tensorrt_batch.value()
+                ),
                 # YOLO Batching
                 "enable_yolo_batching": self.chk_enable_yolo_batching.isChecked(),
                 "yolo_batch_size_mode": (
@@ -12458,8 +12670,8 @@ class MainWindow(QMainWindow):
                 "pose_sleap_model_dir": make_pose_model_path_relative(
                     self._pose_model_path_for_backend("sleap")
                 ),
-                "pose_runtime_flavor": self._selected_pose_runtime_flavor(),
-                "pose_exported_model_path": self.line_pose_exported_model_path.text().strip(),
+                "pose_runtime_flavor": pose_runtime_derived["pose_runtime_flavor"],
+                "pose_exported_model_path": "",
                 "pose_min_kpt_conf_valid": self.spin_pose_min_kpt_conf_valid.value(),
                 "pose_skeleton_file": self.line_pose_skeleton_file.text().strip(),
                 "pose_ignore_keypoints": self._parse_pose_ignore_keypoints(),
@@ -12468,9 +12680,10 @@ class MainWindow(QMainWindow):
                 "pose_batch_size": self.spin_pose_batch.value(),
                 "pose_yolo_batch": self.spin_pose_batch.value(),
                 "pose_sleap_env": self._selected_pose_sleap_env(),
-                "pose_sleap_device": "auto",
+                "pose_sleap_device": pose_runtime_derived["pose_sleap_device"],
                 "pose_sleap_batch": self.spin_pose_batch.value(),
                 "pose_sleap_max_instances": 1,
+                "pose_sleap_experimental_features": self._sleap_experimental_features_enabled(),
                 # === REAL-TIME INDIVIDUAL DATASET ===
                 "enable_individual_dataset": self._is_individual_image_save_enabled(),
                 "enable_individual_image_save": self._is_individual_image_save_enabled(),
@@ -12528,7 +12741,7 @@ class MainWindow(QMainWindow):
         config_path = None
 
         # If default path exists, ask user whether to replace or save elsewhere
-        if default_path and os.path.exists(default_path):
+        if default_path and os.path.exists(default_path) and prompt_if_exists:
             msg = QMessageBox()
             msg.setIcon(QMessageBox.Question)
             msg.setWindowTitle("Configuration File Exists")
@@ -12903,6 +13116,24 @@ class MainWindow(QMainWindow):
 
         # Clear the list after cleanup attempt
         self.temporary_files.clear()
+
+        # Also clean up posekit directories if they exist
+        params = self.get_parameters_dict()
+        output_dir = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
+        if output_dir and os.path.exists(output_dir):
+            posekit_dir = os.path.join(output_dir, "posekit")
+            if os.path.exists(posekit_dir) and os.path.isdir(posekit_dir):
+                try:
+                    import shutil
+
+                    shutil.rmtree(posekit_dir)
+                    logger.info(f"Removed posekit directory: {posekit_dir}")
+                    cleaned.append("posekit/")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to remove posekit directory {posekit_dir}: {e}"
+                    )
+                    failed.append("posekit/")
 
         if cleaned:
             logger.info(

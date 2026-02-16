@@ -178,14 +178,23 @@ def build_pose_lookup_dataframe(
     cache: IndividualPropertiesCache,
     keypoint_names: Optional[Sequence[str]] = None,
     ignore_keypoints: Any = None,
+    min_valid_conf: float = 0.2,
 ) -> pd.DataFrame:
-    """Flatten cache entries into frame+detection keyed wide pose rows."""
+    """Flatten cache entries into frame+detection keyed wide pose rows.
+
+    Args:
+        cache: Cache to read from
+        keypoint_names: Optional keypoint names for labeling
+        ignore_keypoints: Keypoints to ignore
+        min_valid_conf: Minimum confidence threshold for keypoint validity
+    """
     entries: List[Dict[str, Any]] = []
     max_keypoints = 0
     ignore_indices = _resolve_ignored_keypoint_indices(ignore_keypoints, keypoint_names)
 
     for frame_idx in cache.get_cached_frames():
-        frame = cache.get_frame(int(frame_idx))
+        # Pass min_valid_conf to compute stats on-demand
+        frame = cache.get_frame(int(frame_idx), min_valid_conf=min_valid_conf)
         ids = frame.get("detection_ids", [])
         mean_conf = frame.get("pose_mean_conf", [])
         valid_fraction = frame.get("pose_valid_fraction", [])
@@ -319,8 +328,16 @@ def augment_trajectories_with_pose_cache(
     trajectories_df: pd.DataFrame,
     cache_path: str,
     ignore_keypoints: Any = None,
+    min_valid_conf: float = 0.2,
 ) -> pd.DataFrame:
-    """Load properties cache and merge wide pose columns into trajectory rows."""
+    """Load properties cache and merge wide pose columns into trajectory rows.
+
+    Args:
+        trajectories_df: Trajectories dataframe to augment
+        cache_path: Path to individual properties cache
+        ignore_keypoints: Keypoints to ignore
+        min_valid_conf: Minimum confidence threshold for keypoint validity
+    """
     cache = IndividualPropertiesCache(cache_path, mode="r")
     try:
         if not cache.is_compatible():
@@ -334,6 +351,7 @@ def augment_trajectories_with_pose_cache(
             cache,
             keypoint_names=names,
             ignore_keypoints=ignore_keypoints,
+            min_valid_conf=min_valid_conf,
         )
     finally:
         cache.close()

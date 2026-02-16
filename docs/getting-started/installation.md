@@ -40,6 +40,12 @@ python -c "from multi_tracker.app.launcher import parse_arguments; print('ok')"
 python -c "from multi_tracker.utils.gpu_utils import log_device_info; log_device_info()"
 ```
 
+## Integrations
+
+For SLEAP integration setup (dedicated env, ONNX/ONNX-GPU/TensorRT install profiles, and verification), see:
+
+- [Integrations](integrations.md)
+
 ## Docs Tooling
 
 ```bash

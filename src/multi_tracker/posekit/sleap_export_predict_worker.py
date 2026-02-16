@@ -1,0 +1,545 @@
+#!/usr/bin/env python3
+"""Run SLEAP exported-model inference for a batch of images.
+
+Executed inside the selected SLEAP conda environment.
+Input: JSON path passed as argv[1]
+Output: writes {"preds": {...}} JSON to cfg["out_json"].
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+
+import numpy as np
+
+try:
+    import cv2  # type: ignore
+except Exception:
+    cv2 = None
+
+try:
+    from PIL import Image  # type: ignore
+except Exception:
+    Image = None
+
+
+def _as_array(value: Any) -> Optional[np.ndarray]:
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        return value
+    if hasattr(value, "numpy"):
+        try:
+            return value.numpy()
+        except Exception:
+            pass
+    if hasattr(value, "cpu"):
+        try:
+            return value.cpu().numpy()
+        except Exception:
+            pass
+    try:
+        return np.asarray(value)
+    except Exception:
+        return None
+
+
+def _dict_first_present(mapping: Dict[str, Any], keys: Sequence[str]) -> Any:
+    for key in keys:
+        if key in mapping:
+            return mapping.get(key)
+    return None
+
+
+def _load_image(path_str: str) -> np.ndarray:
+    path = str(path_str)
+    if cv2 is not None:
+        img = cv2.imread(path, cv2.IMREAD_COLOR)
+        if img is not None:
+            return img
+    if Image is not None:
+        with Image.open(path) as im:
+            rgb = im.convert("RGB")
+            arr = np.asarray(rgb)
+            # Keep BGR-like convention used elsewhere in the pipeline.
+            return arr[:, :, ::-1].copy()
+    raise RuntimeError(
+        "Unable to load image. Install either opencv-python or pillow in the SLEAP env."
+    )
+
+
+def _normalize_xy_conf(
+    raw: Any, batch_size: int
+) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    xy_arr: Optional[np.ndarray] = None
+    conf_arr: Optional[np.ndarray] = None
+
+    if isinstance(raw, dict):
+        xy_arr = _as_array(
+            _dict_first_present(
+                raw,
+                (
+                    "instance_peaks",
+                    "pred_instance_peaks",
+                    "keypoints",
+                    "points",
+                    "xy",
+                ),
+            )
+        )
+        conf_arr = _as_array(
+            _dict_first_present(
+                raw,
+                (
+                    "instance_peak_vals",
+                    "pred_peak_vals",
+                    "confidences",
+                    "confidence",
+                    "scores",
+                ),
+            )
+        )
+    elif isinstance(raw, (tuple, list)) and len(raw) >= 1:
+        xy_arr = _as_array(raw[0])
+        if len(raw) > 1:
+            conf_arr = _as_array(raw[1])
+    else:
+        xy_arr = _as_array(raw)
+
+    if xy_arr is None:
+        return None, None
+
+    xy_arr = np.asarray(xy_arr)
+    if xy_arr.ndim == 4:
+        # Typical: [B, I, K, 2]
+        xy_arr = xy_arr[:, 0, :, :]
+    elif xy_arr.ndim == 2:
+        # Single sample [K, 2]
+        xy_arr = xy_arr[None, :, :]
+    elif xy_arr.ndim != 3:
+        return None, None
+
+    if xy_arr.shape[-1] < 2:
+        return None, None
+    xy_arr = xy_arr[..., :2]
+
+    if conf_arr is not None:
+        conf_arr = np.asarray(conf_arr)
+        if conf_arr.ndim == 4:
+            conf_arr = conf_arr[:, 0, :, 0]
+        elif conf_arr.ndim == 3:
+            if conf_arr.shape[-1] == 1:
+                conf_arr = conf_arr[:, :, 0]
+            else:
+                conf_arr = conf_arr[:, 0, :]
+        elif conf_arr.ndim == 1:
+            conf_arr = conf_arr[None, :]
+        elif conf_arr.ndim != 2:
+            conf_arr = None
+
+    # Normalize batch dimension.
+    if xy_arr.shape[0] != batch_size:
+        if xy_arr.shape[0] == 1 and batch_size > 1:
+            xy_arr = np.repeat(xy_arr, batch_size, axis=0)
+            if conf_arr is not None and conf_arr.shape[0] == 1:
+                conf_arr = np.repeat(conf_arr, batch_size, axis=0)
+        elif batch_size == 1:
+            xy_arr = xy_arr[:1]
+            if conf_arr is not None:
+                conf_arr = conf_arr[:1]
+        else:
+            return None, None
+
+    return xy_arr.astype(np.float32, copy=False), (
+        conf_arr.astype(np.float32, copy=False) if conf_arr is not None else None
+    )
+
+
+def _extract_metadata_attr(meta: Any, names: Sequence[str], default: Any = None) -> Any:
+    for name in names:
+        if isinstance(meta, dict) and name in meta:
+            return meta.get(name)
+        if hasattr(meta, name):
+            return getattr(meta, name)
+    return default
+
+
+def _detect_input_spec(
+    exported_model_path: str,
+) -> Tuple[Optional[Tuple[int, int]], Optional[int]]:
+    input_hw: Optional[Tuple[int, int]] = None
+    input_channels: Optional[int] = None
+    try:
+        from sleap_nn.export.metadata import load_metadata  # type: ignore
+
+        meta = load_metadata(str(exported_model_path))
+    except Exception:
+        meta = None
+
+    if meta is None:
+        return None, None
+
+    hw = _extract_metadata_attr(
+        meta,
+        names=["crop_size", "crop_hw", "input_hw", "image_hw"],
+        default=None,
+    )
+    if isinstance(hw, (list, tuple)) and len(hw) >= 2:
+        try:
+            input_hw = (int(hw[0]), int(hw[1]))
+        except Exception:
+            input_hw = None
+
+    input_shape = _extract_metadata_attr(
+        meta,
+        names=["input_image_shape", "input_shape"],
+        default=None,
+    )
+    if input_shape is not None:
+        try:
+            arr = np.asarray(input_shape).reshape((-1,))
+            if arr.size >= 4:
+                if int(arr[-1]) in (1, 3):
+                    input_channels = int(arr[-1])
+                    input_hw = (int(arr[-3]), int(arr[-2]))
+                elif int(arr[1]) in (1, 3):
+                    input_channels = int(arr[1])
+                    input_hw = (int(arr[-2]), int(arr[-1]))
+        except Exception:
+            pass
+
+    channels = _extract_metadata_attr(
+        meta,
+        names=["input_channels", "channels", "num_channels"],
+        default=None,
+    )
+    if channels is not None:
+        try:
+            input_channels = int(channels)
+        except Exception:
+            pass
+
+    return input_hw, input_channels
+
+
+def _detect_input_spec_from_predictor(
+    predictor: Any,
+) -> Tuple[Optional[Tuple[int, int]], Optional[int]]:
+    input_hw: Optional[Tuple[int, int]] = None
+    input_channels: Optional[int] = None
+    session = None
+    for name in ("session", "_session", "ort_session"):
+        cand = getattr(predictor, name, None)
+        if cand is not None:
+            session = cand
+            break
+    if session is None or not hasattr(session, "get_inputs"):
+        return None, None
+    try:
+        inputs = session.get_inputs()
+    except Exception:
+        return None, None
+    if not inputs:
+        return None, None
+    try:
+        shape = list(getattr(inputs[0], "shape", []) or [])
+    except Exception:
+        shape = []
+    dims: List[int] = []
+    for d in shape:
+        try:
+            dims.append(int(d))
+        except Exception:
+            dims.append(-1)
+    if len(dims) >= 4:
+        if dims[-1] in (1, 3):
+            input_channels = int(dims[-1])
+            if dims[-3] > 0 and dims[-2] > 0:
+                input_hw = (int(dims[-3]), int(dims[-2]))
+        elif dims[1] in (1, 3):
+            input_channels = int(dims[1])
+            if dims[-2] > 0 and dims[-1] > 0:
+                input_hw = (int(dims[-2]), int(dims[-1]))
+    return input_hw, input_channels
+
+
+def _prepare_crop_for_predictor(
+    crop: np.ndarray,
+    input_hw: Optional[Tuple[int, int]],
+    input_channels: Optional[int],
+) -> Tuple[np.ndarray, float, float]:
+    arr = np.asarray(crop)
+    if arr.ndim == 2:
+        arr = arr[:, :, None]
+    if arr.ndim != 3:
+        raise RuntimeError(
+            f"Invalid crop shape for SLEAP export predictor: {arr.shape}"
+        )
+
+    orig_h, orig_w = int(arr.shape[0]), int(arr.shape[1])
+    if input_channels == 1 and arr.shape[2] != 1:
+        if cv2 is not None:
+            arr = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)[:, :, None]
+        else:
+            arr = np.mean(arr[:, :, :3], axis=2, keepdims=True).astype(arr.dtype)
+    elif (input_channels is None or input_channels == 3) and arr.shape[2] == 1:
+        arr = np.repeat(arr, 3, axis=2)
+
+    if input_hw is not None:
+        h, w = int(input_hw[0]), int(input_hw[1])
+        if h > 0 and w > 0 and (orig_h != h or orig_w != w):
+            if cv2 is None:
+                raise RuntimeError(
+                    "OpenCV is required for resized SLEAP exported inference."
+                )
+            if arr.shape[2] == 1:
+                resized = cv2.resize(
+                    arr[:, :, 0], (w, h), interpolation=cv2.INTER_LINEAR
+                )
+                arr = resized[:, :, None]
+            else:
+                arr = cv2.resize(arr, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    pred_h, pred_w = int(arr.shape[0]), int(arr.shape[1])
+    sx = float(orig_w) / float(pred_w) if pred_w > 0 else 1.0
+    sy = float(orig_h) / float(pred_h) if pred_h > 0 else 1.0
+
+    if arr.shape[2] == 1:
+        arr = arr[:, :, 0]
+    return np.asarray(arr, dtype=np.uint8), sx, sy
+
+
+def _prepare_batch_for_predictor(
+    raw_crops: Sequence[np.ndarray],
+    input_hw: Optional[Tuple[int, int]],
+    input_channels: Optional[int],
+) -> Tuple[List[np.ndarray], List[Tuple[float, float]]]:
+    crops: List[np.ndarray] = []
+    scales: List[Tuple[float, float]] = []
+    for c in raw_crops:
+        prepared, sx, sy = _prepare_crop_for_predictor(c, input_hw, input_channels)
+        crops.append(prepared)
+        scales.append((sx, sy))
+    return crops, scales
+
+
+def _predict_batch(
+    predictor: Any, crops: Sequence[np.ndarray], runtime_flavor: str
+) -> Any:
+    attempts: List[Any] = []
+    attempts.append(list(crops))
+    batch_uint8: Optional[np.ndarray] = None
+    try:
+        batch_uint8 = np.stack([np.asarray(c, dtype=np.uint8) for c in crops], axis=0)
+    except Exception:
+        batch_uint8 = None
+
+    if batch_uint8 is not None:
+        attempts.append(batch_uint8)
+        attempts.append(batch_uint8.astype(np.float32) / 255.0)
+        if batch_uint8.ndim == 4:
+            attempts.append(
+                np.transpose(batch_uint8.astype(np.float32) / 255.0, (0, 3, 1, 2))
+            )
+
+    last_err: Optional[Exception] = None
+    for inp in attempts:
+        try:
+            return predictor.predict(inp)
+        except Exception as exc:
+            last_err = exc
+            continue
+    raise RuntimeError(
+        f"SLEAP exported predictor failed for runtime '{runtime_flavor}': {last_err}"
+    )
+
+
+def _load_predictor(
+    exported_model_path: str,
+    runtime_flavor: str,
+    device: str,
+    batch: int,
+    max_instances: int,
+) -> Any:
+    from sleap_nn.export.predictors import load_exported_model
+
+    model_path = str(exported_model_path or "").strip()
+    model_candidate = Path(model_path).expanduser().resolve()
+    if model_candidate.is_dir():
+        if runtime_flavor == "onnx":
+            onnx_files = sorted(model_candidate.rglob("*.onnx"))
+            if not onnx_files:
+                raise RuntimeError(
+                    f"No ONNX artifact found in export directory: {model_candidate}"
+                )
+            model_candidate = onnx_files[0]
+        elif runtime_flavor == "tensorrt":
+            engine_files = sorted(
+                list(model_candidate.rglob("*.engine"))
+                + list(model_candidate.rglob("*.trt"))
+            )
+            if not engine_files:
+                raise RuntimeError(
+                    f"No TensorRT artifact found in export directory: {model_candidate}"
+                )
+            model_candidate = engine_files[0]
+
+    kwargs_base: Dict[str, Any] = {
+        "batch_size": max(1, int(batch)),
+        "max_instances": max(1, int(max_instances)),
+    }
+    if runtime_flavor == "onnx":
+        if str(device).startswith("cuda"):
+            kwargs_base["providers"] = ["CUDAExecutionProvider"]
+        else:
+            kwargs_base["providers"] = ["CPUExecutionProvider"]
+    elif runtime_flavor == "tensorrt":
+        if not str(device).startswith("cuda"):
+            raise RuntimeError(
+                f"SLEAP TensorRT runtime requires CUDA device, got: {device}"
+            )
+        kwargs_base["device"] = str(device)
+
+    attempts = [
+        {"runtime": runtime_flavor, **kwargs_base},
+        {"inference_model": runtime_flavor, **kwargs_base},
+        {"model_type": runtime_flavor, **kwargs_base},
+        {"runtime": runtime_flavor},
+        {},
+    ]
+    last_err: Optional[Exception] = None
+    for kwargs in attempts:
+        try:
+            return load_exported_model(str(model_candidate), **kwargs)
+        except Exception as exc:
+            last_err = exc
+            continue
+    raise RuntimeError(f"Failed to initialize SLEAP exported predictor: {last_err}")
+
+
+def main() -> int:
+    cfg_path = Path(sys.argv[1]).expanduser().resolve()
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+
+    images = [str(p) for p in (cfg.get("images") or [])]
+    out_json = Path(str(cfg.get("out_json", ""))).expanduser().resolve()
+    out_json.parent.mkdir(parents=True, exist_ok=True)
+    runtime_flavor = str(cfg.get("runtime_flavor", "onnx")).strip().lower()
+    exported_model_path = str(cfg.get("exported_model_path", "")).strip()
+    device = str(cfg.get("device", "cpu")).strip().lower()
+    batch_size = max(1, int(cfg.get("batch", 4)))
+    max_instances = max(1, int(cfg.get("max_instances", 1)))
+    num_kpts = max(1, int(cfg.get("num_keypoints", 1)))
+    cfg_input_hw = cfg.get("input_hw")
+    forced_input_hw: Optional[Tuple[int, int]] = None
+    if isinstance(cfg_input_hw, (list, tuple)) and len(cfg_input_hw) >= 2:
+        try:
+            h = int(cfg_input_hw[0])
+            w = int(cfg_input_hw[1])
+            if h > 0 and w > 0:
+                forced_input_hw = (h, w)
+        except Exception:
+            forced_input_hw = None
+
+    predictor = _load_predictor(
+        exported_model_path=exported_model_path,
+        runtime_flavor=runtime_flavor,
+        device=device,
+        batch=batch_size,
+        max_instances=max_instances,
+    )
+    input_hw, input_channels = _detect_input_spec(exported_model_path)
+    if forced_input_hw is not None:
+        input_hw = forced_input_hw
+    if input_hw is None:
+        hw2, ch2 = _detect_input_spec_from_predictor(predictor)
+        input_hw = hw2 or input_hw
+        input_channels = ch2 if ch2 is not None else input_channels
+
+    preds: Dict[str, List[Tuple[float, float, float]]] = {}
+    total = len(images)
+    done = 0
+
+    for i in range(0, total, batch_size):
+        chunk = images[i : i + batch_size]
+        raw_crops = [_load_image(p) for p in chunk]
+        crops, scales = _prepare_batch_for_predictor(
+            raw_crops, input_hw, input_channels
+        )
+        try:
+            raw = _predict_batch(predictor, crops, runtime_flavor)
+        except Exception as exc:
+            msg = str(exc).lower()
+            retried = False
+            raw = None
+            # Some exported SLEAP ONNX models are strict about stride-compatible
+            # fixed sizes; retry with known-safe square sizes before hard failure.
+            shape_mismatch_tokens = (
+                "concat",
+                "non concat axis dimensions must match",
+                "inhomogeneous shape",
+                "setting an array element with a sequence",
+                "all input arrays must have the same shape",
+                "invalid argument",
+            )
+            if runtime_flavor == "onnx" and any(
+                tok in msg for tok in shape_mismatch_tokens
+            ):
+                tried = set()
+                if input_hw is not None:
+                    tried.add((int(input_hw[0]), int(input_hw[1])))
+                for cand in ((224, 224), (256, 256), (320, 320)):
+                    if cand in tried:
+                        continue
+                    try:
+                        crops_retry, scales_retry = _prepare_batch_for_predictor(
+                            raw_crops, cand, input_channels
+                        )
+                        raw = _predict_batch(predictor, crops_retry, runtime_flavor)
+                        crops = crops_retry
+                        scales = scales_retry
+                        retried = True
+                        print(
+                            f"INFO retrying SLEAP ONNX with fallback input size {cand[0]}x{cand[1]}",
+                            flush=True,
+                        )
+                        break
+                    except Exception:
+                        continue
+            if raw is None:
+                raise
+            if retried:
+                pass
+        xy_arr, conf_arr = _normalize_xy_conf(raw, batch_size=len(chunk))
+
+        for j, path in enumerate(chunk):
+            rows: List[Tuple[float, float, float]] = []
+            if xy_arr is not None and j < xy_arr.shape[0]:
+                xy = xy_arr[j]
+                conf = (
+                    conf_arr[j]
+                    if conf_arr is not None and j < conf_arr.shape[0]
+                    else np.zeros((xy.shape[0],), dtype=np.float32)
+                )
+                n = min(xy.shape[0], num_kpts)
+                sx, sy = scales[j] if j < len(scales) else (1.0, 1.0)
+                for k in range(n):
+                    c = float(conf[k]) if k < len(conf) else 0.0
+                    x = float(xy[k, 0]) * float(sx)
+                    y = float(xy[k, 1]) * float(sy)
+                    rows.append((x, y, float(np.clip(c, 0.0, 1.0))))
+            if len(rows) < num_kpts:
+                rows.extend([(0.0, 0.0, 0.0)] * (num_kpts - len(rows)))
+            preds[str(Path(path))] = rows
+            done += 1
+            print(f"PROGRESS {done} {total}", flush=True)
+
+    out_json.write_text(json.dumps({"preds": preds}), encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

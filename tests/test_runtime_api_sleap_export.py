@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from contextlib import contextmanager
@@ -10,6 +11,44 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
+
+
+def _gpu_stub(**overrides):
+    def _identity_decorator(*_args, **_kwargs):
+        def _wrap(fn):
+            return fn
+
+        return _wrap
+
+    base = {
+        "CUDA_AVAILABLE": False,
+        "MPS_AVAILABLE": False,
+        "ONNXRUNTIME_AVAILABLE": True,
+        "ONNXRUNTIME_PROVIDERS": ["CPUExecutionProvider"],
+        "ONNXRUNTIME_CPU_AVAILABLE": True,
+        "ONNXRUNTIME_CUDA_AVAILABLE": False,
+        "ONNXRUNTIME_ROCM_AVAILABLE": False,
+        "ROCM_AVAILABLE": False,
+        "TENSORRT_AVAILABLE": False,
+        "TORCH_CUDA_AVAILABLE": False,
+        "SLEAP_RUNTIME_ONNX_AVAILABLE": True,
+        "SLEAP_RUNTIME_TENSORRT_AVAILABLE": False,
+        "NUMBA_AVAILABLE": False,
+        "GPU_AVAILABLE": False,
+        "ANY_ACCELERATION": False,
+        "CUPY_AVAILABLE": False,
+        "TORCH_AVAILABLE": False,
+        "F": None,
+        "cp": None,
+        "cupy_ndimage": None,
+        "njit": _identity_decorator,
+        "prange": range,
+        "torch": None,
+        "get_device_info": lambda: {},
+        "log_device_info": lambda: None,
+    }
+    base.update(overrides)
+    return types.SimpleNamespace(**base)
 
 
 @contextmanager
@@ -48,72 +87,58 @@ def _load_runtime_api_module(stubs: dict):
 def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> None:
     calls = []
 
-    class _FakeMetadata:
-        node_names = ["head", "thorax", "abdomen"]
-        crop_size = [32, 32]
-        input_channels = 3
+    class _FakePoseInferenceService:
+        def __init__(self, out_root, keypoint_names, skeleton_edges=None):
+            self.out_root = Path(out_root)
+            self.keypoint_names = list(keypoint_names)
+            self.skeleton_edges = list(skeleton_edges or [])
 
-    class _FakePredictor:
-        def predict(self, batch):
-            if isinstance(batch, list):
-                n = len(batch)
-            else:
-                n = int(np.asarray(batch).shape[0])
-            xy = np.zeros((n, 1, 3, 2), dtype=np.float32)
-            conf = np.zeros((n, 1, 3), dtype=np.float32)
-            for i in range(n):
-                xy[i, 0, :, :] = np.array(
-                    [[10.0 + i, 20.0], [30.0 + i, 40.0], [50.0 + i, 60.0]],
-                    dtype=np.float32,
-                )
-                conf[i, 0, :] = np.array([0.9, 0.7, 0.1], dtype=np.float32)
-            return {"instance_peaks": xy, "instance_peak_vals": conf}
+        @classmethod
+        def sleap_service_running(cls):
+            return False
 
-        def close(self):
+        @classmethod
+        def start_sleap_service(cls, env_name, out_root):
+            return True, "", Path(out_root) / "log.txt"
+
+        @classmethod
+        def shutdown_sleap_service(cls):
             return None
 
-    def _fake_load_exported_model(path, **kwargs):
-        calls.append((path, kwargs))
-        return _FakePredictor()
-
-    def _fake_load_metadata(_path):
-        return _FakeMetadata()
-
-    predictors_mod = types.ModuleType("sleap_nn.export.predictors")
-    predictors_mod.load_exported_model = _fake_load_exported_model
-    metadata_mod = types.ModuleType("sleap_nn.export.metadata")
-    metadata_mod.load_metadata = _fake_load_metadata
-    export_mod = types.ModuleType("sleap_nn.export")
-    export_mod.predictors = predictors_mod
-    export_mod.metadata = metadata_mod
-    sleap_nn_mod = types.ModuleType("sleap_nn")
-    sleap_nn_mod.export = export_mod
+        def predict(self, model_path, image_paths, **kwargs):
+            calls.append(
+                {
+                    "model_path": str(model_path),
+                    "kwargs": dict(kwargs),
+                    "count": len(image_paths),
+                }
+            )
+            preds = {}
+            for i, p in enumerate(image_paths):
+                preds[str(p)] = [
+                    (10.0 + i, 20.0, 0.9),
+                    (30.0 + i, 40.0, 0.7),
+                    (50.0 + i, 60.0, 0.1),
+                ]
+            return preds, ""
 
     stubs = {
-        "multi_tracker.utils.gpu_utils": types.SimpleNamespace(
-            CUDA_AVAILABLE=False,
-            MPS_AVAILABLE=False,
-            ONNXRUNTIME_AVAILABLE=True,
-            ROCM_AVAILABLE=False,
-            TENSORRT_AVAILABLE=False,
-            TORCH_CUDA_AVAILABLE=False,
-            SLEAP_RUNTIME_ONNX_AVAILABLE=True,
-            SLEAP_RUNTIME_TENSORRT_AVAILABLE=False,
+        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+        "multi_tracker.posekit.pose_inference": types.SimpleNamespace(
+            PoseInferenceService=_FakePoseInferenceService
         ),
-        "sleap_nn": sleap_nn_mod,
-        "sleap_nn.export": export_mod,
-        "sleap_nn.export.predictors": predictors_mod,
-        "sleap_nn.export.metadata": metadata_mod,
     }
     mod = _load_runtime_api_module(stubs)
 
     export_dir = tmp_path / "sleap_exported"
     export_dir.mkdir()
+    (export_dir / "metadata.json").write_text("{}", encoding="utf-8")
+    (export_dir / "model.onnx").write_bytes(b"fake-onnx")
     cfg = mod.PoseRuntimeConfig(
         backend_family="sleap",
         runtime_flavor="onnx",
         device="cpu",
-        model_path=str(tmp_path / "unused_training_model"),
+        model_path=str(export_dir),
         exported_model_path=str(export_dir),
         min_valid_conf=0.2,
         keypoint_names=["k1", "k2", "k3"],
@@ -123,17 +148,18 @@ def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> 
 
     with _patched_modules(stubs):
         backend = mod.create_pose_backend_from_config(cfg)
-        assert isinstance(backend, mod.SleapExportBackend)
-        # Metadata node names should become output keypoint names.
-        assert backend.output_keypoint_names == ["head", "thorax", "abdomen"]
-        assert calls
-        assert calls[0][0] == str(export_dir.resolve())
+        assert isinstance(backend, mod.SleapServiceBackend)
 
         crops = [
             np.zeros((24, 24, 3), dtype=np.uint8),
             np.zeros((26, 26, 3), dtype=np.uint8),
         ]
         out = backend.predict_batch(crops)
+        assert calls
+        assert calls[0]["kwargs"]["sleap_runtime_flavor"] == "onnx"
+        assert calls[0]["kwargs"]["sleap_exported_model_path"] == str(
+            export_dir.resolve()
+        )
         assert len(out) == 2
         assert out[0].num_keypoints == 3
         assert out[0].num_valid == 2
@@ -183,16 +209,7 @@ def test_sleap_export_backend_falls_back_to_service_when_unavailable(
     sleap_nn_mod.export = export_mod
 
     stubs = {
-        "multi_tracker.utils.gpu_utils": types.SimpleNamespace(
-            CUDA_AVAILABLE=False,
-            MPS_AVAILABLE=False,
-            ONNXRUNTIME_AVAILABLE=True,
-            ROCM_AVAILABLE=False,
-            TENSORRT_AVAILABLE=False,
-            TORCH_CUDA_AVAILABLE=False,
-            SLEAP_RUNTIME_ONNX_AVAILABLE=True,
-            SLEAP_RUNTIME_TENSORRT_AVAILABLE=False,
-        ),
+        "multi_tracker.utils.gpu_utils": _gpu_stub(),
         "sleap_nn": sleap_nn_mod,
         "sleap_nn.export": export_mod,
         "sleap_nn.export.predictors": predictors_mod,
@@ -244,16 +261,7 @@ def test_yolo_auto_runtime_exports_onnx_and_reuses_cached_artifact(
             return str(out)
 
     stubs = {
-        "multi_tracker.utils.gpu_utils": types.SimpleNamespace(
-            CUDA_AVAILABLE=False,
-            MPS_AVAILABLE=False,
-            ONNXRUNTIME_AVAILABLE=True,
-            ROCM_AVAILABLE=False,
-            TENSORRT_AVAILABLE=False,
-            TORCH_CUDA_AVAILABLE=False,
-            SLEAP_RUNTIME_ONNX_AVAILABLE=False,
-            SLEAP_RUNTIME_TENSORRT_AVAILABLE=False,
-        ),
+        "multi_tracker.utils.gpu_utils": _gpu_stub(SLEAP_RUNTIME_ONNX_AVAILABLE=False),
         "ultralytics": types.SimpleNamespace(YOLO=_FakeYOLO),
     }
     mod = _load_runtime_api_module(stubs)
@@ -302,16 +310,7 @@ def test_yolo_auto_runtime_reexports_when_model_changes(tmp_path: Path) -> None:
             return str(out)
 
     stubs = {
-        "multi_tracker.utils.gpu_utils": types.SimpleNamespace(
-            CUDA_AVAILABLE=False,
-            MPS_AVAILABLE=False,
-            ONNXRUNTIME_AVAILABLE=True,
-            ROCM_AVAILABLE=False,
-            TENSORRT_AVAILABLE=False,
-            TORCH_CUDA_AVAILABLE=False,
-            SLEAP_RUNTIME_ONNX_AVAILABLE=False,
-            SLEAP_RUNTIME_TENSORRT_AVAILABLE=False,
-        ),
+        "multi_tracker.utils.gpu_utils": _gpu_stub(SLEAP_RUNTIME_ONNX_AVAILABLE=False),
         "ultralytics": types.SimpleNamespace(YOLO=_FakeYOLO),
     }
     mod = _load_runtime_api_module(stubs)
@@ -340,24 +339,16 @@ def test_yolo_auto_runtime_reexports_when_model_changes(tmp_path: Path) -> None:
         p2 = Path(b2.model_path)
         b2.close()
 
-    assert p1 != p2
+    assert p1 == p2
     assert len(export_calls) >= 2
+    assert p2.read_bytes() == b"onnx-2"
 
 
 def test_yolo_backend_rejects_directory_model_path_with_clear_error(
     tmp_path: Path,
 ) -> None:
     stubs = {
-        "multi_tracker.utils.gpu_utils": types.SimpleNamespace(
-            CUDA_AVAILABLE=False,
-            MPS_AVAILABLE=False,
-            ONNXRUNTIME_AVAILABLE=True,
-            ROCM_AVAILABLE=False,
-            TENSORRT_AVAILABLE=False,
-            TORCH_CUDA_AVAILABLE=False,
-            SLEAP_RUNTIME_ONNX_AVAILABLE=False,
-            SLEAP_RUNTIME_TENSORRT_AVAILABLE=False,
-        ),
+        "multi_tracker.utils.gpu_utils": _gpu_stub(SLEAP_RUNTIME_ONNX_AVAILABLE=False),
         "ultralytics": types.SimpleNamespace(YOLO=lambda *_a, **_k: None),
     }
     mod = _load_runtime_api_module(stubs)
@@ -383,3 +374,121 @@ def test_yolo_backend_rejects_directory_model_path_with_clear_error(
             msg = str(exc).lower()
             assert "pose_model_type" in msg
             assert "sleap" in msg
+
+
+def test_build_runtime_config_derives_sleap_export_hw_from_model_config(
+    tmp_path: Path,
+) -> None:
+    stubs = {
+        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+    }
+    mod = _load_runtime_api_module(stubs)
+
+    model_dir = tmp_path / "sleap_model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    training_cfg = {
+        "data_config": {
+            "preprocessing": {
+                "crop_size": None,
+                "max_height": 211,
+                "max_width": 216,
+            }
+        },
+        "model_config": {"backbone_config": {"unet": {"max_stride": 32}}},
+    }
+    (model_dir / "training_config.json").write_text(
+        json.dumps(training_cfg), encoding="utf-8"
+    )
+
+    params = {
+        "POSE_MODEL_TYPE": "sleap",
+        "POSE_MODEL_DIR": str(model_dir),
+        "POSE_RUNTIME_FLAVOR": "onnx",
+        "POSE_SLEAP_BATCH": 4,
+    }
+    cfg = mod.build_runtime_config(params, out_root=str(tmp_path))
+    assert cfg.sleap_export_input_hw == (224, 224)
+
+
+def test_build_runtime_config_explicit_sleap_export_hw_overrides_model_config(
+    tmp_path: Path,
+) -> None:
+    stubs = {
+        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+    }
+    mod = _load_runtime_api_module(stubs)
+
+    model_dir = tmp_path / "sleap_model"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    training_cfg = {
+        "data_config": {"preprocessing": {"max_height": 211, "max_width": 216}},
+        "model_config": {"backbone_config": {"unet": {"max_stride": 32}}},
+    }
+    (model_dir / "training_config.json").write_text(
+        json.dumps(training_cfg), encoding="utf-8"
+    )
+
+    params = {
+        "POSE_MODEL_TYPE": "sleap",
+        "POSE_MODEL_DIR": str(model_dir),
+        "POSE_RUNTIME_FLAVOR": "onnx",
+        "POSE_SLEAP_EXPORT_INPUT_HEIGHT": 190,  # aligned up to 192
+        "POSE_SLEAP_EXPORT_INPUT_WIDTH": 224,
+    }
+    cfg = mod.build_runtime_config(params, out_root=str(tmp_path))
+    assert cfg.sleap_export_input_hw == (192, 224)
+
+
+def test_attempt_sleap_cli_export_prefers_size_aware_commands_first(
+    tmp_path: Path,
+) -> None:
+    stubs = {
+        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+    }
+    mod = _load_runtime_api_module(stubs)
+
+    model_dir = tmp_path / "sleap_model"
+    export_dir = tmp_path / "sleap_export"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    seen_cmds = []
+
+    def _fake_run(cmd, timeout_sec=1800):
+        seen_cmds.append(list(cmd))
+        return False, "fail"
+
+    mod._run_cli_command = _fake_run
+    ok, _err = mod._attempt_sleap_cli_export(
+        model_dir=model_dir,
+        export_dir=export_dir,
+        runtime_flavor="onnx",
+        sleap_env="",
+        input_hw=(320, 352),
+    )
+    assert ok is False
+    assert seen_cmds
+    first = seen_cmds[0]
+    assert "--input-height" in first
+    assert "--input-width" in first
+    assert "320" in first
+    assert "352" in first
+
+
+def test_coerce_prediction_batch_normalizes_out_of_range_confidences() -> None:
+    stubs = {
+        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+    }
+    mod = _load_runtime_api_module(stubs)
+
+    # Mimic exported ONNX outputs that provide logits instead of probabilities.
+    pred_out = {
+        "instance_peaks": np.array([[[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]]]),
+        "instance_peak_vals": np.array([[2.0, 0.0, -2.0]], dtype=np.float32),
+    }
+    kpts = mod._coerce_prediction_batch(pred_out, batch_size=1)[0]
+    assert kpts is not None
+    assert np.all((kpts[:, 2] >= 0.0) & (kpts[:, 2] <= 1.0))
+    assert np.isclose(kpts[0, 2], 0.880797, atol=1e-5)
+    assert np.isclose(kpts[1, 2], 0.5, atol=1e-6)
+    assert np.isclose(kpts[2, 2], 0.119203, atol=1e-5)

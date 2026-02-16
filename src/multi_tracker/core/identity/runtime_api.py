@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
 import cv2
 import numpy as np
 
+from multi_tracker.core.runtime.compute_runtime import derive_pose_runtime_settings
 from multi_tracker.utils.gpu_utils import (
     CUDA_AVAILABLE,
     MPS_AVAILABLE,
@@ -66,6 +67,8 @@ class PoseRuntimeConfig:
     sleap_device: str = "auto"
     sleap_batch: int = 4
     sleap_max_instances: int = 1
+    sleap_export_input_hw: Optional[Tuple[int, int]] = None
+    sleap_experimental_features: bool = False
     keypoint_names: List[str] = field(default_factory=list)
     skeleton_edges: List[Tuple[int, int]] = field(default_factory=list)
 
@@ -106,6 +109,8 @@ def _summarize_keypoints(
     arr = np.asarray(keypoints, dtype=np.float32)
     if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
         return _empty_pose_result()
+    arr = arr.copy()
+    arr[:, 2] = _normalize_conf_values(arr[:, 2])
     valid_mask = arr[:, 2] >= float(min_valid_conf)
     return PoseResult(
         keypoints=arr,
@@ -214,27 +219,59 @@ def _dict_first_present(mapping: Dict[str, Any], keys: Sequence[str]) -> Any:
     return None
 
 
+def _normalize_conf_values(conf: Any) -> np.ndarray:
+    arr = np.asarray(conf, dtype=np.float32)
+    if arr.size == 0:
+        return arr
+    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+    if np.any((arr < 0.0) | (arr > 1.0)):
+        # Some exported ONNX predictors can emit logits instead of probabilities.
+        arr = 1.0 / (1.0 + np.exp(-np.clip(arr, -40.0, 40.0)))
+    return np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
+
+
 def _pick_best_instance(
     xy: np.ndarray, conf: Optional[np.ndarray]
 ) -> Optional[np.ndarray]:
     if xy.ndim == 2 and xy.shape[1] == 2:
+        n_kpts = int(xy.shape[0])
         if conf is None:
-            conf = np.zeros((xy.shape[0],), dtype=np.float32)
-        conf_vec = conf.reshape((-1,)).astype(np.float32)
+            conf_vec = np.zeros((n_kpts,), dtype=np.float32)
+        else:
+            conf_vec = _normalize_conf_values(conf).reshape((-1,))
+            if conf_vec.size < n_kpts:
+                conf_vec = np.pad(conf_vec, (0, n_kpts - conf_vec.size))
+            elif conf_vec.size > n_kpts:
+                conf_vec = conf_vec[:n_kpts]
         return np.column_stack((xy.astype(np.float32), conf_vec))
 
     if xy.ndim == 3 and xy.shape[-1] == 2:
         n_instances = int(xy.shape[0])
+        n_kpts = int(xy.shape[1])
         if n_instances <= 0:
             return None
         if conf is None:
-            conf = np.zeros((xy.shape[0], xy.shape[1]), dtype=np.float32)
-        if conf.ndim == 1:
-            conf = np.tile(conf[None, :], (n_instances, 1))
+            conf = np.zeros((n_instances, n_kpts), dtype=np.float32)
+        else:
+            conf = _normalize_conf_values(conf)
+            if conf.ndim == 1:
+                conf = np.tile(conf[None, :], (n_instances, 1))
+            elif conf.ndim > 2:
+                conf = conf.reshape((n_instances, -1))
+            if conf.shape[0] < n_instances:
+                pad_rows = n_instances - conf.shape[0]
+                conf = np.pad(conf, ((0, pad_rows), (0, 0)))
+            elif conf.shape[0] > n_instances:
+                conf = conf[:n_instances, :]
+            if conf.shape[1] < n_kpts:
+                pad_cols = n_kpts - conf.shape[1]
+                conf = np.pad(conf, ((0, 0), (0, pad_cols)))
+            elif conf.shape[1] > n_kpts:
+                conf = conf[:, :n_kpts]
         mean_scores = np.nanmean(conf, axis=1)
         idx = int(np.nanargmax(mean_scores)) if len(mean_scores) else 0
         xy_i = np.asarray(xy[idx], dtype=np.float32)
-        conf_i = np.asarray(conf[idx], dtype=np.float32)
+        conf_i = _normalize_conf_values(conf[idx])
         return np.column_stack((xy_i, conf_i))
     return None
 
@@ -390,11 +427,176 @@ def _path_fingerprint_token(path_str: str) -> str:
     return hashlib.sha1(blob).hexdigest()[:24]
 
 
+def _nested_get(mapping: Dict[str, Any], path: Sequence[str]) -> Any:
+    cur: Any = mapping
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _safe_pos_int(value: Any) -> Optional[int]:
+    try:
+        v = int(value)
+    except Exception:
+        return None
+    return v if v > 0 else None
+
+
+def _align_up(value: int, stride: int) -> int:
+    s = max(1, int(stride))
+    return int(((int(value) + s - 1) // s) * s)
+
+
+def _align_hw_to_stride(
+    hw: Tuple[int, int], stride: int, min_size: int = 64, max_size: int = 1024
+) -> Tuple[int, int]:
+    h = max(1, int(hw[0]))
+    w = max(1, int(hw[1]))
+    h = _align_up(h, stride)
+    w = _align_up(w, stride)
+    h = max(int(min_size), min(int(max_size), h))
+    w = max(int(min_size), min(int(max_size), w))
+    return int(h), int(w)
+
+
+def _load_structured_config(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    suffix = path.suffix.lower()
+    try:
+        if suffix == ".json":
+            data = json.loads(text)
+            return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+    try:
+        import yaml  # type: ignore
+
+        data = yaml.safe_load(text)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _extract_hw_from_sleap_config(
+    cfg: Dict[str, Any],
+) -> Tuple[Optional[Tuple[int, int]], Optional[int]]:
+    prep = _nested_get(cfg, ["data_config", "preprocessing"])
+    hw: Optional[Tuple[int, int]] = None
+    if isinstance(prep, dict):
+        crop_size = prep.get("crop_size")
+        if isinstance(crop_size, (list, tuple)) and len(crop_size) >= 2:
+            ch = _safe_pos_int(crop_size[0])
+            cw = _safe_pos_int(crop_size[1])
+            if ch and cw:
+                hw = (int(ch), int(cw))
+        elif isinstance(crop_size, dict):
+            ch = _safe_pos_int(crop_size.get("height", crop_size.get("h")))
+            cw = _safe_pos_int(crop_size.get("width", crop_size.get("w")))
+            if ch and cw:
+                hw = (int(ch), int(cw))
+        else:
+            c = _safe_pos_int(crop_size)
+            if c:
+                hw = (int(c), int(c))
+
+        if hw is None:
+            mh = _safe_pos_int(prep.get("max_height"))
+            mw = _safe_pos_int(prep.get("max_width"))
+            if mh and mw:
+                hw = (int(mh), int(mw))
+            elif mh:
+                hw = (int(mh), int(mh))
+            elif mw:
+                hw = (int(mw), int(mw))
+
+    stride = _safe_pos_int(
+        _nested_get(cfg, ["model_config", "backbone_config", "unet", "max_stride"])
+    )
+    if stride is None:
+        stride = _safe_pos_int(
+            _nested_get(
+                cfg, ["model_config", "backbone_config", "unet", "output_stride"]
+            )
+        )
+    return hw, stride
+
+
+def _derive_sleap_export_input_hw(model_path_str: str) -> Optional[Tuple[int, int]]:
+    model_path = Path(str(model_path_str or "")).expanduser().resolve()
+    model_dir = model_path if model_path.is_dir() else model_path.parent
+    if not model_dir.exists() or not model_dir.is_dir():
+        return None
+
+    candidates = [
+        model_dir / "training_config.yaml",
+        model_dir / "training_config.yml",
+        model_dir / "training_config.json",
+        model_dir / "initial_config.yaml",
+        model_dir / "initial_config.yml",
+        model_dir / "initial_config.json",
+    ]
+    chosen_hw: Optional[Tuple[int, int]] = None
+    stride = 32
+    for cfg_path in candidates:
+        if not cfg_path.exists() or not cfg_path.is_file():
+            continue
+        cfg = _load_structured_config(cfg_path)
+        if not isinstance(cfg, dict):
+            continue
+        hw, stride_candidate = _extract_hw_from_sleap_config(cfg)
+        if stride_candidate is not None and stride_candidate > 0:
+            stride = int(stride_candidate)
+        if hw is not None and chosen_hw is None:
+            chosen_hw = hw
+        if chosen_hw is not None and stride is not None:
+            # training_config generally contains both; stop early once found.
+            break
+
+    if chosen_hw is None:
+        return None
+    return _align_hw_to_stride(chosen_hw, stride=max(1, int(stride)))
+
+
 def _runtime_export_cache_root(out_root: str) -> Path:
     base = Path(out_root).expanduser().resolve()
     root = base / "posekit" / "runtime_exports"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+def _artifact_meta_path(path: Path) -> Path:
+    p = path.expanduser().resolve()
+    if p.exists() and p.is_dir():
+        return p / ".runtime_meta.json"
+    if p.suffix:
+        return p.with_suffix(f"{p.suffix}.runtime_meta.json")
+    return p / ".runtime_meta.json"
+
+
+def _artifact_meta_matches(path: Path, signature: str) -> bool:
+    p = path.expanduser().resolve()
+    if not p.exists():
+        return False
+    meta = _artifact_meta_path(p)
+    if not meta.exists():
+        return False
+    try:
+        data = json.loads(meta.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return str(data.get("signature", "")) == str(signature)
+
+
+def _write_artifact_meta(path: Path, signature: str) -> None:
+    meta = _artifact_meta_path(path.expanduser().resolve())
+    payload = {"signature": str(signature)}
+    meta.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def _parse_runtime_request(requested: str) -> Tuple[str, Optional[str]]:
@@ -517,6 +719,7 @@ def _auto_export_yolo_model(
         )
 
     ext = ".onnx" if runtime == "onnx" else ".engine"
+    target_path = model_path.with_suffix(ext)
     export_device = (
         str(runtime_device or config.device or "auto").strip().lower() or "auto"
     )
@@ -525,11 +728,9 @@ def _auto_export_yolo_model(
         f"batch={int(config.yolo_batch)}|device={export_device}"
     ).encode("utf-8")
     sig = hashlib.sha1(sig_blob).hexdigest()[:16]
-    cache_dir = _runtime_export_cache_root(config.out_root) / "yolo" / runtime
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    cache_path = cache_dir / f"{model_path.stem}_{sig}{ext}"
-    if cache_path.exists():
-        return str(cache_path.resolve())
+    if _artifact_meta_matches(target_path, sig):
+        return str(target_path.resolve())
+    target_path.parent.mkdir(parents=True, exist_ok=True)
 
     from ultralytics import YOLO
 
@@ -541,8 +742,8 @@ def _auto_export_yolo_model(
         "format": "onnx" if runtime == "onnx" else "engine",
         "imgsz": 640,
         "verbose": False,
-        "project": str(cache_dir),
-        "name": cache_path.stem,
+        "project": str(target_path.parent),
+        "name": model_path.stem,
         "exist_ok": True,
     }
     if runtime == "onnx":
@@ -561,7 +762,7 @@ def _auto_export_yolo_model(
         "Exporting YOLO pose model for %s runtime: %s -> %s",
         runtime,
         model_path,
-        cache_path,
+        target_path,
     )
     export_out = model.export(**export_kwargs)
     out_path = _normalize_export_result_path(export_out, expected_suffix=ext)
@@ -569,9 +770,10 @@ def _auto_export_yolo_model(
         raise RuntimeError(
             f"YOLO export did not produce expected {ext} artifact (result={export_out})."
         )
-    if out_path.resolve() != cache_path.resolve():
-        shutil.copy2(out_path, cache_path)
-    return str(cache_path.resolve())
+    if out_path.resolve() != target_path.resolve():
+        shutil.copy2(out_path, target_path)
+    _write_artifact_meta(target_path, sig)
+    return str(target_path.resolve())
 
 
 def _run_cli_command(cmd: List[str], timeout_sec: int = 1800) -> Tuple[bool, str]:
@@ -666,54 +868,94 @@ def _attempt_sleap_cli_export(
     export_dir: Path,
     runtime_flavor: str,
     sleap_env: str,
+    input_hw: Optional[Tuple[int, int]] = None,
 ) -> Tuple[bool, str]:
     runtime = str(runtime_flavor).strip().lower()
+    sleap_env = str(sleap_env or "").strip()
     runtime_tokens = [runtime]
     if runtime == "tensorrt":
         runtime_tokens.append("trt")
 
+    size_candidates: List[Tuple[int, int]] = []
+    if (
+        isinstance(input_hw, (tuple, list))
+        and len(input_hw) >= 2
+        and int(input_hw[0]) > 0
+        and int(input_hw[1]) > 0
+    ):
+        size_candidates.append((int(input_hw[0]), int(input_hw[1])))
+    # Fallback sizes that are generally safe for encoder/decoder stride alignment.
+    size_candidates.extend([(224, 224), (256, 256)])
+    # Deduplicate while preserving order.
+    deduped_sizes: List[Tuple[int, int]] = []
+    for s in size_candidates:
+        if s not in deduped_sizes:
+            deduped_sizes.append(s)
+    size_candidates = deduped_sizes
+
     command_variants: List[List[str]] = []
     for token in runtime_tokens:
-        command_variants.extend(
+        base_variants = [
             [
-                [
-                    "sleap-nn",
-                    "export",
-                    str(model_dir),
-                    "--output",
-                    str(export_dir),
-                    "--format",
-                    token,
-                ],
-                [
-                    "sleap-nn",
-                    "export",
-                    "--model",
-                    str(model_dir),
-                    "--output",
-                    str(export_dir),
-                    "--format",
-                    token,
-                ],
-                [
-                    "python",
-                    "-m",
-                    "sleap_nn.export",
-                    "--model",
-                    str(model_dir),
-                    "--output",
-                    str(export_dir),
-                    "--format",
-                    token,
-                ],
-            ]
-        )
+                "sleap-nn",
+                "export",
+                str(model_dir),
+                "--output",
+                str(export_dir),
+                "--format",
+                token,
+            ],
+            [
+                "sleap-nn",
+                "export",
+                "--output",
+                str(export_dir),
+                "--format",
+                token,
+                str(model_dir),
+            ],
+            [
+                "python",
+                "-m",
+                "sleap_nn.export.cli",
+                str(model_dir),
+                "--output",
+                str(export_dir),
+                "--format",
+                token,
+            ],
+            [
+                "python",
+                "-m",
+                "sleap_nn.export.cli",
+                "--output",
+                str(export_dir),
+                "--format",
+                token,
+                str(model_dir),
+            ],
+        ]
+        for h, w in size_candidates:
+            for base in base_variants:
+                command_variants.append(
+                    [
+                        *base,
+                        "--input-height",
+                        str(int(h)),
+                        "--input-width",
+                        str(int(w)),
+                    ]
+                )
+        # Keep no-size variants as last resort for CLI versions/models that infer size.
+        command_variants.extend(base_variants)
 
     if shutil.which("conda") and sleap_env:
         conda_wrapped = []
         for cmd in command_variants:
             conda_wrapped.append(["conda", "run", "-n", sleap_env, *cmd])
-        command_variants = conda_wrapped + command_variants
+        # When a SLEAP env is explicitly selected, keep export execution in that env.
+        # Do not fall back to the MAT process env.
+        command_variants = conda_wrapped
 
     last_err = "No SLEAP export CLI command succeeded."
     for cmd in command_variants:
@@ -730,12 +972,6 @@ def _auto_export_sleap_model(config: PoseRuntimeConfig, runtime_flavor: str) -> 
     if runtime not in {"onnx", "tensorrt"}:
         raise RuntimeError(f"Unsupported SLEAP auto-export runtime: {runtime}")
 
-    explicit = str(config.exported_model_path or "").strip()
-    if explicit:
-        explicit_path = Path(explicit).expanduser().resolve()
-        if explicit_path.exists():
-            return str(explicit_path)
-
     model_path = Path(str(config.model_path or "")).expanduser().resolve()
     if _looks_like_sleap_export_path(str(model_path), runtime):
         return str(model_path)
@@ -744,20 +980,25 @@ def _auto_export_sleap_model(config: PoseRuntimeConfig, runtime_flavor: str) -> 
             f"SLEAP model path does not exist or is not a directory: {model_path}"
         )
 
+    input_hw = (
+        tuple(int(v) for v in config.sleap_export_input_hw)
+        if config.sleap_export_input_hw is not None
+        else None
+    )
     sig_blob = (
         f"{_path_fingerprint_token(str(model_path))}|runtime={runtime}|"
-        f"batch={int(config.sleap_batch)}|max_instances={int(config.sleap_max_instances)}"
+        f"batch={int(config.sleap_batch)}|max_instances={int(config.sleap_max_instances)}|"
+        f"input_hw={input_hw}"
     ).encode("utf-8")
     sig = hashlib.sha1(sig_blob).hexdigest()[:16]
-    export_dir = (
-        _runtime_export_cache_root(config.out_root)
-        / "sleap"
-        / runtime
-        / f"{model_path.name}_{sig}"
-    )
-    export_dir.mkdir(parents=True, exist_ok=True)
-    if _looks_like_sleap_export_path(str(export_dir), runtime):
+    export_dir = model_path.parent / f"{model_path.name}.{runtime}"
+    if _looks_like_sleap_export_path(
+        str(export_dir), runtime
+    ) and _artifact_meta_matches(export_dir, sig):
         return str(export_dir.resolve())
+    if export_dir.exists():
+        shutil.rmtree(export_dir, ignore_errors=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
 
     logger.info(
         "Exporting SLEAP model for %s runtime: %s -> %s",
@@ -765,22 +1006,33 @@ def _auto_export_sleap_model(config: PoseRuntimeConfig, runtime_flavor: str) -> 
         model_path,
         export_dir,
     )
-    ok, err = _attempt_sleap_python_export(
+    if input_hw is not None:
+        logger.info(
+            "SLEAP export input size hint: %dx%d",
+            int(input_hw[0]),
+            int(input_hw[1]),
+        )
+    sleap_env = str(config.sleap_env or "").strip()
+    # Preferred/export-stable path: run export through selected SLEAP env.
+    ok, err = _attempt_sleap_cli_export(
         model_dir=model_path,
         export_dir=export_dir,
         runtime_flavor=runtime,
-        batch_size=int(max(1, config.sleap_batch)),
-        max_instances=int(max(1, config.sleap_max_instances)),
+        sleap_env=sleap_env,
+        input_hw=input_hw,
     )
-    if not ok:
-        ok, err = _attempt_sleap_cli_export(
+    if not ok and not sleap_env:
+        # Dev fallback when no env is configured.
+        ok, err = _attempt_sleap_python_export(
             model_dir=model_path,
             export_dir=export_dir,
             runtime_flavor=runtime,
-            sleap_env=str(config.sleap_env or "").strip(),
+            batch_size=int(max(1, config.sleap_batch)),
+            max_instances=int(max(1, config.sleap_max_instances)),
         )
     if not ok or not _looks_like_sleap_export_path(str(export_dir), runtime):
         raise RuntimeError(f"SLEAP auto-export failed for runtime '{runtime}'. {err}")
+    _write_artifact_meta(export_dir, sig)
     return str(export_dir.resolve())
 
 
@@ -990,6 +1242,9 @@ class SleapServiceBackend:
         sleap_batch: int = 4,
         sleap_max_instances: int = 1,
         skeleton_edges: Optional[Sequence[Sequence[int]]] = None,
+        runtime_flavor: str = "native",
+        exported_model_path: str = "",
+        export_input_hw: Optional[Tuple[int, int]] = None,
     ):
         from multi_tracker.posekit.pose_inference import PoseInferenceService
 
@@ -997,10 +1252,20 @@ class SleapServiceBackend:
         self.out_root = Path(out_root).expanduser().resolve()
         self.output_keypoint_names = [str(v) for v in keypoint_names]
         self.min_valid_conf = float(min_valid_conf)
-        self.sleap_env = str(sleap_env or "sleap")
+        self.sleap_env = str(sleap_env or "sleap").strip() or "sleap"
         self.sleap_device = str(sleap_device or "auto")
         self.sleap_batch = max(1, int(sleap_batch))
         self.sleap_max_instances = max(1, int(sleap_max_instances))
+        self.runtime_flavor = str(runtime_flavor or "native").strip().lower()
+        self.exported_model_path = str(exported_model_path or "").strip()
+        self.export_input_hw = (
+            (int(export_input_hw[0]), int(export_input_hw[1]))
+            if isinstance(export_input_hw, (tuple, list))
+            and len(export_input_hw) >= 2
+            and int(export_input_hw[0]) > 0
+            and int(export_input_hw[1]) > 0
+            else None
+        )
         self.skeleton_edges = (
             [tuple(int(v) for v in e[:2]) for e in (skeleton_edges or [])]
             if skeleton_edges
@@ -1016,7 +1281,7 @@ class SleapServiceBackend:
         self._tmp_root.mkdir(parents=True, exist_ok=True)
 
     def warmup(self) -> None:
-        # Explicitly start/validate service when env is configured.
+        # All SLEAP runtime flavors now execute through the persistent service.
         try:
             was_running = self._infer.sleap_service_running()
             ok, err, _ = self._infer.start_sleap_service(self.sleap_env, self.out_root)
@@ -1056,6 +1321,9 @@ class SleapServiceBackend:
                 sleap_device=self.sleap_device,
                 sleap_batch=self.sleap_batch,
                 sleap_max_instances=self.sleap_max_instances,
+                sleap_runtime_flavor=self.runtime_flavor,
+                sleap_exported_model_path=self.exported_model_path,
+                sleap_export_input_hw=self.export_input_hw,
             )
             if pred_map is None:
                 raise RuntimeError(err or "SLEAP inference failed.")
@@ -1150,14 +1418,14 @@ class SleapExportBackend:
         kwargs: Dict[str, Any] = {}
         if self.runtime_flavor == "onnx":
             if self.device.startswith("cuda"):
-                kwargs["provider"] = "cuda"
+                kwargs["providers"] = ["CUDAExecutionProvider"]
             elif self.device == "cpu":
-                kwargs["provider"] = "cpu"
+                kwargs["providers"] = ["CPUExecutionProvider"]
             elif self.device == "mps":
                 # ONNXRuntime does not use MPS execution provider.
-                kwargs["provider"] = "cpu"
+                kwargs["providers"] = ["CPUExecutionProvider"]
             else:
-                kwargs["provider"] = "cpu"
+                kwargs["providers"] = ["CPUExecutionProvider"]
         else:
             if not self.device.startswith("cuda"):
                 raise RuntimeError(
@@ -1255,6 +1523,21 @@ class SleapExportBackend:
             except Exception:
                 self._metadata = None
         self._detect_input_spec()
+
+        export_path = Path(self.exported_model_path).expanduser().resolve()
+        if export_path.is_dir():
+            if self.runtime_flavor == "onnx":
+                onnx_files = sorted(export_path.rglob("*.onnx"))
+                if onnx_files:
+                    export_path = onnx_files[0].resolve()
+            elif self.runtime_flavor == "tensorrt":
+                engine_files = sorted(
+                    list(export_path.rglob("*.engine"))
+                    + list(export_path.rglob("*.trt"))
+                )
+                if engine_files:
+                    export_path = engine_files[0].resolve()
+        self.exported_model_path = str(export_path)
 
         loader_attempts = [
             {"runtime": self.runtime_flavor, **self._build_predictor_kwargs()},
@@ -1406,6 +1689,9 @@ def build_runtime_config(
     runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "auto")).strip().lower()
     model_path = str(params.get("POSE_MODEL_DIR", "")).strip()
     exported_model_path = str(params.get("POSE_EXPORTED_MODEL_PATH", "")).strip()
+    compute_runtime = str(
+        params.get("COMPUTE_RUNTIME", params.get("compute_runtime", ""))
+    ).strip()
 
     skeleton_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
     skeleton_names, skeleton_edges = _load_skeleton_from_json(skeleton_file)
@@ -1419,12 +1705,24 @@ def build_runtime_config(
             if isinstance(edge, (list, tuple)) and len(edge) >= 2
         ]
 
+    derived_device = ""
+    if compute_runtime:
+        derived = derive_pose_runtime_settings(compute_runtime, backend_family)
+        runtime_flavor = (
+            str(derived.get("pose_runtime_flavor", runtime_flavor)).strip().lower()
+        )
+        derived_device = str(derived.get("pose_sleap_device", "auto")).strip() or "auto"
+
     # Keep YOLO and SLEAP device controls explicit.
     if backend_family == "sleap":
-        device = str(params.get("POSE_SLEAP_DEVICE", "auto")).strip() or "auto"
+        device = (
+            derived_device
+            or str(params.get("POSE_SLEAP_DEVICE", "auto")).strip()
+            or "auto"
+        )
         batch_size = int(params.get("POSE_SLEAP_BATCH", 4))
     else:
-        device = (
+        device = derived_device or (
             str(params.get("YOLO_DEVICE", params.get("POSE_DEVICE", "auto"))).strip()
             or "auto"
         )
@@ -1434,6 +1732,40 @@ def build_runtime_config(
                 params.get("POSE_BATCH_SIZE", 4),
             )
         )
+
+    def _norm_hw(value: Any) -> Optional[int]:
+        try:
+            v = int(value)
+        except Exception:
+            return None
+        if v <= 0:
+            return None
+        # Encoder-decoder models are generally stride-sensitive; keep dims on 32-grid.
+        v = int(((v + 31) // 32) * 32)
+        v = max(64, min(1024, v))
+        return v
+
+    derived_model_hw: Optional[Tuple[int, int]] = None
+    if backend_family == "sleap" and model_path:
+        try:
+            derived_model_hw = _derive_sleap_export_input_hw(model_path)
+        except Exception:
+            derived_model_hw = None
+
+    export_h = _norm_hw(params.get("POSE_SLEAP_EXPORT_INPUT_HEIGHT", 0))
+    export_w = _norm_hw(params.get("POSE_SLEAP_EXPORT_INPUT_WIDTH", 0))
+    if export_h is None and export_w is None and derived_model_hw is not None:
+        export_h, export_w = int(derived_model_hw[0]), int(derived_model_hw[1])
+    if export_h is None and export_w is None:
+        crop_hint = _norm_hw(params.get("IDENTITY_CROP_MAX_SIZE", 0))
+        if crop_hint is not None:
+            export_h = crop_hint
+            export_w = crop_hint
+    if export_h is None and export_w is not None:
+        export_h = export_w
+    if export_w is None and export_h is not None:
+        export_w = export_h
+    export_hw = (int(export_h), int(export_w)) if (export_h and export_w) else None
 
     return PoseRuntimeConfig(
         backend_family=backend_family,
@@ -1448,10 +1780,14 @@ def build_runtime_config(
         yolo_iou=float(params.get("POSE_YOLO_IOU", 0.7)),
         yolo_max_det=int(params.get("POSE_YOLO_MAX_DET", 1)),
         yolo_batch=max(1, int(batch_size)),
-        sleap_env=str(params.get("POSE_SLEAP_ENV", "sleap")),
-        sleap_device=str(params.get("POSE_SLEAP_DEVICE", "auto")),
+        sleap_env=str(params.get("POSE_SLEAP_ENV", "sleap")).strip() or "sleap",
+        sleap_device=derived_device or str(params.get("POSE_SLEAP_DEVICE", "auto")),
         sleap_batch=int(params.get("POSE_SLEAP_BATCH", 4)),
         sleap_max_instances=int(params.get("POSE_SLEAP_MAX_INSTANCES", 1)),
+        sleap_export_input_hw=export_hw,
+        sleap_experimental_features=bool(
+            params.get("POSE_SLEAP_EXPERIMENTAL_FEATURES", False)
+        ),
         keypoint_names=skeleton_names,
         skeleton_edges=skeleton_edges,
     )
@@ -1499,14 +1835,10 @@ def create_pose_backend_from_config(config: PoseRuntimeConfig) -> PoseInferenceB
                     ".pt, .onnx, .engine, .trt"
                 )
         if runtime_flavor in ("onnx", "tensorrt"):
-            exported = str(config.exported_model_path).strip()
             try:
-                if exported:
-                    model_candidate = str(Path(exported).expanduser().resolve())
-                else:
-                    model_candidate = _auto_export_yolo_model(
-                        config, runtime_flavor, runtime_device=effective_device
-                    )
+                model_candidate = _auto_export_yolo_model(
+                    config, runtime_flavor, runtime_device=effective_device
+                )
             except Exception as exc:
                 logger.warning(
                     "YOLO %s runtime initialization failed (%s). Falling back to native runtime.",
@@ -1533,30 +1865,42 @@ def create_pose_backend_from_config(config: PoseRuntimeConfig) -> PoseInferenceB
             raise RuntimeError(
                 "SLEAP backend requires keypoint_names (from skeleton JSON or override)."
             )
+
+        # Check if experimental features are disabled for ONNX/TensorRT
+        if (
+            runtime_flavor in ("onnx", "tensorrt")
+            and not config.sleap_experimental_features
+        ):
+            logger.warning(
+                "SLEAP %s runtime is experimental and disabled. Reverting to native runtime.",
+                runtime_flavor,
+            )
+            runtime_flavor = "native"
+
+        # Export model for ONNX/TensorRT if requested and experimental features enabled
+        exported_candidate = ""
         if runtime_flavor in ("onnx", "tensorrt"):
             try:
-                export_candidate = _auto_export_sleap_model(config, runtime_flavor)
-                return SleapExportBackend(
-                    exported_model_path=export_candidate,
-                    runtime_flavor=runtime_flavor,
-                    device=effective_device,
-                    min_valid_conf=config.min_valid_conf,
-                    keypoint_names=config.keypoint_names,
-                    sleap_batch=config.sleap_batch,
-                    sleap_max_instances=max(1, int(config.sleap_max_instances)),
+                exported_candidate = _auto_export_sleap_model(config, runtime_flavor)
+                logger.info(
+                    "SLEAP model exported for %s runtime: %s",
+                    runtime_flavor,
+                    exported_candidate,
                 )
             except Exception as exc:
                 logger.warning(
                     "SLEAP exported runtime (%s) initialization failed: %s. "
-                    "Falling back to SLEAP service backend.",
+                    "Falling back to SLEAP service backend with native runtime.",
                     runtime_flavor,
                     exc,
                 )
+                runtime_flavor = "native"
+                exported_candidate = ""
 
+        # Use service backend for all SLEAP runtimes (native, onnx, tensorrt)
+        # The service will use the exported model if provided
         if not config.model_path:
-            raise RuntimeError(
-                "SLEAP model path is empty. Provide POSE_MODEL_DIR for service fallback."
-            )
+            raise RuntimeError("SLEAP model path is empty. Provide POSE_MODEL_DIR.")
         service_backend = SleapServiceBackend(
             model_dir=config.model_path,
             out_root=config.out_root,
@@ -1567,7 +1911,8 @@ def create_pose_backend_from_config(config: PoseRuntimeConfig) -> PoseInferenceB
             sleap_batch=config.sleap_batch,
             sleap_max_instances=max(1, int(config.sleap_max_instances)),
             skeleton_edges=config.skeleton_edges,
+            runtime_flavor=runtime_flavor,
+            exported_model_path=exported_candidate,
+            export_input_hw=config.sleap_export_input_hw,
         )
         return service_backend
-
-    raise RuntimeError(f"Unsupported pose backend family: {backend_family}")

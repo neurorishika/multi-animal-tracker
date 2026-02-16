@@ -19,7 +19,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 
 def _normalize_for_hash(value: Any) -> Any:
@@ -125,20 +125,55 @@ def compute_filter_settings_hash(params: Dict[str, Any]) -> str:
     return _hash_payload(payload)
 
 
+def _compute_pose_statistics(
+    keypoints: Optional[np.ndarray], min_valid_conf: float = 0.2
+) -> tuple[float, float, int, int]:
+    """Compute pose summary statistics from raw keypoints.
+
+    Returns:
+        (mean_conf, valid_fraction, num_valid, num_keypoints)
+    """
+    if keypoints is None:
+        return 0.0, 0.0, 0, 0
+    arr = np.asarray(keypoints, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+        return 0.0, 0.0, 0, 0
+
+    conf_values = arr[:, 2]
+    # Normalize confidence values to [0, 1]
+    conf_values = np.clip(conf_values, 0.0, 1.0)
+
+    mean_conf = float(np.mean(conf_values))
+    valid_mask = conf_values >= float(min_valid_conf)
+    valid_fraction = float(np.mean(valid_mask))
+    num_valid = int(np.sum(valid_mask))
+    num_keypoints = int(len(arr))
+
+    return mean_conf, valid_fraction, num_valid, num_keypoints
+
+
 def compute_extractor_hash(params: Dict[str, Any]) -> str:
-    """Hash extractor settings that shape individual-property outputs."""
+    """Hash extractor settings that shape individual-property outputs.
+
+    Note: pose_min_kpt_conf_valid is NOT included in the hash anymore.
+    Summary statistics are computed on-demand when reading from cache,
+    so changing the threshold doesn't invalidate the cache.
+    """
     pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
     pose_model_type = str(params.get("POSE_MODEL_TYPE", "yolo")).strip().lower()
     pose_model_dir = str(params.get("POSE_MODEL_DIR", "")).strip()
-    pose_runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "auto")).strip().lower()
+    compute_runtime = (
+        str(params.get("COMPUTE_RUNTIME", params.get("compute_runtime", "cpu")))
+        .strip()
+        .lower()
+    )
     pose_exported_model_path = str(params.get("POSE_EXPORTED_MODEL_PATH", "")).strip()
     pose_skeleton_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
     payload = {
         "schema_version": SCHEMA_VERSION,
         "enable_pose_extractor": pose_enabled,
         "pose_model_type": pose_model_type,
-        "pose_runtime_flavor": pose_runtime_flavor,
-        "pose_min_kpt_conf_valid": params.get("POSE_MIN_KPT_CONF_VALID", 0.2),
+        "compute_runtime": compute_runtime,
         "pose_skeleton_file": (
             _file_fingerprint(pose_skeleton_file) if pose_skeleton_file else None
         ),
@@ -240,27 +275,17 @@ class IndividualPropertiesCache:
         pose_num_keypoints: Optional[List[int]] = None,
         pose_keypoints: Optional[List[Optional[np.ndarray]]] = None,
     ) -> None:
+        """Add a frame of detection data to cache.
+
+        Note: pose_mean_conf, pose_valid_fraction, pose_num_valid, and pose_num_keypoints
+        are deprecated and ignored. Only raw keypoints are stored.
+        Summary statistics are computed on-demand when reading.
+        """
         if self.mode != "w":
             raise RuntimeError("Cache opened in read mode, cannot write.")
 
         n = len(detection_ids)
         ids_arr = np.asarray(detection_ids, dtype=np.float64)
-        mean_conf_arr = np.asarray(
-            pose_mean_conf if pose_mean_conf is not None else [0.0] * n,
-            dtype=np.float32,
-        )
-        valid_fraction_arr = np.asarray(
-            pose_valid_fraction if pose_valid_fraction is not None else [0.0] * n,
-            dtype=np.float32,
-        )
-        num_valid_arr = np.asarray(
-            pose_num_valid if pose_num_valid is not None else [0] * n,
-            dtype=np.int16,
-        )
-        num_kpts_arr = np.asarray(
-            pose_num_keypoints if pose_num_keypoints is not None else [0] * n,
-            dtype=np.int16,
-        )
 
         if pose_keypoints is None:
             pose_keypoints = [None] * n
@@ -279,10 +304,6 @@ class IndividualPropertiesCache:
 
         frame_key = f"frame_{int(frame_idx):06d}"
         self._data[f"{frame_key}_detection_ids"] = ids_arr
-        self._data[f"{frame_key}_pose_mean_conf"] = mean_conf_arr
-        self._data[f"{frame_key}_pose_valid_fraction"] = valid_fraction_arr
-        self._data[f"{frame_key}_pose_num_valid"] = num_valid_arr
-        self._data[f"{frame_key}_pose_num_keypoints"] = num_kpts_arr
         self._data[f"{frame_key}_pose_keypoints"] = pose_keypoints_arr
 
     def save(self, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -300,7 +321,17 @@ class IndividualPropertiesCache:
         logger.info("Saved individual properties cache: %s", self.cache_path)
         self._data.clear()
 
-    def get_frame(self, frame_idx: int) -> Dict[str, Any]:
+    def get_frame(self, frame_idx: int, min_valid_conf: float = 0.2) -> Dict[str, Any]:
+        """Get frame data with summary statistics computed on-demand.
+
+        Args:
+            frame_idx: Frame index to retrieve
+            min_valid_conf: Minimum confidence threshold for keypoint validity (default: 0.2)
+
+        Returns:
+            Dict with detection_ids, pose_mean_conf, pose_valid_fraction,
+            pose_num_valid, pose_num_keypoints, and pose_keypoints
+        """
         if self.mode != "r":
             raise RuntimeError("Cache opened in write mode, cannot read.")
         if self._loaded_data is None:
@@ -308,35 +339,47 @@ class IndividualPropertiesCache:
 
         frame_key = f"frame_{int(frame_idx):06d}"
         ids_arr = self._loaded_data.get(f"{frame_key}_detection_ids", np.array([]))
-        mean_arr = self._loaded_data.get(
-            f"{frame_key}_pose_mean_conf", np.array([], dtype=np.float32)
-        )
-        frac_arr = self._loaded_data.get(
-            f"{frame_key}_pose_valid_fraction", np.array([], dtype=np.float32)
-        )
-        num_valid_arr = self._loaded_data.get(
-            f"{frame_key}_pose_num_valid", np.array([], dtype=np.int16)
-        )
-        num_kpts_arr = self._loaded_data.get(
-            f"{frame_key}_pose_num_keypoints", np.array([], dtype=np.int16)
-        )
         pose_arr = self._loaded_data.get(
             f"{frame_key}_pose_keypoints", np.array([], dtype=object)
         )
 
+        # Compute summary statistics on-demand from raw keypoints
+        n = len(ids_arr)
+        mean_conf_list = []
+        valid_fraction_list = []
+        num_valid_list = []
+        num_kpts_list = []
+
+        for i in range(n):
+            kpts = pose_arr[i] if i < len(pose_arr) else None
+            mean_conf, valid_frac, num_valid, num_kpts = _compute_pose_statistics(
+                kpts, min_valid_conf
+            )
+            mean_conf_list.append(mean_conf)
+            valid_fraction_list.append(valid_frac)
+            num_valid_list.append(num_valid)
+            num_kpts_list.append(num_kpts)
+
         return {
             "detection_ids": ids_arr.tolist(),
-            "pose_mean_conf": mean_arr.tolist(),
-            "pose_valid_fraction": frac_arr.tolist(),
-            "pose_num_valid": num_valid_arr.tolist(),
-            "pose_num_keypoints": num_kpts_arr.tolist(),
+            "pose_mean_conf": mean_conf_list,
+            "pose_valid_fraction": valid_fraction_list,
+            "pose_num_valid": num_valid_list,
+            "pose_num_keypoints": num_kpts_list,
             "pose_keypoints": list(pose_arr.tolist()),
         }
 
     def get_detection(
-        self, frame_idx: int, detection_id: float
+        self, frame_idx: int, detection_id: float, min_valid_conf: float = 0.2
     ) -> Optional[Dict[str, Any]]:
-        frame = self.get_frame(frame_idx)
+        """Get detection data with summary statistics computed on-demand.
+
+        Args:
+            frame_idx: Frame index
+            detection_id: Detection ID to retrieve
+            min_valid_conf: Minimum confidence threshold for keypoint validity
+        """
+        frame = self.get_frame(frame_idx, min_valid_conf=min_valid_conf)
         ids = frame.get("detection_ids", [])
         try:
             target = int(detection_id)

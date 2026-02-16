@@ -48,6 +48,60 @@ logger = logging.getLogger("pose_label")
 import cv2
 import numpy as np
 
+try:
+    from multi_tracker.core.runtime.compute_runtime import (
+        CANONICAL_RUNTIMES,
+        allowed_runtimes_for_pipelines,
+        derive_pose_runtime_settings,
+        infer_compute_runtime_from_legacy,
+        runtime_label,
+    )
+except Exception:
+    CANONICAL_RUNTIMES = [
+        "cpu",
+        "mps",
+        "cuda",
+        "rocm",
+        "onnx_cpu",
+        "onnx_cuda",
+        "onnx_rocm",
+        "tensorrt",
+    ]
+
+    def runtime_label(runtime: str) -> str:
+        return str(runtime or "cpu").strip().upper()
+
+    def allowed_runtimes_for_pipelines(_pipelines):
+        return ["cpu"]
+
+    def infer_compute_runtime_from_legacy(
+        yolo_device, enable_tensorrt, pose_runtime_flavor
+    ):
+        if enable_tensorrt:
+            return "tensorrt"
+        flavor = str(pose_runtime_flavor or "").lower()
+        if flavor.startswith("onnx_rocm"):
+            return "onnx_rocm"
+        if flavor.startswith("onnx_cuda"):
+            return "onnx_cuda"
+        if flavor.startswith("onnx"):
+            return "onnx_cpu"
+        return "cpu"
+
+    def derive_pose_runtime_settings(compute_runtime: str, backend_family: str):
+        rt = str(compute_runtime or "cpu").strip().lower()
+        if rt == "onnx_cpu":
+            return {"pose_runtime_flavor": "onnx_cpu", "pose_sleap_device": "cpu"}
+        if rt in {"onnx_cuda", "onnx_rocm"}:
+            return {"pose_runtime_flavor": rt, "pose_sleap_device": "cuda:0"}
+        if rt == "tensorrt":
+            return {
+                "pose_runtime_flavor": "tensorrt_cuda",
+                "pose_sleap_device": "cuda:0",
+            }
+        return {"pose_runtime_flavor": rt or "cpu", "pose_sleap_device": rt or "cpu"}
+
+
 # Handle both package imports and direct script execution
 try:
     from .pose_inference import PoseInferenceService
@@ -171,6 +225,7 @@ DEFAULT_SKELETON_DIRNAME = "configs"
 DEFAULT_KPT_RADIUS = 5.0
 DEFAULT_LABEL_FONT_SIZE = 10
 DEFAULT_AUTOSAVE_DELAY_MS = 3000
+LARGE_DATASET_SIEVE_THRESHOLD = 10000
 
 
 # -----------------------------
@@ -2960,14 +3015,15 @@ class MainWindow(QMainWindow):
         self.combo_pred_runtime = QComboBox()
         self.combo_pred_runtime.setToolTip(
             "Inference runtime flavor.\n"
-            "ONNX/TensorRT uses exported model path when provided."
+            "ONNX/TensorRT artifacts are auto-exported next to the selected model."
         )
         self._populate_pred_runtime_options("yolo")
         runtime_row.addWidget(self.combo_pred_runtime, 1)
         model_layout.addLayout(runtime_row)
 
         exported_row = QHBoxLayout()
-        exported_row.addWidget(QLabel("Exported model"))
+        self.lbl_pred_exported = QLabel("Exported model")
+        exported_row.addWidget(self.lbl_pred_exported)
         self.pred_exported_edit = QLineEdit("")
         self.pred_exported_edit.setPlaceholderText(
             "Optional exported model path (.onnx/.engine or exported SLEAP dir)"
@@ -2975,7 +3031,10 @@ class MainWindow(QMainWindow):
         self.btn_pred_exported = QPushButton("Browse…")
         exported_row.addWidget(self.pred_exported_edit, 1)
         exported_row.addWidget(self.btn_pred_exported)
-        model_layout.addLayout(exported_row)
+        # Exported artifact paths are fully automatic; no user-facing selector row.
+        self.lbl_pred_exported.setVisible(False)
+        self.pred_exported_edit.setVisible(False)
+        self.btn_pred_exported.setVisible(False)
 
         pred_conf_row = QHBoxLayout()
         pred_conf_row.addWidget(
@@ -3442,8 +3501,9 @@ class MainWindow(QMainWindow):
             "pred_conf": float(self.sp_pred_conf.value()),
             "pred_weights": self.pred_weights_edit.text().strip(),
             "pred_backend": self.combo_pred_backend.currentText().strip(),
-            "pred_runtime": self._pred_runtime_flavor(),
-            "pred_exported_model": self.pred_exported_edit.text().strip(),
+            "compute_runtime": self._selected_compute_runtime(),
+            "pred_runtime": self._selected_compute_runtime(),
+            "pred_exported_model": "",
             "pred_batch": int(self.spin_pred_batch.value()),
             "sleap_env": self.combo_sleap_env.currentText().strip(),
             "sleap_model_dir": self.sleap_model_edit.text().strip(),
@@ -3487,14 +3547,21 @@ class MainWindow(QMainWindow):
                 backend = str(settings["pred_backend"])
                 if backend:
                     self.combo_pred_backend.setCurrentText(backend)
-            if "pred_runtime" in settings:
-                runtime = str(settings["pred_runtime"]).strip()
-                if runtime:
-                    self._populate_pred_runtime_options(
-                        self._pred_backend(), preferred=runtime
+            runtime_setting = str(
+                settings.get("compute_runtime", settings.get("pred_runtime", ""))
+            ).strip()
+            if runtime_setting:
+                canonical_runtime = runtime_setting
+                if canonical_runtime not in CANONICAL_RUNTIMES:
+                    canonical_runtime = infer_compute_runtime_from_legacy(
+                        yolo_device="auto",
+                        enable_tensorrt=False,
+                        pose_runtime_flavor=runtime_setting,
                     )
-            if "pred_exported_model" in settings:
-                self.pred_exported_edit.setText(str(settings["pred_exported_model"]))
+                self._populate_pred_runtime_options(
+                    self._pred_backend(), preferred=canonical_runtime
+                )
+            self.pred_exported_edit.setText("")
             if "pred_batch" in settings:
                 self.spin_pred_batch.setValue(int(settings["pred_batch"]))
             elif "pred_yolo_batch" in settings:
@@ -5819,13 +5886,24 @@ class MainWindow(QMainWindow):
         except Exception:
             return "yolo"
 
-    def _pred_runtime_options_for_backend(self, backend: str) -> List[Tuple[str, str]]:
-        try:
-            from multi_tracker.utils.gpu_utils import get_pose_runtime_options
+    def _selected_compute_runtime(self) -> str:
+        if hasattr(self, "combo_pred_runtime"):
+            data = self.combo_pred_runtime.currentData()
+            if data:
+                value = str(data).strip().lower()
+                if value in CANONICAL_RUNTIMES:
+                    return value
+            txt = self.combo_pred_runtime.currentText().strip().lower()
+            if txt in CANONICAL_RUNTIMES:
+                return txt
+        return "cpu"
 
-            return get_pose_runtime_options(backend)
-        except Exception:
-            return [("Auto", "auto"), ("CPU", "cpu")]
+    def _pred_runtime_options_for_backend(self, backend: str) -> List[Tuple[str, str]]:
+        pipeline = (
+            "sleap_pose" if str(backend).strip().lower() == "sleap" else "yolo_pose"
+        )
+        allowed = allowed_runtimes_for_pipelines([pipeline]) or ["cpu"]
+        return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
 
     def _populate_pred_runtime_options(
         self, backend: str, preferred: Optional[str] = None
@@ -5834,12 +5912,12 @@ class MainWindow(QMainWindow):
             return
         combo = self.combo_pred_runtime
         selected = (
-            str(preferred or self._pred_runtime_flavor() or "auto").strip().lower()
+            str(preferred or self._selected_compute_runtime() or "cpu").strip().lower()
         )
         options = self._pred_runtime_options_for_backend(backend)
         values = [value for _label, value in options]
         if selected not in values:
-            selected = "auto"
+            selected = values[0] if values else "cpu"
         combo.blockSignals(True)
         combo.clear()
         for label, value in options:
@@ -5913,32 +5991,18 @@ class MainWindow(QMainWindow):
             return
         backend = self._pred_backend()
         self._populate_pred_runtime_options(
-            backend=backend, preferred=self._pred_runtime_flavor()
+            backend=backend, preferred=self._selected_compute_runtime()
         )
         is_sleap = backend == "sleap"
-        runtime_flavor = self._pred_runtime_flavor()
-        uses_exported = runtime_flavor.startswith("onnx") or runtime_flavor.startswith(
-            "tensorrt"
-        )
         if hasattr(self, "yolo_pred_widget"):
             self.yolo_pred_widget.setVisible(not is_sleap)
         if hasattr(self, "sleap_pred_widget"):
             self.sleap_pred_widget.setVisible(is_sleap)
+        if hasattr(self, "lbl_pred_exported"):
+            self.lbl_pred_exported.setVisible(False)
         if hasattr(self, "pred_exported_edit") and hasattr(self, "btn_pred_exported"):
-            self.pred_exported_edit.setVisible(uses_exported)
-            self.btn_pred_exported.setVisible(uses_exported)
-            if is_sleap:
-                self.pred_exported_edit.setPlaceholderText(
-                    "Exported SLEAP model directory for ONNX/TensorRT runtime"
-                )
-            elif runtime_flavor.startswith("tensorrt"):
-                self.pred_exported_edit.setPlaceholderText(
-                    "Exported YOLO TensorRT engine (.engine)"
-                )
-            else:
-                self.pred_exported_edit.setPlaceholderText(
-                    "Exported YOLO ONNX model (.onnx)"
-                )
+            self.pred_exported_edit.setVisible(False)
+            self.btn_pred_exported.setVisible(False)
         if is_sleap:
             running = PoseInferenceService.sleap_service_running()
             self._set_sleap_status(
@@ -6244,55 +6308,22 @@ class MainWindow(QMainWindow):
 
     def _get_pred_model_or_prompt(self) -> Optional[Path]:
         backend = self._pred_backend()
-        runtime = self._pred_runtime_flavor()
         if backend == "sleap":
             return self._get_sleap_model_or_prompt()
-        if runtime.startswith("onnx") or runtime.startswith("tensorrt"):
-            exported = self._get_pred_exported_model_silent()
-            if exported is not None:
-                return exported
         return self._get_pred_weights_or_prompt()
 
     def _get_pred_model_silent(self) -> Optional[Path]:
         backend = self._pred_backend()
-        runtime = self._pred_runtime_flavor()
         if backend == "sleap":
             return self._get_sleap_model_silent()
-        if runtime.startswith("onnx") or runtime.startswith("tensorrt"):
-            exported = self._get_pred_exported_model_silent()
-            if exported is not None:
-                return exported
         return self._get_pred_weights_silent()
 
     def _pred_runtime_flavor(self) -> str:
-        if hasattr(self, "combo_pred_runtime"):
-            data = self.combo_pred_runtime.currentData()
-            if data:
-                return str(data).strip().lower()
-        try:
-            txt = self.combo_pred_runtime.currentText().strip().lower()
-            txt_norm = txt.replace(" ", "_").replace("-", "_")
-            if txt_norm.startswith("onnx") and "rocm" in txt_norm:
-                return "onnx_rocm"
-            if txt_norm.startswith("onnx") and "cuda" in txt_norm:
-                return "onnx_cuda"
-            if txt_norm.startswith("onnx"):
-                return "onnx_cpu"
-            if txt_norm.startswith("tensorrt") and "cuda" in txt_norm:
-                return "tensorrt_cuda"
-            if txt_norm.startswith("tensorrt"):
-                return "tensorrt_cuda"
-            if txt_norm.startswith("native") and "mps" in txt_norm:
-                return "mps"
-            if txt_norm.startswith("native") and "cuda" in txt_norm:
-                return "cuda"
-            if txt_norm.startswith("native") and "rocm" in txt_norm:
-                return "rocm"
-            if txt_norm.startswith("native"):
-                return "cpu"
-        except Exception:
-            pass
-        return "auto"
+        backend = self._pred_backend()
+        derived = derive_pose_runtime_settings(
+            self._selected_compute_runtime(), backend_family=backend
+        )
+        return str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
 
     def _browse_pred_exported_model(self):
         backend = self._pred_backend()
@@ -6355,14 +6386,6 @@ class MainWindow(QMainWindow):
     ) -> Optional[Path]:
         if model is None:
             return None
-        runtime = (runtime_flavor or self._pred_runtime_flavor()).strip().lower()
-        if backend == "yolo" and (
-            runtime.startswith("onnx") or runtime.startswith("tensorrt")
-        ):
-            if exported_model is None:
-                exported_model = self._get_pred_exported_model_silent()
-            if exported_model is not None:
-                return exported_model
         return model
 
     def _browse_pred_weights(self):
@@ -6531,12 +6554,11 @@ class MainWindow(QMainWindow):
         else:
             self._last_pred_conf = self._pred_conf_default()
         runtime_flavor = self._pred_runtime_flavor()
-        exported_model_path = self._get_pred_exported_model_silent()
         cache_model = self._pred_cache_model(
             model,
             backend,
             runtime_flavor=runtime_flavor,
-            exported_model=exported_model_path,
+            exported_model=None,
         )
         self._last_pred_model = cache_model
         self._last_pred_backend = backend
@@ -6564,7 +6586,7 @@ class MainWindow(QMainWindow):
             skeleton_edges=self.project.skeleton_edges,
             backend=backend,
             runtime_flavor=runtime_flavor,
-            exported_model_path=exported_model_path,
+            exported_model_path=None,
             device="auto",
             imgsz=640,
             conf=self._last_pred_conf or 0.0,
@@ -6840,12 +6862,11 @@ class MainWindow(QMainWindow):
                 self._set_sleap_status("SLEAP: running", visible=True)
 
         runtime_flavor = self._pred_runtime_flavor()
-        exported_model_path = self._get_pred_exported_model_silent()
         cache_model = self._pred_cache_model(
             model,
             backend,
             runtime_flavor=runtime_flavor,
-            exported_model=exported_model_path,
+            exported_model=None,
         )
         self._last_pred_model = cache_model
         self._last_pred_backend = backend
@@ -6860,7 +6881,7 @@ class MainWindow(QMainWindow):
                 skeleton_edges=self.project.skeleton_edges,
                 backend=backend,
                 runtime_flavor=runtime_flavor,
-                exported_model_path=exported_model_path,
+                exported_model_path=None,
                 device="auto",
                 imgsz=640,
                 conf=self._pred_conf_default() if backend == "yolo" else 0.0,
@@ -7196,6 +7217,45 @@ def create_project_via_wizard(dataset_dir: Path) -> Optional[Project]:
             f"Dataset is missing `{DEFAULT_DATASET_IMAGES_DIR}/`:\n{dataset_dir}",
         )
         return None
+
+    # Suggest DataSieve preprocessing for very large datasets.
+    image_count = len(list_images(images_dir))
+    if image_count > LARGE_DATASET_SIEVE_THRESHOLD:
+        msg = QMessageBox(None)
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle("Large Dataset Detected")
+        msg.setText(
+            f"This dataset has {image_count:,} images.\n\n"
+            "For large datasets, DataSieve can reduce near-duplicates and create a smaller representative subset before labeling."
+        )
+        msg.setInformativeText("Open this dataset in DataSieve now?")
+        btn_open = msg.addButton("Open in DataSieve", QMessageBox.AcceptRole)
+        btn_continue = msg.addButton("Continue in PoseKit", QMessageBox.DestructiveRole)
+        msg.addButton(QMessageBox.Cancel)
+        msg.exec()
+
+        clicked = msg.clickedButton()
+        if clicked == btn_open:
+            try:
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-m",
+                        "multi_tracker.tools.data_sieve.gui",
+                        str(dataset_dir),
+                    ],
+                    start_new_session=True,
+                )
+            except Exception as exc:
+                QMessageBox.warning(
+                    None,
+                    "Launch Failed",
+                    f"Could not launch DataSieve:\n{exc}",
+                )
+            return None
+        if clicked != btn_continue:
+            return None
+
     wiz = ProjectWizard(dataset_dir, existing=None)
 
     if wiz.exec() != QDialog.Accepted:

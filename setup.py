@@ -41,6 +41,8 @@ setup(
             "mat=multi_tracker.app.launcher:main",
             "posekit-labeler=multi_tracker.posekit.pose_label:main",
             "pose=multi_tracker.posekit.pose_label:main",
+            "datasieve=multi_tracker.tools.data_sieve.gui:main",
+            "sieve=multi_tracker.tools.data_sieve.gui:main",
         ],
     },
     # Metadata

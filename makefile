@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-gpu env-create-mps env-create-rocm env-update env-update-gpu env-update-mps env-update-rocm env-remove env-remove-gpu env-remove-mps env-remove-rocm install install-gpu install-mps install-rocm setup setup-gpu setup-mps setup-rocm test pytest coverage test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-run pre-commit-update format format-check whitespace-fix lint lint-autofix lint-autofix-unsafe lint-moderate lint-strict lint-report commit-prep pre-commit-check help
+.PHONY: env-create env-create-gpu env-create-mps env-create-rocm env-update env-update-gpu env-update-mps env-update-rocm env-remove env-remove-gpu env-remove-mps env-remove-rocm install install-gpu install-mps install-rocm setup setup-gpu setup-mps setup-rocm test pytest coverage test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-autopep8 pre-commit-run pre-commit-update format format-check whitespace-fix lint lint-autofix lint-autofix-unsafe lint-moderate lint-strict lint-report commit-prep pre-commit-check help
 
 # Environment names for different platforms
 ENV_NAME = multi-animal-tracker
@@ -207,7 +207,19 @@ pre-commit-install:
 	pre-commit install
 	@echo "Pre-commit hooks installed. They will run automatically on git commit."
 
+pre-commit-autopep8:
+	@echo "🧹 Running autopep8 pre-fix for common pycodestyle issues..."
+	uvx autopep8 --in-place --recursive --select=E226,E225,E231 src/ tests/ tools/ legacy/
+	@set -e; \
+	for f in *.py; do \
+		if [ -f "$$f" ]; then \
+			uvx autopep8 --in-place --select=E226,E225,E231 "$$f"; \
+		fi; \
+	done
+
 pre-commit-run:
+	@$(MAKE) pre-commit-autopep8
+	@echo "🔎 Running pre-commit hooks on all files..."
 	pre-commit run --all-files
 
 pre-commit-update:

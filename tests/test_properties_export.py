@@ -18,10 +18,6 @@ def test_augment_trajectories_with_pose_cache_merges_by_frame_and_detection(tmp_
     writer.add_frame(
         10,
         [101.0, 102.0],
-        pose_mean_conf=[0.9, 0.8],
-        pose_valid_fraction=[1.0, 0.5],
-        pose_num_valid=[5, 3],
-        pose_num_keypoints=[5, 6],
         pose_keypoints=[
             np.array([[1, 2, 0.9], [3, 4, 0.8]], dtype=np.float32),
             None,
@@ -30,10 +26,6 @@ def test_augment_trajectories_with_pose_cache_merges_by_frame_and_detection(tmp_
     writer.add_frame(
         11,
         [201.0],
-        pose_mean_conf=[0.7],
-        pose_valid_fraction=[0.25],
-        pose_num_valid=[2],
-        pose_num_keypoints=[8],
         pose_keypoints=[np.array([[7, 8, 0.5]], dtype=np.float32)],
     )
     writer.save(
@@ -58,9 +50,14 @@ def test_augment_trajectories_with_pose_cache_merges_by_frame_and_detection(tmp_
     for col in POSE_EXPORT_COLUMNS:
         assert col in out.columns
 
+    # First detection: keypoints [[1, 2, 0.9], [3, 4, 0.8]]
+    # Mean conf = (0.9 + 0.8) / 2 = 0.85
+    # With min_valid_conf=0.2 (default), both keypoints valid: num_valid=2, valid_fraction=1.0
     first = out.iloc[0]
-    assert first["PoseMeanConf"] == pytest.approx(0.9)
-    assert first["PoseNumValid"] == 5
+    assert first["PoseMeanConf"] == pytest.approx(0.85)
+    assert first["PoseNumValid"] == 2
+    assert first["PoseNumKeypoints"] == 2
+    assert first["PoseValidFraction"] == pytest.approx(1.0)
     assert first["PoseKpt_head_X"] == pytest.approx(1.0)
     assert first["PoseKpt_head_Y"] == pytest.approx(2.0)
     assert first["PoseKpt_head_Conf"] == pytest.approx(0.9)
@@ -68,12 +65,18 @@ def test_augment_trajectories_with_pose_cache_merges_by_frame_and_detection(tmp_
     assert first["PoseKpt_tail_Y"] == pytest.approx(4.0)
     assert first["PoseKpt_tail_Conf"] == pytest.approx(0.8)
 
+    # Second detection: no keypoints (None)
     second = out.iloc[1]
-    assert second["PoseMeanConf"] == pytest.approx(0.8)
+    assert second["PoseMeanConf"] == pytest.approx(0.0)
     assert np.isnan(second["PoseKpt_head_X"])
 
+    # Third detection: keypoints [[7, 8, 0.5]]
+    # Mean conf = 0.5, num_valid=1, valid_fraction=1.0, num_keypoints=1
     third = out.iloc[2]
-    assert third["PoseNumKeypoints"] == 8
+    assert third["PoseMeanConf"] == pytest.approx(0.5)
+    assert third["PoseNumKeypoints"] == 1
+    assert third["PoseNumValid"] == 1
+    assert third["PoseValidFraction"] == pytest.approx(1.0)
 
     unmatched = out.iloc[3]
     assert np.isnan(unmatched["PoseMeanConf"])
@@ -97,10 +100,6 @@ def test_augment_trajectories_with_pose_cache_applies_ignore_posthoc(tmp_path):
     writer.add_frame(
         3,
         [301.0],
-        pose_mean_conf=[0.8],
-        pose_valid_fraction=[1.0],
-        pose_num_valid=[2],
-        pose_num_keypoints=[2],
         pose_keypoints=[np.array([[11, 12, 0.9], [13, 14, 0.7]], dtype=np.float32)],
     )
     writer.save(

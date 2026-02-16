@@ -56,10 +56,13 @@ class InferenceRuntimeManager:
 
         self.backend = create_pose_backend_from_config(config)
         self.metrics.startup_ms = (time.perf_counter() - t0) * 1000.0
+        effective_runtime = str(
+            getattr(self.backend, "runtime_flavor", config.runtime_flavor)
+        )
         logger.info(
             "Pose runtime backend created (%s/%s) in %.2f ms",
             config.backend_family,
-            config.runtime_flavor,
+            effective_runtime,
             self.metrics.startup_ms,
         )
         return self.backend

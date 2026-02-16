@@ -16,6 +16,12 @@ For complete PoseKit interface documentation (every form control, question label
 - Metadata/tagging and smart frame selection
 - Split generation and training/evaluation dialogs
 
+## SLEAP Backend Setup
+
+For SLEAP env creation and ONNX/TensorRT integration setup, see:
+
+- `/getting-started/integrations/`
+
 ## Key UX Concepts
 
 - Keypoint order is semantic and must remain stable.

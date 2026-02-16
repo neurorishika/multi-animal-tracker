@@ -592,7 +592,11 @@ class TrackingWorker(QThread):
             "Precompute: loading pose backend "
             f"({backend_family}/{runtime_flavor} on {runtime_device})...",
         )
-        pose_backend = create_pose_backend(params, out_root=str(cache_path.parent))
+        # Use individual dataset output directory if available, otherwise fall back to cache directory
+        pose_out_root = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
+        if not pose_out_root:
+            pose_out_root = str(cache_path.parent)
+        pose_backend = create_pose_backend(params, out_root=pose_out_root)
         if runtime_flavor.startswith("onnx") or runtime_flavor.startswith("tensorrt"):
             try:
                 resolved_artifact = str(
@@ -686,10 +690,6 @@ class TrackingWorker(QThread):
                         interpolation=cv2.INTER_AREA,
                     )
 
-                pose_mean_conf = []
-                pose_valid_fraction = []
-                pose_num_valid = []
-                pose_num_keypoints = []
                 pose_keypoints = []
 
                 if meas and filtered_obb_corners:
@@ -732,29 +732,16 @@ class TrackingWorker(QThread):
                                     gkpts = kpts
                                 pose_outputs[det_idx] = {
                                     "keypoints": gkpts,
-                                    "mean_conf": out.mean_conf,
-                                    "valid_fraction": out.valid_fraction,
-                                    "num_valid": out.num_valid,
-                                    "num_keypoints": out.num_keypoints,
                                 }
 
                     for det_idx in range(len(meas)):
                         out = pose_outputs[det_idx]
-                        pose_mean_conf.append(float(out.get("mean_conf", 0.0)))
-                        pose_valid_fraction.append(
-                            float(out.get("valid_fraction", 0.0))
-                        )
-                        pose_num_valid.append(int(out.get("num_valid", 0)))
-                        pose_num_keypoints.append(int(out.get("num_keypoints", 0)))
                         pose_keypoints.append(out.get("keypoints", None))
 
+                # Only store raw keypoints; summary stats computed on-demand when reading
                 cache_writer.add_frame(
                     frame_idx,
                     detection_ids,
-                    pose_mean_conf=pose_mean_conf,
-                    pose_valid_fraction=pose_valid_fraction,
-                    pose_num_valid=pose_num_valid,
-                    pose_num_keypoints=pose_num_keypoints,
                     pose_keypoints=pose_keypoints,
                 )
 
@@ -1083,13 +1070,9 @@ class TrackingWorker(QThread):
                 out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
             )
 
-        # Initialize detector using factory function
-        # Disable TensorRT in preview mode - TensorRT uses fixed batch sizes
-        # which is wasteful for single-frame processing
-        if self.preview_mode and p.get("ENABLE_TENSORRT", False):
-            logger.debug("TensorRT disabled for preview mode (single-frame processing)")
-            p = p.copy()
-            p["ENABLE_TENSORRT"] = False
+        # Initialize detector using factory function.
+        # Preview mode remains compatible with fixed-batch runtimes by using
+        # single-frame padding in the detector path.
         detector = create_detector(p)
 
         # Determine if we should use batched detection

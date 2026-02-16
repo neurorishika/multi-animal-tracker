@@ -226,6 +226,9 @@ class PoseInferenceService:
         sleap_device: str = "auto",
         sleap_batch: int = 4,
         sleap_max_instances: int = 1,
+        sleap_runtime_flavor: str = "native",
+        sleap_exported_model_path: Optional[str] = None,
+        sleap_export_input_hw: Optional[Tuple[int, int]] = None,
     ) -> Tuple[Optional[Dict[str, List[Tuple[float, float, float]]]], str]:
         """predict method documentation."""
         if not image_paths:
@@ -237,13 +240,21 @@ class PoseInferenceService:
         if backend == "sleap":
             if not model_path.exists() or not model_path.is_dir():
                 return None, f"SLEAP model dir not found: {model_path}"
+            sleap_env = str(sleap_env or "").strip()
             if not sleap_env:
                 return None, "Select a SLEAP conda env."
+            runtime_flavor = str(sleap_runtime_flavor or "native").strip().lower()
             # PoseKit is single-instance only.
             sleap_max_instances = 1
             tmp_dir = self.out_root / "posekit" / "tmp"
             tmp_dir.mkdir(parents=True, exist_ok=True)
             out_json = tmp_dir / f"sleap_pred_{os.getpid()}_{uuid.uuid4().hex}.json"
+            exported_model_path = str(sleap_exported_model_path or "").strip()
+            if runtime_flavor in {"onnx", "tensorrt"} and not exported_model_path:
+                return (
+                    None,
+                    f"SLEAP {runtime_flavor} runtime requires an exported model path.",
+                )
             ok, preds, err = _run_sleap_predict_service(
                 model_dir=model_path,
                 image_paths=image_paths,
@@ -254,6 +265,9 @@ class PoseInferenceService:
                 device=sleap_device,
                 batch=sleap_batch,
                 max_instances=sleap_max_instances,
+                runtime_flavor=runtime_flavor,
+                exported_model_path=exported_model_path,
+                export_input_hw=sleap_export_input_hw,
                 progress_cb=progress_cb,
                 cancel_cb=cancel_cb,
             )
@@ -498,7 +512,24 @@ except Exception as e:
     print(f'ERROR: sleap_io not installed: {e}', flush=True)
     sys.exit(2)
 
-_state = {'model_dir': None, 'device': None, 'predictor': None}
+try:
+    import cv2
+except Exception:
+    cv2 = None
+try:
+    from PIL import Image
+except Exception:
+    Image = None
+
+_state = {
+    'model_dir': None,
+    'device': None,
+    'predictor': None,
+    'runtime_flavor': None,
+    'exported_model_path': None,
+    'export_input_hw': None,
+    'export_input_channels': None,
+}
 _log_path = None
 
 def _log(msg):
@@ -529,6 +560,11 @@ def _normalize_device(device):
 
 def _clear_predictor():
     _state['predictor']=None
+    _state['model_dir']=None
+    _state['runtime_flavor']=None
+    _state['exported_model_path']=None
+    _state['export_input_hw']=None
+    _state['export_input_channels']=None
     gc.collect()
     try:
         import torch
@@ -665,6 +701,509 @@ def _run_inference(labels, model_dir, device, batch, max_instances):
     except Exception:
         pass
     return None
+
+def _resolve_export_model_path(exported_model_path, runtime_flavor):
+    p = Path(str(exported_model_path or "")).expanduser().resolve()
+    if p.is_dir():
+        if runtime_flavor == "onnx":
+            files = sorted(p.rglob("*.onnx"))
+            if not files:
+                raise RuntimeError(f"No ONNX artifact found in export directory: {p}")
+            return files[0]
+        files = sorted(list(p.rglob("*.engine")) + list(p.rglob("*.trt")))
+        if not files:
+            raise RuntimeError(f"No TensorRT artifact found in export directory: {p}")
+        return files[0]
+    return p
+
+def _extract_meta_value(meta, keys, default=None):
+    for key in keys:
+        if isinstance(meta, dict) and key in meta:
+            return meta.get(key)
+        if hasattr(meta, key):
+            return getattr(meta, key)
+    return default
+
+def _detect_export_input_spec(exported_model_path):
+    input_hw = None
+    input_channels = None
+    try:
+        from sleap_nn.export.metadata import load_metadata
+        meta = load_metadata(str(exported_model_path))
+    except Exception:
+        meta = None
+    if meta is None:
+        return None, None
+
+    hw = _extract_meta_value(
+        meta,
+        ("crop_size", "crop_hw", "input_hw", "image_hw"),
+        None,
+    )
+    if isinstance(hw, (list, tuple)) and len(hw) >= 2:
+        try:
+            input_hw = (int(hw[0]), int(hw[1]))
+        except Exception:
+            input_hw = None
+
+    input_shape = _extract_meta_value(meta, ("input_image_shape", "input_shape"), None)
+    if input_shape is not None:
+        try:
+            arr = np.asarray(input_shape).reshape((-1,))
+            if arr.size >= 4:
+                if int(arr[-1]) in (1, 3):
+                    input_channels = int(arr[-1])
+                    input_hw = (int(arr[-3]), int(arr[-2]))
+                elif int(arr[1]) in (1, 3):
+                    input_channels = int(arr[1])
+                    input_hw = (int(arr[-2]), int(arr[-1]))
+        except Exception:
+            pass
+
+    channels = _extract_meta_value(
+        meta, ("input_channels", "channels", "num_channels"), None
+    )
+    if channels is not None:
+        try:
+            input_channels = int(channels)
+        except Exception:
+            pass
+    return input_hw, input_channels
+
+def _detect_predictor_input_spec(predictor):
+    session = None
+    for name in ("session", "_session", "ort_session"):
+        cand = getattr(predictor, name, None)
+        if cand is not None:
+            session = cand
+            break
+    if session is None or not hasattr(session, "get_inputs"):
+        return None, None
+    try:
+        inputs = session.get_inputs()
+    except Exception:
+        return None, None
+    if not inputs:
+        return None, None
+    try:
+        shape = list(getattr(inputs[0], "shape", []) or [])
+    except Exception:
+        shape = []
+    dims = []
+    for d in shape:
+        try:
+            dims.append(int(d))
+        except Exception:
+            dims.append(-1)
+
+    input_hw = None
+    input_channels = None
+    if len(dims) >= 4:
+        if dims[-1] in (1, 3):
+            input_channels = int(dims[-1])
+            if dims[-3] > 0 and dims[-2] > 0:
+                input_hw = (int(dims[-3]), int(dims[-2]))
+        elif dims[1] in (1, 3):
+            input_channels = int(dims[1])
+            if dims[-2] > 0 and dims[-1] > 0:
+                input_hw = (int(dims[-2]), int(dims[-1]))
+    return input_hw, input_channels
+
+def _load_export_predictor(exported_model_path, runtime_flavor, device, batch, max_instances):
+    runtime = str(runtime_flavor or "onnx").strip().lower()
+    device = _normalize_device(device)
+    export_file = _resolve_export_model_path(exported_model_path, runtime)
+    export_key = str(export_file)
+    if (
+        _state.get("predictor") is not None
+        and _state.get("runtime_flavor") == runtime
+        and _state.get("exported_model_path") == export_key
+        and _state.get("device") == device
+    ):
+        return _state.get("predictor")
+
+    _clear_predictor()
+    from sleap_nn.export.predictors import load_exported_model
+
+    kwargs_base = {
+        "batch_size": int(max(1, int(batch))),
+        "max_instances": int(max(1, int(max_instances))),
+    }
+    if runtime == "onnx":
+        if str(device).startswith("cuda"):
+            kwargs_base["providers"] = ["CUDAExecutionProvider"]
+        else:
+            kwargs_base["providers"] = ["CPUExecutionProvider"]
+    elif runtime == "tensorrt":
+        if not str(device).startswith("cuda"):
+            raise RuntimeError(
+                f"SLEAP TensorRT runtime requires CUDA device, got: {device}"
+            )
+        kwargs_base["device"] = str(device)
+    else:
+        raise RuntimeError(f"Unsupported exported runtime: {runtime}")
+
+    attempts = [
+        {"runtime": runtime, **kwargs_base},
+        {"inference_model": runtime, **kwargs_base},
+        {"model_type": runtime, **kwargs_base},
+        {"runtime": runtime},
+        {},
+    ]
+    pred = None
+    last_err = None
+    for kwargs in attempts:
+        try:
+            pred = load_exported_model(str(export_file), **kwargs)
+            break
+        except Exception as exc:
+            last_err = exc
+            continue
+    if pred is None:
+        raise RuntimeError(
+            f"Failed to initialize SLEAP exported predictor: {last_err}"
+        )
+    _state["predictor"] = pred
+    _state["model_dir"] = None
+    _state["device"] = device
+    _state["runtime_flavor"] = runtime
+    _state["exported_model_path"] = export_key
+    in_hw, in_ch = _detect_export_input_spec(export_file)
+    if in_hw is None:
+        in_hw2, in_ch2 = _detect_predictor_input_spec(pred)
+        in_hw = in_hw2
+        if in_ch2 is not None:
+            in_ch = in_ch2
+    _state["export_input_hw"] = in_hw
+    _state["export_input_channels"] = in_ch
+    _log(f"predictor: loaded exported {runtime} model {export_file}")
+    return pred
+
+def _load_image(path_str):
+    p = str(path_str)
+    if cv2 is not None:
+        img = cv2.imread(p, cv2.IMREAD_COLOR)
+        if img is not None:
+            return img
+    if Image is not None:
+        with Image.open(p) as im:
+            rgb = im.convert("RGB")
+            arr = np.asarray(rgb)
+            return arr[:, :, ::-1].copy()
+    raise RuntimeError(
+        "Unable to load image. Install either opencv-python or pillow in the SLEAP env."
+    )
+
+def _prepare_export_crop(crop, input_hw, input_channels):
+    arr = np.asarray(crop)
+    if arr.ndim == 2:
+        arr = arr[:, :, None]
+    if arr.ndim != 3:
+        raise RuntimeError(f"Invalid crop shape for SLEAP export predictor: {arr.shape}")
+    orig_h, orig_w = int(arr.shape[0]), int(arr.shape[1])
+
+    if input_channels == 1 and arr.shape[2] != 1:
+        if cv2 is not None:
+            arr = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)[:, :, None]
+        else:
+            arr = np.mean(arr[:, :, :3], axis=2, keepdims=True).astype(arr.dtype)
+    elif (input_channels is None or input_channels == 3) and arr.shape[2] == 1:
+        arr = np.repeat(arr, 3, axis=2)
+
+    if input_hw is not None:
+        h, w = int(input_hw[0]), int(input_hw[1])
+        if h > 0 and w > 0 and (orig_h != h or orig_w != w):
+            if cv2 is None:
+                raise RuntimeError("OpenCV is required for resized SLEAP exported inference.")
+            if arr.shape[2] == 1:
+                resized = cv2.resize(
+                    arr[:, :, 0], (w, h), interpolation=cv2.INTER_LINEAR
+                )
+                arr = resized[:, :, None]
+            else:
+                arr = cv2.resize(arr, (w, h), interpolation=cv2.INTER_LINEAR)
+
+    pred_h, pred_w = int(arr.shape[0]), int(arr.shape[1])
+    sx = float(orig_w) / float(pred_w) if pred_w > 0 else 1.0
+    sy = float(orig_h) / float(pred_h) if pred_h > 0 else 1.0
+    if arr.shape[2] == 1:
+        arr = arr[:, :, 0]
+    return np.asarray(arr, dtype=np.uint8), sx, sy
+
+def _predict_export_batch(predictor, crops, runtime_flavor):
+    attempts = [list(crops)]
+    batch_uint8 = None
+    try:
+        batch_uint8 = np.stack([np.asarray(c, dtype=np.uint8) for c in crops], axis=0)
+    except Exception:
+        batch_uint8 = None
+    if batch_uint8 is not None:
+        attempts.append(batch_uint8)
+        attempts.append(batch_uint8.astype(np.float32) / 255.0)
+        if batch_uint8.ndim == 4:
+            attempts.append(
+                np.transpose(batch_uint8.astype(np.float32) / 255.0, (0, 3, 1, 2))
+            )
+
+    last_err = None
+    for inp in attempts:
+        try:
+            return predictor.predict(inp)
+        except Exception as exc:
+            last_err = exc
+            continue
+    raise RuntimeError(
+        f"SLEAP exported predictor failed for runtime '{runtime_flavor}': {last_err}"
+    )
+
+def _as_array(value):
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        return value
+    if hasattr(value, "numpy"):
+        try:
+            return value.numpy()
+        except Exception:
+            pass
+    if hasattr(value, "cpu"):
+        try:
+            return value.cpu().numpy()
+        except Exception:
+            pass
+    try:
+        return np.asarray(value)
+    except Exception:
+        return None
+
+def _dict_first_present(mapping, keys):
+    for key in keys:
+        if key in mapping:
+            return mapping.get(key)
+    return None
+
+def _pick_best_instance(xy, conf):
+    if xy.ndim == 2 and xy.shape[1] == 2:
+        if conf is None:
+            conf = np.zeros((xy.shape[0],), dtype=np.float32)
+        conf_vec = np.asarray(conf, dtype=np.float32).reshape((-1,))
+        return np.column_stack((xy.astype(np.float32), conf_vec))
+
+    if xy.ndim == 3 and xy.shape[-1] == 2:
+        n_instances = int(xy.shape[0])
+        if n_instances <= 0:
+            return None
+        if conf is None:
+            conf = np.zeros((xy.shape[0], xy.shape[1]), dtype=np.float32)
+        if conf.ndim == 1:
+            conf = np.tile(conf[None, :], (n_instances, 1))
+        mean_scores = np.nanmean(conf, axis=1)
+        idx = int(np.nanargmax(mean_scores)) if len(mean_scores) else 0
+        xy_i = np.asarray(xy[idx], dtype=np.float32)
+        conf_i = np.asarray(conf[idx], dtype=np.float32)
+        return np.column_stack((xy_i, conf_i))
+    return None
+
+def _coerce_prediction_batch(pred_out, batch_size):
+    empty = [None] * int(max(0, batch_size))
+    if pred_out is None or batch_size <= 0:
+        return empty
+
+    if isinstance(pred_out, dict):
+        xy = _as_array(
+            _dict_first_present(
+                pred_out,
+                ["instance_peaks", "pred_instance_peaks", "peaks", "keypoints", "points", "xy"],
+            )
+        )
+        conf = _as_array(
+            _dict_first_present(
+                pred_out,
+                [
+                    "instance_peak_vals",
+                    "pred_instance_peak_vals",
+                    "pred_peak_vals",
+                    "peak_vals",
+                    "scores",
+                    "confidences",
+                    "confidence",
+                ],
+            )
+        )
+        if xy is None:
+            return empty
+
+        if xy.ndim == 2 and xy.shape[1] >= 2:
+            xy = xy[None, :, :2]
+            if conf is not None and conf.ndim == 1:
+                conf = conf[None, :]
+        elif xy.ndim == 3 and xy.shape[-1] >= 2:
+            xy = xy[..., :2]
+            # Could be [B,K,2] or [I,K,2] for a single sample.
+            if batch_size == 1:
+                xy = xy[None, :, :, :]
+                if conf is not None and conf.ndim == 2:
+                    conf = conf[None, :, :]
+        elif xy.ndim == 4 and xy.shape[-1] >= 2:
+            xy = xy[..., :2]
+        else:
+            return empty
+
+        out = []
+        if xy.ndim == 3:
+            for b in range(min(batch_size, xy.shape[0])):
+                conf_b = conf[b] if conf is not None and conf.ndim >= 2 else None
+                out.append(_pick_best_instance(xy[b], conf_b))
+        else:
+            for b in range(min(batch_size, xy.shape[0])):
+                conf_b = conf[b] if conf is not None and conf.ndim >= 3 else None
+                out.append(_pick_best_instance(xy[b], conf_b))
+        if len(out) < batch_size:
+            out.extend([None] * (batch_size - len(out)))
+        return out[:batch_size]
+
+    if isinstance(pred_out, (list, tuple)):
+        # Handle canonical [xy, conf] pair.
+        if len(pred_out) >= 1:
+            xy0 = _as_array(pred_out[0])
+            conf0 = _as_array(pred_out[1]) if len(pred_out) > 1 else None
+            if xy0 is not None and isinstance(xy0, np.ndarray):
+                if xy0.ndim >= 3 and xy0.shape[-1] >= 2:
+                    return _coerce_prediction_batch(
+                        {"instance_peaks": xy0, "instance_peak_vals": conf0},
+                        batch_size,
+                    )
+
+        out = []
+        for item in list(pred_out)[:batch_size]:
+            if isinstance(item, dict):
+                parsed = _coerce_prediction_batch(item, 1)
+                out.append(parsed[0] if parsed else None)
+                continue
+            arr = _as_array(item)
+            if arr is None:
+                out.append(None)
+                continue
+            if arr.ndim == 2 and arr.shape[1] >= 3:
+                out.append(np.asarray(arr[:, :3], dtype=np.float32))
+            elif arr.ndim == 2 and arr.shape[1] >= 2:
+                conf = np.zeros((arr.shape[0],), dtype=np.float32)
+                out.append(np.column_stack((arr[:, :2].astype(np.float32), conf)))
+            else:
+                out.append(None)
+        if len(out) < batch_size:
+            out.extend([None] * (batch_size - len(out)))
+        return out[:batch_size]
+
+    arr = _as_array(pred_out)
+    if arr is None:
+        return empty
+    if arr.ndim == 3 and arr.shape[-1] >= 3:
+        out = [
+            np.asarray(arr[i, :, :3], dtype=np.float32)
+            for i in range(min(batch_size, arr.shape[0]))
+        ]
+        if len(out) < batch_size:
+            out.extend([None] * (batch_size - len(out)))
+        return out[:batch_size]
+    if arr.ndim == 2 and arr.shape[1] >= 3 and batch_size == 1:
+        return [np.asarray(arr[:, :3], dtype=np.float32)]
+    return empty
+
+def _normalize_export_xy_conf(raw, batch_size):
+    parsed = _coerce_prediction_batch(raw, int(max(0, batch_size)))
+    if not parsed:
+        return None, None
+    max_k = max(
+        (
+            int(arr.shape[0])
+            for arr in parsed
+            if arr is not None and hasattr(arr, "shape") and len(arr.shape) == 2
+        ),
+        default=0,
+    )
+    if max_k <= 0:
+        return None, None
+
+    xy_arr = np.zeros((batch_size, max_k, 2), dtype=np.float32)
+    conf_arr = np.zeros((batch_size, max_k), dtype=np.float32)
+    any_valid = False
+    for i in range(min(batch_size, len(parsed))):
+        arr = parsed[i]
+        if arr is None:
+            continue
+        arr = np.asarray(arr, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] < 2:
+            continue
+        n = min(max_k, int(arr.shape[0]))
+        if n <= 0:
+            continue
+        xy_arr[i, :n, :] = arr[:n, :2]
+        if arr.shape[1] >= 3:
+            conf_arr[i, :n] = np.clip(arr[:n, 2], 0.0, 1.0)
+        any_valid = True
+
+    if not any_valid:
+        return None, None
+    return xy_arr, conf_arr
+
+def _run_export_inference(cfg, images, num_kpts):
+    runtime = str(cfg.get("runtime_flavor", "onnx")).strip().lower()
+    exported_model_path = str(cfg.get("exported_model_path", "")).strip()
+    if not exported_model_path:
+        raise RuntimeError(f"SLEAP {runtime} runtime requires an exported model path.")
+
+    predictor = _load_export_predictor(
+        exported_model_path,
+        runtime,
+        cfg.get("device"),
+        int(cfg.get("batch", 4)),
+        int(cfg.get("max_instances", 1)),
+    )
+    input_hw = _state.get("export_input_hw")
+    input_channels = _state.get("export_input_channels")
+
+    forced_hw = cfg.get("export_input_hw")
+    if isinstance(forced_hw, (list, tuple)) and len(forced_hw) >= 2:
+        try:
+            h = int(forced_hw[0])
+            w = int(forced_hw[1])
+            if h > 0 and w > 0:
+                input_hw = (h, w)
+        except Exception:
+            pass
+
+    raw_crops = [_load_image(p) for p in images]
+    crops = []
+    scales = []
+    for c in raw_crops:
+        c2, sx, sy = _prepare_export_crop(c, input_hw, input_channels)
+        crops.append(c2)
+        scales.append((sx, sy))
+    raw = _predict_export_batch(predictor, crops, runtime)
+    xy_arr, conf_arr = _normalize_export_xy_conf(raw, batch_size=len(images))
+
+    preds = {}
+    for j, path in enumerate(images):
+        rows = []
+        if xy_arr is not None and j < xy_arr.shape[0]:
+            xy = xy_arr[j]
+            conf = (
+                conf_arr[j]
+                if conf_arr is not None and j < conf_arr.shape[0]
+                else np.zeros((xy.shape[0],), dtype=np.float32)
+            )
+            n = min(int(xy.shape[0]), int(num_kpts))
+            sx, sy = scales[j] if j < len(scales) else (1.0, 1.0)
+            for k in range(n):
+                c = float(conf[k]) if k < len(conf) else 0.0
+                x = float(xy[k, 0]) * float(sx)
+                y = float(xy[k, 1]) * float(sy)
+                rows.append((x, y, float(np.clip(c, 0.0, 1.0))))
+        if len(rows) < int(num_kpts):
+            rows.extend([(0.0, 0.0, 0.0)] * (int(num_kpts) - len(rows)))
+        preds[str(Path(path))] = rows
+    return preds
 
 def _predict_via_cli(cfg, labels):
     tmp_dir = Path(cfg['tmp_dir'])
@@ -959,6 +1498,16 @@ class Handler(BaseHTTPRequestHandler):
             names=cfg.get('keypoint_names') or []
             edges=cfg.get('skeleton_edges') or []
             cfg['device'] = _normalize_device(cfg.get('device'))
+            runtime_flavor = str(cfg.get("runtime_flavor", "native")).strip().lower()
+            if runtime_flavor in ("onnx", "tensorrt"):
+                preds = _run_export_inference(cfg, images, max(1, len(names)))
+                try:
+                    nonempty = sum(1 for v in preds.values() if v)
+                    _log(f"preds_nonempty={nonempty}/{len(images)} runtime={runtime_flavor}")
+                except Exception:
+                    pass
+                self._json(200, {'ok': True, 'preds': preds})
+                return
             sk=_make_skeleton(names, edges)
             video=_make_video(images)
             try:
@@ -1189,6 +1738,36 @@ def _get_sleap_service() -> _SleapHttpService:
     return _SLEAP_SERVICE
 
 
+def _all_zero_pose_chunk(
+    chunk_paths: List[Path],
+    chunk_preds: Dict[str, List[Tuple[float, float, float]]],
+    num_keypoints: int,
+) -> bool:
+    if not chunk_paths or not chunk_preds:
+        return False
+    n_kpts = int(max(1, num_keypoints))
+    for p in chunk_paths:
+        k1 = str(Path(p))
+        k2 = str(Path(p).resolve())
+        rows = chunk_preds.get(k1)
+        if rows is None:
+            rows = chunk_preds.get(k2)
+        if rows is None or len(rows) < n_kpts:
+            return False
+        for row in rows[:n_kpts]:
+            if not isinstance(row, (list, tuple)) or len(row) < 3:
+                return False
+            try:
+                x = float(row[0])
+                y = float(row[1])
+                c = float(row[2])
+            except Exception:
+                return False
+            if abs(x) > 1e-9 or abs(y) > 1e-9 or abs(c) > 1e-9:
+                return False
+    return True
+
+
 def _run_sleap_predict_service(
     model_dir: Path,
     image_paths: List[Path],
@@ -1199,6 +1778,9 @@ def _run_sleap_predict_service(
     device: str = "auto",
     batch: int = 4,
     max_instances: int = 1,
+    runtime_flavor: str = "native",
+    exported_model_path: str = "",
+    export_input_hw: Optional[Tuple[int, int]] = None,
     progress_cb=None,
     cancel_cb=None,
 ) -> Tuple[bool, Dict[str, List[Tuple[float, float, float]]], str]:
@@ -1231,6 +1813,16 @@ def _run_sleap_predict_service(
             "keypoint_names": list(keypoint_names),
             "skeleton_edges": [list(e) for e in skeleton_edges],
             "tmp_dir": str(Path(tempfile.gettempdir()) / f"sleap_srv_{os.getpid()}"),
+            "runtime_flavor": str(runtime_flavor or "native").strip().lower(),
+            "exported_model_path": str(exported_model_path or "").strip(),
+            "export_input_hw": (
+                [int(export_input_hw[0]), int(export_input_hw[1])]
+                if isinstance(export_input_hw, (tuple, list))
+                and len(export_input_hw) >= 2
+                and int(export_input_hw[0]) > 0
+                and int(export_input_hw[1]) > 0
+                else None
+            ),
         }
         try:
             resp = svc.request("/infer", payload, timeout=3600.0)
@@ -1256,13 +1848,142 @@ def _run_sleap_predict_service(
             if svc.log_path:
                 err = f"{err} (log: {svc.log_path})"
             return False, {}, err
-        preds.update(resp.get("preds", {}))
+        chunk_preds = dict(resp.get("preds", {}) or {})
+        runtime = str(runtime_flavor or "native").strip().lower()
+        if (
+            runtime in {"onnx", "tensorrt"}
+            and str(exported_model_path or "").strip()
+            and _all_zero_pose_chunk(chunk, chunk_preds, len(keypoint_names))
+        ):
+            fb_json = (
+                Path(tempfile.gettempdir())
+                / f"sleap_export_fb_{os.getpid()}_{uuid.uuid4().hex}.json"
+            )
+            fb_ok, fb_preds, _fb_err = _run_sleap_export_predict_subprocess(
+                exported_model_path=Path(str(exported_model_path).strip()),
+                runtime_flavor=runtime,
+                image_paths=chunk,
+                out_json=fb_json,
+                env_name=env_name,
+                keypoint_names=keypoint_names,
+                device=device,
+                batch=batch,
+                max_instances=max_instances,
+                input_hw=export_input_hw,
+                progress_cb=None,
+                cancel_cb=cancel_cb,
+            )
+            if fb_ok and fb_preds:
+                chunk_preds = fb_preds
+        preds.update(chunk_preds)
         done += len(chunk)
         if progress_cb:
             progress_cb(done, total)
 
     out_json.write_text(json.dumps({"preds": preds}), encoding="utf-8")
     return True, preds, ""
+
+
+def _run_sleap_export_predict_subprocess(
+    exported_model_path: Path,
+    runtime_flavor: str,
+    image_paths: List[Path],
+    out_json: Path,
+    env_name: str,
+    keypoint_names: List[str],
+    device: str = "auto",
+    batch: int = 4,
+    max_instances: int = 1,
+    input_hw: Optional[Tuple[int, int]] = None,
+    progress_cb=None,
+    cancel_cb=None,
+) -> Tuple[bool, Dict[str, List[Tuple[float, float, float]]], str]:
+    env_name = str(env_name or "").strip()
+    if not env_name:
+        return False, {}, "Select a SLEAP conda env."
+    if shutil.which("conda") is None:
+        return False, {}, "Conda not found on PATH."
+
+    worker_path = (
+        Path(__file__).resolve().parent / "sleap_export_predict_worker.py"
+    ).resolve()
+    if not worker_path.exists():
+        return False, {}, f"SLEAP export worker not found: {worker_path}"
+
+    req = {
+        "exported_model_path": str(exported_model_path),
+        "runtime_flavor": str(runtime_flavor or "onnx").strip().lower(),
+        "images": [str(p) for p in image_paths],
+        "out_json": str(out_json),
+        "device": str(device or "auto"),
+        "batch": int(batch),
+        "max_instances": int(max_instances),
+        "num_keypoints": int(max(1, len(keypoint_names))),
+        "input_hw": (
+            [int(input_hw[0]), int(input_hw[1])]
+            if isinstance(input_hw, (tuple, list))
+            and len(input_hw) >= 2
+            and int(input_hw[0]) > 0
+            and int(input_hw[1]) > 0
+            else None
+        ),
+    }
+    req_path = (
+        Path(tempfile.gettempdir())
+        / f"sleap_export_req_{os.getpid()}_{uuid.uuid4().hex}.json"
+    )
+    req_path.write_text(json.dumps(req), encoding="utf-8")
+
+    proc = subprocess.Popen(
+        [
+            "conda",
+            "run",
+            "-n",
+            env_name,
+            "python",
+            str(worker_path),
+            str(req_path),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    tail_lines: List[str] = []
+    for line in proc.stdout:
+        if cancel_cb and cancel_cb():
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+            return False, {}, "Canceled."
+        line = line.strip()
+        if line.startswith("PROGRESS "):
+            try:
+                _, done_s, total_s = line.split()
+                if progress_cb:
+                    progress_cb(int(done_s), int(total_s))
+            except Exception:
+                pass
+        else:
+            if line:
+                tail_lines.append(line)
+                if len(tail_lines) > 20:
+                    tail_lines.pop(0)
+
+    rc = proc.wait()
+    if rc != 0:
+        msg = "\n".join(tail_lines[-12:]).strip()
+        if not msg:
+            msg = "SLEAP exported runtime subprocess failed."
+        return False, {}, msg
+
+    try:
+        data = json.loads(out_json.read_text(encoding="utf-8"))
+        return True, data.get("preds", {}), ""
+    except Exception as e:
+        return False, {}, str(e)
 
 
 def _run_sleap_predict_subprocess(
@@ -1278,6 +1999,9 @@ def _run_sleap_predict_subprocess(
     progress_cb=None,
     cancel_cb=None,
 ) -> Tuple[bool, Dict[str, List[Tuple[float, float, float]]], str]:
+    env_name = str(env_name or "").strip()
+    if not env_name:
+        return False, {}, "Select a SLEAP conda env."
     if shutil.which("conda") is None:
         return False, {}, "Conda not found on PATH."
 

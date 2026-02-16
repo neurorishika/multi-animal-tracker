@@ -32,6 +32,7 @@ def test_hashes_change_when_expected(tmp_path: Path) -> None:
         "POSE_MODEL_TYPE": "yolo",
         "POSE_MODEL_DIR": str(model_a),
         "POSE_MIN_KPT_CONF_VALID": 0.2,
+        "COMPUTE_RUNTIME": "mps",
     }
 
     det_hash_1 = mod.compute_detection_hash("abc", str(video), 0, 99)
@@ -51,6 +52,10 @@ def test_hashes_change_when_expected(tmp_path: Path) -> None:
     params_model_changed["POSE_MODEL_DIR"] = str(model_b)
     ext_hash_2 = mod.compute_extractor_hash(params_model_changed)
     assert ext_hash_1 != ext_hash_2
+
+    params_runtime_changed = dict(params)
+    params_runtime_changed["COMPUTE_RUNTIME"] = "onnx_cpu"
+    assert mod.compute_extractor_hash(params_runtime_changed) != ext_hash_1
 
     params_ignore_changed = dict(params)
     params_ignore_changed["POSE_IGNORE_KEYPOINTS"] = ["head"]

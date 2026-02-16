@@ -4,7 +4,9 @@ Supports both background subtraction and YOLO OBB detection methods.
 """
 
 import hashlib
+import json
 import logging
+import shutil
 from pathlib import Path
 
 import cv2
@@ -137,48 +139,243 @@ class YOLOOBBDetector:
         self.model = None
         self.device = self._detect_device()
         self.use_tensorrt = False
+        self.use_onnx = False
         self.tensorrt_model_path = None
+        self.onnx_model_path = None
+        self.onnx_imgsz = None
+        self.onnx_batch_size = 1
+        self.tensorrt_batch_size = 1
         self._shapely_warning_shown = False  # Track if we've warned about shapely
         self._load_model()
+
+    def _resolve_onnx_imgsz(self, model_path: Path | None = None) -> int:
+        """Resolve ONNX export/inference image size.
+
+        Priority:
+        1) Explicit `YOLO_ONNX_IMGSZ`
+        2) Explicit `YOLO_IMGSZ`
+        3) Model metadata from source .pt (`model.overrides['imgsz']` / `model.args['imgsz']`)
+        4) Fallback 640
+        """
+        raw = self.params.get("YOLO_ONNX_IMGSZ", None)
+        if raw is None and "YOLO_IMGSZ" in self.params:
+            raw = self.params.get("YOLO_IMGSZ")
+
+        imgsz = None
+        if raw is not None:
+            try:
+                imgsz = int(raw)
+            except Exception:
+                imgsz = None
+
+        if imgsz is None and model_path is not None and model_path.exists():
+            try:
+                from ultralytics import YOLO
+
+                model = YOLO(str(model_path), task="obb")
+                ov = getattr(model, "overrides", {}) or {}
+                arg_imgsz = None
+                try:
+                    arg_imgsz = ov.get("imgsz")
+                except Exception:
+                    arg_imgsz = None
+                if arg_imgsz is None:
+                    margs = getattr(getattr(model, "model", None), "args", {}) or {}
+                    if isinstance(margs, dict):
+                        arg_imgsz = margs.get("imgsz")
+                if arg_imgsz is not None:
+                    imgsz = int(arg_imgsz)
+            except Exception:
+                imgsz = None
+
+        if imgsz is None:
+            imgsz = 640
+        # Keep this aligned with practical YOLO defaults and export constraints.
+        imgsz = max(64, min(4096, int(imgsz)))
+        return imgsz
+
+    def _artifact_signature(
+        self, runtime: str, batch_size: int = 1, onnx_imgsz: int | None = None
+    ) -> str:
+        inference_model_id = self.params.get("INFERENCE_MODEL_ID")
+        if inference_model_id:
+            token = str(inference_model_id)
+        else:
+            token = str(self.params.get("YOLO_MODEL_PATH", ""))
+        runtime_profile = str(runtime)
+        if str(runtime) == "onnx":
+            # Keep ONNX export profile explicit in cache signature so profile changes
+            # always trigger a rebuild of potentially incompatible artifacts.
+            resolved_imgsz = int(onnx_imgsz or self._resolve_onnx_imgsz())
+            runtime_profile = f"onnx_v3_static_imgsz{resolved_imgsz}_opset17_nosimplify"
+        return hashlib.sha1(
+            f"{token}|runtime={runtime_profile}|batch={int(batch_size)}".encode("utf-8")
+        ).hexdigest()[:16]
+
+    def _artifact_meta_path(self, artifact_path: Path) -> Path:
+        return artifact_path.with_suffix(f"{artifact_path.suffix}.runtime_meta.json")
+
+    def _artifact_is_fresh(self, artifact_path: Path, signature: str) -> bool:
+        if not artifact_path.exists():
+            return False
+        data = self._read_artifact_meta(artifact_path)
+        if not data:
+            return False
+        return str(data.get("signature", "")) == str(signature)
+
+    def _read_artifact_meta(self, artifact_path: Path) -> dict:
+        meta_path = self._artifact_meta_path(artifact_path)
+        if not meta_path.exists():
+            return {}
+        try:
+            data = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _write_artifact_meta(
+        self, artifact_path: Path, signature: str, **extra_meta
+    ) -> None:
+        meta_path = self._artifact_meta_path(artifact_path)
+        payload = {"signature": str(signature)}
+        payload.update({str(k): v for k, v in extra_meta.items()})
+        meta_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _try_load_onnx_model(self, model_path_str):
+        """Try to load or export ONNX model for CPU runtime."""
+        try:
+            from ultralytics import YOLO
+
+            resolved_model = Path(model_path_str).expanduser().resolve()
+            onnx_batch_size = max(1, int(self.params.get("TENSORRT_MAX_BATCH_SIZE", 1)))
+            if resolved_model.suffix.lower() == ".onnx":
+                # User supplied explicit ONNX artifact path.
+                onnx_path = resolved_model
+                if not onnx_path.exists():
+                    raise RuntimeError(f"ONNX model path not found: {onnx_path}")
+                meta = self._read_artifact_meta(onnx_path)
+                try:
+                    meta_imgsz = int(meta.get("imgsz", 0))
+                except Exception:
+                    meta_imgsz = 0
+                try:
+                    meta_batch = int(meta.get("batch_size", 0))
+                except Exception:
+                    meta_batch = 0
+                if meta_batch > 0:
+                    onnx_batch_size = meta_batch
+                else:
+                    # Unknown exported batch dimension for user-supplied ONNX.
+                    # Keep conservative default to avoid invalid-batch errors.
+                    onnx_batch_size = 1
+                onnx_imgsz = (
+                    meta_imgsz
+                    if meta_imgsz > 0
+                    else self._resolve_onnx_imgsz(model_path=resolved_model)
+                )
+                logger.info(f"Loading ONNX model from: {onnx_path}")
+                self.model = YOLO(str(onnx_path), task="obb")
+                self.use_onnx = True
+                self.onnx_model_path = str(onnx_path)
+                self.onnx_imgsz = int(onnx_imgsz)
+                self.onnx_batch_size = int(onnx_batch_size)
+                return
+            else:
+                onnx_path = resolved_model.with_name(
+                    f"{resolved_model.stem}_b{onnx_batch_size}.onnx"
+                )
+            onnx_imgsz = self._resolve_onnx_imgsz(model_path=resolved_model)
+            signature = self._artifact_signature(
+                runtime="onnx",
+                batch_size=int(onnx_batch_size),
+                onnx_imgsz=onnx_imgsz,
+            )
+
+            if self._artifact_is_fresh(onnx_path, signature):
+                meta = self._read_artifact_meta(onnx_path)
+                try:
+                    meta_imgsz = int(meta.get("imgsz", 0))
+                except Exception:
+                    meta_imgsz = 0
+                if meta_imgsz > 0:
+                    onnx_imgsz = meta_imgsz
+                try:
+                    meta_batch = int(meta.get("batch_size", 0))
+                except Exception:
+                    meta_batch = 0
+                if meta_batch > 0:
+                    onnx_batch_size = meta_batch
+                logger.info(f"Loading ONNX model from: {onnx_path}")
+                self.model = YOLO(str(onnx_path), task="obb")
+                self.use_onnx = True
+                self.onnx_model_path = str(onnx_path)
+                self.onnx_imgsz = onnx_imgsz
+                self.onnx_batch_size = int(onnx_batch_size)
+                return
+
+            logger.info("Exporting YOLO OBB model to ONNX runtime artifact...")
+            base_model = YOLO(str(resolved_model), task="obb")
+            export_path = base_model.export(
+                format="onnx",
+                imgsz=onnx_imgsz,
+                dynamic=False,
+                simplify=False,
+                nms=False,
+                opset=17,
+                batch=int(onnx_batch_size),
+                verbose=False,
+            )
+            out_path = Path(export_path).expanduser().resolve()
+            if not out_path.exists():
+                raise RuntimeError(f"ONNX export output missing: {out_path}")
+            if out_path != onnx_path:
+                shutil.copy2(str(out_path), str(onnx_path))
+            self._write_artifact_meta(
+                onnx_path,
+                signature,
+                imgsz=int(onnx_imgsz),
+                batch_size=int(onnx_batch_size),
+            )
+            self.model = YOLO(str(onnx_path), task="obb")
+            self.use_onnx = True
+            self.onnx_model_path = str(onnx_path)
+            self.onnx_imgsz = onnx_imgsz
+            self.onnx_batch_size = int(onnx_batch_size)
+            logger.info(f"ONNX model ready: {onnx_path}")
+        except Exception as e:
+            logger.warning(f"ONNX runtime optimization failed: {e}")
+            self.use_onnx = False
 
     def _try_load_tensorrt_model(self, model_path_str):
         """Try to load or export TensorRT model for faster inference."""
         try:
             from ultralytics import YOLO
 
-            # Determine cache directory for TensorRT models
-            cache_dir = Path.home() / ".cache" / "multi_tracker" / "tensorrt"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-
             # Get max batch size from UI parameter
             max_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
 
-            # Generate a TensorRT engine filename tied to inference identity.
-            # This prevents stale reuse when inference-shaping settings or model files change.
             resolved_model = Path(model_path_str).expanduser().resolve()
-            model_stem = resolved_model.stem or "model"
-            safe_model_stem = "".join(
-                c if c.isalnum() or c in ("_", "-") else "_" for c in model_stem
-            )
-            inference_model_id = self.params.get("INFERENCE_MODEL_ID")
-            if inference_model_id:
-                fingerprint = str(inference_model_id)
+            if resolved_model.suffix.lower() in {".engine", ".trt"}:
+                engine_path = resolved_model
+                meta = self._read_artifact_meta(engine_path)
+                try:
+                    meta_batch = int(meta.get("batch_size", 0))
+                except Exception:
+                    meta_batch = 0
+                if meta_batch > 0:
+                    max_batch_size = meta_batch
+                else:
+                    max_batch_size = 1
             else:
-                fingerprint_parts = [
-                    str(resolved_model),
-                    f"batch={max_batch_size}",
-                ]
-                if resolved_model.exists():
-                    stat = resolved_model.stat()
-                    fingerprint_parts.append(f"size={stat.st_size}")
-                    fingerprint_parts.append(f"mtime_ns={stat.st_mtime_ns}")
-                fingerprint = hashlib.md5(
-                    "|".join(fingerprint_parts).encode("utf-8")
-                ).hexdigest()[:12]
-            engine_path = cache_dir / f"{safe_model_stem}_{fingerprint}.engine"
+                engine_path = resolved_model.with_name(
+                    f"{resolved_model.stem}_b{int(max_batch_size)}.engine"
+                )
+            signature = self._artifact_signature(
+                runtime="tensorrt", batch_size=int(max_batch_size)
+            )
 
-            # Check if TensorRT engine already exists
-            if engine_path.exists():
+            # Check if TensorRT engine already exists and matches current inference signature
+            if self._artifact_is_fresh(engine_path, signature):
                 logger.info(f"Loading cached TensorRT engine: {engine_path}")
                 try:
                     self.model = YOLO(str(engine_path), task="obb")
@@ -193,14 +390,13 @@ class YOLOOBBDetector:
                     return
                 except Exception as e:
                     logger.warning(f"Failed to load cached TensorRT engine: {e}")
-                    # Try to re-export
                     engine_path.unlink(missing_ok=True)
 
             # Export to TensorRT
             logger.info("=" * 60)
             logger.info("BUILDING TENSORRT ENGINE - This is a one-time optimization")
             logger.info("This may take 1-5 minutes. Please wait...")
-            logger.info("The engine will be cached for future use.")
+            logger.info("The engine will be stored next to the source model.")
             logger.info("=" * 60)
             base_model = YOLO(model_path_str)
             base_model.to(self.device)
@@ -223,9 +419,12 @@ class YOLOOBBDetector:
 
             # Move exported engine to cache directory
             if Path(export_path).exists():
-                import shutil
-
-                shutil.move(str(export_path), str(engine_path))
+                exported_path = Path(export_path).expanduser().resolve()
+                if exported_path != engine_path:
+                    shutil.copy2(str(exported_path), str(engine_path))
+                self._write_artifact_meta(
+                    engine_path, signature, batch_size=int(max_batch_size)
+                )
                 logger.info(f"TensorRT engine exported and cached: {engine_path}")
 
                 # Load the TensorRT model
@@ -306,11 +505,27 @@ class YOLOOBBDetector:
 
         model_path_str = self.params.get("YOLO_MODEL_PATH", "yolov8n-obb.pt")
         enable_tensorrt = self.params.get("ENABLE_TENSORRT", False)
+        enable_onnx_runtime = self.params.get("ENABLE_ONNX_RUNTIME", False)
+        model_path = Path(model_path_str).expanduser().resolve()
+        local_model_file = model_path.exists() and model_path.is_file()
 
         # Check if TensorRT is requested and available
-        from multi_tracker.utils.gpu_utils import TENSORRT_AVAILABLE
+        from multi_tracker.utils.gpu_utils import (
+            ONNXRUNTIME_AVAILABLE,
+            TENSORRT_AVAILABLE,
+        )
 
-        if enable_tensorrt and TENSORRT_AVAILABLE and self.device.startswith("cuda"):
+        if enable_onnx_runtime and ONNXRUNTIME_AVAILABLE and local_model_file:
+            self._try_load_onnx_model(model_path_str)
+            if self.use_onnx:
+                return
+
+        if (
+            enable_tensorrt
+            and TENSORRT_AVAILABLE
+            and self.device.startswith("cuda")
+            and local_model_file
+        ):
             self._try_load_tensorrt_model(model_path_str)
             if self.use_tensorrt:
                 return
@@ -331,9 +546,6 @@ class YOLOOBBDetector:
             except Exception as e:
                 logger.error(f"Failed to load YOLO model '{model_path_str}': {e}")
                 raise
-
-        # For custom model paths, resolve and validate
-        model_path = Path(model_path_str).expanduser().resolve()
 
         # Check if the file exists
         if not model_path.exists():
@@ -656,7 +868,13 @@ class YOLOOBBDetector:
         cy = xywhr[:, 1]
         w = xywhr[:, 2]
         h = xywhr[:, 3]
-        angle_rad = xywhr[:, 4]
+        angle_raw = xywhr[:, 4]
+        # Runtime parity guard:
+        # Some exported backends may report theta in degrees instead of radians.
+        if np.nanmax(np.abs(angle_raw)) > (2.0 * np.pi + 1e-3):
+            angle_rad = np.deg2rad(angle_raw)
+        else:
+            angle_rad = angle_raw
 
         angle_deg = np.rad2deg(angle_rad) % 180.0
         swap_mask = w < h
@@ -676,6 +894,18 @@ class YOLOOBBDetector:
 
         meas_arr = np.column_stack((cx, cy, angle_rad_fixed)).astype(np.float32)
         shapes_arr = np.column_stack((ellipse_area, aspect_ratio)).astype(np.float32)
+
+        # Build OBB corners from xywhr directly for stable geometry across runtimes
+        # (ONNX/TensorRT can disagree on provided xyxyxyxy corner ordering/decoding).
+        half_w = major / 2.0
+        half_h = minor / 2.0
+        x_offsets = np.stack((-half_w, half_w, half_w, -half_w), axis=1)
+        y_offsets = np.stack((-half_h, -half_h, half_h, half_h), axis=1)
+        cos_t = np.cos(angle_rad_fixed)
+        sin_t = np.sin(angle_rad_fixed)
+        x_coords = cx[:, None] + x_offsets * cos_t[:, None] - y_offsets * sin_t[:, None]
+        y_coords = cy[:, None] + x_offsets * sin_t[:, None] + y_offsets * cos_t[:, None]
+        corners = np.stack((x_coords, y_coords), axis=2).astype(np.float32, copy=False)
 
         cap = self._raw_detection_cap()
         order = np.argsort(conf_scores)[::-1]
@@ -841,8 +1071,19 @@ class YOLOOBBDetector:
 
         # Run inference on the configured device
         try:
-            results = self.model.predict(
-                frame,
+            fixed_batch = 1
+            if self.use_tensorrt and int(getattr(self, "tensorrt_batch_size", 1)) > 1:
+                fixed_batch = int(self.tensorrt_batch_size)
+            elif self.use_onnx and int(getattr(self, "onnx_batch_size", 1)) > 1:
+                fixed_batch = int(self.onnx_batch_size)
+
+            if fixed_batch > 1:
+                # Static-batch runtimes require exact batch dimension.
+                source_input = [frame] * fixed_batch
+            else:
+                source_input = frame
+            predict_kwargs = dict(
+                source=source_input,
                 conf=raw_conf_floor,
                 iou=1.0,  # Always use custom OBB IOU filtering after inference
                 classes=target_classes,
@@ -850,6 +1091,11 @@ class YOLOOBBDetector:
                 device=self.device,
                 verbose=False,
             )
+            if self.use_onnx and self.onnx_imgsz:
+                predict_kwargs["imgsz"] = int(self.onnx_imgsz)
+            results = self.model.predict(**predict_kwargs)
+            if fixed_batch > 1:
+                results = results[:1]
         except Exception as e:
             logger.error(f"YOLO inference failed on frame {frame_count}: {e}")
             if return_raw:
@@ -926,36 +1172,43 @@ class YOLOOBBDetector:
         raw_conf_floor = max(1e-4, float(p.get("RAW_YOLO_CONFIDENCE_FLOOR", 1e-3)))
         max_det = self._raw_detection_cap()
 
-        # Handle TensorRT fixed batch size
-        # TensorRT requires exact batch size, so we need to:
-        # 1. Chunk larger batches into TensorRT batch-sized pieces
-        # 2. Pad the final chunk if smaller than TensorRT batch size
+        # Handle fixed-batch runtimes (TensorRT and static-batch ONNX).
+        # These require exact batch size, so we:
+        # 1. Chunk larger batches into runtime batch-sized pieces
+        # 2. Pad the final chunk if smaller than runtime batch size
         actual_frame_count = len(frames)
-
+        fixed_batch_size = None
+        fixed_backend = None
         if self.use_tensorrt and hasattr(self, "tensorrt_batch_size"):
-            trt_batch = self.tensorrt_batch_size
+            fixed_batch_size = max(1, int(self.tensorrt_batch_size))
+            fixed_backend = "TensorRT"
+        elif self.use_onnx:
+            fixed_batch_size = max(1, int(getattr(self, "onnx_batch_size", 1)))
+            fixed_backend = "ONNX"
+
+        if fixed_batch_size is not None:
             all_results = []
 
-            # Process in TensorRT-sized chunks
-            for chunk_start in range(0, actual_frame_count, trt_batch):
-                chunk_end = min(chunk_start + trt_batch, actual_frame_count)
+            # Process in fixed-size chunks
+            for chunk_start in range(0, actual_frame_count, fixed_batch_size):
+                chunk_end = min(chunk_start + fixed_batch_size, actual_frame_count)
                 chunk_frames = frames[chunk_start:chunk_end]
                 chunk_size = len(chunk_frames)
 
-                # Pad chunk if smaller than TensorRT batch size
-                if chunk_size < trt_batch:
-                    padding_needed = trt_batch - chunk_size
+                # Pad chunk if smaller than fixed batch size
+                if chunk_size < fixed_batch_size:
+                    padding_needed = fixed_batch_size - chunk_size
                     dummy_frame = chunk_frames[0]
                     chunk_frames = list(chunk_frames) + [dummy_frame] * padding_needed
                     logger.debug(
-                        f"Padded final chunk from {chunk_size} to {trt_batch} for TensorRT"
+                        f"Padded final chunk from {chunk_size} to {fixed_batch_size} for {fixed_backend}"
                     )
 
                 # Run inference on this chunk
                 # Use custom polygon-based IOU filtering OR YOLO's built-in NMS based on user preference
                 try:
-                    chunk_results = self.model.predict(
-                        chunk_frames,
+                    predict_kwargs = dict(
+                        source=chunk_frames,
                         conf=raw_conf_floor,
                         iou=1.0,  # Always use custom OBB IOU filtering after inference
                         classes=target_classes,
@@ -963,6 +1216,9 @@ class YOLOOBBDetector:
                         device=self.device,
                         verbose=False,
                     )
+                    if self.use_onnx and self.onnx_imgsz:
+                        predict_kwargs["imgsz"] = int(self.onnx_imgsz)
+                    chunk_results = self.model.predict(**predict_kwargs)
                     # Only keep results for actual frames (not padding)
                     all_results.extend(chunk_results[:chunk_size])
                 except Exception as e:
@@ -975,8 +1231,8 @@ class YOLOOBBDetector:
             # Standard PyTorch inference - no chunking needed
             # Use custom polygon-based IOU filtering OR YOLO's built-in NMS based on user preference
             try:
-                results_batch = self.model.predict(
-                    frames,
+                predict_kwargs = dict(
+                    source=frames,
                     conf=raw_conf_floor,
                     iou=1.0,  # Always use custom OBB IOU filtering after inference
                     classes=target_classes,
@@ -984,9 +1240,44 @@ class YOLOOBBDetector:
                     device=self.device,
                     verbose=False,
                 )
+                if self.use_onnx and self.onnx_imgsz:
+                    predict_kwargs["imgsz"] = int(self.onnx_imgsz)
+                results_batch = self.model.predict(**predict_kwargs)
             except Exception as e:
                 logger.error(f"YOLO batched inference failed: {e}")
-                return [([], [], [], [], []) for _ in frames]
+                if not self.use_onnx:
+                    return [([], [], [], [], []) for _ in frames]
+
+                # Some ONNX exports are static with batch dimension fixed at 1.
+                # Fall back to per-frame ONNX inference instead of aborting tracking.
+                logger.warning(
+                    "ONNX batched inference unavailable, falling back to per-frame ONNX inference."
+                )
+                results_batch = []
+                for idx, frame in enumerate(frames):
+                    try:
+                        single_kwargs = dict(
+                            source=frame,
+                            conf=raw_conf_floor,
+                            iou=1.0,
+                            classes=target_classes,
+                            max_det=max_det,
+                            device=self.device,
+                            verbose=False,
+                        )
+                        if self.onnx_imgsz:
+                            single_kwargs["imgsz"] = int(self.onnx_imgsz)
+                        single_results = self.model.predict(**single_kwargs)
+                        results_batch.append(
+                            single_results[0] if len(single_results) > 0 else None
+                        )
+                    except Exception as frame_err:
+                        logger.error(
+                            "YOLO ONNX single-frame fallback failed at batch frame %d: %s",
+                            start_frame_idx + idx,
+                            frame_err,
+                        )
+                        results_batch.append(None)
 
         # Process each result
         batch_detections = []
