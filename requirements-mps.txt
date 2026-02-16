@@ -13,6 +13,14 @@ torchaudio
 
 # Computer vision & deep learning
 timm
+faiss-cpu  # Basic FAISS (can cause segfaults on macOS)
+
+# OPTIONAL: Metal-accelerated FAISS for Apple Silicon (recommended for ClassKit)
+# Uncomment these lines for faster, more stable clustering:
+# mlx>=0.0.5
+# mlx-nn
+# metalfaiss
+
 pupil-apriltags
 ultralytics
 

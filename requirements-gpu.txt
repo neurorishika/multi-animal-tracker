@@ -16,6 +16,7 @@ torchaudio
 
 # Computer vision & deep learning
 timm
+faiss-gpu
 pupil-apriltags
 ultralytics
 

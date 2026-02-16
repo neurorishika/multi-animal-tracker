@@ -38,24 +38,7 @@ uv pip install -v -r requirements.txt
 
 ---
 
-### 2. `environment-minimal.yml` + `requirements-minimal.txt` - Lightweight Installation
-**Recommended for**: First-time users, limited disk space, production deployments
-
-- Minimal dependencies
-- Faster installation
-- Smaller environment size (~2GB vs ~5GB)
-- No development tools or Jupyter
-
-**Installation**:
-```bash
-mamba env create -f environment-minimal.yml
-mamba activate multi-animal-tracker-minimal
-uv pip install -v -r requirements-minimal.txt
-```
-
----
-
-### 3. `environment-gpu.yml` + `requirements-gpu.txt` - NVIDIA GPU Accelerated
+### 2. `environment-gpu.yml` + `requirements-gpu.txt` - NVIDIA GPU Accelerated
 **Recommended for**: Users with NVIDIA GPUs, high-performance requirements
 
 - Includes CuPy for GPU-accelerated background processing (8-30x speedup)
@@ -103,14 +86,12 @@ mamba env create -f environment-rocm.yml     # AMD
 
 # Install pip packages for each (after activating)
 mamba activate multi-animal-tracker-base && uv pip install -v -r requirements.txt
-mamba activate multi-animal-tracker-minimal && uv pip install -v -r requirements-minimal.txt
 mamba activate multi-animal-tracker-gpu && uv pip install -v -r requirements-gpu.txt
 mamba activate multi-animal-tracker-mps && uv pip install -v -r requirements-mps.txt
 mamba activate multi-animal-tracker-rocm && uv pip install -v -r requirements-rocm.txt
 
 # Switch between them
 mamba activate multi-animal-tracker-base     # Standard (CPU)
-mamba activate multi-animal-tracker-minimal  # Minimal
 mamba activate multi-animal-tracker-gpu      # NVIDIA GPU
 mamba activate multi-animal-tracker-mps      # Apple Silicon
 mamba activate multi-animal-tracker-rocm     # AMD
@@ -209,7 +190,6 @@ Edit `requirements-rocm.txt` and uncomment the appropriate lines:
 | Environment | Size | Platform | YOLO FPS | BG Sub FPS | Use Case |
 |-------------|------|----------|----------|------------|----------|
 | **standard** | ~5 GB | All | 4 | 60 | General use, development |
-| **minimal** | ~2 GB | All | 4 | 45 | Production, limited space |
 | **gpu** | ~8 GB | NVIDIA + Linux/Win | 85 | 400 | High performance NVIDIA |
 | **mps** | ~5 GB | Apple Silicon + macOS | 30 | 60 | Apple M1/M2/M3/M4 |
 | **rocm** | ~7 GB | AMD + Linux | 40-60 | 200-300 | AMD Radeon/Instinct |
@@ -221,17 +201,14 @@ You can have multiple environments installed simultaneously:
 ```bash
 # Create all environments
 mamba env create -f environment.yml
-mamba env create -f environment-minimal.yml
 mamba env create -f environment-gpu.yml
 
 # Install pip packages for each
 mamba activate multi-animal-tracker-base && uv pip install -v -r requirements.txt
-mamba activate multi-animal-tracker-minimal && uv pip install -v -r requirements-minimal.txt
 mamba activate multi-animal-tracker-gpu && uv pip install -v -r requirements-gpu.txt
 
 # Switch between them
 mamba activate multi-animal-tracker-base     # Standard
-mamba activate multi-animal-tracker-minimal  # Minimal
 mamba activate multi-animal-tracker-gpu      # GPU
 
 # List installed environments
@@ -291,7 +268,7 @@ UV is aut
 - Automatic ARM64 optimization via conda
 
 **Intel Macs**:
-- Use `environment.yml` or `environment-minimal.yml`
+- Use `environment.yml`
 - CPU-only acceleration via Numba
 
 ### Linux
@@ -314,7 +291,7 @@ UV is aut
 - Supported GPUs: Radeon RX 5000+, Instinct MI series
 
 **Intel/AMD CPU**:
-- Use `environment.yml` or `environment-minimal.yml`
+- Use `environment.yml`
 - Numba JIT provides good CPU performance
 
 ### Windows
@@ -331,8 +308,7 @@ UV is aut
 2. **Apple Silicon (macOS)**: Use `environment-mps.yml` for 2-3× YOLO speedup
 3. **AMD GPU (Linux)**: Use `environment-rocm.yml` for GPU acceleration
 4. **CPU-only systems**: Use `environment.yml` (standard) with Numba optimization
-5. **Limited resources**: Use `environment-minimal.yml` (smaller footprint)
-6. **Development**: Use `environment.yml` + install dev dependencies
+5. **Development**: Use `environment.yml` + install dev dependencies
 
 ### Which Environment Should I Choose?
 
@@ -345,11 +321,11 @@ UV is aut
 
 2. Do you need all features?
    - **Yes** → Use appropriate GPU environment or `environment.yml`
-   - **No** → `environment-minimal.yml` (smaller, faster install)
+   - **No** → `environment.yml` (standard, smaller footprint)
 
 3. Are you developing/analyzing?
    - **Yes** → `environment.yml` or `environment-gpu.yml`
-   - **No** → `environment-minimal.yml`
+   - **No** → `environment.yml`
 
 ### Windows
 - All environments supported
@@ -379,5 +355,4 @@ conda env create -f environment.yml
 
 1. **CPU-only systems**: Use `environment.yml` (standard)
 2. **NVIDIA GPU available**: Use `environment-gpu.yml` for 8-30x speedup
-3. **Limited resources**: Use `environment-minimal.yml`
-4. **Development**: Use `environment.yml` + install dev dependencies
+3. **Development**: Use `environment.yml` + install dev dependencies

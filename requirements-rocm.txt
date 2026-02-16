@@ -53,6 +53,7 @@ cupy-rocm-6-0
 
 # Computer vision & deep learning
 timm
+faiss-cpu
 pupil-apriltags
 ultralytics
 
