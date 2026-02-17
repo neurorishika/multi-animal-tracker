@@ -576,7 +576,13 @@ class PosePredictWorker(QObject):
                         backend.close()
                     except Exception:
                         pass
-            except Exception:
+            except Exception as exc:
+                if self.backend == "sleap":
+                    raise RuntimeError(
+                        "SLEAP shared runtime path failed in PoseKit. "
+                        "Legacy fallback is disabled for parity with MAT. "
+                        f"Original error: {exc}"
+                    ) from exc
                 # Fallback to legacy PoseInferenceService path.
                 logger.debug(
                     "Shared runtime predict path failed; falling back to legacy path.",
@@ -597,6 +603,12 @@ class PosePredictWorker(QObject):
                 sleap_device=self.sleap_device,
                 sleap_batch=self.sleap_batch,
                 sleap_max_instances=self.sleap_max_instances,
+                sleap_runtime_flavor=self.runtime_flavor,
+                sleap_exported_model_path=(
+                    str(self.exported_model_path)
+                    if self.exported_model_path is not None
+                    else None
+                ),
             )
             if preds_map is None:
                 self.failed.emit(err or "Prediction failed.")
@@ -769,7 +781,13 @@ class BulkPosePredictWorker(QObject):
                         backend.close()
                     except Exception:
                         pass
-            except Exception:
+            except Exception as exc:
+                if self.backend == "sleap":
+                    raise RuntimeError(
+                        "SLEAP shared runtime bulk path failed in PoseKit. "
+                        "Legacy fallback is disabled for parity with MAT. "
+                        f"Original error: {exc}"
+                    ) from exc
                 logger.debug(
                     "Shared runtime bulk path failed; falling back to legacy path.",
                     exc_info=True,
@@ -789,6 +807,12 @@ class BulkPosePredictWorker(QObject):
                 sleap_device=self.sleap_device,
                 sleap_batch=self.sleap_batch,
                 sleap_max_instances=self.sleap_max_instances,
+                sleap_runtime_flavor=self.runtime_flavor,
+                sleap_exported_model_path=(
+                    str(self.exported_model_path)
+                    if self.exported_model_path is not None
+                    else None
+                ),
             )
             if preds is None:
                 self.failed.emit(err or "Prediction failed.")

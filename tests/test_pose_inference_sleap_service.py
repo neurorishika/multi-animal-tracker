@@ -203,3 +203,10 @@ def test_sleap_env_preflight_runs_temp_script(tmp_path: Path, monkeypatch) -> No
     assert captured["script_path"] is not None
     assert captured["script_path"].suffix == ".py"
     assert captured["script_path"].exists() is False
+
+
+def test_sleap_service_code_normalizes_export_logits() -> None:
+    mod = _load_pose_inference_module()
+    code = str(mod._SLEAP_SERVICE_CODE)
+    assert "def _normalize_conf_values(conf):" in code
+    assert "1.0 / (1.0 + np.exp(-np.clip(arr, -40.0, 40.0)))" in code

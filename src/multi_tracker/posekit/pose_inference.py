@@ -989,25 +989,55 @@ def _dict_first_present(mapping, keys):
             return mapping.get(key)
     return None
 
+def _normalize_conf_values(conf):
+    arr = np.asarray(conf, dtype=np.float32)
+    if arr.size == 0:
+        return arr
+    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+    if np.any((arr < 0.0) | (arr > 1.0)):
+        # Exported predictors can emit logits instead of probabilities.
+        arr = 1.0 / (1.0 + np.exp(-np.clip(arr, -40.0, 40.0)))
+    return np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
+
 def _pick_best_instance(xy, conf):
     if xy.ndim == 2 and xy.shape[1] == 2:
+        n_kpts = int(xy.shape[0])
         if conf is None:
-            conf = np.zeros((xy.shape[0],), dtype=np.float32)
-        conf_vec = np.asarray(conf, dtype=np.float32).reshape((-1,))
+            conf_vec = np.zeros((n_kpts,), dtype=np.float32)
+        else:
+            conf_vec = _normalize_conf_values(conf).reshape((-1,))
+            if conf_vec.size < n_kpts:
+                conf_vec = np.pad(conf_vec, (0, n_kpts - conf_vec.size))
+            elif conf_vec.size > n_kpts:
+                conf_vec = conf_vec[:n_kpts]
         return np.column_stack((xy.astype(np.float32), conf_vec))
 
     if xy.ndim == 3 and xy.shape[-1] == 2:
         n_instances = int(xy.shape[0])
+        n_kpts = int(xy.shape[1])
         if n_instances <= 0:
             return None
         if conf is None:
-            conf = np.zeros((xy.shape[0], xy.shape[1]), dtype=np.float32)
-        if conf.ndim == 1:
-            conf = np.tile(conf[None, :], (n_instances, 1))
+            conf = np.zeros((n_instances, n_kpts), dtype=np.float32)
+        else:
+            conf = _normalize_conf_values(conf)
+            if conf.ndim == 1:
+                conf = np.tile(conf[None, :], (n_instances, 1))
+            elif conf.ndim > 2:
+                conf = conf.reshape((n_instances, -1))
+            if conf.shape[1] < n_kpts:
+                pad = np.zeros((n_instances, n_kpts - conf.shape[1]), dtype=np.float32)
+                conf = np.concatenate((conf, pad), axis=1)
+            elif conf.shape[1] > n_kpts:
+                conf = conf[:, :n_kpts]
         mean_scores = np.nanmean(conf, axis=1)
         idx = int(np.nanargmax(mean_scores)) if len(mean_scores) else 0
         xy_i = np.asarray(xy[idx], dtype=np.float32)
-        conf_i = np.asarray(conf[idx], dtype=np.float32)
+        conf_i = _normalize_conf_values(conf[idx]).reshape((-1,))
+        if conf_i.size < n_kpts:
+            conf_i = np.pad(conf_i, (0, n_kpts - conf_i.size))
+        elif conf_i.size > n_kpts:
+            conf_i = conf_i[:n_kpts]
         return np.column_stack((xy_i, conf_i))
     return None
 
@@ -1147,7 +1177,7 @@ def _normalize_export_xy_conf(raw, batch_size):
             continue
         xy_arr[i, :n, :] = arr[:n, :2]
         if arr.shape[1] >= 3:
-            conf_arr[i, :n] = np.clip(arr[:n, 2], 0.0, 1.0)
+            conf_arr[i, :n] = _normalize_conf_values(arr[:n, 2])[:n]
         any_valid = True
 
     if not any_valid:

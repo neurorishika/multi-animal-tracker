@@ -71,6 +71,16 @@ def _load_image(path_str: str) -> np.ndarray:
     )
 
 
+def _normalize_conf_values(conf: Any) -> np.ndarray:
+    arr = np.asarray(conf, dtype=np.float32)
+    if arr.size == 0:
+        return arr
+    arr = np.nan_to_num(arr, nan=0.0, posinf=1.0, neginf=0.0)
+    if np.any((arr < 0.0) | (arr > 1.0)):
+        arr = 1.0 / (1.0 + np.exp(-np.clip(arr, -40.0, 40.0)))
+    return np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
+
+
 def _normalize_xy_conf(
     raw: Any, batch_size: int
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -139,6 +149,9 @@ def _normalize_xy_conf(
             conf_arr = conf_arr[None, :]
         elif conf_arr.ndim != 2:
             conf_arr = None
+
+    if conf_arr is not None:
+        conf_arr = _normalize_conf_values(conf_arr)
 
     # Normalize batch dimension.
     if xy_arr.shape[0] != batch_size:
