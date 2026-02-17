@@ -135,3 +135,71 @@ def test_sleap_service_nonzero_onnx_does_not_trigger_fallback(
     assert err == ""
     assert fallback_called["n"] == 0
     assert preds[str(images[0])][0] == (11.0, 22.0, 0.6)
+
+
+def test_format_sleap_env_preflight_error_torchvision_nms() -> None:
+    mod = _load_pose_inference_module()
+    msg = mod._format_sleap_env_preflight_error(
+        "RuntimeError: operator torchvision::nms does not exist", "sleap"
+    )
+    assert "torchvision::nms" in msg
+    assert "torch and torchvision are incompatible builds" in msg
+    assert "conda run -n sleap" in msg
+
+
+def test_format_sleap_env_preflight_error_nccl_symbol() -> None:
+    mod = _load_pose_inference_module()
+    msg = mod._format_sleap_env_preflight_error(
+        "ERROR: torch import failed: /x/libtorch_cuda.so: undefined symbol: ncclAlltoAll",
+        "sleap",
+    )
+    assert "CUDA/NCCL binary mismatch" in msg
+    assert "nvidia-nccl-cu13" in msg
+    assert "conda run -n sleap" in msg
+
+
+def test_sleap_service_start_returns_preflight_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    mod = _load_pose_inference_module()
+    svc = mod._SleapHttpService()
+
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/conda")
+    monkeypatch.setattr(
+        mod,
+        "_sleap_env_preflight",
+        lambda _env_name: (False, "preflight import failure"),
+    )
+
+    ok, err = svc.start("sleap", log_path=tmp_path / "sleap_service.log")
+    assert ok is False
+    assert "preflight import failure" in err
+    assert svc.proc is None
+
+
+def test_sleap_env_preflight_runs_temp_script(tmp_path: Path, monkeypatch) -> None:
+    mod = _load_pose_inference_module()
+
+    class _Res:
+        returncode = 0
+        stdout = '{"ok": true}'
+
+    captured = {"cmd": None, "script_path": None}
+
+    def _fake_run(cmd, **kwargs):
+        _ = kwargs
+        captured["cmd"] = list(cmd)
+        captured["script_path"] = Path(cmd[-1])
+        return _Res()
+
+    monkeypatch.setattr(mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(mod.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    ok, err = mod._sleap_env_preflight("sleap")
+    assert ok is True
+    assert err == ""
+    assert captured["cmd"] is not None
+    assert "-c" not in captured["cmd"]
+    assert captured["script_path"] is not None
+    assert captured["script_path"].suffix == ".py"
+    assert captured["script_path"].exists() is False

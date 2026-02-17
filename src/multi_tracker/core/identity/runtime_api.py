@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -869,9 +870,11 @@ def _attempt_sleap_cli_export(
     runtime_flavor: str,
     sleap_env: str,
     input_hw: Optional[Tuple[int, int]] = None,
+    batch_size: int = 1,
 ) -> Tuple[bool, str]:
     runtime = str(runtime_flavor).strip().lower()
     sleap_env = str(sleap_env or "").strip()
+    batch_size = int(max(1, int(batch_size)))
     runtime_tokens = [runtime]
     if runtime == "tensorrt":
         runtime_tokens.append("trt")
@@ -895,6 +898,11 @@ def _attempt_sleap_cli_export(
 
     command_variants: List[List[str]] = []
     for token in runtime_tokens:
+        profile_variants = [
+            ["--batch-size", str(batch_size)],
+            ["--batch", str(batch_size)],
+            [],
+        ]
         base_variants = [
             [
                 "sleap-nn",
@@ -937,17 +945,21 @@ def _attempt_sleap_cli_export(
         ]
         for h, w in size_candidates:
             for base in base_variants:
-                command_variants.append(
-                    [
-                        *base,
-                        "--input-height",
-                        str(int(h)),
-                        "--input-width",
-                        str(int(w)),
-                    ]
-                )
+                for prof in profile_variants:
+                    command_variants.append(
+                        [
+                            *base,
+                            "--input-height",
+                            str(int(h)),
+                            "--input-width",
+                            str(int(w)),
+                            *prof,
+                        ]
+                    )
         # Keep no-size variants as last resort for CLI versions/models that infer size.
-        command_variants.extend(base_variants)
+        for base in base_variants:
+            for prof in profile_variants:
+                command_variants.append([*base, *prof])
 
     if shutil.which("conda") and sleap_env:
         conda_wrapped = []
@@ -1020,6 +1032,7 @@ def _auto_export_sleap_model(config: PoseRuntimeConfig, runtime_flavor: str) -> 
         runtime_flavor=runtime,
         sleap_env=sleap_env,
         input_hw=input_hw,
+        batch_size=int(max(1, config.sleap_batch)),
     )
     if not ok and not sleap_env:
         # Dev fallback when no env is configured.
@@ -1050,6 +1063,8 @@ class YoloNativeBackend:
         max_det: int = 1,
         batch_size: int = 4,
     ):
+        os.environ.setdefault("YOLO_AUTOINSTALL", "false")
+        os.environ.setdefault("ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS", "1")
         from ultralytics import YOLO
 
         self.model_path = str(Path(model_path).expanduser().resolve())

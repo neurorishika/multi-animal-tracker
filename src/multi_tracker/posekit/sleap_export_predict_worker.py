@@ -458,6 +458,11 @@ def main() -> int:
         hw2, ch2 = _detect_input_spec_from_predictor(predictor)
         input_hw = hw2 or input_hw
         input_channels = ch2 if ch2 is not None else input_channels
+    if input_hw is None:
+        raise RuntimeError(
+            "SLEAP exported runtime requires fixed input shape metadata or an explicit input_hw. "
+            "Re-export the model with fixed input height/width."
+        )
 
     preds: Dict[str, List[Tuple[float, float, float]]] = {}
     total = len(images)
@@ -465,55 +470,18 @@ def main() -> int:
 
     for i in range(0, total, batch_size):
         chunk = images[i : i + batch_size]
-        raw_crops = [_load_image(p) for p in chunk]
+        if not chunk:
+            continue
+        chunk_padded = list(chunk)
+        if len(chunk_padded) < batch_size:
+            chunk_padded.extend([chunk_padded[-1]] * (batch_size - len(chunk_padded)))
+
+        raw_crops = [_load_image(p) for p in chunk_padded]
         crops, scales = _prepare_batch_for_predictor(
             raw_crops, input_hw, input_channels
         )
-        try:
-            raw = _predict_batch(predictor, crops, runtime_flavor)
-        except Exception as exc:
-            msg = str(exc).lower()
-            retried = False
-            raw = None
-            # Some exported SLEAP ONNX models are strict about stride-compatible
-            # fixed sizes; retry with known-safe square sizes before hard failure.
-            shape_mismatch_tokens = (
-                "concat",
-                "non concat axis dimensions must match",
-                "inhomogeneous shape",
-                "setting an array element with a sequence",
-                "all input arrays must have the same shape",
-                "invalid argument",
-            )
-            if runtime_flavor == "onnx" and any(
-                tok in msg for tok in shape_mismatch_tokens
-            ):
-                tried = set()
-                if input_hw is not None:
-                    tried.add((int(input_hw[0]), int(input_hw[1])))
-                for cand in ((224, 224), (256, 256), (320, 320)):
-                    if cand in tried:
-                        continue
-                    try:
-                        crops_retry, scales_retry = _prepare_batch_for_predictor(
-                            raw_crops, cand, input_channels
-                        )
-                        raw = _predict_batch(predictor, crops_retry, runtime_flavor)
-                        crops = crops_retry
-                        scales = scales_retry
-                        retried = True
-                        print(
-                            f"INFO retrying SLEAP ONNX with fallback input size {cand[0]}x{cand[1]}",
-                            flush=True,
-                        )
-                        break
-                    except Exception:
-                        continue
-            if raw is None:
-                raise
-            if retried:
-                pass
-        xy_arr, conf_arr = _normalize_xy_conf(raw, batch_size=len(chunk))
+        raw = _predict_batch(predictor, crops, runtime_flavor)
+        xy_arr, conf_arr = _normalize_xy_conf(raw, batch_size=len(chunk_padded))
 
         for j, path in enumerate(chunk):
             rows: List[Tuple[float, float, float]] = []

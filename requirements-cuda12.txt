@@ -1,0 +1,12 @@
+# CUDA 12.x install profile for multi-animal-tracker
+# Install with: uv pip install -v -r requirements-cuda12.txt
+
+--extra-index-url https://download.pytorch.org/whl/cu128
+-r requirements-cuda.txt
+
+tensorrt-cu12
+tensorrt-cu12-bindings
+tensorrt-cu12-libs
+
+faiss-gpu
+cupy-cuda12x

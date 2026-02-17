@@ -1026,6 +1026,317 @@ class DatasetGenerationWorker(QThread):
                     pass
 
 
+class PreviewDetectionWorker(QThread):
+    """Worker thread for non-blocking preview detection."""
+
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, preview_frame_rgb, context, use_size_filtering):
+        super().__init__()
+        self.preview_frame_rgb = preview_frame_rgb
+        self.context = context
+        self.use_size_filtering = bool(use_size_filtering)
+
+    def run(self):
+        try:
+            result = _run_preview_detection_job(
+                self.preview_frame_rgb,
+                self.context,
+                self.use_size_filtering,
+            )
+            self.finished_signal.emit(result)
+        except Exception as exc:
+            import traceback
+
+            self.error_signal.emit(f"{exc}\n{traceback.format_exc()}")
+
+
+def _run_preview_detection_job(
+    frame_rgb, context: dict, use_size_filtering: bool
+) -> dict:
+    """Run preview detection using a frozen parameter snapshot."""
+    from ..core.background.model import BackgroundModel
+    from ..core.detectors.engine import YOLOOBBDetector
+    from ..utils.image_processing import apply_image_adjustments
+
+    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+    detection_method = int(context.get("detection_method", 0))
+    is_background_subtraction = detection_method == 0
+    resize_f = float(context.get("resize_factor", 1.0))
+
+    test_frame = frame_bgr.copy()
+    detected_dimensions = []
+
+    if is_background_subtraction:
+        logger.info("Building background model for test detection...")
+        cap = cv2.VideoCapture(str(context.get("video_path", "")))
+        if not cap.isOpened():
+            raise RuntimeError("Cannot open video for background priming")
+
+        try:
+            bg_params = {
+                "BACKGROUND_PRIME_FRAMES": int(context.get("bg_prime_frames", 30)),
+                "BRIGHTNESS": int(context.get("brightness", 0)),
+                "CONTRAST": float(context.get("contrast", 1.0)),
+                "GAMMA": float(context.get("gamma", 1.0)),
+                "ROI_MASK": context.get("roi_mask"),
+                "RESIZE_FACTOR": resize_f,
+                "DARK_ON_LIGHT_BACKGROUND": bool(context.get("dark_on_light", False)),
+                "THRESHOLD_VALUE": int(context.get("threshold_value", 20)),
+                "MORPH_KERNEL_SIZE": int(context.get("morph_kernel_size", 3)),
+                "ENABLE_ADDITIONAL_DILATION": bool(
+                    context.get("enable_additional_dilation", False)
+                ),
+                "DILATION_KERNEL_SIZE": int(context.get("dilation_kernel_size", 3)),
+                "DILATION_ITERATIONS": int(context.get("dilation_iterations", 1)),
+            }
+
+            bg_model = BackgroundModel(bg_params)
+            bg_model.prime_background(cap)
+
+            if bg_model.lightest_background is None:
+                raise RuntimeError("Failed to build background model")
+
+            frame_to_process = frame_bgr.copy()
+            if resize_f < 1.0:
+                frame_to_process = cv2.resize(
+                    frame_to_process,
+                    (0, 0),
+                    fx=resize_f,
+                    fy=resize_f,
+                    interpolation=cv2.INTER_AREA,
+                )
+                test_frame = cv2.resize(
+                    test_frame,
+                    (0, 0),
+                    fx=resize_f,
+                    fy=resize_f,
+                    interpolation=cv2.INTER_AREA,
+                )
+
+            gray = cv2.cvtColor(frame_to_process, cv2.COLOR_BGR2GRAY)
+            gray = apply_image_adjustments(
+                gray,
+                bg_params["BRIGHTNESS"],
+                bg_params["CONTRAST"],
+                bg_params["GAMMA"],
+                use_gpu=False,
+            )
+
+            roi_for_test = bg_params["ROI_MASK"]
+            if roi_for_test is not None:
+                if resize_f < 1.0:
+                    roi_for_test = cv2.resize(
+                        roi_for_test,
+                        (gray.shape[1], gray.shape[0]),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                gray = cv2.bitwise_and(gray, gray, mask=roi_for_test)
+
+            bg_u8 = bg_model.lightest_background.astype(np.uint8)
+            fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
+            cnts, _ = cv2.findContours(
+                fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            min_contour = float(context.get("min_contour", 50.0))
+            detections = []
+            reference_body_size = float(context.get("reference_body_size", 50.0))
+            reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+            scaled_body_area = reference_body_area * (resize_f**2)
+
+            if use_size_filtering:
+                min_size_multiplier = float(context.get("min_object_size", 0.0))
+                max_size_multiplier = float(context.get("max_object_size", 999.0))
+                min_size_px2 = min_size_multiplier * scaled_body_area
+                max_size_px2 = max_size_multiplier * scaled_body_area
+            else:
+                min_size_px2 = 0.0
+                max_size_px2 = float("inf")
+
+            for c in cnts:
+                area = cv2.contourArea(c)
+                if area < min_contour or len(c) < 5:
+                    continue
+                if use_size_filtering and not (min_size_px2 <= area <= max_size_px2):
+                    continue
+                (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
+                detections.append(((cx, cy), (ax1, ax2), ang, area))
+                major_axis = max(ax1, ax2)
+                minor_axis = min(ax1, ax2)
+                detected_dimensions.append((major_axis, minor_axis))
+                cv2.ellipse(
+                    test_frame,
+                    ((int(cx), int(cy)), (int(ax1), int(ax2)), ang),
+                    (0, 255, 0),
+                    2,
+                )
+                cv2.circle(test_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
+
+            small_fg = cv2.resize(fg_mask, (0, 0), fx=0.3, fy=0.3)
+            test_frame[0 : small_fg.shape[0], 0 : small_fg.shape[1]] = cv2.cvtColor(
+                small_fg, cv2.COLOR_GRAY2BGR
+            )
+
+            small_bg = cv2.resize(bg_u8, (0, 0), fx=0.3, fy=0.3)
+            bg_bgr = cv2.cvtColor(small_bg, cv2.COLOR_GRAY2BGR)
+            test_frame[0 : bg_bgr.shape[0], -bg_bgr.shape[1] :] = bg_bgr
+
+            cv2.putText(
+                test_frame,
+                f"Detections: {len(detections)} (BG from {bg_params['BACKGROUND_PRIME_FRAMES']} frames)",
+                (10, test_frame.shape[0] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2,
+            )
+        finally:
+            cap.release()
+    else:
+        frame_to_process = frame_bgr.copy()
+        if resize_f < 1.0:
+            frame_to_process = cv2.resize(
+                frame_to_process,
+                (0, 0),
+                fx=resize_f,
+                fy=resize_f,
+                interpolation=cv2.INTER_AREA,
+            )
+            test_frame = cv2.resize(
+                test_frame,
+                (0, 0),
+                fx=resize_f,
+                fy=resize_f,
+                interpolation=cv2.INTER_AREA,
+            )
+
+        reference_body_size = float(context.get("reference_body_size", 50.0))
+        reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+        scaled_body_area = reference_body_area * (resize_f**2)
+
+        if use_size_filtering:
+            min_size_px2 = int(
+                float(context.get("min_object_size", 0.0)) * scaled_body_area
+            )
+            max_size_px2 = int(
+                float(context.get("max_object_size", 999.0)) * scaled_body_area
+            )
+        else:
+            min_size_px2 = 0
+            max_size_px2 = float("inf")
+
+        yolo_params = {
+            "YOLO_MODEL_PATH": resolve_model_path(context.get("yolo_model_path", "")),
+            "YOLO_CONFIDENCE_THRESHOLD": float(context.get("yolo_confidence", 0.5)),
+            "YOLO_IOU_THRESHOLD": float(context.get("yolo_iou", 0.45)),
+            "USE_CUSTOM_OBB_IOU_FILTERING": True,
+            "YOLO_TARGET_CLASSES": context.get("yolo_target_classes"),
+            "YOLO_DEVICE": context.get("yolo_device"),
+            "ENABLE_GPU_BACKGROUND": bool(context.get("enable_gpu_background", False)),
+            "ENABLE_TENSORRT": bool(context.get("enable_tensorrt", False)),
+            "ENABLE_ONNX_RUNTIME": bool(context.get("enable_onnx_runtime", False)),
+            "TENSORRT_MAX_BATCH_SIZE": int(context.get("tensorrt_max_batch_size", 1)),
+            "MAX_TARGETS": int(context.get("max_targets", 1)),
+            "MAX_CONTOUR_MULTIPLIER": float(context.get("max_contour_multiplier", 3.0)),
+            "ENABLE_SIZE_FILTERING": bool(use_size_filtering),
+            "MIN_OBJECT_SIZE": min_size_px2,
+            "MAX_OBJECT_SIZE": max_size_px2,
+        }
+
+        roi_for_yolo = context.get("roi_mask")
+        if roi_for_yolo is not None and resize_f < 1.0:
+            roi_for_yolo = cv2.resize(
+                roi_for_yolo,
+                (frame_to_process.shape[1], frame_to_process.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+        logger.info(
+            f"Running YOLO detection (conf={yolo_params['YOLO_CONFIDENCE_THRESHOLD']:.2f}, "
+            f"iou={yolo_params['YOLO_IOU_THRESHOLD']:.2f})"
+        )
+        detector = YOLOOBBDetector(yolo_params)
+        (
+            raw_meas,
+            raw_sizes,
+            raw_shapes,
+            _yolo_results,
+            raw_confidences,
+            raw_obb_corners,
+        ) = detector.detect_objects(frame_to_process, 0, return_raw=True)
+        meas, _sizes, _shapes, detection_confidences, filtered_obb_corners, _ = (
+            detector.filter_raw_detections(
+                raw_meas,
+                raw_sizes,
+                raw_shapes,
+                raw_confidences,
+                raw_obb_corners,
+                roi_mask=roi_for_yolo,
+                detection_ids=None,
+            )
+        )
+
+        for i, corners in enumerate(filtered_obb_corners):
+            corners = np.asarray(corners, dtype=np.float32)
+            major_axis = float(np.linalg.norm(corners[1] - corners[0]))
+            minor_axis = float(np.linalg.norm(corners[2] - corners[1]))
+            if major_axis < minor_axis:
+                major_axis, minor_axis = minor_axis, major_axis
+            detected_dimensions.append((major_axis, minor_axis))
+
+            corners_int = corners.astype(np.int32)
+            cv2.polylines(
+                test_frame,
+                [corners_int],
+                isClosed=True,
+                color=(0, 255, 255),
+                thickness=2,
+            )
+
+            conf = (
+                detection_confidences[i]
+                if i < len(detection_confidences)
+                else float("nan")
+            )
+            if not np.isnan(conf):
+                cx = int(corners[:, 0].mean())
+                cy = int(corners[:, 1].mean())
+                cv2.putText(
+                    test_frame,
+                    f"{conf:.2f}",
+                    (cx - 15, cy - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 255),
+                    2,
+                )
+
+        for m in meas:
+            cx, cy, angle_rad = m
+            cv2.circle(test_frame, (int(cx), int(cy)), 5, (0, 255, 0), -1)
+            ex = int(cx + 30 * math.cos(angle_rad))
+            ey = int(cy + 30 * math.sin(angle_rad))
+            cv2.line(test_frame, (int(cx), int(cy)), (ex, ey), (0, 255, 0), 2)
+
+        cv2.putText(
+            test_frame,
+            f"Detections: {len(meas)} (IOU={yolo_params['YOLO_IOU_THRESHOLD']:.2f})",
+            (10, test_frame.shape[0] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+        )
+
+    return {
+        "test_frame_rgb": cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB),
+        "resize_factor": resize_f,
+        "detected_dimensions": detected_dimensions,
+    }
+
+
 def get_video_config_path(video_path: object) -> object:
     """Get the config file path for a given video file."""
     if not video_path:
@@ -1603,6 +1914,7 @@ class MainWindow(QMainWindow):
         self.csv_writer_thread = None
         self.dataset_worker = None
         self.interp_worker = None
+        self.preview_detection_worker = None
         self.reversal_worker = None
         self.final_full_trajs = []
         self.temporary_files = []  # Track temporary files for cleanup
@@ -5655,6 +5967,13 @@ class MainWindow(QMainWindow):
         except Exception:
             src_path = Path(src)
 
+        try:
+            rel_existing = os.path.relpath(str(src_path), str(Path(dest_dir).resolve()))
+            if not rel_existing.startswith(".."):
+                return make_pose_model_path_relative(str(src_path))
+        except Exception:
+            pass
+
         # Metadata collection (same style as YOLO OBB import dialog).
         now_preview = datetime.now()
         dlg = QDialog(self)
@@ -7347,6 +7666,10 @@ class MainWindow(QMainWindow):
             logger.warning("No preview frame loaded")
             return
 
+        if self.preview_detection_worker and self.preview_detection_worker.isRunning():
+            logger.info("Preview detection is already running")
+            return
+
         # If size filtering is enabled, ask user whether to use it for the test
         use_size_filtering = False
         if self.chk_size_filtering.isChecked():
@@ -7382,474 +7705,148 @@ class MainWindow(QMainWindow):
                     "Running detection test WITHOUT size filtering (recommended for size estimation)"
                 )
 
-        from ..core.background.model import BackgroundModel
-        from ..core.detectors.engine import YOLOOBBDetector
-        from ..utils.image_processing import apply_image_adjustments
+        context = self._collect_preview_detection_context()
+        self.preview_detection_worker = PreviewDetectionWorker(
+            self.preview_frame_original.copy(),
+            context,
+            use_size_filtering,
+        )
+        self.preview_detection_worker.finished_signal.connect(
+            self._on_preview_detection_finished
+        )
+        self.preview_detection_worker.error_signal.connect(
+            self._on_preview_detection_error
+        )
+        self.preview_detection_worker.finished.connect(
+            self._on_preview_detection_worker_finished
+        )
+        self._set_preview_test_running(True)
+        self.preview_detection_worker.start()
 
-        # Convert RGB preview to BGR for OpenCV
-        frame_bgr = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2BGR)
+    def _collect_preview_detection_context(self) -> dict:
+        """Capture current UI values for async preview detection."""
+        runtime_detection = derive_detection_runtime_settings(
+            self._selected_compute_runtime()
+        )
+        selected_runtime = self._selected_compute_runtime()
+        trt_batch_size = (
+            self.spin_yolo_batch_size.value()
+            if self._runtime_requires_fixed_yolo_batch(selected_runtime)
+            else self.spin_tensorrt_batch.value()
+        )
+        class_text = self.line_yolo_classes.text().strip()
+        target_classes = None
+        if class_text:
+            try:
+                target_classes = [int(x.strip()) for x in class_text.split(",")]
+            except ValueError:
+                target_classes = None
 
-        # Get current parameters
-        detection_method = self.combo_detection_method.currentIndex()
-        is_background_subtraction = detection_method == 0
+        return {
+            "detection_method": self.combo_detection_method.currentIndex(),
+            "video_path": self.file_line.text(),
+            "bg_prime_frames": self.spin_bg_prime.value(),
+            "brightness": self.slider_brightness.value(),
+            "contrast": self.slider_contrast.value() / 100.0,
+            "gamma": self.slider_gamma.value() / 100.0,
+            "roi_mask": self.roi_mask.copy() if self.roi_mask is not None else None,
+            "resize_factor": self.spin_resize.value(),
+            "dark_on_light": self.chk_dark_on_light.isChecked(),
+            "threshold_value": self.spin_threshold.value(),
+            "morph_kernel_size": self.spin_morph_size.value(),
+            "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
+            "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
+            "dilation_iterations": self.spin_dilation_iterations.value(),
+            "min_contour": self.spin_min_contour.value(),
+            "reference_body_size": self.spin_reference_body_size.value(),
+            "min_object_size": self.spin_min_object_size.value(),
+            "max_object_size": self.spin_max_object_size.value(),
+            "yolo_model_path": self._get_selected_yolo_model_path(),
+            "yolo_confidence": self.spin_yolo_confidence.value(),
+            "yolo_iou": self.spin_yolo_iou.value(),
+            "yolo_target_classes": target_classes,
+            "yolo_device": runtime_detection["yolo_device"],
+            "enable_gpu_background": runtime_detection["enable_gpu_background"],
+            "enable_tensorrt": runtime_detection["enable_tensorrt"],
+            "enable_onnx_runtime": runtime_detection["enable_onnx_runtime"],
+            "tensorrt_max_batch_size": trt_batch_size,
+            "max_targets": self.spin_max_targets.value(),
+            "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
+        }
 
-        # Create a copy for visualization
-        test_frame = frame_bgr.copy()
+    def _set_preview_test_running(self, running: bool):
+        """Lock/unlock UI while async preview detection is running."""
+        if running:
+            self._set_interactive_widgets_enabled(False, remember_state=True)
+            self._set_video_interaction_enabled(False)
+            self.btn_test_detection.setText("Testing Detection...")
+            self.btn_test_detection.setEnabled(False)
+            self.progress_label.setText("Testing detection on preview...")
+            self.progress_label.setVisible(True)
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.setVisible(True)
+            return
 
-        try:
-            if is_background_subtraction:
-                # Build actual background model using priming frames
-                logger.info("Building background model for test detection...")
+        self._set_interactive_widgets_enabled(True, remember_state=True)
+        self._set_video_interaction_enabled(True)
+        self.btn_test_detection.setText("Test Detection on Preview")
+        self.btn_test_detection.setEnabled(self.preview_frame_original is not None)
+        self.progress_bar.setRange(0, 100)
+        self._refresh_progress_visibility()
 
-                # Open video to sample priming frames
-                video_path = self.file_line.text()
-                cap = cv2.VideoCapture(video_path)
-                if not cap.isOpened():
-                    logger.error("Cannot open video for background priming")
-                    return
+    @Slot(dict)
+    def _on_preview_detection_finished(self, result: dict):
+        """Handle successful async preview detection completion."""
+        test_frame_rgb = result.get("test_frame_rgb")
+        resize_f = float(result.get("resize_factor", 1.0))
+        detected_dimensions = result.get("detected_dimensions") or []
 
-                # Build parameters dict for BackgroundModel
-                bg_params = {
-                    "BACKGROUND_PRIME_FRAMES": self.spin_bg_prime.value(),
-                    "BRIGHTNESS": self.slider_brightness.value(),
-                    "CONTRAST": self.slider_contrast.value() / 100.0,
-                    "GAMMA": self.slider_gamma.value() / 100.0,
-                    "ROI_MASK": self.roi_mask,
-                    "RESIZE_FACTOR": self.spin_resize.value(),
-                    "DARK_ON_LIGHT_BACKGROUND": self.chk_dark_on_light.isChecked(),
-                    "THRESHOLD_VALUE": self.spin_threshold.value(),
-                    "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
-                    "ENABLE_ADDITIONAL_DILATION": self.chk_additional_dilation.isChecked(),
-                    "DILATION_KERNEL_SIZE": self.spin_dilation_kernel_size.value(),
-                    "DILATION_ITERATIONS": self.spin_dilation_iterations.value(),
-                }
+        if test_frame_rgb is None:
+            logger.warning("Preview detection completed without image result")
+            return
 
-                # Create and prime background model
-                bg_model = BackgroundModel(bg_params)
-                bg_model.prime_background(cap)
+        self._update_detection_stats(detected_dimensions, resize_f)
+        self.detection_test_result = (test_frame_rgb.copy(), resize_f)
 
-                if bg_model.lightest_background is None:
-                    logger.error("Failed to build background model")
-                    cap.release()
-                    return
+        h, w, ch = test_frame_rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
 
-                # Now process the preview frame with the primed background
-                # Need to resize frame to match background dimensions if resize factor is set
-                resize_f = bg_params["RESIZE_FACTOR"]
-                frame_to_process = frame_bgr.copy()
-                if resize_f < 1.0:
-                    frame_to_process = cv2.resize(
-                        frame_to_process,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
-                    # Also resize the test_frame for visualization
-                    test_frame = cv2.resize(
-                        test_frame,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
-
-                gray = cv2.cvtColor(frame_to_process, cv2.COLOR_BGR2GRAY)
-                # GPU not needed for single-frame test
-                gray = apply_image_adjustments(
-                    gray,
-                    bg_params["BRIGHTNESS"],
-                    bg_params["CONTRAST"],
-                    bg_params["GAMMA"],
-                    use_gpu=False,
-                )
-
-                # Apply ROI mask if exists (resize it too if needed)
-                roi_for_test = self.roi_mask
-                if self.roi_mask is not None:
-                    if resize_f < 1.0:
-                        roi_for_test = cv2.resize(
-                            self.roi_mask,
-                            (gray.shape[1], gray.shape[0]),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                    gray = cv2.bitwise_and(gray, gray, mask=roi_for_test)
-
-                # Get background (use lightest_background as starting point)
-                bg_u8 = bg_model.lightest_background.astype(np.uint8)
-
-                # Generate foreground mask (includes morphology operations)
-                fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
-
-                # Find contours
-                cnts, _ = cv2.findContours(
-                    fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
-
-                min_contour = self.spin_min_contour.value()
-                detections = []
-                detected_dimensions = (
-                    []
-                )  # Collect (major, minor) axis pairs for statistics
-
-                # Size filtering is based on body area multipliers, not mm²
-                # Calculate pixel areas from reference body size
-                reference_body_size = self.spin_reference_body_size.value()
-                reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
-                scaled_body_area = reference_body_area * (resize_f**2)
-
-                if use_size_filtering:
-                    min_size_multiplier = self.spin_min_object_size.value()
-                    max_size_multiplier = self.spin_max_object_size.value()
-                    min_size_px2 = min_size_multiplier * scaled_body_area
-                    max_size_px2 = max_size_multiplier * scaled_body_area
-                    logger.info("Background subtraction size filtering ENABLED:")
-                    logger.info(f"  Resize factor: {resize_f:.2f}")
-                    logger.info(f"  Reference body size: {reference_body_size:.1f} px")
-                    logger.info(
-                        f"  Reference body area (original): {reference_body_area:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Reference body area (resized): {scaled_body_area:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Min size multiplier: {min_size_multiplier:.2f}× → {min_size_px2:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Max size multiplier: {max_size_multiplier:.2f}× → {max_size_px2:.1f} px²"
-                    )
-
-                filtered_count = 0
-                detection_num = 0
-                for c in cnts:
-                    area = cv2.contourArea(c)
-                    if area < min_contour or len(c) < 5:
-                        continue
-
-                    # Apply size filtering based on user choice
-                    if use_size_filtering:
-                        # Compare pixel area to size thresholds (already in pixels)
-                        passes_filter = min_size_px2 <= area <= max_size_px2
-
-                        if detection_num < 5:  # Log first 5 detections for debugging
-                            logger.info(
-                                f"  Detection {detection_num + 1}: {area:.1f} px² (range: {min_size_px2:.1f}-{max_size_px2:.1f}) - {'PASS' if passes_filter else 'FILTERED OUT'}"
-                            )
-
-                        detection_num += 1
-
-                        if not passes_filter:
-                            filtered_count += 1
-                            continue
-
-                    # Fit ellipse
-                    (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
-                    detections.append(((cx, cy), (ax1, ax2), ang, area))
-                    # Store major and minor axes (fitEllipse returns full axes, not semi-axes)
-                    major_axis = max(ax1, ax2)
-                    minor_axis = min(ax1, ax2)
-                    detected_dimensions.append((major_axis, minor_axis))
-
-                    # Draw ellipse
-                    cv2.ellipse(
-                        test_frame,
-                        ((int(cx), int(cy)), (int(ax1), int(ax2)), ang),
-                        (0, 255, 0),
-                        2,
-                    )
-                    cv2.circle(test_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
-
-                # Show foreground mask in corner
-                small_fg = cv2.resize(fg_mask, (0, 0), fx=0.3, fy=0.3)
-                test_frame[0 : small_fg.shape[0], 0 : small_fg.shape[1]] = cv2.cvtColor(
-                    small_fg, cv2.COLOR_GRAY2BGR
-                )
-
-                # Show estimated background in opposite corner
-                small_bg = cv2.resize(bg_u8, (0, 0), fx=0.3, fy=0.3)
-                bg_bgr = cv2.cvtColor(small_bg, cv2.COLOR_GRAY2BGR)
-                test_frame[0 : bg_bgr.shape[0], -bg_bgr.shape[1] :] = bg_bgr
-
-                # Add detection count and note
-                cv2.putText(
-                    test_frame,
-                    f"Detections: {len(detections)} (BG from {self.spin_bg_prime.value()} frames)",
-                    (10, test_frame.shape[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2,
-                )
-
-                cap.release()
-
-                if use_size_filtering:
-                    logger.info(
-                        f"Background subtraction test complete: {len(detections)} detections passed size filter, {filtered_count} filtered out"
-                    )
-                else:
-                    logger.info(
-                        f"Background subtraction test complete: {len(detections)} detections"
-                    )
-
-                # Update detection statistics (scale dimensions back to original resolution)
-                self._update_detection_stats(detected_dimensions, resize_f)
-            else:
-                # YOLO Detection
-                # Apply resize factor (same as tracking does)
-                resize_f = self.spin_resize.value()
-                frame_to_process = frame_bgr.copy()
-                if resize_f < 1.0:
-                    frame_to_process = cv2.resize(
-                        frame_to_process,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
-                    # Also resize the test_frame for visualization
-                    test_frame = cv2.resize(
-                        test_frame,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
-
-                # Build parameters for YOLO
-                # Convert size multipliers to pixel areas for detector (same as full tracking run)
-                reference_body_size = self.spin_reference_body_size.value()
-                reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
-                scaled_body_area = reference_body_area * (resize_f**2)
-
-                if use_size_filtering:
-                    min_size_px2 = int(
-                        self.spin_min_object_size.value() * scaled_body_area
-                    )
-                    max_size_px2 = int(
-                        self.spin_max_object_size.value() * scaled_body_area
-                    )
-                else:
-                    min_size_px2 = 0
-                    max_size_px2 = float("inf")
-
-                runtime_detection = derive_detection_runtime_settings(
-                    self._selected_compute_runtime()
-                )
-                trt_batch_size = (
-                    self.spin_yolo_batch_size.value()
-                    if self._runtime_requires_fixed_yolo_batch(
-                        self._selected_compute_runtime()
-                    )
-                    else self.spin_tensorrt_batch.value()
-                )
-                yolo_params = {
-                    "YOLO_MODEL_PATH": resolve_model_path(
-                        self._get_selected_yolo_model_path()
-                    ),
-                    "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
-                    "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
-                    "USE_CUSTOM_OBB_IOU_FILTERING": True,
-                    "YOLO_TARGET_CLASSES": (
-                        [
-                            int(x.strip())
-                            for x in self.line_yolo_classes.text().split(",")
-                        ]
-                        if self.line_yolo_classes.text().strip()
-                        else None
-                    ),
-                    "YOLO_DEVICE": runtime_detection["yolo_device"],
-                    "ENABLE_GPU_BACKGROUND": runtime_detection["enable_gpu_background"],
-                    "ENABLE_TENSORRT": runtime_detection["enable_tensorrt"],
-                    "ENABLE_ONNX_RUNTIME": runtime_detection["enable_onnx_runtime"],
-                    "TENSORRT_MAX_BATCH_SIZE": trt_batch_size,
-                    "MAX_TARGETS": self.spin_max_targets.value(),
-                    "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
-                    "ENABLE_SIZE_FILTERING": use_size_filtering,  # Use the user's choice
-                    "MIN_OBJECT_SIZE": min_size_px2,  # Already converted to pixels
-                    "MAX_OBJECT_SIZE": max_size_px2,  # Already converted to pixels
-                }
-
-                # Prepare ROI mask for filtering (resize if needed)
-                roi_for_yolo = None
-                if self.roi_mask is not None:
-                    roi_for_yolo = self.roi_mask
-                    if resize_f < 1.0:
-                        roi_for_yolo = cv2.resize(
-                            self.roi_mask,
-                            (frame_to_process.shape[1], frame_to_process.shape[0]),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-
-                # Log size filtering parameters if enabled
-                if use_size_filtering:
-                    # Logging parameters (already calculated above when building yolo_params)
-                    min_size_multiplier = self.spin_min_object_size.value()
-                    max_size_multiplier = self.spin_max_object_size.value()
-                    logger.info("YOLO size filtering ENABLED:")
-                    logger.info(f"  Resize factor: {resize_f:.2f}")
-                    logger.info(f"  Reference body size: {reference_body_size:.1f} px")
-                    logger.info(
-                        f"  Reference body area (original): {reference_body_area:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Reference body area (resized): {scaled_body_area:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Min size multiplier: {min_size_multiplier:.2f}× → {min_size_px2:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Max size multiplier: {max_size_multiplier:.2f}× → {max_size_px2:.1f} px²"
-                    )
-
-                # Create detector and run detection on FULL frame (no masking)
-                # This preserves natural image context for better YOLO confidence
-                logger.info(
-                    f"Running YOLO detection (conf={yolo_params['YOLO_CONFIDENCE_THRESHOLD']:.2f}, "
-                    f"iou={yolo_params['YOLO_IOU_THRESHOLD']:.2f})"
-                )
-                detector = YOLOOBBDetector(yolo_params)
-                (
-                    raw_meas,
-                    raw_sizes,
-                    raw_shapes,
-                    yolo_results,
-                    raw_confidences,
-                    raw_obb_corners,
-                ) = detector.detect_objects(frame_to_process, 0, return_raw=True)
-                (
-                    meas,
-                    sizes,
-                    shapes,
-                    detection_confidences,
-                    filtered_obb_corners,
-                    _,
-                ) = detector.filter_raw_detections(
-                    raw_meas,
-                    raw_sizes,
-                    raw_shapes,
-                    raw_confidences,
-                    raw_obb_corners,
-                    roi_mask=roi_for_yolo,
-                    detection_ids=None,
-                )
-
-                if use_size_filtering:
-                    logger.info(f"YOLO detected {len(meas)} objects after filtering")
-                    if len(sizes) > 0:
-                        logger.info(
-                            f"  Size range: {min(sizes):.1f} - {max(sizes):.1f} px²"
-                        )
-                        logger.info(
-                            f"  Filtering range: {min_size_px2:.1f} - {max_size_px2:.1f} px²"
-                        )
-                        # Show first few detections
-                        for i in range(min(5, len(sizes))):
-                            passes_filter = min_size_px2 <= sizes[i] <= max_size_px2
-                            logger.info(
-                                f"  Detection {i + 1}: {sizes[i]:.1f} px² - {'PASS' if passes_filter else 'FILTERED OUT'}"
-                            )
-
-                # Collect detected dimensions for statistics (only for filtered detections)
-                detected_dimensions = []
-                for i, corners in enumerate(filtered_obb_corners):
-                    corners = np.asarray(corners, dtype=np.float32)
-                    major_axis = float(np.linalg.norm(corners[1] - corners[0]))
-                    minor_axis = float(np.linalg.norm(corners[2] - corners[1]))
-                    if major_axis < minor_axis:
-                        major_axis, minor_axis = minor_axis, major_axis
-                    detected_dimensions.append((major_axis, minor_axis))
-
-                    corners_int = corners.astype(np.int32)
-                    cv2.polylines(
-                        test_frame,
-                        [corners_int],
-                        isClosed=True,
-                        color=(0, 255, 255),
-                        thickness=2,
-                    )
-
-                    conf = (
-                        detection_confidences[i]
-                        if i < len(detection_confidences)
-                        else float("nan")
-                    )
-                    if not np.isnan(conf):
-                        cx = int(corners[:, 0].mean())
-                        cy = int(corners[:, 1].mean())
-                        cv2.putText(
-                            test_frame,
-                            f"{conf:.2f}",
-                            (cx - 15, cy - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 255, 255),
-                            2,
-                        )
-
-                # Draw detection centers and orientations
-                for i, m in enumerate(meas):
-                    cx, cy, angle_rad = m
-                    cv2.circle(test_frame, (int(cx), int(cy)), 5, (0, 255, 0), -1)
-                    # Draw orientation
-                    ex = int(cx + 30 * math.cos(angle_rad))
-                    ey = int(cy + 30 * math.sin(angle_rad))
-                    cv2.line(test_frame, (int(cx), int(cy)), (ex, ey), (0, 255, 0), 2)
-
-                # Add detection count and parameters
-                cv2.putText(
-                    test_frame,
-                    f"Detections: {len(meas)} (IOU={yolo_params['YOLO_IOU_THRESHOLD']:.2f})",
-                    (10, test_frame.shape[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2,
-                )
-
-                # Update detection statistics (scale dimensions back to original resolution)
-                self._update_detection_stats(detected_dimensions, resize_f)
-
-            # Convert BGR to RGB for Qt display
-            test_frame_rgb = cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB)
-
-            # Store the detection test result for redisplay when zoom changes
-            self.detection_test_result = (test_frame_rgb.copy(), resize_f)
-
-            h, w, ch = test_frame_rgb.shape
-            bytes_per_line = ch * w
-
-            qimg = QImage(
-                test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888
+        zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
+        effective_scale = zoom_val * resize_f
+        if effective_scale != 1.0 and self.preview_frame_original is not None:
+            orig_h, orig_w = self.preview_frame_original.shape[:2]
+            scaled_w = int(orig_w * effective_scale)
+            scaled_h = int(orig_h * effective_scale)
+            qimg = qimg.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
 
-            # Apply zoom (zoom is applied after any resize_factor processing)
-            # The zoom should be relative to the original frame size, not the resized one
-            zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
-            effective_scale = zoom_val * resize_f
+        self.video_label.setPixmap(QPixmap.fromImage(qimg))
+        self._fit_image_to_screen()
+        logger.info("Detection test completed on preview frame")
 
-            if effective_scale != 1.0:
-                # Get original dimensions
-                orig_h, orig_w = self.preview_frame_original.shape[:2]
-                scaled_w = int(orig_w * effective_scale)
-                scaled_h = int(orig_h * effective_scale)
-                qimg = qimg.scaled(
-                    scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
+    @Slot(str)
+    def _on_preview_detection_error(self, error_message: str):
+        """Handle async preview detection failure."""
+        logger.error(f"Detection test failed: {error_message}")
+        QMessageBox.warning(
+            self,
+            "Detection Test Failed",
+            "Detection test failed on preview frame. Check logs for details.",
+        )
 
-            pixmap = QPixmap.fromImage(qimg)
-            self.video_label.setPixmap(pixmap)
-
-            # Auto-fit to screen after detection
-            self._fit_image_to_screen()
-
-            logger.info("Detection test completed on preview frame")
-
-        except Exception as e:
-            logger.error(f"Detection test failed: {e}")
-            import traceback
-
-            traceback.print_exc()
+    @Slot()
+    def _on_preview_detection_worker_finished(self):
+        """Finalize async preview detection UI state and worker lifecycle."""
+        sender = self.sender()
+        if sender is self.preview_detection_worker:
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            self.preview_detection_worker = None
+        self._set_preview_test_running(False)
 
     def _on_roi_mode_changed(self, index):
         """Handle ROI mode selection change."""
@@ -8576,6 +8573,15 @@ class MainWindow(QMainWindow):
         src = str(source_path or "")
         if not src or not os.path.exists(src):
             return None
+
+        src_abs = os.path.abspath(src)
+        models_dir = get_models_directory()
+        try:
+            rel_existing = os.path.relpath(src_abs, models_dir)
+            if not rel_existing.startswith(".."):
+                return make_model_path_relative(src_abs)
+        except Exception:
+            pass
 
         # Single dialog for metadata collection (size + species + model info + timestamp preview)
         now_preview = datetime.now()

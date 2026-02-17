@@ -355,9 +355,11 @@ def _run_pose_predict_subprocess(
     req_path.write_text(json.dumps(req), encoding="utf-8")
 
     code = (
-        "import json,sys\n"
+        "import json,sys,os\n"
         "from pathlib import Path\n"
         "import numpy as np\n"
+        "os.environ.setdefault('YOLO_AUTOINSTALL','false')\n"
+        "os.environ.setdefault('ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS','1')\n"
         "def _is_cuda_device(d):\n"
         "    d=(d or '').strip().lower()\n"
         "    return d in {'cuda','gpu'} or d.startswith('cuda:') or d.isdigit()\n"
@@ -464,12 +466,17 @@ def _run_pose_predict_subprocess(
         "Path(cfg['out_json']).write_text(json.dumps(out),encoding='utf-8')\n"
     )
 
+    popen_env = os.environ.copy()
+    popen_env.setdefault("YOLO_AUTOINSTALL", "false")
+    popen_env.setdefault("ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS", "1")
+
     proc = subprocess.Popen(
         [sys.executable, "-c", code, str(req_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=popen_env,
     )
     assert proc.stdout is not None
     last_msg = ""
@@ -1172,8 +1179,18 @@ def _run_export_inference(cfg, images, num_kpts):
                 input_hw = (h, w)
         except Exception:
             pass
+    if input_hw is None:
+        raise RuntimeError(
+            "SLEAP exported runtime requires fixed input shape metadata or an explicit export_input_hw. "
+            "Re-export the model with fixed input height/width."
+        )
 
-    raw_crops = [_load_image(p) for p in images]
+    infer_batch = int(max(1, int(cfg.get("batch", 4))))
+    images_padded = list(images)
+    if images_padded and len(images_padded) < infer_batch:
+        images_padded.extend([images_padded[-1]] * (infer_batch - len(images_padded)))
+
+    raw_crops = [_load_image(p) for p in images_padded]
     crops = []
     scales = []
     for c in raw_crops:
@@ -1181,7 +1198,7 @@ def _run_export_inference(cfg, images, num_kpts):
         crops.append(c2)
         scales.append((sx, sy))
     raw = _predict_export_batch(predictor, crops, runtime)
-    xy_arr, conf_arr = _normalize_export_xy_conf(raw, batch_size=len(images))
+    xy_arr, conf_arr = _normalize_export_xy_conf(raw, batch_size=len(images_padded))
 
     preds = {}
     for j, path in enumerate(images):
@@ -1500,14 +1517,20 @@ class Handler(BaseHTTPRequestHandler):
             cfg['device'] = _normalize_device(cfg.get('device'))
             runtime_flavor = str(cfg.get("runtime_flavor", "native")).strip().lower()
             if runtime_flavor in ("onnx", "tensorrt"):
-                preds = _run_export_inference(cfg, images, max(1, len(names)))
                 try:
-                    nonempty = sum(1 for v in preds.values() if v)
-                    _log(f"preds_nonempty={nonempty}/{len(images)} runtime={runtime_flavor}")
-                except Exception:
-                    pass
-                self._json(200, {'ok': True, 'preds': preds})
-                return
+                    preds = _run_export_inference(cfg, images, max(1, len(names)))
+                    try:
+                        nonempty = sum(1 for v in preds.values() if v)
+                        _log(f"preds_nonempty={nonempty}/{len(images)} runtime={runtime_flavor}")
+                    except Exception:
+                        pass
+                    self._json(200, {'ok': True, 'preds': preds})
+                    return
+                except Exception as export_exc:
+                    _log(
+                        f"exported-runtime failed ({runtime_flavor}): {export_exc}; "
+                        "falling back to native SLEAP runtime"
+                    )
             sk=_make_skeleton(names, edges)
             video=_make_video(images)
             try:
@@ -1626,6 +1649,15 @@ class _SleapHttpService:
                 pass
         if shutil.which("conda") is None:
             return False, "Conda not found on PATH."
+        preflight_ok, preflight_err = _sleap_env_preflight(env_name)
+        if not preflight_ok:
+            if self.log_path:
+                try:
+                    with open(self.log_path, "a", encoding="utf-8") as f:
+                        f.write(f"[preflight] failed: {preflight_err}\n")
+                except Exception:
+                    pass
+            return False, preflight_err
         port = self._pick_free_port()
         cfg = {"host": "127.0.0.1", "port": int(port)}
         if self.log_path:
@@ -1736,6 +1768,109 @@ _SLEAP_SERVICE = _SleapHttpService()
 
 def _get_sleap_service() -> _SleapHttpService:
     return _SLEAP_SERVICE
+
+
+def _format_sleap_env_preflight_error(raw_error: str, env_name: str) -> str:
+    msg = str(raw_error or "").strip()
+    base = (
+        f"SLEAP env preflight failed for conda env '{env_name}'. "
+        "The environment cannot import SLEAP runtime modules."
+    )
+    if "undefined symbol: ncclAlltoAll" in msg or (
+        "libtorch_cuda.so" in msg and "undefined symbol" in msg
+    ):
+        return (
+            f"{base} Detected CUDA/NCCL binary mismatch while importing torch "
+            "(libtorch_cuda.so unresolved nccl symbol).\n"
+            "Recommended fix (choose one):\n"
+            "  A) Use CPU-only torch in this env:\n"
+            f"     conda run -n {env_name} python -m pip uninstall -y torch torchvision torchaudio nvidia-nccl-cu12 nvidia-nccl-cu13\n"
+            f"     conda run -n {env_name} python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision\n"
+            "  B) Reinstall GPU torch/torchvision + NCCL from one matching CUDA stack (same channel/index):\n"
+            f"     conda run -n {env_name} python -m pip uninstall -y torch torchvision torchaudio nvidia-nccl-cu12 nvidia-nccl-cu13\n"
+            f"     conda run -n {env_name} python -m pip install --index-url https://download.pytorch.org/whl/cu130 torch torchvision\n"
+            f"     conda run -n {env_name} python -m pip install --upgrade nvidia-nccl-cu13\n"
+            f'  Verify: conda run -n {env_name} python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__, torch.cuda.is_available())"\n'
+            f"Original error: {msg}"
+        )
+    if "torchvision::nms does not exist" in msg:
+        return (
+            f"{base} Detected torchvision operator registration failure "
+            "(operator torchvision::nms does not exist), which usually means "
+            "torch and torchvision are incompatible builds.\n"
+            "Recommended fix:\n"
+            f"  conda run -n {env_name} python -m pip uninstall -y torch torchvision torchaudio\n"
+            "  reinstall torch/torchvision from the same release channel (CPU or CUDA-specific)\n"
+            f'  conda run -n {env_name} python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__)"\n'
+            f"Original error: {msg}"
+        )
+    return f"{base} Original error: {msg}"
+
+
+def _sleap_env_preflight(env_name: str) -> Tuple[bool, str]:
+    env_name = str(env_name or "").strip()
+    if not env_name:
+        return False, "Select a SLEAP conda env."
+    script = (
+        "import json,sys\n"
+        "out={'python':sys.version.split()[0]}\n"
+        "try:\n"
+        "    import torch\n"
+        "    out['torch']=getattr(torch,'__version__',None)\n"
+        "except Exception as e:\n"
+        "    print(f'ERROR: torch import failed: {e}')\n"
+        "    sys.exit(2)\n"
+        "try:\n"
+        "    import torchvision\n"
+        "    out['torchvision']=getattr(torchvision,'__version__',None)\n"
+        "except Exception as e:\n"
+        "    print(f'ERROR: torchvision import failed: {e}')\n"
+        "    sys.exit(3)\n"
+        "try:\n"
+        "    from sleap_nn.inference import predictors as _p\n"
+        "    out['sleap_predictors']=bool(_p is not None)\n"
+        "except Exception as e:\n"
+        "    print(f'ERROR: sleap_nn predictors import failed: {e}')\n"
+        "    sys.exit(4)\n"
+        "print(json.dumps(out))\n"
+    )
+    script_path = (
+        Path(tempfile.gettempdir())
+        / f"sleap_preflight_{os.getpid()}_{uuid.uuid4().hex}.py"
+    )
+    try:
+        script_path.write_text(script, encoding="utf-8")
+    except Exception as exc:
+        return False, f"Failed to prepare SLEAP env preflight script: {exc}"
+
+    try:
+        res = subprocess.run(
+            ["conda", "run", "-n", env_name, "python", str(script_path)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=90,
+        )
+    except subprocess.TimeoutExpired:
+        return False, (
+            f"SLEAP env preflight timed out for conda env '{env_name}'. "
+            "Try running: conda run -n "
+            f'{env_name} python -c "import torch, torchvision, sleap_nn"'
+        )
+    except Exception as exc:
+        return False, f"SLEAP env preflight execution failed for '{env_name}': {exc}"
+    finally:
+        try:
+            if script_path.exists():
+                script_path.unlink()
+        except Exception:
+            pass
+
+    if int(res.returncode) == 0:
+        return True, ""
+
+    raw = (res.stdout or "").strip() or f"preflight exited with code {res.returncode}"
+    return False, _format_sleap_env_preflight_error(raw, env_name)
 
 
 def _all_zero_pose_chunk(

@@ -144,6 +144,7 @@ def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> 
         keypoint_names=["k1", "k2", "k3"],
         sleap_batch=4,
         sleap_max_instances=1,
+        sleap_experimental_features=True,
     )
 
     with _patched_modules(stubs):
@@ -473,6 +474,42 @@ def test_attempt_sleap_cli_export_prefers_size_aware_commands_first(
     assert "--input-width" in first
     assert "320" in first
     assert "352" in first
+
+
+def test_attempt_sleap_cli_export_includes_batch_profile(
+    tmp_path: Path,
+) -> None:
+    stubs = {
+        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+    }
+    mod = _load_runtime_api_module(stubs)
+
+    model_dir = tmp_path / "sleap_model"
+    export_dir = tmp_path / "sleap_export"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    seen_cmds = []
+
+    def _fake_run(cmd, timeout_sec=1800):
+        _ = timeout_sec
+        seen_cmds.append(list(cmd))
+        return False, "fail"
+
+    mod._run_cli_command = _fake_run
+    ok, _err = mod._attempt_sleap_cli_export(
+        model_dir=model_dir,
+        export_dir=export_dir,
+        runtime_flavor="tensorrt",
+        sleap_env="",
+        input_hw=(224, 224),
+        batch_size=8,
+    )
+    assert ok is False
+    assert seen_cmds
+    first = seen_cmds[0]
+    assert "--batch-size" in first or "--batch" in first
+    assert "8" in first
 
 
 def test_coerce_prediction_batch_normalizes_out_of_range_confidences() -> None:

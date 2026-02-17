@@ -1,0 +1,36 @@
+# GPU-accelerated packages for multi-animal-tracker
+# Install with:
+#   CUDA 13.x: uv pip install -v -r requirements-cuda13.txt
+#   CUDA 12.x: uv pip install -v -r requirements-cuda12.txt
+#
+# This file contains shared CUDA package requirements only.
+# Version-specific wheels/indexes live in requirements-cuda12.txt and
+# requirements-cuda13.txt.
+
+# PyTorch with CUDA support
+torch
+torchvision
+torchaudio
+
+# Computer vision & deep learning
+timm
+pupil-apriltags
+ultralytics
+
+# TensorRT - NVIDIA inference optimization for YOLO acceleration
+# See: https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html
+tensorrt
+
+# ONNX runtime with GPU support for model export and optimization
+onnx
+onnxslim
+# IMPORTANT (CUDA 13 systems): onnxruntime-gpu currently links against CUDA 12
+# user-space libraries (e.g., libcublasLt.so.12). Do not co-install CPU
+# onnxruntime here, and keep GPU runtime explicit.
+onnxruntime-gpu==1.24.1
+
+# CuPy for GPU-accelerated array computations
+# Install version-specific CuPy in requirements-cuda12.txt / requirements-cuda13.txt
+
+# Install this package in editable mode
+-e .

@@ -6,5 +6,13 @@
     "added_at": "2026-02-14T21:00:51",
     "source_path": "/Users/neurorishika/Projects/MBL/Module 4/models/train22/best.pt",
     "stored_filename": "20260214-210051_26x_ant_train22.pt"
+  },
+  "20260217-080436_26x_ant_train22.pt": {
+    "size": "26x",
+    "species": "ant",
+    "model_info": "train22",
+    "added_at": "2026-02-17T08:04:36",
+    "source_path": "/home/rutalab/Downloads/obb.pt",
+    "stored_filename": "20260217-080436_26x_ant_train22.pt"
   }
 }

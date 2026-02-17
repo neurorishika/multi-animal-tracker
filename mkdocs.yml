@@ -84,6 +84,7 @@ nav:
 - Home: index.md
 - Getting Started:
   - Installation: getting-started/installation.md
+  - Environments and Makefile: getting-started/environments.md
   - Integrations: getting-started/integrations.md
   - Quickstart (MAT): getting-started/quickstart-mat.md
   - Quickstart (PoseKit): getting-started/quickstart-posekit.md
@@ -107,6 +108,7 @@ nav:
   - Data Flow: developer-guide/data-flow.md
   - GPU Backends: developer-guide/gpu-backends.md
   - Runtime Integration: developer-guide/runtime-integration.md
+  - CUDA Dependency Updates: developer-guide/dependency-cuda-updates.md
   - Performance Tuning: developer-guide/performance-tuning.md
   - Confidence Metrics: developer-guide/confidence-metrics.md
   - Extending Detection: developer-guide/extending-detection.md

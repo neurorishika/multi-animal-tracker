@@ -14,6 +14,10 @@ Create a dedicated SLEAP environment and select it from:
 - MAT: `Analyze Individuals -> Pose Extraction -> SLEAP env`
 - PoseKit: `Inference -> SLEAP -> Conda environment`
 
+To use ONNX/TensorRT SLEAP prediction inside PoseKit, also enable:
+
+- `Inference -> SLEAP -> Allow experimental SLEAP runtimes`
+
 ### Environment Setup
 
 ```bash
@@ -48,8 +52,51 @@ pip install "sleap[nn,nn-export-gpu,nn-tensorrt]"
 
 ```bash
 conda run -n sleap python -c "import importlib.util as u; print('sleap_nn', bool(u.find_spec('sleap_nn'))); print('onnx', bool(u.find_spec('onnx'))); print('onnxruntime', bool(u.find_spec('onnxruntime')))"
+conda run -n sleap python -c "import torch, torchvision; print('torch', torch.__version__); print('torchvision', torchvision.__version__)"
 conda run -n sleap sleap-nn export --help
 ```
+
+If `torchvision` import fails with `operator torchvision::nms does not exist`, reinstall matching `torch` + `torchvision` builds from the same channel (CPU or CUDA-specific), then rerun the verification commands above.
+
+### Troubleshooting Install/Runtime Issues
+
+If SLEAP preflight fails, use the commands below.
+
+#### 1) `operator torchvision::nms does not exist`
+
+This usually means `torch` and `torchvision` are incompatible builds.
+
+```bash
+conda run -n sleap python -m pip uninstall -y torch torchvision torchaudio
+
+# Reinstall one matching stack (pick one):
+# CPU-only
+conda run -n sleap python -m pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+
+# CUDA 13.0
+conda run -n sleap python -m pip install --index-url https://download.pytorch.org/whl/cu130 torch torchvision
+
+conda run -n sleap python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__)"
+```
+
+#### 2) `libtorch_cuda.so: undefined symbol: ncclAlltoAll`
+
+This indicates a CUDA/NCCL binary mismatch.
+
+```bash
+conda run -n sleap python -m pip uninstall -y torch torchvision torchaudio nvidia-nccl-cu12 nvidia-nccl-cu13
+conda run -n sleap python -m pip install --index-url https://download.pytorch.org/whl/cu130 torch torchvision
+conda run -n sleap python -m pip install --upgrade nvidia-nccl-cu13
+conda run -n sleap python -c "import torch, torchvision; print(torch.__version__, torchvision.__version__, torch.cuda.is_available())"
+```
+
+If this succeeds only when unsetting `LD_LIBRARY_PATH`, your shell is injecting incompatible CUDA/NCCL libraries:
+
+```bash
+env -u LD_LIBRARY_PATH conda run -n sleap python -c "import torch; print(torch.cuda.is_available())"
+```
+
+In that case, remove conflicting CUDA/NCCL paths from `LD_LIBRARY_PATH` for SLEAP runs.
 
 For ONNX export smoke test:
 
@@ -67,3 +114,40 @@ See also:
 
 - [Compute Runtimes (User Guide)](../user-guide/compute-runtimes.md)
 - [Runtime Integration (Developer Guide)](../developer-guide/runtime-integration.md)
+
+## X-AnyLabeling Integration
+
+`X-AnyLabeling` is useful for adding labels to additional frames and correcting detection misses before rerunning MAT pipelines.
+
+### Install (git clone method)
+
+```bash
+git clone https://github.com/CVHub520/X-AnyLabeling.git
+cd X-AnyLabeling
+mamba create -n x-anylabeling python=3.11 -y
+conda activate x-anylabeling
+pip install -r requirements.txt
+python app.py
+```
+
+If your local clone uses a different launch command, follow the repository instructions from the current branch README/get-started docs.
+
+### Recommended labeling workflow for MAT data
+
+- Export or collect frames where MAT missed animals or produced poor detections.
+- Open those images in `X-AnyLabeling`.
+- Use one of these tools to add/fix labels:
+
+- `SAM2` for assisted segmentation
+- `SAM3` for assisted segmentation
+- Manual segmentation tool (recommended for usability)
+- Manual OBB tool (use when oriented boxes are specifically needed)
+
+- Prefer segmentation masks over OBB for day-to-day correction speed and annotation quality.
+- Export labels in the format needed for your downstream MAT training or validation workflow.
+
+### Notes
+
+- Segmentation editing is generally more user-friendly than manual OBB editing for correction tasks.
+- OBB remains useful when your model or evaluation requires oriented boxes specifically.
+- Keep class names and label conventions consistent with your MAT dataset configuration.

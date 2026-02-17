@@ -2,9 +2,10 @@
 
 # Environment names for different platforms
 ENV_NAME = multi-animal-tracker
-ENV_NAME_GPU = multi-animal-tracker-gpu
+ENV_NAME_GPU = multi-animal-tracker-cuda
 ENV_NAME_MPS = multi-animal-tracker-mps
 ENV_NAME_ROCM = multi-animal-tracker-rocm
+CUDA_MAJOR ?= 13
 
 # =============================================================================
 # ENVIRONMENT SETUP
@@ -35,7 +36,29 @@ install:
 
 install-gpu:
 	@echo "Installing NVIDIA GPU (CUDA) packages..."
-	uv pip install -v -r requirements-gpu.txt
+	@if [ "$(CUDA_MAJOR)" != "12" ] && [ "$(CUDA_MAJOR)" != "13" ]; then \
+		echo "ERROR: CUDA_MAJOR must be 12 or 13"; \
+		exit 1; \
+	fi
+	uv pip install -v -r requirements-cuda$(CUDA_MAJOR).txt
+	@if [ -z "$$CONDA_PREFIX" ]; then \
+		echo "ERROR: activate the CUDA conda env first (conda activate $(ENV_NAME_GPU))"; \
+		exit 1; \
+	fi
+	@mkdir -p "$$CONDA_PREFIX/etc/conda/activate.d" "$$CONDA_PREFIX/etc/conda/deactivate.d"
+	@printf '%s\n' \
+		'export _MAT_OLD_LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}"' \
+		'export LD_LIBRARY_PATH="$$CONDA_PREFIX/targets/x86_64-linux/lib:$$CONDA_PREFIX/lib$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}"' \
+		> "$$CONDA_PREFIX/etc/conda/activate.d/onnxruntime-cuda12-paths.sh"
+	@printf '%s\n' \
+		'if [ -n "$${_MAT_OLD_LD_LIBRARY_PATH+x}" ]; then' \
+		'  export LD_LIBRARY_PATH="$$_MAT_OLD_LD_LIBRARY_PATH"' \
+		'  unset _MAT_OLD_LD_LIBRARY_PATH' \
+		'else' \
+		'  unset LD_LIBRARY_PATH' \
+		'fi' \
+		> "$$CONDA_PREFIX/etc/conda/deactivate.d/onnxruntime-cuda12-paths.sh"
+	@echo "Configured CUDA 12 runtime library path hook for ONNX Runtime GPU."
 
 install-mps:
 	@echo "Installing Apple Silicon (MPS) packages..."
@@ -58,7 +81,11 @@ env-update:
 env-update-gpu:
 	@echo "Updating NVIDIA GPU (CUDA) environment..."
 	mamba env update -f environment-cuda.yml --prune
-	uv pip install -v -r requirements-gpu.txt --upgrade
+	@if [ "$(CUDA_MAJOR)" != "12" ] && [ "$(CUDA_MAJOR)" != "13" ]; then \
+		echo "ERROR: CUDA_MAJOR must be 12 or 13"; \
+		exit 1; \
+	fi
+	uv pip install -v -r requirements-cuda$(CUDA_MAJOR).txt --upgrade
 
 env-update-mps:
 	@echo "Updating Apple Silicon (MPS) environment..."
@@ -145,7 +172,7 @@ setup-gpu:
 	@echo "✅ Conda environment created!"
 	@echo "📝 Next steps:"
 	@echo "   1. conda activate $(ENV_NAME_GPU)"
-	@echo "   2. make install-gpu"
+	@echo "   2. make install-gpu CUDA_MAJOR=13  # or CUDA_MAJOR=12"
 
 setup-mps:
 	@echo "📦 Setting up Apple Silicon (MPS) environment..."
@@ -344,13 +371,15 @@ help:
 	@echo ""
 	@echo "📥 PACKAGE INSTALLATION (after activating environment):"
 	@echo "  make install         - Install CPU packages"
-	@echo "  make install-gpu     - Install NVIDIA GPU packages"
+	@echo "  make install-gpu CUDA_MAJOR=13 - Install NVIDIA GPU packages (CUDA 13)"
+	@echo "  make install-gpu CUDA_MAJOR=12 - Install NVIDIA GPU packages (CUDA 12)"
 	@echo "  make install-mps     - Install Apple Silicon packages"
 	@echo "  make install-rocm    - Install AMD GPU packages"
 	@echo ""
 	@echo "🔄 ENVIRONMENT MAINTENANCE:"
 	@echo "  make env-update      - Update CPU environment"
-	@echo "  make env-update-gpu  - Update NVIDIA GPU environment"
+	@echo "  make env-update-gpu CUDA_MAJOR=13 - Update NVIDIA GPU env (CUDA 13)"
+	@echo "  make env-update-gpu CUDA_MAJOR=12 - Update NVIDIA GPU env (CUDA 12)"
 	@echo "  make env-update-mps  - Update Apple Silicon environment"
 	@echo "  make env-update-rocm - Update AMD GPU environment"
 	@echo ""

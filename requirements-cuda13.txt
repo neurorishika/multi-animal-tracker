@@ -1,0 +1,17 @@
+# CUDA 13.x install profile for multi-animal-tracker
+# Install with: uv pip install -v -r requirements-cuda13.txt
+
+--extra-index-url https://download.pytorch.org/whl/cu130
+-r requirements-cuda.txt
+
+tensorrt-cu13
+tensorrt-cu13-bindings
+tensorrt-cu13-libs
+
+# CUDA 13 + Python 3.13 commonly lacks prebuilt faiss-gpu wheels.
+# Use faiss-cpu in this profile for stable installs.
+faiss-cpu
+
+--pre
+-f https://pip.cupy.dev/pre
+cupy-cuda13x

@@ -418,6 +418,7 @@ class PosePredictWorker(QObject):
         sleap_device: str = "auto",
         sleap_batch: int = 4,
         sleap_max_instances: int = 1,
+        sleap_experimental_features: bool = False,
     ):
         super().__init__()
         self.model_path = Path(model_path)
@@ -440,6 +441,7 @@ class PosePredictWorker(QObject):
         self.sleap_batch = int(sleap_batch)
         # Enforce single-instance predictions for PoseKit.
         self.sleap_max_instances = 1
+        self.sleap_experimental_features = bool(sleap_experimental_features)
 
     def _resolved_runtime_artifact_path(self, backend_obj: Any) -> str:
         runtime = str(self.runtime_flavor or "").strip().lower()
@@ -540,6 +542,9 @@ class PosePredictWorker(QObject):
                     "POSE_SLEAP_DEVICE": self.sleap_device or "auto",
                     "POSE_SLEAP_BATCH": int(max(1, self.sleap_batch)),
                     "POSE_SLEAP_MAX_INSTANCES": 1,
+                    "POSE_SLEAP_EXPERIMENTAL_FEATURES": bool(
+                        self.sleap_experimental_features
+                    ),
                 }
                 cfg = build_runtime_config(
                     params=params,
@@ -633,6 +638,7 @@ class BulkPosePredictWorker(QObject):
         sleap_device: str = "auto",
         sleap_batch: int = 4,
         sleap_max_instances: int = 1,
+        sleap_experimental_features: bool = False,
     ):
         super().__init__()
         self.model_path = Path(model_path)
@@ -654,6 +660,7 @@ class BulkPosePredictWorker(QObject):
         self.sleap_batch = int(sleap_batch)
         # Enforce single-instance predictions for PoseKit.
         self.sleap_max_instances = 1
+        self.sleap_experimental_features = bool(sleap_experimental_features)
         self._cancel = False
 
     def _resolved_runtime_artifact_path(self, backend_obj: Any) -> str:
@@ -700,6 +707,9 @@ class BulkPosePredictWorker(QObject):
                     "POSE_SLEAP_DEVICE": self.sleap_device or "auto",
                     "POSE_SLEAP_BATCH": int(max(1, self.sleap_batch)),
                     "POSE_SLEAP_MAX_INSTANCES": 1,
+                    "POSE_SLEAP_EXPERIMENTAL_FEATURES": bool(
+                        self.sleap_experimental_features
+                    ),
                     "POSE_YOLO_CONF": float(self.conf),
                 }
                 cfg = build_runtime_config(
@@ -3111,6 +3121,16 @@ class MainWindow(QMainWindow):
         sleap_btns.addWidget(self.btn_sleap_stop)
         sleap_layout.addRow("", sleap_btns)
 
+        self.chk_pred_sleap_experimental = QCheckBox(
+            "Allow experimental SLEAP runtimes"
+        )
+        self.chk_pred_sleap_experimental.setChecked(False)
+        self.chk_pred_sleap_experimental.setToolTip(
+            "Enable ONNX/TensorRT runtime execution for SLEAP predictions in PoseKit.\n"
+            "When disabled, PoseKit falls back to native SLEAP runtime."
+        )
+        sleap_layout.addRow("", self.chk_pred_sleap_experimental)
+
         model_layout.addWidget(self.sleap_pred_widget)
 
         self.btn_train = QPushButton("Train / Fine-tune…")
@@ -3269,6 +3289,9 @@ class MainWindow(QMainWindow):
         self.btn_pred_exported.clicked.connect(self._browse_pred_exported_model)
         self.combo_pred_backend.currentTextChanged.connect(self._update_pred_backend_ui)
         self.combo_pred_runtime.currentTextChanged.connect(self._update_pred_backend_ui)
+        self.chk_pred_sleap_experimental.stateChanged.connect(
+            lambda _state: self._update_pred_backend_ui()
+        )
         self.btn_sleap_refresh.clicked.connect(self._refresh_sleap_envs)
         self.btn_sleap_model.clicked.connect(self._browse_sleap_model_dir)
         self.btn_sleap_model_latest.clicked.connect(self._use_latest_sleap_model)
@@ -3507,6 +3530,9 @@ class MainWindow(QMainWindow):
             "pred_batch": int(self.spin_pred_batch.value()),
             "sleap_env": self.combo_sleap_env.currentText().strip(),
             "sleap_model_dir": self.sleap_model_edit.text().strip(),
+            "sleap_experimental_features": bool(
+                self._sleap_experimental_features_enabled()
+            ),
             "show_predictions": bool(self.cb_show_preds.isChecked()),
             "show_pred_conf": bool(self.cb_show_pred_conf.isChecked()),
         }
@@ -3581,6 +3607,12 @@ class MainWindow(QMainWindow):
                         self.combo_sleap_env.setCurrentText(self._sleap_env_pref)
             if "sleap_model_dir" in settings:
                 self.sleap_model_edit.setText(str(settings["sleap_model_dir"]))
+            if "sleap_experimental_features" in settings and hasattr(
+                self, "chk_pred_sleap_experimental"
+            ):
+                self.chk_pred_sleap_experimental.setChecked(
+                    bool(settings["sleap_experimental_features"])
+                )
             if "show_predictions" in settings:
                 self.cb_show_preds.setChecked(bool(settings["show_predictions"]))
                 self.show_predictions = bool(self.cb_show_preds.isChecked())
@@ -5964,6 +5996,7 @@ class MainWindow(QMainWindow):
             "combo_sleap_env",
             "btn_sleap_refresh",
             "sleap_model_edit",
+            "chk_pred_sleap_experimental",
             "btn_sleap_model",
             "btn_sleap_model_latest",
             "btn_sleap_start",
@@ -6325,6 +6358,11 @@ class MainWindow(QMainWindow):
         )
         return str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
 
+    def _sleap_experimental_features_enabled(self) -> bool:
+        if not hasattr(self, "chk_pred_sleap_experimental"):
+            return False
+        return bool(self.chk_pred_sleap_experimental.isChecked())
+
     def _browse_pred_exported_model(self):
         backend = self._pred_backend()
         runtime = self._pred_runtime_flavor()
@@ -6595,6 +6633,7 @@ class MainWindow(QMainWindow):
             sleap_device="auto",
             sleap_batch=int(self.spin_pred_batch.value()),
             sleap_max_instances=1,
+            sleap_experimental_features=self._sleap_experimental_features_enabled(),
         )
         self._pred_worker.moveToThread(self._pred_thread)
         self._pred_thread.started.connect(self._pred_worker.run)
@@ -6890,6 +6929,7 @@ class MainWindow(QMainWindow):
                 sleap_device="auto",
                 sleap_batch=int(pred_batch),
                 sleap_max_instances=1,
+                sleap_experimental_features=self._sleap_experimental_features_enabled(),
             )
             self._bulk_pred_worker.moveToThread(self._bulk_pred_thread)
             self._bulk_pred_thread.started.connect(self._bulk_pred_worker.run)
