@@ -339,24 +339,128 @@ def _prepare_batch_for_predictor(
     return crops, scales
 
 
+def _detect_predictor_input_format(predictor: Any) -> Optional[Dict[str, Any]]:
+    """Detect expected dtype and layout (NCHW/NHWC) from an ONNX session."""
+    session = None
+    for attr in ("session", "_session", "ort_session", "_ort_session", "sess"):
+        cand = getattr(predictor, attr, None)
+        if cand is not None and hasattr(cand, "get_inputs"):
+            session = cand
+            break
+    if session is None:
+        return None
+    try:
+        inputs = session.get_inputs()
+        if not inputs:
+            return None
+        inp = inputs[0]
+        raw_type = str(getattr(inp, "type", "")).lower()
+        shape = list(getattr(inp, "shape", []) or [])
+    except Exception:
+        return None
+    is_float = "float" in raw_type
+    dims: List[int] = []
+    for d in shape:
+        try:
+            dims.append(int(d))
+        except (TypeError, ValueError):
+            dims.append(-1)
+    layout = "nhwc"
+    if len(dims) >= 4:
+        if dims[1] in (1, 3):
+            layout = "nchw"
+        elif dims[-1] in (1, 3):
+            layout = "nhwc"
+    return {"is_float": is_float, "layout": layout}
+
+
+def _detect_model_min_batch(predictor: Any) -> Optional[int]:
+    """Detect the minimum required batch from the model session/engine."""
+    session = None
+    for attr in ("session", "_session", "ort_session", "_ort_session", "sess"):
+        cand = getattr(predictor, attr, None)
+        if cand is not None and hasattr(cand, "get_inputs"):
+            session = cand
+            break
+    if session is not None:
+        try:
+            inputs = session.get_inputs()
+            if inputs:
+                shape = getattr(inputs[0], "shape", [])
+                if shape:
+                    try:
+                        b = int(shape[0])
+                        if b > 0:
+                            return b
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            pass
+    for attr in ("engine", "_engine", "trt_engine"):
+        engine = getattr(predictor, attr, None)
+        if engine is None:
+            continue
+        if hasattr(engine, "get_profile_shape"):
+            try:
+                min_s, _, _ = engine.get_profile_shape(0, 0)
+                if min_s and int(min_s[0]) > 0:
+                    return int(min_s[0])
+            except Exception:
+                pass
+        if hasattr(engine, "get_binding_shape"):
+            try:
+                shape = list(engine.get_binding_shape(0))
+                if shape and int(shape[0]) > 0:
+                    return int(shape[0])
+            except Exception:
+                pass
+    return None
+
+
 def _predict_batch(
     predictor: Any, crops: Sequence[np.ndarray], runtime_flavor: str
 ) -> Any:
-    attempts: List[Any] = []
-    attempts.append(list(crops))
+    # Ensure all crops are 3D [H,W,C] for reliable stacking.
+    crops_3d: List[np.ndarray] = []
+    for c in crops:
+        a = np.asarray(c, dtype=np.uint8)
+        if a.ndim == 2:
+            a = a[:, :, None]
+        crops_3d.append(a)
+
     batch_uint8: Optional[np.ndarray] = None
     try:
-        batch_uint8 = np.stack([np.asarray(c, dtype=np.uint8) for c in crops], axis=0)
+        batch_uint8 = np.stack(crops_3d, axis=0)  # [B, H, W, C]
     except Exception:
         batch_uint8 = None
 
+    # Detect model's expected input format from ONNX session if available.
+    fmt = _detect_predictor_input_format(predictor)
+
+    # If format detected, try it first (no guessing).
+    if fmt is not None and batch_uint8 is not None:
+        inp = (
+            batch_uint8.astype(np.float32) / 255.0
+            if fmt.get("is_float", True)
+            else batch_uint8.copy()
+        )
+        if fmt.get("layout") == "nchw" and inp.ndim == 4:
+            inp = np.transpose(inp, (0, 3, 1, 2))
+        try:
+            return predictor.predict(inp)
+        except Exception:
+            pass  # fall through to alternatives
+
+    # Fallback: try numpy array formats first, list(crops) last.
+    attempts: List[Any] = []
     if batch_uint8 is not None:
-        attempts.append(batch_uint8)
-        attempts.append(batch_uint8.astype(np.float32) / 255.0)
         if batch_uint8.ndim == 4:
             attempts.append(
                 np.transpose(batch_uint8.astype(np.float32) / 255.0, (0, 3, 1, 2))
-            )
+            )  # NCHW float
+        attempts.append(batch_uint8.astype(np.float32) / 255.0)  # NHWC float
+        attempts.append(batch_uint8)  # NHWC uint8
+    attempts.append(list(crops))  # raw list – last resort
 
     last_err: Optional[Exception] = None
     for inp in attempts:
@@ -464,6 +568,13 @@ def main() -> int:
         batch=batch_size,
         max_instances=max_instances,
     )
+    model_min_batch = _detect_model_min_batch(predictor)
+    if model_min_batch is not None and model_min_batch > batch_size:
+        print(
+            f"Model requires min batch={model_min_batch}, adjusting from {batch_size}",
+            flush=True,
+        )
+        batch_size = model_min_batch
     input_hw, input_channels = _detect_input_spec(exported_model_path)
     if forced_input_hw is not None:
         input_hw = forced_input_hw

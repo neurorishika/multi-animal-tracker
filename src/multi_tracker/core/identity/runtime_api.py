@@ -317,7 +317,7 @@ def _coerce_prediction_batch(
                 conf = conf[None, :]
         elif xy.ndim == 3 and xy.shape[-1] == 2:
             # Could be [B,K,2] or [I,K,2] for single image. Use batch size to infer.
-            if batch_size == 1:
+            if int(xy.shape[0]) != int(batch_size):
                 xy = xy[None, :, :, :]
                 if conf is not None and conf.ndim == 2:
                     conf = conf[None, :, :]
@@ -1454,69 +1454,109 @@ class SleapExportBackend:
 
     def _detect_input_spec(self) -> None:
         meta = self._metadata
-        if meta is None:
-            return
-        hw = _extract_metadata_attr(
-            meta,
-            names=[
-                "crop_size",
-                "crop_hw",
-                "input_hw",
-                "image_hw",
-            ],
-            default=None,
-        )
-        if isinstance(hw, (list, tuple)) and len(hw) >= 2:
-            try:
-                self._input_hw = (int(hw[0]), int(hw[1]))
-            except Exception:
-                self._input_hw = None
-        input_shape = _extract_metadata_attr(
-            meta,
-            names=[
-                "input_image_shape",
-                "input_shape",
-            ],
-            default=None,
-        )
-        if input_shape is not None:
-            arr = np.asarray(input_shape).reshape((-1,))
-            if arr.size >= 4:
-                # Supports [B,H,W,C] and [B,C,H,W] style shapes.
-                if int(arr[-1]) in (1, 3):
-                    self._input_channels = int(arr[-1])
-                    self._input_hw = (int(arr[-3]), int(arr[-2]))
-                elif int(arr[1]) in (1, 3):
-                    self._input_channels = int(arr[1])
-                    self._input_hw = (int(arr[-2]), int(arr[-1]))
+        if meta is not None:
+            hw = _extract_metadata_attr(
+                meta,
+                names=[
+                    "crop_size",
+                    "crop_hw",
+                    "input_hw",
+                    "image_hw",
+                ],
+                default=None,
+            )
+            if isinstance(hw, (list, tuple)) and len(hw) >= 2:
+                try:
+                    self._input_hw = (int(hw[0]), int(hw[1]))
+                except Exception:
+                    self._input_hw = None
+            input_shape = _extract_metadata_attr(
+                meta,
+                names=[
+                    "input_image_shape",
+                    "input_shape",
+                ],
+                default=None,
+            )
+            if input_shape is not None:
+                arr = np.asarray(input_shape).reshape((-1,))
+                if arr.size >= 4:
+                    # Supports [B,H,W,C] and [B,C,H,W] style shapes.
+                    if int(arr[-1]) in (1, 3):
+                        self._input_channels = int(arr[-1])
+                        self._input_hw = (int(arr[-3]), int(arr[-2]))
+                    elif int(arr[1]) in (1, 3):
+                        self._input_channels = int(arr[1])
+                        self._input_hw = (int(arr[-2]), int(arr[-1]))
 
-        channels = _extract_metadata_attr(
-            meta,
-            names=[
-                "input_channels",
-                "channels",
-                "num_channels",
-            ],
-            default=None,
-        )
-        if channels is not None:
-            try:
-                self._input_channels = int(channels)
-            except Exception:
-                pass
+            channels = _extract_metadata_attr(
+                meta,
+                names=[
+                    "input_channels",
+                    "channels",
+                    "num_channels",
+                ],
+                default=None,
+            )
+            if channels is not None:
+                try:
+                    self._input_channels = int(channels)
+                except Exception:
+                    pass
 
-        node_names = _extract_metadata_attr(
-            meta,
-            names=["node_names", "keypoint_names"],
-            default=None,
-        )
-        if node_names:
-            try:
-                nodes = [str(v) for v in list(node_names)]
-                if nodes:
-                    self.output_keypoint_names = nodes
-            except Exception:
-                pass
+            node_names = _extract_metadata_attr(
+                meta,
+                names=["node_names", "keypoint_names"],
+                default=None,
+            )
+            if node_names:
+                try:
+                    nodes = [str(v) for v in list(node_names)]
+                    if nodes:
+                        self.output_keypoint_names = nodes
+                except Exception:
+                    pass
+
+        # FALLBACK: If input_hw is still None after checking metadata, infer from training config or use safe default
+        if self._input_hw is None and meta is not None:
+            # Check for max_height/max_width in training config
+            max_h = _extract_metadata_attr(meta, names=["max_height"], default=None)
+            max_w = _extract_metadata_attr(meta, names=["max_width"], default=None)
+            min_crop = _extract_metadata_attr(
+                meta, names=["min_crop_size"], default=None
+            )
+
+            # For U-Net with dynamic sizes, use a safe default based on training data
+            # Round up to next multiple of 32 (common U-Net stride for encoder/decoder matching)
+            if max_h is not None and max_w is not None:
+                try:
+                    target_size = max(int(max_h), int(max_w))
+                    # Round up to multiple of 32
+                    target_size = ((target_size + 31) // 32) * 32
+                    self._input_hw = (target_size, target_size)
+                    logger.info(
+                        f"SLEAP export: detected dynamic input, using square resize to {target_size}x{target_size}"
+                    )
+                except Exception:
+                    pass
+
+            # Last resort: use minimum crop size rounded to multiple of 32
+            if self._input_hw is None and min_crop is not None:
+                try:
+                    target_size = ((int(min_crop) + 31) // 32) * 32
+                    self._input_hw = (target_size, target_size)
+                    logger.info(
+                        f"SLEAP export: using default square resize to {target_size}x{target_size}"
+                    )
+                except Exception:
+                    pass
+
+        # Final fallback for U-Net models - use safe default divisible by 32
+        if self._input_hw is None:
+            self._input_hw = (224, 224)
+            logger.warning(
+                "SLEAP export: no input size in metadata, using default 224x224 for U-Net compatibility."
+            )
 
     def _init_predictor(self) -> None:
         try:
@@ -1629,24 +1669,130 @@ class SleapExportBackend:
             processed.append(arr)
         return np.stack(processed, axis=0)
 
+    def _detect_model_min_batch(self) -> Optional[int]:
+        """Detect the minimum required batch from the model session/engine."""
+        session = None
+        for attr in ("session", "_session", "ort_session", "_ort_session", "sess"):
+            cand = getattr(self._predictor, attr, None)
+            if cand is not None and hasattr(cand, "get_inputs"):
+                session = cand
+                break
+        if session is not None:
+            try:
+                inputs = session.get_inputs()
+                if inputs:
+                    shape = getattr(inputs[0], "shape", [])
+                    if shape:
+                        try:
+                            b = int(shape[0])
+                            if b > 0:
+                                return b
+                        except (TypeError, ValueError):
+                            pass
+            except Exception:
+                pass
+        for attr in ("engine", "_engine", "trt_engine"):
+            engine = getattr(self._predictor, attr, None)
+            if engine is None:
+                continue
+            if hasattr(engine, "get_profile_shape"):
+                try:
+                    min_s, _, _ = engine.get_profile_shape(0, 0)
+                    if min_s and int(min_s[0]) > 0:
+                        return int(min_s[0])
+                except Exception:
+                    pass
+            if hasattr(engine, "get_binding_shape"):
+                try:
+                    shape = list(engine.get_binding_shape(0))
+                    if shape and int(shape[0]) > 0:
+                        return int(shape[0])
+                except Exception:
+                    pass
+        return None
+
+    def _detect_input_format(self) -> Optional[Dict[str, Any]]:
+        """Detect expected dtype and layout (NCHW/NHWC) from ONNX session."""
+        session = None
+        for attr in ("session", "_session", "ort_session", "_ort_session", "sess"):
+            cand = getattr(self._predictor, attr, None)
+            if cand is not None and hasattr(cand, "get_inputs"):
+                session = cand
+                break
+        if session is None:
+            return None
+        try:
+            inputs = session.get_inputs()
+            if not inputs:
+                return None
+            inp = inputs[0]
+            raw_type = str(getattr(inp, "type", "")).lower()
+            shape = list(getattr(inp, "shape", []) or [])
+        except Exception:
+            return None
+        is_float = "float" in raw_type
+        dims: List[int] = []
+        for d in shape:
+            try:
+                dims.append(int(d))
+            except (TypeError, ValueError):
+                dims.append(-1)
+        layout = "nhwc"
+        if len(dims) >= 4:
+            if dims[1] in (1, 3):
+                layout = "nchw"
+            elif dims[-1] in (1, 3):
+                layout = "nhwc"
+        return {"is_float": is_float, "layout": layout}
+
     def _predict_raw(self, crops: Sequence[np.ndarray]) -> Any:
         if self._predictor is None:
             raise RuntimeError("SLEAP export predictor is not initialized.")
-        # Try common predictor input conventions in descending likelihood.
+
+        # Prepare uint8 NHWC batch – always needed as a base.
         last_err: Optional[Exception] = None
-        attempts: List[Any] = []
-        attempts.append(list(crops))
+        batch_uint8: Optional[np.ndarray] = None
         try:
             batch_uint8 = self._prepare_inputs_uint8(crops)
-            attempts.append(batch_uint8)
-            attempts.append(batch_uint8.astype(np.float32) / 255.0)
+        except Exception as exc:
+            last_err = exc
+
+        # Detected format from ONNX session (no guessing).
+        fmt = self._detect_input_format()
+        logger.debug(f"SLEAP export: detected format = {fmt}")
+        if fmt is not None and batch_uint8 is not None:
+            inp = (
+                batch_uint8.astype(np.float32) / 255.0
+                if fmt.get("is_float", True)
+                else batch_uint8.copy()
+            )
+            logger.debug(
+                f"SLEAP export: before transpose, inp.shape = {inp.shape}, layout = {fmt.get('layout')}"
+            )
+            if fmt.get("layout") == "nchw" and inp.ndim == 4:
+                inp = np.transpose(inp, (0, 3, 1, 2))
+                logger.debug(
+                    f"SLEAP export: after transpose to NCHW, inp.shape = {inp.shape}"
+                )
+            try:
+                result = self._predictor.predict(inp)
+                logger.debug("SLEAP export: prediction succeeded with detected format")
+                return result
+            except Exception as exc:
+                logger.debug(f"SLEAP export: detected format failed: {exc}")
+                last_err = exc
+
+        # Fallback: try numpy formats first, list(crops) last.
+        attempts: List[Any] = []
+        if batch_uint8 is not None:
             if batch_uint8.ndim == 4:
                 nchw = np.transpose(
                     batch_uint8.astype(np.float32) / 255.0, (0, 3, 1, 2)
                 )
-                attempts.append(nchw)
-        except Exception as exc:
-            last_err = exc
+                attempts.append(nchw)  # NCHW float
+            attempts.append(batch_uint8.astype(np.float32) / 255.0)  # NHWC float
+            attempts.append(batch_uint8)  # NHWC uint8
+        attempts.append(list(crops))  # raw list – last resort
 
         for inp in attempts:
             try:
@@ -1661,8 +1807,44 @@ class SleapExportBackend:
     def predict_batch(self, crops: Sequence[np.ndarray]) -> List[PoseResult]:
         if not crops:
             return []
-        raw_out = self._predict_raw(crops)
-        kpt_batch = _coerce_prediction_batch(raw_out, batch_size=len(crops))
+        actual_count = len(crops)
+
+        # Store original crop dimensions for coordinate rescaling
+        original_sizes = []
+        for crop in crops:
+            arr = np.asarray(crop)
+            h, w = arr.shape[:2]
+            original_sizes.append((h, w))
+
+        # Pad to model's minimum batch if needed.
+        min_b = self._detect_model_min_batch()
+        padded_crops: Sequence[np.ndarray] = crops
+        if min_b is not None and actual_count < min_b:
+            pad_list = list(crops)
+            pad_list.extend([crops[-1]] * (min_b - actual_count))
+            padded_crops = pad_list
+            # Extend original_sizes for padded crops
+            for _ in range(min_b - actual_count):
+                original_sizes.append(original_sizes[-1])
+
+        raw_out = self._predict_raw(padded_crops)
+        kpt_batch = _coerce_prediction_batch(raw_out, batch_size=len(padded_crops))
+        # Trim back to actual crop count.
+        kpt_batch = kpt_batch[:actual_count]
+        original_sizes = original_sizes[:actual_count]
+
+        # Rescale keypoint coordinates from resized space back to original crop space
+        if self._input_hw is not None:
+            model_h, model_w = self._input_hw
+            for i, kpts in enumerate(kpt_batch):
+                if kpts is not None and len(kpts) > 0:
+                    orig_h, orig_w = original_sizes[i]
+                    scale_x = orig_w / model_w
+                    scale_y = orig_h / model_h
+                    # Scale x, y coordinates (columns 0, 1), leave confidence (column 2) unchanged
+                    kpts[:, 0] *= scale_x
+                    kpts[:, 1] *= scale_y
+
         outputs: List[PoseResult] = []
         for kpts in kpt_batch:
             outputs.append(_summarize_keypoints(kpts, self.min_valid_conf))

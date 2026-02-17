@@ -419,6 +419,7 @@ class PosePredictWorker(QObject):
         sleap_batch: int = 4,
         sleap_max_instances: int = 1,
         sleap_experimental_features: bool = False,
+        cache_backend: Optional[str] = None,
     ):
         super().__init__()
         self.model_path = Path(model_path)
@@ -442,6 +443,7 @@ class PosePredictWorker(QObject):
         # Enforce single-instance predictions for PoseKit.
         self.sleap_max_instances = 1
         self.sleap_experimental_features = bool(sleap_experimental_features)
+        self.cache_backend = str(cache_backend or self.backend).strip().lower()
 
     def _resolved_runtime_artifact_path(self, backend_obj: Any) -> str:
         runtime = str(self.runtime_flavor or "").strip().lower()
@@ -512,7 +514,7 @@ class PosePredictWorker(QObject):
                 self.out_root, self.keypoint_names, self.skeleton_edges
             )
             cached = infer.get_cached_pred(
-                self.model_path, self.image_path, backend=self.backend
+                self.model_path, self.image_path, backend=self.cache_backend
             )
             if cached is not None:
                 self.finished.emit(cached)
@@ -651,6 +653,7 @@ class BulkPosePredictWorker(QObject):
         sleap_batch: int = 4,
         sleap_max_instances: int = 1,
         sleap_experimental_features: bool = False,
+        cache_backend: Optional[str] = None,
     ):
         super().__init__()
         self.model_path = Path(model_path)
@@ -673,6 +676,7 @@ class BulkPosePredictWorker(QObject):
         # Enforce single-instance predictions for PoseKit.
         self.sleap_max_instances = 1
         self.sleap_experimental_features = bool(sleap_experimental_features)
+        self.cache_backend = str(cache_backend or self.backend).strip().lower()
         self._cancel = False
 
     def _resolved_runtime_artifact_path(self, backend_obj: Any) -> str:
@@ -3437,6 +3441,24 @@ class MainWindow(QMainWindow):
                 app.removeEventFilter(self)
             except Exception:
                 pass
+
+        # Ensure background workers are fully stopped before Qt tears down objects.
+        self._shutdown_worker_thread(
+            thread_attr="_bulk_pred_thread",
+            worker_attr="_bulk_pred_worker",
+            cancel_method="cancel",
+        )
+        self._shutdown_worker_thread(
+            thread_attr="_pred_thread",
+            worker_attr="_pred_worker",
+            cancel_method=None,
+        )
+        self._shutdown_worker_thread(
+            thread_attr="_sleap_service_thread",
+            worker_attr="_sleap_service_worker",
+            cancel_method=None,
+        )
+
         self._perform_autosave()
         self.save_project()
         self._save_ui_settings()
@@ -3445,6 +3467,54 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         super().closeEvent(event)
+
+    def _shutdown_worker_thread(
+        self,
+        thread_attr: str,
+        worker_attr: Optional[str] = None,
+        cancel_method: Optional[str] = "cancel",
+        timeout_ms: int = 4000,
+    ) -> None:
+        thread = getattr(self, thread_attr, None)
+        worker = getattr(self, worker_attr, None) if worker_attr else None
+
+        if worker is not None and cancel_method and hasattr(worker, cancel_method):
+            try:
+                getattr(worker, cancel_method)()
+            except Exception:
+                pass
+
+        if thread is None:
+            if worker_attr:
+                setattr(self, worker_attr, None)
+            return
+
+        try:
+            if thread.isRunning():
+                try:
+                    thread.quit()
+                except Exception:
+                    pass
+                try:
+                    stopped = bool(thread.wait(int(max(100, timeout_ms))))
+                except Exception:
+                    stopped = False
+                if not stopped:
+                    try:
+                        thread.terminate()
+                    except Exception:
+                        pass
+                    try:
+                        thread.wait(1000)
+                    except Exception:
+                        pass
+        except RuntimeError:
+            # Qt object may already be deleted.
+            pass
+        finally:
+            setattr(self, thread_attr, None)
+            if worker_attr:
+                setattr(self, worker_attr, None)
 
     def eventFilter(self, obj, event):
         if event is not None and event.type() == QEvent.Wheel:
@@ -4186,7 +4256,8 @@ class MainWindow(QMainWindow):
     def _current_pred_cache_key(self) -> Optional[str]:
         backend = self._pred_backend()
         model = self._pred_cache_model(self._get_pred_model_silent(), backend)
-        return self._pred_cache_key_for(model, backend)
+        cache_backend = self._pred_cache_backend(backend)
+        return self._pred_cache_key_for(model, cache_backend)
 
     def _ensure_pred_conf_cache(self) -> None:
         key = self._current_pred_cache_key()
@@ -4207,13 +4278,14 @@ class MainWindow(QMainWindow):
             return
         backend = self._pred_backend()
         model = self._pred_cache_model(model, backend)
+        cache_backend = self._pred_cache_backend(backend)
         if model is None:
             self._pred_conf_cache_key = None
             self._pred_conf_map = {}
             self._pred_conf_complete = False
             self._pred_kpt_count_map = {}
             return
-        preds_cache = self.infer.load_cache(model, backend=backend)
+        preds_cache = self.infer.load_cache(model, backend=cache_backend)
         self._pred_conf_cache_key = key
         conf_map, kpt_map = self._build_pred_stats_maps(preds_cache)
         self._pred_conf_map = conf_map
@@ -6450,6 +6522,23 @@ class MainWindow(QMainWindow):
             return None
         return model
 
+    def _pred_cache_backend(
+        self, backend: str, runtime_flavor: Optional[str] = None
+    ) -> str:
+        backend_norm = str(backend or "yolo").strip().lower()
+        if backend_norm != "sleap":
+            return backend_norm
+        flavor = (
+            str(runtime_flavor or self._pred_runtime_flavor() or "native")
+            .strip()
+            .lower()
+        )
+        try:
+            batch = int(max(1, int(self.spin_pred_batch.value())))
+        except Exception:
+            batch = 1
+        return f"sleap:{flavor}:b{batch}"
+
     def _browse_pred_weights(self):
         path, _ = QFileDialog.getOpenFileName(self, "Select pose weights", "", "*.pt")
         if path:
@@ -6496,11 +6585,12 @@ class MainWindow(QMainWindow):
         if not self.show_predictions:
             return None, None
         backend = self._pred_backend()
+        cache_backend = self._pred_cache_backend(backend)
         model = self._pred_cache_model(self._get_pred_model_silent(), backend)
         if not model:
             return None, None
         preds = self._get_pred_for_frame(
-            model, self.image_paths[self.current_index], backend=backend
+            model, self.image_paths[self.current_index], backend=cache_backend
         )
         if not preds:
             return None, None
@@ -6616,6 +6706,7 @@ class MainWindow(QMainWindow):
         else:
             self._last_pred_conf = self._pred_conf_default()
         runtime_flavor = self._pred_runtime_flavor()
+        cache_backend = self._pred_cache_backend(backend, runtime_flavor=runtime_flavor)
         cache_model = self._pred_cache_model(
             model,
             backend,
@@ -6624,9 +6715,10 @@ class MainWindow(QMainWindow):
         )
         self._last_pred_model = cache_model
         self._last_pred_backend = backend
+        self._last_pred_cache_backend = cache_backend
 
         cached = self._get_pred_for_frame(
-            cache_model, self.image_paths[self.current_index], backend=backend
+            cache_model, self.image_paths[self.current_index], backend=cache_backend
         )
         if cached is not None:
             self._on_pred_finished(cached)
@@ -6658,6 +6750,7 @@ class MainWindow(QMainWindow):
             sleap_batch=int(self.spin_pred_batch.value()),
             sleap_max_instances=1,
             sleap_experimental_features=self._sleap_experimental_features_enabled(),
+            cache_backend=cache_backend,
         )
         self._pred_worker.moveToThread(self._pred_thread)
         self._pred_thread.started.connect(self._pred_worker.run)
@@ -6668,6 +6761,7 @@ class MainWindow(QMainWindow):
         self._pred_worker.failed.connect(self._on_pred_failed)
         self._pred_worker.finished.connect(self._pred_thread.quit)
         self._pred_worker.failed.connect(self._pred_thread.quit)
+        self._pred_thread.finished.connect(self._on_pred_thread_finished)
         self._pred_thread.finished.connect(self._pred_thread.deleteLater)
         self._pred_thread.start()
 
@@ -6696,7 +6790,11 @@ class MainWindow(QMainWindow):
         if self.mode != "frame":
             self.rb_frame.setChecked(True)
         model = getattr(self, "_last_pred_model", None)
-        backend = getattr(self, "_last_pred_backend", "yolo")
+        backend = getattr(
+            self,
+            "_last_pred_cache_backend",
+            getattr(self, "_last_pred_backend", "yolo"),
+        )
         if model:
             img_path = str(self.image_paths[self.current_index])
             self.infer.merge_cache(model, {img_path: preds}, backend=backend)
@@ -6721,6 +6819,11 @@ class MainWindow(QMainWindow):
             self._clear_progress()
         QMessageBox.warning(self, "Prediction failed", msg)
 
+    def _on_pred_thread_finished(self):
+        """Clean up single-frame prediction thread after it exits."""
+        self._pred_thread = None
+        self._pred_worker = None
+
     def _on_pred_exported_model_resolved(self, path: str):
         resolved = str(path or "").strip()
         if not resolved:
@@ -6737,9 +6840,10 @@ class MainWindow(QMainWindow):
 
     def _clear_prediction_cache(self):
         backend = self._pred_backend()
+        cache_backend = self._pred_cache_backend(backend)
         model = self._pred_cache_model(self._get_pred_model_silent(), backend)
         if model:
-            removed = self.infer.clear_cache(model, backend=backend)
+            removed = self.infer.clear_cache(model, backend=cache_backend)
             self.statusBar().showMessage(
                 f"Cleared prediction cache ({removed} file(s)).", 3000
             )
@@ -6773,11 +6877,12 @@ class MainWindow(QMainWindow):
 
     def _adopt_prediction_kpt(self, kpt_idx: int, x: float, y: float):
         backend = self._pred_backend()
+        cache_backend = self._pred_cache_backend(backend)
         model = self._pred_cache_model(self._get_pred_model_or_prompt(), backend)
         preds = None
         if model:
             preds = self.infer.get_cached_pred(
-                model, self.image_paths[self.current_index], backend=backend
+                model, self.image_paths[self.current_index], backend=cache_backend
             )
 
         if not self._current_frame_has_labels():
@@ -6800,7 +6905,7 @@ class MainWindow(QMainWindow):
                 self.infer.merge_cache(
                     model,
                     {str(self.image_paths[self.current_index]): preds},
-                    backend=backend,
+                    backend=cache_backend,
                 )
             return
 
@@ -6826,7 +6931,7 @@ class MainWindow(QMainWindow):
             self.infer.merge_cache(
                 model,
                 {str(self.image_paths[self.current_index]): preds},
-                backend=backend,
+                backend=cache_backend,
             )
 
     def apply_predictions_current(self: object) -> object:
@@ -6835,11 +6940,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No frame", "Select a frame first.")
             return
         backend = self._pred_backend()
+        cache_backend = self._pred_cache_backend(backend)
         model = self._pred_cache_model(self._get_pred_model_or_prompt(), backend)
         if not model:
             return
         preds = self.infer.get_cached_pred(
-            model, self.image_paths[self.current_index], backend=backend
+            model, self.image_paths[self.current_index], backend=cache_backend
         )
         if not preds:
             QMessageBox.information(
@@ -6925,6 +7031,7 @@ class MainWindow(QMainWindow):
                 self._set_sleap_status("SLEAP: running", visible=True)
 
         runtime_flavor = self._pred_runtime_flavor()
+        cache_backend = self._pred_cache_backend(backend, runtime_flavor=runtime_flavor)
         cache_model = self._pred_cache_model(
             model,
             backend,
@@ -6933,6 +7040,7 @@ class MainWindow(QMainWindow):
         )
         self._last_pred_model = cache_model
         self._last_pred_backend = backend
+        self._last_pred_cache_backend = cache_backend
         pred_batch = int(self.spin_pred_batch.value())
         try:
             self._bulk_pred_thread = QThread()
@@ -6954,6 +7062,7 @@ class MainWindow(QMainWindow):
                 sleap_batch=int(pred_batch),
                 sleap_max_instances=1,
                 sleap_experimental_features=self._sleap_experimental_features_enabled(),
+                cache_backend=cache_backend,
             )
             self._bulk_pred_worker.moveToThread(self._bulk_pred_thread)
             self._bulk_pred_thread.started.connect(self._bulk_pred_worker.run)
@@ -6966,6 +7075,7 @@ class MainWindow(QMainWindow):
             self._bulk_pred_worker.finished.connect(self._bulk_pred_thread.quit)
             self._bulk_pred_worker.failed.connect(self._bulk_pred_thread.quit)
             self._bulk_pred_thread.finished.connect(self._bulk_pred_thread.deleteLater)
+            self._bulk_pred_thread.finished.connect(self._on_bulk_pred_thread_finished)
             self._bulk_pred_thread.start()
         except Exception as e:
             self._set_bulk_prediction_locked(False)
@@ -6989,13 +7099,18 @@ class MainWindow(QMainWindow):
         self.btn_predict_bulk.setEnabled(True)
         self._set_bulk_prediction_locked(False)
         self._bulk_pred_worker = None
-        self._bulk_pred_thread = None
+        # NOTE: Do NOT set self._bulk_pred_thread = None here!
+        # Thread cleanup happens in _on_bulk_pred_thread_finished after thread.quit() completes
         self._clear_progress()
         self.statusBar().showMessage("Predictions cached.", 2000)
         if getattr(self, "_last_pred_backend", "yolo") == "sleap":
             self._set_sleap_status("SLEAP: idle", visible=True)
         model = getattr(self, "_last_pred_model", None)
-        backend = getattr(self, "_last_pred_backend", "yolo")
+        backend = getattr(
+            self,
+            "_last_pred_cache_backend",
+            getattr(self, "_last_pred_backend", "yolo"),
+        )
         if model:
             self.infer.merge_cache(model, preds, backend=backend)
             self._update_pred_conf_map_from_preds(preds, model=model, backend=backend)
@@ -7031,12 +7146,17 @@ class MainWindow(QMainWindow):
         self.btn_predict_bulk.setEnabled(True)
         self._set_bulk_prediction_locked(False)
         self._bulk_pred_worker = None
-        self._bulk_pred_thread = None
+        # NOTE: Do NOT set self._bulk_pred_thread = None here!
+        # Thread cleanup happens in _on_bulk_pred_thread_finished after thread.quit() completes
         self._clear_progress()
         self.statusBar().showMessage("Prediction failed.", 2000)
         if getattr(self, "_last_pred_backend", "yolo") == "sleap":
             self._set_sleap_status("SLEAP: idle", visible=True)
         QMessageBox.warning(self, "Prediction failed", msg)
+
+    def _on_bulk_pred_thread_finished(self):
+        """Called when the bulk prediction thread has fully finished execution."""
+        self._bulk_pred_thread = None
 
     def open_training_runner(self: object) -> object:
         """open_training_runner method documentation."""
