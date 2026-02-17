@@ -39,8 +39,8 @@ setup(
         "console_scripts": [
             "multi-animal-tracker=multi_tracker.app.launcher:main",
             "mat=multi_tracker.app.launcher:main",
-            "posekit-labeler=multi_tracker.posekit.pose_label:main",
-            "pose=multi_tracker.posekit.pose_label:main",
+            "posekit-labeler=multi_tracker.posekit.ui.main:main",
+            "pose=multi_tracker.posekit.ui.main:main",
             "datasieve=multi_tracker.tools.data_sieve.gui:main",
             "sieve=multi_tracker.tools.data_sieve.gui:main",
         ],

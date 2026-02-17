@@ -1625,22 +1625,22 @@ class CollapsibleGroupBox(QWidget):
         self._header_button = QToolButton()
         self._header_button.setStyleSheet("""
             QToolButton {
-                background-color: #3a3a3a;
-                border: 1px solid #555;
+                background-color: #2d2d30;
+                border: 1px solid #3e3e42;
                 border-radius: 4px;
                 padding: 8px 12px;
-                font-weight: bold;
+                font-weight: 600;
                 font-size: 12px;
-                color: #4a9eff;
+                color: #9cdcfe;
                 text-align: left;
             }
             QToolButton:hover {
-                background-color: #454545;
-                border-color: #666;
+                background-color: #37373d;
+                border-color: #4a4a4a;
             }
             QToolButton:checked {
-                background-color: #404040;
-                border-color: #4a9eff;
+                background-color: #37373d;
+                border-color: #007acc;
             }
         """)
         self._header_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -1757,139 +1757,200 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Multi-Animal-Tracker")
         self.resize(1360, 850)
 
-        # Set comprehensive dark mode styling
+        # Apply consistent VSCode dark theme (matches PoseKit and ClassKit)
         self.setStyleSheet("""
-            /* Main window and widgets */
-            QMainWindow, QWidget { background-color: #2b2b2b; color: #ffffff; font-family: -apple-system, system-ui, sans-serif; }
+            QMainWindow, QWidget {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+                font-family: "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+                font-size: 11px;
+            }
 
             /* Tabs */
-            QTabWidget::pane { border: 1px solid #444; top: -1px; }
+            QTabWidget::pane { border: 1px solid #3e3e42; top: -1px; background-color: #1e1e1e; }
             QTabBar::tab {
-                background: #353535; color: #aaa; padding: 8px 12px; margin-right: 2px;
+                background: #2d2d30; color: #cccccc; padding: 8px 14px; margin-right: 2px;
                 border-top-left-radius: 4px; border-top-right-radius: 4px;
+                border: 1px solid #3e3e42; border-bottom: none;
             }
-            QTabBar::tab:selected { background: #4a9eff; color: white; font-weight: bold; }
-            QTabBar::tab:hover { background: #404040; }
+            QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; font-weight: 600; border-bottom: 2px solid #007acc; }
+            QTabBar::tab:hover:!selected { background: #37373d; }
 
             /* Group boxes */
             QGroupBox {
-                font-weight: bold; border: 1px solid #555; border-radius: 6px;
-                margin-top: 20px; padding-top: 10px; background-color: #323232;
+                font-weight: 600; border: 1px solid #3e3e42; border-radius: 6px;
+                margin-top: 10px; padding: 8px; background-color: #252526;
+                color: #cccccc;
             }
             QGroupBox::title {
-                subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #4a9eff;
+                subcontrol-origin: margin; subcontrol-position: top left;
+                left: 10px; padding: 2px 8px;
+                background-color: #1e1e1e; color: #9cdcfe; border-radius: 3px;
             }
 
             /* Buttons */
             QPushButton {
-                background-color: #444; border: 1px solid #555; color: #fff;
-                padding: 6px 12px; border-radius: 4px; min-height: 25px;
+                background-color: #0e639c; border: none; color: #ffffff;
+                padding: 6px 14px; border-radius: 4px; min-height: 24px; font-weight: 500;
             }
-            QPushButton:hover { background-color: #555; border-color: #666; }
-            QPushButton:pressed { background-color: #2a75c4; }
-            QPushButton:checked { background-color: #2a75c4; border: 1px solid #4a9eff; }
-            QPushButton:disabled { background-color: #333; color: #666; border-color: #333; }
+            QPushButton:hover { background-color: #1177bb; }
+            QPushButton:pressed { background-color: #0d5a8f; }
+            QPushButton:checked { background-color: #094771; border: 1px solid #007acc; }
+            QPushButton:disabled { background-color: #3e3e42; color: #777777; border: none; }
 
-            /* Specific Action Buttons */
-            QPushButton#ActionBtn { background-color: #4a9eff; font-weight: bold; font-size: 13px; }
-            QPushButton#ActionBtn:hover { background-color: #3d8bdb; }
+            /* Action / Stop buttons */
+            QPushButton#ActionBtn {
+                background-color: #0e639c; font-weight: bold; font-size: 11px;
+            }
+            QPushButton#ActionBtn:hover { background-color: #1177bb; }
             QPushButton#StopBtn { background-color: #d9534f; font-weight: bold; }
             QPushButton#StopBtn:hover { background-color: #c9302c; }
 
             /* Inputs */
             QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {
-                background-color: #222; border: 1px solid #555; border-radius: 3px;
-                padding: 4px; color: #fff; selection-background-color: #4a9eff;
-                min-width: 120px;
+                background-color: #3c3c3c; border: 1px solid #3e3e42; border-radius: 4px;
+                padding: 4px 8px; color: #e0e0e0;
+                selection-background-color: #094771; min-width: 100px; min-height: 22px;
             }
-            QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QComboBox:focus { border: 1px solid #4a9eff; }
+            QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover, QComboBox:hover {
+                border-color: #0e639c;
+            }
+            QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QComboBox:focus {
+                border-color: #007acc;
+            }
 
             /* ComboBox dropdown */
             QComboBox::drop-down {
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 20px;
-                border-left: 1px solid #555;
-                background-color: #555;
-                border-top-right-radius: 3px;
-                border-bottom-right-radius: 3px;
+                subcontrol-origin: padding; subcontrol-position: top right;
+                width: 20px; border-left: 1px solid #3e3e42;
+                background-color: #4a4a4a;
+                border-top-right-radius: 4px; border-bottom-right-radius: 4px;
             }
-            QComboBox::drop-down:hover { background-color: #666; }
-            QComboBox::down-arrow {
-                image: none;
-                border: 2px solid #fff;
-                width: 6px;
-                height: 6px;
-                border-top: none;
-                border-right: none;
-            }
+            QComboBox::drop-down:hover { background-color: #5a5a5a; }
             QComboBox QAbstractItemView {
-                background-color: #2b2b2b;
-                border: 1px solid #555;
-                selection-background-color: #4a9eff;
-                selection-color: #fff;
-                color: #fff;
-                padding: 4px;
-                min-width: 200px;
+                background-color: #252526; border: 1px solid #3e3e42;
+                selection-background-color: #094771; selection-color: #ffffff;
+                color: #e0e0e0; outline: none;
             }
-            QComboBox QAbstractItemView::item {
-                padding: 6px 8px;
-                min-height: 24px;
-                border: none;
-            }
-            QComboBox QAbstractItemView::item:hover {
-                background-color: #3d8bdb;
-                color: #fff;
-            }
-            QComboBox QAbstractItemView::item:selected {
-                background-color: #4a9eff;
-                color: #fff;
-            }
+            QComboBox QAbstractItemView::item { padding: 6px 10px; min-height: 22px; }
+            QComboBox QAbstractItemView::item:hover { background-color: #2a2d2e; }
+            QComboBox QAbstractItemView::item:selected { background-color: #094771; color: #ffffff; }
 
             /* SpinBox arrows */
             QSpinBox::up-button, QDoubleSpinBox::up-button {
-                subcontrol-origin: border;
-                subcontrol-position: top right;
-                width: 18px;
-                border-left: 1px solid #555;
-                background-color: #555;
-                border-top-right-radius: 3px;
+                subcontrol-origin: border; subcontrol-position: top right;
+                width: 18px; border-left: 1px solid #3e3e42;
+                background-color: #4a4a4a; border-top-right-radius: 4px;
             }
-            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {
-                background-color: #666;
-            }
-            QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {
-                background-color: #4a9eff;
-            }
-
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover { background-color: #0e639c; }
             QSpinBox::down-button, QDoubleSpinBox::down-button {
-                subcontrol-origin: border;
-                subcontrol-position: bottom right;
-                width: 18px;
-                border-left: 1px solid #555;
-                background-color: #555;
-                border-bottom-right-radius: 3px;
+                subcontrol-origin: border; subcontrol-position: bottom right;
+                width: 18px; border-left: 1px solid #3e3e42;
+                background-color: #4a4a4a; border-bottom-right-radius: 4px;
             }
-            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-                background-color: #666;
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover { background-color: #0e639c; }
+
+            /* Checkboxes and Radio buttons */
+            QCheckBox, QRadioButton { color: #cccccc; spacing: 8px; }
+            QCheckBox::indicator, QRadioButton::indicator {
+                width: 14px; height: 14px; border: 1px solid #3e3e42;
+                border-radius: 3px; background-color: #3c3c3c;
             }
-            QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
-                background-color: #4a9eff;
+            QRadioButton::indicator { border-radius: 7px; }
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+                background-color: #0e639c; border-color: #007acc;
             }
+            QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #007acc; }
+
+            /* Labels */
+            QLabel { color: #cccccc; background-color: transparent; }
+
+            /* Toolbar */
+            QToolBar {
+                background-color: #252526; border-bottom: 1px solid #3e3e42;
+                spacing: 6px; padding: 4px 6px;
+            }
+            QToolButton {
+                background-color: transparent; border: none; border-radius: 4px;
+                padding: 6px 10px; color: #cccccc;
+            }
+            QToolButton:hover { background-color: #2a2d2e; }
+            QToolButton:pressed, QToolButton:checked { background-color: #094771; color: #4fc1ff; }
+
+            /* Status bar */
+            QStatusBar {
+                background-color: #007acc; color: #ffffff;
+                border-top: 1px solid #0098ff; font-weight: 500; font-size: 11px;
+            }
+            QStatusBar QLabel { background-color: transparent; color: #ffffff; padding: 0px 4px; }
+
+            /* Menu */
+            QMenuBar {
+                background-color: #252526; color: #cccccc;
+                border-bottom: 1px solid #3e3e42; padding: 2px;
+            }
+            QMenuBar::item { padding: 5px 10px; background-color: transparent; border-radius: 3px; }
+            QMenuBar::item:selected { background-color: #2a2d2e; }
+            QMenu {
+                background-color: #252526; color: #cccccc;
+                border: 1px solid #3e3e42; border-radius: 4px; padding: 4px;
+            }
+            QMenu::item { padding: 6px 20px 6px 12px; border-radius: 3px; }
+            QMenu::item:selected { background-color: #094771; color: #ffffff; }
+            QMenu::separator { height: 1px; background-color: #3e3e42; margin: 4px 8px; }
+
+            /* Splitter */
+            QSplitter::handle { background-color: #3e3e42; }
+            QSplitter::handle:hover { background-color: #007acc; }
 
             /* Scrollbars */
-            QScrollBar:vertical { background: #2b2b2b; width: 12px; }
-            QScrollBar::handle:vertical { background: #555; border-radius: 6px; min-height: 20px; }
-            QScrollBar::handle:vertical:hover { background: #666; }
+            QScrollBar:vertical { background-color: #252526; width: 10px; border-radius: 5px; margin: 0px; }
+            QScrollBar::handle:vertical { background-color: #5a5a5a; border-radius: 5px; min-height: 24px; }
+            QScrollBar::handle:vertical:hover { background-color: #007acc; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+            QScrollBar:horizontal { background-color: #252526; height: 10px; border-radius: 5px; margin: 0px; }
+            QScrollBar::handle:horizontal { background-color: #5a5a5a; border-radius: 5px; min-width: 24px; }
+            QScrollBar::handle:horizontal:hover { background-color: #007acc; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
 
-            /* Progress Bar */
+            /* Progress bar */
             QProgressBar {
-                border: 1px solid #555; border-radius: 4px; text-align: center; background: #222;
+                border: 1px solid #3e3e42; border-radius: 4px;
+                text-align: center; background-color: #252526; color: #cccccc; font-size: 11px;
             }
-            QProgressBar::chunk { background-color: #4a9eff; width: 10px; margin: 0.5px; }
+            QProgressBar::chunk { background-color: #0e639c; border-radius: 3px; }
 
-            QSplitter::handle { background-color: #444; }
+            /* Lists and Tables */
+            QListWidget, QTableWidget {
+                background-color: #252526; border: 1px solid #3e3e42; border-radius: 4px; outline: none;
+            }
+            QListWidget::item, QTableWidget::item { padding: 4px 8px; }
+            QListWidget::item:selected, QTableWidget::item:selected { background-color: #094771; color: #ffffff; }
+            QListWidget::item:hover:!selected, QTableWidget::item:hover:!selected { background-color: #2a2d2e; }
+            QHeaderView::section {
+                background-color: #2d2d30; color: #cccccc;
+                border: none; border-right: 1px solid #3e3e42; border-bottom: 1px solid #3e3e42;
+                padding: 4px 8px; font-weight: 600;
+            }
+
+            /* Text edits */
+            QPlainTextEdit, QTextEdit {
+                background-color: #252526; color: #e0e0e0;
+                border: 1px solid #3e3e42; border-radius: 4px; padding: 4px;
+            }
+            QPlainTextEdit:focus, QTextEdit:focus { border-color: #007acc; }
+
+            /* Sliders */
+            QSlider::groove:horizontal {
+                border: 1px solid #3e3e42; height: 4px;
+                background-color: #3c3c3c; border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background-color: #007acc; border: none;
+                width: 14px; height: 14px; border-radius: 7px; margin: -5px 0;
+            }
+            QSlider::handle:horizontal:hover { background-color: #1177bb; }
+            QSlider::sub-page:horizontal { background-color: #0e639c; border-radius: 2px; }
             """)
 
         # === STATE VARIABLES ===
@@ -2013,11 +2074,11 @@ class MainWindow(QMainWindow):
         # Video Area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("background-color: #000; border: none;")
+        self.scroll.setStyleSheet("background-color: #121212; border: none;")
         self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_label = QLabel("")
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+        self.video_label.setStyleSheet("color: #6a6a6a; font-size: 16px;")
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll.setWidget(self.video_label)
         self._show_video_logo_placeholder()
@@ -2037,14 +2098,14 @@ class MainWindow(QMainWindow):
 
         # ROI Toolbar (Contextual to video)
         roi_frame = QFrame()
-        roi_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
+        roi_frame.setStyleSheet("background-color: #252526; border-radius: 6px;")
         roi_main_layout = QVBoxLayout(roi_frame)
         roi_main_layout.setContentsMargins(10, 5, 10, 5)
 
         # Top row: mode selection and controls
         roi_layout = QHBoxLayout()
         roi_label = QLabel("ROI controls")
-        roi_label.setStyleSheet("font-weight: bold; color: #bbb;")
+        roi_label.setStyleSheet("font-weight: bold; color: #cccccc;")
 
         # Mode selector
         self.combo_roi_mode = QComboBox()
@@ -2092,11 +2153,11 @@ class MainWindow(QMainWindow):
         self.btn_crop_video.setStyleSheet(
             "QPushButton { background-color: #2d7a3e; }"
             "QPushButton:hover { background-color: #3a9150; }"
-            "QPushButton:disabled { background-color: #333; color: #666; }"
+            "QPushButton:disabled { background-color: #3e3e42; color: #777777; }"
         )
 
         self.roi_status_label = QLabel("No ROI")
-        self.roi_status_label.setStyleSheet("color: #888; margin-left: 10px;")
+        self.roi_status_label.setStyleSheet("color: #6a6a6a; margin-left: 10px;")
 
         roi_layout.addWidget(roi_label)
         roi_layout.addWidget(self.combo_roi_mode)
@@ -2124,8 +2185,8 @@ class MainWindow(QMainWindow):
         self.roi_instructions = QLabel("")
         self.roi_instructions.setWordWrap(True)
         self.roi_instructions.setStyleSheet(
-            "color: #4a9eff; font-size: 11px; font-weight: bold; "
-            "padding: 6px; background-color: #1a3a5a; border-radius: 4px;"
+            "color: #4fc1ff; font-size: 11px; font-weight: bold; "
+            "padding: 6px; background-color: #0d3354; border-radius: 4px;"
         )
         roi_main_layout.addWidget(self.roi_instructions)
 
@@ -2137,8 +2198,8 @@ class MainWindow(QMainWindow):
         )
         self.interaction_help.setAlignment(Qt.AlignCenter)
         self.interaction_help.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic; "
-            "padding: 4px; background-color: #1a1a1a; border-radius: 3px;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic; "
+            "padding: 4px; background-color: #1e1e1e; border-radius: 3px;"
         )
         left_layout.addWidget(self.interaction_help)
 
@@ -2146,12 +2207,12 @@ class MainWindow(QMainWindow):
 
         # Zoom control under video
         zoom_frame = QFrame()
-        zoom_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
+        zoom_frame.setStyleSheet("background-color: #252526; border-radius: 6px;")
         zoom_layout = QHBoxLayout(zoom_frame)
         zoom_layout.setContentsMargins(10, 5, 10, 5)
 
         zoom_label = QLabel("Zoom")
-        zoom_label.setStyleSheet("font-weight: bold; color: #bbb;")
+        zoom_label.setStyleSheet("font-weight: bold; color: #cccccc;")
 
         self.slider_zoom = QSlider(Qt.Horizontal)
         self.slider_zoom.setRange(10, 500)  # 0.1x to 5.0x, scaled by 100
@@ -2162,7 +2223,7 @@ class MainWindow(QMainWindow):
 
         self.label_zoom_val = QLabel("1.00x")
         self.label_zoom_val.setStyleSheet(
-            "color: #4a9eff; font-weight: bold; min-width: 50px;"
+            "color: #4fc1ff; font-weight: bold; min-width: 50px;"
         )
 
         zoom_layout.addWidget(zoom_label)
@@ -2173,7 +2234,7 @@ class MainWindow(QMainWindow):
 
         # Preview detection button (uses current player frame)
         preview_frame = QFrame()
-        preview_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
+        preview_frame.setStyleSheet("background-color: #252526; border-radius: 6px;")
         preview_layout = QHBoxLayout(preview_frame)
         preview_layout.setContentsMargins(10, 5, 10, 5)
 
@@ -2181,7 +2242,7 @@ class MainWindow(QMainWindow):
         self.btn_test_detection.clicked.connect(self._test_detection_on_preview)
         self.btn_test_detection.setEnabled(False)
         self.btn_test_detection.setStyleSheet(
-            "background-color: #4a9eff; color: white; font-weight: bold;"
+            "background-color: #0e639c; color: white; font-weight: bold;"
         )
         preview_layout.addWidget(self.btn_test_detection)
 
@@ -2235,7 +2296,7 @@ class MainWindow(QMainWindow):
         # Persistent Action Panel (Bottom Right)
         action_frame = QFrame()
         action_frame.setStyleSheet(
-            "background-color: #252525; border-top: 1px solid #444; border-radius: 0px;"
+            "background-color: #1e1e1e; border-top: 1px solid #3e3e42; border-radius: 0px;"
         )
         action_layout = QVBoxLayout(action_frame)
 
@@ -2254,18 +2315,18 @@ class MainWindow(QMainWindow):
 
         self.label_current_fps = QLabel("FPS: --")
         self.label_current_fps.setStyleSheet(
-            "color: #4a9eff; font-weight: bold; font-size: 11px;"
+            "color: #4fc1ff; font-weight: bold; font-size: 11px;"
         )
         self.label_current_fps.setVisible(False)
         stats_layout.addWidget(self.label_current_fps)
 
         self.label_elapsed_time = QLabel("Elapsed: --")
-        self.label_elapsed_time.setStyleSheet("color: #888; font-size: 11px;")
+        self.label_elapsed_time.setStyleSheet("color: #6a6a6a; font-size: 11px;")
         self.label_elapsed_time.setVisible(False)
         stats_layout.addWidget(self.label_elapsed_time)
 
         self.label_eta = QLabel("ETA: --")
-        self.label_eta.setStyleSheet("color: #888; font-size: 11px;")
+        self.label_eta.setStyleSheet("color: #6a6a6a; font-size: 11px;")
         self.label_eta.setVisible(False)
         stats_layout.addWidget(self.label_eta)
 
@@ -2364,7 +2425,7 @@ class MainWindow(QMainWindow):
 
         self.preset_status_label = QLabel("")
         self.preset_status_label.setStyleSheet(
-            "color: #888; font-style: italic; font-size: 10px;"
+            "color: #6a6a6a; font-style: italic; font-size: 10px;"
         )
 
         preset_layout.addWidget(preset_label)
@@ -2379,8 +2440,8 @@ class MainWindow(QMainWindow):
         self.preset_description_label = QLabel("")
         self.preset_description_label.setWordWrap(True)
         self.preset_description_label.setStyleSheet(
-            "color: #bbb; font-style: italic; font-size: 10px; padding: 5px; "
-            "background-color: #1a1a1a; border-radius: 3px;"
+            "color: #9a9a9a; font-style: italic; font-size: 10px; padding: 5px; "
+            "background-color: #252526; border-radius: 3px;"
         )
         self.preset_description_label.setVisible(False)
         vl_presets.addWidget(self.preset_description_label)
@@ -2443,7 +2504,7 @@ class MainWindow(QMainWindow):
         # FPS info label
         self.label_fps_info = QLabel()
         self.label_fps_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic;"
         )
         fl.addRow("", self.label_fps_info)
 
@@ -2464,14 +2525,14 @@ class MainWindow(QMainWindow):
         # Video info label
         self.lbl_video_info = QLabel("No video loaded")
         self.lbl_video_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic; padding: 5px;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic; padding: 5px;"
         )
         vl_player.addWidget(self.lbl_video_info)
 
         # Timeline slider
         timeline_layout = QVBoxLayout()
         self.lbl_current_frame = QLabel("Frame: -")
-        self.lbl_current_frame.setStyleSheet("font-size: 10px; color: #aaa;")
+        self.lbl_current_frame.setStyleSheet("font-size: 10px; color: #9a9a9a;")
         timeline_layout.addWidget(self.lbl_current_frame)
 
         self.slider_timeline = QSlider(Qt.Horizontal)
@@ -2580,7 +2641,7 @@ class MainWindow(QMainWindow):
         # Range info
         self.lbl_range_info = QLabel()
         self.lbl_range_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic; padding: 5px;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic; padding: 5px;"
         )
         range_layout.addRow("", self.lbl_range_info)
 
@@ -2637,7 +2698,7 @@ class MainWindow(QMainWindow):
         # Config status label
         self.config_status_label = QLabel("No config loaded (using defaults)")
         self.config_status_label.setStyleSheet(
-            "color: #888; font-style: italic; font-size: 10px;"
+            "color: #6a6a6a; font-style: italic; font-size: 10px;"
         )
         fl_output.addRow("", self.config_status_label)
         vl_output.addLayout(fl_output)
@@ -2917,7 +2978,7 @@ class MainWindow(QMainWindow):
         bright_label_row = QHBoxLayout()
         bright_label_row.addWidget(QLabel("Brightness"))
         self.label_brightness_val = QLabel("0")
-        self.label_brightness_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
+        self.label_brightness_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
         bright_label_row.addWidget(self.label_brightness_val)
         bright_label_row.addStretch()
         bright_layout.addLayout(bright_label_row)
@@ -2941,7 +3002,7 @@ class MainWindow(QMainWindow):
         contrast_label_row = QHBoxLayout()
         contrast_label_row.addWidget(QLabel("Contrast"))
         self.label_contrast_val = QLabel("1.0")
-        self.label_contrast_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
+        self.label_contrast_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
         contrast_label_row.addWidget(self.label_contrast_val)
         contrast_label_row.addStretch()
         contrast_layout.addLayout(contrast_label_row)
@@ -2965,7 +3026,7 @@ class MainWindow(QMainWindow):
         gamma_label_row = QHBoxLayout()
         gamma_label_row.addWidget(QLabel("Gamma"))
         self.label_gamma_val = QLabel("1.0")
-        self.label_gamma_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
+        self.label_gamma_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
         gamma_label_row.addWidget(self.label_gamma_val)
         gamma_label_row.addStretch()
         gamma_layout.addLayout(gamma_label_row)
@@ -3532,7 +3593,7 @@ class MainWindow(QMainWindow):
         # Info label showing calculated area
         self.label_body_size_info = QLabel()
         self.label_body_size_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic;"
         )
         fl_body.addRow("", self.label_body_size_info)
         vl_body_size.addLayout(fl_body)
@@ -3558,8 +3619,8 @@ class MainWindow(QMainWindow):
             "No detection data yet.\nRun 'Test Detection' to estimate sizes."
         )
         self.label_detection_stats.setStyleSheet(
-            "color: #aaa; font-size: 11px; padding: 8px; "
-            "background-color: #2a2a2a; border-radius: 4px;"
+            "color: #9a9a9a; font-size: 11px; padding: 8px; "
+            "background-color: #252526; border-radius: 4px;"
         )
         self.label_detection_stats.setWordWrap(True)
         vl_stats.addWidget(self.label_detection_stats)
@@ -4623,7 +4684,7 @@ class MainWindow(QMainWindow):
             "Enable Dataset Generation for Active Learning"
         )
         self.chk_enable_dataset_gen.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+            "font-weight: bold; font-size: 11px; color: #4fc1ff;"
         )
         self.chk_enable_dataset_gen.setChecked(False)
         self.chk_enable_dataset_gen.toggled.connect(self._on_dataset_generation_toggled)
@@ -4886,7 +4947,7 @@ class MainWindow(QMainWindow):
             "Save Individual Analysis Images to Disk"
         )
         self.chk_enable_individual_dataset.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+            "font-weight: bold; font-size: 11px; color: #4fc1ff;"
         )
         self.chk_enable_individual_dataset.toggled.connect(
             self._on_individual_dataset_toggled
@@ -5024,7 +5085,7 @@ class MainWindow(QMainWindow):
             "Enable Individual Analysis Pipeline (YOLO OBB only)"
         )
         self.chk_enable_individual_analysis.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+            "font-weight: bold; font-size: 11px; color: #4fc1ff;"
         )
         self.chk_enable_individual_analysis.toggled.connect(
             self._on_individual_analysis_toggled
@@ -8840,7 +8901,7 @@ class MainWindow(QMainWindow):
                 "Maximum speed processing mode active.\n"
                 "Real-time stats displayed below."
             )
-            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+            self.video_label.setStyleSheet("color: #9a9a9a; font-size: 14px;")
             logger.info("Visualization-Free Mode enabled - Maximum speed processing")
         elif is_tracking_active and not is_viz_free:
             # Restore previous state or default message
@@ -8848,7 +8909,7 @@ class MainWindow(QMainWindow):
                 self.video_label.setText(self._stored_preview_text)
             elif not self.video_label.pixmap():
                 self._show_video_logo_placeholder()
-            self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+            self.video_label.setStyleSheet("color: #6a6a6a; font-size: 16px;")
 
     def start_full(self: object) -> object:
         """start_full method documentation."""
@@ -9116,19 +9177,19 @@ class MainWindow(QMainWindow):
         self.video_label.clear()
         if self._is_visualization_enabled():
             self.video_label.setText("")
-            self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+            self.video_label.setStyleSheet("color: #6a6a6a; font-size: 16px;")
         else:
             self.video_label.setText(
                 "Visualization Disabled\n\n"
                 "Maximum speed processing mode active.\n"
                 "Real-time stats displayed below."
             )
-            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+            self.video_label.setStyleSheet("color: #9a9a9a; font-size: 14px;")
 
     def _show_video_logo_placeholder(self):
         """Show MAT logo in the video panel when no video is loaded."""
         try:
-            project_root = Path(__file__).resolve().parents[3]
+            project_root = Path(__file__).resolve().parents[2]
             logo_path = project_root / "brand" / "multianimaltracker.svg"
             vw = max(640, self.scroll.viewport().width())
             vh = max(420, self.scroll.viewport().height())
@@ -11583,7 +11644,7 @@ class MainWindow(QMainWindow):
                 f"✓ Loaded: {os.path.basename(config_path)}"
             )
             self.config_status_label.setStyleSheet(
-                "color: #4a9eff; font-style: italic; font-size: 10px;"
+                "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
             logger.info(f"Configuration loaded from {config_path}")
 
@@ -13186,7 +13247,7 @@ class MainWindow(QMainWindow):
         label = QLabel(text)
         label.setWordWrap(True)
         label.setStyleSheet(
-            "color: #aaa; font-size: 11px; font-weight: normal; "
+            "color: #9a9a9a; font-size: 11px; font-weight: normal; "
             "font-style: italic; padding: 4px 2px; margin: 2px 0px;"
         )
         return label
@@ -13322,7 +13383,7 @@ class MainWindow(QMainWindow):
             preset_name = self.combo_presets.currentText()
             self.preset_status_label.setText(f"✓ Loaded: {preset_name}")
             self.preset_status_label.setStyleSheet(
-                "color: #4a9eff; font-style: italic; font-size: 10px;"
+                "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
             logger.info(f"Loaded preset: {preset_name} from {filepath}")
 
@@ -13338,14 +13399,14 @@ class MainWindow(QMainWindow):
 
         # Name input
         name_label = QLabel("Preset name (e.g., danio rerio / zebrafish)")
-        name_label.setStyleSheet("color: #fff; font-weight: bold;")
+        name_label.setStyleSheet("color: #e0e0e0; font-weight: bold;")
         name_input = QLineEdit()
         name_input.setPlaceholderText("Scientific Name (Common Name)")
         name_input.setText("Custom")
 
         # Description input
         desc_label = QLabel("Description (optional)")
-        desc_label.setStyleSheet("color: #fff; font-weight: bold; margin-top: 10px;")
+        desc_label.setStyleSheet("color: #e0e0e0; font-weight: bold; margin-top: 10px;")
         desc_input = QTextEdit()
         desc_input.setPlaceholderText(
             "Describe the optimizations or use case for this preset..."
@@ -13414,7 +13475,7 @@ class MainWindow(QMainWindow):
 
             self.preset_status_label.setText(f"✓ Saved: {preset_name}")
             self.preset_status_label.setStyleSheet(
-                "color: #4a9eff; font-style: italic; font-size: 10px;"
+                "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
 
             filename = os.path.basename(custom_path)
@@ -13940,7 +14001,7 @@ class MainWindow(QMainWindow):
                             f"✓ Loaded: {os.path.basename(config_path)}"
                         )
                         self.config_status_label.setStyleSheet(
-                            "color: #4a9eff; font-style: italic; font-size: 10px;"
+                            "color: #4fc1ff; font-style: italic; font-size: 10px;"
                         )
                         logger.info(
                             f"Cropped video loaded: {output_path} (auto-loaded config)"

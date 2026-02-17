@@ -129,7 +129,7 @@ class MainWindow(QMainWindow):
                 background-color: #1e1e1e;
                 color: #e0e0e0;
                 font-family: "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
-                font-size: 13px;
+                font-size: 11px;
             }
             QListWidget {
                 background-color: #252526;
@@ -652,7 +652,7 @@ class MainWindow(QMainWindow):
         desc_label.setAlignment(Qt.AlignCenter)
         desc_label.setWordWrap(True)
         desc_label.setStyleSheet(
-            "color: #aaaaaa; font-size: 14px; padding: 24px; "
+            "color: #aaaaaa; font-size: 12px; padding: 24px; "
             + "background-color: #252526; border-radius: 8px; line-height: 1.8;"
         )
         layout.addWidget(desc_label)

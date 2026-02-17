@@ -475,6 +475,7 @@ class DataSieveWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self.apply_stylesheet()
         self.setWindowTitle("DataSieve - Dataset Subsampling")
         self.resize(1400, 950)
         self.setMinimumSize(1300, 900)
@@ -496,9 +497,135 @@ class DataSieveWindow(QMainWindow):
         self.init_ui()
         self._update_rollback_availability()
 
+    def apply_stylesheet(self):
+        """Apply VSCode dark theme (consistent with MAT, PoseKit, ClassKit)."""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #1e1e1e;
+            }
+            QWidget {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+                font-family: "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+                font-size: 11px;
+            }
+            QGroupBox {
+                background-color: #252526;
+                border: 1px solid #3e3e42;
+                border-radius: 6px;
+                margin-top: 10px;
+                padding: 8px;
+                font-weight: 600;
+                color: #cccccc;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 2px 8px;
+                background-color: #1e1e1e;
+                color: #9cdcfe;
+                border-radius: 3px;
+            }
+            QPushButton {
+                background-color: #0e639c;
+                color: #ffffff;
+                border: none;
+                border-radius: 4px;
+                padding: 6px 14px;
+                font-weight: 500;
+                min-height: 22px;
+            }
+            QPushButton:hover { background-color: #1177bb; }
+            QPushButton:pressed { background-color: #0d5a8f; }
+            QPushButton:disabled { background-color: #3e3e42; color: #777777; }
+            QCheckBox { color: #cccccc; spacing: 8px; }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border: 1px solid #3e3e42;
+                border-radius: 3px;
+                background-color: #3c3c3c;
+            }
+            QCheckBox::indicator:checked { background-color: #0e639c; border-color: #007acc; }
+            QCheckBox::indicator:hover { border-color: #007acc; }
+            QLabel { color: #cccccc; background-color: transparent; }
+            QSpinBox, QDoubleSpinBox, QComboBox {
+                background-color: #3c3c3c;
+                color: #e0e0e0;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                padding: 4px 8px;
+                min-height: 22px;
+            }
+            QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover { border-color: #0e639c; }
+            QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color: #007acc; }
+            QComboBox::drop-down { border: none; width: 20px; }
+            QComboBox QAbstractItemView {
+                background-color: #252526;
+                border: 1px solid #3e3e42;
+                selection-background-color: #094771;
+                selection-color: #ffffff;
+                outline: none;
+            }
+            QScrollArea { border: none; background-color: transparent; }
+            QScrollBar:vertical {
+                background-color: #252526; width: 10px; border-radius: 5px; margin: 0px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #5a5a5a; border-radius: 5px; min-height: 24px;
+            }
+            QScrollBar::handle:vertical:hover { background-color: #007acc; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+            QScrollBar:horizontal {
+                background-color: #252526; height: 10px; border-radius: 5px; margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #5a5a5a; border-radius: 5px; min-width: 24px;
+            }
+            QScrollBar::handle:horizontal:hover { background-color: #007acc; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
+            QProgressBar {
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                text-align: center;
+                background-color: #252526;
+                color: #cccccc;
+                font-size: 11px;
+            }
+            QProgressBar::chunk { background-color: #0e639c; border-radius: 3px; }
+            QStatusBar {
+                background-color: #007acc;
+                color: #ffffff;
+                border-top: 1px solid #0098ff;
+                font-weight: 500;
+                font-size: 11px;
+            }
+            QMenuBar {
+                background-color: #252526;
+                color: #cccccc;
+                border-bottom: 1px solid #3e3e42;
+                padding: 2px;
+            }
+            QMenuBar::item { padding: 5px 10px; background-color: transparent; border-radius: 3px; }
+            QMenuBar::item:selected { background-color: #2a2d2e; }
+            QMenuBar::item:pressed { background-color: #094771; }
+            QMenu {
+                background-color: #252526;
+                color: #cccccc;
+                border: 1px solid #3e3e42;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QMenu::item { padding: 6px 20px 6px 12px; border-radius: 3px; }
+            QMenu::item:selected { background-color: #094771; color: #ffffff; }
+            QMenu::separator { height: 1px; background-color: #3e3e42; margin: 4px 8px; }
+            QSplitter::handle { background-color: #3e3e42; }
+            QSplitter::handle:hover { background-color: #007acc; }
+        """)
+
     def _set_window_icon(self):
         try:
-            project_root = Path(__file__).resolve().parents[4]
+            project_root = Path(__file__).resolve().parents[3]
             icon_path = project_root / "brand" / "datasieve.svg"
             if icon_path.exists():
                 self.setWindowIcon(QIcon(str(icon_path)))
@@ -551,7 +678,7 @@ class DataSieveWindow(QMainWindow):
             "Pick your dataset root folder. If it contains an images/ folder, DataSieve uses it automatically."
         )
         self.lbl_load_help.setWordWrap(True)
-        self.lbl_load_help.setStyleSheet("color: #666666;")
+        self.lbl_load_help.setStyleSheet("color: #6a6a6a;")
         layout.addWidget(self.lbl_load_help)
 
         parent_layout.addWidget(group)
@@ -593,7 +720,7 @@ class DataSieveWindow(QMainWindow):
             "Presets set practical defaults. Use Recommend for dataset-size-aware values."
         )
         self.lbl_preset_help.setWordWrap(True)
-        self.lbl_preset_help.setStyleSheet("color: #666666;")
+        self.lbl_preset_help.setStyleSheet("color: #6a6a6a;")
         layout.addWidget(self.lbl_preset_help)
 
         self.chk_temporal = QCheckBox("Keep every Nth frame")
@@ -758,7 +885,7 @@ class DataSieveWindow(QMainWindow):
         )
         self.lbl_summary.setWordWrap(True)
         self.lbl_summary.setStyleSheet(
-            "color: #ffffff; background-color: #1f2937; padding: 8px; border-radius: 6px;"
+            "color: #e0e0e0; background-color: #0d3354; padding: 8px; border-radius: 6px;"
         )
         layout.addWidget(self.lbl_summary)
 
@@ -782,7 +909,7 @@ class DataSieveWindow(QMainWindow):
             "Process renames images/ → all_images/ and creates a new images/ with selected files. Rollback restores the previous state."
         )
         self.lbl_process_help.setWordWrap(True)
-        self.lbl_process_help.setStyleSheet("color: #666666;")
+        self.lbl_process_help.setStyleSheet("color: #6a6a6a;")
         layout.addWidget(self.lbl_process_help)
 
         self.progress = QProgressBar()
@@ -791,7 +918,7 @@ class DataSieveWindow(QMainWindow):
         self.progress.setFormat("%p%")
         self.lbl_progress_details = QLabel("Progress details will appear here.")
         self.lbl_progress_details.setWordWrap(True)
-        self.lbl_progress_details.setStyleSheet("color: #666666;")
+        self.lbl_progress_details.setStyleSheet("color: #6a6a6a;")
         self.lbl_status = QLabel("Ready")
         layout.addWidget(self.progress)
         layout.addWidget(self.lbl_progress_details)
@@ -801,7 +928,7 @@ class DataSieveWindow(QMainWindow):
 
     def _build_preview_group(self, right_layout):
         self.lbl_preview_info = QLabel("No dataset loaded.")
-        self.lbl_preview_info.setStyleSheet("color: white;")
+        self.lbl_preview_info.setStyleSheet("color: #e0e0e0;")
         right_layout.addWidget(self.lbl_preview_info)
 
         pagination_row = QHBoxLayout()
@@ -812,7 +939,7 @@ class DataSieveWindow(QMainWindow):
 
         self.lbl_page_info = QLabel("Page 1 of 1")
         self.lbl_page_info.setAlignment(Qt.AlignCenter)
-        self.lbl_page_info.setStyleSheet("color: white;")
+        self.lbl_page_info.setStyleSheet("color: #e0e0e0;")
         pagination_row.addWidget(self.lbl_page_info)
 
         self.btn_next_page = QPushButton("Next →")
@@ -835,7 +962,7 @@ class DataSieveWindow(QMainWindow):
         right_layout.addWidget(self.list_preview, 2)
 
         self.lbl_removed = QLabel("Removed examples")
-        self.lbl_removed.setStyleSheet("color: white;")
+        self.lbl_removed.setStyleSheet("color: #e0e0e0;")
         self.lbl_removed.hide()
         right_layout.addWidget(self.lbl_removed)
 
@@ -853,7 +980,7 @@ class DataSieveWindow(QMainWindow):
 
         self.lbl_removed_page = QLabel("Removed Page 1 of 1")
         self.lbl_removed_page.setAlignment(Qt.AlignCenter)
-        self.lbl_removed_page.setStyleSheet("color: white;")
+        self.lbl_removed_page.setStyleSheet("color: #e0e0e0;")
         removed_pagination_row.addWidget(self.lbl_removed_page)
 
         self.btn_removed_next = QPushButton("Next Removed →")
@@ -866,12 +993,12 @@ class DataSieveWindow(QMainWindow):
     def _add_help(self, layout, text):
         label = QLabel(text)
         label.setWordWrap(True)
-        label.setStyleSheet("color: #666666;")
+        label.setStyleSheet("color: #6a6a6a;")
         layout.addWidget(label)
 
     def _show_logo(self):
         try:
-            project_root = Path(__file__).resolve().parents[4]
+            project_root = Path(__file__).resolve().parents[3]
             logo_path = project_root / "brand" / "datasieve.svg"
 
             canvas_w = max(500, self.logo_label.width() or 800)
@@ -1483,7 +1610,7 @@ def main():
     app.setOrganizationName("NeuroRishika")
 
     try:
-        project_root = Path(__file__).resolve().parents[4]
+        project_root = Path(__file__).resolve().parents[3]
         icon_path = project_root / "brand" / "datasieve.svg"
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))

@@ -101,7 +101,14 @@ class InferenceRuntimeManager:
                 self.backend = None
         if self._sleap_service_started:
             try:
-                from multi_tracker.posekit.pose_inference import PoseInferenceService
+                try:
+                    from multi_tracker.posekit.inference.service import (
+                        PoseInferenceService,
+                    )
+                except ImportError:
+                    from multi_tracker.posekit_old.pose_inference import (
+                        PoseInferenceService,
+                    )
 
                 PoseInferenceService.shutdown_sleap_service()
                 logger.info("Stopped SLEAP service for session: %s", self.session_name)
@@ -115,7 +122,12 @@ class InferenceRuntimeManager:
         if not env:
             return
         try:
-            from multi_tracker.posekit.pose_inference import PoseInferenceService
+            try:
+                from multi_tracker.posekit.inference.service import PoseInferenceService
+            except ImportError:
+                from multi_tracker.posekit_old.pose_inference import (
+                    PoseInferenceService,
+                )
 
             if PoseInferenceService.sleap_service_running():
                 return
