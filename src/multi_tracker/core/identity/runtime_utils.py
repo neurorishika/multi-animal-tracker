@@ -13,7 +13,6 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-import cv2
 import numpy as np
 
 from multi_tracker.core.identity.runtime_types import PoseResult
@@ -103,23 +102,6 @@ def _normalize_conf_values(conf: Any) -> np.ndarray:
         # Some exported ONNX predictors can emit logits instead of probabilities.
         arr = 1.0 / (1.0 + np.exp(-np.clip(arr, -40.0, 40.0)))
     return np.clip(arr, 0.0, 1.0).astype(np.float32, copy=False)
-
-
-# ==============================================================================
-# IMAGE PROCESSING
-# ==============================================================================
-
-
-def _resize_crop(crop: np.ndarray, hw: Optional[Tuple[int, int]]) -> np.ndarray:
-    """Resize crop to specified height and width."""
-    if hw is None:
-        return crop
-    h, w = int(hw[0]), int(hw[1])
-    if h <= 0 or w <= 0:
-        return crop
-    if crop.shape[0] == h and crop.shape[1] == w:
-        return crop
-    return cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR)
 
 
 # ==============================================================================

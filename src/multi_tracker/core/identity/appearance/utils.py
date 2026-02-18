@@ -58,7 +58,9 @@ def _auto_export_timm_model(
     ).encode("utf-8")
     sig = hashlib.sha1(sig_blob).hexdigest()[:16]
 
-    export_root = Path(config.out_root).expanduser().resolve() / "timm_exports"
+    # Export into <repo_root>/models/TIMM/
+    _repo_root = Path(__file__).parents[5]
+    export_root = _repo_root / "models" / "TIMM"
     export_root.mkdir(parents=True, exist_ok=True)
 
     safe_model_name = model_name.replace("/", "_").replace(":", "_")

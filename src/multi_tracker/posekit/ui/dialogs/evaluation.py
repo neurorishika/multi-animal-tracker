@@ -48,36 +48,6 @@ from .utils import (
 logger = logging.getLogger("pose_label.dialogs.evaluation")
 
 
-def _read_image_size(img_path: Path) -> Optional[Tuple[int, int]]:
-    try:
-        import cv2
-
-        img = cv2.imread(str(img_path))
-        if img is None:
-            return None
-        h, w = img.shape[:2]
-        return (w, h)
-    except Exception:
-        return None
-
-
-def _load_kpts_px(
-    label_path: Path, k: int, img_path: Path
-) -> Optional[List[Tuple[float, float, float]]]:
-    size = _read_image_size(img_path)
-    if size is None:
-        return None
-    w, h = size
-    parsed = load_yolo_pose_label(label_path, k)
-    if parsed is None:
-        return None
-    _, kpts, _ = parsed
-    out = []
-    for kp in kpts:
-        out.append((float(kp.x) * w, float(kp.y) * h, float(kp.v)))
-    return out
-
-
 class EvaluationWorker(QObject):
     """Worker for running evaluation in background."""
 

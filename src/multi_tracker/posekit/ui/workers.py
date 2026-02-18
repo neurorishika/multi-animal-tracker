@@ -77,58 +77,6 @@ class PosePredictWorker(QObject):
                 return str(value)
         return ""
 
-    def _extract_best_prediction(
-        self, result: Any
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """Extract the highest-confidence keypoint set from a model result."""
-        if result is None or result.keypoints is None:
-            return None, None
-        kpts = result.keypoints
-        try:
-            xy = kpts.xy
-            conf = getattr(kpts, "conf", None)
-            xy = xy.cpu().numpy() if hasattr(xy, "cpu") else np.array(xy)
-            if conf is not None:
-                conf = conf.cpu().numpy() if hasattr(conf, "cpu") else np.array(conf)
-        except Exception:
-            return None, None
-
-        if xy.ndim == 2:
-            xy = xy[None, :, :]
-        if conf is not None and conf.ndim == 1:
-            conf = conf[None, :]
-
-        if xy.size == 0:
-            return None, None
-
-        if conf is not None:
-            scores = np.nanmean(conf, axis=1)
-        else:
-            scores = None
-            try:
-                if result.boxes is not None and hasattr(result.boxes, "conf"):
-                    scores = result.boxes.conf.cpu().numpy()
-            except Exception:
-                scores = None
-            if scores is None:
-                scores = np.zeros((xy.shape[0],), dtype=np.float32)
-
-        best = int(np.argmax(scores)) if len(scores) > 0 else 0
-        pred_xy = xy[best]
-        pred_conf = conf[best] if conf is not None else np.zeros((self.num_kpts,))
-        pred_conf = np.clip(np.asarray(pred_conf, dtype=np.float32), 0.0, 1.0)
-
-        if pred_xy.shape[0] != self.num_kpts:
-            num = min(pred_xy.shape[0], self.num_kpts)
-            tmp_xy = np.zeros((self.num_kpts, 2), dtype=np.float32)
-            tmp_conf = np.zeros((self.num_kpts,), dtype=np.float32)
-            tmp_xy[:num] = pred_xy[:num]
-            tmp_conf[:num] = pred_conf[:num]
-            pred_xy = tmp_xy
-            pred_conf = tmp_conf
-
-        return pred_xy, pred_conf
-
     def run(self) -> None:
         """Run inference and emit either predicted keypoints or an error."""
         try:

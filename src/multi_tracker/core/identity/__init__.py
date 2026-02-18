@@ -1,6 +1,6 @@
 """Identity and individual-level analysis."""
 
-from .analysis import IdentityProcessor, IndividualDatasetGenerator
+from .analysis import IndividualDatasetGenerator
 from .appearance_cache import (
     AppearanceEmbeddingCache,
     build_appearance_cache_path,
@@ -15,7 +15,6 @@ from .runtime_api import (
 )
 
 __all__ = [
-    "IdentityProcessor",
     "IndividualDatasetGenerator",
     "AppearanceResult",
     "AppearanceRuntimeConfig",

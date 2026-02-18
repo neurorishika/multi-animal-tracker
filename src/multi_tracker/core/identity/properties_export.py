@@ -230,9 +230,7 @@ def build_pose_lookup_dataframe(
             )
 
     labels = build_pose_keypoint_labels(keypoint_names, max_keypoints)
-    labels, ignored_label_indices = _filter_labels_for_ignore(
-        labels, keypoint_names, ignore_indices
-    )
+    labels, _ = _filter_labels_for_ignore(labels, keypoint_names, ignore_indices)
     keypoint_cols = pose_wide_columns_for_labels(labels)
     if not entries:
         return pd.DataFrame(

@@ -18,108 +18,23 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QSpinBox,
-    QTextEdit,
     QVBoxLayout,
 )
 
 from ...core.extensions import (
     EmbeddingWorker,
-    MetadataManager,
     cluster_embeddings_cosine,
     pick_frames_stratified,
 )
 from .utils import _load_dialog_settings, _save_dialog_settings, get_available_devices
 
 logger = logging.getLogger("pose_label.dialogs.exploration")
-
-
-class FrameMetadataDialog(QDialog):
-    """Dialog for viewing/editing frame metadata and tags."""
-
-    def __init__(self, parent, image_path: str, metadata_manager: MetadataManager):
-        super().__init__(parent)
-        self.setWindowTitle(f"Frame Metadata: {Path(image_path).name}")
-        self.setMinimumSize(QSize(500, 400))
-
-        self.image_path = image_path
-        self.metadata_manager = metadata_manager
-        self.metadata = metadata_manager.get_metadata(image_path)
-
-        layout = QVBoxLayout(self)
-
-        # Tags section
-        tags_group = QGroupBox("Tags")
-        tags_layout = QVBoxLayout(tags_group)
-
-        # Common tags
-        self.tag_checkboxes = {}
-        common_tags = [
-            "occluded",
-            "weird_posture",
-            "motion_blur",
-            "poor_lighting",
-            "partial_view",
-            "unclear",
-        ]
-
-        for tag in common_tags:
-            cb = QCheckBox(tag)
-            cb.setChecked(tag in self.metadata.tags)
-            self.tag_checkboxes[tag] = cb
-            tags_layout.addWidget(cb)
-
-        layout.addWidget(tags_group)
-
-        # Notes section
-        notes_group = QGroupBox("Notes")
-        notes_layout = QVBoxLayout(notes_group)
-
-        self.notes_edit = QTextEdit()
-        self.notes_edit.setPlainText(self.metadata.notes)
-        self.notes_edit.setMaximumHeight(100)
-        notes_layout.addWidget(self.notes_edit)
-
-        layout.addWidget(notes_group)
-
-        # Cluster info
-        if self.metadata.cluster_id is not None:
-            cluster_label = QLabel(f"Cluster ID: {self.metadata.cluster_id}")
-            layout.addWidget(cluster_label)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        self.btn_save = QPushButton("Save")
-        self.btn_cancel = QPushButton("Cancel")
-        btn_layout.addWidget(self.btn_save)
-        btn_layout.addStretch()
-        btn_layout.addWidget(self.btn_cancel)
-        layout.addLayout(btn_layout)
-
-        # Wiring
-        self.btn_save.clicked.connect(self._save)
-        self.btn_cancel.clicked.connect(self.reject)
-
-    def _save(self):
-        """Save metadata changes."""
-        # Update tags
-        for tag, cb in self.tag_checkboxes.items():
-            if cb.isChecked():
-                self.metadata_manager.add_tag(self.image_path, tag)
-            else:
-                self.metadata_manager.remove_tag(self.image_path, tag)
-
-        # Update notes
-        notes = self.notes_edit.toPlainText().strip()
-        self.metadata_manager.set_notes(self.image_path, notes)
-
-        self.accept()
 
 
 class SmartSelectDialog(QDialog):

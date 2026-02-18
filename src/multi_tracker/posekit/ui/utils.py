@@ -168,3 +168,14 @@ def _choose_device(pref: str = "auto") -> str:
     except Exception:
         pass
     return "cpu"
+
+
+def _maybe_empty_cuda_cache() -> None:
+    """Release unused CUDA memory back to the allocator if CUDA is available."""
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass

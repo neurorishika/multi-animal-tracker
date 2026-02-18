@@ -298,23 +298,3 @@ class YoloNativeBackend:
             outputs.append(_summarize_keypoints(kpts, self.min_valid_conf))
 
         return outputs
-
-    def benchmark(self, crops: Sequence[np.ndarray], runs: int = 3) -> Dict[str, float]:
-        if not crops:
-            return {"runs": 0.0, "total_ms": 0.0, "ms_per_run": 0.0, "fps": 0.0}
-        total = 0.0
-        runs = max(1, int(runs))
-        for _ in range(runs):
-            t0 = time.perf_counter()
-            self.predict_batch(crops)
-            total += (time.perf_counter() - t0) * 1000.0
-        ms_per_run = total / runs
-        return {
-            "runs": float(runs),
-            "total_ms": float(total),
-            "ms_per_run": float(ms_per_run),
-            "fps": float((len(crops) * 1000.0) / max(1e-6, ms_per_run)),
-        }
-
-    def close(self) -> None:
-        return None

@@ -110,41 +110,6 @@ class SieveWorker(QThread):
                 self._emit_stage_progress(15, 30, idx, total, "Quality filter")
         return kept
 
-    def _estimate_duplicate_clusters(self, dataset, method="phash", top_n=None):
-        hash_to_paths = {}
-        for item in dataset:
-            if "dedup_signature" not in item:
-                img = cv2.imread(item["path"])
-                if img is None:
-                    continue
-                item["dedup_signature"] = self.core.compute_signature(img, method)
-
-            signature = item["dedup_signature"]
-            if method == "histogram":
-                hash_value = tuple((signature * 16).astype(int).tolist())
-            else:
-                hash_value = int(signature)
-
-            hash_to_paths.setdefault(hash_value, []).append(str(item["path"]))
-
-        clusters = sorted(
-            [(h, paths) for h, paths in hash_to_paths.items() if len(paths) > 1],
-            key=lambda x: len(x[1]),
-            reverse=True,
-        )
-        if top_n is not None:
-            clusters = clusters[:top_n]
-
-        return [
-            {
-                "hash": str(h),
-                "count": len(paths),
-                "paths": paths,
-                "method": method,
-            }
-            for h, paths in clusters
-        ]
-
     def run(self):
         try:
             self.progress.emit(0, "Step 1/6: Loading dataset metadata")
