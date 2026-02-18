@@ -113,6 +113,7 @@ nav:
   - Confidence Metrics: developer-guide/confidence-metrics.md
   - Extending Detection: developer-guide/extending-detection.md
   - Extending Identity: developer-guide/extending-identity.md
+  - Code Health & Auditing: developer-guide/code-health.md
   - Contributing: developer-guide/contributing.md
 - Reference:
   - API Index: reference/api-index.md

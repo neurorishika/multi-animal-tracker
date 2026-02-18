@@ -246,7 +246,7 @@ def export_dataset(
     class_name: object,
     params: object,
     include_context: object = True,
-    yolo_results_dict: object = None,
+    _yolo_results_dict: object = None,
 ) -> object:
     """
     Export selected frames and annotations as a training dataset.

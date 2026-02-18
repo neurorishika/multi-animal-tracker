@@ -43,6 +43,8 @@ setup(
             "pose=multi_tracker.posekit.ui.main:main",
             "datasieve=multi_tracker.tools.data_sieve.gui:main",
             "sieve=multi_tracker.tools.data_sieve.gui:main",
+            "classkit-labeler=src.multi_tracker.classkit.ui.main:main",
+            "class=src.multi_tracker.classkit.ui.main:main",
         ],
     },
     # Metadata

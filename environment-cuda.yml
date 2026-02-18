@@ -56,13 +56,9 @@ dependencies:
 - pip
 - setuptools
 - wheel
-- pytest
-- pytest-cov
-- black
-- flake8
-- isort
-- pre-commit
 
+  # Dev tools are managed separately; after activating this env run:
+  #   make install-dev
   # Install GPU-accelerated packages via pip
   # Step 1: mamba/conda installs core packages + uv
   # Step 2: uv installs GPU packages from requirements-cuda12/13.txt (much faster)

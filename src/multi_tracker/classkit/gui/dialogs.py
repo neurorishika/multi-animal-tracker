@@ -248,7 +248,7 @@ class EmbeddingDialog(QDialog):
             if MPS_AVAILABLE:
                 self.device_combo.addItem("Apple Silicon (MPS)", "mps")
                 self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
-        except:
+        except Exception:
             pass
 
         form.addRow("<b>Device:</b>", self.device_combo)

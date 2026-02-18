@@ -93,6 +93,15 @@ from ..utils.gpu_utils import (
 from .dialogs.train_yolo_dialog import TrainYoloDialog
 from .widgets.histograms import HistogramPanel
 
+# Import for appearance embedding controls
+try:
+    from ..posekit.ui.dialogs.utils import get_available_devices
+except ImportError:
+
+    def get_available_devices():
+        return ["auto", "cpu", "cuda", "mps"]
+
+
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
 
@@ -377,12 +386,17 @@ class InterpolatedCropsWorker(QThread):
             pose_kpt_source_names = []
             pose_kpt_labels = []
             if pose_enabled:
-                from ..core.identity.feature_runtime import create_pose_backend
+                from ..core.identity.runtime_api import (
+                    build_runtime_config,
+                    create_pose_backend_from_config,
+                )
 
                 try:
-                    pose_backend = create_pose_backend(
+                    pose_config = build_runtime_config(
                         self.params, out_root=str(Path(output_dir).expanduser())
                     )
+                    pose_backend = create_pose_backend_from_config(pose_config)
+                    pose_backend.warmup()
                     pose_kpt_source_names = list(
                         getattr(pose_backend, "output_keypoint_names", []) or []
                     )
@@ -646,7 +660,7 @@ class InterpolatedCropsWorker(QThread):
                     if pose_backend is not None and frame_pose_tasks:
                         if self._should_stop():
                             return
-                        pose_results = pose_backend.predict_crops(
+                        pose_results = pose_backend.predict_batch(
                             [entry["crop"] for entry in frame_pose_tasks]
                         )
                         for pidx, entry in enumerate(frame_pose_tasks):
@@ -5503,6 +5517,117 @@ class MainWindow(QMainWindow):
             fl_pose, self.pose_sleap_experimental_row_widget, False
         )
 
+        # ========== Appearance Embedding Controls ==========
+        self.g_appearance = QGroupBox("Appearance Embedding (Optional)")
+        self.g_appearance.setCheckable(True)
+        self.g_appearance.setChecked(False)
+        self.g_appearance.setToolTip(
+            "Extract appearance embeddings for detections using TIMM models.\n"
+            "Embeddings can be used for re-identification and similarity analysis.\n"
+            "This is independent of pose prediction."
+        )
+        vl_appearance = QVBoxLayout(self.g_appearance)
+        vl_appearance.addWidget(
+            self._create_help_label(
+                "Extract appearance embeddings using TIMM models for re-identification. "
+                "Embeddings are automatically computed during tracking runs (no manual extraction needed)."
+            )
+        )
+        fl_appearance = QFormLayout()
+        fl_appearance.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
+        )
+        self.form_appearance_runtime = fl_appearance
+
+        # Model selection
+        self.combo_appearance_model = QComboBox()
+        self.combo_appearance_model.setEditable(True)
+        self.combo_appearance_model.addItems(
+            [
+                # DINO v2 models (recommended for general image understanding)
+                "timm/vit_base_patch14_dinov2.lvd142m",
+                "timm/vit_small_patch14_dinov2.lvd142m",
+                "timm/vit_large_patch14_dinov2.lvd142m",
+                "timm/vit_giant_patch14_dinov2.lvd142m",
+                # CLIP models
+                "timm/vit_base_patch32_clip_224.openai",
+                "timm/vit_bigG_14_clip_224.laion400M_e32",
+                "timm/convnext_base_w_clip.laion2b_s29B_b131k_ft_in1k",
+                # ResNet models
+                "timm/resnet50.a1_in1k",
+                "timm/resnet18.a1_in1k",
+                "timm/resnet101.a1_in1k",
+                # EfficientNet models
+                "timm/efficientnet_b0.ra_in1k",
+                "timm/efficientnet_b3.ra2_in1k",
+                "timm/efficientnet_b5.sw_in12k_ft_in1k",
+                # MobileNet models
+                "timm/mobilenetv3_small_100.lamb_in1k",
+                "timm/mobilenetv3_large_100.ra_in1k",
+                # ConvNeXt models
+                "timm/convnext_tiny.fb_in1k",
+                "timm/convnext_base.fb_in1k",
+            ]
+        )
+        self.combo_appearance_model.setToolTip(
+            "TIMM model for appearance embedding extraction.\n"
+            "DINO v2 models are recommended for general-purpose embeddings.\n"
+            "You can also enter any custom timm model name."
+        )
+        fl_appearance.addRow("Model", self.combo_appearance_model)
+
+        # Runtime flavor selection
+        self.combo_appearance_runtime_flavor = QComboBox()
+        self.combo_appearance_runtime_flavor.setToolTip(
+            "Appearance runtime implementation.\n"
+            "Auto selects the best available runtime (TensorRT > ONNX > Native).\n"
+            "Native uses PyTorch, ONNX and TensorRT are optimized and reused automatically."
+        )
+        self._populate_appearance_runtime_flavor_options()
+        fl_appearance.addRow("Runtime", self.combo_appearance_runtime_flavor)
+
+        # Batch size
+        self.spin_appearance_batch = QSpinBox()
+        self.spin_appearance_batch.setRange(1, 512)
+        self.spin_appearance_batch.setValue(32)
+        self.spin_appearance_batch.setToolTip(
+            "Batch size for appearance embedding extraction.\n"
+            "Larger values are faster but use more memory."
+        )
+        fl_appearance.addRow("Batch size", self.spin_appearance_batch)
+
+        # Max image side
+        self.spin_appearance_max_side = QSpinBox()
+        self.spin_appearance_max_side.setRange(64, 2048)
+        self.spin_appearance_max_side.setValue(512)
+        self.spin_appearance_max_side.setSingleStep(64)
+        self.spin_appearance_max_side.setToolTip(
+            "Maximum side length for image preprocessing.\n"
+            "Images are resized to fit within this dimension."
+        )
+        fl_appearance.addRow("Max image side", self.spin_appearance_max_side)
+
+        # CLAHE enhancement
+        self.chk_appearance_clahe = QCheckBox("Apply CLAHE enhancement")
+        self.chk_appearance_clahe.setChecked(False)
+        self.chk_appearance_clahe.setToolTip(
+            "Apply Contrast Limited Adaptive Histogram Equalization.\n"
+            "Can improve feature extraction in low-contrast images."
+        )
+        fl_appearance.addRow("", self.chk_appearance_clahe)
+
+        # Normalize embeddings
+        self.chk_appearance_normalize = QCheckBox("Normalize embeddings (L2)")
+        self.chk_appearance_normalize.setChecked(True)
+        self.chk_appearance_normalize.setToolTip(
+            "Apply L2 normalization to output embeddings.\n"
+            "Recommended for similarity metrics and clustering."
+        )
+        fl_appearance.addRow("", self.chk_appearance_normalize)
+
+        vl_appearance.addLayout(fl_appearance)
+        form.addWidget(self.g_appearance)
+
         form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -6609,6 +6734,44 @@ class MainWindow(QMainWindow):
             self._selected_compute_runtime(), backend_family=backend
         )
         return str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
+
+    def _populate_appearance_runtime_flavor_options(self, preferred: str | None = None):
+        """Populate appearance runtime flavor dropdown with available options."""
+        if not hasattr(self, "combo_appearance_runtime_flavor"):
+            return
+        combo = self.combo_appearance_runtime_flavor
+        selected = (
+            str(preferred or self._selected_appearance_runtime_flavor() or "auto")
+            .strip()
+            .lower()
+        )
+
+        # Options: Auto, Native, ONNX, TensorRT
+        options = [
+            ("Auto (Best Available)", "auto"),
+            ("Native (PyTorch)", "native"),
+            ("ONNX Runtime", "onnx"),
+            ("TensorRT (CUDA only)", "tensorrt"),
+        ]
+
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = "auto"
+
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _selected_appearance_runtime_flavor(self) -> str:
+        """Get currently selected appearance runtime flavor."""
+        if not hasattr(self, "combo_appearance_runtime_flavor"):
+            return "auto"
+        combo = self.combo_appearance_runtime_flavor
+        return str(combo.currentData() or "auto").strip().lower()
 
     def _set_form_row_visible(self, form_layout, field_widget, visible: bool):
         """Show/hide a QFormLayout row by field widget."""
@@ -10089,7 +10252,11 @@ class MainWindow(QMainWindow):
             )
             # Add any extra labels present in CSV but absent from skeleton.
             extras = sorted(
-                [l for l in pose_labels_available.keys() if l not in ordered_labels]
+                [
+                    lbl
+                    for lbl in pose_labels_available.keys()
+                    if lbl not in ordered_labels
+                ]
             )
             ordered_labels.extend(extras)
             for label in ordered_labels:
@@ -11614,6 +11781,14 @@ class MainWindow(QMainWindow):
             "POSE_SLEAP_BATCH": self.spin_pose_batch.value(),
             "POSE_SLEAP_MAX_INSTANCES": 1,
             "POSE_SLEAP_EXPERIMENTAL_FEATURES": self._sleap_experimental_features_enabled(),
+            # Appearance embedding parameters
+            "APPEARANCE_ENABLED": self.g_appearance.isChecked(),
+            "APPEARANCE_MODEL_NAME": self.combo_appearance_model.currentText().strip(),
+            "APPEARANCE_RUNTIME_FLAVOR": self._selected_appearance_runtime_flavor(),
+            "APPEARANCE_BATCH_SIZE": self.spin_appearance_batch.value(),
+            "APPEARANCE_MAX_IMAGE_SIDE": self.spin_appearance_max_side.value(),
+            "APPEARANCE_USE_CLAHE": self.chk_appearance_clahe.isChecked(),
+            "APPEARANCE_NORMALIZE": self.chk_appearance_normalize.isChecked(),
             "INDIVIDUAL_PROPERTIES_CACHE_PATH": str(
                 self.current_individual_properties_cache_path or ""
             ).strip(),
@@ -12348,6 +12523,42 @@ class MainWindow(QMainWindow):
             )
             self.spin_pose_batch.setValue(shared_pose_batch)
 
+            # === APPEARANCE EMBEDDING ===
+            if hasattr(self, "g_appearance"):
+                self.g_appearance.setChecked(
+                    get_cfg("appearance_enabled", default=False)
+                )
+                appearance_model = get_cfg(
+                    "appearance_model_name",
+                    default="timm/vit_base_patch14_dinov2.lvd142m",
+                )
+                # Set combo box to saved model or add it if not in list
+                idx = self.combo_appearance_model.findText(appearance_model)
+                if idx >= 0:
+                    self.combo_appearance_model.setCurrentIndex(idx)
+                else:
+                    self.combo_appearance_model.setCurrentText(appearance_model)
+
+                appearance_runtime = get_cfg(
+                    "appearance_runtime_flavor", default="auto"
+                )
+                self._populate_appearance_runtime_flavor_options(
+                    preferred=appearance_runtime
+                )
+
+                self.spin_appearance_batch.setValue(
+                    get_cfg("appearance_batch_size", default=32)
+                )
+                self.spin_appearance_max_side.setValue(
+                    get_cfg("appearance_max_image_side", default=512)
+                )
+                self.chk_appearance_clahe.setChecked(
+                    get_cfg("appearance_use_clahe", default=False)
+                )
+                self.chk_appearance_normalize.setChecked(
+                    get_cfg("appearance_normalize", default=True)
+                )
+
             # === REAL-TIME INDIVIDUAL DATASET ===
             self.chk_enable_individual_dataset.setChecked(
                 get_cfg(
@@ -12751,6 +12962,14 @@ class MainWindow(QMainWindow):
                 "pose_sleap_batch": self.spin_pose_batch.value(),
                 "pose_sleap_max_instances": 1,
                 "pose_sleap_experimental_features": self._sleap_experimental_features_enabled(),
+                # === APPEARANCE EMBEDDING ===
+                "appearance_enabled": self.g_appearance.isChecked(),
+                "appearance_model_name": self.combo_appearance_model.currentText().strip(),
+                "appearance_device": "auto",
+                "appearance_batch_size": self.spin_appearance_batch.value(),
+                "appearance_max_image_side": self.spin_appearance_max_side.value(),
+                "appearance_use_clahe": self.chk_appearance_clahe.isChecked(),
+                "appearance_normalize": self.chk_appearance_normalize.isChecked(),
                 # === REAL-TIME INDIVIDUAL DATASET ===
                 "enable_individual_dataset": self._is_individual_image_save_enabled(),
                 "enable_individual_image_save": self._is_individual_image_save_enabled(),

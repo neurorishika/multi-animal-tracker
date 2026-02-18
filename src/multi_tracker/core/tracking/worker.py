@@ -486,6 +486,531 @@ class TrackingWorker(QThread):
             out[det_id] = keypoints[i]
         return out
 
+    def _precompute_individual_data_unified(
+        self,
+        detector,
+        params,
+        detection_cache,
+        start_frame,
+        end_frame,
+    ):
+        """
+        Unified precompute for pose keypoints and appearance embeddings in a single video pass.
+
+        This method combines pose and appearance extraction to avoid multiple video reads and
+        redundant crop extractions, significantly improving efficiency.
+
+        Returns:
+            (pose_cache_path, pose_cache_hit, appearance_cache_path, appearance_cache_hit)
+        """
+        import time
+
+        # Check what's enabled
+        pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
+        appearance_enabled = bool(params.get("APPEARANCE_ENABLED", False))
+        detection_method = params.get("DETECTION_METHOD", "background_subtraction")
+
+        if detection_method != "yolo_obb":
+            if pose_enabled or appearance_enabled:
+                logger.warning(
+                    "Individual data precompute requires YOLO OBB detection mode."
+                )
+            return None, True, None, True
+
+        if not pose_enabled and not appearance_enabled:
+            return None, True, None, True
+
+        # ===== POSE SETUP =====
+        pose_cache_path = None
+        pose_cache_hit = True
+        pose_backend = None
+        pose_cache_writer = None
+        properties_id = None
+        detection_hash = None
+        filter_hash = None
+        extractor_hash = None
+
+        if pose_enabled:
+            from multi_tracker.core.identity.properties_cache import (
+                IndividualPropertiesCache,
+                compute_detection_hash,
+                compute_extractor_hash,
+                compute_filter_settings_hash,
+                compute_individual_properties_id,
+            )
+            from multi_tracker.core.identity.runtime_api import (
+                create_pose_backend_from_config,
+            )
+
+            detection_hash = compute_detection_hash(
+                params.get("INFERENCE_MODEL_ID", ""),
+                self.video_path,
+                start_frame,
+                end_frame,
+                detection_cache_version="2.0",
+            )
+            filter_hash = compute_filter_settings_hash(params)
+            extractor_hash = compute_extractor_hash(params)
+            properties_id = compute_individual_properties_id(
+                detection_hash, filter_hash, extractor_hash
+            )
+            pose_cache_path = self._build_individual_properties_cache_path(
+                properties_id, start_frame, end_frame
+            )
+            self.individual_properties_id = str(properties_id)
+            self.individual_properties_cache_path = str(pose_cache_path)
+            params["INDIVIDUAL_PROPERTIES_ID"] = properties_id
+            params["INDIVIDUAL_PROPERTIES_CACHE_PATH"] = str(pose_cache_path)
+
+            # Check for existing pose cache
+            if pose_cache_path.exists():
+                existing = IndividualPropertiesCache(str(pose_cache_path), mode="r")
+                try:
+                    if existing.is_compatible():
+                        logger.info(
+                            "Pose properties cache hit: %s", str(pose_cache_path)
+                        )
+                    else:
+                        pose_cache_hit = False
+                finally:
+                    existing.close()
+            else:
+                pose_cache_hit = False
+
+        # ===== APPEARANCE SETUP =====
+        appearance_cache_path = None
+        appearance_cache_hit = True
+        appearance_backend = None
+        appearance_cache_writer = None
+        embedding_id = None
+        embedding_dim = None
+        appearance_config = None
+
+        if appearance_enabled:
+            from multi_tracker.core.identity.appearance_cache import (
+                AppearanceEmbeddingCache,
+                build_appearance_cache_path,
+                compute_appearance_embedding_id,
+                compute_appearance_extractor_hash,
+            )
+            from multi_tracker.core.identity.properties_cache import (
+                compute_detection_hash,
+                compute_filter_settings_hash,
+            )
+            from multi_tracker.core.identity.runtime_api import (
+                AppearanceRuntimeConfig,
+                create_appearance_backend_from_config,
+            )
+
+            detection_hash = compute_detection_hash(
+                params.get("INFERENCE_MODEL_ID", ""),
+                self.video_path,
+                start_frame,
+                end_frame,
+                detection_cache_version="2.0",
+            )
+            filter_hash = compute_filter_settings_hash(params)
+            appearance_hash = compute_appearance_extractor_hash(params)
+            embedding_id = compute_appearance_embedding_id(
+                detection_hash, filter_hash, appearance_hash
+            )
+
+            video_stem = Path(self.video_path).stem
+            output_dir = params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "").strip()
+            if not output_dir:
+                output_dir = str(Path(self.video_path).parent / "appearance_embeddings")
+
+            appearance_cache_path = build_appearance_cache_path(
+                output_dir, video_stem, embedding_id, start_frame, end_frame
+            )
+
+            # Check for existing appearance cache
+            if appearance_cache_path.exists():
+                existing = AppearanceEmbeddingCache(
+                    str(appearance_cache_path), mode="r"
+                )
+                try:
+                    if existing.is_compatible():
+                        meta = existing.metadata or {}
+                        if (
+                            str(meta.get("model_name", ""))
+                            == params.get("APPEARANCE_MODEL_NAME", "")
+                            and int(meta.get("start_frame", -1)) == int(start_frame)
+                            and int(meta.get("end_frame", -1)) == int(end_frame)
+                        ):
+                            logger.info(
+                                "Appearance embedding cache hit: %s",
+                                str(appearance_cache_path),
+                            )
+                        else:
+                            appearance_cache_hit = False
+                    else:
+                        appearance_cache_hit = False
+                finally:
+                    existing.close()
+            else:
+                appearance_cache_hit = False
+
+        # If both are cache hits, return early
+        if pose_cache_hit and appearance_cache_hit:
+            self.progress_signal.emit(
+                100,
+                "Precompute: using existing pose and appearance caches.",
+            )
+            return (
+                str(pose_cache_path) if pose_cache_path else None,
+                True,
+                str(appearance_cache_path) if appearance_cache_path else None,
+                True,
+            )
+
+        # ===== UNIFIED EXTRACTION =====
+        logger.info("=" * 80)
+        logger.info("UNIFIED PRECOMPUTE: Pose + Appearance (single video pass)")
+        logger.info("=" * 80)
+
+        # Initialize backends
+        if pose_enabled and not pose_cache_hit:
+            logger.info("Initializing pose backend...")
+            self.progress_signal.emit(0, "Precompute: loading pose backend...")
+            from multi_tracker.core.identity.runtime_api import (
+                build_runtime_config,
+                create_pose_backend_from_config,
+            )
+
+            pose_out_root = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
+            if not pose_out_root:
+                pose_out_root = str(pose_cache_path.parent) if pose_cache_path else "."
+
+            pose_config = build_runtime_config(params, out_root=pose_out_root)
+            pose_backend = create_pose_backend_from_config(pose_config)
+            pose_backend.warmup()
+            logger.info("Pose backend ready.")
+
+            # Store resolved artifact path if applicable
+            runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "")).lower()
+            if runtime_flavor.startswith("onnx") or runtime_flavor.startswith(
+                "tensorrt"
+            ):
+                try:
+                    resolved_artifact = str(
+                        getattr(pose_backend, "exported_model_path", "")
+                        or getattr(pose_backend, "model_path", "")
+                    ).strip()
+                except Exception:
+                    resolved_artifact = ""
+                if resolved_artifact:
+                    params["POSE_EXPORTED_MODEL_PATH"] = resolved_artifact
+                    self.pose_exported_model_resolved_signal.emit(resolved_artifact)
+
+        if appearance_enabled and not appearance_cache_hit:
+            logger.info("Initializing appearance backend...")
+            self.progress_signal.emit(0, "Precompute: loading appearance model...")
+
+            from multi_tracker.core.identity.runtime_api import (
+                AppearanceRuntimeConfig,
+                create_appearance_backend_from_config,
+            )
+
+            appearance_config = AppearanceRuntimeConfig(
+                model_name=params.get(
+                    "APPEARANCE_MODEL_NAME", "timm/vit_base_patch14_dinov2.lvd142m"
+                ),
+                runtime_flavor=params.get("APPEARANCE_RUNTIME_FLAVOR", "auto"),
+                batch_size=params.get("APPEARANCE_BATCH_SIZE", 32),
+                max_image_side=params.get("APPEARANCE_MAX_IMAGE_SIDE", 512),
+                use_clahe=params.get("APPEARANCE_USE_CLAHE", False),
+                normalize_embeddings=params.get("APPEARANCE_NORMALIZE", True),
+                compute_runtime=str(
+                    params.get("COMPUTE_RUNTIME", params.get("compute_runtime", ""))
+                ),
+            )
+
+            appearance_backend = create_appearance_backend_from_config(
+                appearance_config
+            )
+            appearance_backend.warmup()
+            embedding_dim = appearance_backend.output_dimension
+            logger.info(
+                f"Appearance model loaded. Embedding dimension: {embedding_dim}"
+            )
+
+        # Common setup
+        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
+        padding_fraction = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+
+        roi_mask = params.get("ROI_MASK", None)
+        if roi_mask is not None:
+            dims_cap = cv2.VideoCapture(self.video_path)
+            base_h = int(dims_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            base_w = int(dims_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            dims_cap.release()
+            target_w = max(1, int(base_w * resize_f))
+            target_h = max(1, int(base_h * resize_f))
+            if roi_mask.shape[1] != target_w or roi_mask.shape[0] != target_h:
+                roi_mask = cv2.resize(roi_mask, (target_w, target_h), cv2.INTER_NEAREST)
+
+        # Open video once
+        video_cap = cv2.VideoCapture(self.video_path)
+        if not video_cap.isOpened():
+            raise RuntimeError(
+                f"Failed to open video for unified precompute: {self.video_path}"
+            )
+        if start_frame > 0:
+            video_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        # Open cache writers
+        if pose_enabled and not pose_cache_hit:
+            from multi_tracker.core.identity.properties_cache import (
+                IndividualPropertiesCache,
+            )
+
+            pose_cache_writer = IndividualPropertiesCache(
+                str(pose_cache_path), mode="w"
+            )
+        if appearance_enabled and not appearance_cache_hit:
+            from multi_tracker.core.identity.appearance_cache import (
+                AppearanceEmbeddingCache,
+            )
+
+            appearance_cache_writer = AppearanceEmbeddingCache(
+                str(appearance_cache_path), mode="w"
+            )
+
+        # Process frames
+        total_frames = max(1, end_frame - start_frame + 1)
+        precompute_start_ts = time.time()
+        cancelled = False
+
+        self.progress_signal.emit(
+            1,
+            f"Unified precompute: processing {total_frames} frame(s)...",
+        )
+
+        try:
+            for rel_idx, frame_idx in enumerate(range(start_frame, end_frame + 1)):
+                if self._stop_requested:
+                    cancelled = True
+                    break
+
+                # Get detections
+                (
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    raw_detection_ids,
+                ) = detection_cache.get_frame(frame_idx)
+
+                (
+                    meas,
+                    _sizes,
+                    _shapes,
+                    _confs,
+                    filtered_obb_corners,
+                    detection_ids,
+                ) = detector.filter_raw_detections(
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    roi_mask=roi_mask,
+                    detection_ids=raw_detection_ids,
+                )
+
+                # Read frame
+                ret, frame = video_cap.read()
+                if not ret:
+                    if pose_cache_writer:
+                        pose_cache_writer.add_frame(
+                            frame_idx, detection_ids or [], pose_keypoints=[]
+                        )
+                    if appearance_cache_writer:
+                        appearance_cache_writer.add_frame(
+                            frame_idx, detection_ids or [], embeddings=[]
+                        )
+                    continue
+
+                if resize_f < 1.0:
+                    frame = cv2.resize(
+                        frame,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
+                    )
+
+                # Extract crops once
+                pose_keypoints = []
+                embeddings_list = []
+
+                if meas and filtered_obb_corners:
+                    crops = []
+                    crop_to_det = []
+                    crop_offsets = {}
+
+                    for det_idx, corners in enumerate(filtered_obb_corners):
+                        corners_arr = np.asarray(corners, dtype=np.float32)
+                        crop, crop_offset = self._extract_expanded_obb_crop(
+                            frame, corners_arr, padding_fraction
+                        )
+                        if crop is not None and crop.size > 0:
+                            crops.append(crop)
+                            crop_to_det.append(det_idx)
+                            crop_offsets[det_idx] = crop_offset
+
+                    if crops:
+                        if self._stop_requested:
+                            cancelled = True
+                            break
+
+                        # Process pose
+                        if pose_backend:
+                            pose_outputs = [{} for _ in range(len(meas))]
+                            pred_outputs = pose_backend.predict_batch(crops)
+                            for crop_idx, det_idx in enumerate(crop_to_det):
+                                if crop_idx < len(pred_outputs):
+                                    out = pred_outputs[crop_idx]
+                                    crop_offset = crop_offsets.get(det_idx)
+                                    kpts = out.keypoints
+                                    if (
+                                        kpts is not None
+                                        and crop_offset is not None
+                                        and len(kpts) > 0
+                                    ):
+                                        x0, y0 = crop_offset
+                                        gkpts = np.asarray(
+                                            kpts, dtype=np.float32
+                                        ).copy()
+                                        gkpts[:, 0] += float(x0)
+                                        gkpts[:, 1] += float(y0)
+                                    else:
+                                        gkpts = kpts
+                                    pose_outputs[det_idx] = {"keypoints": gkpts}
+
+                            for det_idx in range(len(meas)):
+                                out = pose_outputs[det_idx]
+                                pose_keypoints.append(out.get("keypoints", None))
+
+                        # Process appearance
+                        if appearance_backend:
+                            embeddings_list = [None] * len(meas)
+                            appearance_results = appearance_backend.predict_crops(crops)
+                            for crop_idx, det_idx in enumerate(crop_to_det):
+                                if crop_idx < len(appearance_results):
+                                    result = appearance_results[crop_idx]
+                                    embeddings_list[det_idx] = result.embedding
+
+                # Write to caches
+                if pose_cache_writer:
+                    pose_cache_writer.add_frame(
+                        frame_idx,
+                        detection_ids,
+                        pose_keypoints=pose_keypoints,
+                    )
+
+                if appearance_cache_writer:
+                    appearance_cache_writer.add_frame(
+                        frame_idx,
+                        detection_ids or [],
+                        embeddings=embeddings_list,
+                    )
+
+                # Progress update
+                processed_count = rel_idx + 1
+                if rel_idx % 10 == 0 or rel_idx == total_frames - 1:
+                    elapsed = max(1e-6, time.time() - precompute_start_ts)
+                    rate_fps = processed_count / elapsed
+                    remaining = max(0, total_frames - processed_count)
+                    eta = (remaining / rate_fps) if rate_fps > 1e-9 else 0.0
+                    pct = int((processed_count * 100) / total_frames)
+                    self.progress_signal.emit(
+                        pct,
+                        f"Unified precompute: {processed_count}/{total_frames}",
+                    )
+                    self.stats_signal.emit(
+                        {
+                            "phase": "unified_precompute",
+                            "fps": rate_fps,
+                            "elapsed": elapsed,
+                            "eta": eta,
+                        }
+                    )
+
+            if cancelled or self._stop_requested:
+                logger.info("Unified precompute cancelled.")
+                self.progress_signal.emit(0, "Precompute cancelled.")
+                return None, False, None, False
+
+            # Save caches
+            if pose_cache_writer:
+                pose_cache_writer.save(
+                    metadata={
+                        "individual_properties_id": properties_id,
+                        "detection_hash": detection_hash,
+                        "filter_settings_hash": filter_hash,
+                        "extractor_hash": extractor_hash,
+                        "pose_keypoint_names": list(
+                            getattr(pose_backend, "output_keypoint_names", []) or []
+                        ),
+                        "start_frame": int(start_frame),
+                        "end_frame": int(end_frame),
+                        "video_path": str(Path(self.video_path).expanduser().resolve()),
+                    }
+                )
+                logger.info("Pose properties cache saved: %s", str(pose_cache_path))
+
+            if appearance_cache_writer:
+                appearance_cache_writer.save(
+                    metadata={
+                        "model_name": appearance_config.model_name,
+                        "embedding_dimension": embedding_dim,
+                        "device": appearance_config.device,
+                        "batch_size": appearance_config.batch_size,
+                        "max_image_side": appearance_config.max_image_side,
+                        "use_clahe": appearance_config.use_clahe,
+                        "normalize_embeddings": appearance_config.normalize_embeddings,
+                        "start_frame": int(start_frame),
+                        "end_frame": int(end_frame),
+                        "video_path": str(Path(self.video_path).expanduser().resolve()),
+                        "detection_cache_path": str(self.detection_cache_path),
+                    }
+                )
+                logger.info(
+                    "Appearance embedding cache saved: %s", str(appearance_cache_path)
+                )
+
+            self.progress_signal.emit(
+                100,
+                "Unified precompute complete: pose and appearance caches saved.",
+            )
+
+        finally:
+            if pose_cache_writer:
+                pose_cache_writer.close()
+            if appearance_cache_writer:
+                appearance_cache_writer.close()
+            video_cap.release()
+            if pose_backend:
+                try:
+                    pose_backend.close()
+                except Exception:
+                    pass
+            if appearance_backend:
+                try:
+                    appearance_backend.close()
+                except Exception:
+                    pass
+
+        return (
+            str(pose_cache_path) if pose_cache_path else None,
+            not pose_enabled or pose_cache_hit,
+            str(appearance_cache_path) if appearance_cache_path else None,
+            not appearance_enabled or appearance_cache_hit,
+        )
+
     def _precompute_individual_properties(
         self,
         detector,
@@ -578,7 +1103,10 @@ class TrackingWorker(QThread):
         if not pose_model_file.exists():
             raise RuntimeError(f"Pose model not found: {pose_model_file}")
 
-        from multi_tracker.core.identity.feature_runtime import create_pose_backend
+        from multi_tracker.core.identity.runtime_api import (
+            build_runtime_config,
+            create_pose_backend_from_config,
+        )
 
         runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "auto")).strip().lower()
         backend_family = str(params.get("POSE_MODEL_TYPE", "yolo")).strip().lower()
@@ -596,12 +1124,14 @@ class TrackingWorker(QThread):
         pose_out_root = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
         if not pose_out_root:
             pose_out_root = str(cache_path.parent)
-        pose_backend = create_pose_backend(params, out_root=pose_out_root)
+        pose_config = build_runtime_config(params, out_root=pose_out_root)
+        pose_backend = create_pose_backend_from_config(pose_config)
+        pose_backend.warmup()
         if runtime_flavor.startswith("onnx") or runtime_flavor.startswith("tensorrt"):
             try:
                 resolved_artifact = str(
-                    pose_backend.resolved_artifact_path()  # type: ignore[attr-defined]
-                    or ""
+                    getattr(pose_backend, "exported_model_path", "")
+                    or getattr(pose_backend, "model_path", "")
                 ).strip()
             except Exception:
                 resolved_artifact = ""
@@ -638,8 +1168,6 @@ class TrackingWorker(QThread):
         cache_writer = IndividualPropertiesCache(str(cache_path), mode="w")
         total_frames = max(1, end_frame - start_frame + 1)
         precompute_start_ts = time.time()
-        total_filtered_detections = 0
-        total_predicted_crops = 0
         cancelled = False
         self.progress_signal.emit(
             1,
@@ -693,7 +1221,6 @@ class TrackingWorker(QThread):
                 pose_keypoints = []
 
                 if meas and filtered_obb_corners:
-                    total_filtered_detections += int(len(meas))
                     crops = []
                     crop_to_det = []
                     pose_outputs = [{} for _ in range(len(meas))]
@@ -712,8 +1239,7 @@ class TrackingWorker(QThread):
                         if self._stop_requested:
                             cancelled = True
                             break
-                        total_predicted_crops += int(len(crops))
-                        pred_outputs = pose_backend.predict_crops(crops)
+                        pred_outputs = pose_backend.predict_batch(crops)
                         for crop_idx, det_idx in enumerate(crop_to_det):
                             if crop_idx < len(pred_outputs):
                                 out = pred_outputs[crop_idx]
@@ -795,6 +1321,307 @@ class TrackingWorker(QThread):
             pose_cap.release()
             try:
                 pose_backend.close()
+            except Exception:
+                pass
+
+        return str(cache_path), False
+
+    def _precompute_appearance_embeddings(
+        self,
+        detector,
+        params,
+        detection_cache,
+        start_frame,
+        end_frame,
+    ):
+        """
+        Precompute and cache appearance embeddings for filtered detections.
+
+        Returns:
+            (cache_path, cache_hit)
+        """
+        from multi_tracker.core.identity.appearance_cache import (
+            AppearanceEmbeddingCache,
+            build_appearance_cache_path,
+            compute_appearance_embedding_id,
+            compute_appearance_extractor_hash,
+        )
+        from multi_tracker.core.identity.properties_cache import (
+            compute_detection_hash,
+            compute_filter_settings_hash,
+        )
+        from multi_tracker.core.identity.runtime_api import (
+            AppearanceRuntimeConfig,
+            create_appearance_backend_from_config,
+        )
+
+        appearance_enabled = bool(params.get("APPEARANCE_ENABLED", False))
+        if not appearance_enabled:
+            logger.info("Appearance embedding extraction is disabled; skipping.")
+            return None, True
+
+        if params.get("DETECTION_METHOD", "background_subtraction") != "yolo_obb":
+            logger.warning(
+                "Appearance embedding extraction requires YOLO OBB detection mode; skipping."
+            )
+            return None, True
+
+        # Compute cache ID
+        detection_hash = compute_detection_hash(
+            params.get("INFERENCE_MODEL_ID", ""),
+            self.video_path,
+            start_frame,
+            end_frame,
+            detection_cache_version="2.0",
+        )
+        filter_hash = compute_filter_settings_hash(params)
+        appearance_hash = compute_appearance_extractor_hash(params)
+        embedding_id = compute_appearance_embedding_id(
+            detection_hash, filter_hash, appearance_hash
+        )
+
+        video_stem = Path(self.video_path).stem
+        output_dir = params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "").strip()
+        if not output_dir:
+            output_dir = str(Path(self.video_path).parent / "appearance_embeddings")
+
+        cache_path = build_appearance_cache_path(
+            output_dir, video_stem, embedding_id, start_frame, end_frame
+        )
+
+        if self._stop_requested:
+            return "", False
+
+        # Check for existing cache
+        if cache_path.exists():
+            existing = AppearanceEmbeddingCache(str(cache_path), mode="r")
+            try:
+                if existing.is_compatible():
+                    meta = existing.metadata or {}
+                    if (
+                        str(meta.get("model_name", ""))
+                        == params.get("APPEARANCE_MODEL_NAME", "")
+                        and int(meta.get("start_frame", -1)) == int(start_frame)
+                        and int(meta.get("end_frame", -1)) == int(end_frame)
+                    ):
+                        logger.info(
+                            "Appearance embedding cache hit: %s", str(cache_path)
+                        )
+                        self.progress_signal.emit(
+                            100,
+                            "Appearance embedding cache hit: reusing existing embeddings.",
+                        )
+                        return str(cache_path), True
+            finally:
+                existing.close()
+
+        logger.info("=" * 80)
+        logger.info("PRECOMPUTE: Appearance embeddings for filtered detections")
+        logger.info("=" * 80)
+        self.progress_signal.emit(
+            0,
+            "Precompute: initializing appearance embedding runtime...",
+        )
+
+        # Create appearance runtime config
+        runtime_config = AppearanceRuntimeConfig(
+            model_name=params.get(
+                "APPEARANCE_MODEL_NAME", "timm/vit_base_patch14_dinov2.lvd142m"
+            ),
+            runtime_flavor=params.get("APPEARANCE_RUNTIME_FLAVOR", "auto"),
+            batch_size=params.get("APPEARANCE_BATCH_SIZE", 32),
+            max_image_side=params.get("APPEARANCE_MAX_IMAGE_SIDE", 512),
+            use_clahe=params.get("APPEARANCE_USE_CLAHE", False),
+            normalize_embeddings=params.get("APPEARANCE_NORMALIZE", True),
+            compute_runtime=str(
+                params.get("COMPUTE_RUNTIME", params.get("compute_runtime", ""))
+            ),
+        )
+
+        self.progress_signal.emit(
+            0,
+            f"Precompute: loading appearance model {runtime_config.model_name}...",
+        )
+        backend = create_appearance_backend_from_config(runtime_config)
+        backend.warmup()
+
+        embedding_dim = backend.output_dimension
+        logger.info(f"Appearance model loaded. Embedding dimension: {embedding_dim}")
+
+        self.progress_signal.emit(
+            1,
+            "Precompute: appearance backend ready, reading frames...",
+        )
+
+        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
+        padding_fraction = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+
+        roi_mask = params.get("ROI_MASK", None)
+        if roi_mask is not None:
+            dims_cap = cv2.VideoCapture(self.video_path)
+            base_h = int(dims_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            base_w = int(dims_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            dims_cap.release()
+            target_w = max(1, int(base_w * resize_f))
+            target_h = max(1, int(base_h * resize_f))
+            if roi_mask.shape[1] != target_w or roi_mask.shape[0] != target_h:
+                roi_mask = cv2.resize(roi_mask, (target_w, target_h), cv2.INTER_NEAREST)
+
+        app_cap = cv2.VideoCapture(self.video_path)
+        if not app_cap.isOpened():
+            raise RuntimeError(
+                f"Failed to open video for appearance precompute: {self.video_path}"
+            )
+        if start_frame > 0:
+            app_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        cache_writer = AppearanceEmbeddingCache(str(cache_path), mode="w")
+        total_frames = max(1, end_frame - start_frame + 1)
+        precompute_start_ts = time.time()
+        total_detections = 0
+        total_embeddings_computed = 0
+        cancelled = False
+        self.progress_signal.emit(
+            1,
+            f"Precompute: processing {total_frames} frame(s) for appearance embeddings...",
+        )
+
+        try:
+            for rel_idx, frame_idx in enumerate(range(start_frame, end_frame + 1)):
+                if self._stop_requested:
+                    cancelled = True
+                    break
+
+                (
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    raw_detection_ids,
+                ) = detection_cache.get_frame(frame_idx)
+
+                (
+                    meas,
+                    _sizes,
+                    _shapes,
+                    _confs,
+                    filtered_obb_corners,
+                    detection_ids,
+                ) = detector.filter_raw_detections(
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confidences,
+                    raw_obb_corners,
+                    roi_mask=roi_mask,
+                    detection_ids=raw_detection_ids,
+                )
+
+                ret, frame = app_cap.read()
+                if not ret:
+                    logger.warning(
+                        f"Failed to read frame {frame_idx} for appearance precompute, adding empty frame"
+                    )
+                    cache_writer.add_frame(
+                        frame_idx, detection_ids or [], embeddings=[]
+                    )
+                    continue
+
+                if resize_f < 1.0:
+                    frame = cv2.resize(
+                        frame,
+                        (0, 0),
+                        fx=resize_f,
+                        fy=resize_f,
+                        interpolation=cv2.INTER_AREA,
+                    )
+
+                embeddings_list = []
+
+                if meas and filtered_obb_corners:
+                    total_detections += len(meas)
+                    crops = []
+                    crop_to_det = []
+
+                    for det_idx, corners in enumerate(filtered_obb_corners):
+                        corners_arr = np.asarray(corners, dtype=np.float32)
+                        crop, crop_offset = self._extract_expanded_obb_crop(
+                            frame, corners_arr, padding_fraction
+                        )
+                        if crop is not None and crop.size > 0:
+                            crops.append(crop)
+                            crop_to_det.append(det_idx)
+
+                    embeddings_list = [None] * len(meas)
+
+                    if crops:
+                        if self._stop_requested:
+                            cancelled = True
+                            break
+
+                        total_embeddings_computed += len(crops)
+                        appearance_results = backend.predict_crops(crops)
+
+                        for crop_idx, det_idx in enumerate(crop_to_det):
+                            if crop_idx < len(appearance_results):
+                                result = appearance_results[crop_idx]
+                                embeddings_list[det_idx] = result.embedding
+
+                cache_writer.add_frame(
+                    frame_idx, detection_ids or [], embeddings=embeddings_list
+                )
+
+                processed_count = rel_idx + 1
+                if rel_idx % 10 == 0 or rel_idx == total_frames - 1:
+                    elapsed = max(1e-6, time.time() - precompute_start_ts)
+                    rate_fps = processed_count / elapsed
+                    remaining = max(0, total_frames - processed_count)
+                    eta = (remaining / rate_fps) if rate_fps > 1e-9 else 0.0
+                    pct = int((processed_count * 100) / total_frames)
+                    self.progress_signal.emit(
+                        pct,
+                        f"Precompute appearance embeddings: {processed_count}/{total_frames}",
+                    )
+                    self.stats_signal.emit(
+                        {
+                            "phase": "appearance_precompute",
+                            "fps": rate_fps,
+                            "elapsed": elapsed,
+                            "eta": eta,
+                        }
+                    )
+
+            if cancelled or self._stop_requested:
+                logger.info("Appearance embedding precompute cancelled.")
+                self.progress_signal.emit(0, "Appearance precompute cancelled.")
+                return "", False
+
+            cache_writer.save(
+                metadata={
+                    "model_name": runtime_config.model_name,
+                    "embedding_dimension": embedding_dim,
+                    "device": runtime_config.device,
+                    "batch_size": runtime_config.batch_size,
+                    "max_image_side": runtime_config.max_image_side,
+                    "use_clahe": runtime_config.use_clahe,
+                    "normalize_embeddings": runtime_config.normalize_embeddings,
+                    "start_frame": int(start_frame),
+                    "end_frame": int(end_frame),
+                    "video_path": str(Path(self.video_path).expanduser().resolve()),
+                    "detection_cache_path": str(self.detection_cache_path),
+                }
+            )
+            logger.info("Appearance embedding cache saved: %s", str(cache_path))
+            self.progress_signal.emit(
+                100,
+                "Precompute complete: appearance embedding cache saved.",
+            )
+        finally:
+            cache_writer.close()
+            app_cap.release()
+            try:
+                backend.close()
             except Exception:
                 pass
 
@@ -1331,15 +2158,27 @@ class TrackingWorker(QThread):
                 self.finished_signal.emit(False, [], [])
                 return
 
+            # Unified precompute for both pose and appearance in a single video pass
             try:
-                props_path, cache_hit = self._precompute_individual_properties(
+                (
+                    props_path,
+                    props_cache_hit,
+                    app_path,
+                    app_cache_hit,
+                ) = self._precompute_individual_data_unified(
                     detector, p, detection_cache, start_frame, end_frame
                 )
+
+                # Log results
                 if props_path:
-                    state = "hit" if cache_hit else "miss"
+                    state = "hit" if props_cache_hit else "miss"
                     logger.info("Individual properties cache %s: %s", state, props_path)
+                if app_path:
+                    state = "hit" if app_cache_hit else "miss"
+                    logger.info("Appearance embedding cache %s: %s", state, app_path)
+
             except Exception as exc:
-                logger.exception("Individual properties precompute failed.")
+                logger.exception("Individual data precompute failed.")
                 self.warning_signal.emit(
                     "Individual Precompute Failed",
                     f"Aborting tracking run because individual precompute failed:\n{exc}",

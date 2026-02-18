@@ -219,7 +219,7 @@ class ActiveLearningWorker(QObject):
                     preds_b = preds_b_dict
 
             # Helper to get pred for path
-            def get_pred(target_path, cache, computed_dict, is_b=False):
+            def get_pred(target_path, cache, computed_dict, _is_b=False):
                 if computed_dict:
                     return computed_dict.get(str(target_path))
                 if cache:

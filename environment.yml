@@ -42,14 +42,8 @@ dependencies:
 - setuptools
 - wheel
 
-  # Optional: development dependencies
-- pytest
-- pytest-cov
-- black
-- flake8
-- isort
-- pre-commit
-
+  # Dev tools are managed separately; after activating this env run:
+  #   make install-dev
   # Install uv for fast pip package installation
   # After creating environment, run: uv pip install -v -r requirements.txt
 - pip:

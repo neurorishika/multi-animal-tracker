@@ -1513,7 +1513,7 @@ class TrainingRunnerDialog(QDialog):
                         return None
                     try:
                         return float(s)
-                    except:
+                    except ValueError:
                         return None
 
                 for i, name in train_cols:

@@ -228,42 +228,6 @@ def list_sleap_envs() -> Tuple[List[str], str]:
         return [], f"Env scan failed: {e}"
 
 
-def is_cuda_device(device: str) -> bool:
-    d = (device or "").strip().lower()
-    if d in {"cuda", "gpu"}:
-        return True
-    if d.startswith("cuda:"):
-        return True
-    return d.isdigit()
-
-
-def is_oom_error(err: Exception) -> bool:
-    msg = str(err).lower()
-    return "out of memory" in msg or "cuda error" in msg and "memory" in msg
-
-
-def maybe_limit_cuda_memory(log_fn=None, fraction: float = 0.9):
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.set_per_process_memory_fraction(float(fraction))
-            if log_fn:
-                log_fn(f"CUDA memory cap set to {int(fraction * 100)}% of GPU.")
-    except Exception:
-        pass
-
-
-def maybe_empty_cuda_cache():
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass
-
-
 class SignalLogHandler(logging.Handler):
     def __init__(self, signal):
         super().__init__()
@@ -295,29 +259,6 @@ def make_histogram_image(values, bins: int = 20, width: int = 360, height: int =
         x = i * bar_w
         h = int((count / max_count) * (height - 8))
         painter.fillRect(x, height - h, bar_w - 1, h, QColor(60, 120, 200))
-    painter.end()
-    return img
-
-
-def make_heatmap_image(matrix: np.ndarray, width: int = 360, height: int = 140):
-    img = QImage(width, height, QImage.Format_ARGB32)
-    img.fill(QColor(248, 248, 248))
-    if matrix.size == 0:
-        return img
-
-    rows, cols = matrix.shape
-    max_val = float(matrix.max()) if matrix.size else 1.0
-    if max_val <= 0:
-        max_val = 1.0
-
-    cell_w = max(1, width // cols)
-    cell_h = max(1, height // rows)
-    painter = QPainter(img)
-    for r in range(rows):
-        for c in range(cols):
-            v = float(matrix[r, c]) / max_val
-            color = QColor(255 - int(180 * v), 80 + int(120 * v), 80 + int(120 * v))
-            painter.fillRect(c * cell_w, r * cell_h, cell_w, cell_h, color)
     painter.end()
     return img
 

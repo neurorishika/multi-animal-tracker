@@ -19,7 +19,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 # Set up logging
 def setup_logging(
     log_level: object = logging.INFO,
-    enable_file_logging: object = False,
+    _enable_file_logging: object = False,
     log_dir: object = None,
 ) -> object:
     """Set up logging configuration for the multi-tracker application.

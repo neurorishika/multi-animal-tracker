@@ -303,3 +303,34 @@ def derive_pose_runtime_settings(compute_runtime: str, backend_family: str) -> d
     if resolved == "onnx_cpu":
         return {"pose_runtime_flavor": "onnx_cpu", "pose_sleap_device": "cpu"}
     return {"pose_runtime_flavor": resolved, "pose_sleap_device": "cuda:0"}
+
+
+def derive_appearance_runtime_settings(compute_runtime: str) -> dict:
+    """Map canonical runtime to appearance embedding runtime settings.
+
+    Returns a dict with keys:
+      appearance_runtime_flavor: native | onnx | onnx_cpu | tensorrt
+      appearance_device:         cpu | cuda | mps | auto
+    """
+    rt = _normalize_runtime(compute_runtime)
+
+    if rt == "mps":
+        # PyTorch MPS is well-supported by timm; prefer native over ONNX/CPU.
+        return {"appearance_runtime_flavor": "native", "appearance_device": "mps"}
+    if rt == "cpu":
+        return {"appearance_runtime_flavor": "native", "appearance_device": "cpu"}
+    if rt in {"cuda", "rocm"}:
+        return {"appearance_runtime_flavor": "native", "appearance_device": "cuda"}
+    if rt == "tensorrt":
+        return {"appearance_runtime_flavor": "tensorrt", "appearance_device": "cuda"}
+    if rt == "onnx_cpu":
+        return {"appearance_runtime_flavor": "onnx", "appearance_device": "cpu"}
+    if rt in {"onnx_cuda", "onnx_rocm"}:
+        return {"appearance_runtime_flavor": "onnx", "appearance_device": "cuda"}
+
+    # Unknown / legacy fallback: native on best available device.
+    if MPS_AVAILABLE:
+        return {"appearance_runtime_flavor": "native", "appearance_device": "mps"}
+    if _cuda_like_available():
+        return {"appearance_runtime_flavor": "native", "appearance_device": "cuda"}
+    return {"appearance_runtime_flavor": "native", "appearance_device": "cpu"}

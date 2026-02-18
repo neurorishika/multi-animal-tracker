@@ -168,32 +168,3 @@ def _choose_device(pref: str = "auto") -> str:
     except Exception:
         pass
     return "cpu"
-
-
-def _is_cuda_device(device: str) -> bool:
-    d = (device or "").strip().lower()
-    if d in {"cuda", "gpu"}:
-        return True
-    if d.startswith("cuda:"):
-        return True
-    return d.isdigit()
-
-
-def _maybe_limit_cuda_memory(fraction: float = 0.9):
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.set_per_process_memory_fraction(float(fraction))
-    except Exception:
-        pass
-
-
-def _maybe_empty_cuda_cache():
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-    except Exception:
-        pass

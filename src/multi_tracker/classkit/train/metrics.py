@@ -6,14 +6,12 @@ try:
     import numpy as np
     from sklearn.metrics import (
         accuracy_score,
-        classification_report,
         confusion_matrix,
         precision_recall_fscore_support,
     )
 except ImportError:
     np = None
     confusion_matrix = None
-    classification_report = None
     accuracy_score = None
     precision_recall_fscore_support = None
 

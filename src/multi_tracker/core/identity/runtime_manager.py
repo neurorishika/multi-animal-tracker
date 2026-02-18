@@ -40,7 +40,7 @@ class InferenceRuntimeManager:
     def __enter__(self) -> "InferenceRuntimeManager":
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> None:
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
         self.close()
 
     def create_backend(self, config: PoseRuntimeConfig) -> PoseInferenceBackend:
