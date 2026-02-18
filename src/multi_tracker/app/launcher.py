@@ -127,7 +127,7 @@ def main() -> object:
     log_level = getattr(logging, args.log_level.upper())
     setup_logging(
         log_level=log_level,
-        enable_file_logging=not args.no_file_log,
+        _enable_file_logging=not args.no_file_log,
         log_dir=args.log_dir,
     )
 
