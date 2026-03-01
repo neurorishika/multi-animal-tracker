@@ -222,6 +222,7 @@ class TrackingWorker(QThread):
 
         return frame[y_min:y_max, x_min:x_max].copy(), (x_min, y_min)
 
+    @staticmethod
     def _normalize_theta(theta):
         """Normalize radians to [0, 2*pi)."""
         try:
@@ -606,7 +607,6 @@ class TrackingWorker(QThread):
                 model_name=params.get(
                     "APPEARANCE_MODEL_NAME", "timm/vit_base_patch14_dinov2.lvd142m"
                 ),
-                runtime_flavor=params.get("APPEARANCE_RUNTIME_FLAVOR", "auto"),
                 batch_size=params.get("APPEARANCE_BATCH_SIZE", 32),
                 max_image_side=params.get("APPEARANCE_MAX_IMAGE_SIDE", 512),
                 use_clahe=params.get("APPEARANCE_USE_CLAHE", False),
