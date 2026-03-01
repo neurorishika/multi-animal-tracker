@@ -102,15 +102,6 @@ class TrackAssigner:
         self.worker = worker
         self._large_n_warning_shown = False  # Track if we've shown the warning
 
-    def _spatial_optimization_enabled(self) -> bool:
-        """Support both the current flag and the legacy alias."""
-        return bool(
-            self.params.get(
-                "ENABLE_SPATIAL_OPTIMIZATION",
-                self.params.get("USE_SPATIAL_PRUNING", False),
-            )
-        )
-
     def _get_spatial_candidates(self, N, M, pred_pos, meas_pos, max_dist):
         """Use KD-tree to find candidate matches within max_dist for large N."""
         if M == 0 or N == 0:
@@ -144,13 +135,13 @@ class TrackAssigner:
         # Warn about spatial indexing for large N
         if (
             N > 25
-            and not self._spatial_optimization_enabled()
+            and not p.get("USE_SPATIAL_PRUNING", False)
             and not self._large_n_warning_shown
         ):
             warning_msg = (
                 f"Tracking {N} objects without spatial indexing may be slow.\n\n"
                 f"Consider enabling these optimizations in tracking_config.json:\n"
-                f"  • ENABLE_SPATIAL_OPTIMIZATION: true\n"
+                f"  • USE_SPATIAL_PRUNING: true\n"
                 f"  • ENABLE_GREEDY_ASSIGNMENT: true\n\n"
                 f"Expected performance improvement: 10-30% for {N}+ objects."
             )
@@ -198,7 +189,7 @@ class TrackAssigner:
             max(MAX_DIST / p["W_POSITION"], 50.0) if p["W_POSITION"] > 0 else 1e6
         )
 
-        if self._spatial_optimization_enabled() and N > 50:
+        if p.get("ENABLE_SPATIAL_OPTIMIZATION", False) and N > 50:
             spatial_candidates = self._get_spatial_candidates(
                 N, M, pred_pos, meas_pos, cull_threshold
             )
@@ -273,7 +264,7 @@ class TrackAssigner:
         """
         p = self.params
         if M == 0:
-            return [], [], [], next_trajectory_id, []
+            return [], [], [], next_trajectory_id
 
         THRESH = p.get("CONTINUITY_THRESHOLD", 10)
         MAX_DIST = p["MAX_DISTANCE_THRESHOLD"]
@@ -333,26 +324,20 @@ class TrackAssigner:
         # Phase 3: Respawn Lost Tracks
         unassigned = [j for j in range(M) if j not in assigned_dets]
         respawn_dist_limit = p.get("MIN_RESPAWN_DISTANCE", MAX_DIST * 0.8)
-        non_lost_positions = [
-            np.asarray(kf_manager.X[r, :2], dtype=np.float32)
-            for r in range(N)
-            if track_states[r] != "lost"
-        ]
 
         for c in unassigned:
             if not lost:
                 break
-            # Block respawns near any currently active or occluded track prediction.
-            min_dist_non_lost = (
+            # Check proximity to existing active tracks to avoid shadow tracking
+            min_dist_active = (
                 min(
-                    np.linalg.norm(meas[c][:2] - track_pos)
-                    for track_pos in non_lost_positions
+                    [np.linalg.norm(meas[c][:2] - meas[ad][:2]) for ad in assigned_dets]
                 )
-                if non_lost_positions
+                if assigned_dets
                 else 1e6
             )
 
-            if min_dist_non_lost >= respawn_dist_limit:
+            if min_dist_active >= respawn_dist_limit:
                 best_r, best_c_val = None, 1e6
                 for r in lost:
                     # Accessing vectorized manager state X: [x, y, theta, vx, vy]
@@ -369,7 +354,7 @@ class TrackAssigner:
                     next_trajectory_id += 1
 
         if not all_assignments:
-            return [], [], list(range(M)), next_trajectory_id, []
+            return [], [], [], next_trajectory_id, []
 
         final_r, final_c = zip(*all_assignments)
         free_dets = list(set(range(M)) - set(final_c))

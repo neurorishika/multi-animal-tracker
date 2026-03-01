@@ -377,43 +377,6 @@ class TrackingWorker(QThread):
             out[det_id] = keypoints[i]
         return out
 
-    def _should_precompute_individual_data(self, params, detection_method):
-        """Run pose/appearance precompute whenever either extractor is enabled."""
-        pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
-        appearance_enabled = bool(params.get("APPEARANCE_ENABLED", False))
-        return bool(
-            not self.backward_mode
-            and not self.preview_mode
-            and detection_method == "yolo_obb"
-            and (pose_enabled or appearance_enabled)
-        )
-
-    def _resolve_tracking_theta(
-        self,
-        track_idx,
-        measured_theta,
-        pose_directed,
-        orientation_last,
-        fallback_theta=None,
-    ):
-        """Resolve directed vs axis-aligned orientation consistently for one track."""
-        if pose_directed:
-            return self._normalize_theta(measured_theta)
-
-        reference_theta = None
-        if orientation_last is not None and 0 <= int(track_idx) < len(orientation_last):
-            reference_theta = orientation_last[int(track_idx)]
-
-        if reference_theta is None and fallback_theta is not None:
-            try:
-                candidate = float(fallback_theta)
-            except Exception:
-                candidate = None
-            if candidate is not None and np.isfinite(candidate):
-                reference_theta = candidate
-
-        return self._collapse_obb_axis_theta(measured_theta, reference_theta)
-
     def _precompute_individual_data_unified(
         self,
         detector,
@@ -1268,10 +1231,14 @@ class TrackingWorker(QThread):
             individual_pipeline_enabled = False
             individual_image_save_enabled = False
 
-        individual_data_precompute_enabled = self._should_precompute_individual_data(
-            p, detection_method
+        individual_precompute_enabled = bool(
+            individual_pipeline_enabled
+            and not self.backward_mode
+            and not self.preview_mode
+            and detection_method == "yolo_obb"
+            and p.get("ENABLE_POSE_EXTRACTOR", False)
         )
-        if individual_data_precompute_enabled and not self.detection_cache_path:
+        if individual_precompute_enabled and not self.detection_cache_path:
             logger.error(
                 "Individual precompute requires detection caching, but no detection cache path is configured."
             )
@@ -1281,9 +1248,11 @@ class TrackingWorker(QThread):
 
         # Individual precompute needs full raw detections before tracking starts.
         # Force two-phase detection in YOLO mode so precompute can run on cached detections.
-        if individual_data_precompute_enabled and not use_batched_detection:
+        if individual_precompute_enabled and not use_batched_detection:
             use_batched_detection = True
-            logger.info("Enabling batched YOLO prepass for pose/appearance precompute.")
+            logger.info(
+                "Enabling batched YOLO prepass for individual-properties precompute."
+            )
 
         # Initialize individual dataset generator for image persistence only.
         individual_generator = None
@@ -1345,7 +1314,7 @@ class TrackingWorker(QThread):
             # Check if we should load existing cache
             cache_exists = os.path.exists(self.detection_cache_path)
             should_load_cache = self.backward_mode or (
-                (self.use_cached_detections or individual_data_precompute_enabled)
+                (self.use_cached_detections or individual_precompute_enabled)
                 and cache_exists
             )
 
@@ -1450,7 +1419,7 @@ class TrackingWorker(QThread):
             logger.info("PHASE 2: Tracking and Visualization")
             logger.info("=" * 80)
 
-        if individual_data_precompute_enabled:
+        if individual_precompute_enabled:
             if detection_cache is None or not use_cached_detections:
                 logger.error(
                     "Individual properties precompute requires cached raw detections."
@@ -2013,7 +1982,7 @@ class TrackingWorker(QThread):
                         track_states[r] = "occluded"
 
                 # --- KF Update & State Update ---
-                total_cost = 0.0
+                avg_cost = 0.0
                 for r, c in zip(rows, cols):
                     x = float(meas[c][0])
                     y = float(meas[c][1])
@@ -2023,20 +1992,17 @@ class TrackingWorker(QThread):
                     )
 
                     if pose_directed:
-                        theta_for_tracking = self._resolve_tracking_theta(
-                            r,
-                            measured_theta,
-                            pose_directed=True,
-                            orientation_last=orientation_last,
-                        )
+                        theta_for_tracking = self._normalize_theta(measured_theta)
                         pose_direction_applied_count += 1
                     else:
-                        theta_for_tracking = self._resolve_tracking_theta(
-                            r,
-                            measured_theta,
-                            pose_directed=False,
-                            orientation_last=orientation_last,
-                            fallback_theta=preds[r, 2] if r < len(preds) else None,
+                        reference_theta = orientation_last[r]
+                        if reference_theta is None:
+                            try:
+                                reference_theta = float(preds[r, 2])
+                            except Exception:
+                                reference_theta = None
+                        theta_for_tracking = self._collapse_obb_axis_theta(
+                            measured_theta, reference_theta
                         )
                         pose_direction_fallback_count += 1
 
@@ -2113,7 +2079,7 @@ class TrackingWorker(QThread):
                         self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1
                     current_cost = cost[r, c]
-                    total_cost += current_cost
+                    avg_cost += current_cost / N
 
                     # Populate histogram lists (this part is correct)
                     hist_velocities.append(speed)
@@ -2161,28 +2127,13 @@ class TrackingWorker(QThread):
                 for d_idx in free_dets:
                     for track_idx in range(N):
                         if track_states[track_idx] == "lost":
-                            pose_directed = bool(
-                                d_idx < len(pose_directed_mask)
-                                and pose_directed_mask[d_idx] == 1
-                            )
-                            theta_init = self._resolve_tracking_theta(
-                                track_idx,
-                                float(meas[d_idx][2]),
-                                pose_directed=pose_directed,
-                                orientation_last=orientation_last,
-                                fallback_theta=(
-                                    self.kf_manager.X[track_idx, 2]
-                                    if track_idx < len(self.kf_manager.X)
-                                    else None
-                                ),
-                            )
                             self.kf_manager.initialize_filter(
                                 track_idx,
                                 np.array(
                                     [
                                         meas[d_idx][0],
                                         meas[d_idx][1],
-                                        theta_init,
+                                        meas[d_idx][2],
                                         0,
                                         0,
                                     ],
@@ -2195,19 +2146,9 @@ class TrackingWorker(QThread):
                                 tracking_continuity[track_idx],
                             ) = ("active", 0, 0)
                             trajectory_ids[track_idx] = next_trajectory_id
-                            orientation_last[track_idx] = theta_init
-                            last_shape_info[track_idx] = (
-                                shapes[d_idx] if d_idx < len(shapes) else None
-                            )
-                            position_deques[track_idx].clear()
-                            position_deques[track_idx].append(
-                                (float(meas[d_idx][0]), float(meas[d_idx][1]))
-                            )
-                            local_counts[track_idx] = 0
                             next_trajectory_id += 1
                             break
 
-                avg_cost = total_cost / len(rows) if rows else float("inf")
                 if avg_cost < params["MAX_DISTANCE_THRESHOLD"]:
                     tracking_counts += 1
                 else:

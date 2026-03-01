@@ -231,6 +231,49 @@ def test_resolve_pose_group_indices_accepts_names_and_indices() -> None:
     assert idxs == [0, 2]
 
 
+def test_individual_data_precompute_gate_allows_pose_or_appearance_independently() -> (
+    None
+):
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    assert (
+        worker._should_precompute_individual_data(
+            {"ENABLE_POSE_EXTRACTOR": True, "APPEARANCE_ENABLED": False},
+            "yolo_obb",
+        )
+        is True
+    )
+    assert (
+        worker._should_precompute_individual_data(
+            {"ENABLE_POSE_EXTRACTOR": False, "APPEARANCE_ENABLED": True},
+            "yolo_obb",
+        )
+        is True
+    )
+    assert (
+        worker._should_precompute_individual_data(
+            {"ENABLE_POSE_EXTRACTOR": True, "APPEARANCE_ENABLED": True},
+            "yolo_obb",
+        )
+        is True
+    )
+    assert (
+        worker._should_precompute_individual_data(
+            {"ENABLE_POSE_EXTRACTOR": False, "APPEARANCE_ENABLED": False},
+            "yolo_obb",
+        )
+        is False
+    )
+    assert (
+        worker._should_precompute_individual_data(
+            {"ENABLE_POSE_EXTRACTOR": True, "APPEARANCE_ENABLED": True},
+            "background_subtraction",
+        )
+        is False
+    )
+
+
 def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:
     mod = _load_worker_module()
     worker = mod.TrackingWorker("dummy.mp4")

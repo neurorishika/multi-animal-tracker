@@ -153,6 +153,74 @@ def test_assign_tracks_respawns_lost_track_when_valid_detection_exists() -> None
     assert trajectory_ids[1] == 2
 
 
+def test_assign_tracks_does_not_respawn_near_non_lost_track() -> None:
+    params = _params()
+    assigner = TrackAssigner(params)
+    kf = _DummyKF(2)
+    kf.X[0, :2] = [10.0, 10.0]
+    kf.X[1, :2] = [14.0, 14.0]
+
+    measurements = [
+        np.array([12.0, 12.0, 0.1], dtype=np.float32),
+    ]
+
+    cost = np.array(
+        [
+            [80.0],
+            [2.0],
+        ],
+        dtype=np.float32,
+    )
+
+    track_states = ["active", "lost"]
+    continuity = [10, 0]
+    trajectory_ids = [0, 1]
+
+    rows, cols, free_dets, next_id, _ = assigner.assign_tracks(
+        cost=cost,
+        N=2,
+        M=1,
+        meas=measurements,
+        track_states=track_states,
+        tracking_continuity=continuity,
+        kf_manager=kf,
+        trajectory_ids=trajectory_ids,
+        next_trajectory_id=2,
+        spatial_candidates={},
+    )
+
+    assert rows == []
+    assert cols == []
+    assert free_dets == [0]
+    assert next_id == 2
+    assert trajectory_ids == [0, 1]
+
+
+def test_assign_tracks_returns_five_values_when_no_measurements() -> None:
+    assigner = TrackAssigner(_params())
+    kf = _DummyKF(2)
+    result = assigner.assign_tracks(
+        cost=np.zeros((2, 0), dtype=np.float32),
+        N=2,
+        M=0,
+        meas=[],
+        track_states=["active", "lost"],
+        tracking_continuity=[5, 0],
+        kf_manager=kf,
+        trajectory_ids=[0, 1],
+        next_trajectory_id=2,
+        spatial_candidates={},
+    )
+
+    assert len(result) == 5
+    rows, cols, free_dets, next_id, high_cost_tracks = result
+    assert rows == []
+    assert cols == []
+    assert free_dets == []
+    assert next_id == 2
+    assert high_cost_tracks == []
+
+
 def test_orientation_cost_uses_axis_equivalence_by_default() -> None:
     assigner = TrackAssigner(_params())
     kf = _DummyKF(1)
