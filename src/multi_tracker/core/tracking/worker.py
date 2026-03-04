@@ -377,15 +377,154 @@ class TrackingWorker(QThread):
             out[det_id] = keypoints[i]
         return out
 
+    def _compute_pose_geometry_from_keypoints(
+        self,
+        keypoints,
+        anterior_indices,
+        posterior_indices,
+        min_valid_conf,
+        ignore_indices=None,
+    ):
+        """Extract heading, body length, and visibility from pose keypoints."""
+        if keypoints is None:
+            return None
+        arr = np.asarray(keypoints, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+            return None
+
+        ignore_set = {int(idx) for idx in (ignore_indices or [])}
+
+        def weighted_centroid(indices):
+            pts = []
+            weights = []
+            for idx in indices:
+                if idx in ignore_set or idx < 0 or idx >= len(arr):
+                    continue
+                x, y, conf = arr[idx]
+                if (
+                    not np.isfinite(x)
+                    or not np.isfinite(y)
+                    or not np.isfinite(conf)
+                    or float(conf) < float(min_valid_conf)
+                ):
+                    continue
+                pts.append((float(x), float(y)))
+                weights.append(max(1e-6, float(conf)))
+            if not pts:
+                return None
+            pts_arr = np.asarray(pts, dtype=np.float64)
+            w_arr = np.asarray(weights, dtype=np.float64)
+            cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+            cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+            return cx, cy
+
+        valid_total = 0
+        visible_total = 0
+        for idx in range(len(arr)):
+            if idx in ignore_set:
+                continue
+            valid_total += 1
+            conf = arr[idx, 2]
+            if np.isfinite(conf) and float(conf) >= float(min_valid_conf):
+                visible_total += 1
+        visibility = (
+            float(visible_total) / float(valid_total) if valid_total > 0 else 0.0
+        )
+
+        ant = weighted_centroid(anterior_indices)
+        post = weighted_centroid(posterior_indices)
+        if ant is None or post is None:
+            return {
+                "heading": None,
+                "body_length": None,
+                "visibility": float(np.clip(visibility, 0.0, 1.0)),
+            }
+
+        dx = ant[0] - post[0]
+        dy = ant[1] - post[1]
+        if not np.isfinite(dx) or not np.isfinite(dy):
+            heading = None
+            body_length = None
+        else:
+            heading = self._normalize_theta(math.atan2(dy, dx))
+            body_length = float(math.hypot(dx, dy))
+
+        return {
+            "heading": heading,
+            "body_length": body_length,
+            "visibility": float(np.clip(visibility, 0.0, 1.0)),
+        }
+
+    def _normalize_pose_keypoints(self, keypoints, min_valid_conf, ignore_indices=None):
+        """Center and scale pose keypoints for same-keypoint shape comparison."""
+        if keypoints is None:
+            return None
+        arr = np.asarray(keypoints, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+            return None
+
+        ignore_set = {int(idx) for idx in (ignore_indices or [])}
+        valid = np.zeros(len(arr), dtype=bool)
+        valid_points = []
+        valid_weights = []
+        for idx in range(len(arr)):
+            if idx in ignore_set:
+                continue
+            x, y, conf = arr[idx]
+            if (
+                np.isfinite(x)
+                and np.isfinite(y)
+                and np.isfinite(conf)
+                and float(conf) >= float(min_valid_conf)
+            ):
+                valid[idx] = True
+                valid_points.append((float(x), float(y)))
+                valid_weights.append(max(1e-6, float(conf)))
+
+        if not valid_points:
+            return None
+
+        pts_arr = np.asarray(valid_points, dtype=np.float64)
+        w_arr = np.asarray(valid_weights, dtype=np.float64)
+        cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+        cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+        centered = pts_arr - np.array([[cx, cy]], dtype=np.float64)
+        radii = np.sqrt(np.sum(centered**2, axis=1))
+        scale = float(np.median(radii[radii > 1e-6])) if np.any(radii > 1e-6) else 1.0
+        scale = max(scale, 1.0)
+
+        out = np.full((len(arr), 3), np.nan, dtype=np.float32)
+        out[:, 2] = 0.0
+        valid_indices = np.where(valid)[0]
+        for src_idx, kp_idx in enumerate(valid_indices):
+            out[kp_idx, 0] = np.float32(centered[src_idx, 0] / scale)
+            out[kp_idx, 1] = np.float32(centered[src_idx, 1] / scale)
+            out[kp_idx, 2] = np.float32(arr[kp_idx, 2])
+        return out
+
+    @staticmethod
+    def _estimate_detection_crop_quality(shape, reference_body_size):
+        """Estimate crop quality from detection geometry."""
+        try:
+            area = float(shape[0])
+            aspect = float(shape[1])
+        except Exception:
+            return 0.0
+        if not np.isfinite(area) or area <= 0:
+            return 0.0
+        aspect = max(1e-3, float(abs(aspect)))
+        minor = math.sqrt(max(1e-6, (4.0 * area) / (math.pi * max(aspect, 1e-3))))
+        ref = max(1.0, float(reference_body_size) * 0.75)
+        return float(np.clip(minor / ref, 0.0, 1.0))
+
     def _should_precompute_individual_data(self, params, detection_method):
-        """Run pose/appearance precompute whenever either extractor is enabled."""
+        """Run pose precompute when the pose extractor is enabled."""
         pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
-        appearance_enabled = bool(params.get("APPEARANCE_ENABLED", False))
         return bool(
             not self.backward_mode
             and not self.preview_mode
             and detection_method == "yolo_obb"
-            and (pose_enabled or appearance_enabled)
+            and pose_enabled
         )
 
     def _resolve_tracking_theta(
@@ -414,7 +553,7 @@ class TrackingWorker(QThread):
 
         return self._collapse_obb_axis_theta(measured_theta, reference_theta)
 
-    def _precompute_individual_data_unified(
+    def _precompute_pose_data(
         self,
         detector,
         params,
@@ -423,32 +562,24 @@ class TrackingWorker(QThread):
         end_frame,
     ):
         """
-        Unified precompute for pose keypoints and appearance embeddings in a single video pass.
-
-        This method combines pose and appearance extraction to avoid multiple video reads and
-        redundant crop extractions, significantly improving efficiency.
+        Precompute pose keypoints in a single video pass.
 
         Returns:
-            (pose_cache_path, pose_cache_hit, appearance_cache_path, appearance_cache_hit)
+            (pose_cache_path, pose_cache_hit)
         """
         import time
 
-        # Check what's enabled
         pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
-        appearance_enabled = bool(params.get("APPEARANCE_ENABLED", False))
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
 
         if detection_method != "yolo_obb":
-            if pose_enabled or appearance_enabled:
-                logger.warning(
-                    "Individual data precompute requires YOLO OBB detection mode."
-                )
-            return None, True, None, True
+            if pose_enabled:
+                logger.warning("Pose precompute requires YOLO OBB detection mode.")
+            return None, True
 
-        if not pose_enabled and not appearance_enabled:
-            return None, True, None, True
+        if not pose_enabled:
+            return None, True
 
-        # ===== POSE SETUP =====
         pose_cache_path = None
         pose_cache_hit = True
         pose_backend = None
@@ -505,99 +636,17 @@ class TrackingWorker(QThread):
             else:
                 pose_cache_hit = False
 
-        # ===== APPEARANCE SETUP =====
-        appearance_cache_path = None
-        appearance_cache_hit = True
-        appearance_backend = None
-        appearance_cache_writer = None
-        embedding_id = None
-        embedding_dim = None
-        appearance_config = None
-
-        if appearance_enabled:
-            from multi_tracker.core.identity.appearance_cache import (
-                AppearanceEmbeddingCache,
-                build_appearance_cache_path,
-                compute_appearance_embedding_id,
-                compute_appearance_extractor_hash,
-            )
-            from multi_tracker.core.identity.properties_cache import (
-                compute_detection_hash,
-                compute_filter_settings_hash,
-            )
-            from multi_tracker.core.identity.runtime_api import (
-                AppearanceRuntimeConfig,
-                create_appearance_backend_from_config,
-            )
-
-            detection_hash = compute_detection_hash(
-                params.get("INFERENCE_MODEL_ID", ""),
-                self.video_path,
-                start_frame,
-                end_frame,
-                detection_cache_version="2.0",
-            )
-            filter_hash = compute_filter_settings_hash(params)
-            appearance_hash = compute_appearance_extractor_hash(params)
-            embedding_id = compute_appearance_embedding_id(
-                detection_hash, filter_hash, appearance_hash
-            )
-
-            video_stem = Path(self.video_path).stem
-            output_dir = params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "").strip()
-            if not output_dir:
-                output_dir = str(Path(self.video_path).parent / "appearance_embeddings")
-
-            appearance_cache_path = build_appearance_cache_path(
-                output_dir, video_stem, embedding_id, start_frame, end_frame
-            )
-
-            # Check for existing appearance cache
-            if appearance_cache_path.exists():
-                existing = AppearanceEmbeddingCache(
-                    str(appearance_cache_path), mode="r"
-                )
-                try:
-                    if existing.is_compatible():
-                        meta = existing.metadata or {}
-                        if (
-                            str(meta.get("model_name", ""))
-                            == params.get("APPEARANCE_MODEL_NAME", "")
-                            and int(meta.get("start_frame", -1)) == int(start_frame)
-                            and int(meta.get("end_frame", -1)) == int(end_frame)
-                        ):
-                            logger.info(
-                                "Appearance embedding cache hit: %s",
-                                str(appearance_cache_path),
-                            )
-                        else:
-                            appearance_cache_hit = False
-                    else:
-                        appearance_cache_hit = False
-                finally:
-                    existing.close()
-            else:
-                appearance_cache_hit = False
-
-        # If both are cache hits, return early
-        if pose_cache_hit and appearance_cache_hit:
+        if pose_cache_hit:
             self.progress_signal.emit(
                 100,
-                "Precompute: using existing pose and appearance caches.",
+                "Precompute: using existing pose cache.",
             )
-            return (
-                str(pose_cache_path) if pose_cache_path else None,
-                True,
-                str(appearance_cache_path) if appearance_cache_path else None,
-                True,
-            )
+            return str(pose_cache_path) if pose_cache_path else None, True
 
-        # ===== UNIFIED EXTRACTION =====
         logger.info("=" * 80)
-        logger.info("UNIFIED PRECOMPUTE: Pose + Appearance (single video pass)")
+        logger.info("POSE PRECOMPUTE: single video pass")
         logger.info("=" * 80)
 
-        # Initialize backends
         if pose_enabled and not pose_cache_hit:
             logger.info("Initializing pose backend...")
             self.progress_signal.emit(0, "Precompute: loading pose backend...")
@@ -631,38 +680,6 @@ class TrackingWorker(QThread):
                     params["POSE_EXPORTED_MODEL_PATH"] = resolved_artifact
                     self.pose_exported_model_resolved_signal.emit(resolved_artifact)
 
-        if appearance_enabled and not appearance_cache_hit:
-            logger.info("Initializing appearance backend...")
-            self.progress_signal.emit(0, "Precompute: loading appearance model...")
-
-            from multi_tracker.core.identity.runtime_api import (
-                AppearanceRuntimeConfig,
-                create_appearance_backend_from_config,
-            )
-
-            appearance_config = AppearanceRuntimeConfig(
-                model_name=params.get(
-                    "APPEARANCE_MODEL_NAME", "timm/vit_base_patch14_dinov2.lvd142m"
-                ),
-                batch_size=params.get("APPEARANCE_BATCH_SIZE", 32),
-                max_image_side=params.get("APPEARANCE_MAX_IMAGE_SIDE", 512),
-                use_clahe=params.get("APPEARANCE_USE_CLAHE", False),
-                normalize_embeddings=params.get("APPEARANCE_NORMALIZE", True),
-                compute_runtime=str(
-                    params.get("COMPUTE_RUNTIME", params.get("compute_runtime", ""))
-                ),
-            )
-
-            appearance_backend = create_appearance_backend_from_config(
-                appearance_config
-            )
-            appearance_backend.warmup()
-            embedding_dim = appearance_backend.output_dimension
-            logger.info(
-                f"Appearance model loaded. Embedding dimension: {embedding_dim}"
-            )
-
-        # Common setup
         resize_f = float(params.get("RESIZE_FACTOR", 1.0))
         padding_fraction = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
 
@@ -695,23 +712,14 @@ class TrackingWorker(QThread):
             pose_cache_writer = IndividualPropertiesCache(
                 str(pose_cache_path), mode="w"
             )
-        if appearance_enabled and not appearance_cache_hit:
-            from multi_tracker.core.identity.appearance_cache import (
-                AppearanceEmbeddingCache,
-            )
 
-            appearance_cache_writer = AppearanceEmbeddingCache(
-                str(appearance_cache_path), mode="w"
-            )
-
-        # Process frames
         total_frames = max(1, end_frame - start_frame + 1)
         precompute_start_ts = time.time()
         cancelled = False
 
         self.progress_signal.emit(
             1,
-            f"Unified precompute: processing {total_frames} frame(s)...",
+            f"Pose precompute: processing {total_frames} frame(s)...",
         )
 
         try:
@@ -754,10 +762,6 @@ class TrackingWorker(QThread):
                         pose_cache_writer.add_frame(
                             frame_idx, detection_ids or [], pose_keypoints=[]
                         )
-                    if appearance_cache_writer:
-                        appearance_cache_writer.add_frame(
-                            frame_idx, detection_ids or [], embeddings=[]
-                        )
                     continue
 
                 if resize_f < 1.0:
@@ -771,7 +775,6 @@ class TrackingWorker(QThread):
 
                 # Extract crops once
                 pose_keypoints = []
-                embeddings_list = []
 
                 if meas and filtered_obb_corners:
                     crops = []
@@ -793,7 +796,6 @@ class TrackingWorker(QThread):
                             cancelled = True
                             break
 
-                        # Process pose
                         if pose_backend:
                             pose_outputs = [{} for _ in range(len(meas))]
                             pred_outputs = pose_backend.predict_batch(crops)
@@ -821,16 +823,6 @@ class TrackingWorker(QThread):
                                 out = pose_outputs[det_idx]
                                 pose_keypoints.append(out.get("keypoints", None))
 
-                        # Process appearance
-                        if appearance_backend:
-                            embeddings_list = [None] * len(meas)
-                            appearance_results = appearance_backend.predict_crops(crops)
-                            for crop_idx, det_idx in enumerate(crop_to_det):
-                                if crop_idx < len(appearance_results):
-                                    result = appearance_results[crop_idx]
-                                    embeddings_list[det_idx] = result.embedding
-
-                # Write to caches
                 if pose_cache_writer:
                     pose_cache_writer.add_frame(
                         frame_idx,
@@ -838,14 +830,6 @@ class TrackingWorker(QThread):
                         pose_keypoints=pose_keypoints,
                     )
 
-                if appearance_cache_writer:
-                    appearance_cache_writer.add_frame(
-                        frame_idx,
-                        detection_ids or [],
-                        embeddings=embeddings_list,
-                    )
-
-                # Progress update
                 processed_count = rel_idx + 1
                 if rel_idx % 10 == 0 or rel_idx == total_frames - 1:
                     elapsed = max(1e-6, time.time() - precompute_start_ts)
@@ -855,11 +839,11 @@ class TrackingWorker(QThread):
                     pct = int((processed_count * 100) / total_frames)
                     self.progress_signal.emit(
                         pct,
-                        f"Unified precompute: {processed_count}/{total_frames}",
+                        f"Pose precompute: {processed_count}/{total_frames}",
                     )
                     self.stats_signal.emit(
                         {
-                            "phase": "unified_precompute",
+                            "phase": "pose_precompute",
                             "fps": rate_fps,
                             "elapsed": elapsed,
                             "eta": eta,
@@ -889,54 +873,24 @@ class TrackingWorker(QThread):
                 )
                 logger.info("Pose properties cache saved: %s", str(pose_cache_path))
 
-            if appearance_cache_writer:
-                appearance_cache_writer.save(
-                    metadata={
-                        "model_name": appearance_config.model_name,
-                        "embedding_dimension": embedding_dim,
-                        "device": appearance_config.device,
-                        "batch_size": appearance_config.batch_size,
-                        "max_image_side": appearance_config.max_image_side,
-                        "use_clahe": appearance_config.use_clahe,
-                        "normalize_embeddings": appearance_config.normalize_embeddings,
-                        "start_frame": int(start_frame),
-                        "end_frame": int(end_frame),
-                        "video_path": str(Path(self.video_path).expanduser().resolve()),
-                        "detection_cache_path": str(self.detection_cache_path),
-                    }
-                )
-                logger.info(
-                    "Appearance embedding cache saved: %s", str(appearance_cache_path)
-                )
-
             self.progress_signal.emit(
                 100,
-                "Unified precompute complete: pose and appearance caches saved.",
+                "Pose precompute complete: pose cache saved.",
             )
 
         finally:
             if pose_cache_writer:
                 pose_cache_writer.close()
-            if appearance_cache_writer:
-                appearance_cache_writer.close()
             video_cap.release()
             if pose_backend:
                 try:
                     pose_backend.close()
                 except Exception:
                     pass
-            if appearance_backend:
-                try:
-                    appearance_backend.close()
-                except Exception:
-                    pass
 
         return (
-            str(pose_cache_path) if pose_cache_path else None,
-            not pose_enabled or pose_cache_hit,
-            str(appearance_cache_path) if appearance_cache_path else None,
-            not appearance_enabled or appearance_cache_hit,
-        )
+            str(pose_cache_path) if pose_cache_path else None
+        ), not pose_enabled or pose_cache_hit
 
     def _run_batched_detection_phase(
         self, cap, detection_cache, detector, params, start_frame, end_frame
@@ -1283,7 +1237,7 @@ class TrackingWorker(QThread):
         # Force two-phase detection in YOLO mode so precompute can run on cached detections.
         if individual_data_precompute_enabled and not use_batched_detection:
             use_batched_detection = True
-            logger.info("Enabling batched YOLO prepass for pose/appearance precompute.")
+            logger.info("Enabling batched YOLO prepass for pose precompute.")
 
         # Initialize individual dataset generator for image persistence only.
         individual_generator = None
@@ -1313,6 +1267,8 @@ class TrackingWorker(QThread):
         trajectories_pruned = [[] for _ in range(N)]
         position_deques = [deque(maxlen=2) for _ in range(N)]
         orientation_last, last_shape_info = [None] * N, [None] * N
+        track_pose_prototypes = [None] * N
+        track_avg_step = [0.0] * N
         tracking_continuity = [0] * N
         trajectory_ids, next_trajectory_id = list(range(N)), N
 
@@ -1463,24 +1419,14 @@ class TrackingWorker(QThread):
                 self.finished_signal.emit(False, [], [])
                 return
 
-            # Unified precompute for both pose and appearance in a single video pass
             try:
-                (
-                    props_path,
-                    props_cache_hit,
-                    app_path,
-                    app_cache_hit,
-                ) = self._precompute_individual_data_unified(
+                props_path, props_cache_hit = self._precompute_pose_data(
                     detector, p, detection_cache, start_frame, end_frame
                 )
 
-                # Log results
                 if props_path:
                     state = "hit" if props_cache_hit else "miss"
                     logger.info("Individual properties cache %s: %s", state, props_path)
-                if app_path:
-                    state = "hit" if app_cache_hit else "miss"
-                    logger.info("Appearance embedding cache %s: %s", state, app_path)
 
             except Exception as exc:
                 logger.exception("Individual data precompute failed.")
@@ -1503,6 +1449,7 @@ class TrackingWorker(QThread):
         pose_direction_fallback_count = 0
         pose_direction_anterior_indices = []
         pose_direction_posterior_indices = []
+        pose_ignore_indices = []
         pose_keypoint_names = []
         pose_min_valid_conf = float(p.get("POSE_MIN_KPT_CONF_VALID", 0.2))
         pose_frame_keypoints_map = {}
@@ -1536,6 +1483,9 @@ class TrackingWorker(QThread):
                 names = pose_props_cache.metadata.get("pose_keypoint_names", [])
                 if isinstance(names, (list, tuple)):
                     pose_keypoint_names = [str(v) for v in names]
+                pose_ignore_indices = self._resolve_pose_group_indices(
+                    p.get("POSE_IGNORE_KEYPOINTS", []), pose_keypoint_names
+                )
                 pose_direction_anterior_indices = self._resolve_pose_group_indices(
                     p.get("POSE_DIRECTION_ANTERIOR_KEYPOINTS", []), pose_keypoint_names
                 )
@@ -1883,7 +1833,21 @@ class TrackingWorker(QThread):
 
             profile_times["detection"] += time.time() - detect_start
 
-            # Optional pose-based direction override on filtered detections.
+            detection_crop_quality = np.zeros(len(meas), dtype=np.float32)
+            detection_pose_heading = np.full(len(meas), np.nan, dtype=np.float32)
+            detection_pose_keypoints = [None] * len(meas)
+            detection_pose_visibility = np.zeros(len(meas), dtype=np.float32)
+
+            if meas and shapes:
+                reference_body_size = float(params.get("REFERENCE_BODY_SIZE", 20.0))
+                for det_idx in range(min(len(meas), len(shapes))):
+                    detection_crop_quality[det_idx] = (
+                        self._estimate_detection_crop_quality(
+                            shapes[det_idx], reference_body_size
+                        )
+                    )
+
+            # Optional pose-based geometry features and direction override.
             if pose_direction_enabled and meas and detection_ids:
                 if pose_frame_keypoints_map_frame != actual_frame_index:
                     pose_frame_keypoints_map = self._build_pose_detection_keypoint_map(
@@ -1899,19 +1863,26 @@ class TrackingWorker(QThread):
                     except Exception:
                         continue
                     keypoints = pose_frame_keypoints_map.get(det_id)
-                    pose_theta = self._compute_pose_heading_from_keypoints(
+                    pose_features = self._compute_pose_geometry_from_keypoints(
                         keypoints,
                         pose_direction_anterior_indices,
                         pose_direction_posterior_indices,
                         pose_min_valid_conf,
+                        ignore_indices=pose_ignore_indices,
                     )
+                    if pose_features is None:
+                        continue
+                    visibility = float(pose_features.get("visibility", 0.0) or 0.0)
+                    detection_pose_visibility[det_idx] = visibility
+                    detection_pose_keypoints[det_idx] = self._normalize_pose_keypoints(
+                        keypoints,
+                        pose_min_valid_conf,
+                        ignore_indices=pose_ignore_indices,
+                    )
+                    pose_theta = pose_features.get("heading")
                     if pose_theta is None:
                         continue
-                    m = np.asarray(meas[det_idx], dtype=np.float32).copy()
-                    if len(m) < 3:
-                        continue
-                    m[2] = np.float32(pose_theta)
-                    meas[det_idx] = m
+                    detection_pose_heading[det_idx] = np.float32(pose_theta)
                     pose_directed_mask[det_idx] = 1
 
             if len(meas) >= params.get("MIN_DETECTIONS_TO_START", 1):
@@ -1953,6 +1924,16 @@ class TrackingWorker(QThread):
                 preds = self.kf_manager.get_predictions()
 
                 # The Assigner now takes the kf_manager directly to access X and S_inv
+                association_data = {
+                    "detection_confidences": detection_confidences,
+                    "detection_crop_quality": detection_crop_quality,
+                    "detection_pose_heading": detection_pose_heading,
+                    "detection_pose_keypoints": detection_pose_keypoints,
+                    "detection_pose_visibility": detection_pose_visibility,
+                    "track_pose_prototypes": track_pose_prototypes,
+                    "track_avg_step": track_avg_step,
+                }
+
                 cost, spatial_candidates = assigner.compute_cost_matrix(
                     N,
                     meas,
@@ -1960,11 +1941,8 @@ class TrackingWorker(QThread):
                     shapes,
                     self.kf_manager,
                     last_shape_info,
-                    meas_ori_directed=(
-                        pose_directed_mask
-                        if len(pose_directed_mask) == len(meas)
-                        else None
-                    ),
+                    meas_ori_directed=None,
+                    association_data=association_data,
                 )
 
                 rows, cols, free_dets, next_id, high_cost_tracks = (
@@ -1979,6 +1957,7 @@ class TrackingWorker(QThread):
                         trajectory_ids,
                         next_trajectory_id,
                         spatial_candidates,
+                        association_data=association_data,
                     )
                 )
                 next_trajectory_id = next_id
@@ -2021,23 +2000,22 @@ class TrackingWorker(QThread):
                     pose_directed = bool(
                         c < len(pose_directed_mask) and pose_directed_mask[c] == 1
                     )
+                    tracking_theta_measurement = measured_theta
+                    if pose_directed and c < len(detection_pose_heading):
+                        pose_heading = float(detection_pose_heading[c])
+                        if np.isfinite(pose_heading):
+                            tracking_theta_measurement = pose_heading
 
+                    theta_for_tracking = self._resolve_tracking_theta(
+                        r,
+                        tracking_theta_measurement,
+                        pose_directed=pose_directed,
+                        orientation_last=orientation_last,
+                        fallback_theta=preds[r, 2] if r < len(preds) else None,
+                    )
                     if pose_directed:
-                        theta_for_tracking = self._resolve_tracking_theta(
-                            r,
-                            measured_theta,
-                            pose_directed=True,
-                            orientation_last=orientation_last,
-                        )
                         pose_direction_applied_count += 1
                     else:
-                        theta_for_tracking = self._resolve_tracking_theta(
-                            r,
-                            measured_theta,
-                            pose_directed=False,
-                            orientation_last=orientation_last,
-                            fallback_theta=preds[r, 2] if r < len(preds) else None,
-                        )
                         pose_direction_fallback_count += 1
 
                     # Vectorized manager handles the reshaping and indexing internally
@@ -2065,6 +2043,64 @@ class TrackingWorker(QThread):
                         position_deques,
                     )
                     last_shape_info[r] = shapes[c]
+                    feature_alpha = float(
+                        np.clip(params.get("TRACK_FEATURE_EMA_ALPHA", 0.85), 0.0, 0.999)
+                    )
+                    high_conf_thresh = float(
+                        np.clip(
+                            params.get("ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD", 0.7),
+                            0.0,
+                            1.0,
+                        )
+                    )
+                    det_conf_for_track = (
+                        float(detection_confidences[c])
+                        if c < len(detection_confidences)
+                        else 0.0
+                    )
+                    if det_conf_for_track >= high_conf_thresh:
+                        prev_avg = float(track_avg_step[r])
+                        track_avg_step[r] = (
+                            feature_alpha * prev_avg + (1.0 - feature_alpha) * speed
+                        )
+
+                    det_pose_proto = (
+                        detection_pose_keypoints[c]
+                        if c < len(detection_pose_keypoints)
+                        else None
+                    )
+                    if det_pose_proto is not None:
+                        det_pose_proto = np.asarray(det_pose_proto, dtype=np.float32)
+                        prev_pose_proto = track_pose_prototypes[r]
+                        if prev_pose_proto is None or np.shape(
+                            prev_pose_proto
+                        ) != np.shape(det_pose_proto):
+                            track_pose_prototypes[r] = det_pose_proto.copy()
+                        else:
+                            prev_pose_proto = np.asarray(
+                                prev_pose_proto, dtype=np.float32
+                            )
+                            updated = prev_pose_proto.copy()
+                            for kp_idx in range(len(det_pose_proto)):
+                                det_valid = np.isfinite(
+                                    det_pose_proto[kp_idx, 0]
+                                ) and np.isfinite(det_pose_proto[kp_idx, 1])
+                                prev_valid = np.isfinite(
+                                    updated[kp_idx, 0]
+                                ) and np.isfinite(updated[kp_idx, 1])
+                                if det_valid and prev_valid:
+                                    updated[kp_idx, :2] = (
+                                        feature_alpha * updated[kp_idx, :2]
+                                        + (1.0 - feature_alpha)
+                                        * det_pose_proto[kp_idx, :2]
+                                    )
+                                    updated[kp_idx, 2] = max(
+                                        float(updated[kp_idx, 2]),
+                                        float(det_pose_proto[kp_idx, 2]),
+                                    )
+                                elif det_valid:
+                                    updated[kp_idx] = det_pose_proto[kp_idx]
+                            track_pose_prototypes[r] = updated
 
                     theta_out = orientation_last[r]
                     # Backward fallback orientation historically needs a 180-degree correction.
@@ -2165,9 +2201,14 @@ class TrackingWorker(QThread):
                                 d_idx < len(pose_directed_mask)
                                 and pose_directed_mask[d_idx] == 1
                             )
+                            theta_measurement = float(meas[d_idx][2])
+                            if pose_directed and d_idx < len(detection_pose_heading):
+                                pose_heading = float(detection_pose_heading[d_idx])
+                                if np.isfinite(pose_heading):
+                                    theta_measurement = pose_heading
                             theta_init = self._resolve_tracking_theta(
                                 track_idx,
-                                float(meas[d_idx][2]),
+                                theta_measurement,
                                 pose_directed=pose_directed,
                                 orientation_last=orientation_last,
                                 fallback_theta=(
@@ -2199,6 +2240,17 @@ class TrackingWorker(QThread):
                             last_shape_info[track_idx] = (
                                 shapes[d_idx] if d_idx < len(shapes) else None
                             )
+                            track_pose_prototypes[track_idx] = (
+                                np.asarray(
+                                    detection_pose_keypoints[d_idx], dtype=np.float32
+                                ).copy()
+                                if (
+                                    d_idx < len(detection_pose_keypoints)
+                                    and detection_pose_keypoints[d_idx] is not None
+                                )
+                                else None
+                            )
+                            track_avg_step[track_idx] = 0.0
                             position_deques[track_idx].clear()
                             position_deques[track_idx].append(
                                 (float(meas[d_idx][0]), float(meas[d_idx][1]))
@@ -2497,7 +2549,6 @@ class TrackingWorker(QThread):
                 pose_props_cache.close()
             except Exception:
                 pass
-
         # Save or close detection cache
         if detection_cache:
             if not self.backward_mode and not use_cached_detections:

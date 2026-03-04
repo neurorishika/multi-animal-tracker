@@ -1,0 +1,62 @@
+\contentsline {section}{\numberline {1}Executive Overview}{4}{section.1}%
+\contentsline {section}{\numberline {2}Product Ecosystem}{4}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Multi-Animal-Tracker}{5}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}PoseKit}{6}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}ClassKit}{6}{subsection.2.3}%
+\contentsline {subsection}{\numberline {2.4}DataSieve}{6}{subsection.2.4}%
+\contentsline {section}{\numberline {3}Pipeline Topology}{7}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Per-frame execution order}{9}{subsection.3.1}%
+\contentsline {section}{\numberline {4}Formal Objects and Data Representations}{9}{section.4}%
+\contentsline {subsection}{\numberline {4.1}State vector}{9}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}Measurement vector}{10}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}Detection-side attributes}{10}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}Deterministic detection identifiers}{10}{subsection.4.4}%
+\contentsline {section}{\numberline {5}Detection Layer}{10}{section.5}%
+\contentsline {subsection}{\numberline {5.1}Background-subtraction branch}{10}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}YOLO OBB branch}{11}{subsection.5.2}%
+\contentsline {subsection}{\numberline {5.3}Detection cache}{11}{subsection.5.3}%
+\contentsline {subsection}{\numberline {5.4}Detection-to-track handoff}{11}{subsection.5.4}%
+\contentsline {section}{\numberline {6}State Estimation}{12}{section.6}%
+\contentsline {subsection}{\numberline {6.1}Transition model}{12}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}Observation model}{12}{subsection.6.2}%
+\contentsline {subsection}{\numberline {6.3}Heading-aware process noise}{12}{subsection.6.3}%
+\contentsline {subsection}{\numberline {6.4}Prediction and correction}{13}{subsection.6.4}%
+\contentsline {subsection}{\numberline {6.5}Maturity and speed limits}{13}{subsection.6.5}%
+\contentsline {section}{\numberline {7}Orientation and Pose Handling}{13}{section.7}%
+\contentsline {subsection}{\numberline {7.1}Directed versus axis-aligned orientation}{14}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}Axis collapse}{14}{subsection.7.2}%
+\contentsline {subsection}{\numberline {7.3}Pose-derived heading}{14}{subsection.7.3}%
+\contentsline {subsection}{\numberline {7.4}Normalized pose prototypes}{14}{subsection.7.4}%
+\contentsline {section}{\numberline {8}Association and Online Identity Maintenance}{14}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Base positional uncertainty}{15}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Orientation distance}{15}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}Stage-2 association cost}{15}{subsection.8.3}%
+\contentsline {subsection}{\numberline {8.4}Stage-1 gating}{15}{subsection.8.4}%
+\contentsline {subsection}{\numberline {8.5}Pose-shape rejection}{16}{subsection.8.5}%
+\contentsline {subsection}{\numberline {8.6}Assignment phases}{16}{subsection.8.6}%
+\contentsline {subsection}{\numberline {8.7}Respawn guard}{17}{subsection.8.7}%
+\contentsline {subsection}{\numberline {8.8}Track memory updates}{17}{subsection.8.8}%
+\contentsline {subsection}{\numberline {8.9}Why the worker prefers fragmentation}{18}{subsection.8.9}%
+\contentsline {subsection}{\numberline {8.10}Current limitations of pose and appearance cues}{18}{subsection.8.10}%
+\contentsline {section}{\numberline {9}Backward Replay and Consensus Resolution}{19}{section.9}%
+\contentsline {subsection}{\numberline {9.1}Replay decision ladder}{19}{subsection.9.1}%
+\contentsline {section}{\numberline {10}Post-Processing and Trajectory Resolution}{20}{section.10}%
+\contentsline {subsection}{\numberline {10.1}Cleaning and breaks}{20}{subsection.10.1}%
+\contentsline {subsection}{\numberline {10.2}Forward/backward agreement}{20}{subsection.10.2}%
+\contentsline {subsection}{\numberline {10.3}Offline resolution ladder}{20}{subsection.10.3}%
+\contentsline {subsection}{\numberline {10.4}Motion-and-pose relinking}{21}{subsection.10.4}%
+\contentsline {subsection}{\numberline {10.5}Interpolation}{22}{subsection.10.5}%
+\contentsline {section}{\numberline {11}Limitations and Future Directions}{22}{section.11}%
+\contentsline {subsection}{\numberline {11.1}Why pose and appearance are not dominant Hungarian terms yet}{22}{subsection.11.1}%
+\contentsline {subsection}{\numberline {11.2}Marker-mediated identity channels}{23}{subsection.11.2}%
+\contentsline {subsection}{\numberline {11.3}Post-experiment identity fusion with contrastive learning}{23}{subsection.11.3}%
+\contentsline {subsection}{\numberline {11.4}Faster hybrid detection}{24}{subsection.11.4}%
+\contentsline {subsection}{\numberline {11.5}Current UI footholds for future work}{24}{subsection.11.5}%
+\contentsline {subsection}{\numberline {11.6}Longer-horizon roadmap}{25}{subsection.11.6}%
+\contentsline {section}{\numberline {12}UI-to-Runtime Parameter Mapping}{26}{section.12}%
+\contentsline {subsection}{\numberline {12.1}Primary derived quantities}{26}{subsection.12.1}%
+\contentsline {subsection}{\numberline {12.2}Crosswalk tables}{26}{subsection.12.2}%
+\contentsline {subsection}{\numberline {12.3}How operator controls move the math}{32}{subsection.12.3}%
+\contentsline {section}{\numberline {13}Operational Guidance}{34}{section.13}%
+\contentsline {section}{\numberline {14}Implementation Surface}{34}{section.14}%
+\contentsline {section}{\numberline {15}Summary}{35}{section.15}%

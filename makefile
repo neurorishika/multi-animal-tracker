@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-cuda env-create-mps env-create-rocm env-update env-update-cuda env-update-mps env-update-rocm env-remove env-remove-cuda env-remove-mps env-remove-rocm install install-cuda install-mps install-rocm install-dev setup setup-cuda setup-mps setup-rocm test pytest test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check pre-commit-install pre-commit-autopep8 pre-commit-run pre-commit-update format format-check lint lint-fix lint-strict lint-report dead-code dead-code-fix dep-graph dep-graph-text type-check audit help
+.PHONY: env-create env-create-cuda env-create-mps env-create-rocm env-update env-update-cuda env-update-mps env-update-rocm env-remove env-remove-cuda env-remove-mps env-remove-rocm install install-cuda install-mps install-rocm install-dev setup setup-cuda setup-mps setup-rocm test pytest test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check techref-build techref-clean pre-commit-install pre-commit-autopep8 pre-commit-run pre-commit-update format format-check lint lint-fix lint-strict lint-report dead-code dead-code-fix dep-graph dep-graph-text type-check audit help
 
 # Environment names for different platforms
 ENV_NAME = multi-animal-tracker
@@ -236,6 +236,12 @@ docs-check: docs-build docs-quality
 		fi; \
 	fi
 	@echo "Docs checks passed."
+
+techref-build:
+	$(MAKE) -C technical-reference pdf
+
+techref-clean:
+	$(MAKE) -C technical-reference clean
 
 # Pre-commit hooks
 pre-commit-install:

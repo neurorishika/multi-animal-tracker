@@ -46,6 +46,14 @@ Welcome to the central documentation for:
 
     [Open Reference](reference/api-index.md)
 
+- :material-file-document-outline: **Technical Reference**
+
+    ---
+
+    Publication-style algorithm writeup plus LaTeX manuscript source for the current tracker.
+
+    [Open Technical Reference](reference/technical-reference.md)
+
 </div>
 
 ## Launch Commands

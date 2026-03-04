@@ -106,6 +106,7 @@ nav:
   - Architecture: developer-guide/architecture.md
   - Module Map: developer-guide/module-map.md
   - Data Flow: developer-guide/data-flow.md
+  - Tracking Algorithm Deep Dive: developer-guide/tracking-algorithm-deep-dive.md
   - GPU Backends: developer-guide/gpu-backends.md
   - Runtime Integration: developer-guide/runtime-integration.md
   - CUDA Dependency Updates: developer-guide/dependency-cuda-updates.md
@@ -126,5 +127,6 @@ nav:
   - API (PoseKit): reference/api-posekit.md
   - API (Utils): reference/api-utils.md
   - CLI Reference: reference/cli-reference.md
+  - Technical Reference (LaTeX): reference/technical-reference.md
   - Changelog: reference/changelog.md
   - FAQ: reference/faq.md

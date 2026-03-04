@@ -71,6 +71,7 @@ from ..core.identity.properties_export import (
 from ..core.post.processing import (
     interpolate_trajectories,
     process_trajectories,
+    relink_trajectories_with_pose,
     resolve_trajectories,
 )
 from ..core.runtime.compute_runtime import (
@@ -94,7 +95,6 @@ from ..utils.gpu_utils import (
 from .dialogs.train_yolo_dialog import TrainYoloDialog
 from .widgets.histograms import HistogramPanel
 
-# Import for appearance embedding controls
 try:
     from ..posekit.ui.dialogs.utils import get_available_devices
 except ImportError:
@@ -3945,14 +3945,14 @@ class MainWindow(QMainWindow):
         g_kf.setContentLayout(vl_kf)
         vbox.addWidget(g_kf)
 
-        # Weights
-        g_weights = CollapsibleGroupBox("What should matching prioritize?")
+        # Matching cost
+        g_weights = CollapsibleGroupBox("How should match scoring work?")
         self.tracking_accordion.addCollapsible(g_weights)
         l_weights = QVBoxLayout()
         l_weights.addWidget(
             self._create_help_label(
-                "Control how different factors influence track-to-detection matching. Position is primary; orientation, "
-                "area, and aspect help resolve ambiguities. Increase Mahalanobis to trust Kalman predictions more."
+                "This is the core assignment cost used after motion gating. Position does most of the work; "
+                "orientation and coarse box geometry help break ties without relying on appearance."
             )
         )
 
@@ -3961,22 +3961,21 @@ class MainWindow(QMainWindow):
         self.spin_Wp.setRange(0.0, 10.0)
         self.spin_Wp.setValue(1.0)
         self.spin_Wp.setToolTip(
-            "Weight for position distance in assignment cost.\n"
-            "Higher = prioritize spatial proximity.\n"
-            "Recommended: 1.0 (primary factor)"
+            "Weight for position distance in the assignment cost.\n"
+            "Higher = trust spatial proximity more.\n"
+            "Recommended: keep this as the dominant term."
         )
-        row1.addWidget(QLabel("Position importance"))
+        row1.addWidget(QLabel("Position weight"))
         row1.addWidget(self.spin_Wp)
 
         self.spin_Wo = QDoubleSpinBox()
         self.spin_Wo.setRange(0.0, 10.0)
         self.spin_Wo.setValue(1.0)
         self.spin_Wo.setToolTip(
-            "Weight for orientation difference in assignment cost.\n"
-            "Higher = penalize large orientation changes.\n"
-            "Recommended: 0.5-2.0 (helps maintain correct identity)"
+            "Weight for orientation difference in the assignment cost.\n"
+            "Higher = penalize large direction changes more strongly."
         )
-        row1.addWidget(QLabel("Direction importance"))
+        row1.addWidget(QLabel("Direction weight"))
         row1.addWidget(self.spin_Wo)
         l_weights.addLayout(row1)
 
@@ -3987,47 +3986,121 @@ class MainWindow(QMainWindow):
         self.spin_Wa.setDecimals(4)
         self.spin_Wa.setValue(0.001)
         self.spin_Wa.setToolTip(
-            "Weight for area difference in assignment cost.\n"
-            "Higher = penalize size changes.\n"
-            "Recommended: 0.001-0.01 (prevents size-based swaps)"
+            "Weight for area difference in the assignment cost.\n"
+            "Higher = penalize sudden size changes more strongly."
         )
-        row2.addWidget(QLabel("Size importance"))
+        row2.addWidget(QLabel("Area weight"))
         row2.addWidget(self.spin_Wa)
 
         self.spin_Wasp = QDoubleSpinBox()
         self.spin_Wasp.setRange(0.0, 10.0)
         self.spin_Wasp.setValue(0.1)
         self.spin_Wasp.setToolTip(
-            "Weight for aspect ratio difference in assignment cost.\n"
-            "Higher = penalize shape changes.\n"
-            "Recommended: 0.05-0.2 (helps with occlusions)"
+            "Weight for aspect-ratio difference in the assignment cost.\n"
+            "Higher = penalize coarse shape changes more strongly."
         )
-        row2.addWidget(QLabel("Shape importance"))
+        row2.addWidget(QLabel("Aspect weight"))
         row2.addWidget(self.spin_Wasp)
         l_weights.addLayout(row2)
 
         self.chk_use_mahal = QCheckBox("Use motion-aware distance")
         self.chk_use_mahal.setChecked(True)
         self.chk_use_mahal.setToolTip(
-            "Use Mahalanobis distance instead of Euclidean for position.\n"
-            "Accounts for velocity and uncertainty in motion prediction.\n"
-            "Recommended: Enable for better handling of motion variability."
+            "Use Mahalanobis distance instead of Euclidean distance for the position term.\n"
+            "This makes the matcher respect predicted velocity and uncertainty."
         )
         l_weights.addWidget(self.chk_use_mahal)
         g_weights.setContentLayout(l_weights)
         vbox.addWidget(g_weights)
 
-        # Assignment Algorithm (for large N optimization)
-        g_assign = CollapsibleGroupBox("How should matches be computed at scale?")
+        # Candidate gating and pose safeguards
+        g_assign = CollapsibleGroupBox("How should candidate matches be filtered?")
         self.tracking_accordion.addCollapsible(g_assign)
         vl_assign = QVBoxLayout()
         vl_assign.addWidget(
             self._create_help_label(
-                "Choose matching algorithm. Hungarian is optimal but slow for many animals (N>100). "
-                "Greedy approximation is faster but may produce suboptimal assignments."
+                "First, the tracker prunes impossible candidates using motion and coarse geometry. "
+                "Pose can then veto clearly incompatible matches when enough keypoints are visible."
             )
         )
         f_assign = QFormLayout(None)
+
+        self.spin_assoc_gate_multiplier = QDoubleSpinBox()
+        self.spin_assoc_gate_multiplier.setRange(0.5, 5.0)
+        self.spin_assoc_gate_multiplier.setDecimals(2)
+        self.spin_assoc_gate_multiplier.setSingleStep(0.05)
+        self.spin_assoc_gate_multiplier.setValue(1.4)
+        self.spin_assoc_gate_multiplier.setToolTip(
+            "Multiplier for the stage-1 motion gate before full scoring."
+        )
+        f_assign.addRow("Motion gate multiplier", self.spin_assoc_gate_multiplier)
+
+        self.spin_assoc_max_area_ratio = QDoubleSpinBox()
+        self.spin_assoc_max_area_ratio.setRange(1.0, 10.0)
+        self.spin_assoc_max_area_ratio.setDecimals(2)
+        self.spin_assoc_max_area_ratio.setSingleStep(0.1)
+        self.spin_assoc_max_area_ratio.setValue(2.5)
+        self.spin_assoc_max_area_ratio.setToolTip(
+            "Maximum allowed area ratio during candidate gating."
+        )
+        f_assign.addRow("Max area ratio", self.spin_assoc_max_area_ratio)
+
+        self.spin_assoc_max_aspect_diff = QDoubleSpinBox()
+        self.spin_assoc_max_aspect_diff.setRange(0.0, 5.0)
+        self.spin_assoc_max_aspect_diff.setDecimals(2)
+        self.spin_assoc_max_aspect_diff.setSingleStep(0.05)
+        self.spin_assoc_max_aspect_diff.setValue(0.8)
+        self.spin_assoc_max_aspect_diff.setToolTip(
+            "Maximum aspect-ratio change allowed during candidate gating."
+        )
+        f_assign.addRow("Max aspect diff", self.spin_assoc_max_aspect_diff)
+
+        self.chk_enable_pose_rejection = QCheckBox("Enable pose rejection")
+        self.chk_enable_pose_rejection.setChecked(True)
+        self.chk_enable_pose_rejection.setToolTip(
+            "Allow pose to veto motion-feasible matches when the same-keypoint layout\n"
+            "is clearly incompatible."
+        )
+        f_assign.addRow(self.chk_enable_pose_rejection)
+
+        self.spin_pose_rejection_threshold = QDoubleSpinBox()
+        self.spin_pose_rejection_threshold.setRange(0.0, 5.0)
+        self.spin_pose_rejection_threshold.setDecimals(2)
+        self.spin_pose_rejection_threshold.setSingleStep(0.05)
+        self.spin_pose_rejection_threshold.setValue(0.5)
+        self.spin_pose_rejection_threshold.setToolTip(
+            "Maximum normalized same-keypoint pose distance allowed before rejecting a match.\n"
+            "Lower = stricter pose veto."
+        )
+        f_assign.addRow("Pose rejection threshold", self.spin_pose_rejection_threshold)
+
+        self.spin_pose_rejection_min_visibility = QDoubleSpinBox()
+        self.spin_pose_rejection_min_visibility.setRange(0.0, 1.0)
+        self.spin_pose_rejection_min_visibility.setDecimals(2)
+        self.spin_pose_rejection_min_visibility.setSingleStep(0.05)
+        self.spin_pose_rejection_min_visibility.setValue(0.5)
+        self.spin_pose_rejection_min_visibility.setToolTip(
+            "Minimum pose visibility required before pose rejection is allowed to activate."
+        )
+        f_assign.addRow(
+            "Pose rejection min visibility", self.spin_pose_rejection_min_visibility
+        )
+
+        vl_assign.addLayout(f_assign)
+        g_assign.setContentLayout(vl_assign)
+        vbox.addWidget(g_assign)
+
+        # Solver and adaptation
+        g_solver = CollapsibleGroupBox("How should assignment adapt over time?")
+        self.tracking_accordion.addCollapsible(g_solver)
+        vl_solver = QVBoxLayout()
+        vl_solver.addWidget(
+            self._create_help_label(
+                "These settings control how assignments are solved and how quickly the tracker updates "
+                "its internal motion and pose summaries."
+            )
+        )
+        f_solver = QFormLayout(None)
 
         self.combo_assignment_method = QComboBox()
         self.combo_assignment_method.addItems(
@@ -4035,31 +4108,55 @@ class MainWindow(QMainWindow):
         )
         self.combo_assignment_method.setCurrentIndex(0)
         self.combo_assignment_method.setToolTip(
-            "Hungarian: Optimal global assignment (slow for N>100)\n"
-            "Greedy: Fast approximation for large N (200+)"
+            "Hungarian: optimal global assignment.\n"
+            "Greedy: faster approximation for very large groups."
         )
-        f_assign.addRow("Which method should be used?", self.combo_assignment_method)
+        f_solver.addRow("Assignment solver", self.combo_assignment_method)
 
         self.chk_spatial_optimization = QCheckBox("Speed up matching for many animals")
         self.chk_spatial_optimization.setChecked(False)
         self.chk_spatial_optimization.setToolTip(
-            "Uses KD-tree to reduce comparisons for large N (50+).\n"
-            "Disable for small N (8-50) to reduce overhead."
+            "Use spatial indexing to reduce comparisons when many animals are present.\n"
+            "Usually only helpful for larger groups."
         )
-        f_assign.addRow(self.chk_spatial_optimization)
+        f_solver.addRow(self.chk_spatial_optimization)
 
-        vl_assign.addLayout(f_assign)
-        g_assign.setContentLayout(vl_assign)
-        vbox.addWidget(g_assign)
+        self.spin_track_feature_ema_alpha = QDoubleSpinBox()
+        self.spin_track_feature_ema_alpha.setRange(0.0, 0.99)
+        self.spin_track_feature_ema_alpha.setDecimals(2)
+        self.spin_track_feature_ema_alpha.setSingleStep(0.01)
+        self.spin_track_feature_ema_alpha.setValue(0.85)
+        self.spin_track_feature_ema_alpha.setToolTip(
+            "EMA retention for the per-track pose prototype and step-size summary.\n"
+            "Higher = slower adaptation."
+        )
+        f_solver.addRow("Track feature EMA", self.spin_track_feature_ema_alpha)
+
+        self.spin_assoc_high_conf_threshold = QDoubleSpinBox()
+        self.spin_assoc_high_conf_threshold.setRange(0.0, 1.0)
+        self.spin_assoc_high_conf_threshold.setDecimals(2)
+        self.spin_assoc_high_conf_threshold.setSingleStep(0.05)
+        self.spin_assoc_high_conf_threshold.setValue(0.7)
+        self.spin_assoc_high_conf_threshold.setToolTip(
+            "Minimum detection confidence required before updating the per-track\n"
+            "high-confidence step-size summary."
+        )
+        f_solver.addRow(
+            "High-conf update threshold", self.spin_assoc_high_conf_threshold
+        )
+
+        vl_solver.addLayout(f_solver)
+        g_solver.setContentLayout(vl_solver)
+        vbox.addWidget(g_solver)
 
         # Orientation & Lifecycle
-        g_misc = CollapsibleGroupBox("How should direction changes be handled?")
+        g_misc = CollapsibleGroupBox("How should track direction be updated?")
         self.tracking_accordion.addCollapsible(g_misc)
         vl_misc = QVBoxLayout()
         vl_misc.addWidget(
             self._create_help_label(
-                "Control how orientation is calculated based on movement. Moving animals can flip orientation instantly, "
-                "stationary animals change orientation gradually within max angle limit."
+                "These settings control the tracked body axis. When pose direction is available it overrides OBB heading; "
+                "otherwise movement and smoothing determine how quickly direction can change."
             )
         )
         f_misc = QFormLayout(None)
@@ -4105,13 +4202,12 @@ class MainWindow(QMainWindow):
         vbox.addWidget(g_misc)
 
         # Track Lifecycle
-        g_lifecycle = CollapsibleGroupBox("When should tracks start and end?")
+        g_lifecycle = CollapsibleGroupBox("When should tracks be created or dropped?")
         self.tracking_accordion.addCollapsible(g_lifecycle)
         vl_lifecycle = QVBoxLayout()
         vl_lifecycle.addWidget(
             self._create_help_label(
-                "Control when tracks start and end. Lost frames determines how long to wait before terminating a track. "
-                "Min respawn distance prevents creating duplicate IDs near existing animals."
+                "These settings control occlusion tolerance and duplicate-track prevention."
             )
         )
         f_lifecycle = QFormLayout(None)
@@ -4149,13 +4245,12 @@ class MainWindow(QMainWindow):
         vbox.addWidget(g_lifecycle)
 
         # Stability
-        g_stab = CollapsibleGroupBox("How strict should new track validation be?")
+        g_stab = CollapsibleGroupBox("How strict should track validation be?")
         self.tracking_accordion.addCollapsible(g_stab)
         vl_stab = QVBoxLayout()
         vl_stab.addWidget(
             self._create_help_label(
-                "Filter out unreliable tracks. Min detections to start prevents creating tracks from noise. "
-                "Min detect/tracking frames removes short-lived false tracks in post-processing."
+                "Use these settings to suppress noisy starts and remove short-lived fragments."
             )
         )
         f_stab = QFormLayout(None)
@@ -4274,6 +4369,33 @@ class MainWindow(QMainWindow):
         )
         self.lbl_max_occlusion_gap = QLabel("Maximum occlusion gap (frames)")
         f_pp.addRow(self.lbl_max_occlusion_gap, self.spin_max_occlusion_gap)
+
+        self.chk_enable_tracklet_relinking = QCheckBox(
+            "Relink fragments after pose interpolation"
+        )
+        self.chk_enable_tracklet_relinking.setChecked(True)
+        self.chk_enable_tracklet_relinking.setToolTip(
+            "Reconnect short trajectory fragments after pose/interpolation completes.\n"
+            "Uses existing motion and gap thresholds plus a pose continuity check."
+        )
+        self.lbl_enable_tracklet_relinking = QLabel("Enable relinking")
+        f_pp.addRow(
+            self.lbl_enable_tracklet_relinking, self.chk_enable_tracklet_relinking
+        )
+
+        self.spin_relink_pose_max_distance = QDoubleSpinBox()
+        self.spin_relink_pose_max_distance.setRange(0.05, 5.0)
+        self.spin_relink_pose_max_distance.setSingleStep(0.05)
+        self.spin_relink_pose_max_distance.setDecimals(2)
+        self.spin_relink_pose_max_distance.setValue(0.45)
+        self.spin_relink_pose_max_distance.setToolTip(
+            "Maximum normalized same-keypoint pose distance allowed when relinking fragments.\n"
+            "Lower values are stricter and reduce risky merges."
+        )
+        self.lbl_relink_pose_max_distance = QLabel("Max normalized pose distance")
+        f_pp.addRow(
+            self.lbl_relink_pose_max_distance, self.spin_relink_pose_max_distance
+        )
 
         # Z-score based velocity breaking
         self.spin_max_velocity_zscore = QDoubleSpinBox()
@@ -5522,113 +5644,6 @@ class MainWindow(QMainWindow):
             fl_pose, self.pose_sleap_experimental_row_widget, False
         )
 
-        # ========== Appearance Embedding Controls ==========
-        self.g_appearance = QGroupBox("Appearance Embedding")
-        self.g_appearance.setToolTip(
-            "Extract appearance embeddings for detections using TIMM models.\n"
-            "Embeddings can be used for re-identification and similarity analysis.\n"
-            "This is independent of pose prediction."
-        )
-        vl_appearance = QVBoxLayout(self.g_appearance)
-        fl_appearance = QFormLayout()
-        fl_appearance.setFieldGrowthPolicy(
-            QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow
-        )
-        self.form_appearance_runtime = fl_appearance
-
-        # Enable checkbox (consistent with pose extractor pattern)
-        self.chk_enable_appearance = QCheckBox("Enable Appearance Embedding")
-        self.chk_enable_appearance.setChecked(False)
-        self.chk_enable_appearance.setToolTip(
-            "Extract appearance embeddings using TIMM models for re-identification.\n"
-            "Embeddings are automatically computed during tracking (no manual step needed).\n"
-            "Runtime is derived from the common Compute Runtime setting."
-        )
-        fl_appearance.addRow(self.chk_enable_appearance)
-
-        # Model selection
-        self.combo_appearance_model = QComboBox()
-        self.combo_appearance_model.setEditable(True)
-        self.combo_appearance_model.addItems(
-            [
-                # DINO v2 models (recommended for general image understanding)
-                "timm/vit_base_patch14_dinov2.lvd142m",
-                "timm/vit_small_patch14_dinov2.lvd142m",
-                "timm/vit_large_patch14_dinov2.lvd142m",
-                "timm/vit_giant_patch14_dinov2.lvd142m",
-                # CLIP models
-                "timm/vit_base_patch32_clip_224.openai",
-                "timm/vit_bigG_14_clip_224.laion400M_e32",
-                "timm/convnext_base_w_clip.laion2b_s29B_b131k_ft_in1k",
-                # ResNet models
-                "timm/resnet50.a1_in1k",
-                "timm/resnet18.a1_in1k",
-                "timm/resnet101.a1_in1k",
-                # EfficientNet models
-                "timm/efficientnet_b0.ra_in1k",
-                "timm/efficientnet_b3.ra2_in1k",
-                "timm/efficientnet_b5.sw_in12k_ft_in1k",
-                # MobileNet models
-                "timm/mobilenetv3_small_100.lamb_in1k",
-                "timm/mobilenetv3_large_100.ra_in1k",
-                # ConvNeXt models
-                "timm/convnext_tiny.fb_in1k",
-                "timm/convnext_base.fb_in1k",
-            ]
-        )
-        self.combo_appearance_model.setToolTip(
-            "TIMM model for appearance embedding extraction.\n"
-            "DINO v2 models are recommended for general-purpose embeddings.\n"
-            "You can also enter any custom timm model name."
-        )
-        fl_appearance.addRow("Model", self.combo_appearance_model)
-
-        # Batch size
-        self.spin_appearance_batch = QSpinBox()
-        self.spin_appearance_batch.setRange(1, 512)
-        self.spin_appearance_batch.setValue(32)
-        self.spin_appearance_batch.setToolTip(
-            "Batch size for appearance embedding extraction.\n"
-            "Larger values are faster but use more memory."
-        )
-        # Max image side
-        self.spin_appearance_max_side = QSpinBox()
-        self.spin_appearance_max_side.setRange(64, 2048)
-        self.spin_appearance_max_side.setValue(512)
-        self.spin_appearance_max_side.setSingleStep(64)
-        self.spin_appearance_max_side.setToolTip(
-            "Maximum side length for image preprocessing.\n"
-            "Images are resized to fit within this dimension."
-        )
-        _app_spin_row = QHBoxLayout()
-        _app_spin_row.addWidget(QLabel("Batch size"))
-        _app_spin_row.addWidget(self.spin_appearance_batch)
-        _app_spin_row.addWidget(QLabel("Max image side"))
-        _app_spin_row.addWidget(self.spin_appearance_max_side)
-        fl_appearance.addRow(_app_spin_row)
-
-        # CLAHE enhancement
-        self.chk_appearance_clahe = QCheckBox("Apply CLAHE enhancement")
-        self.chk_appearance_clahe.setChecked(False)
-        self.chk_appearance_clahe.setToolTip(
-            "Apply Contrast Limited Adaptive Histogram Equalization.\n"
-            "Can improve feature extraction in low-contrast images."
-        )
-        # Normalize embeddings
-        self.chk_appearance_normalize = QCheckBox("Normalize embeddings (L2)")
-        self.chk_appearance_normalize.setChecked(True)
-        self.chk_appearance_normalize.setToolTip(
-            "Apply L2 normalization to output embeddings.\n"
-            "Recommended for similarity metrics and clustering."
-        )
-        _app_chk_row = QHBoxLayout()
-        _app_chk_row.addWidget(self.chk_appearance_clahe)
-        _app_chk_row.addWidget(self.chk_appearance_normalize)
-        fl_appearance.addRow("", _app_chk_row)
-
-        vl_appearance.addLayout(fl_appearance)
-        form.addWidget(self.g_appearance)
-
         form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -5636,7 +5651,6 @@ class MainWindow(QMainWindow):
         # Initially disable all controls
         self.g_identity.setEnabled(False)
         self.g_pose_runtime.setEnabled(False)
-        self.g_appearance.setEnabled(False)
         self._refresh_pose_direction_keypoint_lists()
         self._sync_pose_backend_ui()
         self._sync_individual_analysis_mode_ui()
@@ -6737,14 +6751,6 @@ class MainWindow(QMainWindow):
         )
         return str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
 
-    def _populate_appearance_runtime_flavor_options(self, preferred: str | None = None):
-        """No-op: appearance runtime is now derived from the common Compute Runtime."""
-        pass
-
-    def _selected_appearance_runtime_flavor(self) -> str:
-        """Appearance runtime is always auto-derived from COMPUTE_RUNTIME."""
-        return "auto"
-
     def _set_form_row_visible(self, form_layout, field_widget, visible: bool):
         """Show/hide a QFormLayout row by field widget."""
         if form_layout is None or field_widget is None:
@@ -6914,8 +6920,6 @@ class MainWindow(QMainWindow):
             self.g_pose_runtime.setEnabled(pipeline_enabled)
         if hasattr(self, "g_individual_pipeline_common"):
             self.g_individual_pipeline_common.setEnabled(pipeline_enabled)
-        if hasattr(self, "g_appearance"):
-            self.g_appearance.setEnabled(pipeline_enabled)
         self._sync_pose_backend_ui()
 
         if has_save_toggle:
@@ -7115,6 +7119,10 @@ class MainWindow(QMainWindow):
         self.lbl_max_velocity_break.setVisible(enabled)
         self.spin_max_occlusion_gap.setVisible(enabled)
         self.lbl_max_occlusion_gap.setVisible(enabled)
+        self.chk_enable_tracklet_relinking.setVisible(enabled)
+        self.lbl_enable_tracklet_relinking.setVisible(enabled)
+        self.spin_relink_pose_max_distance.setVisible(enabled)
+        self.lbl_relink_pose_max_distance.setVisible(enabled)
         self.spin_max_velocity_zscore.setVisible(enabled)
         self.lbl_max_velocity_zscore.setVisible(enabled)
         self.spin_velocity_zscore_window.setVisible(enabled)
@@ -7135,6 +7143,8 @@ class MainWindow(QMainWindow):
         self.spin_min_trajectory_length.setEnabled(enabled)
         self.spin_max_velocity_break.setEnabled(enabled)
         self.spin_max_occlusion_gap.setEnabled(enabled)
+        self.chk_enable_tracklet_relinking.setEnabled(enabled)
+        self.spin_relink_pose_max_distance.setEnabled(enabled)
         self.spin_max_velocity_zscore.setEnabled(enabled)
         self.spin_velocity_zscore_window.setEnabled(enabled)
         self.spin_velocity_zscore_min_vel.setEnabled(enabled)
@@ -9971,7 +9981,7 @@ class MainWindow(QMainWindow):
         self._refresh_progress_visibility()
 
         if self._pending_pose_export_csv_path:
-            self._export_pose_augmented_csv(self._pending_pose_export_csv_path)
+            self._relink_final_pose_augmented_csv(self._pending_pose_export_csv_path)
 
         if self._pending_finish_after_interp:
             self._pending_finish_after_interp = False
@@ -10782,8 +10792,8 @@ class MainWindow(QMainWindow):
             and self._is_yolo_detection_mode()
         )
 
-    def _export_pose_augmented_csv(self, final_csv_path):
-        """Write a pose-augmented trajectories CSV next to the final CSV."""
+    def _build_pose_augmented_dataframe(self, final_csv_path):
+        """Load final CSV and merge available cached/interpolated pose columns."""
         if not final_csv_path or not os.path.exists(final_csv_path):
             return None
         if not self._is_pose_export_enabled():
@@ -10847,6 +10857,13 @@ class MainWindow(QMainWindow):
                 final_csv_path,
             )
             return None
+        return with_pose_df
+
+    def _export_pose_augmented_csv(self, final_csv_path):
+        """Write a pose-augmented trajectories CSV next to the final CSV."""
+        with_pose_df = self._build_pose_augmented_dataframe(final_csv_path)
+        if with_pose_df is None or with_pose_df.empty:
+            return None
 
         base, ext = os.path.splitext(final_csv_path)
         with_pose_path = f"{base}_with_pose{ext or '.csv'}"
@@ -10858,6 +10875,80 @@ class MainWindow(QMainWindow):
 
         logger.info("Pose-augmented trajectories saved to: %s", with_pose_path)
         return with_pose_path
+
+    def _relink_final_pose_augmented_csv(self, final_csv_path):
+        """Rewrite final CSV IDs after pose-aware relinking and regenerate _with_pose.csv."""
+        if not final_csv_path or not os.path.exists(final_csv_path):
+            return None
+
+        with_pose_df = self._build_pose_augmented_dataframe(final_csv_path)
+        params = self.get_parameters_dict()
+
+        try:
+            base_df = pd.read_csv(final_csv_path)
+        except Exception:
+            logger.exception(
+                "Relinking skipped: failed to reload final CSV: %s", final_csv_path
+            )
+            return self._export_pose_augmented_csv(final_csv_path)
+
+        relink_input_df = (
+            with_pose_df
+            if with_pose_df is not None and not with_pose_df.empty
+            else base_df
+        )
+        relinked_with_pose = relink_trajectories_with_pose(relink_input_df, params)
+        if relinked_with_pose is None or relinked_with_pose.empty:
+            relinked_with_pose = relink_input_df
+
+        common_cols = [
+            col for col in base_df.columns if col in relinked_with_pose.columns
+        ]
+        relinked_base = relinked_with_pose.loc[:, common_cols].copy()
+        relinked_base = relinked_base.sort_values(
+            ["TrajectoryID", "FrameID"], kind="stable"
+        ).reset_index(drop=True)
+        relinked_with_pose = relinked_with_pose.sort_values(
+            ["TrajectoryID", "FrameID"], kind="stable"
+        ).reset_index(drop=True)
+
+        try:
+            relinked_base.to_csv(final_csv_path, index=False)
+        except Exception:
+            logger.exception("Failed to rewrite relinked final CSV: %s", final_csv_path)
+            return None
+
+        base, ext = os.path.splitext(final_csv_path)
+        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
+        if with_pose_df is not None and not with_pose_df.empty:
+            try:
+                relinked_with_pose.to_csv(with_pose_path, index=False)
+            except Exception:
+                logger.exception(
+                    "Failed to rewrite relinked pose-augmented CSV: %s", with_pose_path
+                )
+                return None
+        elif os.path.exists(with_pose_path):
+            try:
+                os.remove(with_pose_path)
+            except Exception:
+                logger.warning(
+                    "Failed to remove stale pose-augmented CSV: %s", with_pose_path
+                )
+
+        logger.info(
+            "Relinked final CSV rewritten: %s (%d trajectories)",
+            final_csv_path,
+            (
+                int(relinked_base["TrajectoryID"].nunique())
+                if "TrajectoryID" in relinked_base.columns
+                else 0
+            ),
+        )
+        if with_pose_df is not None and not with_pose_df.empty:
+            logger.info("Relinked pose-augmented CSV saved: %s", with_pose_path)
+            return with_pose_path
+        return final_csv_path
 
     def _load_video_trajectories(self, final_csv_path):
         """Load best available trajectories for video generation (prefers pose-augmented CSV)."""
@@ -10941,6 +11032,9 @@ class MainWindow(QMainWindow):
                 # Hold final UI/session completion until interpolation finishes.
                 self._pending_finish_after_interp = True
                 return
+
+        if final_csv_path:
+            self._relink_final_pose_augmented_csv(final_csv_path)
 
         self._run_pending_video_generation_or_finalize()
 
@@ -11653,6 +11747,8 @@ class MainWindow(QMainWindow):
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
             "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
             "MAX_OCCLUSION_GAP": self.spin_max_occlusion_gap.value(),
+            "ENABLE_TRACKLET_RELINKING": self.chk_enable_tracklet_relinking.isChecked(),
+            "RELINK_POSE_MAX_DISTANCE": self.spin_relink_pose_max_distance.value(),
             "MAX_VELOCITY_ZSCORE": self.spin_max_velocity_zscore.value(),
             "VELOCITY_ZSCORE_WINDOW": self.spin_velocity_zscore_window.value(),
             "VELOCITY_ZSCORE_MIN_VELOCITY": self.spin_velocity_zscore_min_vel.value()
@@ -11698,10 +11794,21 @@ class MainWindow(QMainWindow):
             "W_ORIENTATION": self.spin_Wo.value(),
             "W_AREA": self.spin_Wa.value(),
             "W_ASPECT": self.spin_Wasp.value(),
+            "W_POSE_DIRECTION": 0.5,
+            "W_POSE_LENGTH": 0.0,
+            "POSE_VALID_ORIENTATION_SCALE": 0.15,
             "USE_MAHALANOBIS": self.chk_use_mahal.isChecked(),
             "ENABLE_GREEDY_ASSIGNMENT": self.combo_assignment_method.currentIndex()
             == 1,
             "ENABLE_SPATIAL_OPTIMIZATION": self.chk_spatial_optimization.isChecked(),
+            "ASSOCIATION_STAGE1_MOTION_GATE_MULTIPLIER": self.spin_assoc_gate_multiplier.value(),
+            "ASSOCIATION_STAGE1_MAX_AREA_RATIO": self.spin_assoc_max_area_ratio.value(),
+            "ASSOCIATION_STAGE1_MAX_ASPECT_DIFF": self.spin_assoc_max_aspect_diff.value(),
+            "ENABLE_POSE_REJECTION": self.chk_enable_pose_rejection.isChecked(),
+            "POSE_REJECTION_THRESHOLD": self.spin_pose_rejection_threshold.value(),
+            "POSE_REJECTION_MIN_VISIBILITY": self.spin_pose_rejection_min_visibility.value(),
+            "TRACK_FEATURE_EMA_ALPHA": self.spin_track_feature_ema_alpha.value(),
+            "ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD": self.spin_assoc_high_conf_threshold.value(),
             "TRAJECTORY_COLORS": colors,
             "SHOW_FG": self.chk_show_fg.isChecked(),
             "SHOW_BG": self.chk_show_bg.isChecked(),
@@ -11784,13 +11891,6 @@ class MainWindow(QMainWindow):
             "POSE_SLEAP_BATCH": self.spin_pose_batch.value(),
             "POSE_SLEAP_MAX_INSTANCES": 1,
             "POSE_SLEAP_EXPERIMENTAL_FEATURES": self._sleap_experimental_features_enabled(),
-            # Appearance embedding parameters
-            "APPEARANCE_ENABLED": self.chk_enable_appearance.isChecked(),
-            "APPEARANCE_MODEL_NAME": self.combo_appearance_model.currentText().strip(),
-            "APPEARANCE_BATCH_SIZE": self.spin_appearance_batch.value(),
-            "APPEARANCE_MAX_IMAGE_SIDE": self.spin_appearance_max_side.value(),
-            "APPEARANCE_USE_CLAHE": self.chk_appearance_clahe.isChecked(),
-            "APPEARANCE_NORMALIZE": self.chk_appearance_normalize.isChecked(),
             "INDIVIDUAL_PROPERTIES_CACHE_PATH": str(
                 self.current_individual_properties_cache_path or ""
             ).strip(),
@@ -12153,6 +12253,62 @@ class MainWindow(QMainWindow):
             self.chk_spatial_optimization.setChecked(
                 get_cfg("enable_spatial_optimization", default=False)
             )
+            self.spin_assoc_gate_multiplier.setValue(
+                get_cfg(
+                    "association_stage1_motion_gate_multiplier",
+                    "ASSOCIATION_STAGE1_MOTION_GATE_MULTIPLIER",
+                    default=1.4,
+                )
+            )
+            self.spin_assoc_max_area_ratio.setValue(
+                get_cfg(
+                    "association_stage1_max_area_ratio",
+                    "ASSOCIATION_STAGE1_MAX_AREA_RATIO",
+                    default=2.5,
+                )
+            )
+            self.spin_assoc_max_aspect_diff.setValue(
+                get_cfg(
+                    "association_stage1_max_aspect_diff",
+                    "ASSOCIATION_STAGE1_MAX_ASPECT_DIFF",
+                    default=0.8,
+                )
+            )
+            self.chk_enable_pose_rejection.setChecked(
+                get_cfg(
+                    "enable_pose_rejection",
+                    "ENABLE_POSE_REJECTION",
+                    default=True,
+                )
+            )
+            self.spin_pose_rejection_threshold.setValue(
+                get_cfg(
+                    "pose_rejection_threshold",
+                    "POSE_REJECTION_THRESHOLD",
+                    default=0.5,
+                )
+            )
+            self.spin_pose_rejection_min_visibility.setValue(
+                get_cfg(
+                    "pose_rejection_min_visibility",
+                    "POSE_REJECTION_MIN_VISIBILITY",
+                    default=0.5,
+                )
+            )
+            self.spin_track_feature_ema_alpha.setValue(
+                get_cfg(
+                    "track_feature_ema_alpha",
+                    "TRACK_FEATURE_EMA_ALPHA",
+                    default=0.85,
+                )
+            )
+            self.spin_assoc_high_conf_threshold.setValue(
+                get_cfg(
+                    "association_high_confidence_threshold",
+                    "ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD",
+                    default=0.7,
+                )
+            )
 
             # === ORIENTATION & MOTION ===
             self.spin_velocity.setValue(get_cfg("velocity_threshold", default=5.0))
@@ -12196,6 +12352,12 @@ class MainWindow(QMainWindow):
             )
             self.spin_max_occlusion_gap.setValue(
                 get_cfg("max_occlusion_gap", default=30)
+            )
+            self.chk_enable_tracklet_relinking.setChecked(
+                get_cfg("enable_tracklet_relinking", default=True)
+            )
+            self.spin_relink_pose_max_distance.setValue(
+                get_cfg("relink_pose_max_distance", default=0.45)
             )
             self.spin_max_velocity_zscore.setValue(
                 get_cfg("max_velocity_zscore", default=0.0)
@@ -12525,35 +12687,6 @@ class MainWindow(QMainWindow):
             )
             self.spin_pose_batch.setValue(shared_pose_batch)
 
-            # === APPEARANCE EMBEDDING ===
-            if hasattr(self, "chk_enable_appearance"):
-                self.chk_enable_appearance.setChecked(
-                    get_cfg("appearance_enabled", default=False)
-                )
-                appearance_model = get_cfg(
-                    "appearance_model_name",
-                    default="timm/vit_base_patch14_dinov2.lvd142m",
-                )
-                # Set combo box to saved model or add it if not in list
-                idx = self.combo_appearance_model.findText(appearance_model)
-                if idx >= 0:
-                    self.combo_appearance_model.setCurrentIndex(idx)
-                else:
-                    self.combo_appearance_model.setCurrentText(appearance_model)
-
-                self.spin_appearance_batch.setValue(
-                    get_cfg("appearance_batch_size", default=32)
-                )
-                self.spin_appearance_max_side.setValue(
-                    get_cfg("appearance_max_image_side", default=512)
-                )
-                self.chk_appearance_clahe.setChecked(
-                    get_cfg("appearance_use_clahe", default=False)
-                )
-                self.chk_appearance_normalize.setChecked(
-                    get_cfg("appearance_normalize", default=True)
-                )
-
             # === REAL-TIME INDIVIDUAL DATASET ===
             self.chk_enable_individual_dataset.setChecked(
                 get_cfg(
@@ -12794,11 +12927,22 @@ class MainWindow(QMainWindow):
                 "weight_orientation": self.spin_Wo.value(),
                 "weight_area": self.spin_Wa.value(),
                 "weight_aspect_ratio": self.spin_Wasp.value(),
+                "weight_pose_direction": 0.5,
+                "weight_pose_length": 0.0,
+                "pose_valid_orientation_scale": 0.15,
                 "use_mahalanobis_distance": self.chk_use_mahal.isChecked(),
                 # === ASSIGNMENT ALGORITHM ===
                 "enable_greedy_assignment": self.combo_assignment_method.currentIndex()
                 == 1,
                 "enable_spatial_optimization": self.chk_spatial_optimization.isChecked(),
+                "association_stage1_motion_gate_multiplier": self.spin_assoc_gate_multiplier.value(),
+                "association_stage1_max_area_ratio": self.spin_assoc_max_area_ratio.value(),
+                "association_stage1_max_aspect_diff": self.spin_assoc_max_aspect_diff.value(),
+                "enable_pose_rejection": self.chk_enable_pose_rejection.isChecked(),
+                "pose_rejection_threshold": self.spin_pose_rejection_threshold.value(),
+                "pose_rejection_min_visibility": self.spin_pose_rejection_min_visibility.value(),
+                "track_feature_ema_alpha": self.spin_track_feature_ema_alpha.value(),
+                "association_high_confidence_threshold": self.spin_assoc_high_conf_threshold.value(),
                 # === ORIENTATION & MOTION ===
                 "velocity_threshold": self.spin_velocity.value(),
                 "enable_instant_flip": self.chk_instant_flip.isChecked(),
@@ -12814,6 +12958,8 @@ class MainWindow(QMainWindow):
                 "min_trajectory_length": self.spin_min_trajectory_length.value(),
                 "max_velocity_break": self.spin_max_velocity_break.value(),
                 "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
+                "enable_tracklet_relinking": self.chk_enable_tracklet_relinking.isChecked(),
+                "relink_pose_max_distance": self.spin_relink_pose_max_distance.value(),
                 "max_velocity_zscore": self.spin_max_velocity_zscore.value(),
                 "velocity_zscore_window": self.spin_velocity_zscore_window.value(),
                 "velocity_zscore_min_velocity": self.spin_velocity_zscore_min_vel.value(),
@@ -12957,14 +13103,6 @@ class MainWindow(QMainWindow):
                 "pose_sleap_batch": self.spin_pose_batch.value(),
                 "pose_sleap_max_instances": 1,
                 "pose_sleap_experimental_features": self._sleap_experimental_features_enabled(),
-                # === APPEARANCE EMBEDDING ===
-                "appearance_enabled": self.chk_enable_appearance.isChecked(),
-                "appearance_model_name": self.combo_appearance_model.currentText().strip(),
-                "appearance_device": "auto",
-                "appearance_batch_size": self.spin_appearance_batch.value(),
-                "appearance_max_image_side": self.spin_appearance_max_side.value(),
-                "appearance_use_clahe": self.chk_appearance_clahe.isChecked(),
-                "appearance_normalize": self.chk_appearance_normalize.isChecked(),
                 # === REAL-TIME INDIVIDUAL DATASET ===
                 "enable_individual_dataset": self._is_individual_image_save_enabled(),
                 "enable_individual_image_save": self._is_individual_image_save_enabled(),
@@ -13385,8 +13523,6 @@ class MainWindow(QMainWindow):
             pipelines.append("Individual analysis")
             if self.chk_enable_pose_extractor.isChecked():
                 pipelines.append("Pose extraction")
-            if self.chk_enable_appearance.isChecked():
-                pipelines.append("Appearance embedding")
         if pipelines:
             lines.append("Pipelines: " + ", ".join(pipelines))
 

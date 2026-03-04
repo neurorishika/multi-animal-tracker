@@ -9,6 +9,7 @@ Optimizations:
 """
 
 import logging
+import re
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,8 @@ except Exception:
 
 
 logger = logging.getLogger(__name__)
+
+_POSE_KPT_COL_RE = re.compile(r"^PoseKpt_(.+)_(X|Y|Conf)$")
 
 # Create jit decorator based on availability
 if NUMBA_AVAILABLE:
@@ -2121,6 +2124,370 @@ def interpolate_trajectories(
     )
 
     logger.info("Interpolation complete")
+    return result_df
+
+
+def _link_orientation_diff(theta_a, theta_b):
+    diff = abs(float(theta_a) - float(theta_b))
+    if diff > np.pi:
+        diff = 2 * np.pi - diff
+    return float(max(0.0, diff))
+
+
+def _relink_pose_labels(df: pd.DataFrame) -> list[str]:
+    labels = []
+    for col in df.columns:
+        match = _POSE_KPT_COL_RE.match(str(col))
+        if match and match.group(2) == "X":
+            labels.append(match.group(1))
+    return labels
+
+
+def _normalize_pose_keypoints_window(
+    window_df: pd.DataFrame, pose_labels: list[str], min_valid_conf: float
+):
+    if window_df is None or window_df.empty or not pose_labels:
+        return None, 0.0
+
+    keypoints = np.full((len(pose_labels), 3), np.nan, dtype=np.float32)
+    keypoints[:, 2] = 0.0
+    valid_points = []
+    valid_weights = []
+
+    for idx, label in enumerate(pose_labels):
+        x_col = f"PoseKpt_{label}_X"
+        y_col = f"PoseKpt_{label}_Y"
+        c_col = f"PoseKpt_{label}_Conf"
+        if (
+            x_col not in window_df.columns
+            or y_col not in window_df.columns
+            or c_col not in window_df.columns
+        ):
+            continue
+
+        vals = window_df[[x_col, y_col, c_col]].copy()
+        vals = vals.replace([np.inf, -np.inf], np.nan).dropna()
+        if vals.empty:
+            continue
+        vals = vals[vals[c_col] >= float(min_valid_conf)]
+        if vals.empty:
+            continue
+
+        x = float(vals[x_col].median())
+        y = float(vals[y_col].median())
+        conf = float(vals[c_col].median())
+        keypoints[idx] = np.array([x, y, conf], dtype=np.float32)
+        valid_points.append((x, y))
+        valid_weights.append(max(1e-6, conf))
+
+    if not valid_points:
+        return None, 0.0
+
+    pts_arr = np.asarray(valid_points, dtype=np.float64)
+    w_arr = np.asarray(valid_weights, dtype=np.float64)
+    cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+    cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+    centered = pts_arr - np.array([[cx, cy]], dtype=np.float64)
+    radii = np.sqrt(np.sum(centered**2, axis=1))
+    scale = float(np.median(radii[radii > 1e-6])) if np.any(radii > 1e-6) else 1.0
+    scale = max(scale, 1.0)
+
+    normalized = np.full((len(pose_labels), 3), np.nan, dtype=np.float32)
+    normalized[:, 2] = 0.0
+    valid_counter = 0
+    for idx in range(len(pose_labels)):
+        x, y, conf = keypoints[idx]
+        if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(conf)):
+            continue
+        normalized[idx, 0] = np.float32((float(x) - cx) / scale)
+        normalized[idx, 1] = np.float32((float(y) - cy) / scale)
+        normalized[idx, 2] = np.float32(conf)
+        valid_counter += 1
+
+    visibility = float(valid_counter) / float(len(pose_labels)) if pose_labels else 0.0
+    return normalized, float(np.clip(visibility, 0.0, 1.0))
+
+
+def _pose_paired_distance_relink(det_pose, track_pose, min_shared: int = 3):
+    if det_pose is None or track_pose is None:
+        return None
+    det_arr = np.asarray(det_pose, dtype=np.float32)
+    track_arr = np.asarray(track_pose, dtype=np.float32)
+    if det_arr.shape != track_arr.shape or det_arr.ndim != 2 or det_arr.shape[1] < 2:
+        return None
+
+    dists = []
+    for kp_idx in range(len(det_arr)):
+        det_valid = np.isfinite(det_arr[kp_idx, 0]) and np.isfinite(det_arr[kp_idx, 1])
+        track_valid = np.isfinite(track_arr[kp_idx, 0]) and np.isfinite(
+            track_arr[kp_idx, 1]
+        )
+        if not (det_valid and track_valid):
+            continue
+        dist = float(np.linalg.norm(det_arr[kp_idx, :2] - track_arr[kp_idx, :2]))
+        if np.isfinite(dist):
+            dists.append(dist)
+
+    if len(dists) < min_shared:
+        return None
+
+    dists_arr = np.asarray(dists, dtype=np.float32)
+    med = float(np.median(dists_arr))
+    abs_dev = np.abs(dists_arr - med)
+    mad = float(np.median(abs_dev))
+    if mad > 1e-6:
+        keep = abs_dev <= (2.5 * mad)
+        filtered = dists_arr[keep]
+        if len(filtered) >= min_shared:
+            dists_arr = filtered
+    if len(dists_arr) >= 5:
+        cutoff = max(1, int(np.floor(len(dists_arr) * 0.2)))
+        dists_arr = (
+            np.sort(dists_arr)[:-cutoff] if cutoff < len(dists_arr) else dists_arr
+        )
+    return float(np.mean(dists_arr))
+
+
+def _build_relink_fragment_summaries(
+    trajectories_df: pd.DataFrame, params: dict
+) -> tuple[list[dict], dict[int, pd.DataFrame]]:
+    pose_labels = _relink_pose_labels(trajectories_df)
+    min_pose_conf = float(params.get("POSE_MIN_KPT_CONF_VALID", 0.2))
+    fragments = []
+    fragment_frames = {}
+
+    for traj_id in sorted(trajectories_df["TrajectoryID"].dropna().unique()):
+        frag_df = (
+            trajectories_df[trajectories_df["TrajectoryID"] == traj_id]
+            .copy()
+            .sort_values("FrameID", kind="stable")
+            .reset_index(drop=True)
+        )
+        if frag_df.empty:
+            continue
+        valid_pos = frag_df["X"].notna() & frag_df["Y"].notna()
+        valid_df = frag_df.loc[valid_pos].copy()
+        if valid_df.empty:
+            continue
+
+        start_row = valid_df.iloc[0]
+        end_row = valid_df.iloc[-1]
+        start_frame = int(start_row["FrameID"])
+        end_frame = int(end_row["FrameID"])
+
+        start_window = valid_df.head(3)
+        end_window = valid_df.tail(3)
+
+        start_velocity = np.zeros(2, dtype=np.float32)
+        end_velocity = np.zeros(2, dtype=np.float32)
+        start_speed = 0.0
+        end_speed = 0.0
+
+        if len(start_window) >= 2:
+            r0 = start_window.iloc[0]
+            r1 = start_window.iloc[1]
+            dt = max(1.0, float(r1["FrameID"]) - float(r0["FrameID"]))
+            start_velocity = np.asarray(
+                [
+                    (float(r1["X"]) - float(r0["X"])) / dt,
+                    (float(r1["Y"]) - float(r0["Y"])) / dt,
+                ],
+                dtype=np.float32,
+            )
+            start_speed = float(np.linalg.norm(start_velocity))
+
+        if len(end_window) >= 2:
+            r0 = end_window.iloc[-2]
+            r1 = end_window.iloc[-1]
+            dt = max(1.0, float(r1["FrameID"]) - float(r0["FrameID"]))
+            end_velocity = np.asarray(
+                [
+                    (float(r1["X"]) - float(r0["X"])) / dt,
+                    (float(r1["Y"]) - float(r0["Y"])) / dt,
+                ],
+                dtype=np.float32,
+            )
+            end_speed = float(np.linalg.norm(end_velocity))
+
+        start_pose, start_vis = _normalize_pose_keypoints_window(
+            start_window, pose_labels, min_pose_conf
+        )
+        end_pose, end_vis = _normalize_pose_keypoints_window(
+            end_window, pose_labels, min_pose_conf
+        )
+
+        traj_id_int = int(traj_id)
+        fragments.append(
+            {
+                "traj_id": traj_id_int,
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "start_pos": np.asarray(
+                    [float(start_row["X"]), float(start_row["Y"])], dtype=np.float32
+                ),
+                "end_pos": np.asarray(
+                    [float(end_row["X"]), float(end_row["Y"])], dtype=np.float32
+                ),
+                "start_theta": (
+                    float(start_row["Theta"])
+                    if np.isfinite(start_row["Theta"])
+                    else 0.0
+                ),
+                "end_theta": (
+                    float(end_row["Theta"]) if np.isfinite(end_row["Theta"]) else 0.0
+                ),
+                "start_velocity": start_velocity,
+                "end_velocity": end_velocity,
+                "start_speed": start_speed,
+                "end_speed": end_speed,
+                "start_pose": start_pose,
+                "end_pose": end_pose,
+                "start_pose_visibility": start_vis,
+                "end_pose_visibility": end_vis,
+            }
+        )
+        fragment_frames[traj_id_int] = frag_df
+
+    return fragments, fragment_frames
+
+
+def relink_trajectories_with_pose(
+    trajectories_df: pd.DataFrame, params: dict
+) -> pd.DataFrame:
+    """Greedily relink short trajectory fragments using motion and optional pose continuity."""
+    if trajectories_df is None or trajectories_df.empty:
+        return trajectories_df
+    if (
+        "TrajectoryID" not in trajectories_df.columns
+        or "FrameID" not in trajectories_df.columns
+    ):
+        return trajectories_df
+    if not bool(params.get("ENABLE_TRACKLET_RELINKING", True)):
+        return trajectories_df.copy()
+
+    fragments, fragment_frames = _build_relink_fragment_summaries(
+        trajectories_df, params
+    )
+    if len(fragments) < 2:
+        return trajectories_df.copy()
+
+    max_gap = int(max(0, params.get("MAX_OCCLUSION_GAP", 30)))
+    max_vel_break = float(max(1e-6, params.get("MAX_VELOCITY_BREAK", 100.0)))
+    agreement_distance = float(max(1e-6, params.get("AGREEMENT_DISTANCE", 15.0)))
+    pose_max_distance = float(max(1e-6, params.get("RELINK_POSE_MAX_DISTANCE", 0.45)))
+    heading_gate = float(np.pi / 3.0)
+    min_motion_speed = 1e-3
+
+    candidates = []
+    for src in fragments:
+        for dst in fragments:
+            if src["traj_id"] == dst["traj_id"]:
+                continue
+            if dst["start_frame"] <= src["end_frame"]:
+                continue
+
+            gap = int(dst["start_frame"] - src["end_frame"] - 1)
+            if gap < 1 or gap > max_gap:
+                continue
+
+            delta_frames = gap + 1
+            predicted_pos = src["end_pos"] + src["end_velocity"] * float(delta_frames)
+            distance = float(np.linalg.norm(predicted_pos - dst["start_pos"]))
+            allowed_distance = max(
+                agreement_distance, max_vel_break * float(delta_frames)
+            )
+            if distance > allowed_distance:
+                continue
+
+            heading_norm = 0.0
+            if (
+                src["end_speed"] > min_motion_speed
+                and dst["start_speed"] > min_motion_speed
+            ):
+                heading_diff = _link_orientation_diff(
+                    src["end_theta"], dst["start_theta"]
+                )
+                if heading_diff > heading_gate:
+                    continue
+                heading_norm = float(heading_diff / np.pi)
+
+            pose_norm = 0.0
+            if src["end_pose"] is not None and dst["start_pose"] is not None:
+                pose_dist = _pose_paired_distance_relink(
+                    src["end_pose"], dst["start_pose"]
+                )
+                if pose_dist is not None:
+                    if pose_dist > pose_max_distance:
+                        continue
+                    pose_norm = float(pose_dist / pose_max_distance)
+
+            score = (
+                float(distance / allowed_distance)
+                + 0.25 * (float(gap) / float(max_gap if max_gap > 0 else 1))
+                + 0.35 * heading_norm
+                + 0.75 * pose_norm
+            )
+            candidates.append((score, int(src["traj_id"]), int(dst["traj_id"])))
+
+    if not candidates:
+        return trajectories_df.copy()
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    outgoing = {}
+    incoming = {}
+    for _, src_id, dst_id in candidates:
+        if src_id in outgoing or dst_id in incoming:
+            continue
+        outgoing[src_id] = dst_id
+        incoming[dst_id] = src_id
+
+    if not outgoing:
+        return trajectories_df.copy()
+
+    ordered_ids = sorted(fragment_frames)
+    visited = set()
+    chains = []
+    for traj_id in ordered_ids:
+        if traj_id in incoming or traj_id in visited:
+            continue
+        chain = [traj_id]
+        visited.add(traj_id)
+        while chain[-1] in outgoing:
+            nxt = outgoing[chain[-1]]
+            if nxt in visited:
+                break
+            chain.append(nxt)
+            visited.add(nxt)
+        chains.append(chain)
+    for traj_id in ordered_ids:
+        if traj_id not in visited:
+            chains.append([traj_id])
+            visited.add(traj_id)
+
+    relinked_parts = []
+    for new_id, chain in enumerate(chains):
+        part = pd.concat(
+            [fragment_frames[traj_id].copy() for traj_id in chain], ignore_index=True
+        )
+        part = part.sort_values("FrameID", kind="stable")
+        if part["FrameID"].duplicated().any():
+            logger.warning(
+                "Relinking chain %s produced duplicate FrameID rows; keeping first occurrence.",
+                chain,
+            )
+            part = part.drop_duplicates(subset="FrameID", keep="first")
+        part = part.reset_index(drop=True)
+        part["TrajectoryID"] = new_id
+        relinked_parts.append(part)
+
+    result_df = pd.concat(relinked_parts, ignore_index=True)
+    result_df = result_df.sort_values(["TrajectoryID", "FrameID"], kind="stable")
+    result_df = result_df.reset_index(drop=True)
+    logger.info(
+        "Tracklet relinking collapsed %d fragments into %d trajectories.",
+        len(fragments),
+        result_df["TrajectoryID"].nunique(),
+    )
     return result_df
 
 

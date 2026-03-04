@@ -1,0 +1,35 @@
+\begin{tikzpicture}[
+  node distance=10mm and 12mm,
+  box/.style={
+    rounded corners=3mm,
+    draw=#1!85!black,
+    very thick,
+    fill=#1!10,
+    text width=4.1cm,
+    minimum height=1.25cm,
+    align=left,
+    inner sep=7pt,
+    font=\small
+  },
+  arrow/.style={-{Latex[length=3mm,width=2mm]}, very thick, draw=Slate}
+]
+  \node[box=MATBlue] (forward) {\textbf{Forward trajectories}\\Primary online hypothesis from normal playback.};
+  \node[box=PoseGreen, below=of forward] (backward) {\textbf{Backward trajectories}\\Reverse replay over the same cached detections.};
+
+  \node[box=MATGreen, right=of forward] (clean) {\textbf{Clean and split}\\Minimum length, velocity breaks, z-score breaks, and occlusion gaps.};
+  \node[box=MATGreen, right=of backward] (candidates) {\textbf{Candidate search}\\Find forward/backward overlaps with enough agreeing frames.};
+
+  \node[box=MATBlue, right=16mm of clean] (merge) {\textbf{Conservative merge}\\Merge only agreeing overlaps and keep uncertain regions separate.};
+  \node[box=MATBlue, below=of merge] (stitch) {\textbf{Stitch and relink}\\Short-gap stitching using motion continuity and optional pose continuity.};
+
+  \node[box=ClassGreen, right=16mm of merge] (interp) {\textbf{Interpolate}\\Fill short missing spans only after identity decisions.};
+  \node[box=ClassBlue, below=of interp] (export) {\textbf{Final artifacts}\\Analysis-ready CSV, confidence fields, crops, and derived datasets.};
+
+  \draw[arrow] (forward) -- (clean);
+  \draw[arrow] (backward) -- (candidates);
+  \draw[arrow] (clean) -- (merge);
+  \draw[arrow] (candidates) -- (merge);
+  \draw[arrow] (merge) -- (stitch);
+  \draw[arrow] (stitch) -- (interp);
+  \draw[arrow] (interp) -- (export);
+\end{tikzpicture}

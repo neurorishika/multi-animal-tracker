@@ -123,6 +123,257 @@ class TrackAssigner:
                 candidates[i] = indices
         return candidates
 
+    @staticmethod
+    def _orientation_diff(pred_theta, meas_theta, directed: bool) -> float:
+        odiff = abs(float(pred_theta) - float(meas_theta))
+        if odiff > np.pi:
+            odiff = 2 * np.pi - odiff
+        if not directed:
+            alt = np.pi - odiff
+            if alt < odiff:
+                odiff = alt
+        return float(max(0.0, odiff))
+
+    @staticmethod
+    def _pose_paired_distance(
+        det_pose, track_pose, min_shared: int = 3
+    ) -> float | None:
+        pose_dist, _ = TrackAssigner._pose_paired_stats(
+            det_pose, track_pose, min_shared=min_shared
+        )
+        return pose_dist
+
+    @staticmethod
+    def _pose_paired_stats(
+        det_pose, track_pose, min_shared: int = 3
+    ) -> tuple[float | None, int]:
+        if det_pose is None or track_pose is None:
+            return None, 0
+        det_arr = np.asarray(det_pose, dtype=np.float32)
+        track_arr = np.asarray(track_pose, dtype=np.float32)
+        if (
+            det_arr.shape != track_arr.shape
+            or det_arr.ndim != 2
+            or det_arr.shape[1] < 2
+        ):
+            return None, 0
+
+        dists = []
+        for kp_idx in range(len(det_arr)):
+            det_valid = np.isfinite(det_arr[kp_idx, 0]) and np.isfinite(
+                det_arr[kp_idx, 1]
+            )
+            track_valid = np.isfinite(track_arr[kp_idx, 0]) and np.isfinite(
+                track_arr[kp_idx, 1]
+            )
+            if not (det_valid and track_valid):
+                continue
+            dist = float(np.linalg.norm(det_arr[kp_idx, :2] - track_arr[kp_idx, :2]))
+            if np.isfinite(dist):
+                dists.append(dist)
+
+        if len(dists) < min_shared:
+            return None, len(dists)
+
+        dists_arr = np.asarray(dists, dtype=np.float32)
+        med = float(np.median(dists_arr))
+        abs_dev = np.abs(dists_arr - med)
+        mad = float(np.median(abs_dev))
+        if mad > 1e-6:
+            keep = abs_dev <= (2.5 * mad)
+            filtered = dists_arr[keep]
+            if len(filtered) >= min_shared:
+                dists_arr = filtered
+        if len(dists_arr) >= 5:
+            cutoff = max(1, int(np.floor(len(dists_arr) * 0.2)))
+            dists_arr = (
+                np.sort(dists_arr)[:-cutoff] if cutoff < len(dists_arr) else dists_arr
+            )
+        return float(np.mean(dists_arr)), int(len(dists_arr))
+
+    def _advanced_association_enabled(self, association_data) -> bool:
+        if not association_data:
+            return False
+        return bool(
+            association_data.get("detection_pose_keypoints") is not None
+            or association_data.get("track_pose_prototypes") is not None
+        )
+
+    def _compute_stage1_gate(
+        self,
+        N,
+        M,
+        meas_pos,
+        pred_pos,
+        shapes_area,
+        shapes_asp,
+        prev_areas,
+        prev_asps,
+        S_inv_batch,
+        track_uncertainty,
+        track_avg_step,
+        cull_threshold,
+    ):
+        p = self.params
+        reference_body_size = max(1.0, float(p.get("REFERENCE_BODY_SIZE", 20.0)))
+        gate_multiplier = float(p.get("ASSOCIATION_STAGE1_MOTION_GATE_MULTIPLIER", 1.4))
+        max_area_ratio = float(p.get("ASSOCIATION_STAGE1_MAX_AREA_RATIO", 2.5))
+        max_aspect_diff = float(p.get("ASSOCIATION_STAGE1_MAX_ASPECT_DIFF", 0.8))
+        uncertainty_ref = max(1.0, reference_body_size**2)
+
+        candidates = {}
+        for i in range(N):
+            inv_S_pos = S_inv_batch[i, :2, :2]
+            uncertainty_scale = min(2.0, float(track_uncertainty[i]) / uncertainty_ref)
+            motion_scale = min(2.0, float(track_avg_step[i]) / reference_body_size)
+            local_gate = (
+                cull_threshold
+                * gate_multiplier
+                * (1.0 + 0.5 * uncertainty_scale + 0.35 * motion_scale)
+            )
+            det_indices = []
+            for j in range(M):
+                diff = meas_pos[j] - pred_pos[i]
+                pos_dist = (
+                    float(np.sqrt(diff @ inv_S_pos @ diff))
+                    if p["USE_MAHALANOBIS"]
+                    else float(np.linalg.norm(diff))
+                )
+                if pos_dist > local_gate:
+                    continue
+                prev_area = max(1e-6, float(prev_areas[i]))
+                curr_area = max(1e-6, float(shapes_area[j]))
+                area_ratio = max(prev_area, curr_area) / max(
+                    min(prev_area, curr_area), 1e-6
+                )
+                if area_ratio > max_area_ratio:
+                    continue
+                if abs(float(shapes_asp[j]) - float(prev_asps[i])) > max_aspect_diff:
+                    continue
+                det_indices.append(j)
+            if det_indices:
+                candidates[i] = det_indices
+        return candidates
+
+    def _compute_advanced_cost_matrix(
+        self,
+        N,
+        M,
+        meas_pos,
+        meas_ori,
+        pred_pos,
+        pred_ori,
+        shapes_area,
+        shapes_asp,
+        prev_areas,
+        prev_asps,
+        S_inv_batch,
+        meas_ori_directed,
+        association_data,
+    ):
+        p = self.params
+        cost = np.full((N, M), 1e6, dtype=np.float32)
+        track_uncertainty = np.asarray(
+            association_data.get("track_position_uncertainty", np.zeros(N)),
+            dtype=np.float32,
+        )
+        track_avg_step = np.asarray(
+            association_data.get("track_avg_step", np.zeros(N)), dtype=np.float32
+        )
+        candidates = self._compute_stage1_gate(
+            N,
+            M,
+            meas_pos,
+            pred_pos,
+            shapes_area,
+            shapes_asp,
+            prev_areas,
+            prev_asps,
+            S_inv_batch,
+            track_uncertainty,
+            track_avg_step,
+            max(
+                self.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
+                / max(self.params.get("W_POSITION", 1.0), 1e-6),
+                50.0,
+            ),
+        )
+
+        detection_pose_keypoints = list(
+            association_data.get("detection_pose_keypoints", [None] * M)
+        )
+        detection_pose_visibility = np.asarray(
+            association_data.get("detection_pose_visibility", np.zeros(M)),
+            dtype=np.float32,
+        )
+        track_pose_prototypes = list(
+            association_data.get("track_pose_prototypes", [None] * N)
+        )
+        pose_rejection_enabled = bool(p.get("ENABLE_POSE_REJECTION", True))
+        pose_veto_threshold = float(p.get("POSE_REJECTION_THRESHOLD", 0.5))
+        pose_min_visibility = float(p.get("POSE_REJECTION_MIN_VISIBILITY", 0.5))
+
+        for track_idx, det_indices in candidates.items():
+            inv_S = S_inv_batch[track_idx, :2, :2]
+            pred_theta = pred_ori[track_idx]
+            for det_idx in det_indices:
+                diff = meas_pos[det_idx] - pred_pos[track_idx]
+                pos_cost = (
+                    float(np.sqrt(diff @ inv_S @ diff))
+                    if p["USE_MAHALANOBIS"]
+                    else float(np.linalg.norm(diff))
+                )
+
+                visibility = (
+                    float(detection_pose_visibility[det_idx])
+                    if det_idx < len(detection_pose_visibility)
+                    else 0.0
+                )
+                visibility = float(np.clip(visibility, 0.0, 1.0))
+                det_pose_proto = (
+                    detection_pose_keypoints[det_idx]
+                    if det_idx < len(detection_pose_keypoints)
+                    else None
+                )
+                track_pose_proto = track_pose_prototypes[track_idx]
+                pose_dist, shared_keypoints = self._pose_paired_stats(
+                    det_pose_proto, track_pose_proto
+                )
+                adaptive_pose_threshold = pose_veto_threshold
+                if shared_keypoints > 0:
+                    if shared_keypoints <= 3 or visibility < min(
+                        1.0, pose_min_visibility + 0.15
+                    ):
+                        adaptive_pose_threshold *= 1.2
+                if (
+                    pose_rejection_enabled
+                    and pose_dist is not None
+                    and visibility >= pose_min_visibility
+                    and pose_dist > adaptive_pose_threshold
+                ):
+                    continue
+
+                orientation_cost = float(p["W_ORIENTATION"]) * self._orientation_diff(
+                    pred_theta, meas_ori[det_idx], False
+                )
+
+                area_cost = float(p["W_AREA"]) * abs(
+                    float(shapes_area[det_idx]) - float(prev_areas[track_idx])
+                )
+                aspect_cost = float(p["W_ASPECT"]) * abs(
+                    float(shapes_asp[det_idx]) - float(prev_asps[track_idx])
+                )
+
+                motion_core_cost = (
+                    float(p["W_POSITION"]) * pos_cost
+                    + orientation_cost
+                    + area_cost
+                    + aspect_cost
+                )
+                cost[track_idx, det_idx] = motion_core_cost
+
+        return cost, candidates
+
     def compute_cost_matrix(
         self,
         N: int,
@@ -132,6 +383,7 @@ class TrackAssigner:
         kf_manager: Any,
         last_shape_info: List[Any],
         meas_ori_directed: np.ndarray | None = None,
+        association_data: Dict[str, Any] | None = None,
     ) -> Tuple[np.ndarray, Dict[int, List[int]]]:
         """
         Computes cost matrix. Compatible with Vectorized Kalman Filter.
@@ -197,6 +449,32 @@ class TrackAssigner:
         cull_threshold = (
             max(MAX_DIST / p["W_POSITION"], 50.0) if p["W_POSITION"] > 0 else 1e6
         )
+
+        if self._advanced_association_enabled(association_data):
+            track_uncertainty = (
+                np.asarray(kf_manager.get_position_uncertainties(), dtype=np.float32)
+                if hasattr(kf_manager, "get_position_uncertainties")
+                else np.trace(kf_manager.P[:, :2, :2], axis1=1, axis2=2).astype(
+                    np.float32
+                )
+            )
+            advanced_data = dict(association_data or {})
+            advanced_data["track_position_uncertainty"] = track_uncertainty
+            return self._compute_advanced_cost_matrix(
+                N,
+                M,
+                meas_pos,
+                meas_ori,
+                pred_pos,
+                pred_ori,
+                shapes_area,
+                shapes_asp,
+                prev_areas,
+                prev_asps,
+                S_inv_batch,
+                meas_ori_directed_arr,
+                advanced_data,
+            )
 
         if self._spatial_optimization_enabled() and N > 50:
             spatial_candidates = self._get_spatial_candidates(
@@ -266,6 +544,7 @@ class TrackAssigner:
         trajectory_ids: object,
         next_trajectory_id: object,
         spatial_candidates: object = None,
+        association_data: Dict[str, Any] | None = None,
     ) -> object:
         """
         Drop-in replacement for track assignment logic.
@@ -291,7 +570,6 @@ class TrackAssigner:
             if tracking_continuity[i] < THRESH and track_states[i] != "lost"
         ]
         lost = [i for i in range(N) if track_states[i] == "lost"]
-
         all_assignments = []
         assigned_dets = set()
 

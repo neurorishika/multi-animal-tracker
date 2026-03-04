@@ -1,8 +1,8 @@
 """
-Shared utility functions for pose and appearance runtime backends.
+Shared utility functions for pose runtime backends.
 
 This module contains device resolution, artifact caching, skeleton parsing,
-and other helper functions used across all runtime implementations.
+and other helper functions used across runtime implementations.
 """
 
 from __future__ import annotations

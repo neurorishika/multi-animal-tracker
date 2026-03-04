@@ -231,43 +231,27 @@ def test_resolve_pose_group_indices_accepts_names_and_indices() -> None:
     assert idxs == [0, 2]
 
 
-def test_individual_data_precompute_gate_allows_pose_or_appearance_independently() -> (
-    None
-):
+def test_individual_data_precompute_gate_requires_pose_extractor() -> None:
     mod = _load_worker_module()
     worker = mod.TrackingWorker("dummy.mp4")
 
     assert (
         worker._should_precompute_individual_data(
-            {"ENABLE_POSE_EXTRACTOR": True, "APPEARANCE_ENABLED": False},
+            {"ENABLE_POSE_EXTRACTOR": True},
             "yolo_obb",
         )
         is True
     )
     assert (
         worker._should_precompute_individual_data(
-            {"ENABLE_POSE_EXTRACTOR": False, "APPEARANCE_ENABLED": True},
-            "yolo_obb",
-        )
-        is True
-    )
-    assert (
-        worker._should_precompute_individual_data(
-            {"ENABLE_POSE_EXTRACTOR": True, "APPEARANCE_ENABLED": True},
-            "yolo_obb",
-        )
-        is True
-    )
-    assert (
-        worker._should_precompute_individual_data(
-            {"ENABLE_POSE_EXTRACTOR": False, "APPEARANCE_ENABLED": False},
+            {"ENABLE_POSE_EXTRACTOR": False},
             "yolo_obb",
         )
         is False
     )
     assert (
         worker._should_precompute_individual_data(
-            {"ENABLE_POSE_EXTRACTOR": True, "APPEARANCE_ENABLED": True},
+            {"ENABLE_POSE_EXTRACTOR": True},
             "background_subtraction",
         )
         is False

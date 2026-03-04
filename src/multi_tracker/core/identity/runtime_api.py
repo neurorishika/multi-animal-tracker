@@ -23,8 +23,6 @@ from multi_tracker.core.identity.pose.yolo_backend import (
 
 # Shared Types
 from multi_tracker.core.identity.runtime_types import (
-    AppearanceInferenceBackend,
-    AppearanceRuntimeConfig,
     PoseInferenceBackend,
     PoseRuntimeConfig,
 )
@@ -37,14 +35,6 @@ from multi_tracker.core.identity.runtime_utils import (
     _parse_runtime_request,
 )
 from multi_tracker.core.runtime.compute_runtime import derive_pose_runtime_settings
-from multi_tracker.utils.gpu_utils import (
-    CUDA_AVAILABLE,
-    ONNXRUNTIME_AVAILABLE,
-    TENSORRT_AVAILABLE,
-)
-
-# Appearance Backends are imported lazily inside build_appearance_backend()
-
 
 logger = logging.getLogger(__name__)
 
@@ -286,89 +276,3 @@ def create_pose_backend_from_config(config: PoseRuntimeConfig) -> PoseInferenceB
         return service_backend
 
     raise RuntimeError(f"Unsupported pose backend family: {backend_family}")
-
-
-def create_appearance_backend_from_config(
-    config: AppearanceRuntimeConfig,
-) -> AppearanceInferenceBackend:
-    """
-    Factory function to create appearance backend from config.
-
-    Supports runtime flavors:
-    - native: PyTorch TIMM (default)
-    - onnx: ONNX Runtime
-    - tensorrt: TensorRT
-    - auto: Derives best runtime from compute_runtime field, then available hardware
-    """
-    from multi_tracker.core.runtime.compute_runtime import (
-        derive_appearance_runtime_settings,
-    )
-
-    requested_runtime = str(config.runtime_flavor or "auto").strip().lower()
-
-    # Auto-select runtime: respect the canonical compute_runtime when provided.
-    if requested_runtime == "auto":
-        compute_rt = str(config.compute_runtime or "").strip()
-        if compute_rt:
-            derived = derive_appearance_runtime_settings(compute_rt)
-            requested_runtime = str(derived.get("appearance_runtime_flavor", "native"))
-            derived_device = str(derived.get("appearance_device", "auto"))
-            # Propagate derived device back into config if still unresolved.
-            if str(config.device or "auto").strip().lower() in {"auto", ""}:
-                (
-                    object.__setattr__(config, "device", derived_device)
-                    if hasattr(type(config), "__dataclass_fields__")
-                    else None
-                )
-                try:
-                    config.device = derived_device
-                except Exception:
-                    pass
-            logger.info(
-                "Appearance runtime derived from compute_runtime '%s': %s on %s",
-                compute_rt,
-                requested_runtime,
-                derived_device,
-            )
-        elif TENSORRT_AVAILABLE and CUDA_AVAILABLE:
-            requested_runtime = "tensorrt"
-            logger.info("Appearance runtime auto-selected: tensorrt")
-        elif ONNXRUNTIME_AVAILABLE:
-            requested_runtime = "onnx"
-            logger.info("Appearance runtime auto-selected: onnx")
-        else:
-            requested_runtime = "native"
-            logger.info("Appearance runtime auto-selected: native")
-
-    # Validate ONNX/TensorRT availability
-    if requested_runtime == "onnx" and not ONNXRUNTIME_AVAILABLE:
-        logger.warning(
-            "ONNX Runtime requested but not available. Falling back to native."
-        )
-        requested_runtime = "native"
-
-    if requested_runtime == "tensorrt":
-        if not TENSORRT_AVAILABLE:
-            logger.warning(
-                "TensorRT requested but not available. Falling back to ONNX or native."
-            )
-            requested_runtime = "onnx" if ONNXRUNTIME_AVAILABLE else "native"
-        elif not CUDA_AVAILABLE:
-            logger.warning("TensorRT requires CUDA. Falling back to ONNX or native.")
-            requested_runtime = "onnx" if ONNXRUNTIME_AVAILABLE else "native"
-
-    # Create backend
-    if requested_runtime == "native":
-        from multi_tracker.core.identity.appearance import TimmNativeBackend
-
-        return TimmNativeBackend(config)
-    elif requested_runtime == "onnx":
-        from multi_tracker.core.identity.appearance import TimmOnnxBackend
-
-        return TimmOnnxBackend(config)
-    elif requested_runtime == "tensorrt":
-        from multi_tracker.core.identity.appearance import TimmTensorRTBackend
-
-        return TimmTensorRTBackend(config)
-    else:
-        raise RuntimeError(f"Unsupported appearance runtime: {requested_runtime}")

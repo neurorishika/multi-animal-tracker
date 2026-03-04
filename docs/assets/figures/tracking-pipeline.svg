@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">Tracking pipeline overview</title>
+  <desc id="desc">Overview diagram of the multi-animal tracking pipeline from video input through detection, assignment, lifecycle management, backward replay, and post-processing.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f7fbfc"/>
+      <stop offset="100%" stop-color="#eef6f3"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0f766e"/>
+      <stop offset="100%" stop-color="#155e75"/>
+    </linearGradient>
+    <style>
+      .title { font: 700 34px 'Avenir Next', 'Segoe UI', sans-serif; fill: #102a43; }
+      .subtitle { font: 500 17px 'Avenir Next', 'Segoe UI', sans-serif; fill: #486581; }
+      .label { font: 700 18px 'Avenir Next', 'Segoe UI', sans-serif; fill: #102a43; }
+      .body { font: 500 15px 'Avenir Next', 'Segoe UI', sans-serif; fill: #243b53; }
+      .small { font: 500 13px 'Avenir Next', 'Segoe UI', sans-serif; fill: #52606d; }
+      .box { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 20; ry: 20; }
+      .feature { fill: #f8fafc; stroke: #d9e2ec; stroke-width: 1.5; rx: 16; ry: 16; }
+      .side { fill: #fef7ed; stroke: #fdba74; stroke-width: 1.5; rx: 16; ry: 16; }
+      .arrow { fill: none; stroke: #155e75; stroke-width: 4; marker-end: url(#arrowHead); }
+      .dash { stroke-dasharray: 8 8; }
+    </style>
+    <marker id="arrowHead" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#155e75"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="760" fill="url(#bg)"/>
+  <rect x="60" y="48" width="1080" height="78" rx="22" fill="url(#accent)"/>
+  <text x="88" y="95" class="title" fill="#f8fafc">Current Tracking Algorithm</text>
+  <text x="88" y="118" class="subtitle" fill="#d9f99d">Detection, motion prediction, association, reconciliation, and export in one operational view</text>
+
+  <rect x="80" y="170" width="300" height="108" class="box"/>
+  <text x="104" y="206" class="label">1. Video Ingest</text>
+  <text x="104" y="234" class="body">Frames are read from disk, optionally prefetched, resized, and</text>
+  <text x="104" y="256" class="body">paired with ROI masks and image adjustments before detection.</text>
+
+  <rect x="450" y="170" width="300" height="108" class="box"/>
+  <text x="474" y="206" class="label">2. Detection</text>
+  <text x="474" y="234" class="body">Either background subtraction or YOLO OBB emits per-frame</text>
+  <text x="474" y="256" class="body">measurements, size cues, confidence values, and detection IDs.</text>
+
+  <rect x="820" y="170" width="300" height="108" class="side"/>
+  <text x="844" y="206" class="label">Cache Layer</text>
+  <text x="844" y="234" class="body">Raw detections are written to `.npz` cache files so tracking can</text>
+  <text x="844" y="256" class="body">be replayed, tuned, or run backward without re-inference.</text>
+
+  <path d="M380 224 L450 224" class="arrow"/>
+  <path d="M750 224 L820 224" class="arrow"/>
+
+  <rect x="80" y="332" width="300" height="124" class="box"/>
+  <text x="104" y="368" class="label">3. Prediction</text>
+  <text x="104" y="396" class="body">A vectorized Kalman manager predicts `[x, y, theta, vx, vy]` for</text>
+  <text x="104" y="418" class="body">every active slot, rotates process noise by heading, and keeps</text>
+  <text x="104" y="440" class="body">young tracks conservative until enough evidence accumulates.</text>
+
+  <rect x="450" y="332" width="300" height="124" class="box"/>
+  <text x="474" y="368" class="label">4. Association</text>
+  <text x="474" y="396" class="body">Detections are matched to predictions using weighted motion,</text>
+  <text x="474" y="418" class="body">orientation, area, aspect, and optional pose-shape agreement.</text>
+  <text x="474" y="440" class="body">Established tracks use Hungarian or greedy assignment.</text>
+
+  <rect x="820" y="332" width="300" height="124" class="feature"/>
+  <text x="844" y="368" class="label">Pose-Aware Features</text>
+  <text x="844" y="396" class="body">If pose extraction is enabled, directed heading and normalized</text>
+  <text x="844" y="418" class="body">keypoint prototypes refine orientation and can veto bad matches.</text>
+  <text x="844" y="440" class="body">Low-visibility cases fall back to OBB axis orientation.</text>
+
+  <path d="M380 394 L450 394" class="arrow"/>
+  <path d="M750 394 L820 394" class="arrow"/>
+  <path d="M600 278 L600 332" class="arrow"/>
+
+  <rect x="80" y="512" width="300" height="124" class="box"/>
+  <text x="104" y="548" class="label">5. Track Lifecycle</text>
+  <text x="104" y="576" class="body">Matched tracks are corrected, unmatched tracks age into</text>
+  <text x="104" y="598" class="body">`occluded` or `lost`, and distant free detections can respawn</text>
+  <text x="104" y="620" class="body">previously lost slots with fresh trajectory IDs.</text>
+
+  <rect x="450" y="512" width="300" height="124" class="box"/>
+  <text x="474" y="548" class="label">6. Forward and Backward Replay</text>
+  <text x="474" y="576" class="body">Forward runs create the main hypothesis. Optional backward runs</text>
+  <text x="474" y="598" class="body">reuse cached detections in reverse order to produce a second</text>
+  <text x="474" y="620" class="body">trajectory hypothesis for conservative consensus merging.</text>
+
+  <rect x="820" y="512" width="300" height="124" class="box"/>
+  <text x="844" y="548" class="label">7. Post-Processing and Export</text>
+  <text x="844" y="576" class="body">Trajectory cleaning, merge resolution, relinking, interpolation,</text>
+  <text x="844" y="598" class="body">CSV export, and optional crop datasets turn raw tracks into</text>
+  <text x="844" y="620" class="body">analysis-ready artifacts for downstream biology workflows.</text>
+
+  <path d="M380 574 L450 574" class="arrow"/>
+  <path d="M750 574 L820 574" class="arrow"/>
+  <path d="M600 456 L600 512" class="arrow"/>
+
+  <path d="M970 278 C1010 320, 1040 420, 970 512" class="arrow dash"/>
+  <text x="1018" y="404" class="small">Cached detections and pose properties</text>
+  <text x="1032" y="424" class="small">feed replay, tuning, and reproducibility.</text>
+</svg>
