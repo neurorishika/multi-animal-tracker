@@ -12,12 +12,15 @@
 \usepackage{booktabs}
 \usepackage{array}
 \usepackage{longtable}
+\usepackage{ragged2e}
 \usepackage{tabularx}
 \usepackage{enumitem}
 \usepackage{xcolor}
 \usepackage{hyperref}
+\usepackage{capt-of}
 \usepackage{fancyhdr}
 \usepackage{float}
+\usepackage[section]{placeins}
 \usepackage{titlesec}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,calc,matrix,backgrounds}
@@ -76,7 +79,7 @@
   {}
 \titlespacing*{\subsection}{0pt}{1.0em}{0.45em}
 
-\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
 \newcolumntype{Y}{>{\raggedright\arraybackslash}X}
 
 \newcommand{\brandchip}[2]{%
@@ -203,12 +206,11 @@ The design bias is deliberate: when certainty is low, the system prefers fragmen
 
 The tracking algorithm does not live alone. The repository is now a small ecosystem of tightly related tools.
 
-\begin{figure}[H]
-  \centering
+\begin{center}
   \resizebox{\linewidth}{!}{\input{figures/ecosystem}}
-  \caption{Relationship between MAT and the adjacent tools in the repository.}
+  \captionof{figure}{Relationship between MAT and the adjacent tools in the repository.}
   \label{fig:ecosystem}
-\end{figure}
+\end{center}
 
 \subsection{Multi-Animal-Tracker}
 
@@ -276,12 +278,11 @@ For large crop sets or frame corpora, DataSieve is the practical pre-filter befo
 
 Figure~\ref{fig:pipeline} summarizes the current tracking flow.
 
-\begin{figure}[H]
-  \centering
+\begin{center}
   \resizebox{\linewidth}{!}{\input{figures/pipeline}}
-  \caption{Operational flow of the current tracking pipeline.}
+  \captionof{figure}{Operational flow of the current tracking pipeline.}
   \label{fig:pipeline}
-\end{figure}
+\end{center}
 
 The top-level worker performs the following broad stages:
 
@@ -639,13 +640,14 @@ Before full advanced costing, the current implementation applies a track-specifi
 
 For track $i$, define
 \begin{equation}
-  u_i = \min\!\left(2,\,
-  \frac{\text{position uncertainty}_i}{\max(1,\runtimekey{REFERENCE\_BODY\_SIZE}^2)}
-  \right),
-  \qquad
-  q_i = \min\!\left(2,\,
-  \frac{\text{avg step}_i}{\max(1,\runtimekey{REFERENCE\_BODY\_SIZE})}
-  \right).
+  \begin{aligned}
+    u_i &= \min\!\left(2,\,
+    \frac{\text{position uncertainty}_i}{\max(1,\runtimekey{REFERENCE\_BODY\_SIZE}^2)}
+    \right), \\
+    q_i &= \min\!\left(2,\,
+    \frac{\text{avg step}_i}{\max(1,\runtimekey{REFERENCE\_BODY\_SIZE})}
+    \right).
+  \end{aligned}
 \end{equation}
 
 Then the local motion gate is
@@ -692,12 +694,11 @@ The assigner uses three phases rather than a single matching call.
   \item \textbf{Lost-slot respawn.} Free detections may be assigned to lost slots if they lie far enough from all non-lost track predictions.
 \end{enumerate}
 
-\begin{figure}[H]
-  \centering
+\begin{center}
   \resizebox{\linewidth}{!}{\input{figures/lifecycle}}
-  \caption{Association phases and lifecycle transitions in the current worker.}
+  \captionof{figure}{Association phases and lifecycle transitions in the current worker.}
   \label{fig:lifecycle}
-\end{figure}
+\end{center}
 
 \subsection{Respawn guard}
 
@@ -780,12 +781,11 @@ This is why backward replay improves difficult scenes without acting like a magi
 
 \section{Post-Processing and Trajectory Resolution}
 
-\begin{figure}[H]
-  \centering
+\begin{center}
   \resizebox{\linewidth}{!}{\input{figures/postprocessing}}
-  \caption{Current post-processing stack. The order is intentionally conservative.}
+  \captionof{figure}{Current post-processing stack. The order is intentionally conservative.}
   \label{fig:post}
-\end{figure}
+\end{center}
 
 \subsection{Cleaning and breaks}
 
@@ -1005,8 +1005,12 @@ The intended benefit is to run a fast detector once on the whole frame, spend OB
 
 \begingroup
 \renewcommand{\runtimekey}[1]{\ifmmode\text{\path{#1}}\else\path{#1}\fi}
-\small
-\begin{longtable}{L{0.27\linewidth} L{0.26\linewidth} L{0.37\linewidth}}
+\setlength{\tabcolsep}{4pt}
+\setlength{\LTleft}{0pt}
+\setlength{\LTright}{0pt}
+\renewcommand{\arraystretch}{1.08}
+\footnotesize
+\begin{longtable}{L{0.22\linewidth} L{0.22\linewidth} L{0.34\linewidth}}
 \caption{Future directions mapped to today's UI/runtime surface.}\label{tab:future-ui-crosswalk}\\
 \toprule
 \textbf{Future direction} & \textbf{Existing UI/runtime footholds} & \textbf{Expected next extension} \\
@@ -1075,8 +1079,12 @@ The following tables group runtime parameters by the user-facing UI areas that f
 
 \begingroup
 \renewcommand{\runtimekey}[1]{\ifmmode\text{\path{#1}}\else\path{#1}\fi}
-\small
-\begin{longtable}{L{0.18\linewidth} L{0.24\linewidth} L{0.22\linewidth} L{0.28\linewidth}}
+\setlength{\tabcolsep}{4pt}
+\setlength{\LTleft}{0pt}
+\setlength{\LTright}{0pt}
+\renewcommand{\arraystretch}{1.08}
+\footnotesize
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
 \caption{Reference scaling, frame range, and runtime fan-out.}\label{tab:ui-scaling}\\
 \toprule
 \textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
@@ -1095,7 +1103,7 @@ TensorRT / batch controls & \runtimekey{TENSORRT\_MAX\_BATCH\_SIZE}, \runtimekey
 \bottomrule
 \end{longtable}
 
-\begin{longtable}{L{0.18\linewidth} L{0.24\linewidth} L{0.22\linewidth} L{0.28\linewidth}}
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
 \caption{Detection and preprocessing controls.}\label{tab:ui-detection}\\
 \toprule
 \textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
@@ -1118,7 +1126,7 @@ ROI editor & \runtimekey{ROI\_MASK} & binary mask generated in UI and passed dir
 \bottomrule
 \end{longtable}
 
-\begin{longtable}{L{0.18\linewidth} L{0.24\linewidth} L{0.22\linewidth} L{0.28\linewidth}}
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
 \caption{Tracking, Kalman, and association controls.}\label{tab:ui-tracking}\\
 \toprule
 \textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
@@ -1145,7 +1153,7 @@ Pose-aware assignment & \runtimekey{ENABLE\_POSE\_REJECTION}, \runtimekey{POSE\_
 \bottomrule
 \end{longtable}
 
-\begin{longtable}{L{0.18\linewidth} L{0.24\linewidth} L{0.22\linewidth} L{0.28\linewidth}}
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
 \caption{Post-processing, merge resolution, and diagnostics controls.}\label{tab:ui-post}\\
 \toprule
 \textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
@@ -1168,7 +1176,7 @@ Overlay toggles & \runtimekey{SHOW\_FG}, \runtimekey{SHOW\_BG}, \runtimekey{SHOW
 \bottomrule
 \end{longtable}
 
-\begin{longtable}{L{0.18\linewidth} L{0.24\linewidth} L{0.22\linewidth} L{0.28\linewidth}}
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
 \caption{Pose, identity, and downstream dataset controls.}\label{tab:ui-pose}\\
 \toprule
 \textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
@@ -1194,7 +1202,7 @@ Real-time crop export & \runtimekey{ENABLE\_INDIVIDUAL\_DATASET}, \runtimekey{EN
 
 The crosswalk tables above are comprehensive, but operators usually need a more causal reading: if a control moves, which mathematical object moves with it, and what does the tracker do differently?
 
-\begin{longtable}{L{0.22\linewidth} L{0.24\linewidth} L{0.46\linewidth}}
+\begin{longtable}{L{0.19\linewidth} L{0.19\linewidth} L{0.42\linewidth}}
 \caption{High-value UI controls and their mathematical effect.}\label{tab:ui-math-impact}\\
 \toprule
 \textbf{UI control family} & \textbf{Mathematical target} & \textbf{Runtime effect} \\

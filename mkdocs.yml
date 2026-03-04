@@ -5,6 +5,11 @@ repo_url: https://github.com/neurorishika/multi-animal-tracker
 repo_name: neurorishika/multi-animal-tracker
 edit_uri: edit/main/docs/
 strict: true
+
+extra:
+  version:
+    provider: mike
+    default: latest
 exclude_docs: |
   archive/**
 hooks:
