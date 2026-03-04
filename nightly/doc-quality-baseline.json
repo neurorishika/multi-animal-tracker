@@ -1,0 +1,11 @@
+{
+  "module_total": 43,
+  "module_doc": 43,
+  "module_doc_pct": 100.0,
+  "symbol_total": 377,
+  "symbol_doc": 377,
+  "symbol_doc_pct": 100.0,
+  "function_total": 320,
+  "function_fully_typed": 320,
+  "function_typed_pct": 100.0
+}

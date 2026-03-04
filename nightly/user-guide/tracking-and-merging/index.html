@@ -1,0 +1,2651 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="User and developer documentation for Multi-Animal-Tracker and PoseKit">
+      
+      
+      
+        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/tracking-and-merging/">
+      
+      
+        <link rel="prev" href="../detection-modes/">
+      
+      
+        <link rel="next" href="../post-processing/">
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.43">
+    
+    
+      
+        <title>Tracking and Merging - Multi-Animal-Tracker Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.0253249f.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#tracking-identity-continuity-and-merging" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-header__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Multi-Animal-Tracker Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Tracking and Merging
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../overview/" class="md-tabs__link">
+          
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../developer-guide/architecture/" class="md-tabs__link">
+          
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/api-index/" class="md-tabs__link">
+          
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-nav__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Multi-Animal-Tracker Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/environments/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Environments and Makefile
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/integrations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Integrations
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/platforms/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Platform Notes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  <span class="md-ellipsis">
+    User Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            User Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../overview/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Overview
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../workflow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    End-to-End Workflow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../detection-modes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Detection Modes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  <span class="md-ellipsis">
+    Tracking and Merging
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  <span class="md-ellipsis">
+    Tracking and Merging
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#plain-english-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Plain-English Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-on-every-frame" class="md-nav__link">
+    <span class="md-ellipsis">
+      What Happens on Every Frame
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What Happens on Every Frame">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-video-ingest-and-preprocessing" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Video ingest and preprocessing
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Detection
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#background-subtraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      Background subtraction
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#yolo-obb" class="md-nav__link">
+    <span class="md-ellipsis">
+      YOLO OBB
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-motion-prediction" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Motion prediction
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-association" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Association
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-track-lifecycle-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Track lifecycle management
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-forward-and-backward-hypotheses" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Forward and backward hypotheses
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-post-processing" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. Post-processing
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-current-tracking-logic-in-detail" class="md-nav__link">
+    <span class="md-ellipsis">
+      The Current Tracking Logic in Detail
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The Current Tracking Logic in Detail">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#measurement-representation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Measurement representation
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#orientation-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Orientation handling
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Orientation handling">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#obb-orientation-is-often-axis-aligned-not-directed" class="md-nav__link">
+    <span class="md-ellipsis">
+      OBB orientation is often axis-aligned, not directed
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pose-can-override-orientation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Pose can override orientation
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cost-gating-before-global-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cost gating before global assignment
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#assignment-phases" class="md-nav__link">
+    <span class="md-ellipsis">
+      Assignment phases
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Assignment phases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-1-established-tracks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 1: established tracks
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-unstable-tracks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 2: unstable tracks
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-3-lost-track-respawn" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 3: lost-track respawn
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#track-update-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Track update behavior
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-forward-and-backward-results-are-merged" class="md-nav__link">
+    <span class="md-ellipsis">
+      How Forward and Backward Results Are Merged
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#post-processing-stages" class="md-nav__link">
+    <span class="md-ellipsis">
+      Post-Processing Stages
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Post-Processing Stages">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fragment-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      Fragment cleanup
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#velocity-based-breaking" class="md-nav__link">
+    <span class="md-ellipsis">
+      Velocity-based breaking
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#velocity-z-score-breaking" class="md-nav__link">
+    <span class="md-ellipsis">
+      Velocity z-score breaking
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#occlusion-gap-splitting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Occlusion-gap splitting
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#motion-and-pose-relinking" class="md-nav__link">
+    <span class="md-ellipsis">
+      Motion-and-pose relinking
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interpolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Interpolation
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#practical-tuning-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      Practical Tuning Order
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Practical Tuning Order">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#if-animals-are-merging-into-one-blob" class="md-nav__link">
+    <span class="md-ellipsis">
+      If animals are merging into one blob
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#if-tracks-fragment-too-often" class="md-nav__link">
+    <span class="md-ellipsis">
+      If tracks fragment too often
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#if-ids-swap-during-crossings" class="md-nav__link">
+    <span class="md-ellipsis">
+      If IDs swap during crossings
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#if-the-run-is-too-slow" class="md-nav__link">
+    <span class="md-ellipsis">
+      If the run is too slow
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-reading-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Reading Paths
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../post-processing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Post-processing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../compute-runtimes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Compute Runtimes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../outputs-and-csv-schema/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Outputs and CSV Schema
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataset-generation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Dataset Generation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../individual-analysis/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Individual Analysis
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../posekit-labeler/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    PoseKit Labeler
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Developer Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Developer Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/architecture/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Architecture
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/module-map/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Module Map
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/data-flow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Flow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Algorithm Deep Dive
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/gpu-backends/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    GPU Backends
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/runtime-integration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Runtime Integration
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CUDA Dependency Updates
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/performance-tuning/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Tuning
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/confidence-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Confidence Metrics
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/extending-detection/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Detection
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/extending-identity/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Identity
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/code-health/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Code Health & Auditing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Reference
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-index/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API Index
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ui-components-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ui-components-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-app/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (App)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-core/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Core)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-data/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Data)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-gui/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (GUI)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-utils/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Utils)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CLI Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/technical-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Technical Reference (LaTeX)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/changelog/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Changelog
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/faq/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FAQ
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#plain-english-overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Plain-English Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-happens-on-every-frame" class="md-nav__link">
+    <span class="md-ellipsis">
+      What Happens on Every Frame
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What Happens on Every Frame">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-video-ingest-and-preprocessing" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Video ingest and preprocessing
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Detection
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#background-subtraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      Background subtraction
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#yolo-obb" class="md-nav__link">
+    <span class="md-ellipsis">
+      YOLO OBB
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-motion-prediction" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Motion prediction
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-association" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Association
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-track-lifecycle-management" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Track lifecycle management
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-forward-and-backward-hypotheses" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Forward and backward hypotheses
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-post-processing" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. Post-processing
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-current-tracking-logic-in-detail" class="md-nav__link">
+    <span class="md-ellipsis">
+      The Current Tracking Logic in Detail
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The Current Tracking Logic in Detail">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#measurement-representation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Measurement representation
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#orientation-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Orientation handling
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Orientation handling">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#obb-orientation-is-often-axis-aligned-not-directed" class="md-nav__link">
+    <span class="md-ellipsis">
+      OBB orientation is often axis-aligned, not directed
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pose-can-override-orientation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Pose can override orientation
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cost-gating-before-global-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cost gating before global assignment
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#assignment-phases" class="md-nav__link">
+    <span class="md-ellipsis">
+      Assignment phases
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Assignment phases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-1-established-tracks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 1: established tracks
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-unstable-tracks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 2: unstable tracks
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-3-lost-track-respawn" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 3: lost-track respawn
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#track-update-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      Track update behavior
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-forward-and-backward-results-are-merged" class="md-nav__link">
+    <span class="md-ellipsis">
+      How Forward and Backward Results Are Merged
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#post-processing-stages" class="md-nav__link">
+    <span class="md-ellipsis">
+      Post-Processing Stages
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Post-Processing Stages">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fragment-cleanup" class="md-nav__link">
+    <span class="md-ellipsis">
+      Fragment cleanup
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#velocity-based-breaking" class="md-nav__link">
+    <span class="md-ellipsis">
+      Velocity-based breaking
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#velocity-z-score-breaking" class="md-nav__link">
+    <span class="md-ellipsis">
+      Velocity z-score breaking
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#occlusion-gap-splitting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Occlusion-gap splitting
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#motion-and-pose-relinking" class="md-nav__link">
+    <span class="md-ellipsis">
+      Motion-and-pose relinking
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interpolation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Interpolation
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#practical-tuning-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      Practical Tuning Order
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Practical Tuning Order">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#if-animals-are-merging-into-one-blob" class="md-nav__link">
+    <span class="md-ellipsis">
+      If animals are merging into one blob
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#if-tracks-fragment-too-often" class="md-nav__link">
+    <span class="md-ellipsis">
+      If tracks fragment too often
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#if-ids-swap-during-crossings" class="md-nav__link">
+    <span class="md-ellipsis">
+      If IDs swap during crossings
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#if-the-run-is-too-slow" class="md-nav__link">
+    <span class="md-ellipsis">
+      If the run is too slow
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-reading-paths" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Reading Paths
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/user-guide/tracking-and-merging.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="tracking-identity-continuity-and-merging">Tracking, Identity Continuity, and Merging<a class="headerlink" href="#tracking-identity-continuity-and-merging" title="Permanent link">&para;</a></h1>
+<p>This page explains how the current Multi-Animal-Tracker pipeline turns raw video into stable trajectories.</p>
+<p>It is written in two layers:</p>
+<ul>
+<li>The first sections explain the system in plain language.</li>
+<li>The later sections describe the implemented decision logic closely enough to tune runs and interpret failure modes.</li>
+</ul>
+<p><img alt="Tracking pipeline overview" src="../../assets/figures/tracking-pipeline.svg" /></p>
+<h2 id="plain-english-overview">Plain-English Overview<a class="headerlink" href="#plain-english-overview" title="Permanent link">&para;</a></h2>
+<p>At a high level, the tracker repeats the same question on every frame:</p>
+<ol>
+<li>Where are the animals now?</li>
+<li>Which current detections belong to which existing tracks?</li>
+<li>Which tracks should stay alive, go temporarily missing, or be declared lost?</li>
+<li>After the full run, which trajectory segments are trustworthy enough to keep, merge, relink, or interpolate?</li>
+</ol>
+<p>The system is intentionally conservative in the places where identity mistakes are expensive:</p>
+<ul>
+<li>It predicts where each animal should be before it looks at the new frame.</li>
+<li>It does not match every detection to every track equally. It first gates out implausible candidates.</li>
+<li>It treats forward and backward passes as separate hypotheses rather than assuming either one is always correct.</li>
+<li>In post-processing, it prefers splitting uncertain segments over forcing a single, smooth-but-wrong trajectory.</li>
+</ul>
+<h2 id="what-happens-on-every-frame">What Happens on Every Frame<a class="headerlink" href="#what-happens-on-every-frame" title="Permanent link">&para;</a></h2>
+<h3 id="1-video-ingest-and-preprocessing">1. Video ingest and preprocessing<a class="headerlink" href="#1-video-ingest-and-preprocessing" title="Permanent link">&para;</a></h3>
+<p>The worker reads frames from the selected video range and can prefetch frames asynchronously when that improves throughput. Depending on the mode, it may also:</p>
+<ul>
+<li>resize the frame for processing,</li>
+<li>apply ROI masking,</li>
+<li>stabilize lighting for background subtraction,</li>
+<li>or skip frame reads entirely when cached detections are sufficient and no visualization is needed.</li>
+</ul>
+<h3 id="2-detection">2. Detection<a class="headerlink" href="#2-detection" title="Permanent link">&para;</a></h3>
+<p>The current tracker supports two major detection paths.</p>
+<h4 id="background-subtraction">Background subtraction<a class="headerlink" href="#background-subtraction" title="Permanent link">&para;</a></h4>
+<p>This mode builds and updates a background model, subtracts the current frame, cleans the foreground mask, and extracts measurement candidates from connected components.</p>
+<p>This is most useful when:</p>
+<ul>
+<li>the scene is controlled,</li>
+<li>the background is stable,</li>
+<li>the target count is moderate,</li>
+<li>and you want a lightweight pipeline without a learned detector.</li>
+</ul>
+<h4 id="yolo-obb">YOLO OBB<a class="headerlink" href="#yolo-obb" title="Permanent link">&para;</a></h4>
+<p>This mode runs oriented object detection and keeps richer per-detection geometry:</p>
+<ul>
+<li>center position,</li>
+<li>orientation,</li>
+<li>oriented bounding box corners,</li>
+<li>area,</li>
+<li>aspect ratio,</li>
+<li>confidence,</li>
+<li>and a persistent <code>DetectionID</code>.</li>
+</ul>
+<p>When caching is enabled, YOLO can run as a two-phase pipeline:</p>
+<ol>
+<li>First pass: batch inference writes raw detections to the detection cache.</li>
+<li>Second pass: tracking, visualization, pose extraction, and export reuse those cached detections.</li>
+</ol>
+<p>That design matters because it separates expensive inference from the rest of the tracking workflow and makes reruns reproducible.</p>
+<h3 id="3-motion-prediction">3. Motion prediction<a class="headerlink" href="#3-motion-prediction" title="Permanent link">&para;</a></h3>
+<p>Each track slot has a small motion model. Before matching detections, the tracker predicts where the animal should be next using a vectorized Kalman filter.</p>
+<p>The state includes:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>[x, y, theta, vx, vy]
+</span></code></pre></div>
+<p>This lets the tracker carry forward:</p>
+<ul>
+<li>current position,</li>
+<li>current body orientation,</li>
+<li>and short-term motion direction.</li>
+</ul>
+<p>The filter is not generic boilerplate. The current implementation is tuned for animal motion:</p>
+<ul>
+<li>process noise is anisotropic and rotated into the animal's heading frame,</li>
+<li>velocity is damped so stopped animals do not overshoot badly,</li>
+<li>very young tracks keep velocity conservative until they mature,</li>
+<li>and a maximum velocity constraint prevents unrealistic jumps.</li>
+</ul>
+<h3 id="4-association">4. Association<a class="headerlink" href="#4-association" title="Permanent link">&para;</a></h3>
+<p>Once predictions exist, the tracker compares them against the detections in the current frame.</p>
+<p>The comparison is based on a weighted cost made from:</p>
+<ul>
+<li>positional disagreement,</li>
+<li>orientation disagreement,</li>
+<li>area mismatch,</li>
+<li>aspect-ratio mismatch,</li>
+<li>and, when enabled, pose-shape disagreement.</li>
+</ul>
+<p>The important point is that matching is not only "closest centroid wins". The tracker uses multiple cues because crowded animal videos frequently produce cases where position alone is ambiguous.</p>
+<h3 id="5-track-lifecycle-management">5. Track lifecycle management<a class="headerlink" href="#5-track-lifecycle-management" title="Permanent link">&para;</a></h3>
+<p>After assignment, each track slot is updated into one of three practical states:</p>
+<ul>
+<li><code>active</code>: the slot matched a detection this frame,</li>
+<li><code>occluded</code>: the slot missed this frame but has not exceeded the loss threshold,</li>
+<li><code>lost</code>: the slot has missed too long and is no longer trusted as a live trajectory.</li>
+</ul>
+<p>Lost slots are not immediately discarded forever. They can be reused, but only when a new free detection appears far enough from all non-lost tracks to avoid creating a duplicate near an already-active animal.</p>
+<h3 id="6-forward-and-backward-hypotheses">6. Forward and backward hypotheses<a class="headerlink" href="#6-forward-and-backward-hypotheses" title="Permanent link">&para;</a></h3>
+<p>If backward tracking is enabled, the system runs a second pass over the cached detections in reverse temporal order.</p>
+<p>Why do this?</p>
+<ul>
+<li>Crossings and brief occlusions often look different when viewed backward.</li>
+<li>A forward-only answer can be locally plausible but globally inconsistent.</li>
+<li>Comparing forward and backward hypotheses gives the post-processing stage a second opinion before it commits to a final merged trajectory set.</li>
+</ul>
+<h3 id="7-post-processing">7. Post-processing<a class="headerlink" href="#7-post-processing" title="Permanent link">&para;</a></h3>
+<p>Post-processing turns raw trajectories into analysis-ready outputs. The current stack can:</p>
+<ul>
+<li>remove short fragments,</li>
+<li>split trajectories at implausible jumps,</li>
+<li>split at long occlusion runs,</li>
+<li>conservatively merge forward and backward tracks,</li>
+<li>stitch nearby fragments across short gaps,</li>
+<li>relink fragments using motion and optional pose continuity,</li>
+<li>and interpolate short missing spans.</li>
+</ul>
+<p><img alt="Post-processing stack" src="../../assets/figures/postprocessing-stack.svg" /></p>
+<h2 id="the-current-tracking-logic-in-detail">The Current Tracking Logic in Detail<a class="headerlink" href="#the-current-tracking-logic-in-detail" title="Permanent link">&para;</a></h2>
+<h3 id="measurement-representation">Measurement representation<a class="headerlink" href="#measurement-representation" title="Permanent link">&para;</a></h3>
+<p>A detection contributes several parallel data streams:</p>
+<ul>
+<li>measurement: center and orientation,</li>
+<li>size: detector-specific scale information,</li>
+<li>shape: area and aspect ratio,</li>
+<li>confidence,</li>
+<li>OBB corners when available,</li>
+<li>and <code>DetectionID</code>.</li>
+</ul>
+<p>For YOLO OBB mode, detections can also be paired with pose features if the individual-properties cache exists.</p>
+<h3 id="orientation-handling">Orientation handling<a class="headerlink" href="#orientation-handling" title="Permanent link">&para;</a></h3>
+<p>Orientation is one of the subtle parts of the current implementation.</p>
+<h4 id="obb-orientation-is-often-axis-aligned-not-directed">OBB orientation is often axis-aligned, not directed<a class="headerlink" href="#obb-orientation-is-often-axis-aligned-not-directed" title="Permanent link">&para;</a></h4>
+<p>For many oriented boxes, angle <code>theta</code> and <code>theta + pi</code> describe the same body axis. The tracker resolves that ambiguity by choosing the version that is closest to the previous track orientation.</p>
+<p>That prevents avoidable 180-degree flips.</p>
+<h4 id="pose-can-override-orientation">Pose can override orientation<a class="headerlink" href="#pose-can-override-orientation" title="Permanent link">&para;</a></h4>
+<p>If pose extraction is enabled and the configured anterior and posterior keypoint groups are visible enough, the tracker computes a directed heading from posterior to anterior. In that case:</p>
+<ul>
+<li>orientation becomes genuinely directed,</li>
+<li>assignment can use that heading,</li>
+<li>and track updates use the pose-derived angle instead of the ambiguous OBB axis.</li>
+</ul>
+<p>If pose visibility is too poor, the system falls back to the OBB-based orientation logic.</p>
+<h3 id="cost-gating-before-global-assignment">Cost gating before global assignment<a class="headerlink" href="#cost-gating-before-global-assignment" title="Permanent link">&para;</a></h3>
+<p>The tracker does not always evaluate every detection-track pair equally.</p>
+<p>Before full association, it can reject candidate pairs that violate a coarse feasibility envelope. The current gate uses:</p>
+<ul>
+<li>motion-scaled distance,</li>
+<li>track uncertainty,</li>
+<li>area-ratio consistency,</li>
+<li>and aspect-ratio consistency.</li>
+</ul>
+<p>That reduces bad candidate pairs and also improves performance when the number of animals grows.</p>
+<h3 id="assignment-phases">Assignment phases<a class="headerlink" href="#assignment-phases" title="Permanent link">&para;</a></h3>
+<p>The assignment step is intentionally staged rather than monolithic.</p>
+<p><img alt="Association and lifecycle diagram" src="../../assets/figures/association-lifecycle.svg" /></p>
+<h4 id="phase-1-established-tracks">Phase 1: established tracks<a class="headerlink" href="#phase-1-established-tracks" title="Permanent link">&para;</a></h4>
+<p>Tracks whose continuity is above the configured threshold are treated as established. These are the most trusted tracks and get first access to detections.</p>
+<p>Depending on configuration, the tracker uses:</p>
+<ul>
+<li>Hungarian assignment for a more global optimum, or</li>
+<li>greedy assignment for better throughput.</li>
+</ul>
+<h4 id="phase-2-unstable-tracks">Phase 2: unstable tracks<a class="headerlink" href="#phase-2-unstable-tracks" title="Permanent link">&para;</a></h4>
+<p>Low-continuity but not-yet-lost tracks are filled greedily from the remaining detections, in descending order of continuity.</p>
+<p>This gives partially stabilized tracks a chance to recover without letting them dominate the assignment.</p>
+<h4 id="phase-3-lost-track-respawn">Phase 3: lost-track respawn<a class="headerlink" href="#phase-3-lost-track-respawn" title="Permanent link">&para;</a></h4>
+<p>Remaining detections can be used to revive lost slots, but only if they are sufficiently far from currently non-lost predictions. This protects against the common failure mode where a second track is spawned on top of an already-tracked animal.</p>
+<h3 id="track-update-behavior">Track update behavior<a class="headerlink" href="#track-update-behavior" title="Permanent link">&para;</a></h3>
+<p>When a match is accepted:</p>
+<ul>
+<li>the Kalman filter is corrected,</li>
+<li>continuity increases,</li>
+<li>missed-frame count resets,</li>
+<li>speed is estimated from the recent position deque,</li>
+<li>orientation is smoothed,</li>
+<li>shape history is updated,</li>
+<li>and pose prototypes are updated with an exponential moving average.</li>
+</ul>
+<p>The pose prototype update matters because it lets the tracker maintain a running normalized body-shape memory for later association and relinking.</p>
+<h2 id="how-forward-and-backward-results-are-merged">How Forward and Backward Results Are Merged<a class="headerlink" href="#how-forward-and-backward-results-are-merged" title="Permanent link">&para;</a></h2>
+<p>The merge strategy is deliberately conservative.</p>
+<p>Two trajectory fragments become merge candidates only if they share enough overlapping frames where their positions agree within <code>AGREEMENT_DISTANCE</code>.</p>
+<p>That means the merge stage asks:</p>
+<ul>
+<li>"Do these trajectories tell the same story where they overlap?"</li>
+</ul>
+<p>not:</p>
+<ul>
+<li>"Can I invent a single continuous track from these two fragments?"</li>
+</ul>
+<p>The consequences are important:</p>
+<ul>
+<li>good identity continuity is prioritized over cosmetic smoothness,</li>
+<li>disagreeing regions can split instead of forcing a merge,</li>
+<li>and the final output may contain more fragments than a more aggressive smoother, but those fragments are usually more defensible.</li>
+</ul>
+<p>After the main merge, the system also performs:</p>
+<ul>
+<li>redundancy removal for trajectories spatially contained inside others,</li>
+<li>overlap-aware merging of agreeing fragments,</li>
+<li>and short-gap stitching.</li>
+</ul>
+<h2 id="post-processing-stages">Post-Processing Stages<a class="headerlink" href="#post-processing-stages" title="Permanent link">&para;</a></h2>
+<h3 id="fragment-cleanup">Fragment cleanup<a class="headerlink" href="#fragment-cleanup" title="Permanent link">&para;</a></h3>
+<p>Short segments below <code>MIN_TRAJECTORY_LENGTH</code> are removed early because they often represent unstable detector noise or incomplete identity handoffs.</p>
+<h3 id="velocity-based-breaking">Velocity-based breaking<a class="headerlink" href="#velocity-based-breaking" title="Permanent link">&para;</a></h3>
+<p>The tracker can split a trajectory when velocity becomes implausibly large. This is useful for identity-swap events that pass through the online assignment stage but later look physically impossible.</p>
+<h3 id="velocity-z-score-breaking">Velocity z-score breaking<a class="headerlink" href="#velocity-z-score-breaking" title="Permanent link">&para;</a></h3>
+<p>An optional z-score-based breaker looks for sudden, statistically abnormal motion changes relative to the recent history of that trajectory. This is aimed at swap-like discontinuities that are not caught by a single fixed absolute velocity threshold.</p>
+<h3 id="occlusion-gap-splitting">Occlusion-gap splitting<a class="headerlink" href="#occlusion-gap-splitting" title="Permanent link">&para;</a></h3>
+<p>Long runs of <code>occluded</code> state can be used as break points. This avoids pretending that a track stayed reliable through a prolonged missing interval.</p>
+<h3 id="motion-and-pose-relinking">Motion-and-pose relinking<a class="headerlink" href="#motion-and-pose-relinking" title="Permanent link">&para;</a></h3>
+<p>After conservative splitting, the current implementation can greedily reconnect fragments when:</p>
+<ul>
+<li>the temporal gap is short enough,</li>
+<li>motion extrapolation stays plausible,</li>
+<li>heading remains compatible when motion is informative,</li>
+<li>and pose prototypes do not contradict the join.</li>
+</ul>
+<p>This is particularly useful for turn maneuvers, temporary detector dropouts, and short occlusions in which the online tracker became too cautious.</p>
+<h3 id="interpolation">Interpolation<a class="headerlink" href="#interpolation" title="Permanent link">&para;</a></h3>
+<p>Interpolation is the last polish step, not the main identity mechanism.</p>
+<p>It fills short missing spans only up to the configured maximum gap and supports:</p>
+<ul>
+<li><code>linear</code>,</li>
+<li><code>cubic</code>,</li>
+<li><code>spline</code>,</li>
+<li>or no interpolation.</li>
+</ul>
+<p>For orientation, the tracker uses circular interpolation logic rather than plain numeric interpolation.</p>
+<h2 id="practical-tuning-order">Practical Tuning Order<a class="headerlink" href="#practical-tuning-order" title="Permanent link">&para;</a></h2>
+<p>If a run is poor, this order usually converges faster than random parameter search:</p>
+<ol>
+<li>Fix detection quality first.</li>
+<li>Reconfirm <code>REFERENCE_BODY_SIZE</code>.</li>
+<li>Tune assignment distance and lifecycle thresholds.</li>
+<li>Only then adjust Kalman and post-processing parameters.</li>
+<li>Enable backward tracking and relinking after the forward-only baseline is already reasonable.</li>
+</ol>
+<h3 id="if-animals-are-merging-into-one-blob">If animals are merging into one blob<a class="headerlink" href="#if-animals-are-merging-into-one-blob" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Improve detection quality before widening assignment gates.</li>
+<li>Tighten size and shape filtering.</li>
+<li>Revisit ROI and lighting stabilization.</li>
+</ul>
+<h3 id="if-tracks-fragment-too-often">If tracks fragment too often<a class="headerlink" href="#if-tracks-fragment-too-often" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Increase the lost threshold modestly.</li>
+<li>Relax assignment distance only enough to recover consistent misses.</li>
+<li>Check whether pose extraction is helping or vetoing too aggressively.</li>
+</ul>
+<h3 id="if-ids-swap-during-crossings">If IDs swap during crossings<a class="headerlink" href="#if-ids-swap-during-crossings" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Enable backward tracking.</li>
+<li>Keep merging conservative.</li>
+<li>Use pose direction and pose rejection if pose estimates are reliable.</li>
+</ul>
+<h3 id="if-the-run-is-too-slow">If the run is too slow<a class="headerlink" href="#if-the-run-is-too-slow" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Use cached detections.</li>
+<li>Use visualization-free mode when possible.</li>
+<li>Turn on batched YOLO inference.</li>
+<li>Use spatial optimization for larger target counts.</li>
+</ul>
+<h2 id="recommended-reading-paths">Recommended Reading Paths<a class="headerlink" href="#recommended-reading-paths" title="Permanent link">&para;</a></h2>
+<ul>
+<li>For a code-oriented explanation, continue to <a href="../../developer-guide/tracking-algorithm-deep-dive/">Tracking Algorithm Deep Dive</a>.</li>
+<li>For the formal reference manuscript source, see <a href="../../reference/technical-reference/">Technical Reference (LaTeX)</a>.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.83f73b43.min.js"></script>
+      
+    
+  </body>
+</html>
