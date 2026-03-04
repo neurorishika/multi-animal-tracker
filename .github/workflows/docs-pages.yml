@@ -3,13 +3,13 @@ name: Docs (GitHub Pages)
 on:
   push:
     branches:
-    - '**'
+    - "**"
   workflow_dispatch:
     inputs:
       deploy_as:
-        description: 'Version label to deploy (latest or nightly)'
+        description: "Version label to deploy (latest or nightly)"
         required: false
-        default: 'nightly'
+        default: "nightly"
 
 # mike pushes directly to the gh-pages branch, so contents: write is required.
 permissions:
@@ -28,7 +28,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        # mike needs the full history to manage the gh-pages branch
+          # mike needs the full history to manage the gh-pages branch
         fetch-depth: 0
 
     - name: Setup Python
