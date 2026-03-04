@@ -55,7 +55,7 @@ jobs:
     - name: Deploy nightly docs (non-main branch → "nightly")
       if: github.ref_name != 'main'
       env:
-        # Do not abort on warnings for nightly builds — the source may be mid-flight.
+          # Do not abort on warnings for nightly builds — the source may be mid-flight.
         MKDOCS_STRICT: "false"
       run: |
         # Override strict mode: mike passes args to mkdocs build internally,
