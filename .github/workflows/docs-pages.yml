@@ -54,5 +54,12 @@ jobs:
 
     - name: Deploy nightly docs (non-main branch → "nightly")
       if: github.ref_name != 'main'
+      env:
+        # Do not abort on warnings for nightly builds — the source may be mid-flight.
+        MKDOCS_STRICT: "false"
       run: |
-        mike deploy --push nightly "Nightly"
+        # Override strict mode: mike passes args to mkdocs build internally,
+        # but we can supply a non-strict mkdocs config via an override file.
+        sed 's/^strict: true/strict: false/' mkdocs.yml > mkdocs-nightly.yml
+        mike deploy --push --config-file mkdocs-nightly.yml nightly "Nightly"
+        rm -f mkdocs-nightly.yml

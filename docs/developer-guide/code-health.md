@@ -97,7 +97,7 @@ To tighten incrementally:
 mypy src/multi_tracker/core/identity/ --strict
 ```
 
-Type errors in `legacy/` are excluded via [`pyproject.toml`](../../pyproject.toml)
+Type errors in `legacy/` are excluded via `pyproject.toml`
 `[tool.mypy]` configuration.
 
 ---
