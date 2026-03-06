@@ -5368,13 +5368,13 @@ class MainWindow(QMainWindow):
         form.addWidget(self.g_xanylabeling)
 
         # ============================================================
-        # YOLO-OBB Training (separate section)
+        # YOLO Training Center (separate section)
         # ============================================================
-        self.g_yolo_training = QGroupBox("Do you want to train a YOLO-OBB model?")
+        self.g_yolo_training = QGroupBox("Do you want to train YOLO models?")
         vl_yolo_train = QVBoxLayout(self.g_yolo_training)
-        self.btn_open_training_dialog = QPushButton("Train YOLO-OBB Model...")
+        self.btn_open_training_dialog = QPushButton("Open Training Center...")
         self.btn_open_training_dialog.setToolTip(
-            "Open training dialog to merge datasets and train a YOLO-OBB model."
+            "Open role-aware training center for direct OBB, sequential detect/crop OBB, and head-tail models."
         )
         self.btn_open_training_dialog.clicked.connect(self._open_training_dialog)
         vl_yolo_train.addWidget(self.btn_open_training_dialog)
@@ -5989,13 +5989,7 @@ class MainWindow(QMainWindow):
 
     def _open_training_dialog(self):
         class_name = self.line_dataset_class_name.text().strip() or "object"
-        envs = []
-        for i in range(self.combo_xanylabeling_env.count()):
-            name = self.combo_xanylabeling_env.itemText(i)
-            if "No X-AnyLabeling" in name or "Conda not available" in name:
-                continue
-            envs.append(name)
-        dialog = TrainYoloDialog(self, class_name=class_name, conda_envs=envs)
+        dialog = TrainYoloDialog(self, class_name=class_name)
         dialog.exec()
 
     def _refresh_xanylabeling_envs(self):
@@ -6243,25 +6237,30 @@ class MainWindow(QMainWindow):
         import sys
 
         try:
-            # The labeler lives in the top-level posekit package.
+            # The labeler lives in the posekit.ui.main module.
             gui_dir = Path(__file__).parent
             package_root = gui_dir.parent
-            labeler_dir = package_root / "posekit"
-            pose_label_script = labeler_dir / "pose_label.py"
+            labeler_dir = package_root / "posekit" / "ui"
+            pose_label_script = labeler_dir / "main.py"
 
             if not pose_label_script.exists():
                 QMessageBox.critical(
                     self,
                     "Script Not Found",
-                    f"Could not find pose_label.py at:\n{pose_label_script}",
+                    f"Could not find posekit UI entry point at:\n{pose_label_script}",
                 )
                 return
 
-            # Use the current Python executable (same environment as mat)
-            # This avoids conda activation and terminal detection complexity
+            # Use the current Python executable (same environment as mat).
+            # Run as a module to support relative imports inside the package.
             subprocess.Popen(
-                [sys.executable, str(pose_label_script), str(dataset_root)],
-                cwd=str(labeler_dir),
+                [
+                    sys.executable,
+                    "-m",
+                    "multi_tracker.posekit.ui.main",
+                    str(dataset_root),
+                ],
+                cwd=str(package_root.parent),  # root where multi_tracker package lives
             )
 
             logger.info(f"Opened PoseKit Labeler for dataset: {dataset_root}")

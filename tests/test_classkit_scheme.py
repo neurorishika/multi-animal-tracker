@@ -1,0 +1,62 @@
+from pathlib import Path
+
+from multi_tracker.classkit.config.schemas import Factor, LabelingScheme, ProjectConfig
+
+
+def test_factor_has_name_and_labels():
+    f = Factor(name="tag_1", labels=["red", "blue", "green"])
+    assert f.name == "tag_1"
+    assert f.labels == ["red", "blue", "green"]
+    assert f.shortcut_keys == []
+
+
+def test_scheme_single_factor():
+    scheme = LabelingScheme(
+        name="age",
+        factors=[Factor(name="age", labels=["young", "old"])],
+        training_modes=["flat_tiny", "flat_yolo"],
+    )
+    assert len(scheme.factors) == 1
+    assert scheme.total_classes == 2
+
+
+def test_scheme_two_factor_cartesian():
+    scheme = LabelingScheme(
+        name="color2",
+        factors=[
+            Factor(name="tag_1", labels=["red", "blue", "green"]),
+            Factor(name="tag_2", labels=["red", "blue", "green"]),
+        ],
+        training_modes=["flat_yolo", "multihead_yolo"],
+    )
+    assert scheme.total_classes == 9
+
+
+def test_scheme_composite_label_round_trip():
+    scheme = LabelingScheme(
+        name="color2",
+        factors=[
+            Factor(name="tag_1", labels=["red", "blue"]),
+            Factor(name="tag_2", labels=["green", "yellow"]),
+        ],
+        training_modes=["flat_yolo"],
+    )
+    composite = scheme.encode_label(["red", "green"])
+    assert composite == "red|green"
+    decoded = scheme.decode_label(composite)
+    assert decoded == ["red", "green"]
+
+
+def test_project_config_accepts_scheme():
+    scheme = LabelingScheme(
+        name="test",
+        factors=[Factor(name="f", labels=["a", "b"])],
+        training_modes=["flat_tiny"],
+    )
+    cfg = ProjectConfig(name="proj", classes=[], root_dir=Path("/tmp"), scheme=scheme)
+    assert cfg.scheme is not None
+
+
+def test_project_config_scheme_defaults_none():
+    cfg = ProjectConfig(name="proj", classes=[], root_dir=Path("/tmp"))
+    assert cfg.scheme is None

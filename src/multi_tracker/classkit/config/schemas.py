@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -24,11 +24,40 @@ class ALConfig:
 
 
 @dataclass
+class Factor:
+    name: str
+    labels: List[str]
+    shortcut_keys: List[str] = field(default_factory=list)
+
+
+@dataclass
+class LabelingScheme:
+    name: str
+    factors: List[Factor]
+    training_modes: List[str]
+    description: str = ""
+
+    @property
+    def total_classes(self) -> int:
+        result = 1
+        for f in self.factors:
+            result *= len(f.labels)
+        return result
+
+    def encode_label(self, factor_values: List[str]) -> str:
+        return "|".join(factor_values)
+
+    def decode_label(self, composite: str) -> List[str]:
+        return composite.split("|")
+
+
+@dataclass
 class ProjectConfig:
     name: str
     classes: List[str]
     root_dir: Path
     description: str = ""
+    scheme: Optional[LabelingScheme] = None
 
 
 @dataclass
