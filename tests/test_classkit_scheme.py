@@ -90,3 +90,72 @@ def test_decode_label_wrong_parts_raises():
 
     with pytest.raises(ValueError, match="Expected 2 parts"):
         scheme.decode_label("red|blue|green")  # too many parts
+
+
+from multi_tracker.classkit.presets import (
+    age_preset,
+    color_tag_preset,
+    head_tail_preset,
+)
+
+
+def test_head_tail_preset():
+    scheme = head_tail_preset()
+    assert scheme.name == "head_tail"
+    assert len(scheme.factors) == 1
+    assert set(scheme.factors[0].labels) == {"left", "right", "up", "down"}
+    assert scheme.total_classes == 4
+
+
+def test_color_tag_preset_1factor():
+    colors = ["red", "blue", "green", "yellow", "white"]
+    scheme = color_tag_preset(n_factors=1, colors=colors)
+    assert scheme.total_classes == 5
+    assert len(scheme.factors) == 1
+
+
+def test_color_tag_preset_2factor():
+    colors = ["red", "blue", "green", "yellow", "white"]
+    scheme = color_tag_preset(n_factors=2, colors=colors)
+    assert scheme.total_classes == 25
+    assert len(scheme.factors) == 2
+    assert scheme.factors[0].name == "tag_1"
+    assert scheme.factors[1].name == "tag_2"
+
+
+def test_color_tag_preset_3factor():
+    colors = ["red", "blue", "green", "yellow", "white"]
+    scheme = color_tag_preset(n_factors=3, colors=colors)
+    assert scheme.total_classes == 125
+
+
+def test_age_preset_default():
+    scheme = age_preset()
+    assert scheme.total_classes == 2
+    assert "young" in scheme.factors[0].labels
+    assert "old" in scheme.factors[0].labels
+
+
+def test_age_preset_extra_classes():
+    scheme = age_preset(extra_classes=["juvenile"])
+    assert scheme.total_classes == 3
+    assert "juvenile" in scheme.factors[0].labels
+
+
+def test_color_tag_preset_custom_colors():
+    scheme = color_tag_preset(n_factors=2, colors=["a", "b", "c"])
+    assert scheme.total_classes == 9
+
+
+def test_color_tag_preset_invalid_n_factors_raises():
+    import pytest
+
+    with pytest.raises(ValueError):
+        color_tag_preset(n_factors=0, colors=["red"])
+
+
+def test_color_tag_preset_empty_colors_raises():
+    import pytest
+
+    with pytest.raises(ValueError):
+        color_tag_preset(n_factors=1, colors=[])
