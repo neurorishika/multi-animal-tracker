@@ -49,10 +49,10 @@ class DetectionCache:
             if "metadata" in self._loaded_data:
                 metadata = self._loaded_data["metadata"].item()
                 cache_version = str(metadata.get("version", ""))
-                if cache_version != "2.0":
+                if cache_version not in {"2.0", "2.1"}:
                     logger.warning(
                         f"Incompatible detection cache version '{cache_version}' "
-                        f"(expected '2.0'). Cache will be regenerated."
+                        f"(expected '2.0' or '2.1'). Cache will be regenerated."
                     )
                     self._compatible = False
                     self._loaded_data.close()
@@ -101,6 +101,8 @@ class DetectionCache:
         confidences: object,
         obb_corners: object = None,
         detection_ids: object = None,
+        heading_hints: object = None,
+        directed_mask: object = None,
     ) -> object:
         """
         Add detection data for a single frame (forward pass).
@@ -113,6 +115,8 @@ class DetectionCache:
             confidences: List of confidence scores (float or nan)
             obb_corners: Optional list of OBB corner arrays for YOLO
             detection_ids: Optional list of detection IDs (FrameID * 10000 + detection_index)
+            heading_hints: Optional list of directed heading hints (radians).
+            directed_mask: Optional list indicating whether heading_hints are directed.
         """
         if self.mode != "w":
             raise RuntimeError("Cache opened in read mode, cannot write")
@@ -135,6 +139,16 @@ class DetectionCache:
                 obb_arr = np.array(obb_corners, dtype=np.float32)
             else:
                 obb_arr = np.array([], dtype=np.float32)
+
+            if heading_hints and len(heading_hints) > 0:
+                heading_hints_arr = np.array(heading_hints, dtype=np.float32)
+            else:
+                heading_hints_arr = np.array([], dtype=np.float32)
+
+            if directed_mask and len(directed_mask) > 0:
+                directed_mask_arr = np.array(directed_mask, dtype=np.uint8)
+            else:
+                directed_mask_arr = np.array([], dtype=np.uint8)
         else:
             # Empty frame (no detections)
             meas_arr = np.array([], dtype=np.float32).reshape(0, 3)
@@ -143,6 +157,8 @@ class DetectionCache:
             confidences_arr = np.array([], dtype=np.float32)
             detection_ids_arr = np.array([], dtype=np.float64)
             obb_arr = np.array([], dtype=np.float32)
+            heading_hints_arr = np.array([], dtype=np.float32)
+            directed_mask_arr = np.array([], dtype=np.uint8)
 
         # Store with frame index as key
         frame_key = f"frame_{frame_idx:06d}"
@@ -152,6 +168,8 @@ class DetectionCache:
         self._data[f"{frame_key}_confidences"] = confidences_arr
         self._data[f"{frame_key}_detection_ids"] = detection_ids_arr
         self._data[f"{frame_key}_obb"] = obb_arr
+        self._data[f"{frame_key}_heading_hints"] = heading_hints_arr
+        self._data[f"{frame_key}_directed_mask"] = directed_mask_arr
 
         self._total_frames = max(self._total_frames, frame_idx + 1)
 
@@ -166,7 +184,7 @@ class DetectionCache:
                 "total_frames": self._total_frames,
                 "start_frame": self._start_frame,
                 "end_frame": self._end_frame,
-                "version": "2.0",
+                "version": "2.1",
                 "format": "raw_detections",
             }
         )
@@ -193,7 +211,16 @@ class DetectionCache:
             frame_idx: Frame number (0-based)
 
         Returns:
-            Tuple of (meas, sizes, shapes, confidences, obb_corners, detection_ids)
+            Tuple of (
+                meas,
+                sizes,
+                shapes,
+                confidences,
+                obb_corners,
+                detection_ids,
+                heading_hints,
+                directed_mask,
+            )
             where meas is a list of numpy arrays to match the tracking worker API
         """
         if self.mode != "r":
@@ -223,6 +250,12 @@ class DetectionCache:
         obb_arr = self._loaded_data.get(
             f"{frame_key}_obb", np.array([], dtype=np.float32)
         )
+        heading_hints_arr = self._loaded_data.get(
+            f"{frame_key}_heading_hints", np.array([], dtype=np.float32)
+        )
+        directed_mask_arr = self._loaded_data.get(
+            f"{frame_key}_directed_mask", np.array([], dtype=np.uint8)
+        )
 
         # Convert back to lists matching the original format
         # meas should be list of numpy arrays (one per detection)
@@ -241,8 +274,19 @@ class DetectionCache:
             obb_corners = [obb_arr[i] for i in range(len(obb_arr))]
         else:
             obb_corners = []
+        heading_hints = heading_hints_arr.tolist()
+        directed_mask = directed_mask_arr.tolist()
 
-        return meas, sizes, shapes, confidences, obb_corners, detection_ids
+        return (
+            meas,
+            sizes,
+            shapes,
+            confidences,
+            obb_corners,
+            detection_ids,
+            heading_hints,
+            directed_mask,
+        )
 
     def get_total_frames(self: object) -> object:
         """Get total number of frames in cache."""

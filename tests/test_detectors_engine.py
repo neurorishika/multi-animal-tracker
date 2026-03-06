@@ -351,3 +351,242 @@ def test_filter_raw_detections_applies_roi_mask() -> None:
     assert out_sizes == [50.0]
     assert np.allclose(out_conf, [0.6], rtol=1e-6, atol=1e-6)
     assert out_ids == [1.0]
+
+
+def test_filter_raw_detections_filters_heading_hints_consistently() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "YOLO_CONFIDENCE_THRESHOLD": 0.5,
+        "YOLO_IOU_THRESHOLD": 0.7,
+        "MAX_TARGETS": 4,
+        "ENABLE_SIZE_FILTERING": False,
+    }
+    det._shapely_warning_shown = False
+
+    meas = [
+        np.array([5.0, 10.0, 0.0], dtype=np.float32),
+        np.array([15.0, 10.0, 0.0], dtype=np.float32),
+    ]
+    sizes = [50.0, 60.0]
+    shapes = [(50.0, 1.0), (60.0, 1.0)]
+    confidences = [0.6, 0.4]  # second one filtered by confidence
+    obb = [
+        np.array([[4, 9], [6, 9], [6, 11], [4, 11]], dtype=np.float32),
+        np.array([[14, 9], [16, 9], [16, 11], [14, 11]], dtype=np.float32),
+    ]
+    ids = [1.0, 2.0]
+    heading_hints = [0.25, 1.25]
+    directed_mask = [1, 0]
+
+    out = det.filter_raw_detections(
+        meas,
+        sizes,
+        shapes,
+        confidences,
+        obb,
+        roi_mask=None,
+        detection_ids=ids,
+        heading_hints=heading_hints,
+        directed_mask=directed_mask,
+    )
+    _, out_sizes, _, out_conf, _, out_ids, out_heading, out_directed = out
+    assert out_sizes == [50.0]
+    assert np.allclose(out_conf, [0.6], rtol=1e-6, atol=1e-6)
+    assert out_ids == [1.0]
+    assert np.allclose(out_heading, [0.25], rtol=1e-6, atol=1e-6)
+    assert out_directed == [1]
+
+
+def test_sequential_stage2_obb_runs_in_batched_crop_call() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {}
+    det.device = "cpu"
+
+    class _ArrayWrap:
+        def __init__(self, arr):
+            self._arr = np.asarray(arr, dtype=np.float32)
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self._arr
+
+    class _Boxes:
+        def __init__(self):
+            self.xyxy = _ArrayWrap([[10, 20, 40, 60], [60, 70, 90, 100]])
+            self.conf = _ArrayWrap([0.5, 0.9])
+
+        def __len__(self):
+            return 2
+
+    boxes = _Boxes()
+    det.detect_model = types.SimpleNamespace(
+        predict=lambda **_kwargs: [types.SimpleNamespace(boxes=boxes)]
+    )
+    det._build_sequential_crop = lambda _frame, _bbox: (
+        np.zeros((8, 8, 3), dtype=np.uint8),
+        (1.0, 2.0),
+    )
+
+    calls = {"count": 0, "source_len": 0}
+
+    def _fake_predict(source, target_classes, raw_conf_floor, max_det):
+        calls["count"] += 1
+        calls["source_len"] = len(source) if isinstance(source, list) else -1
+        return [
+            types.SimpleNamespace(obb=f"obb_{i}") for i in range(calls["source_len"])
+        ]
+
+    def _fake_extract(_obb):
+        meas = [np.array([5.0, 6.0, 0.1], dtype=np.float32)]
+        sizes = [20.0]
+        shapes = [(10.0, 1.0)]
+        conf = [0.9]
+        corners = [np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32)]
+        return meas, sizes, shapes, conf, corners
+
+    det._predict_obb_results = _fake_predict
+    det._extract_raw_detections = _fake_extract
+
+    out = det._run_sequential_raw_detection(
+        np.zeros((128, 128, 3), dtype=np.uint8),
+        target_classes=None,
+        raw_conf_floor=0.01,
+        max_det=4,
+    )
+    raw_meas, _, _, _, _, _ = out
+
+    assert calls["count"] == 1
+    assert calls["source_len"] == 2
+    assert len(raw_meas) == 2
+
+
+def test_headtail_hint_uses_batched_classify_call() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {"YOLO_HEADTAIL_CONF_THRESHOLD": 0.6}
+    det.device = "cpu"
+    det._canonicalize_obb_for_headtail = lambda _frame, _corners: (
+        np.zeros((12, 24, 3), dtype=np.uint8),
+        0.5,
+    )
+
+    calls = {"count": 0, "source_is_list": False}
+
+    def _predict(*, source, conf, device, verbose):
+        calls["count"] += 1
+        calls["source_is_list"] = isinstance(source, list)
+        return [
+            types.SimpleNamespace(
+                probs=types.SimpleNamespace(top1=0, top1conf=0.95),
+                names={0: "right"},
+            )
+            for _ in source
+        ]
+
+    det.headtail_model = types.SimpleNamespace(predict=_predict)
+
+    obb_corners = [
+        np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32),
+        np.array([[3, 3], [5, 3], [5, 4], [3, 4]], dtype=np.float32),
+    ]
+    heading_hints, directed_mask = det._compute_headtail_hints(
+        np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
+    )
+
+    assert calls["count"] == 1
+    assert calls["source_is_list"] is True
+    assert directed_mask == [1, 1]
+    assert np.allclose(heading_hints, [0.5, 0.5], rtol=1e-6, atol=1e-6)
+
+
+def test_filter_overlapping_uses_precise_iou_for_all_overlaps() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+
+    calls = {"indices": []}
+
+    def _fake_precise(_corners1, _corners_list, indices):
+        calls["indices"].append(list(indices))
+        # Suppress only the first overlapping candidate.
+        vals = [0.9 if idx == 1 else 0.2 for idx in indices]
+        return np.asarray(vals, dtype=np.float32)
+
+    det._compute_obb_iou_batch = _fake_precise
+
+    meas = [
+        np.array([10.0, 10.0, 0.0], dtype=np.float32),
+        np.array([11.0, 10.0, 0.0], dtype=np.float32),
+        np.array([9.0, 10.0, 0.0], dtype=np.float32),
+    ]
+    sizes = [100.0, 90.0, 80.0]
+    shapes = [(100.0, 1.0), (90.0, 1.0), (80.0, 1.0)]
+    confidences = [0.95, 0.9, 0.85]
+    corners = [
+        np.array([[8, 8], [12, 8], [12, 12], [8, 12]], dtype=np.float32),
+        np.array([[9, 8], [13, 8], [13, 12], [9, 12]], dtype=np.float32),
+        np.array([[7, 8], [11, 8], [11, 12], [7, 12]], dtype=np.float32),
+    ]
+
+    out = det._filter_overlapping_detections(
+        meas,
+        sizes,
+        shapes,
+        confidences,
+        corners,
+        iou_threshold=0.5,
+    )
+    out_meas, out_sizes, _, _, _ = out
+
+    assert calls["indices"] and calls["indices"][0] == [1, 2]
+    assert len(out_meas) == 2
+    assert out_sizes == [100.0, 80.0]
+
+
+def test_loads_notebook_tiny_headtail_state_dict(tmp_path: Path) -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {}
+    det.device = "cpu"
+
+    # Build and save a notebook-style raw state_dict checkpoint.
+    tiny = det._build_tiny_head_classifier(input_size=(128, 64))
+    ckpt_path = tmp_path / "tiny_headtail.pth"
+    import torch
+
+    torch.save(tiny.state_dict(), ckpt_path)
+
+    det._load_headtail_model(str(ckpt_path))
+
+    assert det.headtail_backend == "tiny"
+    assert det.headtail_model is not None
+    assert det.headtail_predict_device is None
+
+
+def test_tiny_headtail_inference_converts_bgr_to_rgb() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {}
+    det.device = "cpu"
+    det.headtail_backend = "tiny"
+
+    import torch.nn as nn
+
+    class _Probe(nn.Module):
+        # Logit uses channel0 - channel2. If RGB conversion is correct, BGR-red
+        # input becomes RGB-red and yields a strongly positive logit.
+        def forward(self, x):
+            v = x[:, 0, 0, 0] - x[:, 2, 0, 0]
+            return v.unsqueeze(1) * 10.0
+
+    det.headtail_model = _Probe().eval()
+    det.headtail_predict_device = None
+
+    bgr_red = np.array([[[0, 0, 255]]], dtype=np.uint8)
+    probs = det._predict_headtail_results([bgr_red])
+
+    assert len(probs) == 1
+    assert float(probs[0]) > 0.9

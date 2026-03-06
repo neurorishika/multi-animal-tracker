@@ -278,3 +278,35 @@ def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:
         (float(pose_theta_out) - float(base_theta) + np.pi) % (2 * np.pi)
     ) - np.pi
     assert abs(float(diff_pose)) < 1e-6
+
+
+def test_select_directed_heading_prefers_pose_by_default() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    selected, directed = worker._select_directed_heading(
+        pose_heading=np.deg2rad(30.0),
+        pose_directed=True,
+        headtail_heading=np.deg2rad(210.0),
+        headtail_directed=True,
+        pose_overrides_headtail=True,
+    )
+    assert directed is True
+    diff = ((float(selected) - float(np.deg2rad(30.0)) + np.pi) % (2 * np.pi)) - np.pi
+    assert abs(float(diff)) < 1e-6
+
+
+def test_select_directed_heading_can_prefer_headtail() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    selected, directed = worker._select_directed_heading(
+        pose_heading=np.deg2rad(30.0),
+        pose_directed=True,
+        headtail_heading=np.deg2rad(210.0),
+        headtail_directed=True,
+        pose_overrides_headtail=False,
+    )
+    assert directed is True
+    diff = ((float(selected) - float(np.deg2rad(210.0)) + np.pi) % (2 * np.pi)) - np.pi
+    assert abs(float(diff)) < 1e-6

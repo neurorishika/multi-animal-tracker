@@ -47,6 +47,14 @@ def test_hashes_change_when_expected(tmp_path: Path) -> None:
     filter_hash_2 = mod.compute_filter_settings_hash(params_changed)
     assert filter_hash_1 != filter_hash_2
 
+    params_mode_changed = dict(params)
+    params_mode_changed["YOLO_OBB_MODE"] = "sequential"
+    assert mod.compute_filter_settings_hash(params_mode_changed) != filter_hash_1
+
+    params_priority_changed = dict(params)
+    params_priority_changed["POSE_OVERRIDES_HEADTAIL"] = False
+    assert mod.compute_filter_settings_hash(params_priority_changed) != filter_hash_1
+
     ext_hash_1 = mod.compute_extractor_hash(params)
     params_model_changed = dict(params)
     params_model_changed["POSE_MODEL_DIR"] = str(model_b)

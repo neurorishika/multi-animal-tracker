@@ -117,6 +117,14 @@ def compute_filter_settings_hash(params: Dict[str, Any]) -> str:
         "detection_method": params.get("DETECTION_METHOD", "background_subtraction"),
         "yolo_confidence_threshold": params.get("YOLO_CONFIDENCE_THRESHOLD", 0.25),
         "yolo_iou_threshold": params.get("YOLO_IOU_THRESHOLD", 0.7),
+        "yolo_obb_mode": params.get("YOLO_OBB_MODE", "direct"),
+        "pose_overrides_headtail": bool(params.get("POSE_OVERRIDES_HEADTAIL", True)),
+        "yolo_seq_crop_pad_ratio": params.get("YOLO_SEQ_CROP_PAD_RATIO", 0.15),
+        "yolo_seq_min_crop_size_px": params.get("YOLO_SEQ_MIN_CROP_SIZE_PX", 64),
+        "yolo_seq_enforce_square_crop": bool(
+            params.get("YOLO_SEQ_ENFORCE_SQUARE_CROP", True)
+        ),
+        "yolo_headtail_conf_threshold": params.get("YOLO_HEADTAIL_CONF_THRESHOLD", 0.6),
         "enable_size_filtering": bool(params.get("ENABLE_SIZE_FILTERING", False)),
         "min_object_size": params.get("MIN_OBJECT_SIZE", 0),
         "max_object_size": params.get("MAX_OBJECT_SIZE", None),

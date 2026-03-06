@@ -1,0 +1,48 @@
+{
+  "20260214-210051_26x_ant_train22.pt": {
+    "size": "26x",
+    "species": "ant",
+    "model_info": "train22",
+    "added_at": "2026-02-14T21:00:51",
+    "source_path": "/Users/neurorishika/Projects/MBL/Module 4/models/train22/best.pt",
+    "stored_filename": "20260214-210051_26x_ant_train22.pt"
+  },
+  "20260217-080436_26x_ant_train22.pt": {
+    "size": "26x",
+    "species": "ant",
+    "model_info": "train22",
+    "added_at": "2026-02-17T08:04:36",
+    "source_path": "/home/rutalab/Downloads/obb.pt",
+    "stored_filename": "20260217-080436_26x_ant_train22.pt"
+  },
+  "YOLO-classify/orientation/20260305-173944_26n_obiroi_head_v2.pth": {
+    "size": "26n",
+    "species": "obiroi",
+    "model_info": "head_v2",
+    "added_at": "2026-03-05T17:39:44",
+    "source_path": "/Users/neurorishika/Downloads/tiny_head_classifier_v2.pth",
+    "stored_filename": "20260305-173944_26n_obiroi_head_v2.pth",
+    "task_family": "classify",
+    "usage_role": "headtail"
+  },
+  "YOLO-detect/20260305-175022_26x_obiroi_v1.pt": {
+    "size": "26x",
+    "species": "obiroi",
+    "model_info": "v1",
+    "added_at": "2026-03-05T17:50:22",
+    "source_path": "/Users/neurorishika/Downloads/yolo26detect.pt",
+    "stored_filename": "20260305-175022_26x_obiroi_v1.pt",
+    "task_family": "detect",
+    "usage_role": "seq_detect"
+  },
+  "cropped/20260305-175049_26s_obiroi_obbcrop.pt": {
+    "size": "26s",
+    "species": "obiroi",
+    "model_info": "obbcrop",
+    "added_at": "2026-03-05T17:50:49",
+    "source_path": "/Users/neurorishika/Downloads/yolo26obbcrop.pt",
+    "stored_filename": "20260305-175049_26s_obiroi_obbcrop.pt",
+    "task_family": "obb",
+    "usage_role": "seq_crop_obb"
+  }
+}

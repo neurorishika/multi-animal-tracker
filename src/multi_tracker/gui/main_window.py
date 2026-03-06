@@ -290,7 +290,7 @@ class InterpolatedCropsWorker(QThread):
         if detection_cache is None or detection_id is None or pd.isna(detection_id):
             return None, None
         try:
-            _, _, shapes, _, obb_corners, detection_ids = detection_cache.get_frame(
+            _, _, shapes, _, obb_corners, detection_ids, *_ = detection_cache.get_frame(
                 int(frame_id)
             )
         except Exception:
@@ -967,7 +967,7 @@ class DatasetGenerationWorker(QThread):
                 raw_confidences = []
                 if detection_cache is not None:
                     try:
-                        _, _, _, raw_confidences, _, _ = detection_cache.get_frame(
+                        _, _, _, raw_confidences, _, _, *_ = detection_cache.get_frame(
                             int(frame_id)
                         )
                     except Exception:
@@ -1244,6 +1244,42 @@ def _run_preview_detection_job(
 
         yolo_params = {
             "YOLO_MODEL_PATH": resolve_model_path(context.get("yolo_model_path", "")),
+            "YOLO_OBB_MODE": str(context.get("yolo_obb_mode", "direct"))
+            .strip()
+            .lower(),
+            "YOLO_OBB_DIRECT_MODEL_PATH": resolve_model_path(
+                context.get(
+                    "yolo_obb_direct_model_path", context.get("yolo_model_path", "")
+                )
+            ),
+            "YOLO_DETECT_MODEL_PATH": resolve_model_path(
+                context.get("yolo_detect_model_path", "")
+            ),
+            "YOLO_CROP_OBB_MODEL_PATH": resolve_model_path(
+                context.get("yolo_crop_obb_model_path", "")
+            ),
+            "YOLO_HEADTAIL_MODEL_PATH": resolve_model_path(
+                context.get("yolo_headtail_model_path", "")
+            ),
+            "POSE_OVERRIDES_HEADTAIL": bool(
+                context.get("pose_overrides_headtail", True)
+            ),
+            "YOLO_SEQ_CROP_PAD_RATIO": float(
+                context.get("yolo_seq_crop_pad_ratio", 0.15)
+            ),
+            "YOLO_SEQ_MIN_CROP_SIZE_PX": int(
+                context.get("yolo_seq_min_crop_size_px", 64)
+            ),
+            "YOLO_SEQ_ENFORCE_SQUARE_CROP": bool(
+                context.get("yolo_seq_enforce_square_crop", True)
+            ),
+            "YOLO_SEQ_STAGE2_IMGSZ": int(context.get("yolo_seq_stage2_imgsz", 160)),
+            "YOLO_SEQ_STAGE2_POW2_PAD": bool(
+                context.get("yolo_seq_stage2_pow2_pad", False)
+            ),
+            "YOLO_HEADTAIL_CONF_THRESHOLD": float(
+                context.get("yolo_headtail_conf_threshold", 0.50)
+            ),
             "YOLO_CONFIDENCE_THRESHOLD": float(context.get("yolo_confidence", 0.5)),
             "YOLO_IOU_THRESHOLD": float(context.get("yolo_iou", 0.45)),
             "USE_CUSTOM_OBB_IOU_FILTERING": True,
@@ -1280,18 +1316,58 @@ def _run_preview_detection_job(
             _yolo_results,
             raw_confidences,
             raw_obb_corners,
+            raw_heading_hints,
+            raw_directed_mask,
         ) = detector.detect_objects(frame_to_process, 0, return_raw=True)
-        meas, _sizes, _shapes, detection_confidences, filtered_obb_corners, _ = (
-            detector.filter_raw_detections(
-                raw_meas,
-                raw_sizes,
-                raw_shapes,
-                raw_confidences,
-                raw_obb_corners,
-                roi_mask=roi_for_yolo,
-                detection_ids=None,
-            )
+        (
+            meas,
+            _sizes,
+            _shapes,
+            detection_confidences,
+            filtered_obb_corners,
+            _,
+            filtered_heading_hints,
+            filtered_directed_mask,
+        ) = detector.filter_raw_detections(
+            raw_meas,
+            raw_sizes,
+            raw_shapes,
+            raw_confidences,
+            raw_obb_corners,
+            roi_mask=roi_for_yolo,
+            detection_ids=None,
+            heading_hints=raw_heading_hints,
+            directed_mask=raw_directed_mask,
         )
+
+        yolo_mode = str(yolo_params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+        if yolo_mode == "sequential" and _yolo_results is not None:
+            # Visualize stage-1 full-frame detect boxes in sequential mode.
+            boxes = getattr(_yolo_results, "boxes", None)
+            if boxes is not None and len(boxes) > 0:
+                try:
+                    det_xyxy = np.ascontiguousarray(
+                        boxes.xyxy.cpu().numpy(), dtype=np.float32
+                    )
+                    det_conf = np.ascontiguousarray(
+                        boxes.conf.cpu().numpy(), dtype=np.float32
+                    )
+                except Exception:
+                    det_xyxy = np.empty((0, 4), dtype=np.float32)
+                    det_conf = np.empty((0,), dtype=np.float32)
+                for di in range(len(det_xyxy)):
+                    x1, y1, x2, y2 = [int(v) for v in det_xyxy[di]]
+                    cv2.rectangle(test_frame, (x1, y1), (x2, y2), (255, 200, 0), 1)
+                    if di < len(det_conf):
+                        cv2.putText(
+                            test_frame,
+                            f"D {float(det_conf[di]):.2f}",
+                            (x1, max(12, y1 - 4)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.4,
+                            (255, 200, 0),
+                            1,
+                        )
 
         for i, corners in enumerate(filtered_obb_corners):
             corners = np.asarray(corners, dtype=np.float32)
@@ -1328,12 +1404,27 @@ def _run_preview_detection_job(
                     2,
                 )
 
-        for m in meas:
+        for det_idx, m in enumerate(meas):
             cx, cy, angle_rad = m
             cv2.circle(test_frame, (int(cx), int(cy)), 5, (0, 255, 0), -1)
-            ex = int(cx + 30 * math.cos(angle_rad))
-            ey = int(cy + 30 * math.sin(angle_rad))
-            cv2.line(test_frame, (int(cx), int(cy)), (ex, ey), (0, 255, 0), 2)
+            theta = float(angle_rad)
+            if 0 <= det_idx < len(filtered_heading_hints):
+                if (
+                    det_idx < len(filtered_directed_mask)
+                    and int(filtered_directed_mask[det_idx]) == 1
+                    and np.isfinite(float(filtered_heading_hints[det_idx]))
+                ):
+                    theta = float(filtered_heading_hints[det_idx])
+            ex = int(cx + 30 * math.cos(theta))
+            ey = int(cy + 30 * math.sin(theta))
+            cv2.arrowedLine(
+                test_frame,
+                (int(cx), int(cy)),
+                (ex, ey),
+                (0, 255, 0),
+                2,
+                tipLength=0.3,
+            )
 
         cv2.putText(
             test_frame,
@@ -1363,23 +1454,45 @@ def get_video_config_path(video_path: object) -> object:
 
 def get_models_directory() -> object:
     """
-    Get the path to the local models directory.
+    Get the path to the default YOLO OBB model repository.
 
-    Returns the models/YOLO-obb directory for OBB detection models.
+    Returns models/YOLO-obb (direct OBB models).
     Creates the directory if it doesn't exist.
     """
-    # Get project root directory (multi-animal-tracker/)
-    # __file__ is: .../multi-animal-tracker/src/multi_tracker/gui/main_window.py
-    # Need to go up 4 levels: gui -> multi_tracker -> src -> multi-animal-tracker
+    return get_yolo_model_repository_directory(
+        task_family="obb", usage_role="obb_direct"
+    )
+
+
+def get_models_root_directory() -> object:
+    """Return project-local models/ root and create it when missing."""
     project_root = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
-    models_dir = os.path.join(project_root, "models", "YOLO-obb")
+    models_root = os.path.join(project_root, "models")
+    os.makedirs(models_root, exist_ok=True)
+    return models_root
 
-    # Create directory if it doesn't exist
-    os.makedirs(models_dir, exist_ok=True)
 
-    return models_dir
+def get_yolo_model_repository_directory(
+    task_family: str | None = None, usage_role: str | None = None
+) -> object:
+    """Return repository directory for a YOLO model role."""
+    tf = str(task_family or "").strip().lower()
+    ur = str(usage_role or "").strip().lower()
+    models_root = get_models_root_directory()
+
+    if ur == "seq_detect" or tf == "detect":
+        repo_dir = os.path.join(models_root, "YOLO-detect")
+    elif ur == "seq_crop_obb":
+        repo_dir = os.path.join(models_root, "YOLO-obb", "cropped")
+    elif ur == "headtail" or tf == "classify":
+        repo_dir = os.path.join(models_root, "YOLO-classify", "orientation")
+    else:
+        repo_dir = os.path.join(models_root, "YOLO-obb")
+
+    os.makedirs(repo_dir, exist_ok=True)
+    return repo_dir
 
 
 def get_pose_models_directory(backend: str | None = None) -> object:
@@ -1463,20 +1576,49 @@ def resolve_model_path(model_path: object) -> object:
     if not model_path:
         return model_path
 
+    path_str = str(model_path).strip()
+
     # If already absolute and exists, return it
-    if os.path.isabs(model_path) and os.path.exists(model_path):
-        return model_path
+    if os.path.isabs(path_str) and os.path.exists(path_str):
+        return path_str
 
-    # Try to resolve relative to models directory
-    models_dir = get_models_directory()
-    resolved_path = os.path.join(models_dir, model_path)
-
-    if os.path.exists(resolved_path):
-        return resolved_path
+    candidates = []
+    models_root = get_models_root_directory()
+    candidates.append(os.path.join(models_root, path_str))
+    # Backward-compatible default lookup under YOLO-obb root.
+    candidates.append(os.path.join(get_models_directory(), path_str))
+    # Role-specific repository lookups.
+    candidates.append(
+        os.path.join(
+            get_yolo_model_repository_directory(
+                task_family="detect", usage_role="seq_detect"
+            ),
+            path_str,
+        )
+    )
+    candidates.append(
+        os.path.join(
+            get_yolo_model_repository_directory(
+                task_family="obb", usage_role="seq_crop_obb"
+            ),
+            path_str,
+        )
+    )
+    candidates.append(
+        os.path.join(
+            get_yolo_model_repository_directory(
+                task_family="classify", usage_role="headtail"
+            ),
+            path_str,
+        )
+    )
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
 
     # If relative path doesn't exist in models dir, try as-is
-    if os.path.exists(model_path):
-        return os.path.abspath(model_path)
+    if os.path.exists(path_str):
+        return os.path.abspath(path_str)
 
     # Return original if nothing works (will fail later with clear error)
     return model_path
@@ -1498,11 +1640,20 @@ def make_model_path_relative(model_path: object) -> object:
         return model_path
 
     models_dir = get_models_directory()
+    models_root = get_models_root_directory()
 
-    # Check if model is inside the models directory
+    # Prefer legacy YOLO-obb-root relative paths for backward compatibility.
     try:
         rel_path = os.path.relpath(model_path, models_dir)
         # If relpath doesn't start with .., it's inside models_dir
+        if not rel_path.startswith(".."):
+            return rel_path
+    except (ValueError, TypeError):
+        pass
+
+    # For role-specific repositories, store path relative to models/ root.
+    try:
+        rel_path = os.path.relpath(model_path, models_root)
         if not rel_path.startswith(".."):
             return rel_path
     except (ValueError, TypeError):
@@ -1514,7 +1665,7 @@ def make_model_path_relative(model_path: object) -> object:
 
 def get_yolo_model_registry_path() -> object:
     """Return path to the local YOLO model metadata registry JSON."""
-    return os.path.join(get_models_directory(), "model_registry.json")
+    return os.path.join(get_models_root_directory(), "model_registry.json")
 
 
 def _sanitize_model_token(text: object) -> object:
@@ -1548,6 +1699,17 @@ def _normalize_yolo_model_metadata(metadata: object) -> object:
     if model_info:
         normalized["model_info"] = model_info
 
+    task_family = _sanitize_model_token(normalized.get("task_family", "")).lower()
+    usage_role = _sanitize_model_token(normalized.get("usage_role", "")).lower()
+    if task_family:
+        normalized["task_family"] = task_family
+    else:
+        normalized.pop("task_family", None)
+    if usage_role:
+        normalized["usage_role"] = usage_role
+    else:
+        normalized.pop("usage_role", None)
+
     # Drop deprecated fields
     normalized.pop("identifier", None)
     normalized.pop("id", None)
@@ -1558,7 +1720,17 @@ def load_yolo_model_registry() -> object:
     """Load YOLO model metadata registry (path -> metadata)."""
     registry_path = get_yolo_model_registry_path()
     if not os.path.exists(registry_path):
-        return {}
+        legacy_path = os.path.join(get_models_directory(), "model_registry.json")
+        if os.path.exists(legacy_path):
+            try:
+                with open(legacy_path, "r") as f:
+                    legacy_data = json.load(f)
+                if isinstance(legacy_data, dict):
+                    save_yolo_model_registry(legacy_data)
+            except Exception:
+                pass
+        if not os.path.exists(registry_path):
+            return {}
     try:
         with open(registry_path, "r") as f:
             data = json.load(f)
@@ -3353,17 +3525,35 @@ class MainWindow(QMainWindow):
         self.yolo_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         f_yolo = QFormLayout(self.yolo_group)
 
+        self.combo_yolo_obb_mode = QComboBox()
+        self.combo_yolo_obb_mode.addItems(["Direct", "Sequential (Faster)"])
+        self.combo_yolo_obb_mode.currentIndexChanged.connect(self._on_yolo_mode_changed)
+        self.combo_yolo_obb_mode.setToolTip(
+            "Direct: run OBB on full frame.\n"
+            "Sequential: run detect model first, crop detections, then run OBB on crops."
+        )
+        f_yolo.addRow("YOLO OBB mode", self.combo_yolo_obb_mode)
+
+        self.lbl_obb_mode_warning = QLabel()
+        self.lbl_obb_mode_warning.setWordWrap(True)
+        self.lbl_obb_mode_warning.setStyleSheet(
+            "color: #f0ad4e; font-style: italic; padding: 2px 0px;"
+        )
+        self.lbl_obb_mode_warning.setVisible(False)
+        f_yolo.addRow("", self.lbl_obb_mode_warning)
+
+        self.yolo_direct_model_widget = QWidget()
+        vl_direct_model = QVBoxLayout(self.yolo_direct_model_widget)
+        vl_direct_model.setContentsMargins(0, 0, 0, 0)
+        vl_direct_model.setSpacing(4)
         self.combo_yolo_model = QComboBox()
         self._refresh_yolo_model_combo()
         self.combo_yolo_model.currentIndexChanged.connect(self.on_yolo_model_changed)
         self.combo_yolo_model.setToolTip(
-            "YOLO model for oriented bounding box detection.\n"
-            "yolo26s = balanced speed/accuracy, yolo26n = fastest.\n"
-            "Select 'Custom Model...' to use your own trained model."
+            "Direct-mode YOLO OBB model.\n"
+            "Select 'Custom Model...' to import into models/YOLO-obb."
         )
-        f_yolo.addRow("YOLO model", self.combo_yolo_model)
-
-        # Custom model container (hidden by default)
+        vl_direct_model.addWidget(self.combo_yolo_model)
         self.yolo_custom_model_widget = QWidget()
         h_cust = QHBoxLayout(self.yolo_custom_model_widget)
         h_cust.setContentsMargins(0, 0, 0, 0)
@@ -3372,11 +3562,139 @@ class MainWindow(QMainWindow):
         self.btn_yolo_custom_model.clicked.connect(self.select_yolo_custom_model)
         h_cust.addWidget(self.yolo_custom_model_line)
         h_cust.addWidget(self.btn_yolo_custom_model)
-        f_yolo.addRow(
-            "Which custom YOLO model file should be used?",
-            self.yolo_custom_model_widget,
-        )
         self.yolo_custom_model_widget.setVisible(False)
+        vl_direct_model.addWidget(self.yolo_custom_model_widget)
+        f_yolo.addRow("Direct OBB model", self.yolo_direct_model_widget)
+
+        self.yolo_detect_model_widget = QWidget()
+        vl_detect_model = QVBoxLayout(self.yolo_detect_model_widget)
+        vl_detect_model.setContentsMargins(0, 0, 0, 0)
+        vl_detect_model.setSpacing(4)
+        self.combo_yolo_detect_model = QComboBox()
+        self._refresh_yolo_detect_model_combo()
+        self.combo_yolo_detect_model.currentIndexChanged.connect(
+            self.on_yolo_detect_model_changed
+        )
+        self.combo_yolo_detect_model.setToolTip(
+            "Sequential stage-1 model (axis-aligned detect)."
+        )
+        vl_detect_model.addWidget(self.combo_yolo_detect_model)
+        self.yolo_detect_custom_model_widget = QWidget()
+        h_detect_cust = QHBoxLayout(self.yolo_detect_custom_model_widget)
+        h_detect_cust.setContentsMargins(0, 0, 0, 0)
+        self.yolo_detect_custom_model_line = QLineEdit()
+        self.btn_yolo_detect_custom_model = QPushButton("...")
+        self.btn_yolo_detect_custom_model.clicked.connect(
+            self.select_yolo_detect_custom_model
+        )
+        h_detect_cust.addWidget(self.yolo_detect_custom_model_line)
+        h_detect_cust.addWidget(self.btn_yolo_detect_custom_model)
+        self.yolo_detect_custom_model_widget.setVisible(False)
+        vl_detect_model.addWidget(self.yolo_detect_custom_model_widget)
+        f_yolo.addRow("Seq detect model", self.yolo_detect_model_widget)
+
+        self.yolo_crop_obb_model_widget = QWidget()
+        vl_crop_obb_model = QVBoxLayout(self.yolo_crop_obb_model_widget)
+        vl_crop_obb_model.setContentsMargins(0, 0, 0, 0)
+        vl_crop_obb_model.setSpacing(4)
+        self.combo_yolo_crop_obb_model = QComboBox()
+        self._refresh_yolo_crop_obb_model_combo()
+        self.combo_yolo_crop_obb_model.currentIndexChanged.connect(
+            self.on_yolo_crop_obb_model_changed
+        )
+        self.combo_yolo_crop_obb_model.setToolTip(
+            "Sequential stage-2 OBB model trained on cropped detections."
+        )
+        vl_crop_obb_model.addWidget(self.combo_yolo_crop_obb_model)
+        self.yolo_crop_obb_custom_model_widget = QWidget()
+        h_crop_obb_cust = QHBoxLayout(self.yolo_crop_obb_custom_model_widget)
+        h_crop_obb_cust.setContentsMargins(0, 0, 0, 0)
+        self.yolo_crop_obb_custom_model_line = QLineEdit()
+        self.btn_yolo_crop_obb_custom_model = QPushButton("...")
+        self.btn_yolo_crop_obb_custom_model.clicked.connect(
+            self.select_yolo_crop_obb_custom_model
+        )
+        h_crop_obb_cust.addWidget(self.yolo_crop_obb_custom_model_line)
+        h_crop_obb_cust.addWidget(self.btn_yolo_crop_obb_custom_model)
+        self.yolo_crop_obb_custom_model_widget.setVisible(False)
+        vl_crop_obb_model.addWidget(self.yolo_crop_obb_custom_model_widget)
+        f_yolo.addRow("Seq crop OBB model", self.yolo_crop_obb_model_widget)
+
+        self.yolo_headtail_model_widget = QWidget()
+        vl_headtail_model = QVBoxLayout(self.yolo_headtail_model_widget)
+        vl_headtail_model.setContentsMargins(0, 0, 0, 0)
+        vl_headtail_model.setSpacing(4)
+        self.combo_yolo_headtail_model = QComboBox()
+        self._refresh_yolo_headtail_model_combo()
+        self.combo_yolo_headtail_model.currentIndexChanged.connect(
+            self.on_yolo_headtail_model_changed
+        )
+        self.combo_yolo_headtail_model.setToolTip(
+            "Optional head-tail classifier used to direct orientation along OBB major axis."
+        )
+        vl_headtail_model.addWidget(self.combo_yolo_headtail_model)
+        self.yolo_headtail_custom_model_widget = QWidget()
+        h_headtail_cust = QHBoxLayout(self.yolo_headtail_custom_model_widget)
+        h_headtail_cust.setContentsMargins(0, 0, 0, 0)
+        self.yolo_headtail_custom_model_line = QLineEdit()
+        self.btn_yolo_headtail_custom_model = QPushButton("...")
+        self.btn_yolo_headtail_custom_model.clicked.connect(
+            self.select_yolo_headtail_custom_model
+        )
+        h_headtail_cust.addWidget(self.yolo_headtail_custom_model_line)
+        h_headtail_cust.addWidget(self.btn_yolo_headtail_custom_model)
+        self.yolo_headtail_custom_model_widget.setVisible(False)
+        vl_headtail_model.addWidget(self.yolo_headtail_custom_model_widget)
+        f_yolo.addRow("Head-tail model", self.yolo_headtail_model_widget)
+
+        self.chk_pose_overrides_headtail = QCheckBox(
+            "Pose orientation overrides head-tail"
+        )
+        self.chk_pose_overrides_headtail.setChecked(True)
+        self.chk_pose_overrides_headtail.setToolTip(
+            "When enabled, valid pose heading takes precedence over head-tail heading."
+        )
+        f_yolo.addRow("", self.chk_pose_overrides_headtail)
+
+        self.yolo_seq_advanced = CollapsibleGroupBox(
+            "Sequential Advanced Settings", initially_expanded=False
+        )
+        self.yolo_seq_advanced_content = QWidget()
+        f_seq_adv = QFormLayout(self.yolo_seq_advanced_content)
+        self.spin_yolo_seq_crop_pad = QDoubleSpinBox()
+        self.spin_yolo_seq_crop_pad.setRange(0.0, 1.0)
+        self.spin_yolo_seq_crop_pad.setSingleStep(0.01)
+        self.spin_yolo_seq_crop_pad.setValue(0.15)
+        f_seq_adv.addRow("Crop pad ratio", self.spin_yolo_seq_crop_pad)
+        self.spin_yolo_seq_min_crop_px = QSpinBox()
+        self.spin_yolo_seq_min_crop_px.setRange(8, 1024)
+        self.spin_yolo_seq_min_crop_px.setValue(64)
+        f_seq_adv.addRow("Min crop size (px)", self.spin_yolo_seq_min_crop_px)
+        self.chk_yolo_seq_square_crop = QCheckBox("Enforce square crop")
+        self.chk_yolo_seq_square_crop.setChecked(True)
+        f_seq_adv.addRow("", self.chk_yolo_seq_square_crop)
+        self.spin_yolo_headtail_conf = QDoubleSpinBox()
+        self.spin_yolo_headtail_conf.setRange(0.0, 1.0)
+        self.spin_yolo_headtail_conf.setSingleStep(0.01)
+        self.spin_yolo_headtail_conf.setValue(0.50)
+        f_seq_adv.addRow("Head-tail min confidence", self.spin_yolo_headtail_conf)
+        self.spin_yolo_seq_stage2_imgsz = QSpinBox()
+        self.spin_yolo_seq_stage2_imgsz.setRange(0, 2048)
+        self.spin_yolo_seq_stage2_imgsz.setValue(160)
+        self.spin_yolo_seq_stage2_imgsz.setToolTip(
+            "Crop OBB stage input size in pixels. Set 0 to disable pre-resize."
+        )
+        f_seq_adv.addRow("Stage-2 imgsz (px)", self.spin_yolo_seq_stage2_imgsz)
+        self.chk_yolo_seq_stage2_pow2_pad = QCheckBox(
+            "Pad stage-2 batch to power-of-two"
+        )
+        self.chk_yolo_seq_stage2_pow2_pad.setChecked(False)
+        self.chk_yolo_seq_stage2_pow2_pad.setToolTip(
+            "Reduces dynamic batch-size variants in sequential stage-2 inference."
+        )
+        f_seq_adv.addRow("", self.chk_yolo_seq_stage2_pow2_pad)
+        self.yolo_seq_advanced.setContentLayout(f_seq_adv)
+        f_yolo.addRow(self.yolo_seq_advanced)
 
         self.spin_yolo_confidence = QDoubleSpinBox()
         self.spin_yolo_confidence.setRange(0.01, 1.0)
@@ -3421,6 +3739,7 @@ class MainWindow(QMainWindow):
             "Refer to your model's class definitions."
         )
         f_yolo.addRow("Classes (optional)", self.line_yolo_classes)
+        self._on_yolo_mode_changed(self.combo_yolo_obb_mode.currentIndex())
 
         l_yolo.addWidget(self.yolo_group)
 
@@ -6671,6 +6990,7 @@ class MainWindow(QMainWindow):
         previous = self._selected_compute_runtime()
         self._populate_compute_runtime_options(preferred=previous)
         selected_runtime = self._selected_compute_runtime()
+        self._update_obb_mode_warning()
         # Keep hidden legacy controls synchronized for compatibility paths.
         derived = derive_detection_runtime_settings(selected_runtime)
         if hasattr(self, "combo_device"):
@@ -7914,6 +8234,20 @@ class MainWindow(QMainWindow):
                 )
 
         context = self._collect_preview_detection_context()
+        if (
+            int(context.get("detection_method", 0)) == 1
+            and str(context.get("yolo_obb_mode", "direct")).strip().lower()
+            == "sequential"
+        ):
+            detect_model = str(context.get("yolo_detect_model_path", "")).strip()
+            crop_obb_model = str(context.get("yolo_crop_obb_model_path", "")).strip()
+            if not detect_model or not crop_obb_model:
+                QMessageBox.warning(
+                    self,
+                    "Missing Sequential Models",
+                    "Sequential YOLO OBB mode in detection preview requires both a detect model and a crop OBB model.",
+                )
+                return
         self.preview_detection_worker = PreviewDetectionWorker(
             self.preview_frame_original.copy(),
             context,
@@ -7969,7 +8303,23 @@ class MainWindow(QMainWindow):
             "reference_body_size": self.spin_reference_body_size.value(),
             "min_object_size": self.spin_min_object_size.value(),
             "max_object_size": self.spin_max_object_size.value(),
+            "yolo_obb_mode": (
+                "sequential"
+                if self.combo_yolo_obb_mode.currentIndex() == 1
+                else "direct"
+            ),
             "yolo_model_path": self._get_selected_yolo_model_path(),
+            "yolo_obb_direct_model_path": self._get_selected_yolo_model_path(),
+            "yolo_detect_model_path": self._get_selected_yolo_detect_model_path(),
+            "yolo_crop_obb_model_path": self._get_selected_yolo_crop_obb_model_path(),
+            "yolo_headtail_model_path": self._get_selected_yolo_headtail_model_path(),
+            "pose_overrides_headtail": self.chk_pose_overrides_headtail.isChecked(),
+            "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
+            "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
+            "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
+            "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
+            "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+            "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
             "yolo_confidence": self.spin_yolo_confidence.value(),
             "yolo_iou": self.spin_yolo_iou.value(),
             "yolo_target_classes": target_classes,
@@ -7981,6 +8331,30 @@ class MainWindow(QMainWindow):
             "max_targets": self.spin_max_targets.value(),
             "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
         }
+
+    def _validate_yolo_model_requirements(self, params: dict, mode_label: str) -> bool:
+        """Validate YOLO mode-specific model requirements before starting runs."""
+        if str(params.get("DETECTION_METHOD", "")) != "yolo_obb":
+            return True
+
+        yolo_mode = str(params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+        if yolo_mode != "sequential":
+            return True
+
+        detect_model = str(params.get("YOLO_DETECT_MODEL_PATH", "")).strip()
+        crop_obb_model = str(params.get("YOLO_CROP_OBB_MODEL_PATH", "")).strip()
+        if detect_model and crop_obb_model:
+            return True
+
+        QMessageBox.warning(
+            self,
+            "Missing Sequential Models",
+            (
+                f"Sequential YOLO OBB mode in {mode_label} requires both a detect model "
+                "and a crop OBB model."
+            ),
+        )
+        return False
 
     def _set_preview_test_running(self, running: bool):
         """Lock/unlock UI while async preview detection is running."""
@@ -8681,7 +9055,9 @@ class MainWindow(QMainWindow):
         """Sanitize model metadata token for safe filename use."""
         return _sanitize_model_token(text)
 
-    def _format_yolo_model_label(self, model_path: object) -> object:
+    def _format_yolo_model_label(
+        self, model_path: object, include_builtin_hints: bool = True
+    ) -> object:
         """Build combo-box label for a model path, including metadata if available."""
         rel_path = make_model_path_relative(model_path)
         filename = os.path.basename(rel_path)
@@ -8690,34 +9066,82 @@ class MainWindow(QMainWindow):
         size = metadata.get("size") or metadata.get("model_size")
         species = metadata.get("species")
         model_info = metadata.get("model_info")
+        task_family = str(metadata.get("task_family", "")).strip().lower()
+        usage_role = str(metadata.get("usage_role", "")).strip().lower()
         model_id = None
         if species and model_info:
             model_id = f"{species}_{model_info}"
         elif species:
             model_id = species
-        if size and model_id:
-            return f"{filename} ({size}, {model_id})"
+        suffix_parts = []
+        if size:
+            suffix_parts.append(str(size))
+        if model_id:
+            suffix_parts.append(str(model_id))
+        if usage_role:
+            suffix_parts.append(usage_role)
+        elif task_family:
+            suffix_parts.append(task_family)
+        if suffix_parts:
+            return f"{filename} ({', '.join(suffix_parts)})"
 
-        builtins = {
-            "yolo26s-obb.pt": "Balanced",
-            "yolo26n-obb.pt": "Fastest",
-            "yolov11s-obb.pt": "Legacy",
-        }
-        if filename in builtins:
-            return f"{filename} ({builtins[filename]})"
+        if include_builtin_hints:
+            builtins = {
+                "yolo26s-obb.pt": "Balanced",
+                "yolo26n-obb.pt": "Fastest",
+                "yolov11s-obb.pt": "Legacy",
+            }
+            if filename in builtins:
+                return f"{filename} ({builtins[filename]})"
         return filename
 
-    def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
-        """Populate YOLO model combo from built-ins + repository models."""
+    @staticmethod
+    def _yolo_model_matches_filter(
+        metadata: object, task_family: str | None = None, usage_role: str | None = None
+    ) -> bool:
+        if not isinstance(metadata, dict):
+            return True
+        meta_task = str(metadata.get("task_family", "")).strip().lower()
+        meta_role = str(metadata.get("usage_role", "")).strip().lower()
+        if not meta_task and not meta_role:
+            # Backward compatibility for legacy entries with no role/type metadata.
+            return True
+        if task_family and meta_task and meta_task != task_family:
+            return False
+        if usage_role and meta_role and meta_role != usage_role:
+            return False
+        return True
+
+    def _populate_yolo_model_combo(
+        self,
+        combo: object,
+        preferred_model_path: object = None,
+        default_path: str = "",
+        include_obb_builtins: bool = False,
+        task_family: str | None = None,
+        usage_role: str | None = None,
+        repository_dir: str | None = None,
+    ) -> object:
+        """Populate a YOLO-model combo with optional metadata role filtering."""
         selected_path = preferred_model_path
-        if selected_path is None and hasattr(self, "combo_yolo_model"):
-            selected_path = self._get_selected_yolo_model_path()
+        if selected_path is None:
+            selected_data = combo.currentData(Qt.UserRole)
+            if selected_data and selected_data != "__custom__":
+                selected_path = str(selected_data)
 
         entries = {}
-        for built_in in ("yolo26s-obb.pt", "yolo26n-obb.pt", "yolov11s-obb.pt"):
-            entries[built_in] = self._format_yolo_model_label(built_in)
+        if include_obb_builtins:
+            for built_in in ("yolo26s-obb.pt", "yolo26n-obb.pt", "yolov11s-obb.pt"):
+                entries[built_in] = self._format_yolo_model_label(
+                    built_in, include_builtin_hints=True
+                )
 
-        models_dir = get_models_directory()
+        models_dir = str(
+            repository_dir
+            or get_yolo_model_repository_directory(
+                task_family=task_family, usage_role=usage_role
+            )
+        )
         try:
             local_models = sorted(
                 f
@@ -8730,60 +9154,92 @@ class MainWindow(QMainWindow):
 
         for filename in local_models:
             rel_path = make_model_path_relative(os.path.join(models_dir, filename))
-            entries[rel_path] = self._format_yolo_model_label(rel_path)
+            metadata = get_yolo_model_metadata(rel_path) or {}
+            if not self._yolo_model_matches_filter(
+                metadata, task_family=task_family, usage_role=usage_role
+            ):
+                continue
+            entries[rel_path] = self._format_yolo_model_label(
+                rel_path,
+                include_builtin_hints=include_obb_builtins,
+            )
 
-        self.combo_yolo_model.blockSignals(True)
-        self.combo_yolo_model.clear()
+        combo.blockSignals(True)
+        combo.clear()
         for model_path, label in entries.items():
-            self.combo_yolo_model.addItem(label, model_path)
-        self.combo_yolo_model.addItem("Custom Model...", "__custom__")
-        self.combo_yolo_model.blockSignals(False)
+            combo.addItem(label, model_path)
+        combo.addItem("Custom Model...", "__custom__")
+        combo.blockSignals(False)
 
-        self._set_yolo_model_selection(selected_path)
+        self._set_model_selection_for_selector(
+            combo,
+            None,
+            selected_path,
+            default_path=default_path,
+        )
 
-    def _get_selected_yolo_model_path(self) -> object:
-        """Return currently selected YOLO model path (relative when available)."""
-        if not hasattr(self, "combo_yolo_model"):
-            return "yolo26s-obb.pt"
-        selected_data = self.combo_yolo_model.currentData(Qt.UserRole)
-        if selected_data and selected_data != "__custom__":
-            return str(selected_data)
-        if (
-            hasattr(self, "yolo_custom_model_line")
-            and self.yolo_custom_model_line.text().strip()
-        ):
-            return make_model_path_relative(self.yolo_custom_model_line.text().strip())
-        return "yolo26s-obb.pt"
-
-    def _set_yolo_model_selection(self, model_path: object) -> object:
-        """Set combo/custom selection from a model path."""
+    def _set_model_selection_for_selector(
+        self,
+        combo: object,
+        custom_line: object,
+        model_path: object,
+        default_path: str = "",
+    ) -> object:
         target_path = make_model_path_relative(model_path or "")
         if not target_path:
-            target_path = "yolo26s-obb.pt"
+            target_path = str(default_path or "")
 
-        for i in range(self.combo_yolo_model.count()):
-            item_data = self.combo_yolo_model.itemData(i, Qt.UserRole)
+        for i in range(combo.count()):
+            item_data = combo.itemData(i, Qt.UserRole)
             if item_data == target_path:
-                self.combo_yolo_model.setCurrentIndex(i)
-                if hasattr(self, "yolo_custom_model_line"):
-                    self.yolo_custom_model_line.setText("")
+                combo.setCurrentIndex(i)
+                if custom_line is not None:
+                    custom_line.setText("")
                 return
 
-        custom_idx = self.combo_yolo_model.findData("__custom__", Qt.UserRole)
+        custom_idx = combo.findData("__custom__", Qt.UserRole)
         if custom_idx < 0:
-            custom_idx = self.combo_yolo_model.count() - 1
-        self.combo_yolo_model.setCurrentIndex(custom_idx)
-        if hasattr(self, "yolo_custom_model_line"):
-            self.yolo_custom_model_line.setText(target_path)
+            custom_idx = combo.count() - 1
+        combo.setCurrentIndex(custom_idx)
+        if custom_line is not None:
+            custom_line.setText(target_path)
 
-    def _import_yolo_model_to_repository(self, source_path: object) -> object:
-        """Import a model file into models/YOLO-obb using metadata-based naming."""
+    def _get_selected_model_path_from_selector(
+        self, combo: object, custom_line: object, default_path: str = ""
+    ) -> object:
+        selected_data = combo.currentData(Qt.UserRole)
+        if selected_data and selected_data != "__custom__":
+            return str(selected_data)
+        if custom_line is not None and custom_line.text().strip():
+            return make_model_path_relative(custom_line.text().strip())
+        return str(default_path or "")
+
+    @staticmethod
+    def _sync_selector_custom_visibility(
+        combo: object, custom_widget: object
+    ) -> object:
+        is_custom = combo.currentData(Qt.UserRole) == "__custom__"
+        custom_widget.setVisible(is_custom)
+
+    def _import_yolo_model_to_repository(
+        self,
+        source_path: object,
+        task_family: str | None = None,
+        usage_role: str | None = None,
+        repository_dir: str | None = None,
+    ) -> object:
+        """Import a YOLO model file into models/YOLO-obb with metadata."""
         src = str(source_path or "")
         if not src or not os.path.exists(src):
             return None
 
         src_abs = os.path.abspath(src)
-        models_dir = get_models_directory()
+        models_dir = str(
+            repository_dir
+            or get_yolo_model_repository_directory(
+                task_family=task_family, usage_role=usage_role
+            )
+        )
         try:
             rel_existing = os.path.relpath(src_abs, models_dir)
             if not rel_existing.startswith(".."):
@@ -8849,7 +9305,6 @@ class MainWindow(QMainWindow):
         timestamp_token = now.strftime("%Y%m%d-%H%M%S")
         added_at = now.isoformat(timespec="seconds")
         ext = os.path.splitext(src)[1].lower() or ".pt"
-        models_dir = get_models_directory()
 
         model_slug = f"{model_species}_{model_info}"
         base_name = f"{timestamp_token}_{model_size}_{model_slug}"
@@ -8879,29 +9334,289 @@ class MainWindow(QMainWindow):
             "source_path": src,
             "stored_filename": os.path.basename(dest_path),
         }
+        if task_family:
+            metadata["task_family"] = str(task_family).strip().lower()
+        if usage_role:
+            metadata["usage_role"] = str(usage_role).strip().lower()
         register_yolo_model(rel_path, metadata)
         logger.info(f"Imported model to repository: {dest_path}")
         return rel_path
 
+    def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
+        """Populate direct OBB model combo from built-ins + repository models."""
+        self._populate_yolo_model_combo(
+            self.combo_yolo_model,
+            preferred_model_path=preferred_model_path,
+            default_path="yolo26s-obb.pt",
+            include_obb_builtins=True,
+            task_family="obb",
+            usage_role="obb_direct",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="obb", usage_role="obb_direct"
+            ),
+        )
+
+    def _refresh_yolo_detect_model_combo(self, preferred_model_path: object = None):
+        self._populate_yolo_model_combo(
+            self.combo_yolo_detect_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_obb_builtins=False,
+            task_family="detect",
+            usage_role="seq_detect",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="detect", usage_role="seq_detect"
+            ),
+        )
+
+    def _refresh_yolo_crop_obb_model_combo(self, preferred_model_path: object = None):
+        self._populate_yolo_model_combo(
+            self.combo_yolo_crop_obb_model,
+            preferred_model_path=preferred_model_path,
+            default_path="yolo26s-obb.pt",
+            include_obb_builtins=True,
+            task_family="obb",
+            usage_role="seq_crop_obb",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="obb", usage_role="seq_crop_obb"
+            ),
+        )
+
+    def _refresh_yolo_headtail_model_combo(self, preferred_model_path: object = None):
+        self._populate_yolo_model_combo(
+            self.combo_yolo_headtail_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_obb_builtins=False,
+            task_family="classify",
+            usage_role="headtail",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="classify", usage_role="headtail"
+            ),
+        )
+
+    def _get_selected_yolo_model_path(self) -> object:
+        """Return currently selected direct OBB model path."""
+        if not hasattr(self, "combo_yolo_model"):
+            return "yolo26s-obb.pt"
+        return self._get_selected_model_path_from_selector(
+            self.combo_yolo_model,
+            getattr(self, "yolo_custom_model_line", None),
+            default_path="yolo26s-obb.pt",
+        )
+
+    def _get_selected_yolo_detect_model_path(self) -> object:
+        return self._get_selected_model_path_from_selector(
+            self.combo_yolo_detect_model,
+            getattr(self, "yolo_detect_custom_model_line", None),
+            default_path="",
+        )
+
+    def _get_selected_yolo_crop_obb_model_path(self) -> object:
+        return self._get_selected_model_path_from_selector(
+            self.combo_yolo_crop_obb_model,
+            getattr(self, "yolo_crop_obb_custom_model_line", None),
+            default_path="yolo26s-obb.pt",
+        )
+
+    def _get_selected_yolo_headtail_model_path(self) -> object:
+        return self._get_selected_model_path_from_selector(
+            self.combo_yolo_headtail_model,
+            getattr(self, "yolo_headtail_custom_model_line", None),
+            default_path="",
+        )
+
+    def _set_yolo_model_selection(self, model_path: object) -> object:
+        self._set_model_selection_for_selector(
+            self.combo_yolo_model,
+            getattr(self, "yolo_custom_model_line", None),
+            model_path,
+            default_path="yolo26s-obb.pt",
+        )
+
+    def _set_yolo_detect_model_selection(self, model_path: object) -> object:
+        self._set_model_selection_for_selector(
+            self.combo_yolo_detect_model,
+            getattr(self, "yolo_detect_custom_model_line", None),
+            model_path,
+            default_path="",
+        )
+
+    def _set_yolo_crop_obb_model_selection(self, model_path: object) -> object:
+        self._set_model_selection_for_selector(
+            self.combo_yolo_crop_obb_model,
+            getattr(self, "yolo_crop_obb_custom_model_line", None),
+            model_path,
+            default_path="yolo26s-obb.pt",
+        )
+
+    def _set_yolo_headtail_model_selection(self, model_path: object) -> object:
+        self._set_model_selection_for_selector(
+            self.combo_yolo_headtail_model,
+            getattr(self, "yolo_headtail_custom_model_line", None),
+            model_path,
+            default_path="",
+        )
+
+    def _on_yolo_mode_changed(self, _index: object) -> object:
+        """Toggle direct/sequential model controls."""
+        form = self.yolo_group.layout() if hasattr(self, "yolo_group") else None
+
+        def _set_row_visible(widget: object, visible: bool):
+            if widget is None:
+                return
+            widget.setVisible(bool(visible))
+            if form is None:
+                return
+            try:
+                label = form.labelForField(widget)
+            except Exception:
+                label = None
+            if label is not None:
+                label.setVisible(bool(visible))
+
+        sequential = (
+            hasattr(self, "combo_yolo_obb_mode")
+            and self.combo_yolo_obb_mode.currentIndex() == 1
+        )
+
+        _set_row_visible(
+            getattr(self, "yolo_direct_model_widget", None),
+            not sequential,
+        )
+        if hasattr(self, "yolo_custom_model_widget"):
+            self.yolo_custom_model_widget.setVisible(
+                bool(
+                    not sequential
+                    and self.combo_yolo_model.currentData(Qt.UserRole) == "__custom__"
+                )
+            )
+
+        _set_row_visible(
+            getattr(self, "yolo_detect_model_widget", None),
+            sequential,
+        )
+        _set_row_visible(
+            getattr(self, "yolo_crop_obb_model_widget", None),
+            sequential,
+        )
+        _set_row_visible(
+            getattr(self, "yolo_seq_advanced", None),
+            sequential,
+        )
+        _set_row_visible(
+            getattr(self, "yolo_headtail_model_widget", None),
+            True,
+        )
+        _set_row_visible(getattr(self, "chk_pose_overrides_headtail", None), True)
+        if hasattr(self, "yolo_detect_custom_model_widget"):
+            self.yolo_detect_custom_model_widget.setVisible(
+                bool(
+                    sequential
+                    and self.combo_yolo_detect_model.currentData(Qt.UserRole)
+                    == "__custom__"
+                )
+            )
+        if hasattr(self, "yolo_crop_obb_custom_model_widget"):
+            self.yolo_crop_obb_custom_model_widget.setVisible(
+                bool(
+                    sequential
+                    and self.combo_yolo_crop_obb_model.currentData(Qt.UserRole)
+                    == "__custom__"
+                )
+            )
+        if hasattr(self, "yolo_headtail_custom_model_widget"):
+            self.yolo_headtail_custom_model_widget.setVisible(
+                self.combo_yolo_headtail_model.currentData(Qt.UserRole) == "__custom__"
+            )
+        if hasattr(self, "spin_yolo_headtail_conf"):
+            self.spin_yolo_headtail_conf.setEnabled(
+                bool(self._get_selected_yolo_headtail_model_path().strip())
+            )
+        self._update_obb_mode_warning()
+
+    def _update_obb_mode_warning(self) -> None:
+        """Show a performance hint when device/mode is a suboptimal combination."""
+        if not hasattr(self, "lbl_obb_mode_warning"):
+            return
+        runtime = (
+            self._selected_compute_runtime()
+            if hasattr(self, "combo_compute_runtime")
+            else ""
+        )
+        sequential = (
+            hasattr(self, "combo_yolo_obb_mode")
+            and self.combo_yolo_obb_mode.currentIndex() == 1
+        )
+        is_mps = "mps" in runtime.lower()
+        is_cuda = "cuda" in runtime.lower()
+        if is_mps and sequential:
+            msg = (
+                "⚠ Sequential mode is significantly slower on Apple Silicon (MPS). "
+                "Direct mode is recommended for MPS — it runs ~4× faster."
+            )
+        elif is_cuda and not sequential:
+            msg = (
+                "⚠ Sequential mode is typically faster on CUDA GPUs. "
+                "Consider switching to Sequential for better throughput."
+            )
+        else:
+            msg = ""
+        self.lbl_obb_mode_warning.setText(msg)
+        self.lbl_obb_mode_warning.setVisible(bool(msg))
+
     def on_yolo_model_changed(self: object, index: object) -> object:
-        """on_yolo_model_changed method documentation."""
-        is_custom = self.combo_yolo_model.currentData(Qt.UserRole) == "__custom__"
-        self.yolo_custom_model_widget.setVisible(is_custom)
+        """Handle direct OBB selector custom-model visibility."""
+        self._sync_selector_custom_visibility(
+            self.combo_yolo_model, self.yolo_custom_model_widget
+        )
+        self._on_yolo_mode_changed(index)
 
-    def select_yolo_custom_model(self: object) -> object:
-        """select_yolo_custom_model method documentation."""
-        start_dir = get_models_directory()
+    def on_yolo_detect_model_changed(self: object, index: object) -> object:
+        self._sync_selector_custom_visibility(
+            self.combo_yolo_detect_model, self.yolo_detect_custom_model_widget
+        )
+        self._on_yolo_mode_changed(index)
 
+    def on_yolo_crop_obb_model_changed(self: object, index: object) -> object:
+        self._sync_selector_custom_visibility(
+            self.combo_yolo_crop_obb_model, self.yolo_crop_obb_custom_model_widget
+        )
+        self._on_yolo_mode_changed(index)
+
+    def on_yolo_headtail_model_changed(self: object, index: object) -> object:
+        self._sync_selector_custom_visibility(
+            self.combo_yolo_headtail_model, self.yolo_headtail_custom_model_widget
+        )
+        self._on_yolo_mode_changed(index)
+
+    def _select_and_import_yolo_model(
+        self,
+        selector_combo: object,
+        selector_line: object,
+        refresh_callback: object,
+        selection_callback: object,
+        task_family: str,
+        usage_role: str,
+        dialog_title: str,
+        repository_dir: str | None = None,
+    ) -> object:
+        start_dir = str(
+            repository_dir
+            or get_yolo_model_repository_directory(
+                task_family=task_family, usage_role=usage_role
+            )
+        )
         fp, _ = QFileDialog.getOpenFileName(
             self,
-            "Select YOLO Model",
+            dialog_title,
             start_dir,
             "PyTorch Model Files (*.pt *.pth);;All Files (*)",
         )
         if not fp:
             return
 
-        models_dir = get_models_directory()
+        models_dir = start_dir
         selected_abs = os.path.abspath(fp)
         try:
             rel_path = os.path.relpath(selected_abs, models_dir)
@@ -8912,7 +9627,12 @@ class MainWindow(QMainWindow):
         if is_in_repo:
             final_model_path = make_model_path_relative(selected_abs)
         else:
-            final_model_path = self._import_yolo_model_to_repository(selected_abs)
+            final_model_path = self._import_yolo_model_to_repository(
+                selected_abs,
+                task_family=task_family,
+                usage_role=usage_role,
+                repository_dir=models_dir,
+            )
             if not final_model_path:
                 return
             QMessageBox.information(
@@ -8921,8 +9641,66 @@ class MainWindow(QMainWindow):
                 f"Model imported to repository as:\n{os.path.basename(final_model_path)}",
             )
 
-        self._refresh_yolo_model_combo(preferred_model_path=final_model_path)
-        self._set_yolo_model_selection(final_model_path)
+        refresh_callback(preferred_model_path=final_model_path)
+        selection_callback(final_model_path)
+        if selector_combo.currentData(Qt.UserRole) != "__custom__":
+            selector_line.setText("")
+
+    def select_yolo_custom_model(self: object) -> object:
+        self._select_and_import_yolo_model(
+            selector_combo=self.combo_yolo_model,
+            selector_line=self.yolo_custom_model_line,
+            refresh_callback=self._refresh_yolo_model_combo,
+            selection_callback=self._set_yolo_model_selection,
+            task_family="obb",
+            usage_role="obb_direct",
+            dialog_title="Select Direct OBB Model",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="obb", usage_role="obb_direct"
+            ),
+        )
+
+    def select_yolo_detect_custom_model(self: object) -> object:
+        self._select_and_import_yolo_model(
+            selector_combo=self.combo_yolo_detect_model,
+            selector_line=self.yolo_detect_custom_model_line,
+            refresh_callback=self._refresh_yolo_detect_model_combo,
+            selection_callback=self._set_yolo_detect_model_selection,
+            task_family="detect",
+            usage_role="seq_detect",
+            dialog_title="Select Sequential Detect Model",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="detect", usage_role="seq_detect"
+            ),
+        )
+
+    def select_yolo_crop_obb_custom_model(self: object) -> object:
+        self._select_and_import_yolo_model(
+            selector_combo=self.combo_yolo_crop_obb_model,
+            selector_line=self.yolo_crop_obb_custom_model_line,
+            refresh_callback=self._refresh_yolo_crop_obb_model_combo,
+            selection_callback=self._set_yolo_crop_obb_model_selection,
+            task_family="obb",
+            usage_role="seq_crop_obb",
+            dialog_title="Select Sequential Crop OBB Model",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="obb", usage_role="seq_crop_obb"
+            ),
+        )
+
+    def select_yolo_headtail_custom_model(self: object) -> object:
+        self._select_and_import_yolo_model(
+            selector_combo=self.combo_yolo_headtail_model,
+            selector_line=self.yolo_headtail_custom_model_line,
+            refresh_callback=self._refresh_yolo_headtail_model_combo,
+            selection_callback=self._set_yolo_headtail_model_selection,
+            task_family="classify",
+            usage_role="headtail",
+            dialog_title="Select Head-Tail Model",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="classify", usage_role="headtail"
+            ),
+        )
 
     def toggle_histogram_window(self: object) -> object:
         """toggle_histogram_window method documentation."""
@@ -11161,7 +11939,7 @@ class MainWindow(QMainWindow):
         if detection_cache is None or detection_id is None or pd.isna(detection_id):
             return None, None
         try:
-            _, _, shapes, _, obb_corners, detection_ids = detection_cache.get_frame(
+            _, _, shapes, _, obb_corners, detection_ids, *_ = detection_cache.get_frame(
                 int(frame_id)
             )
         except Exception:
@@ -11289,6 +12067,10 @@ class MainWindow(QMainWindow):
             preview_mode=True,  # Preview mode - frame-by-frame only
         )
         params = self.get_parameters_dict()
+        if not self._validate_yolo_model_requirements(
+            params, mode_label="tracking preview"
+        ):
+            return
         # Preview should always render frames regardless of visualization-free toggle
         params["VISUALIZATION_FREE_MODE"] = False
         self.tracking_worker.set_parameters(params)
@@ -11395,6 +12177,8 @@ class MainWindow(QMainWindow):
         )
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
         use_cached_detections = self.chk_use_cached_detections.isChecked()
+        if not self._validate_yolo_model_requirements(params, mode_label="tracking"):
+            return
 
         # Generate model-specific cache name
         def get_inference_model_id() -> object:
@@ -11466,8 +12250,18 @@ class MainWindow(QMainWindow):
             )
 
             if detection_method == "yolo_obb":
-                yolo_model = params.get("YOLO_MODEL_PATH", "best.pt")
-                model_fingerprint = get_model_fingerprint(yolo_model)
+                yolo_mode = str(params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+                direct_model = params.get(
+                    "YOLO_OBB_DIRECT_MODEL_PATH",
+                    params.get("YOLO_MODEL_PATH", "best.pt"),
+                )
+                crop_obb_model = params.get(
+                    "YOLO_CROP_OBB_MODEL_PATH", params.get("YOLO_MODEL_PATH", "best.pt")
+                )
+                active_obb_model = (
+                    direct_model if yolo_mode == "direct" else crop_obb_model
+                )
+                model_fingerprint = get_model_fingerprint(active_obb_model)
                 model_name = os.path.basename(
                     model_fingerprint["resolved_path"]
                     or model_fingerprint["configured_path"]
@@ -11482,13 +12276,33 @@ class MainWindow(QMainWindow):
                     "YOLO_DEVICE",
                     "ENABLE_TENSORRT",
                     "TENSORRT_MAX_BATCH_SIZE",
+                    "YOLO_OBB_MODE",
+                    "YOLO_SEQ_CROP_PAD_RATIO",
+                    "YOLO_SEQ_MIN_CROP_SIZE_PX",
+                    "YOLO_SEQ_ENFORCE_SQUARE_CROP",
+                    "YOLO_SEQ_STAGE2_IMGSZ",
+                    "YOLO_SEQ_STAGE2_POW2_PAD",
+                    "YOLO_HEADTAIL_CONF_THRESHOLD",
+                    "POSE_OVERRIDES_HEADTAIL",
                 )
                 cache_params = {
                     "common": extract_hash_params(common_detection_keys),
                     "yolo": extract_hash_params(yolo_inference_keys),
-                    "model": normalize_for_hash(model_fingerprint),
+                    "models": normalize_for_hash(
+                        {
+                            "active_obb": model_fingerprint,
+                            "direct_obb": get_model_fingerprint(direct_model),
+                            "detect": get_model_fingerprint(
+                                params.get("YOLO_DETECT_MODEL_PATH", "")
+                            ),
+                            "crop_obb": get_model_fingerprint(crop_obb_model),
+                            "headtail": get_model_fingerprint(
+                                params.get("YOLO_HEADTAIL_MODEL_PATH", "")
+                            ),
+                        }
+                    ),
                     # Bump when raw detection extraction/filtering semantics change.
-                    "raw_detection_cache_version": 3,
+                    "raw_detection_cache_version": 4,
                 }
                 # Class order should not change cache identity.
                 classes = cache_params["yolo"].get("YOLO_TARGET_CLASSES")
@@ -11625,9 +12439,22 @@ class MainWindow(QMainWindow):
             else "yolo_obb"
         )
 
-        yolo_path = resolve_model_path(
+        yolo_mode = (
+            "sequential" if self.combo_yolo_obb_mode.currentIndex() == 1 else "direct"
+        )
+        yolo_direct_path = resolve_model_path(
             self._get_selected_yolo_model_path() or "yolo26s-obb.pt"
         )
+        yolo_detect_path = resolve_model_path(
+            self._get_selected_yolo_detect_model_path() or ""
+        )
+        yolo_crop_obb_path = resolve_model_path(
+            self._get_selected_yolo_crop_obb_model_path() or "yolo26s-obb.pt"
+        )
+        yolo_headtail_path = resolve_model_path(
+            self._get_selected_yolo_headtail_model_path() or ""
+        )
+        yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
 
         yolo_cls = None
         if self.line_yolo_classes.text().strip():
@@ -11724,6 +12551,18 @@ class MainWindow(QMainWindow):
             "START_FRAME": self.spin_start_frame.value(),
             "END_FRAME": self.spin_end_frame.value(),
             "YOLO_MODEL_PATH": yolo_path,
+            "YOLO_OBB_MODE": yolo_mode,
+            "YOLO_OBB_DIRECT_MODEL_PATH": yolo_direct_path,
+            "YOLO_DETECT_MODEL_PATH": yolo_detect_path,
+            "YOLO_CROP_OBB_MODEL_PATH": yolo_crop_obb_path,
+            "YOLO_HEADTAIL_MODEL_PATH": yolo_headtail_path,
+            "POSE_OVERRIDES_HEADTAIL": self.chk_pose_overrides_headtail.isChecked(),
+            "YOLO_SEQ_CROP_PAD_RATIO": self.spin_yolo_seq_crop_pad.value(),
+            "YOLO_SEQ_MIN_CROP_SIZE_PX": self.spin_yolo_seq_min_crop_px.value(),
+            "YOLO_SEQ_ENFORCE_SQUARE_CROP": self.chk_yolo_seq_square_crop.isChecked(),
+            "YOLO_SEQ_STAGE2_IMGSZ": self.spin_yolo_seq_stage2_imgsz.value(),
+            "YOLO_SEQ_STAGE2_POW2_PAD": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+            "YOLO_HEADTAIL_CONF_THRESHOLD": self.spin_yolo_headtail_conf.value(),
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
             "USE_CUSTOM_OBB_IOU_FILTERING": True,
@@ -12096,35 +12935,94 @@ class MainWindow(QMainWindow):
             )
 
             # === YOLO CONFIGURATION ===
-            yolo_model = get_cfg("yolo_model_path", default="yolo26s-obb.pt")
+            yolo_mode = str(get_cfg("yolo_obb_mode", default="direct")).strip().lower()
+            if yolo_mode not in {"direct", "sequential"}:
+                yolo_mode = "direct"
+            self.combo_yolo_obb_mode.setCurrentIndex(
+                1 if yolo_mode == "sequential" else 0
+            )
 
-            # Resolve model path (handles both relative and absolute)
-            resolved_yolo_model = resolve_model_path(yolo_model)
+            yolo_direct_model = get_cfg(
+                "yolo_obb_direct_model_path",
+                "yolo_model_path",
+                default="yolo26s-obb.pt",
+            )
+            yolo_detect_model = get_cfg("yolo_detect_model_path", default="")
+            yolo_crop_obb_model = get_cfg(
+                "yolo_crop_obb_model_path",
+                default=yolo_direct_model,
+            )
+            yolo_headtail_model = get_cfg("yolo_headtail_model_path", default="")
 
-            # Validate model exists if it's a relative path from preset
-            if preset_mode and not os.path.isabs(yolo_model):
-                if not os.path.exists(resolved_yolo_model):
+            resolved_yolo_direct = resolve_model_path(yolo_direct_model)
+            resolved_yolo_detect = resolve_model_path(yolo_detect_model)
+            resolved_yolo_crop_obb = resolve_model_path(yolo_crop_obb_model)
+            resolved_yolo_headtail = resolve_model_path(yolo_headtail_model)
+
+            if preset_mode:
+                for model_key, model_cfg, model_resolved in (
+                    ("Direct OBB model", yolo_direct_model, resolved_yolo_direct),
+                    (
+                        "Sequential detect model",
+                        yolo_detect_model,
+                        resolved_yolo_detect,
+                    ),
+                    (
+                        "Sequential crop OBB model",
+                        yolo_crop_obb_model,
+                        resolved_yolo_crop_obb,
+                    ),
+                    ("Head-tail model", yolo_headtail_model, resolved_yolo_headtail),
+                ):
+                    if not model_cfg:
+                        continue
+                    if os.path.isabs(str(model_cfg)):
+                        continue
+                    if os.path.exists(model_resolved):
+                        continue
                     logger.warning(
-                        f"Preset references non-existent model: {yolo_model}\n"
-                        f"Expected location: {resolved_yolo_model}"
-                    )
-                    QMessageBox.warning(
-                        self,
-                        "Model Not Found",
-                        f"The preset references a model that doesn't exist:\n\n"
-                        f"Model: {yolo_model}\n"
-                        f"Expected at: {resolved_yolo_model}\n\n"
-                        f"Please ensure the model is in your local models archive:\n"
-                        f"{get_models_directory()}",
+                        "Preset references non-existent %s: %s (expected: %s)",
+                        model_key,
+                        model_cfg,
+                        model_resolved,
                     )
 
-            # Refresh model combo from repository and apply selection
-            self._refresh_yolo_model_combo(preferred_model_path=yolo_model)
-            if self._get_selected_yolo_model_path() != make_model_path_relative(
-                yolo_model
-            ):
-                # Fall back to resolved path when the configured relative path cannot be matched
-                self._set_yolo_model_selection(resolved_yolo_model)
+            self._refresh_yolo_model_combo(preferred_model_path=yolo_direct_model)
+            self._set_yolo_model_selection(resolved_yolo_direct)
+            self._refresh_yolo_detect_model_combo(
+                preferred_model_path=yolo_detect_model
+            )
+            self._set_yolo_detect_model_selection(resolved_yolo_detect)
+            self._refresh_yolo_crop_obb_model_combo(
+                preferred_model_path=yolo_crop_obb_model
+            )
+            self._set_yolo_crop_obb_model_selection(resolved_yolo_crop_obb)
+            self._refresh_yolo_headtail_model_combo(
+                preferred_model_path=yolo_headtail_model
+            )
+            self._set_yolo_headtail_model_selection(resolved_yolo_headtail)
+            self.chk_pose_overrides_headtail.setChecked(
+                bool(get_cfg("pose_overrides_headtail", default=True))
+            )
+            self.spin_yolo_seq_crop_pad.setValue(
+                float(get_cfg("yolo_seq_crop_pad_ratio", default=0.15))
+            )
+            self.spin_yolo_seq_min_crop_px.setValue(
+                int(get_cfg("yolo_seq_min_crop_size_px", default=64))
+            )
+            self.chk_yolo_seq_square_crop.setChecked(
+                bool(get_cfg("yolo_seq_enforce_square_crop", default=True))
+            )
+            self.spin_yolo_seq_stage2_imgsz.setValue(
+                int(get_cfg("yolo_seq_stage2_imgsz", default=160))
+            )
+            self.chk_yolo_seq_stage2_pow2_pad.setChecked(
+                bool(get_cfg("yolo_seq_stage2_pow2_pad", default=False))
+            )
+            self.spin_yolo_headtail_conf.setValue(
+                float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
+            )
+            self._on_yolo_mode_changed(self.combo_yolo_obb_mode.currentIndex())
 
             self.spin_yolo_confidence.setValue(
                 get_cfg("yolo_confidence_threshold", default=0.25)
@@ -12134,6 +13032,8 @@ class MainWindow(QMainWindow):
             yolo_cls = get_cfg("yolo_target_classes", default=None)
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
+            else:
+                self.line_yolo_classes.clear()
 
             compute_runtime_cfg = (
                 str(
@@ -12774,7 +13674,14 @@ class MainWindow(QMainWindow):
         Returns:
             bool: True if config was saved successfully, False if cancelled or failed
         """
-        yolo_path = self._get_selected_yolo_model_path()
+        yolo_mode = (
+            "sequential" if self.combo_yolo_obb_mode.currentIndex() == 1 else "direct"
+        )
+        yolo_direct_path = self._get_selected_yolo_model_path()
+        yolo_detect_path = self._get_selected_yolo_detect_model_path()
+        yolo_crop_obb_path = self._get_selected_yolo_crop_obb_model_path()
+        yolo_headtail_path = self._get_selected_yolo_headtail_model_path()
+        yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
         yolo_cls = (
             [int(x.strip()) for x in self.line_yolo_classes.text().split(",")]
             if self.line_yolo_classes.text().strip()
@@ -12871,6 +13778,24 @@ class MainWindow(QMainWindow):
                 # === YOLO CONFIGURATION ===
                 # Store relative path if model is in archive, otherwise absolute
                 "yolo_model_path": make_model_path_relative(yolo_path),
+                "yolo_obb_mode": yolo_mode,
+                "yolo_obb_direct_model_path": make_model_path_relative(
+                    yolo_direct_path
+                ),
+                "yolo_detect_model_path": make_model_path_relative(yolo_detect_path),
+                "yolo_crop_obb_model_path": make_model_path_relative(
+                    yolo_crop_obb_path
+                ),
+                "yolo_headtail_model_path": make_model_path_relative(
+                    yolo_headtail_path
+                ),
+                "pose_overrides_headtail": self.chk_pose_overrides_headtail.isChecked(),
+                "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
+                "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
+                "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
+                "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
+                "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+                "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
                 "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
                 "yolo_iou_threshold": self.spin_yolo_iou.value(),
                 "use_custom_obb_iou_filtering": self.chk_use_custom_obb_iou.isChecked(),
@@ -12883,6 +13808,25 @@ class MainWindow(QMainWindow):
             cfg["yolo_model_species"] = yolo_meta.get("species", "")
             cfg["yolo_model_info"] = yolo_meta.get("model_info", "")
             cfg["yolo_model_added_at"] = yolo_meta.get("added_at", "")
+
+        role_models = {
+            "yolo_obb_direct": yolo_direct_path,
+            "yolo_seq_detect": yolo_detect_path,
+            "yolo_seq_crop_obb": yolo_crop_obb_path,
+            "yolo_headtail": yolo_headtail_path,
+        }
+        for role_key, model_path in role_models.items():
+            if not model_path:
+                continue
+            role_meta = get_yolo_model_metadata(model_path) or {}
+            if not role_meta:
+                continue
+            cfg[f"{role_key}_model_size"] = role_meta.get("size", "")
+            cfg[f"{role_key}_model_species"] = role_meta.get("species", "")
+            cfg[f"{role_key}_model_info"] = role_meta.get("model_info", "")
+            cfg[f"{role_key}_model_added_at"] = role_meta.get("added_at", "")
+            cfg[f"{role_key}_task_family"] = role_meta.get("task_family", "")
+            cfg[f"{role_key}_usage_role"] = role_meta.get("usage_role", "")
 
         # === COMPUTE RUNTIME ===
         runtime_detection = derive_detection_runtime_settings(compute_runtime)

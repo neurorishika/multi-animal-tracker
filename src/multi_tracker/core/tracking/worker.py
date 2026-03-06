@@ -553,6 +553,31 @@ class TrackingWorker(QThread):
 
         return self._collapse_obb_axis_theta(measured_theta, reference_theta)
 
+    @staticmethod
+    def _select_directed_heading(
+        pose_heading,
+        pose_directed,
+        headtail_heading,
+        headtail_directed,
+        pose_overrides_headtail=True,
+    ):
+        """Choose directed heading source (pose/head-tail) according to precedence."""
+        pose_valid = bool(pose_directed) and np.isfinite(float(pose_heading))
+        headtail_valid = bool(headtail_directed) and np.isfinite(
+            float(headtail_heading)
+        )
+        if pose_overrides_headtail:
+            if pose_valid:
+                return float(pose_heading), True
+            if headtail_valid:
+                return float(headtail_heading), True
+            return float("nan"), False
+        if headtail_valid:
+            return float(headtail_heading), True
+        if pose_valid:
+            return float(pose_heading), True
+        return float("nan"), False
+
     def _precompute_pose_data(
         self,
         detector,
@@ -736,6 +761,8 @@ class TrackingWorker(QThread):
                     raw_confidences,
                     raw_obb_corners,
                     raw_detection_ids,
+                    raw_heading_hints,
+                    raw_directed_mask,
                 ) = detection_cache.get_frame(frame_idx)
 
                 (
@@ -745,6 +772,8 @@ class TrackingWorker(QThread):
                     _confs,
                     filtered_obb_corners,
                     detection_ids,
+                    _heading_hints,
+                    _directed_mask,
                 ) = detector.filter_raw_detections(
                     raw_meas,
                     raw_sizes,
@@ -753,6 +782,8 @@ class TrackingWorker(QThread):
                     raw_obb_corners,
                     roi_mask=roi_mask,
                     detection_ids=raw_detection_ids,
+                    heading_hints=raw_heading_hints,
+                    directed_mask=raw_directed_mask,
                 )
 
                 # Read frame
@@ -1053,6 +1084,8 @@ class TrackingWorker(QThread):
                 raw_shapes,
                 raw_confidences,
                 raw_obb_corners,
+                raw_heading_hints,
+                raw_directed_mask,
             ) in enumerate(batch_results):
                 relative_idx = batch_start_idx + local_idx
                 actual_frame_idx = (
@@ -1070,6 +1103,8 @@ class TrackingWorker(QThread):
                     raw_confidences,
                     raw_obb_corners,
                     detection_ids,
+                    raw_heading_hints,
+                    raw_directed_mask,
                 )
 
             # Track batch timing
@@ -1661,6 +1696,8 @@ class TrackingWorker(QThread):
             filtered_obb_corners = []
             detection_confidences = []
             pose_directed_mask = np.zeros(0, dtype=np.uint8)
+            detection_headtail_heading = np.full(0, np.nan, dtype=np.float32)
+            headtail_directed_mask = np.zeros(0, dtype=np.uint8)
             raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = (
                 [],
                 [],
@@ -1668,6 +1705,8 @@ class TrackingWorker(QThread):
                 [],
                 [],
             )
+            raw_heading_hints = []
+            raw_directed_mask = []
             yolo_results = None
             fg_mask = None
             bg_u8 = None
@@ -1683,6 +1722,8 @@ class TrackingWorker(QThread):
                     raw_confidences,
                     raw_obb_corners,
                     raw_detection_ids,
+                    raw_heading_hints,
+                    raw_directed_mask,
                 ) = detection_cache.get_frame(actual_frame_index)
 
                 if detection_method == "yolo_obb":
@@ -1693,6 +1734,8 @@ class TrackingWorker(QThread):
                         detection_confidences,
                         filtered_obb_corners,
                         detection_ids,
+                        filtered_heading_hints,
+                        filtered_directed_mask,
                     ) = detector.filter_raw_detections(
                         raw_meas,
                         raw_sizes,
@@ -1701,6 +1744,14 @@ class TrackingWorker(QThread):
                         raw_obb_corners,
                         roi_mask=ROI_mask_current,
                         detection_ids=raw_detection_ids,
+                        heading_hints=raw_heading_hints,
+                        directed_mask=raw_directed_mask,
+                    )
+                    detection_headtail_heading = np.asarray(
+                        filtered_heading_hints, dtype=np.float32
+                    )
+                    headtail_directed_mask = np.asarray(
+                        filtered_directed_mask, dtype=np.uint8
                     )
                 else:
                     meas = raw_meas
@@ -1766,6 +1817,8 @@ class TrackingWorker(QThread):
                 raw_confidences = detection_confidences
                 raw_obb_corners = filtered_obb_corners
                 raw_detection_ids = detection_ids
+                raw_heading_hints = []
+                raw_directed_mask = []
 
             elif (
                 detection_method == "yolo_obb" and frame is not None
@@ -1781,6 +1834,8 @@ class TrackingWorker(QThread):
                     yolo_results,
                     raw_confidences,
                     raw_obb_corners,
+                    raw_heading_hints,
+                    raw_directed_mask,
                 ) = detector.detect_objects(
                     yolo_frame,
                     self.frame_count,
@@ -1797,6 +1852,8 @@ class TrackingWorker(QThread):
                     detection_confidences,
                     filtered_obb_corners,
                     detection_ids,
+                    filtered_heading_hints,
+                    filtered_directed_mask,
                 ) = detector.filter_raw_detections(
                     raw_meas,
                     raw_sizes,
@@ -1805,6 +1862,14 @@ class TrackingWorker(QThread):
                     raw_obb_corners,
                     roi_mask=ROI_mask_current,
                     detection_ids=raw_detection_ids,
+                    heading_hints=raw_heading_hints,
+                    directed_mask=raw_directed_mask,
+                )
+                detection_headtail_heading = np.asarray(
+                    filtered_heading_hints, dtype=np.float32
+                )
+                headtail_directed_mask = np.asarray(
+                    filtered_directed_mask, dtype=np.uint8
                 )
                 if yolo_results is not None:
                     yolo_results._filtered_obb_corners = filtered_obb_corners
@@ -1828,6 +1893,8 @@ class TrackingWorker(QThread):
                     raw_confidences,
                     raw_obb_corners if raw_obb_corners else None,
                     raw_detection_ids,
+                    raw_heading_hints,
+                    raw_directed_mask,
                 )
                 cached_frame_indices.add(actual_frame_index)
 
@@ -1837,6 +1904,8 @@ class TrackingWorker(QThread):
             detection_pose_heading = np.full(len(meas), np.nan, dtype=np.float32)
             detection_pose_keypoints = [None] * len(meas)
             detection_pose_visibility = np.zeros(len(meas), dtype=np.float32)
+            detection_directed_heading = np.full(len(meas), np.nan, dtype=np.float32)
+            detection_directed_mask = np.zeros(len(meas), dtype=np.uint8)
 
             if meas and shapes:
                 reference_body_size = float(params.get("REFERENCE_BODY_SIZE", 20.0))
@@ -1885,6 +1954,38 @@ class TrackingWorker(QThread):
                     detection_pose_heading[det_idx] = np.float32(pose_theta)
                     pose_directed_mask[det_idx] = 1
 
+            pose_overrides_headtail = bool(params.get("POSE_OVERRIDES_HEADTAIL", True))
+            if len(meas) > 0:
+                for det_idx in range(len(meas)):
+                    pose_heading = (
+                        float(detection_pose_heading[det_idx])
+                        if det_idx < len(detection_pose_heading)
+                        else float("nan")
+                    )
+                    pose_directed = bool(
+                        det_idx < len(pose_directed_mask)
+                        and pose_directed_mask[det_idx] == 1
+                    )
+                    headtail_heading = (
+                        float(detection_headtail_heading[det_idx])
+                        if det_idx < len(detection_headtail_heading)
+                        else float("nan")
+                    )
+                    headtail_directed = bool(
+                        det_idx < len(headtail_directed_mask)
+                        and headtail_directed_mask[det_idx] == 1
+                    )
+                    selected_heading, is_directed = self._select_directed_heading(
+                        pose_heading=pose_heading,
+                        pose_directed=pose_directed,
+                        headtail_heading=headtail_heading,
+                        headtail_directed=headtail_directed,
+                        pose_overrides_headtail=pose_overrides_headtail,
+                    )
+                    if is_directed:
+                        detection_directed_heading[det_idx] = selected_heading
+                        detection_directed_mask[det_idx] = 1
+
             if len(meas) >= params.get("MIN_DETECTIONS_TO_START", 1):
                 detection_counts += 1
             else:
@@ -1927,7 +2028,7 @@ class TrackingWorker(QThread):
                 association_data = {
                     "detection_confidences": detection_confidences,
                     "detection_crop_quality": detection_crop_quality,
-                    "detection_pose_heading": detection_pose_heading,
+                    "detection_pose_heading": detection_directed_heading,
                     "detection_pose_keypoints": detection_pose_keypoints,
                     "detection_pose_visibility": detection_pose_visibility,
                     "track_pose_prototypes": track_pose_prototypes,
@@ -1997,23 +2098,24 @@ class TrackingWorker(QThread):
                     x = float(meas[c][0])
                     y = float(meas[c][1])
                     measured_theta = float(meas[c][2])
-                    pose_directed = bool(
-                        c < len(pose_directed_mask) and pose_directed_mask[c] == 1
+                    directed_heading = bool(
+                        c < len(detection_directed_mask)
+                        and detection_directed_mask[c] == 1
                     )
                     tracking_theta_measurement = measured_theta
-                    if pose_directed and c < len(detection_pose_heading):
-                        pose_heading = float(detection_pose_heading[c])
-                        if np.isfinite(pose_heading):
-                            tracking_theta_measurement = pose_heading
+                    if directed_heading and c < len(detection_directed_heading):
+                        directed_theta = float(detection_directed_heading[c])
+                        if np.isfinite(directed_theta):
+                            tracking_theta_measurement = directed_theta
 
                     theta_for_tracking = self._resolve_tracking_theta(
                         r,
                         tracking_theta_measurement,
-                        pose_directed=pose_directed,
+                        pose_directed=directed_heading,
                         orientation_last=orientation_last,
                         fallback_theta=preds[r, 2] if r < len(preds) else None,
                     )
-                    if pose_directed:
+                    if directed_heading:
                         pose_direction_applied_count += 1
                     else:
                         pose_direction_fallback_count += 1
@@ -2104,7 +2206,7 @@ class TrackingWorker(QThread):
 
                     theta_out = orientation_last[r]
                     # Backward fallback orientation historically needs a 180-degree correction.
-                    if self.backward_mode and not pose_directed:
+                    if self.backward_mode and not directed_heading:
                         theta_out = (theta_out + np.pi) % (2 * np.pi)
 
                     # Update trajectory with actual frame index
@@ -2197,19 +2299,23 @@ class TrackingWorker(QThread):
                 for d_idx in free_dets:
                     for track_idx in range(N):
                         if track_states[track_idx] == "lost":
-                            pose_directed = bool(
-                                d_idx < len(pose_directed_mask)
-                                and pose_directed_mask[d_idx] == 1
+                            directed_heading = bool(
+                                d_idx < len(detection_directed_mask)
+                                and detection_directed_mask[d_idx] == 1
                             )
                             theta_measurement = float(meas[d_idx][2])
-                            if pose_directed and d_idx < len(detection_pose_heading):
-                                pose_heading = float(detection_pose_heading[d_idx])
-                                if np.isfinite(pose_heading):
-                                    theta_measurement = pose_heading
+                            if directed_heading and d_idx < len(
+                                detection_directed_heading
+                            ):
+                                directed_theta = float(
+                                    detection_directed_heading[d_idx]
+                                )
+                                if np.isfinite(directed_theta):
+                                    theta_measurement = directed_theta
                             theta_init = self._resolve_tracking_theta(
                                 track_idx,
                                 theta_measurement,
-                                pose_directed=pose_directed,
+                                pose_directed=directed_heading,
                                 orientation_last=orientation_last,
                                 fallback_theta=(
                                     self.kf_manager.X[track_idx, 2]
@@ -2532,6 +2638,8 @@ class TrackingWorker(QThread):
                         [],
                         None,
                         [],
+                        [],
+                        [],
                     )
 
         # === 3. CLEANUP (Identical to Original) ===
@@ -2566,9 +2674,9 @@ class TrackingWorker(QThread):
             if dataset_path:
                 logger.info(f"Individual dataset saved to: {dataset_path}")
 
-        if pose_direction_enabled:
+        if pose_direction_applied_count > 0 or pose_direction_fallback_count > 0:
             logger.info(
-                "Pose direction summary: applied=%d, fallback=%d",
+                "Directed heading summary: applied=%d, fallback=%d",
                 int(pose_direction_applied_count),
                 int(pose_direction_fallback_count),
             )
