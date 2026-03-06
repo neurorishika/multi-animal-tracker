@@ -8,6 +8,8 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
+from ...core.canonicalization import MatMetadataCanonicalizer
+
 
 class TaskSignals(QObject):
     """
@@ -75,6 +77,7 @@ class EmbeddingWorker(QRunnable):
         batch_size: int = 32,
         db_path: Optional[Path] = None,
         force_recompute: bool = False,
+        canonicalize_mat: bool = False,
     ):
         super().__init__()
         self.image_paths = image_paths
@@ -83,12 +86,16 @@ class EmbeddingWorker(QRunnable):
         self.batch_size = batch_size
         self.db_path = db_path
         self.force_recompute = force_recompute
+        self.canonicalize_mat = bool(canonicalize_mat)
         self.signals = TaskSignals()
 
     @Slot()
     def run(self):
         try:
             self.signals.started.emit()
+            cache_model_name = self.model_name
+            if self.canonicalize_mat:
+                cache_model_name = f"{self.model_name}__matcanon_v1"
 
             # Check for cached embeddings
             if self.db_path and not self.force_recompute:
@@ -98,7 +105,7 @@ class EmbeddingWorker(QRunnable):
 
                 db = ClassKitDB(self.db_path)
 
-                cached = db.get_embeddings(self.model_name, self.device)
+                cached = db.get_embeddings(cache_model_name, self.device)
                 if cached is not None:
                     embeddings, metadata = cached
                     self.signals.progress.emit(
@@ -131,6 +138,7 @@ class EmbeddingWorker(QRunnable):
 
             self.signals.progress.emit(8, "Loading model weights...")
             embedder.load_model()
+            canonicalizer = MatMetadataCanonicalizer(enabled=self.canonicalize_mat)
 
             self.signals.progress.emit(
                 10, f"Computing embeddings for {len(self.image_paths):,} images..."
@@ -140,7 +148,11 @@ class EmbeddingWorker(QRunnable):
             )
 
             # Compute embeddings
-            embeddings = embedder.embed(self.image_paths, batch_size=self.batch_size)
+            embeddings = embedder.embed(
+                self.image_paths,
+                batch_size=self.batch_size,
+                preprocess_fn=canonicalizer if self.canonicalize_mat else None,
+            )
 
             self.signals.progress.emit(
                 90, f"Computed {embeddings.shape[0]:,} embeddings"
@@ -151,7 +163,15 @@ class EmbeddingWorker(QRunnable):
                 self.signals.progress.emit(92, "Saving embeddings to cache...")
                 db = ClassKitDB(self.db_path)
                 db.save_embeddings(
-                    embeddings, self.model_name, self.device, self.batch_size
+                    embeddings,
+                    cache_model_name,
+                    self.device,
+                    self.batch_size,
+                    meta={
+                        "model_name": self.model_name,
+                        "canonicalize_mat": bool(self.canonicalize_mat),
+                        "canonicalization_summary": canonicalizer.summary(),
+                    },
                 )
                 self.signals.progress.emit(95, "Cached for future use")
 
@@ -161,6 +181,11 @@ class EmbeddingWorker(QRunnable):
                     "embeddings": embeddings,
                     "dimension": embedder.dimension,
                     "cached": False,
+                    "metadata": {
+                        "model_name": self.model_name,
+                        "canonicalize_mat": bool(self.canonicalize_mat),
+                        "canonicalization_summary": canonicalizer.summary(),
+                    },
                 }
             )
 
@@ -510,6 +535,84 @@ class TrainingWorker(QRunnable):
         except Exception as e:
             traceback.print_exc()
             self.signals.error.emit(str(e))
+        finally:
+            self.signals.finished.emit()
+
+
+class ClassKitTrainingWorker(QRunnable):
+    """Worker for ClassKit classification training (flat or multi-head)."""
+
+    def __init__(
+        self,
+        *,
+        role,
+        specs,
+        run_dir: str,
+        multi_head: bool = False,
+    ):
+        super().__init__()
+        self.role = role
+        self.specs = (
+            specs  # list of TrainingRunSpec (one per factor if multi_head, else one)
+        )
+        self.run_dir = run_dir
+        self.multi_head = multi_head
+        self.signals = TaskSignals()
+        self._canceled = False
+
+    def cancel(self):
+        self._canceled = True
+
+    def run(self):
+        from pathlib import Path
+
+        from ...training.runner import run_training
+
+        try:
+            self.signals.started.emit()
+            results = []
+
+            for i, spec in enumerate(self.specs):
+                if self._canceled:
+                    self.signals.error.emit("Canceled by user")
+                    return
+
+                factor_run_dir = (
+                    Path(self.run_dir) / f"factor_{i}"
+                    if self.multi_head
+                    else Path(self.run_dir) / "run"
+                )
+                n_specs = len(self.specs)
+
+                def log_cb(msg: str, _i: int = i) -> None:
+                    prefix = f"[factor {_i}] " if self.multi_head else ""
+                    self.signals.progress.emit(0, f"{prefix}{msg}")
+
+                def progress_cb(
+                    current: int, total: int, _i: int = i, _n: int = n_specs
+                ) -> None:
+                    if self.multi_head:
+                        overall = int((_i * 100 + current * 100 // max(1, total)) / _n)
+                    else:
+                        overall = current * 100 // max(1, total)
+                    self.signals.progress.emit(overall, "")
+
+                result = run_training(
+                    spec,
+                    factor_run_dir,
+                    log_cb=log_cb,
+                    progress_cb=progress_cb,
+                    should_cancel=lambda: self._canceled,
+                )
+                results.append(result)
+
+                if not result.get("success"):
+                    self.signals.error.emit(f"Training failed for spec {i}")
+                    return
+
+            self.signals.success.emit(results)
+        except Exception as exc:
+            self.signals.error.emit(str(exc))
         finally:
             self.signals.finished.emit()
 

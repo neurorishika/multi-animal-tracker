@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QTextEdit,
@@ -479,44 +481,43 @@ class ClusterDialog(QDialog):
         return self.n_clusters_spin.value(), self.gpu_combo.currentData()
 
 
-class TrainingDialog(QDialog):
-    """Dialog for configuring embedding-head training."""
+class ClassKitTrainingDialog(QDialog):
+    """Training dialog for ClassKit: flat or multi-head, tiny CNN or YOLO-classify."""
 
-    def __init__(self, parent=None):
+    def __init__(self, scheme=None, parent=None):
         super().__init__(parent)
+        self._scheme = scheme
+        self._train_results = None
+        self._worker = None
         self.setWindowTitle("Train Classifier")
-        self.setMinimumWidth(520)
+        self.setMinimumWidth(600)
+        self.setMinimumHeight(520)
+        self._build_ui()
 
-        self.setStyleSheet("""
-            QDialog { background-color: #1e1e1e; }
-            QLabel { color: #cccccc; }
-            QComboBox, QSpinBox, QDoubleSpinBox {
-                background-color: #252526;
-                color: #e0e0e0;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-                padding: 6px;
-            }
-            QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
-                border: 1px solid #007acc;
-            }
-            QCheckBox { color: #cccccc; }
-            """)
-
+    def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
+        layout.setSpacing(10)
 
-        header = QLabel("<h2 style='color: #ffffff;'>Embedding Head Training</h2>")
+        # Header
+        total = self._scheme.total_classes if self._scheme else "?"
+        name = self._scheme.name if self._scheme else "free-form"
+        header = QLabel(
+            f"<h2 style='color:#ffffff;margin:0'>Train Classifier</h2>"
+            f"<p style='color:#888;margin:4px 0 0 0'>Scheme: <b>{name}</b>"
+            f" &nbsp;|&nbsp; Classes: <b>{total}</b></p>"
+        )
+        header.setStyleSheet("background: #252526; padding: 10px; border-radius: 4px;")
         layout.addWidget(header)
 
         form = QFormLayout()
-        form.setSpacing(10)
+        form.setSpacing(8)
 
-        self.model_type_combo = QComboBox()
-        self.model_type_combo.addItem("Linear Head (fast)", "linear")
-        self.model_type_combo.addItem("MLP Head (stronger)", "mlp")
-        form.addRow("<b>Model Type:</b>", self.model_type_combo)
+        # Training mode
+        self.mode_combo = QComboBox()
+        self._populate_modes()
+        form.addRow("<b>Training Mode:</b>", self.mode_combo)
 
+        # Device
         self.device_combo = QComboBox()
         self.device_combo.addItem("CPU", "cpu")
         try:
@@ -531,27 +532,22 @@ class TrainingDialog(QDialog):
             pass
         form.addRow("<b>Device:</b>", self.device_combo)
 
-        self.hidden_dim_spin = QSpinBox()
-        self.hidden_dim_spin.setRange(32, 4096)
-        self.hidden_dim_spin.setValue(512)
-        form.addRow("<b>MLP Hidden Dim:</b>", self.hidden_dim_spin)
+        # Base model (YOLO only)
+        self.base_model_combo = QComboBox()
+        for m in ["yolo11n-cls.pt", "yolo11s-cls.pt", "yolo11m-cls.pt"]:
+            self.base_model_combo.addItem(m, m)
+        form.addRow("<b>Base Model (YOLO):</b>", self.base_model_combo)
 
-        self.dropout_spin = QDoubleSpinBox()
-        self.dropout_spin.setRange(0.0, 0.9)
-        self.dropout_spin.setSingleStep(0.05)
-        self.dropout_spin.setDecimals(2)
-        self.dropout_spin.setValue(0.1)
-        form.addRow("<b>Dropout:</b>", self.dropout_spin)
-
-        self.batch_size_spin = QSpinBox()
-        self.batch_size_spin.setRange(8, 4096)
-        self.batch_size_spin.setValue(256)
-        form.addRow("<b>Batch Size:</b>", self.batch_size_spin)
-
+        # Hyperparams
         self.epochs_spin = QSpinBox()
         self.epochs_spin.setRange(1, 500)
-        self.epochs_spin.setValue(100)
+        self.epochs_spin.setValue(50)
         form.addRow("<b>Epochs:</b>", self.epochs_spin)
+
+        self.batch_spin = QSpinBox()
+        self.batch_spin.setRange(4, 512)
+        self.batch_spin.setValue(32)
+        form.addRow("<b>Batch Size:</b>", self.batch_spin)
 
         self.lr_spin = QDoubleSpinBox()
         self.lr_spin.setDecimals(5)
@@ -560,72 +556,92 @@ class TrainingDialog(QDialog):
         self.lr_spin.setValue(0.001)
         form.addRow("<b>Learning Rate:</b>", self.lr_spin)
 
-        self.weight_decay_spin = QDoubleSpinBox()
-        self.weight_decay_spin.setDecimals(5)
-        self.weight_decay_spin.setRange(0.0, 1.0)
-        self.weight_decay_spin.setSingleStep(0.001)
-        self.weight_decay_spin.setValue(0.01)
-        form.addRow("<b>Weight Decay:</b>", self.weight_decay_spin)
-
-        self.early_stop_spin = QSpinBox()
-        self.early_stop_spin.setRange(1, 100)
-        self.early_stop_spin.setValue(10)
-        form.addRow("<b>Early Stop Patience:</b>", self.early_stop_spin)
-
         self.val_fraction_spin = QDoubleSpinBox()
         self.val_fraction_spin.setRange(0.0, 0.5)
         self.val_fraction_spin.setSingleStep(0.05)
         self.val_fraction_spin.setDecimals(2)
         self.val_fraction_spin.setValue(0.2)
-        form.addRow("<b>Validation Fraction:</b>", self.val_fraction_spin)
-
-        self.calibrate_check = QCheckBox("Run calibration when validation split exists")
-        self.calibrate_check.setChecked(True)
-        form.addRow("", self.calibrate_check)
+        form.addRow("<b>Val Fraction:</b>", self.val_fraction_spin)
 
         layout.addLayout(form)
 
-        info = QLabel(
-            "<b>Notes:</b><br>"
-            "• Linear is fastest and works well for small datasets.<br>"
-            "• MLP can improve accuracy with enough labels.<br>"
-            "• Validation fraction 0 disables validation and calibration."
+        # Log panel
+        self.log_view = QPlainTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setFixedHeight(160)
+        self.log_view.setStyleSheet(
+            "background:#111; color:#ccc; font-family:monospace; font-size:11px;"
         )
-        info.setWordWrap(True)
-        info.setStyleSheet(
-            "padding: 12px; background-color: #252526; border-radius: 6px; "
-            + "border-left: 3px solid #0e639c; color: #aaaaaa; line-height: 1.8;"
-        )
-        layout.addWidget(info)
+        layout.addWidget(self.log_view)
 
-        self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        self.buttons.accepted.connect(self.accept)
-        self.buttons.rejected.connect(self.reject)
-        layout.addWidget(self.buttons)
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        layout.addWidget(self.progress_bar)
 
-        self.model_type_combo.currentIndexChanged.connect(self._on_model_type_changed)
-        self._on_model_type_changed()
+        # Buttons
+        btn_row = QHBoxLayout()
+        self.start_btn = QPushButton("Start Training")
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setEnabled(False)
+        self.publish_btn = QPushButton("Publish to models/")
+        self.publish_btn.setEnabled(False)
+        self.close_btn = QPushButton("Close")
+        self.close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(self.start_btn)
+        btn_row.addWidget(self.cancel_btn)
+        btn_row.addWidget(self.publish_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(self.close_btn)
+        layout.addLayout(btn_row)
 
-    def _on_model_type_changed(self):
-        """Enable MLP-only options when needed."""
-        is_mlp = self.model_type_combo.currentData() == "mlp"
-        self.hidden_dim_spin.setEnabled(is_mlp)
+        self.cancel_btn.clicked.connect(self._on_cancel)
+        self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        self._on_mode_changed()
 
-    def get_settings(self):
-        """Return training hyperparameters from dialog."""
-        return {
-            "model_type": self.model_type_combo.currentData(),
-            "device": self.device_combo.currentData(),
-            "hidden_dim": self.hidden_dim_spin.value(),
-            "dropout": float(self.dropout_spin.value()),
-            "batch_size": self.batch_size_spin.value(),
-            "epochs": self.epochs_spin.value(),
-            "lr": float(self.lr_spin.value()),
-            "weight_decay": float(self.weight_decay_spin.value()),
-            "early_stop_patience": self.early_stop_spin.value(),
-            "val_fraction": float(self.val_fraction_spin.value()),
-            "calibrate": self.calibrate_check.isChecked(),
+    def _populate_modes(self):
+        self.mode_combo.clear()
+        if self._scheme is None:
+            self.mode_combo.addItem("Flat - Tiny CNN", "flat_tiny")
+            self.mode_combo.addItem("Flat - YOLO-classify", "flat_yolo")
+            return
+        labels = {
+            "flat_tiny": "Flat - Tiny CNN",
+            "flat_yolo": "Flat - YOLO-classify",
+            "multihead_tiny": "Multi-head - Tiny CNN (one model per factor)",
+            "multihead_yolo": "Multi-head - YOLO-classify (one model per factor)",
         }
+        for key in ["flat_tiny", "flat_yolo", "multihead_tiny", "multihead_yolo"]:
+            if key in self._scheme.training_modes:
+                self.mode_combo.addItem(labels[key], key)
+
+    def _on_mode_changed(self):
+        mode = self.mode_combo.currentData() or ""
+        self.base_model_combo.setVisible("yolo" in mode)
+
+    def _on_cancel(self):
+        if self._worker is not None:
+            self._worker.cancel()
+
+    def append_log(self, msg: str):
+        if msg:
+            self.log_view.appendPlainText(msg)
+            self.log_view.ensureCursorVisible()
+
+    def get_settings(self) -> dict:
+        return {
+            "mode": self.mode_combo.currentData(),
+            "device": self.device_combo.currentData(),
+            "base_model": self.base_model_combo.currentData(),
+            "epochs": self.epochs_spin.value(),
+            "batch": self.batch_spin.value(),
+            "lr": self.lr_spin.value(),
+            "val_fraction": self.val_fraction_spin.value(),
+        }
+
+
+TrainingDialog = ClassKitTrainingDialog
 
 
 class ExportDialog(QDialog):
