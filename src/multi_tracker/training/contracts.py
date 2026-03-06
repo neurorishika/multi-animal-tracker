@@ -13,6 +13,8 @@ class TrainingRole(str, Enum):
     OBB_DIRECT = "obb_direct"
     SEQ_DETECT = "seq_detect"
     SEQ_CROP_OBB = "seq_crop_obb"
+    # Deprecated: classification training has moved to ClassKit (classkit-labeler).
+    # Kept here for registry backwards-compatibility only — not exposed in any dialog.
     HEADTAIL_YOLO = "headtail_yolo"
     HEADTAIL_TINY = "headtail_tiny"
 

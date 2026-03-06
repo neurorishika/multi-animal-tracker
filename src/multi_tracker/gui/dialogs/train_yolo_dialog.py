@@ -1,16 +1,11 @@
-"""Qt dialog for building and training YOLO-OBB datasets from GUI sources.
+"""Role-aware MAT Training Center dialog for multi-model YOLO workflows."""
 
-This dialog coordinates conversion, validation, dataset merging, and training
-invocation workflows used by the MAT application.
-"""
+from __future__ import annotations
 
 import logging
-import os
-import shutil
-import sys
 from pathlib import Path
 
-from PySide6.QtCore import QProcess, Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -18,6 +13,8 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -36,240 +33,264 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...data.dataset_merge import (
-    detect_dataset_layout,
-    get_dataset_class_name,
-    merge_datasets,
-    rewrite_labels_to_single_class,
-    update_dataset_class_name,
-    validate_labels,
+from ...training import (
+    PublishPolicy,
+    SourceDataset,
+    SplitConfig,
+    TrainingHyperParams,
+    TrainingOrchestrator,
+    TrainingRole,
+    TrainingRunSpec,
 )
-from ...integrations.xanylabeling_cli import convert_project
+from ...training.validation import ValidationReport, format_validation_report
 from ...utils.gpu_utils import get_device_info
 
 logger = logging.getLogger(__name__)
 
 
-class BuildDatasetWorker(QThread):
-    """Background worker that converts and merges selected dataset sources."""
+class RoleTrainingWorker(QThread):
+    """Run selected role trainings sequentially in a background thread."""
 
-    status_signal = Signal(int, str)
     log_signal = Signal(str)
-    done_signal = Signal(bool, str)
+    role_started = Signal(str)
+    role_finished = Signal(str, bool, str)
+    progress_signal = Signal(str, int, int)
+    done_signal = Signal(list)
 
-    def __init__(
-        self,
-        sources,
-        output_dir,
-        class_name,
-        split_cfg,
-        seed,
-        dedup,
-        conda_env,
-        rewrite_classes=False,
-    ):
+    def __init__(self, orchestrator, role_entries):
         super().__init__()
-        self.sources = sources
-        self.output_dir = output_dir
-        self.class_name = class_name
-        self.split_cfg = split_cfg
-        self.seed = seed
-        self.dedup = dedup
-        self.conda_env = conda_env
-        self.rewrite_classes = rewrite_classes
-        self.converted_sources = []
+        self.orchestrator = orchestrator
+        self.role_entries = role_entries
+        self._cancel = False
 
-    def run(self: object) -> object:
-        """run method documentation."""
-        try:
-            converted = []
-            # Convert X-AnyLabeling sources
-            for src in self.sources:
-                row = src.get("row", 0)
-                if src["type"] != "xany":
-                    converted.append(src)
-                    continue
-                self.status_signal.emit(row, "Converting")
-                project_name = Path(src["path"]).name
-                ok, log = convert_project(src["path"], self.output_dir, self.conda_env)
-                self.log_signal.emit(log)
-                if not ok:
-                    self.status_signal.emit(row, "Failed")
-                    self.done_signal.emit(
-                        False, f"Conversion failed for {project_name}"
-                    )
-                    return
-                self.status_signal.emit(row, "Converted")
-                converted.append(
-                    {"name": project_name, "path": src["path"], "row": row}
+    def cancel(self):
+        self._cancel = True
+
+    def _should_cancel(self) -> bool:
+        return bool(self._cancel)
+
+    def run(self):
+        results = []
+        parent_run = ""
+        for entry in self.role_entries:
+            if self._cancel:
+                break
+            role = entry["role"]
+            spec = entry["spec"]
+            publish_meta = entry["publish_meta"]
+            self.role_started.emit(role.value)
+
+            def _log(msg: str, _role=role):
+                self.log_signal.emit(f"[{_role.value}] {msg}")
+
+            def _prog(cur: int, total: int, _role=role):
+                self.progress_signal.emit(_role.value, int(cur), int(total))
+
+            try:
+                result = self.orchestrator.run_role_training(
+                    spec,
+                    parent_run_id=parent_run,
+                    publish_metadata=publish_meta,
+                    log_cb=_log,
+                    progress_cb=_prog,
+                    should_cancel=self._should_cancel,
                 )
+            except Exception as exc:
+                result = {
+                    "run_id": "",
+                    "success": False,
+                    "error": str(exc),
+                    "published_registry_key": "",
+                    "published_model_path": "",
+                }
 
-            # Optionally rewrite classes to single class
-            if self.rewrite_classes:
-                for src in converted:
-                    update_dataset_class_name(src["path"], self.class_name)
-                    layout = detect_dataset_layout(src["path"])
-                    for _, (_, lbl_dir) in layout.items():
-                        rewrite_labels_to_single_class(lbl_dir, 0)
-
-            # Validate datasets & class count
-            for src in converted:
-                row = src.get("row", 0)
-                self.status_signal.emit(row, "Validating")
-                layout = detect_dataset_layout(src["path"])
-                class_name = get_dataset_class_name(src["path"])
-                if class_name and class_name != self.class_name:
-                    self.done_signal.emit(False, "CLASS_MISMATCH")
-                    return
-                for split, (_, lbl_dir) in layout.items():
-                    class_ids, _ = validate_labels(lbl_dir)
-                    if len(class_ids) > 1 or (
-                        len(class_ids) == 1 and 0 not in class_ids
-                    ):
-                        self.done_signal.emit(False, "CLASS_MISMATCH")
-                        return
-                self.status_signal.emit(row, "Validated")
-
-            # Merge datasets
-            merged_dir = merge_datasets(
-                sources=converted,
-                output_dir=self.output_dir,
-                class_name=self.class_name,
-                split_cfg=self.split_cfg,
-                seed=self.seed,
-                dedup=self.dedup,
+            result["role"] = role.value
+            results.append(result)
+            ok = bool(result.get("success", False))
+            msg = (
+                f"run_id={result.get('run_id', '')}"
+                if ok
+                else (
+                    result.get("error") or f"exit={result.get('exit_code', 'unknown')}"
+                )
             )
-            self.done_signal.emit(True, merged_dir)
-        except Exception as e:
-            self.log_signal.emit(str(e))
-            self.done_signal.emit(False, str(e))
+            self.role_finished.emit(role.value, ok, msg)
+            if result.get("run_id"):
+                parent_run = str(result["run_id"])
+
+        self.done_signal.emit(results)
 
 
 class TrainYoloDialog(QDialog):
-    """Interactive workflow dialog for YOLO dataset build and training runs."""
+    """MAT role-aware training center replacing legacy OBB-only trainer."""
 
     def __init__(self, parent=None, class_name="object", conda_envs=None):
-        """Initialize dialog UI state and defaults for dataset/training controls."""
         super().__init__(parent)
-        self.setWindowTitle("Train YOLO-OBB Model")
-        self.resize(900, 700)
-        self.class_name = class_name
+        self.setWindowTitle("Training Center (YOLO Multi-Role)")
+        self.resize(1100, 820)
+
+        self.class_name = str(class_name or "object")
         self.conda_envs = conda_envs or []
-        self.merged_dataset_dir = None
-        self.train_process = None
-        self.pending_build_args = None
+        self.worker = None
+
+        self.repo_root = Path(__file__).resolve().parents[3]
+        self.workspace_default = self.repo_root / "training" / "YOLO"
+        self.orchestrator = TrainingOrchestrator(self.workspace_default)
+
+        self.validation_report: ValidationReport | None = None
+        self.merged_dataset_dir = ""
+        self.role_dataset_dirs: dict[str, str] = {}
 
         self._build_ui()
 
     def _build_ui(self):
-        outer_layout = QVBoxLayout(self)
-
+        outer = QVBoxLayout(self)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.NoFrame)
         content = QWidget()
         layout = QVBoxLayout(content)
 
-        # Sources
-        gb_sources = QGroupBox("Sources")
-        v_sources = QVBoxLayout(gb_sources)
+        layout.addWidget(self._build_sources_group())
+        layout.addWidget(self._build_roles_group())
+        layout.addWidget(self._build_config_group())
+        layout.addWidget(self._build_run_group())
+
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+
+    def _build_sources_group(self):
+        gb = QGroupBox("Step 1: Sources + Validation")
+        v = QVBoxLayout(gb)
+
         self.table_sources = QTableWidget(0, 3)
         self.table_sources.setHorizontalHeaderLabels(["Type", "Path", "Status"])
         self.table_sources.horizontalHeader().setStretchLastSection(True)
-        v_sources.addWidget(self.table_sources)
+        v.addWidget(self.table_sources)
 
-        btn_row = QHBoxLayout()
-        self.btn_add_xany = QPushButton("Add X-AnyLabeling Projects…")
-        self.btn_add_yolo = QPushButton("Add YOLO-OBB Datasets…")
+        row = QHBoxLayout()
+        self.btn_add_obb = QPushButton("Add OBB Source Datasets…")
         self.btn_remove = QPushButton("Remove Selected")
         self.btn_clear = QPushButton("Clear All")
-        btn_row.addWidget(self.btn_add_xany)
-        btn_row.addWidget(self.btn_add_yolo)
-        btn_row.addWidget(self.btn_remove)
-        btn_row.addWidget(self.btn_clear)
-        v_sources.addLayout(btn_row)
+        self.btn_validate = QPushButton("Validate Sources")
+        row.addWidget(self.btn_add_obb)
+        row.addWidget(self.btn_remove)
+        row.addWidget(self.btn_clear)
+        row.addWidget(self.btn_validate)
+        v.addLayout(row)
 
-        # Conversion
-        gb_conv = QGroupBox("X-AnyLabeling Conversion")
-        v_conv = QVBoxLayout(gb_conv)
-        h_env = QHBoxLayout()
-        h_env.addWidget(QLabel("Conda Env:"))
-        self.combo_env = QComboBox()
-        self.combo_env.addItems(self.conda_envs or ["(none)"])
-        h_env.addWidget(self.combo_env, 1)
-        v_conv.addLayout(h_env)
+        self.validation_view = QTextEdit()
+        self.validation_view.setReadOnly(True)
+        self.validation_view.setPlaceholderText("Validation report appears here.")
+        v.addWidget(self.validation_view)
 
-        v_conv.addWidget(QLabel("Converter: X-AnyLabeling XLABEL → YOLO-OBB"))
+        self.btn_add_obb.clicked.connect(self._add_obb_sources)
+        self.btn_remove.clicked.connect(self._remove_selected)
+        self.btn_clear.clicked.connect(self._clear_sources)
+        self.btn_validate.clicked.connect(self._validate_sources)
 
-        # Merge
-        gb_merge = QGroupBox("Merge + Validation")
-        f_merge = QVBoxLayout(gb_merge)
-        h_out = QHBoxLayout()
-        repo_root = Path(__file__).resolve().parents[3]
-        self.repo_output_dir = repo_root / "training" / "YOLO-obb"
-        self.line_output = QLineEdit(str(self.repo_output_dir))
-        self.btn_output = QPushButton("Browse…")
-        h_out.addWidget(QLabel("Output Dir:"))
-        h_out.addWidget(self.line_output, 1)
-        h_out.addWidget(self.btn_output)
-        f_merge.addLayout(h_out)
+        return gb
 
-        h_class = QHBoxLayout()
+    def _build_roles_group(self):
+        gb = QGroupBox("Step 2: Role Selection")
+        g = QGridLayout(gb)
+
+        self.chk_role_obb_direct = QCheckBox("obb_direct")
+        self.chk_role_seq_detect = QCheckBox("seq_detect")
+        self.chk_role_seq_crop_obb = QCheckBox("seq_crop_obb")
+
+        self.chk_role_obb_direct.setChecked(True)
+        self.chk_role_seq_detect.setChecked(True)
+        self.chk_role_seq_crop_obb.setChecked(True)
+
+        g.addWidget(self.chk_role_obb_direct, 0, 0)
+        g.addWidget(self.chk_role_seq_detect, 0, 1)
+        g.addWidget(self.chk_role_seq_crop_obb, 0, 2)
+
+        info = QLabel(
+            "<b>Classification training has moved to ClassKit.</b><br>"
+            "Use <code>classkit-labeler</code> to label and train classifiers."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet(
+            "padding: 8px; background: #1a2a1a; border-left: 3px solid #4caf50;"
+            " color: #aaa; border-radius: 3px;"
+        )
+        g.addWidget(info, 1, 0, 1, 3)
+
+        note = QLabel("Sequential datasets are auto-derived from OBB sources.")
+        note.setWordWrap(True)
+        g.addWidget(note, 2, 0, 1, 3)
+        return gb
+
+    def _build_config_group(self):
+        gb = QGroupBox("Step 3: Config")
+        v = QVBoxLayout(gb)
+
+        form = QFormLayout()
+        self.line_workspace = QLineEdit(str(self.workspace_default))
+        self.btn_workspace = QPushButton("Browse…")
+        h_ws = QHBoxLayout()
+        h_ws.addWidget(self.line_workspace, 1)
+        h_ws.addWidget(self.btn_workspace)
+        form.addRow("Workspace Root", h_ws)
+
         self.line_class = QLineEdit(self.class_name)
-        h_class.addWidget(QLabel("Class Name:"))
-        h_class.addWidget(self.line_class)
-        f_merge.addLayout(h_class)
+        form.addRow("Class Name", self.line_class)
 
-        h_split = QHBoxLayout()
         self.spin_train = QDoubleSpinBox()
+        self.spin_train.setRange(0.05, 0.95)
+        self.spin_train.setSingleStep(0.05)
+        self.spin_train.setValue(0.8)
         self.spin_val = QDoubleSpinBox()
-        for spin, val in [(self.spin_train, 0.8), (self.spin_val, 0.2)]:
-            spin.setRange(0.0, 1.0)
-            spin.setDecimals(2)
-            spin.setSingleStep(0.05)
-            spin.setValue(val)
-        h_split.addWidget(QLabel("Train"))
+        self.spin_val.setRange(0.05, 0.95)
+        self.spin_val.setSingleStep(0.05)
+        self.spin_val.setValue(0.2)
+        h_split = QHBoxLayout()
+        h_split.addWidget(QLabel("train"))
         h_split.addWidget(self.spin_train)
-        h_split.addWidget(QLabel("Val"))
+        h_split.addWidget(QLabel("val"))
         h_split.addWidget(self.spin_val)
-        f_merge.addLayout(h_split)
+        form.addRow("Split", h_split)
 
         self.spin_seed = QSpinBox()
-        self.spin_seed.setRange(0, 9999)
+        self.spin_seed.setRange(0, 999999)
         self.spin_seed.setValue(42)
-        f_merge.addWidget(QLabel("Seed:"))
-        f_merge.addWidget(self.spin_seed)
+        form.addRow("Seed", self.spin_seed)
 
-        self.chk_dedup = QCheckBox("Deduplicate images by content")
+        self.chk_dedup = QCheckBox("Deduplicate source images by content hash")
         self.chk_dedup.setChecked(True)
-        f_merge.addWidget(self.chk_dedup)
+        form.addRow("", self.chk_dedup)
 
-        self.btn_build = QPushButton("Build Combined Dataset")
-        f_merge.addWidget(self.btn_build)
+        self.spin_crop_pad = QDoubleSpinBox()
+        self.spin_crop_pad.setRange(0.0, 1.0)
+        self.spin_crop_pad.setSingleStep(0.01)
+        self.spin_crop_pad.setValue(0.15)
+        self.spin_crop_min_px = QSpinBox()
+        self.spin_crop_min_px.setRange(8, 2048)
+        self.spin_crop_min_px.setValue(64)
+        self.chk_crop_square = QCheckBox("Enforce square crop")
+        self.chk_crop_square.setChecked(True)
+        h_crop = QHBoxLayout()
+        h_crop.addWidget(QLabel("pad"))
+        h_crop.addWidget(self.spin_crop_pad)
+        h_crop.addWidget(QLabel("min px"))
+        h_crop.addWidget(self.spin_crop_min_px)
+        h_crop.addWidget(self.chk_crop_square)
+        form.addRow("Sequential crop derivation", h_crop)
 
-        # Training
-        gb_train = QGroupBox("Training")
-        v_train = QVBoxLayout(gb_train)
-        h_weights = QHBoxLayout()
-        self.combo_weights = QComboBox()
-        self.combo_weights.setEditable(True)
-        self.combo_weights.addItems(self._build_model_options())
-        self.combo_weights.addItem("Select weights file…")
-        self.line_weights = QLineEdit()
-        self.line_weights.setPlaceholderText("weights file path")
-        self.btn_weights = QPushButton("Browse…")
-        h_weights.addWidget(self.combo_weights)
-        h_weights.addWidget(self.line_weights, 1)
-        h_weights.addWidget(self.btn_weights)
-        v_train.addLayout(h_weights)
+        self.combo_device = QComboBox()
+        self.combo_device.addItems(self._build_device_options())
+        form.addRow("Device", self.combo_device)
 
-        # Hyperparams
-        h_params = QHBoxLayout()
+        v.addLayout(form)
+
+        gb_train = QGroupBox("Training Hyperparameters")
+        tr = QGridLayout(gb_train)
         self.spin_epochs = QSpinBox()
         self.spin_epochs.setRange(1, 1000)
         self.spin_epochs.setValue(100)
         self.spin_imgsz = QSpinBox()
-        self.spin_imgsz.setRange(320, 2048)
+        self.spin_imgsz.setRange(64, 2048)
         self.spin_imgsz.setValue(640)
         self.spin_batch = QSpinBox()
         self.spin_batch.setRange(1, 256)
@@ -279,355 +300,464 @@ class TrainYoloDialog(QDialog):
         self.spin_lr0.setDecimals(5)
         self.spin_lr0.setValue(0.01)
         self.spin_patience = QSpinBox()
-        self.spin_patience.setRange(1, 200)
+        self.spin_patience.setRange(1, 500)
         self.spin_patience.setValue(30)
-        self.combo_device = QComboBox()
-        self.combo_device.addItems(self._build_device_options())
         self.spin_workers = QSpinBox()
         self.spin_workers.setRange(0, 32)
         self.spin_workers.setValue(8)
         self.chk_cache = QCheckBox("Cache")
-        h_params.addWidget(QLabel("epochs"))
-        h_params.addWidget(self.spin_epochs)
-        h_params.addWidget(QLabel("imgsz"))
-        h_params.addWidget(self.spin_imgsz)
-        h_params.addWidget(QLabel("batch"))
-        h_params.addWidget(self.spin_batch)
-        h_params.addWidget(QLabel("lr0"))
-        h_params.addWidget(self.spin_lr0)
-        h_params.addWidget(QLabel("patience"))
-        h_params.addWidget(self.spin_patience)
-        v_train.addLayout(h_params)
-        h_params2 = QHBoxLayout()
-        h_params2.addWidget(QLabel("device"))
-        h_params2.addWidget(self.combo_device)
-        h_params2.addWidget(QLabel("workers"))
-        h_params2.addWidget(self.spin_workers)
-        h_params2.addWidget(self.chk_cache)
-        v_train.addLayout(h_params2)
+        tr.addWidget(QLabel("epochs"), 0, 0)
+        tr.addWidget(self.spin_epochs, 0, 1)
+        tr.addWidget(QLabel("imgsz"), 0, 2)
+        tr.addWidget(self.spin_imgsz, 0, 3)
+        tr.addWidget(QLabel("batch"), 0, 4)
+        tr.addWidget(self.spin_batch, 0, 5)
+        tr.addWidget(QLabel("lr0"), 1, 0)
+        tr.addWidget(self.spin_lr0, 1, 1)
+        tr.addWidget(QLabel("patience"), 1, 2)
+        tr.addWidget(self.spin_patience, 1, 3)
+        tr.addWidget(QLabel("workers"), 1, 4)
+        tr.addWidget(self.spin_workers, 1, 5)
+        tr.addWidget(self.chk_cache, 2, 0, 1, 2)
+        v.addWidget(gb_train)
 
-        h_aug = QHBoxLayout()
-        self.chk_default_aug = QCheckBox("Use default augmentations")
-        self.chk_default_aug.setChecked(True)
-        self.line_aug = QLineEdit()
-        self.line_aug.setPlaceholderText(
-            "Custom aug args e.g. degrees=10 translate=0.1 scale=0.5"
+        gb_models = QGroupBox("Base Models")
+        fm = QFormLayout(gb_models)
+        self.combo_model_obb_direct = QComboBox()
+        self.combo_model_obb_direct.setEditable(True)
+        self.combo_model_obb_direct.addItems(
+            [
+                "yolo26n-obb.pt",
+                "yolo26s-obb.pt",
+                "yolo26m-obb.pt",
+                "yolo26l-obb.pt",
+                "yolo26x-obb.pt",
+            ]
         )
-        self.line_aug.setEnabled(False)
-        h_aug.addWidget(self.chk_default_aug)
-        h_aug.addWidget(self.line_aug, 1)
-        v_train.addLayout(h_aug)
+        self.combo_model_obb_direct.setCurrentText("yolo26s-obb.pt")
 
-        h_train_btn = QHBoxLayout()
-        self.btn_start_train = QPushButton("Start Training")
-        self.btn_stop_train = QPushButton("Stop Training")
-        self.btn_stop_train.setEnabled(False)
-        h_train_btn.addWidget(self.btn_start_train)
-        h_train_btn.addWidget(self.btn_stop_train)
-        v_train.addLayout(h_train_btn)
+        self.combo_model_seq_detect = QComboBox()
+        self.combo_model_seq_detect.setEditable(True)
+        self.combo_model_seq_detect.addItems(
+            ["yolo26n.pt", "yolo26s.pt", "yolo26m.pt", "yolo26l.pt", "yolo26x.pt"]
+        )
+        self.combo_model_seq_detect.setCurrentText("yolo26s.pt")
+
+        self.combo_model_seq_crop_obb = QComboBox()
+        self.combo_model_seq_crop_obb.setEditable(True)
+        self.combo_model_seq_crop_obb.addItems(
+            ["yolo26n-obb.pt", "yolo26s-obb.pt", "yolo26m-obb.pt"]
+        )
+        self.combo_model_seq_crop_obb.setCurrentText("yolo26s-obb.pt")
+
+        fm.addRow("obb_direct", self.combo_model_obb_direct)
+        fm.addRow("seq_detect", self.combo_model_seq_detect)
+        fm.addRow("seq_crop_obb", self.combo_model_seq_crop_obb)
+        v.addWidget(gb_models)
+
+        gb_publish = QGroupBox("Publish Metadata")
+        fp = QFormLayout(gb_publish)
+        self.line_species = QLineEdit(self.class_name)
+        self.line_model_tag = QLineEdit("train")
+        self.chk_auto_import = QCheckBox(
+            "Auto-import successful models into repository"
+        )
+        self.chk_auto_import.setChecked(True)
+        self.chk_auto_select = QCheckBox("Auto-select newly imported models in main UI")
+        self.chk_auto_select.setChecked(False)
+        fp.addRow("species", self.line_species)
+        fp.addRow("model tag", self.line_model_tag)
+        fp.addRow("", self.chk_auto_import)
+        fp.addRow("", self.chk_auto_select)
+        v.addWidget(gb_publish)
+
+        self.btn_workspace.clicked.connect(self._choose_workspace)
+
+        return gb
+
+    def _build_run_group(self):
+        gb = QGroupBox("Step 4: Build + Train + Monitor")
+        v = QVBoxLayout(gb)
+
+        row = QHBoxLayout()
+        self.btn_build = QPushButton("Build Role Datasets")
+        self.btn_train = QPushButton("Start Training")
+        self.btn_stop = QPushButton("Stop")
+        self.btn_stop.setEnabled(False)
+        row.addWidget(self.btn_build)
+        row.addWidget(self.btn_train)
+        row.addWidget(self.btn_stop)
+        v.addLayout(row)
 
         self.progress = QProgressBar()
-        self.progress.setRange(0, 0)
-        self.progress.setVisible(False)
-        v_train.addWidget(self.progress)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        v.addWidget(self.progress)
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
-        v_train.addWidget(self.log_view)
+        v.addWidget(self.log_view)
 
-        # Wire up
-        self.btn_add_xany.clicked.connect(self._add_xany)
-        self.btn_add_yolo.clicked.connect(self._add_yolo)
-        self.btn_remove.clicked.connect(self._remove_selected)
-        self.btn_clear.clicked.connect(self._clear_all)
-        self.btn_output.clicked.connect(self._choose_output)
-        self.btn_build.clicked.connect(self._build_dataset)
-        self.btn_weights.clicked.connect(self._choose_weights)
-        self.btn_start_train.clicked.connect(self._start_training)
-        self.btn_stop_train.clicked.connect(self._stop_training)
-        self.combo_weights.currentIndexChanged.connect(self._on_weights_choice)
-        self.chk_default_aug.toggled.connect(self._on_aug_toggle)
+        self.btn_build.clicked.connect(self._build_role_datasets)
+        self.btn_train.clicked.connect(self._start_training)
+        self.btn_stop.clicked.connect(self._stop_training)
 
-        layout.addWidget(gb_sources)
-        layout.addWidget(gb_conv)
-        layout.addWidget(gb_merge)
-        layout.addWidget(gb_train)
-
-        scroll.setWidget(content)
-        outer_layout.addWidget(scroll)
-        self._on_weights_choice()
-        self._on_aug_toggle(self.chk_default_aug.isChecked())
-
-    def _add_xany(self):
-        for d in self._get_multiple_dirs("Select X-AnyLabeling Projects"):
-            self._add_source("xany", d)
-
-    def _add_yolo(self):
-        for d in self._get_multiple_dirs("Select YOLO-OBB Datasets"):
-            self._add_source("yolo", d)
-
-    def _add_source(self, typ, path):
-        row = self.table_sources.rowCount()
-        self.table_sources.insertRow(row)
-        self.table_sources.setItem(
-            row, 0, QTableWidgetItem("X-AnyLabeling" if typ == "xany" else "YOLO-OBB")
-        )
-        self.table_sources.setItem(row, 1, QTableWidgetItem(path))
-        self.table_sources.setItem(row, 2, QTableWidgetItem("Pending"))
-        self.table_sources.item(row, 0).setData(Qt.UserRole, typ)
-
-    def _remove_selected(self):
-        rows = {idx.row() for idx in self.table_sources.selectedIndexes()}
-        for row in sorted(rows, reverse=True):
-            self.table_sources.removeRow(row)
-
-    def _clear_all(self):
-        self.table_sources.setRowCount(0)
-
-    def _choose_output(self):
-        directory = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if directory:
-            self.line_output.setText(directory)
-
-    def _choose_weights(self):
-        fp, _ = QFileDialog.getOpenFileName(
-            self, "Select Weights", "", "Weights (*.pt)"
-        )
-        if fp:
-            self.line_weights.setText(fp)
-
-    def _build_dataset(self):
-        if self.table_sources.rowCount() == 0:
-            QMessageBox.warning(self, "No sources", "Please add at least one source.")
-            return
-        output_dir = self.line_output.text().strip()
-        if not output_dir:
-            QMessageBox.warning(
-                self, "Output directory", "Please select an output directory."
-            )
-            return
-        class_name = self.line_class.text().strip() or "object"
-        split_cfg = {
-            "train": self.spin_train.value(),
-            "val": self.spin_val.value(),
-            "test": 0.0,
-        }
-        sources = []
-        for row in range(self.table_sources.rowCount()):
-            typ = self.table_sources.item(row, 0).data(Qt.UserRole)
-            path = self.table_sources.item(row, 1).text()
-            name = Path(path).name
-            sources.append({"type": typ, "path": path, "name": name, "row": row})
-
-        conda_env = self.combo_env.currentText()
-        if conda_env == "(none)":
-            conda_env = None
-
-        self.pending_build_args = dict(
-            sources=sources,
-            output_dir=output_dir,
-            class_name=class_name,
-            split_cfg=split_cfg,
-            seed=self.spin_seed.value(),
-            dedup=self.chk_dedup.isChecked(),
-            conda_env=conda_env,
-            rewrite_classes=False,
-        )
-        self.worker = BuildDatasetWorker(**self.pending_build_args)
-        self.worker.status_signal.connect(self._update_status)
-        self.worker.log_signal.connect(self._append_log)
-        self.worker.done_signal.connect(self._build_done)
-        self.worker.start()
-
-    def _update_status(self, row, status):
-        self.table_sources.setItem(row, 2, QTableWidgetItem(status))
-
-    def _append_log(self, text):
-        self.log_view.append(text)
-
-    def _build_done(self, ok, message):
-        if ok and message != "CLASS_MISMATCH":
-            self.merged_dataset_dir = message
-            QMessageBox.information(self, "Dataset Ready", f"Merged dataset: {message}")
-            return
-        if message == "CLASS_MISMATCH":
-            resp = QMessageBox.question(
-                self,
-                "Class Mismatch",
-                "One or more datasets have multiple classes or mismatched class IDs.\n"
-                "Rewrite all labels to the Active Learning class?",
-                QMessageBox.Yes | QMessageBox.No,
-            )
-            if resp == QMessageBox.Yes:
-                if self.pending_build_args:
-                    self.pending_build_args["rewrite_classes"] = True
-                    self.worker = BuildDatasetWorker(**self.pending_build_args)
-                    self.worker.status_signal.connect(self._update_status)
-                    self.worker.log_signal.connect(self._append_log)
-                    self.worker.done_signal.connect(self._build_done)
-                    self.worker.start()
-            return
-        QMessageBox.critical(self, "Build Failed", message)
-
-    def _start_training(self):
-        if not self.merged_dataset_dir:
-            QMessageBox.warning(self, "No dataset", "Build a dataset first.")
-            return
-        weights = self._get_weights_path()
-        if not weights:
-            QMessageBox.warning(
-                self, "Weights", "Select weights or choose auto-download."
-            )
-            return
-
-        yaml_path = os.path.join(self.merged_dataset_dir, "dataset.yaml")
-        if not os.path.exists(yaml_path):
-            QMessageBox.warning(
-                self, "Dataset", "dataset.yaml not found in merged dataset."
-            )
-            return
-
-        output_dir = os.path.join(self.line_output.text().strip(), "training_runs")
-        os.makedirs(output_dir, exist_ok=True)
-        run_name = os.path.basename(self.merged_dataset_dir)
-
-        cmd = self._build_train_command(
-            yaml_path=yaml_path,
-            weights=weights,
-            output_dir=output_dir,
-            run_name=run_name,
-        )
-        if self.chk_cache.isChecked():
-            cmd.append("cache=True")
-        if not self.chk_default_aug.isChecked():
-            custom_aug = self.line_aug.text().strip()
-            if not custom_aug:
-                QMessageBox.warning(
-                    self,
-                    "Augmentations",
-                    "Custom augmentations enabled, but no args provided.",
-                )
-                return
-            cmd.extend(custom_aug.split())
-
-        self.log_view.append("Running: " + " ".join(cmd))
-
-        self.train_process = QProcess(self)
-        self.train_process.setProcessChannelMode(QProcess.MergedChannels)
-        self.train_process.readyReadStandardOutput.connect(self._read_train_log)
-        self.train_process.finished.connect(self._train_finished)
-        self.train_process.start(cmd[0], cmd[1:])
-
-        self.progress.setVisible(True)
-        self.btn_start_train.setEnabled(False)
-        self.btn_stop_train.setEnabled(True)
-
-    def _get_weights_path(self):
-        choice = self.combo_weights.currentText().strip()
-        if choice == "Select weights file…":
-            return self.line_weights.text().strip()
-        return choice
-
-    def _read_train_log(self):
-        if not self.train_process:
-            return
-        text = (
-            self.train_process.readAllStandardOutput()
-            .data()
-            .decode("utf-8", errors="ignore")
-        )
-        if text:
-            self.log_view.append(text)
-
-    def _train_finished(self):
-        self.progress.setVisible(False)
-        self.btn_start_train.setEnabled(True)
-        self.btn_stop_train.setEnabled(False)
-        self.log_view.append("Training finished.")
-
-    def _stop_training(self):
-        if self.train_process:
-            self.train_process.terminate()
-            if not self.train_process.waitForFinished(3000):
-                self.train_process.kill()
-
-    def _get_multiple_dirs(self, title):
-        dialog = QFileDialog(self, title)
-        dialog.setFileMode(QFileDialog.Directory)
-        dialog.setOption(QFileDialog.ShowDirsOnly, True)
-        dialog.setOption(QFileDialog.DontUseNativeDialog, True)
-        # Enable multi-selection in the view
-        for view in dialog.findChildren(QListView):
-            view.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        for view in dialog.findChildren(QTreeView):
-            view.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        if dialog.exec() != QFileDialog.Accepted:
-            return []
-        return dialog.selectedFiles()
-
-    def _on_weights_choice(self):
-        is_custom = self.combo_weights.currentText().strip() == "Select weights file…"
-        self.line_weights.setEnabled(is_custom)
-        self.btn_weights.setEnabled(is_custom)
-
-    def _on_aug_toggle(self, checked):
-        # Checked = use defaults, disable custom input.
-        self.line_aug.setEnabled(not checked)
-
-    def _build_model_options(self):
-        options = [
-            "yolo26n-obb.pt",
-            "yolo26s-obb.pt",
-            "yolo26m-obb.pt",
-            "yolo26l-obb.pt",
-            "yolo26x-obb.pt",
-        ]
-        # Include any local .pt files in repo models/YOLO-obb
-        try:
-            for fp in (self.repo_output_dir).glob("*.pt"):
-                options.append(str(fp))
-        except Exception:
-            pass
-        return options
-
-    def _build_train_command(self, yaml_path, weights, output_dir, run_name):
-        common = [
-            "obb",
-            "train",
-            f"data={yaml_path}",
-            f"model={weights}",
-            f"epochs={self.spin_epochs.value()}",
-            f"imgsz={self.spin_imgsz.value()}",
-            f"batch={self.spin_batch.value()}",
-            f"lr0={self.spin_lr0.value()}",
-            f"patience={self.spin_patience.value()}",
-            f"device={self.combo_device.currentText()}",
-            f"workers={self.spin_workers.value()}",
-            f"project={output_dir}",
-            f"name={run_name}",
-        ]
-        if self.chk_cache.isChecked():
-            common.append("cache=True")
-
-        # Prefer `yolo` executable if available, else ultralytics.cli module
-        yolo_exe = shutil.which("yolo")
-        if yolo_exe:
-            return [yolo_exe] + common
-        return [sys.executable, "-m", "ultralytics.cli"] + common
+        return gb
 
     def _build_device_options(self):
         info = get_device_info()
         options = ["auto", "cpu"]
         if info.get("torch_cuda_available"):
             options.append("cuda")
-            count = info.get("torch_cuda_device_count", 0)
-            if count:
-                for i in range(count):
-                    options.append(f"cuda:{i}")
-                if count > 1:
-                    options.append(",".join([f"cuda:{i}" for i in range(count)]))
+            count = int(info.get("torch_cuda_device_count", 0) or 0)
+            for i in range(count):
+                options.append(f"cuda:{i}")
         if info.get("mps_available"):
             options.append("mps")
         if info.get("rocm_available"):
             options.append("rocm")
         return options
+
+    def _append_log(self, text: str):
+        self.log_view.append(str(text))
+
+    def _choose_workspace(self):
+        d = QFileDialog.getExistingDirectory(self, "Select Workspace Root")
+        if d:
+            self.line_workspace.setText(d)
+            self.orchestrator = TrainingOrchestrator(d)
+
+    def _get_multiple_dirs(self, title):
+        dlg = QFileDialog(self, title)
+        dlg.setFileMode(QFileDialog.Directory)
+        dlg.setOption(QFileDialog.ShowDirsOnly, True)
+        dlg.setOption(QFileDialog.DontUseNativeDialog, True)
+        for view in dlg.findChildren(QListView):
+            view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        for view in dlg.findChildren(QTreeView):
+            view.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        if dlg.exec() != QFileDialog.Accepted:
+            return []
+        return dlg.selectedFiles()
+
+    def _add_source_row(self, source_type: str, path: str):
+        row = self.table_sources.rowCount()
+        self.table_sources.insertRow(row)
+        pretty = "OBB Source"
+        self.table_sources.setItem(row, 0, QTableWidgetItem(pretty))
+        self.table_sources.setItem(row, 1, QTableWidgetItem(path))
+        self.table_sources.setItem(row, 2, QTableWidgetItem("Pending"))
+        self.table_sources.item(row, 0).setData(Qt.UserRole, source_type)
+
+    def _add_obb_sources(self):
+        for d in self._get_multiple_dirs("Select OBB Source Datasets"):
+            self._add_source_row("obb", d)
+
+    def _remove_selected(self):
+        rows = {idx.row() for idx in self.table_sources.selectedIndexes()}
+        for row in sorted(rows, reverse=True):
+            self.table_sources.removeRow(row)
+
+    def _clear_sources(self):
+        self.table_sources.setRowCount(0)
+
+    def _collect_sources(self):
+        obb_sources = []
+        for row in range(self.table_sources.rowCount()):
+            st = self.table_sources.item(row, 0).data(Qt.UserRole)
+            p = self.table_sources.item(row, 1).text().strip()
+            if st == "obb":
+                obb_sources.append(
+                    SourceDataset(path=p, source_type="yolo_obb", name=Path(p).name)
+                )
+        return obb_sources
+
+    def _validate_sources(self):
+        obb_sources = self._collect_sources()
+        if not obb_sources:
+            QMessageBox.warning(
+                self, "No OBB Sources", "Add at least one OBB source dataset."
+            )
+            return False
+
+        try:
+            report = self.orchestrator.preflight_obb_sources(
+                obb_sources, require_train_val=False
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Validation Error", str(exc))
+            return False
+
+        self.validation_report = report
+        self.validation_view.setPlainText(format_validation_report(report))
+
+        status = "Validated" if report.valid else "Validation Failed"
+        for row in range(self.table_sources.rowCount()):
+            self.table_sources.setItem(row, 2, QTableWidgetItem(status))
+
+        if not report.valid:
+            QMessageBox.warning(
+                self,
+                "Validation Failed",
+                "Source validation failed. See report for actionable issues.",
+            )
+            return False
+        return True
+
+    def _selected_roles(self):
+        roles = []
+        if self.chk_role_obb_direct.isChecked():
+            roles.append(TrainingRole.OBB_DIRECT)
+        if self.chk_role_seq_detect.isChecked():
+            roles.append(TrainingRole.SEQ_DETECT)
+        if self.chk_role_seq_crop_obb.isChecked():
+            roles.append(TrainingRole.SEQ_CROP_OBB)
+        return roles
+
+    def _build_role_datasets(self):
+        if not self._validate_sources():
+            return False
+
+        roles = self._selected_roles()
+        if not roles:
+            QMessageBox.warning(self, "No Roles", "Select at least one training role.")
+            return False
+
+        obb_sources = self._collect_sources()
+        try:
+            split = SplitConfig(
+                train=self.spin_train.value(), val=self.spin_val.value(), test=0.0
+            )
+            merged = self.orchestrator.build_merged_obb_dataset(
+                obb_sources,
+                class_name=self.line_class.text().strip() or "object",
+                split_cfg=split,
+                seed=self.spin_seed.value(),
+                dedup=self.chk_dedup.isChecked(),
+            )
+            self.merged_dataset_dir = merged.dataset_dir
+            self.role_dataset_dirs = {}
+            self._append_log(f"Merged dataset: {merged.dataset_dir}")
+
+            for role in roles:
+                build = self.orchestrator.build_role_dataset(
+                    role,
+                    merged.dataset_dir,
+                    class_name=self.line_class.text().strip() or "object",
+                    crop_pad_ratio=self.spin_crop_pad.value(),
+                    min_crop_size_px=self.spin_crop_min_px.value(),
+                    enforce_square=self.chk_crop_square.isChecked(),
+                )
+                self.role_dataset_dirs[role.value] = build.dataset_dir
+                self._append_log(
+                    f"Prepared [{role.value}] dataset: {build.dataset_dir}"
+                )
+        except Exception as exc:
+            QMessageBox.critical(self, "Build Failed", str(exc))
+            return False
+
+        QMessageBox.information(
+            self, "Datasets Ready", "Role datasets built successfully."
+        )
+        return True
+
+    def _base_model_for_role(self, role: TrainingRole) -> str:
+        if role == TrainingRole.OBB_DIRECT:
+            return self.combo_model_obb_direct.currentText().strip()
+        if role == TrainingRole.SEQ_DETECT:
+            return self.combo_model_seq_detect.currentText().strip()
+        if role == TrainingRole.SEQ_CROP_OBB:
+            return self.combo_model_seq_crop_obb.currentText().strip()
+        return ""
+
+    @staticmethod
+    def _infer_size_token(model_path: str) -> str:
+        name = Path(str(model_path or "")).name.lower()
+        for token in (
+            "26n",
+            "26s",
+            "26m",
+            "26l",
+            "26x",
+            "11n",
+            "11s",
+            "11m",
+            "11l",
+            "11x",
+        ):
+            if token in name:
+                return token
+        return "unknown"
+
+    def _publish_meta_for_role(self, role: TrainingRole, base_model: str) -> dict:
+        species = self.line_species.text().strip() or "species"
+        tag = self.line_model_tag.text().strip() or "train"
+        role_suffix = role.value
+        return {
+            "size": self._infer_size_token(base_model),
+            "species": species,
+            "model_info": f"{tag}_{role_suffix}",
+        }
+
+    def _start_training(self):
+        if self.worker is not None and self.worker.isRunning():
+            QMessageBox.warning(self, "Busy", "Training is already running.")
+            return
+
+        roles = self._selected_roles()
+        if not roles:
+            QMessageBox.warning(self, "No Roles", "Select at least one training role.")
+            return
+
+        if not self.role_dataset_dirs:
+            if not self._build_role_datasets():
+                return
+
+        if not self.chk_auto_import.isChecked() and self.chk_auto_select.isChecked():
+            QMessageBox.warning(
+                self,
+                "Invalid Publish Settings",
+                "Auto-select requires auto-import to be enabled.",
+            )
+            return
+
+        source_obb = self._collect_sources()
+        role_entries = []
+        for role in roles:
+            ds = self.role_dataset_dirs.get(role.value, "")
+            if not ds:
+                QMessageBox.warning(
+                    self,
+                    "Missing Dataset",
+                    f"No dataset prepared for role: {role.value}",
+                )
+                return
+
+            base_model = self._base_model_for_role(role)
+            if not base_model:
+                QMessageBox.warning(
+                    self, "Base Model", f"Set base model for role: {role.value}"
+                )
+                return
+
+            spec = TrainingRunSpec(
+                role=role,
+                source_datasets=source_obb,
+                derived_dataset_dir=ds,
+                base_model=base_model,
+                hyperparams=TrainingHyperParams(
+                    epochs=self.spin_epochs.value(),
+                    imgsz=self.spin_imgsz.value(),
+                    batch=self.spin_batch.value(),
+                    lr0=self.spin_lr0.value(),
+                    patience=self.spin_patience.value(),
+                    workers=self.spin_workers.value(),
+                    cache=self.chk_cache.isChecked(),
+                ),
+                device=self.combo_device.currentText().strip() or "auto",
+                seed=self.spin_seed.value(),
+                publish_policy=PublishPolicy(
+                    auto_import=self.chk_auto_import.isChecked(),
+                    auto_select=self.chk_auto_select.isChecked(),
+                ),
+            )
+            role_entries.append(
+                {
+                    "role": role,
+                    "spec": spec,
+                    "publish_meta": self._publish_meta_for_role(role, base_model),
+                }
+            )
+
+        self.worker = RoleTrainingWorker(self.orchestrator, role_entries)
+        self.worker.log_signal.connect(self._append_log)
+        self.worker.role_started.connect(self._on_role_started)
+        self.worker.role_finished.connect(self._on_role_finished)
+        self.worker.progress_signal.connect(self._on_role_progress)
+        self.worker.done_signal.connect(self._on_training_done)
+
+        self.btn_train.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.progress.setValue(0)
+        self.worker.start()
+
+    def _stop_training(self):
+        if self.worker is not None:
+            self.worker.cancel()
+            self._append_log("Cancellation requested…")
+
+    def _on_role_started(self, role: str):
+        self._append_log(f"=== START {role} ===")
+
+    def _on_role_finished(self, role: str, ok: bool, message: str):
+        self._append_log(f"=== {'OK' if ok else 'FAIL'} {role}: {message} ===")
+
+    def _on_role_progress(self, role: str, cur: int, total: int):
+        total = max(1, int(total))
+        cur = max(0, min(total, int(cur)))
+        pct = int((cur / total) * 100.0)
+        self.progress.setValue(pct)
+        self.progress.setFormat(f"{role}: {cur}/{total} ({pct}%)")
+
+    def _on_training_done(self, results: list):
+        self.btn_train.setEnabled(True)
+        self.btn_stop.setEnabled(False)
+        self.progress.setFormat("Done")
+
+        succeeded = [r for r in results if r.get("success")]
+        failed = [r for r in results if not r.get("success")]
+
+        self._append_log(
+            f"Session complete: {len(succeeded)} success, {len(failed)} failed"
+        )
+
+        if self.chk_auto_select.isChecked():
+            self._try_auto_select_parent_models(results)
+
+        if failed:
+            QMessageBox.warning(
+                self,
+                "Training Completed with Failures",
+                f"Succeeded: {len(succeeded)}\nFailed: {len(failed)}\nSee logs for details.",
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Training Completed",
+                f"All {len(succeeded)} selected roles completed successfully.",
+            )
+
+    def _try_auto_select_parent_models(self, results: list[dict]):
+        parent = self.parent()
+        if parent is None:
+            return
+
+        for r in results:
+            if not r.get("success"):
+                continue
+            key = str(r.get("published_registry_key") or "").strip()
+            if not key:
+                continue
+            role = str(r.get("role") or "")
+            try:
+                if role == TrainingRole.OBB_DIRECT.value:
+                    if hasattr(parent, "_refresh_yolo_model_combo"):
+                        parent._refresh_yolo_model_combo(preferred_model_path=key)
+                    if hasattr(parent, "_set_yolo_model_selection"):
+                        parent._set_yolo_model_selection(key)
+                elif role == TrainingRole.SEQ_DETECT.value:
+                    if hasattr(parent, "_refresh_yolo_detect_model_combo"):
+                        parent._refresh_yolo_detect_model_combo(
+                            preferred_model_path=key
+                        )
+                    if hasattr(parent, "_set_yolo_detect_model_selection"):
+                        parent._set_yolo_detect_model_selection(key)
+                elif role == TrainingRole.SEQ_CROP_OBB.value:
+                    if hasattr(parent, "_refresh_yolo_crop_obb_model_combo"):
+                        parent._refresh_yolo_crop_obb_model_combo(
+                            preferred_model_path=key
+                        )
+                    if hasattr(parent, "_set_yolo_crop_obb_model_selection"):
+                        parent._set_yolo_crop_obb_model_selection(key)
+            except Exception as exc:
+                logger.warning("Auto-select model failed for role %s: %s", role, exc)
