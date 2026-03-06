@@ -5,12 +5,12 @@ Exploration dialogs: Smart Select, Embedding Explorer, Frame Metadata.
 
 import csv
 import logging
-import tempfile
 from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
-from PySide6.QtCore import QObject, QSize, QThread, Signal
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -18,13 +18,21 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGraphicsEllipseItem,
+    QGraphicsItem,
+    QGraphicsScene,
+    QGraphicsView,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSpinBox,
+    QSplitter,
     QVBoxLayout,
+    QWidget,
 )
 
 from ...core.extensions import (
@@ -131,25 +139,35 @@ class SmartSelectDialog(QDialog):
         self.cb_use_enhance.setChecked(bool(self.project.enhance_enabled))
         emb_form.addRow("", self.cb_use_enhance)
 
+        self.cb_canonicalize_mat = QCheckBox(
+            "Canonicalize MAT individual datasets using metadata.json when possible"
+        )
+        self.cb_canonicalize_mat.setToolTip(
+            "Uses MAT individual-dataset metadata to rotate/crop saved animal crops "
+            "before embedding and clustering. Images without usable metadata stay unchanged."
+        )
+        emb_form.addRow("", self.cb_canonicalize_mat)
+
         layout.addLayout(emb_form)
 
         # --- compute button + progress
         row = QHBoxLayout()
         self.btn_compute = QPushButton("Compute / Load cached embeddings")
-        self.btn_cancel = QPushButton("Cancel compute")
+        self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setEnabled(False)
         row.addWidget(self.btn_compute, 1)
         row.addWidget(self.btn_cancel)
         layout.addLayout(row)
 
-        self.progress = QDoubleSpinBox()
-        self.progress.setRange(0.0, 1.0)
-        self.progress.setSingleStep(0.01)
-        self.progress.setValue(0.0)
-        self.progress.setEnabled(False)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setTextVisible(True)
+        self.progress.setFormat("%p%  %v / %m")
         layout.addWidget(self.progress)
 
         self.lbl_status = QLabel("")
+        self.lbl_status.setWordWrap(True)
         layout.addWidget(self.lbl_status)
 
         # --- selection params
@@ -221,18 +239,19 @@ class SmartSelectDialog(QDialog):
         layout.addWidget(self.preview, 1)
 
         # --- bottom buttons
+        # Left group: analysis actions  |  Right group: dialog actions
         bottom = QHBoxLayout()
         self.btn_preview = QPushButton("Run Clustering")
-        self.btn_add = QPushButton("Add to Labeling Set && Close")
-        self.btn_save_csv = QPushButton("Save clusters CSV…")
         self.btn_explorer = QPushButton("Embedding Explorer…")
         self.btn_explorer.setEnabled(False)
-        self.btn_close = QPushButton("Close Without Saving")
+        self.btn_save_csv = QPushButton("Save clusters CSV…")
+        self.btn_add = QPushButton("Add to Labeling Set && Close")
+        self.btn_close = QPushButton("Close")
         bottom.addWidget(self.btn_preview)
-        bottom.addWidget(self.btn_add)
-        bottom.addWidget(self.btn_save_csv)
         bottom.addWidget(self.btn_explorer)
+        bottom.addWidget(self.btn_save_csv)
         bottom.addStretch(1)
+        bottom.addWidget(self.btn_add)
         bottom.addWidget(self.btn_close)
         layout.addLayout(bottom)
 
@@ -296,6 +315,9 @@ class SmartSelectDialog(QDialog):
         self.cb_use_enhance.setChecked(
             bool(settings.get("use_enhance", self.cb_use_enhance.isChecked()))
         )
+        self.cb_canonicalize_mat.setChecked(
+            bool(settings.get("canonicalize_mat", self.cb_canonicalize_mat.isChecked()))
+        )
         self.n_spin.setValue(int(settings.get("n", self.n_spin.value())))
         self.k_spin.setValue(int(settings.get("k", self.k_spin.value())))
         self.min_per_spin.setValue(
@@ -329,6 +351,7 @@ class SmartSelectDialog(QDialog):
                 "auto_batch": bool(self.cb_auto_batch.isChecked()),
                 "max_side": int(self.max_side_spin.value()),
                 "use_enhance": bool(self.cb_use_enhance.isChecked()),
+                "canonicalize_mat": bool(self.cb_canonicalize_mat.isChecked()),
                 "n": int(self.n_spin.value()),
                 "k": int(self.k_spin.value()),
                 "min_per": int(self.min_per_spin.value()),
@@ -383,7 +406,9 @@ class SmartSelectDialog(QDialog):
         self.btn_save_csv.setEnabled(False)
         self.preview.setPlainText("")
         self.lbl_status.setText("Starting…")
-        self.progress.setValue(0.0)
+        self.progress.setMaximum(100)
+        self.progress.setValue(0)
+        self.progress.setFormat("%p%")
 
         self._thread = QThread(self)
         self._worker = EmbeddingWorker(
@@ -396,6 +421,7 @@ class SmartSelectDialog(QDialog):
             use_enhance=bool(self.cb_use_enhance.isChecked()),
             max_side=int(self.max_side_spin.value()),
             cache_ok=True,
+            canonicalize_mat=bool(self.cb_canonicalize_mat.isChecked()),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -410,7 +436,9 @@ class SmartSelectDialog(QDialog):
             self._worker.cancel()
 
     def _on_progress(self, done: int, total: int):
-        self.progress.setValue(done / max(1, total))
+        self.progress.setMaximum(max(1, total))
+        self.progress.setValue(done)
+        self.progress.setFormat(f"%v / {max(1, total)}  (%p%)")
 
     def _on_status(self, s: str):
         self.lbl_status.setText(s)
@@ -425,7 +453,17 @@ class SmartSelectDialog(QDialog):
         self._cleanup_thread()
         self._emb = emb
         self._eligible_indices = eligible_indices
-        self.lbl_status.setText(f"Embeddings ready: {emb.shape[0]} × {emb.shape[1]}")
+        canon = meta.get("canonicalization_summary", {})
+        canon_text = ""
+        if meta.get("canonicalize_mat"):
+            canon_text = (
+                f" | canonicalized {canon.get('applied_count', 0)}"
+                f", skipped {canon.get('skipped_count', 0)}"
+            )
+        self.lbl_status.setText(
+            f"Embeddings ready: {emb.shape[0]} × {emb.shape[1]}{canon_text}"
+        )
+        self.progress.setValue(self.progress.maximum())
         self.btn_compute.setEnabled(True)
         self.btn_cancel.setEnabled(False)
         self.btn_preview.setEnabled(True)
@@ -541,6 +579,7 @@ class SmartSelectDialog(QDialog):
             image_paths=[self.image_paths[i] for i in self._eligible_indices],
             cluster_ids=self._cluster,
             is_labeled_fn=self.is_labeled_fn if self.is_labeled_fn else lambda p: False,
+            canonicalize_mat=bool(self.cb_canonicalize_mat.isChecked()),
             parent=self,
         )
 
@@ -553,8 +592,6 @@ class SmartSelectDialog(QDialog):
                     if idx not in existing:
                         self.selected_indices.append(idx)
                         existing.add(idx)
-
-                # Update preview... (simplified for brevity)
                 QMessageBox.information(
                     self,
                     "Added from Explorer",
@@ -602,8 +639,188 @@ class SmartSelectDialog(QDialog):
             pass
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Lightweight Qt-native scatter plot view (adapted from ClassKit ExplorerView)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class EmbeddingExplorerView(QGraphicsView):
+    """Scatter-plot widget for UMAP embeddings with hover + click signals."""
+
+    point_hovered = Signal(int)
+    point_clicked = Signal(int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setRenderHint(QPainter.Antialiasing, True)
+        self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QGraphicsView.AnchorUnderMouse)
+        self.setMouseTracking(True)
+        self.setBackgroundBrush(QBrush(QColor(30, 30, 30)))
+        self.setStyleSheet("QGraphicsView { border: none; }")
+
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+
+        self._coords: Optional[np.ndarray] = None
+        self._cluster_ids: Optional[np.ndarray] = None
+        self._labeled_mask: List[bool] = []
+        self._points: List[QGraphicsEllipseItem] = []
+        self._point_centers: List[tuple] = []
+        self._selected_set: set = set()  # multi-selection
+        self._last_hover_idx: Optional[int] = None
+        self._has_fitted = False
+        self._zoom_redraw_limit = 5000
+
+    def _radius_scale(self) -> float:
+        view_scale = self.transform().m11()
+        if view_scale <= 0:
+            view_scale = 1.0
+        zoom_gain = min(0.45, max(-0.35, (view_scale - 1.0) * 0.10))
+        return 1.0 - zoom_gain
+
+    def _point_color(self, i: int) -> QColor:
+        import hashlib
+
+        if i in self._selected_set:
+            return QColor(255, 245, 120)
+        if self._cluster_ids is not None and i < len(self._cluster_ids):
+            h = int(
+                hashlib.md5(str(int(self._cluster_ids[i])).encode()).hexdigest(), 16
+            )
+            r = max(60, min(215, (h & 0xFF0000) >> 16))
+            g = max(60, min(215, (h & 0x00FF00) >> 8))
+            b = max(60, min(215, h & 0x0000FF))
+            return QColor(r, g, b)
+        return QColor(100, 149, 237)
+
+    def _point_radius(self, i: int, rs: float) -> float:
+        if i in self._selected_set:
+            return 8.0 * rs
+        if i < len(self._labeled_mask) and self._labeled_mask[i]:
+            return 5.0 * rs
+        return 3.5 * rs
+
+    def _point_pen(self, i: int, rs: float) -> QPen:
+        if i in self._selected_set:
+            return QPen(QColor(255, 60, 60), max(2.0, 2.5 * rs))
+        if i < len(self._labeled_mask) and self._labeled_mask[i]:
+            return QPen(QColor(210, 210, 210), max(0.5, 0.7 * rs))
+        return QPen(Qt.NoPen)
+
+    def _point_z(self, i: int) -> float:
+        if i in self._selected_set:
+            return 5.0
+        if i < len(self._labeled_mask) and self._labeled_mask[i]:
+            return 2.0
+        return 1.0
+
+    def set_data(
+        self,
+        coords: np.ndarray,
+        cluster_ids: Optional[np.ndarray] = None,
+        labeled_mask: Optional[List[bool]] = None,
+        selected_set: Optional[set] = None,
+        preserve_view: bool = True,
+    ):
+        """Populate scatter plot from (N, 2) UMAP coords."""
+        self._coords = coords
+        self._cluster_ids = cluster_ids
+        self._labeled_mask = labeled_mask or []
+        self._selected_set = set(selected_set) if selected_set else set()
+
+        self._scene.clear()
+        self._points = []
+        self._point_centers = []
+        self._last_hover_idx = None
+
+        if coords is None or len(coords) == 0:
+            return
+
+        mn = coords.min(axis=0)
+        mx = coords.max(axis=0)
+        span = mx - mn
+        span[span == 0] = 1.0
+        norm = (coords - mn) / span * 1000.0
+
+        rs = self._radius_scale()
+        for i, (x, y) in enumerate(norm):
+            r = self._point_radius(i, rs)
+            item = QGraphicsEllipseItem(x - r, y - r, r * 2, r * 2)
+            item.setBrush(QBrush(self._point_color(i)))
+            item.setPen(self._point_pen(i, rs))
+            item.setZValue(self._point_z(i))
+            item.setFlag(QGraphicsItem.ItemIsSelectable)
+            item.setData(0, i)
+            self._scene.addItem(item)
+            self._points.append(item)
+            self._point_centers.append((x, y))
+
+        if not preserve_view or not self._has_fitted:
+            self.fitInView(self._scene.itemsBoundingRect(), Qt.KeepAspectRatio)
+            self._has_fitted = True
+
+    def toggle_selected(self, idx: int):
+        """Fast-path: toggle a single point in/out of the selection set."""
+        if idx in self._selected_set:
+            self._selected_set.discard(idx)
+        else:
+            self._selected_set.add(idx)
+        if not self._points or self._coords is None:
+            return
+        if idx < 0 or idx >= len(self._points):
+            return
+        rs = self._radius_scale()
+        item = self._points[idx]
+        cx, cy = self._point_centers[idx]
+        r = self._point_radius(idx, rs)
+        item.setRect(cx - r, cy - r, r * 2, r * 2)
+        item.setBrush(QBrush(self._point_color(idx)))
+        item.setPen(self._point_pen(idx, rs))
+        item.setZValue(self._point_z(idx))
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        item = self.itemAt(event.pos())
+        if isinstance(item, QGraphicsEllipseItem):
+            idx = item.data(0)
+            if idx != self._last_hover_idx:
+                self._last_hover_idx = idx
+                self.point_hovered.emit(idx)
+        else:
+            self._last_hover_idx = None
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        if event.button() == Qt.LeftButton:
+            item = self.itemAt(event.pos())
+            if isinstance(item, QGraphicsEllipseItem):
+                self.point_clicked.emit(item.data(0))
+
+    def wheelEvent(self, event):
+        delta = event.angleDelta().y()
+        if not delta:
+            return
+        factor = 1.15 if delta > 0 else 1.0 / 1.15
+        self.scale(factor, factor)
+        if self._coords is not None and len(self._coords) <= self._zoom_redraw_limit:
+            self.set_data(
+                self._coords,
+                cluster_ids=self._cluster_ids,
+                labeled_mask=self._labeled_mask,
+                selected_set=self._selected_set,
+                preserve_view=True,
+            )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Embedding Explorer Dialog (Qt-native, replaces Bokeh version)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 class EmbeddingExplorerDialog(QDialog):
-    """Interactive UMAP visualization with Bokeh."""
+    """Interactive UMAP visualization with Qt scatter plot + image hover preview."""
 
     def __init__(
         self,
@@ -611,72 +828,171 @@ class EmbeddingExplorerDialog(QDialog):
         image_paths: List[Path],
         cluster_ids: Optional[np.ndarray] = None,
         is_labeled_fn=None,
+        canonicalize_mat: bool = False,
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Embedding Explorer (UMAP + Bokeh)")
-        self.setMinimumSize(QSize(1000, 700))
+        self.setWindowTitle("Embedding Explorer (UMAP)")
+        self.setMinimumSize(QSize(1200, 760))
 
         self.embeddings = embeddings
         self.image_paths = image_paths
         self.cluster_ids = cluster_ids
-        self.is_labeled_fn = is_labeled_fn
+        self.is_labeled_fn = is_labeled_fn or (lambda p: False)
+        self.canonicalize_mat = canonicalize_mat
 
-        self.umap_projection = None
+        self.umap_projection: Optional[np.ndarray] = None
         self.selected_indices: List[int] = []
-        self.bokeh_html_path = None
         self._umap_thread = None
         self._umap_worker = None
+        self._pending_preview_idx: Optional[int] = None
+        self._canon_cache: dict = {}
 
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
-        controls = QHBoxLayout()
-        controls.addWidget(QLabel("UMAP neighbors"))
+        self.setStyleSheet("""
+            QDialog { background-color: #1e1e1e; }
+            QLabel { color: #cccccc; }
+            QPushButton {
+                background-color: #0e639c; color: #ffffff;
+                border: none; border-radius: 4px; padding: 5px 12px;
+            }
+            QPushButton:hover { background-color: #1177bb; }
+            QPushButton:disabled { background-color: #3e3e42; color: #888888; }
+            QSpinBox, QDoubleSpinBox {
+                background-color: #252526; color: #e0e0e0;
+                border: 1px solid #3e3e42; border-radius: 3px; padding: 3px 6px;
+            }
+        """)
+
+        outer = QVBoxLayout(self)
+        outer.setSpacing(6)
+
+        # ── Controls row ─────────────────────────────────────────────────────
+        ctrl = QHBoxLayout()
+        ctrl.addWidget(QLabel("Neighbors:"))
         self.neighbors_spin = QSpinBox()
-        self.neighbors_spin.setRange(5, 50)
+        self.neighbors_spin.setRange(5, 100)
         self.neighbors_spin.setValue(15)
-        controls.addWidget(self.neighbors_spin)
+        ctrl.addWidget(self.neighbors_spin)
+
+        ctrl.addWidget(QLabel("Min dist:"))
+        self.min_dist_spin = QDoubleSpinBox()
+        self.min_dist_spin.setRange(0.0, 1.0)
+        self.min_dist_spin.setSingleStep(0.05)
+        self.min_dist_spin.setValue(0.1)
+        ctrl.addWidget(self.min_dist_spin)
 
         self.btn_compute_umap = QPushButton("Compute UMAP")
         self.btn_compute_umap.clicked.connect(self._compute_umap)
-        controls.addWidget(self.btn_compute_umap)
+        ctrl.addWidget(self.btn_compute_umap)
 
         self.btn_cancel_umap = QPushButton("Cancel")
         self.btn_cancel_umap.setEnabled(False)
         self.btn_cancel_umap.clicked.connect(self._cancel_umap)
-        controls.addWidget(self.btn_cancel_umap)
-        controls.addStretch()
-        layout.addLayout(controls)
+        ctrl.addWidget(self.btn_cancel_umap)
 
-        self.umap_progress = QLabel("UMAP not computed yet.")
-        layout.addWidget(self.umap_progress)
+        if self.canonicalize_mat:
+            canon_badge = QLabel("  Canonicalization ON")
+            canon_badge.setStyleSheet("color: #4ec9b0; font-weight: bold;")
+            ctrl.addWidget(canon_badge)
 
-        info_layout = QHBoxLayout()
-        self.btn_refresh = QPushButton("Refresh Visualization")
-        self.btn_refresh.clicked.connect(self._refresh_viz)
-        self.btn_refresh.setEnabled(False)
-        info_layout.addWidget(self.btn_refresh)
+        ctrl.addStretch()
+        outer.addLayout(ctrl)
 
+        self.umap_status = QLabel("Adjust parameters and click 'Compute UMAP'.")
+        self.umap_status.setStyleSheet("color: #9e9e9e; padding: 2px;")
+        outer.addWidget(self.umap_status)
+
+        # ── Main splitter: scatter (left) | preview (right) ──────────────────
+        splitter = QSplitter(Qt.Horizontal)
+
+        self.explorer_view = EmbeddingExplorerView()
+        self.explorer_view.setMinimumWidth(500)
+        self.explorer_view.point_hovered.connect(self._on_hover)
+        self.explorer_view.point_clicked.connect(self._on_click)
+        splitter.addWidget(self.explorer_view)
+
+        # Right panel
+        right = QWidget()
+        right.setMinimumWidth(320)
+        right_layout = QVBoxLayout(right)
+        right_layout.setSpacing(6)
+
+        right_layout.addWidget(QLabel("<b style='color:#ffffff;'>Image Preview</b>"))
+
+        self.preview_label = QLabel()
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setMinimumSize(300, 300)
+        self.preview_label.setStyleSheet(
+            "background-color: #252526; border: 1px solid #3e3e42; border-radius: 4px;"
+        )
+        self.preview_label.setText(
+            "<span style='color:#555555;'>Hover a point to preview</span>"
+        )
+        right_layout.addWidget(self.preview_label, 1)
+
+        self.preview_info = QLabel()
+        self.preview_info.setWordWrap(True)
+        self.preview_info.setTextFormat(Qt.RichText)
+        self.preview_info.setStyleSheet("color: #cccccc; padding: 4px;")
+        self.preview_info.setText(
+            "<span style='color:#9e9e9e;'>Hover to preview  ·  Click to select / deselect</span>"
+        )
+        right_layout.addWidget(self.preview_info)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setStyleSheet("color: #3e3e42;")
+        right_layout.addWidget(sep)
+
+        self.selection_summary = QLabel("No points selected.")
+        self.selection_summary.setStyleSheet(
+            "color: #4ec9b0; padding: 4px; font-weight: bold;"
+        )
+        right_layout.addWidget(self.selection_summary)
+
+        btn_row = QHBoxLayout()
+        self.btn_clear_sel = QPushButton("Clear Selection")
+        self.btn_clear_sel.clicked.connect(self._clear_selection)
+        self.btn_add_sel = QPushButton("Add to Labeling Set")
+        self.btn_add_sel.clicked.connect(self.accept)
         btn_close = QPushButton("Close")
         btn_close.clicked.connect(self.reject)
-        info_layout.addWidget(btn_close)
-        layout.addLayout(info_layout)
+        btn_row.addWidget(self.btn_clear_sel)
+        btn_row.addWidget(self.btn_add_sel)
+        btn_row.addWidget(btn_close)
+        right_layout.addLayout(btn_row)
+
+        splitter.addWidget(right)
+        splitter.setSizes([720, 380])
+        outer.addWidget(splitter, 1)
+
+        # Debounce timer for preview
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setInterval(60)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(self._flush_preview)
+
+    # ── UMAP ─────────────────────────────────────────────────────────────────
 
     def _compute_umap(self):
+        if self.embeddings is None:
+            return
         self.btn_compute_umap.setEnabled(False)
         self.btn_cancel_umap.setEnabled(True)
-        self.umap_progress.setText("Computing UMAP projection...")
+        self.umap_status.setText("Computing UMAP projection...")
         self._umap_thread = QThread(self)
         self._umap_worker = UMAPWorker(
             embeddings=self.embeddings,
             n_neighbors=self.neighbors_spin.value(),
+            min_dist=self.min_dist_spin.value(),
             random_state=42,
         )
         self._umap_worker.moveToThread(self._umap_thread)
         self._umap_thread.started.connect(self._umap_worker.run)
-        self._umap_worker.progress.connect(self._on_umap_progress)
+        self._umap_worker.progress.connect(self.umap_status.setText)
         self._umap_worker.finished.connect(self._on_umap_finished)
         self._umap_worker.failed.connect(self._on_umap_failed)
         self._umap_thread.start()
@@ -685,102 +1001,188 @@ class EmbeddingExplorerDialog(QDialog):
         if self._umap_worker:
             self._umap_worker.cancel()
 
-    def _on_umap_progress(self, msg: str):
-        self.umap_progress.setText(msg)
-
     def _on_umap_finished(self, projection: np.ndarray):
-        self._cleanup_umap_thread()
-        self.umap_projection = projection
-        self.umap_progress.setText(f"UMAP complete! {projection.shape[0]} points.")
-        self.btn_compute_umap.setEnabled(True)
-        self.btn_cancel_umap.setEnabled(False)
-        self.btn_refresh.setEnabled(True)
-        self._generate_bokeh_viz()
-
-    def _on_umap_failed(self, error_msg: str):
-        self._cleanup_umap_thread()
-        self.umap_progress.setText(f"UMAP failed: {error_msg}")
-        self.btn_compute_umap.setEnabled(True)
-        self.btn_cancel_umap.setEnabled(False)
-        QMessageBox.critical(self, "UMAP Error", str(error_msg))
-
-    def _cleanup_umap_thread(self):
         if self._umap_thread:
             self._umap_thread.quit()
             self._umap_thread.wait(2000)
         self._umap_thread = None
         self._umap_worker = None
+        self.umap_projection = projection
+        n = projection.shape[0]
+        self.umap_status.setText(
+            f"UMAP complete  ·  {n:,} points  (hover to preview, click to select)"
+        )
+        self.btn_compute_umap.setEnabled(True)
+        self.btn_cancel_umap.setEnabled(False)
+        labeled_mask = [self.is_labeled_fn(p) for p in self.image_paths]
+        self.explorer_view.set_data(
+            projection,
+            cluster_ids=self.cluster_ids,
+            labeled_mask=labeled_mask,
+            selected_set=set(self.selected_indices),
+        )
 
-    def _generate_bokeh_viz(self):
-        if self.umap_projection is None:
-            return
+    def _on_umap_failed(self, msg: str):
+        if self._umap_thread:
+            self._umap_thread.quit()
+            self._umap_thread.wait(2000)
+        self._umap_thread = None
+        self._umap_worker = None
+        self.umap_status.setText(f"UMAP failed: {msg}")
+        self.btn_compute_umap.setEnabled(True)
+        self.btn_cancel_umap.setEnabled(False)
+        QMessageBox.critical(self, "UMAP Error", msg)
+
+    # ── Preview ───────────────────────────────────────────────────────────────
+
+    def _on_hover(self, idx: int):
+        self._pending_preview_idx = idx
+        if not self._preview_timer.isActive():
+            self._preview_timer.start()
+
+    def _flush_preview(self):
+        idx = self._pending_preview_idx
+        if idx is not None:
+            self._load_preview(idx)
+
+    def _canonicalized_pixmap(self, path: Path) -> QPixmap:
+        """Load image and apply MAT canonicalization if enabled."""
+        cache_key = str(path)
+        if cache_key in self._canon_cache:
+            return self._canon_cache[cache_key]
+
         try:
-            from bokeh.models import ColumnDataSource, HoverTool
-            from bokeh.plotting import figure, output_file, save
+            from PIL import Image as PILImage
 
-            self.umap_progress.setText("Generating Bokeh visualization...")
+            from ....core.canonicalization import MatMetadataCanonicalizer
 
-            # Simplified generation for brevity
-            image_names = [p.name for p in self.image_paths]
-            source = ColumnDataSource(
-                data=dict(
-                    x=self.umap_projection[:, 0],
-                    y=self.umap_projection[:, 1],
-                    names=image_names,
-                    indices=list(range(len(self.image_paths))),
+            img_pil = PILImage.open(str(path)).convert("RGB")
+            canonicalizer = MatMetadataCanonicalizer(enabled=True)
+            img_pil = canonicalizer(path, img_pil)
+
+            arr = np.asarray(img_pil)
+            h, w = arr.shape[:2]
+            if arr.ndim == 2:
+                qimg = QImage(arr.data, w, h, w, QImage.Format_Grayscale8)
+            else:
+                qimg = QImage(arr.tobytes(), w, h, w * 3, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg)
+        except Exception:
+            pixmap = QPixmap(str(path))
+
+        self._canon_cache[cache_key] = pixmap
+        return pixmap
+
+    def _load_preview(self, idx: int):
+        if idx < 0 or idx >= len(self.image_paths):
+            return
+        path = self.image_paths[idx]
+
+        try:
+            if self.canonicalize_mat:
+                pixmap = self._canonicalized_pixmap(path)
+            else:
+                pixmap = QPixmap(str(path))
+
+            if not pixmap.isNull():
+                preview_w = max(8, self.preview_label.width() - 8)
+                preview_h = max(8, self.preview_label.height() - 8)
+                pixmap = pixmap.scaled(
+                    preview_w,
+                    preview_h,
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
                 )
+                self.preview_label.setPixmap(pixmap)
+            else:
+                self.preview_label.setText(
+                    "<span style='color:#f44336;'>Could not load image</span>"
+                )
+        except Exception as exc:
+            self.preview_label.setText(
+                f"<span style='color:#f44336;'>Error: {exc}</span>"
             )
 
-            p = figure(
-                width=900,
-                height=700,
-                title="UMAP Embedding Space",
-                tools="pan,wheel_zoom,box_select,reset,save",
+        cluster_str = "n/a"
+        if self.cluster_ids is not None and idx < len(self.cluster_ids):
+            cluster_str = str(int(self.cluster_ids[idx]))
+        labeled_str = "yes" if self.is_labeled_fn(path) else "no"
+        selected_str = "yes" if idx in self.selected_indices else "no"
+        canon_badge = (
+            "&nbsp; <span style='color:#4ec9b0;'>canonicalized</span>"
+            if self.canonicalize_mat
+            else ""
+        )
+        self.preview_info.setText(
+            f"<div style='line-height:1.6;'>"
+            f"<b>Index:</b> {idx} &nbsp; <b>Cluster:</b> {cluster_str}<br>"
+            f"<b>Labeled:</b> {labeled_str} &nbsp; <b>Selected:</b> {selected_str}"
+            f"{canon_badge}<br>"
+            f"<span style='color:#9e9e9e; font-size:11px;'>{path.name}</span>"
+            f"</div>"
+        )
+
+    # ── Selection ─────────────────────────────────────────────────────────────
+
+    def _on_click(self, idx: int):
+        if idx in self.selected_indices:
+            self.selected_indices.remove(idx)
+        else:
+            self.selected_indices.append(idx)
+        self._update_selection_summary()
+        self.explorer_view.toggle_selected(idx)
+        self._load_preview(idx)
+
+    def _update_selection_summary(self):
+        n = len(self.selected_indices)
+        if n == 0:
+            self.selection_summary.setText("No points selected.")
+        else:
+            self.selection_summary.setText(
+                f"{n:,} point(s) selected  \u2014  click \u2018Add to Labeling Set\u2019 to use them."
             )
-            p.circle("x", "y", size=6, alpha=0.6, source=source)
-            p.add_tools(HoverTool(tooltips=[("Name", "@names")]))
 
-            if self.bokeh_html_path is None:
-                fd, self.bokeh_html_path = tempfile.mkstemp(
-                    suffix=".html", prefix="umap_"
-                )
-                import os
-
-                os.close(fd)
-
-            output_file(self.bokeh_html_path, title="Embedding Explorer")
-            save(p)
-            self._load_visualization()
-            self.umap_progress.setText(f"Visualization ready: {self.bokeh_html_path}")
-
-        except Exception as e:
-            QMessageBox.critical(self, "Viz Error", str(e))
-
-    def _load_visualization(self):
-        if self.bokeh_html_path:
-            import webbrowser
-
-            webbrowser.open("file://" + self.bokeh_html_path)
-
-    def _refresh_viz(self):
-        self._load_visualization()
+    def _clear_selection(self):
+        self.selected_indices.clear()
+        self._update_selection_summary()
+        if self.umap_projection is not None:
+            labeled_mask = [self.is_labeled_fn(p) for p in self.image_paths]
+            self.explorer_view.set_data(
+                self.umap_projection,
+                cluster_ids=self.cluster_ids,
+                labeled_mask=labeled_mask,
+                selected_set=set(),
+            )
 
     def closeEvent(self, event):
+        if self._umap_worker:
+            self._umap_worker.cancel()
+        if self._umap_thread:
+            self._umap_thread.quit()
+            self._umap_thread.wait(1000)
         self.embeddings = None
+        self._canon_cache.clear()
         super().closeEvent(event)
 
 
 class UMAPWorker(QObject):
-    """Background worker for UMAP."""
+    """Background worker for UMAP projection."""
 
     progress = Signal(str)
     finished = Signal(np.ndarray)
     failed = Signal(str)
 
-    def __init__(self, embeddings: np.ndarray, n_neighbors: int, random_state: int):
+    def __init__(
+        self,
+        embeddings: np.ndarray,
+        n_neighbors: int,
+        min_dist: float = 0.1,
+        random_state: int = 42,
+    ):
         super().__init__()
         self.embeddings = embeddings
         self.n_neighbors = n_neighbors
+        self.min_dist = min_dist
         self.random_state = random_state
         self._cancelled = False
 
@@ -796,11 +1198,13 @@ class UMAPWorker(QObject):
 
             if self._cancelled:
                 return
-            self.progress.emit("Running UMAP...")
+            self.progress.emit(
+                f"Running UMAP  ({self.n_neighbors} neighbors, min_dist={self.min_dist})..."
+            )
             reducer = umap.UMAP(
                 n_components=2,
                 n_neighbors=self.n_neighbors,
-                min_dist=0.1,
+                min_dist=self.min_dist,
                 metric="cosine",
                 random_state=self.random_state,
             )
@@ -808,5 +1212,6 @@ class UMAPWorker(QObject):
             if self._cancelled:
                 return
             self.finished.emit(projection.astype(np.float32))
-        except Exception as e:
-            self.failed.emit(str(e))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            self.failed.emit(str(exc))

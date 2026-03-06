@@ -33,6 +33,40 @@ class FrameAnn:
 
 
 @dataclass
+class DataSource:
+    """A single source dataset ingested into a multi-source PoseKit project."""
+
+    source_id: str  # unique within project, e.g. "source_0"
+    dataset_root: Path  # original dataset root (for metadata.json lookup)
+    images_dir: Path  # where this source's images live
+    labels_dir: Path  # per-source label subdirectory (avoids filename collisions)
+    description: str = ""  # human-readable label, e.g. "Species A – Jan 2025"
+
+    def to_dict(self, base: Path) -> dict:
+        return {
+            "source_id": self.source_id,
+            "dataset_root": str(_relativize_path(self.dataset_root, base)),
+            "images_dir": str(_relativize_path(self.images_dir, base)),
+            "labels_dir": str(_relativize_path(self.labels_dir, base)),
+            "description": self.description,
+        }
+
+    @staticmethod
+    def from_dict(d: dict, base: Path) -> "DataSource":
+        def _rp(key: str) -> Path:
+            raw = Path(d[key])
+            return _resolve_project_path(raw, base, {})
+
+        return DataSource(
+            source_id=str(d["source_id"]),
+            dataset_root=_rp("dataset_root"),
+            images_dir=_rp("images_dir"),
+            labels_dir=_rp("labels_dir"),
+            description=str(d.get("description", "")),
+        )
+
+
+@dataclass
 class Project:
     """Persistent PoseKit project configuration and UI/session state."""
 
@@ -68,6 +102,11 @@ class Project:
     edge_width: float = DEFAULT_EDGE_WIDTH
     latest_pose_weights: Optional[Path] = None
     latest_sleap_dataset: Optional[Path] = None
+
+    # Multi-source support — list of ingested dataset sources.
+    # When non-empty, images/labels are routed per-source.
+    # Legacy single-source projects have sources=[] and use images_dir/labels_dir.
+    sources: List["DataSource"] = field(default_factory=list)
 
     def to_json(self) -> dict:
         """Serialize project state to a JSON-compatible dictionary."""
@@ -117,6 +156,7 @@ class Project:
             "kpt_opacity": self.kpt_opacity,
             "edge_opacity": self.edge_opacity,
             "edge_width": self.edge_width,
+            "sources": [s.to_dict(base) for s in self.sources],
         }
 
     @staticmethod
@@ -170,6 +210,11 @@ class Project:
             edge_width=float(data.get("edge_width", DEFAULT_EDGE_WIDTH)),
             latest_pose_weights=latest_pose_weights,
             latest_sleap_dataset=latest_sleap_dataset,
+            sources=[
+                DataSource.from_dict(s, base)
+                for s in data.get("sources", [])
+                if isinstance(s, dict)
+            ],
         )
 
 

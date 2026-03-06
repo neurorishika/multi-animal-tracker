@@ -17,7 +17,9 @@ class EmbedderBase(ABC):
         pass
 
     @abstractmethod
-    def embed(self, image_paths: List[Path]) -> np.ndarray:
+    def embed(
+        self, image_paths: List[Path], batch_size: int = 32, preprocess_fn=None
+    ) -> np.ndarray:
         """
         Embed a list of images to a numpy array (N, D).
         """

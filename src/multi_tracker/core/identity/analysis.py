@@ -309,6 +309,19 @@ class IndividualDatasetGenerator:
                     "theta": theta,
                     "crop_size": crop_info["crop_size"],
                     "obb_corners": corners.tolist(),
+                    "obb_corners_local": crop_info["obb_corners_local"],
+                    "obb_corners_expanded_local": crop_info[
+                        "obb_corners_expanded_local"
+                    ],
+                    "canonicalization": {
+                        "center_px": crop_info["canonical_center_px"],
+                        "size_px": crop_info["canonical_size_px"],
+                        "angle_rad": float(theta),
+                        "major_axis_theta_rad": float(theta),
+                        "minor_axis_theta_rad": float(theta + (np.pi / 2.0)),
+                        "directed": False,
+                        "orientation_source": "tracking_theta",
+                    },
                     "source_type": source_type,
                 }
 
@@ -364,6 +377,17 @@ class IndividualDatasetGenerator:
             "theta": float(theta),
             "crop_size": crop_info["crop_size"],
             "obb_corners": corners.tolist(),
+            "obb_corners_local": crop_info["obb_corners_local"],
+            "obb_corners_expanded_local": crop_info["obb_corners_expanded_local"],
+            "canonicalization": {
+                "center_px": crop_info["canonical_center_px"],
+                "size_px": crop_info["canonical_size_px"],
+                "angle_rad": float(theta),
+                "major_axis_theta_rad": float(theta),
+                "minor_axis_theta_rad": float(theta + (np.pi / 2.0)),
+                "directed": False,
+                "orientation_source": "tracking_theta",
+            },
             "source_type": "interpolated",
             "interpolated": True,
             "interp_from_frames": [int(interp_from[0]), int(interp_from[1])],
@@ -429,13 +453,16 @@ class IndividualDatasetGenerator:
         crop = frame[y_min:y_max, x_min:x_max].copy()
 
         # Create mask for expanded OBB region (shift corners to crop coordinates)
-        shifted_corners = expanded_corners.copy()
+        shifted_corners = corners.copy()
         shifted_corners[:, 0] -= x_min
         shifted_corners[:, 1] -= y_min
+        shifted_expanded_corners = expanded_corners.copy()
+        shifted_expanded_corners[:, 0] -= x_min
+        shifted_expanded_corners[:, 1] -= y_min
 
         # Create OBB polygon mask
         mask = np.zeros((crop_h, crop_w), dtype=np.uint8)
-        cv2.fillPoly(mask, [shifted_corners.astype(np.int32)], 255)
+        cv2.fillPoly(mask, [shifted_expanded_corners.astype(np.int32)], 255)
 
         # Apply mask - keep OBB region, fill rest with background color
         mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
@@ -451,6 +478,15 @@ class IndividualDatasetGenerator:
             "crop_size": (crop_w, crop_h),
             "crop_bbox": (x_min, y_min, x_max, y_max),
             "obb_corners_local": shifted_corners.tolist(),
+            "obb_corners_expanded_local": shifted_expanded_corners.tolist(),
+            "canonical_center_px": [
+                float(shifted_corners[:, 0].mean()),
+                float(shifted_corners[:, 1].mean()),
+            ],
+            "canonical_size_px": [
+                float(np.linalg.norm(shifted_corners[1] - shifted_corners[0])),
+                float(np.linalg.norm(shifted_corners[2] - shifted_corners[1])),
+            ],
             "expansion_factor": 1.0 + self.padding_fraction,
         }
 

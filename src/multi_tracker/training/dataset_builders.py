@@ -124,7 +124,7 @@ def merge_obb_sources(
     root.mkdir(parents=True, exist_ok=True)
     out_dir = root / f"combined_obb_{_timestamp()}"
 
-    for split in ("train", "val"):
+    for split in ("train", "val", "test"):
         (out_dir / "images" / split).mkdir(parents=True, exist_ok=True)
         (out_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
@@ -132,7 +132,7 @@ def merge_obb_sources(
 
     rng = random.Random(int(seed))
     seen_hashes: set[str] = set()
-    split_counts = {"train": 0, "val": 0}
+    split_counts = {"train": 0, "val": 0, "test": 0}
     source_items: dict[str, int] = defaultdict(int)
     duplicate_skipped = 0
 
@@ -142,7 +142,7 @@ def merge_obb_sources(
         split_items = split_items_for_training(inspection, split_tuple, seed=seed)
 
         # If source already has train/val we keep their order deterministic but shuffled per-source.
-        for split in ("train", "val"):
+        for split in ("train", "val", "test"):
             items = list(split_items.get(split, []))
             rng.shuffle(items)
             for idx, item in enumerate(items):
@@ -180,7 +180,8 @@ def merge_obb_sources(
             "Merged dataset has empty split(s). Ensure source datasets provide enough labeled frames."
         )
 
-    _write_dataset_yaml(out_dir, class_name=class_name, include_test=False)
+    include_test = split_counts["test"] > 0
+    _write_dataset_yaml(out_dir, class_name=class_name, include_test=include_test)
     manifest = {
         "type": "merged_obb",
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -229,13 +230,13 @@ def derive_detect_dataset_from_obb(
     out_root.mkdir(parents=True, exist_ok=True)
     out_dir = out_root / f"derived_detect_{_timestamp()}"
 
-    for split in ("train", "val"):
+    for split in ("train", "val", "test"):
         (out_dir / "images" / split).mkdir(parents=True, exist_ok=True)
         (out_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
-    counts = {"train": 0, "val": 0, "objects": 0}
+    counts = {"train": 0, "val": 0, "test": 0, "objects": 0}
 
-    for split in ("train", "val"):
+    for split in ("train", "val", "test"):
         src_img = src / "images" / split
         src_lbl = src / "labels" / split
         if not src_img.exists():
@@ -284,7 +285,8 @@ def derive_detect_dataset_from_obb(
             counts[split] += 1
             counts["objects"] += len(out_lines)
 
-    _write_dataset_yaml(out_dir, class_name=class_name, include_test=False)
+    include_test = counts["test"] > 0
+    _write_dataset_yaml(out_dir, class_name=class_name, include_test=include_test)
     manifest = {
         "type": "derived_detect",
         "source": str(src),
@@ -325,13 +327,13 @@ def derive_crop_obb_dataset_from_obb(
     out_root.mkdir(parents=True, exist_ok=True)
     out_dir = out_root / f"derived_crop_obb_{_timestamp()}"
 
-    for split in ("train", "val"):
+    for split in ("train", "val", "test"):
         (out_dir / "images" / split).mkdir(parents=True, exist_ok=True)
         (out_dir / "labels" / split).mkdir(parents=True, exist_ok=True)
 
-    counts = {"train": 0, "val": 0, "objects": 0}
+    counts = {"train": 0, "val": 0, "test": 0, "objects": 0}
 
-    for split in ("train", "val"):
+    for split in ("train", "val", "test"):
         src_img = src / "images" / split
         src_lbl = src / "labels" / split
         if not src_img.exists():
@@ -425,7 +427,8 @@ def derive_crop_obb_dataset_from_obb(
                 counts[split] += 1
                 counts["objects"] += 1
 
-    _write_dataset_yaml(out_dir, class_name=class_name, include_test=False)
+    include_test = counts["test"] > 0
+    _write_dataset_yaml(out_dir, class_name=class_name, include_test=include_test)
     manifest = {
         "type": "derived_crop_obb",
         "source": str(src),
@@ -521,14 +524,20 @@ def derive_headtail_classify_dataset_from_obb(
     out_dir = out_root / f"derived_headtail_{_timestamp()}"
 
     left_name, right_name = class_names
-    for split in ("train", "val"):
+    for split in ("train", "val", "test"):
         for cls_name in (left_name, right_name):
             (out_dir / split / cls_name).mkdir(parents=True, exist_ok=True)
 
-    counts = {"train": 0, "val": 0, left_name: 0, right_name: 0}
+    counts = {
+        "train": 0,
+        "val": 0,
+        "test": 0,
+        left_name: 0,
+        right_name: 0,
+    }
     index_rows: list[dict[str, object]] = []
 
-    for split in ("train", "val"):
+    for split in ("train", "val", "test"):
         img_dir = src / "images" / split
         lbl_dir = src / "labels" / split
         if not img_dir.exists():

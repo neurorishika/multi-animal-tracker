@@ -94,7 +94,9 @@ class TimmEmbedder(EmbedderBase):
             self.load_model()
         return self._dim
 
-    def embed(self, image_paths: List[Path], batch_size: int = 32) -> np.ndarray:
+    def embed(
+        self, image_paths: List[Path], batch_size: int = 32, preprocess_fn=None
+    ) -> np.ndarray:
         if self.model is None:
             self.load_model()
 
@@ -108,6 +110,8 @@ class TimmEmbedder(EmbedderBase):
             for p in batch_paths:
                 try:
                     img = Image.open(p).convert("RGB")
+                    if preprocess_fn is not None:
+                        img = preprocess_fn(Path(p), img)
                     batch_tensors.append(self.transform(img))
                 except Exception as e:
                     print(f"Error loading {p}: {e}")

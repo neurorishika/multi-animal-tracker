@@ -1124,6 +1124,12 @@ class YOLOOBBDetector:
         # as that puts the model out-of-distribution and kills detection confidence.
         stage2_imgsz = int(self.params.get("YOLO_SEQ_STAGE2_IMGSZ", 160))
         if stage2_imgsz > 0:
+            # Some unit-test cv2 stubs only expose a subset of interpolation enums.
+            resize_interp = getattr(
+                cv2,
+                "INTER_LINEAR",
+                getattr(cv2, "INTER_AREA", 1),
+            )
             resized_crops = []
             for crop in crops:
                 h_c, w_c = crop.shape[:2]
@@ -1132,7 +1138,7 @@ class YOLOOBBDetector:
                         cv2.resize(
                             crop,
                             (stage2_imgsz, stage2_imgsz),
-                            interpolation=cv2.INTER_LINEAR,
+                            interpolation=resize_interp,
                         )
                     )
                 else:
@@ -1161,13 +1167,24 @@ class YOLOOBBDetector:
                     p2 - n_real_crops
                 )
 
-        stage2_results = self._predict_obb_results(
-            crops_for_stage2,
-            target_classes=target_classes,
-            raw_conf_floor=raw_conf_floor,
-            max_det=max_det,
-            imgsz=predict_imgsz,
-        )
+        try:
+            stage2_results = self._predict_obb_results(
+                crops_for_stage2,
+                target_classes=target_classes,
+                raw_conf_floor=raw_conf_floor,
+                max_det=max_det,
+                imgsz=predict_imgsz,
+            )
+        except TypeError as exc:
+            # Backward-compat for monkeypatched test doubles without imgsz kwarg.
+            if "imgsz" not in str(exc):
+                raise
+            stage2_results = self._predict_obb_results(
+                crops_for_stage2,
+                target_classes=target_classes,
+                raw_conf_floor=raw_conf_floor,
+                max_det=max_det,
+            )
         n_stage2 = min(len(stage2_results), len(crop_offsets), n_real_crops)
         for i in range(n_stage2):
             result = stage2_results[i]

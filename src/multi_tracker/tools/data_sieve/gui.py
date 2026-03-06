@@ -1457,7 +1457,10 @@ class DataSieveWindow(QMainWindow):
 
             copied = 0
             for item in self.filtered_dataset:
-                src = Path(item["path"])
+                # After the rename, files now live under all_images_path.
+                # item["path"] still contains the old images/ path, so we
+                # redirect to the renamed backup folder using just the filename.
+                src = all_images_path / Path(item["path"]).name
                 dst = images_path / src.name
                 if src.exists():
                     shutil.copy2(src, dst)

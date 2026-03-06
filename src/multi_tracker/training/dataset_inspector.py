@@ -103,16 +103,23 @@ def _collect_dir_split(
     return items
 
 
-def _infer_label_path_from_image(root: Path, image_path: Path) -> Path:
+def _infer_label_path_from_image(
+    root: Path, image_path: Path, labels_root: Path | None = None
+) -> Path:
+    labels_root = (labels_root or (root / "labels")).resolve()
     image_posix = image_path.as_posix()
     if "/images/" in image_posix:
-        label_posix = image_posix.replace("/images/", "/labels/")
-        return Path(label_posix).with_suffix(".txt")
+        image_parts = image_path.parts
+        idx = image_parts.index("images")
+        rel = Path(*image_parts[idx + 1 :])
+        return (labels_root / rel).with_suffix(".txt")
     # Fallback to sibling labels folder
-    return (root / "labels" / image_path.name).with_suffix(".txt")
+    return (labels_root / image_path.name).with_suffix(".txt")
 
 
-def _collect_list_split(root: Path, list_path: Path, split: str) -> list[DatasetItem]:
+def _collect_list_split(
+    root: Path, list_path: Path, split: str, labels_root: Path | None = None
+) -> list[DatasetItem]:
     items: list[DatasetItem] = []
     if not list_path.exists():
         return items
@@ -125,7 +132,7 @@ def _collect_list_split(root: Path, list_path: Path, split: str) -> list[Dataset
             p = (root / p).resolve()
         if p.suffix.lower() not in IMAGE_EXTS:
             continue
-        lbl = _infer_label_path_from_image(root, p)
+        lbl = _infer_label_path_from_image(root, p, labels_root=labels_root)
         if not lbl.is_absolute():
             lbl = (root / lbl).resolve()
         items.append(DatasetItem(image_path=str(p), label_path=str(lbl), split=split))
@@ -168,13 +175,15 @@ def inspect_obb_or_detect_dataset(root_dir: str | Path) -> DatasetInspection:
             split_path = _resolve_data_path(root, split_ref)
             if split_path is None:
                 continue
+            labels_dir = _resolve_data_path(root, data.get("labels"))
+            if labels_dir is None:
+                labels_dir = root / "labels"
 
             if split_path.suffix.lower() == ".txt":
-                items = _collect_list_split(root, split_path, split=split)
+                items = _collect_list_split(
+                    root, split_path, split=split, labels_root=labels_dir
+                )
             else:
-                labels_dir = _resolve_data_path(root, data.get("labels"))
-                if labels_dir is None:
-                    labels_dir = root / "labels"
                 # If split_path is images/<split>, labels should be labels/<split>
                 if split_path.is_dir() and split_path.name in {"train", "val", "test"}:
                     split_labels = labels_dir / split_path.name

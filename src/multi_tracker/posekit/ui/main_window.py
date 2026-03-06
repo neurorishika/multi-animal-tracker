@@ -53,16 +53,18 @@ logger = logging.getLogger("pose_label")
 from .canvas import FrameListDelegate, PoseCanvas
 
 # Local refactored modules
-from .constants import DEFAULT_AUTOSAVE_DELAY_MS, DEFAULT_DATASET_IMAGES_DIR
+from .constants import DEFAULT_AUTOSAVE_DELAY_MS
 from .dialogs.project_wizard import ProjectWizard
 from .dialogs.skeleton import SkeletonEditorDialog
 from .io import load_yolo_pose_label, migrate_labels_keypoints, save_yolo_pose_label
-from .models import FrameAnn, Keypoint, Project, compute_bbox_from_kpts
+from .models import DataSource, FrameAnn, Keypoint, Project, compute_bbox_from_kpts
 from .project import (
-    create_project_via_wizard,
+    add_source_to_project,
+    build_image_list,
+    create_standalone_project_via_wizard,
     find_project,
     load_project_with_repairs,
-    resolve_dataset_paths,
+    open_project_from_path,
 )
 from .runtimes import (
     CANONICAL_RUNTIMES,
@@ -90,6 +92,7 @@ try:
     )
     from multi_tracker.posekit.inference.service import PoseInferenceService
     from multi_tracker.posekit.ui.dialogs.active_learning import ActiveLearningDialog
+    from multi_tracker.posekit.ui.dialogs.add_source import AddSourceDialog
     from multi_tracker.posekit.ui.dialogs.evaluation import EvaluationDashboardDialog
     from multi_tracker.posekit.ui.dialogs.exploration import SmartSelectDialog
     from multi_tracker.posekit.ui.dialogs.training import TrainingRunnerDialog
@@ -118,11 +121,15 @@ class MainWindow(QMainWindow):
         self._img_bgr = None
         self._img_display = None
         self._img_wh = (1, 1)
+        self._canonicalize_enabled = False
         self._ann: Optional[FrameAnn] = None
         self._dirty = False
         self._undo_stack: List[List[Keypoint]] = []
         self._undo_max = 50
         self._frame_cache: Dict[int, FrameAnn] = {}
+        # Multi-source routing: populated by _build_source_index()
+        self._source_map: Dict[str, DataSource] = {}  # source_id -> DataSource
+        self._image_source: Dict[str, str] = {}  # str(img_path) -> source_id
         self._suppress_list_rebuild = False
         self._pred_thread: Optional[QThread] = None
         self._pred_worker: Optional[PosePredictWorker] = None
@@ -345,6 +352,12 @@ class MainWindow(QMainWindow):
         self.btn_enhance_settings = QPushButton("Enhancement settings…")
         disp_layout.addWidget(self.cb_enhance)
         disp_layout.addWidget(self.btn_enhance_settings)
+        self.cb_canonicalize = QCheckBox("Canonicalize (MAT metadata)")
+        self.cb_canonicalize.setChecked(False)
+        self.cb_canonicalize.setToolTip(
+            "Rotate/crop each image using MAT individual-dataset metadata.json when available."
+        )
+        disp_layout.addWidget(self.cb_canonicalize)
         self.cb_show_preds = QCheckBox("Show predictions")
         self.cb_show_preds.setChecked(True)
         disp_layout.addWidget(self.cb_show_preds)
@@ -726,6 +739,7 @@ class MainWindow(QMainWindow):
         self.class_combo.currentIndexChanged.connect(self._mark_dirty)
         self.cb_enhance.toggled.connect(self._toggle_enhancement)
         self.btn_enhance_settings.clicked.connect(self._open_enhancement_settings)
+        self.cb_canonicalize.toggled.connect(self._toggle_canonicalization)
         self.sp_kpt_size.valueChanged.connect(self._update_kpt_size)
         self.sp_label_size.valueChanged.connect(self._update_label_size)
         self.sp_kpt_opacity.valueChanged.connect(self._update_kpt_opacity)
@@ -1159,31 +1173,79 @@ class MainWindow(QMainWindow):
             pass
 
     def show_startup_open_overlay(self: object) -> object:
-        """Show startup chooser overlay for opening a dataset directory."""
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Open PoseKit Dataset")
+        """Non-dismissible welcome screen shown when PoseKit launches without a project."""
+
+        class _StartupDialog(QDialog):
+            def keyPressEvent(self, event):  # noqa: N802
+                if event.key() == Qt.Key_Escape:
+                    return  # Esc is blocked — must use the buttons
+                super().keyPressEvent(event)
+
+        dlg = _StartupDialog(self)
+        dlg.setWindowTitle("PoseKit Labeler")
         dlg.setModal(True)
-        dlg.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        dlg.setMinimumWidth(500)
+        dlg.setWindowFlags(
+            (dlg.windowFlags() | Qt.Dialog)
+            & ~Qt.WindowCloseButtonHint
+            & ~Qt.WindowContextHelpButtonHint
+        )
 
         layout = QVBoxLayout(dlg)
-        msg = QLabel("No dataset is open.\n\nChoose one option to continue:")
-        msg.setWordWrap(True)
-        layout.addWidget(msg)
+        layout.setSpacing(14)
+        layout.setContentsMargins(40, 36, 40, 32)
 
-        btn_open_dataset = QPushButton("Open Dataset Folder…")
+        from PySide6.QtGui import QFont
+
+        title_lbl = QLabel("PoseKit Labeler")
+        title_font = QFont()
+        title_font.setPointSize(22)
+        title_font.setBold(True)
+        title_lbl.setFont(title_font)
+        title_lbl.setAlignment(Qt.AlignCenter)
+        layout.addWidget(title_lbl)
+        layout.addSpacing(4)
+
+        sub_lbl = QLabel("Create a new project or open an existing one to get started.")
+        sub_lbl.setWordWrap(True)
+        sub_lbl.setAlignment(Qt.AlignCenter)
+        layout.addWidget(sub_lbl)
+        layout.addSpacing(10)
+
+        btn_new = QPushButton("➕  New Project…")
+        btn_new.setMinimumHeight(44)
+        btn_open = QPushButton("📂  Open Existing Project…")
+        btn_open.setMinimumHeight(44)
         btn_quit = QPushButton("Quit")
-        layout.addWidget(btn_open_dataset)
+
+        layout.addWidget(btn_new)
+        layout.addWidget(btn_open)
+        layout.addSpacing(6)
         layout.addWidget(btn_quit)
 
-        def open_dataset():
+        def _new():
             dlg.accept()
-            self.open_dataset_folder()
+            self.new_project_wizard()
             if self.isVisible() and not self.image_paths:
                 QTimer.singleShot(0, self.show_startup_open_overlay)
 
-        btn_open_dataset.clicked.connect(open_dataset)
+        def _open():
+            dlg.accept()
+            self.open_project()
+            if self.isVisible() and not self.image_paths:
+                QTimer.singleShot(0, self.show_startup_open_overlay)
+
+        btn_new.clicked.connect(_new)
+        btn_open.clicked.connect(_open)
         btn_quit.clicked.connect(lambda: (dlg.reject(), self.close()))
         dlg.exec()
+
+    def new_project_wizard(self) -> None:
+        """Run the New Project wizard and switch to the created project."""
+        proj = create_standalone_project_via_wizard(parent_widget=self)
+        if proj is None:
+            return
+        self._switch_project_window(proj)
 
     def closeEvent(self: object, event: object) -> object:
         """Save UI settings when window closes."""
@@ -1486,9 +1548,13 @@ class MainWindow(QMainWindow):
         act_save.setShortcut(QKeySequence.Save)
         act_save.triggered.connect(self.save_all_labeling_frames)
 
-        act_open_proj = QAction("Open Dataset Folder…", self)
+        act_new_proj = QAction("New Project…", self)
+        act_new_proj.setShortcut(QKeySequence("Ctrl+N"))
+        act_new_proj.triggered.connect(self.new_project_wizard)
+
+        act_open_proj = QAction("Open Project…", self)
         act_open_proj.setShortcut(QKeySequence.Open)
-        act_open_proj.triggered.connect(self.open_dataset_folder)
+        act_open_proj.triggered.connect(self.open_project)
 
         act_export = QAction("Export dataset.yaml + splits…", self)
         act_export.setShortcut(QKeySequence("Ctrl+E"))
@@ -1549,6 +1615,14 @@ class MainWindow(QMainWindow):
         self.act_enhance_settings = QAction("Enhancement Settings…", self)
         self.act_enhance_settings.triggered.connect(self._open_enhancement_settings)
 
+        self.act_canonicalize = QAction("Canonicalize (MAT Metadata)", self)
+        self.act_canonicalize.setCheckable(True)
+        self.act_canonicalize.setChecked(False)
+        self.act_canonicalize.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.act_canonicalize.triggered.connect(
+            lambda checked: self._toggle_canonicalization(checked)
+        )
+
         self.act_show_pred_conf = QAction("Show Prediction Confidence", self)
         self.act_show_pred_conf.setCheckable(True)
         self.act_show_pred_conf.setChecked(bool(self.show_pred_conf))
@@ -1564,7 +1638,10 @@ class MainWindow(QMainWindow):
         act_active.triggered.connect(self.open_active_learning)
 
         m_file.addAction(act_save)
+        m_file.addSeparator()
+        m_file.addAction(act_new_proj)
         m_file.addAction(act_open_proj)
+        m_file.addSeparator()
         m_file.addAction(act_proj)
         m_file.addSeparator()
         m_file.addAction(act_export)
@@ -1587,6 +1664,7 @@ class MainWindow(QMainWindow):
         m_tools.addSeparator()
         m_tools.addAction(self.act_enhance)
         m_tools.addAction(self.act_enhance_settings)
+        m_tools.addAction(self.act_canonicalize)
         m_tools.addSeparator()
         m_tools.addAction(self.act_show_pred_conf)
 
@@ -1611,7 +1689,15 @@ class MainWindow(QMainWindow):
 
     # ----- file paths -----
     def _label_path_for(self, img_path: Path) -> Path:
-        return self.project.labels_dir / (img_path.stem + ".txt")
+        """Return the label .txt path for *img_path*, routed per-source when available."""
+        src_id = self._image_source.get(str(img_path)) or self._image_source.get(
+            str(img_path.resolve()) if img_path.exists() else str(img_path)
+        )
+        if src_id and src_id in self._source_map:
+            labels_dir = self._source_map[src_id].labels_dir
+        else:
+            labels_dir = self.project.labels_dir
+        return labels_dir / (img_path.stem + ".txt")
 
     def _is_labeled(self, img_path: Path) -> bool:
         lp = self._label_path_for(img_path)
@@ -1715,6 +1801,15 @@ class MainWindow(QMainWindow):
                 color = QColor(220, 220, 220)  # White
 
             item_text = f"{tick}{img_path.name}"
+            # Show a short source badge when the project has multiple sources
+            if len(self.project.sources) > 1:
+                src_id = self._image_source.get(str(img_path), "")
+                src = self._source_map.get(src_id)
+                badge = (src.description or src.source_id) if src else src_id
+                # Truncate long descriptions to keep list readable
+                if len(badge) > 20:
+                    badge = badge[:17] + "…"
+                item_text = f"{tick}[{badge}] {img_path.name}"
             pred_conf = conf_map.get(idx)
             pred_kpt_count = kpt_map.get(idx)
             cluster_id = cluster_map.get(idx)
@@ -1837,6 +1932,13 @@ class MainWindow(QMainWindow):
             color = QColor(220, 220, 220)  # White
 
         item_text = f"{tick}{img_path.name}"
+        if len(self.project.sources) > 1:
+            src_id = self._image_source.get(str(img_path), "")
+            src = self._source_map.get(src_id)
+            badge = (src.description or src.source_id) if src else src_id
+            if len(badge) > 20:
+                badge = badge[:17] + "…"
+            item_text = f"{tick}[{badge}] {img_path.name}"
         if pred_conf is None:
             pred_conf = self._get_pred_conf_for_indices([idx]).get(idx)
         if pred_kpt_count is None:
@@ -1844,14 +1946,30 @@ class MainWindow(QMainWindow):
         if cluster_id is None:
             cluster_id = self._get_cluster_id_for_indices([idx]).get(idx)
 
-        # Find and update the item in the appropriate list
+        # Find and update the item in the appropriate list.
+        # If the frame was just saved (is_saved True) and is currently sitting in
+        # the "all frames" (unlabeled) list, move it to the labeling list so the
+        # transfer is visible immediately without a full list rebuild.
         item = self._list_items.get(idx)
         if item is not None:
-            item.setForeground(color)
-            item.setText(item_text)
-            item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
-            item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
-            item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
+            needs_labeling = is_saved or (idx in self.labeling_frames)
+            row_in_frame = self.frame_list.row(item)
+            if needs_labeling and row_in_frame >= 0:
+                # Move item from unlabeled → labeling list
+                self.frame_list.takeItem(row_in_frame)
+                self.labeling_frames.add(idx)
+                item.setForeground(color)
+                item.setText(item_text)
+                item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
+                item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
+                self.labeling_list.addItem(item)
+            else:
+                item.setForeground(color)
+                item.setText(item_text)
+                item.setData(FrameListDelegate.CONF_ROLE, pred_conf)
+                item.setData(FrameListDelegate.KP_COUNT_ROLE, pred_kpt_count)
+                item.setData(FrameListDelegate.CLUSTER_ROLE, cluster_id)
             return
 
         for i in range(self.labeling_list.count()):
@@ -1899,6 +2017,22 @@ class MainWindow(QMainWindow):
                 self._path_to_index[str(p.resolve())] = i
             except Exception:
                 self._path_to_index[str(p)] = i
+        self._build_source_index()
+
+    def _build_source_index(self):
+        """Rebuild _source_map and _image_source from project.sources."""
+        self._source_map = {s.source_id: s for s in self.project.sources}
+        self._image_source = {}
+        for src in self.project.sources:
+            try:
+                for p in list_images(src.images_dir):
+                    self._image_source[str(p)] = src.source_id
+                    try:
+                        self._image_source[str(p.resolve())] = src.source_id
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
     def _get_pred_conf_for_indices(
         self, indices: List[int]
@@ -2136,7 +2270,55 @@ class MainWindow(QMainWindow):
         img = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if img is None:
             raise RuntimeError(f"Failed to read image: {path}")
+        if self._canonicalize_enabled:
+            try:
+                from PIL import Image as _PILImage
+
+                from ...core.canonicalization import MatMetadataCanonicalizer
+
+                img_pil = _PILImage.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+                canon = MatMetadataCanonicalizer(enabled=True)
+                img_pil = canon(path, img_pil)
+                img = cv2.cvtColor(np.asarray(img_pil), cv2.COLOR_RGB2BGR)
+            except Exception:
+                pass
         return img
+
+    def _kpts_to_save_space(
+        self, kpts: "List[Keypoint]", img_path: "Path"
+    ) -> "tuple[List[Keypoint], int, int]":
+        """Return ``(kpts_orig_px, save_w, save_h)`` always in **original** image space.
+
+        When canonicalization is active the in-memory keypoints live in canonical
+        pixel coordinates.  This helper applies the inverse affine so the
+        returned coordinates are relative to the original (pre-warp) image,
+        which is what YOLO training expects on disk.  Falls back gracefully when
+        the metadata transform is unavailable.
+        """
+        if not self._canonicalize_enabled:
+            return list(kpts), self._img_wh[0], self._img_wh[1]
+        try:
+            from ...core.canonicalization import get_canon_transform
+
+            raw = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+            if raw is None:
+                return list(kpts), self._img_wh[0], self._img_wh[1]
+            orig_h, orig_w = raw.shape[:2]
+            t = get_canon_transform(img_path)
+            if t is None:
+                return list(kpts), orig_w, orig_h
+            inv_A = t["inv_affine"]
+            out: List[Keypoint] = []
+            for kp in kpts:
+                if kp.v == 0:
+                    out.append(Keypoint(0.0, 0.0, 0))
+                else:
+                    x_o = float(inv_A[0, 0] * kp.x + inv_A[0, 1] * kp.y + inv_A[0, 2])
+                    y_o = float(inv_A[1, 0] * kp.x + inv_A[1, 1] * kp.y + inv_A[1, 2])
+                    out.append(Keypoint(x_o, y_o, kp.v))
+            return out, orig_w, orig_h
+        except Exception:
+            return list(kpts), self._img_wh[0], self._img_wh[1]
 
     def _clone_ann(self, ann: FrameAnn) -> FrameAnn:
         return FrameAnn(
@@ -2171,8 +2353,12 @@ class MainWindow(QMainWindow):
 
     def _load_ann_from_disk(self, idx: int) -> FrameAnn:
         img_path = self.image_paths[idx]
-        img = self._read_image(img_path)
-        h, w = img.shape[:2]
+        # Labels on disk are always stored in original (pre-canonicalization) image
+        # coordinates.  Read raw dims directly so denormalization is correct.
+        raw = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+        if raw is None:
+            raw = self._read_image(img_path)
+        orig_h, orig_w = raw.shape[:2]
         k = len(self.project.keypoint_names)
         kpts = [Keypoint(0.0, 0.0, 0) for _ in range(k)]
         bbox = None
@@ -2182,19 +2368,43 @@ class MainWindow(QMainWindow):
         if loaded is not None:
             cls_loaded, kpts_norm, bbox_cxcywh = loaded
             cls = int(cls_loaded)
+
+            # When canonicalization is active, forward-transform pixel coords from
+            # original space into canonical display space for the UI.
+            canon_affine = None
+            disp_w, disp_h = orig_w, orig_h
+            if self._canonicalize_enabled:
+                try:
+                    from ...core.canonicalization import get_canon_transform
+
+                    t = get_canon_transform(img_path)
+                    if t is not None:
+                        canon_affine = t["affine"]
+                        disp_w, disp_h = t["canon_w"], t["canon_h"]
+                except Exception:
+                    pass
+
             kpts = []
             for kp in kpts_norm:
                 if kp.v == 0:
                     kpts.append(Keypoint(0.0, 0.0, 0))
                 else:
-                    kpts.append(Keypoint(kp.x * w, kp.y * h, int(kp.v)))
+                    x_px = kp.x * orig_w
+                    y_px = kp.y * orig_h
+                    if canon_affine is not None:
+                        A = canon_affine
+                        x_px, y_px = (
+                            float(A[0, 0] * x_px + A[0, 1] * y_px + A[0, 2]),
+                            float(A[1, 0] * x_px + A[1, 1] * y_px + A[1, 2]),
+                        )
+                    kpts.append(Keypoint(float(x_px), float(y_px), int(kp.v)))
 
             if bbox_cxcywh is not None:
                 cx, cy, bw, bh = bbox_cxcywh
-                cx *= w
-                cy *= h
-                bw *= w
-                bh *= h
+                cx *= disp_w
+                cy *= disp_h
+                bw *= disp_w
+                bh *= disp_h
                 x1 = cx - bw / 2
                 x2 = cx + bw / 2
                 y1 = cy - bh / 2
@@ -2211,6 +2421,16 @@ class MainWindow(QMainWindow):
 
         # Cache current annotations before switching
         self._cache_current_frame()
+
+        # Commit any pending changes synchronously before leaving the current frame.
+        # load_frame resets _dirty = False unconditionally, which would cancel the
+        # delayed autosave timer without actually writing the label to disk.  Saving
+        # here (before current_index changes) ensures the label is on disk and the
+        # frame can be moved to the labeling list.
+        _prev_index = self.current_index
+        _was_dirty = self._dirty
+        if _was_dirty and self._ann is not None:
+            self.save_current(refresh_ui=False)
 
         self.current_index = idx
         img_path = self.image_paths[idx]
@@ -2270,6 +2490,13 @@ class MainWindow(QMainWindow):
         self._rebuild_canvas()
         self._update_info()
         self._load_metadata_ui()
+
+        # If the previous frame was saved above, update its entry in the frame lists
+        # so it moves from the unlabeled set to the labeling set without a full rebuild.
+        if _was_dirty:
+            self._update_frame_item(_prev_index)
+
+        return
 
     # ----- events -----
     def _on_labeling_frame_selected(self, row: int):
@@ -2411,6 +2638,83 @@ class MainWindow(QMainWindow):
         self._img_display = None
         self._refresh_canvas_image()
         self.save_project()
+
+    @staticmethod
+    def _apply_affine_to_ann(ann: "FrameAnn", A: "np.ndarray") -> "FrameAnn":
+        """Return a new FrameAnn with keypoints transformed by the 2×3 affine A."""
+        new_kpts = []
+        for kp in ann.kpts:
+            if kp.v == 0:
+                new_kpts.append(Keypoint(0.0, 0.0, 0))
+            else:
+                x = float(A[0, 0] * kp.x + A[0, 1] * kp.y + A[0, 2])
+                y = float(A[1, 0] * kp.x + A[1, 1] * kp.y + A[1, 2])
+                new_kpts.append(Keypoint(x, y, kp.v))
+        return FrameAnn(cls=ann.cls, bbox_xyxy=ann.bbox_xyxy, kpts=new_kpts)
+
+    def _toggle_canonicalization(self, checked: bool):
+        prev_enabled = self._canonicalize_enabled
+        self._canonicalize_enabled = bool(checked)
+        if self.cb_canonicalize.isChecked() != self._canonicalize_enabled:
+            self.cb_canonicalize.setChecked(self._canonicalize_enabled)
+        if self.act_canonicalize.isChecked() != self._canonicalize_enabled:
+            self.act_canonicalize.setChecked(self._canonicalize_enabled)
+
+        if (
+            self.current_index >= len(self.image_paths)
+            or prev_enabled == self._canonicalize_enabled
+        ):
+            return
+
+        img_path = self.image_paths[self.current_index]
+
+        # Transform all cached annotations in-place (avoids disk re-reads on
+        # subsequent frame navigation).  Each image may belong to a different
+        # source with its own metadata.json, so the transform is looked up per
+        # path.  A small path→affine dict is built once to amortise repeated
+        # lookups for frames that share the same metadata (common case).
+        try:
+            from ...core.canonicalization import get_canon_transform
+
+            _transform_cache: dict = {}
+            key = "affine" if self._canonicalize_enabled else "inv_affine"
+
+            def _get_A(path):
+                """Return the affine matrix for *path*, or None if unavailable."""
+                p = str(path)
+                if p not in _transform_cache:
+                    t = get_canon_transform(path)
+                    _transform_cache[p] = t
+                t = _transform_cache[p]
+                return None if t is None else t[key]
+
+            # Re-map in-memory annotation
+            if self._ann is not None:
+                A = _get_A(img_path)
+                if A is not None:
+                    self._ann = self._apply_affine_to_ann(self._ann, A)
+
+            # Re-map every cached frame in-place
+            for idx, ann in list(self._frame_cache.items()):
+                A = _get_A(self.image_paths[idx])
+                if A is not None:
+                    self._frame_cache[idx] = self._apply_affine_to_ann(ann, A)
+
+        except Exception:
+            # If transform lookup fails entirely, fall back to clearing the cache
+            # so frames are re-read cleanly from disk.
+            self._frame_cache.clear()
+
+        # Reload current image and update canvas dimensions / overlays
+        try:
+            self._img_bgr = self._read_image(img_path)
+            self._img_display = None
+            h, w = self._img_bgr.shape[:2]
+            self._img_wh = (w, h)
+            self._refresh_canvas_image()
+            self._rebuild_canvas()
+        except Exception:
+            pass
 
     def _update_kpt_size(self, value: float):
         self.project.kpt_radius = float(value)
@@ -3063,18 +3367,22 @@ class MainWindow(QMainWindow):
         img_path = self.image_paths[self.current_index]
         label_path = self._label_path_for(img_path)
 
-        w, h = self._img_wh
         cls = int(self.class_combo.currentIndex())
         self._ann.cls = cls
 
-        bbox = compute_bbox_from_kpts(self._ann.kpts, self.project.bbox_pad_frac, w, h)
+        # Convert keypoints back to original image space before saving so that
+        # YOLO-normalised coordinates on disk are always relative to the original
+        # (pre-canonicalization) image.  Falls back to current dims if unavailable.
+        kpts_save, w, h = self._kpts_to_save_space(self._ann.kpts, img_path)
+
+        bbox = compute_bbox_from_kpts(kpts_save, self.project.bbox_pad_frac, w, h)
 
         save_yolo_pose_label(
             label_path=label_path,
             cls=cls,
             img_w=w,
             img_h=h,
-            kpts_px=self._ann.kpts,
+            kpts_px=kpts_save,
             bbox_xyxy_px=bbox,
             pad_frac=self.project.bbox_pad_frac,
         )
@@ -3124,16 +3432,18 @@ class MainWindow(QMainWindow):
             )
 
             img_path = self.image_paths[idx]
-            img = self._read_image(img_path)
-            h, w = img.shape[:2]
 
-            bbox = compute_bbox_from_kpts(ann.kpts, self.project.bbox_pad_frac, w, h)
+            # Convert keypoints back to original image space (inverse affine when
+            # canonicalization is active) so labels on disk always use original dims.
+            kpts_save, w, h = self._kpts_to_save_space(ann.kpts, img_path)
+
+            bbox = compute_bbox_from_kpts(kpts_save, self.project.bbox_pad_frac, w, h)
             save_yolo_pose_label(
                 label_path=self._label_path_for(img_path),
                 cls=int(ann.cls),
                 img_w=w,
                 img_h=h,
-                kpts_px=ann.kpts,
+                kpts_px=kpts_save,
                 bbox_xyxy_px=bbox,
                 pad_frac=self.project.bbox_pad_frac,
             )
@@ -3278,11 +3588,26 @@ class MainWindow(QMainWindow):
         self.save_project()
         self._update_info()
 
+        # Rebuild image list if sources were added inside the wizard
+        if getattr(wiz, "sources_modified", False):
+            cur_path = (
+                self.image_paths[self.current_index] if self.image_paths else None
+            )
+            self.image_paths = build_image_list(self.project)
+            self._rebuild_path_index()
+            if cur_path and str(cur_path) in self._path_to_index:
+                self.current_index = self._path_to_index[str(cur_path)]
+            else:
+                self.current_index = 0
+            self._populate_frames()
+            self._select_frame_in_list(self.current_index)
+            self._update_info()
+
     def _switch_project_window(self, proj: Project):
-        imgs = list_images(proj.images_dir)
+        imgs = build_image_list(proj)
         if not imgs:
             QMessageBox.critical(
-                self, "No images", f"No images found under: {proj.images_dir}"
+                self, "No images", "No images found in any registered source."
             )
             return
         try:
@@ -3300,45 +3625,111 @@ class MainWindow(QMainWindow):
             app._posekit_windows.append(new_win)
         self.close()
 
-    def open_dataset_folder(self: object) -> object:
-        """Open a dataset root folder containing an images/ directory."""
+    def open_project(self: object) -> object:
+        """Open an existing PoseKit project.
+
+        The user may select either:
+          • A PoseKit project JSON file (standalone or legacy).
+          • A dataset root folder that contains a ``posekit_project/`` sub-dir
+            (legacy dataset-anchored layout).
+        """
+        from PySide6.QtWidgets import QFileDialog
+
         start = (
             str(self.project.images_dir.parent)
             if self.project.images_dir
             else str(Path.home())
         )
-        path = QFileDialog.getExistingDirectory(self, "Select dataset folder", start)
-        if not path:
-            return
-        dataset_dir = Path(path).expanduser().resolve()
-        _, images_dir, _out_root, _labels_dir, _project_path = resolve_dataset_paths(
-            dataset_dir
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open PoseKit Project",
+            start,
+            "PoseKit Project (pose_project.json);;All Files (*)",
         )
-        if not images_dir.exists() or not images_dir.is_dir():
-            QMessageBox.warning(
-                self,
-                "Invalid Dataset",
-                f"Selected folder does not contain `{DEFAULT_DATASET_IMAGES_DIR}/`:\n\n"
-                f"{dataset_dir}",
-            )
+        if path:
+            # User selected a .json file directly
+            proj = open_project_from_path(Path(path))
+            if proj is not None:
+                self._switch_project_window(proj)
             return
-        proj = None
+
+        # Fall back to folder-browse (legacy dataset-anchored layout)
+        folder = QFileDialog.getExistingDirectory(
+            self, "Or select a legacy dataset folder", start
+        )
+        if not folder:
+            return
+        dataset_dir = Path(folder).expanduser().resolve()
         found = find_project(dataset_dir)
         if found:
             proj = load_project_with_repairs(found, dataset_dir)
         else:
-            proj = create_project_via_wizard(dataset_dir)
+            QMessageBox.information(
+                self,
+                "No Project Found",
+                f"No PoseKit project found in:\n{dataset_dir}\n\n"
+                'Use "New Project" to create one, or select a pose_project.json file.',
+            )
+            return
         if proj is None:
             return
         self._switch_project_window(proj)
 
+    def open_dataset_folder(self: object) -> object:
+        """Backward-compatible alias."""
+        self.open_project()
+
     def open_project_dialog(self: object) -> object:
-        """Backward-compatible alias for opening dataset folder."""
-        self.open_dataset_folder()
+        """Backward-compatible alias."""
+        self.open_project()
+
+    def add_dataset_source(self) -> None:
+        """Add a new dataset source folder to the current multi-source project."""
+        try:
+            dlg = AddSourceDialog(self.project, parent=self)
+        except NameError:
+            QMessageBox.warning(
+                self, "Unavailable", "AddSourceDialog could not be loaded."
+            )
+            return
+        if dlg.exec() != QDialog.Accepted or dlg.selected_dir is None:
+            return
+
+        dataset_dir = dlg.selected_dir
+        description = dlg.description
+
+        try:
+            new_src = add_source_to_project(self.project, dataset_dir, description)
+        except Exception as exc:
+            QMessageBox.critical(self, "Add Source Failed", str(exc))
+            return
+
+        # Rebuild image list and source index in place
+        cur_path = self.image_paths[self.current_index] if self.image_paths else None
+        self.image_paths = build_image_list(self.project)
+        self._rebuild_path_index()
+
+        # Restore current position
+        if cur_path and str(cur_path) in self._path_to_index:
+            self.current_index = self._path_to_index[str(cur_path)]
+        else:
+            self.current_index = 0
+
+        self._populate_frames()
+        self._select_frame_in_list(self.current_index)
+        self.save_project()
+        self._update_info()
+        QMessageBox.information(
+            self,
+            "Source Added",
+            f"Added '{new_src.description}' as '{new_src.source_id}' "
+            f"({len(list_images(new_src.images_dir)):,} images).",
+        )
 
     def open_images_folder(self: object) -> object:
-        """Backward-compatible alias for opening dataset folder."""
-        self.open_dataset_folder()
+        """Backward-compatible alias."""
+        self.open_project()
 
     def export_dataset_dialog(self: object) -> object:
         """export_dataset_dialog method documentation."""
@@ -3481,6 +3872,13 @@ class MainWindow(QMainWindow):
                 int(seed.value()),
                 self.project.class_names,
                 self.project.keypoint_names,
+                # Pass each extra source so build_yolo_pose_dataset collects all labels
+                extra_datasets=[
+                    ([p for p in list_images(s.images_dir)], s.labels_dir)
+                    for s in self.project.sources
+                    if s.labels_dir != self.project.labels_dir
+                ]
+                or None,
                 train_items=train_items,
                 val_items=val_items,
                 ignore_occluded_train=False,
@@ -3595,7 +3993,7 @@ class MainWindow(QMainWindow):
             for i in self.labeling_frames
             if 0 <= i < len(self.image_paths)
         }
-        self.image_paths = list_images(self.project.images_dir)
+        self.image_paths = build_image_list(self.project)
         self._rebuild_path_index()
         self.labeling_frames = set()
         for i, p in enumerate(self.image_paths):
@@ -5041,4 +5439,5 @@ class MainWindow(QMainWindow):
     def _on_clusters_updated(self):
         self._cluster_ids_cache = None
         self._cluster_ids_mtime = None
+        self._populate_frames()
         self._populate_frames()
