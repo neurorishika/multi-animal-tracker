@@ -45,10 +45,19 @@ class LabelingScheme:
         return result
 
     def encode_label(self, factor_values: List[str]) -> str:
+        if len(factor_values) != len(self.factors):
+            raise ValueError(
+                f"Expected {len(self.factors)} factor values, got {len(factor_values)}"
+            )
         return "|".join(factor_values)
 
     def decode_label(self, composite: str) -> List[str]:
-        return composite.split("|")
+        parts = composite.split("|")
+        if len(parts) != len(self.factors):
+            raise ValueError(
+                f"Expected {len(self.factors)} parts in composite label, got {len(parts)}"
+            )
+        return parts
 
 
 @dataclass

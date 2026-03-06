@@ -60,3 +60,33 @@ def test_project_config_accepts_scheme():
 def test_project_config_scheme_defaults_none():
     cfg = ProjectConfig(name="proj", classes=[], root_dir=Path("/tmp"))
     assert cfg.scheme is None
+
+
+def test_encode_label_wrong_length_raises():
+    scheme = LabelingScheme(
+        name="color2",
+        factors=[
+            Factor(name="tag_1", labels=["red"]),
+            Factor(name="tag_2", labels=["blue"]),
+        ],
+        training_modes=["flat_yolo"],
+    )
+    import pytest
+
+    with pytest.raises(ValueError, match="Expected 2 factor values"):
+        scheme.encode_label(["red"])  # missing second factor
+
+
+def test_decode_label_wrong_parts_raises():
+    scheme = LabelingScheme(
+        name="color2",
+        factors=[
+            Factor(name="tag_1", labels=["red"]),
+            Factor(name="tag_2", labels=["blue"]),
+        ],
+        training_modes=["flat_yolo"],
+    )
+    import pytest
+
+    with pytest.raises(ValueError, match="Expected 2 parts"):
+        scheme.decode_label("red|blue|green")  # too many parts
