@@ -2166,7 +2166,7 @@ class MainWindow(QMainWindow):
             dialog._worker = worker
 
             def _on_progress(pct: int, msg: str) -> None:
-                if pct > 0:
+                if pct >= 0:
                     dialog.progress_bar.setValue(pct)
                 if msg:
                     dialog.append_log(msg)
