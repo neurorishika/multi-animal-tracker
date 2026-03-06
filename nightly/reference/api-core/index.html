@@ -4725,7 +4725,7 @@ Compatible interface with ObjectDetector for seamless integration.</p>
 
 
 <h4 id="multi_tracker.core.detectors.engine.YOLOOBBDetector.filter_raw_detections" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">filter_raw_detections</span><span class="p">(</span><span class="n">meas</span><span class="p">,</span> <span class="n">sizes</span><span class="p">,</span> <span class="n">shapes</span><span class="p">,</span> <span class="n">confidences</span><span class="p">,</span> <span class="n">obb_corners_list</span><span class="p">,</span> <span class="n">roi_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">filter_raw_detections</span><span class="p">(</span><span class="n">meas</span><span class="p">,</span> <span class="n">sizes</span><span class="p">,</span> <span class="n">shapes</span><span class="p">,</span> <span class="n">confidences</span><span class="p">,</span> <span class="n">obb_corners_list</span><span class="p">,</span> <span class="n">roi_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.filter_raw_detections" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -4758,7 +4758,8 @@ This is shared by live detection and cached-raw detection paths.</p>
     Default mode:
         meas, sizes, shapes, yolo_results, confidences
     If return_raw=True:
-        raw_meas, raw_sizes, raw_shapes, yolo_results, raw_confidences, raw_obb_corners</p>
+        raw_meas, raw_sizes, raw_shapes, yolo_results, raw_confidences,
+        raw_obb_corners, raw_heading_hints, raw_directed_mask</p>
 
     </div>
 
@@ -4783,7 +4784,10 @@ This is shared by live detection and cached-raw detection paths.</p>
 <p>Returns:
     List of tuples per frame:
       - return_raw=False: (meas, sizes, shapes, confidences, obb_corners)
-      - return_raw=True:  (raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners)</p>
+      - return_raw=True:  (
+            raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners,
+            raw_heading_hints, raw_directed_mask
+        )</p>
 
     </div>
 
