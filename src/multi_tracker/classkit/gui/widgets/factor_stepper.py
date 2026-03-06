@@ -71,8 +71,8 @@ class StepperState:
 
 def _build_qt_widget(scheme: LabelingScheme):  # pragma: no cover
     """Build and return a FactorStepperWidget class (deferred Qt import)."""
-    from PyQt6.QtCore import pyqtSignal
-    from PyQt6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+    from PySide6.QtCore import Signal as pyqtSignal
+    from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
     class FactorStepperWidget(QWidget):
         """Sequential per-factor label picker.

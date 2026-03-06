@@ -29,6 +29,21 @@ class Factor:
     labels: List[str]
     shortcut_keys: List[str] = field(default_factory=list)
 
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "labels": self.labels,
+            "shortcut_keys": self.shortcut_keys,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Factor":
+        return cls(
+            name=d["name"],
+            labels=d["labels"],
+            shortcut_keys=d.get("shortcut_keys", []),
+        )
+
 
 @dataclass
 class LabelingScheme:
@@ -58,6 +73,23 @@ class LabelingScheme:
                 f"Expected {len(self.factors)} parts in composite label, got {len(parts)}"
             )
         return parts
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "factors": [f.to_dict() for f in self.factors],
+            "training_modes": self.training_modes,
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LabelingScheme":
+        return cls(
+            name=d["name"],
+            factors=[Factor.from_dict(f) for f in d.get("factors", [])],
+            training_modes=d.get("training_modes", []),
+            description=d.get("description", ""),
+        )
 
 
 @dataclass

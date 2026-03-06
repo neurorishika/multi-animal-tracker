@@ -174,3 +174,26 @@ def test_color_tag_preset_empty_colors_raises():
 
     with pytest.raises(ValueError):
         color_tag_preset(n_factors=1, colors=[])
+
+
+def test_factor_round_trip():
+    f = Factor(name="tag_1", labels=["red", "blue"], shortcut_keys=["r", "b"])
+    assert Factor.from_dict(f.to_dict()) == f
+
+
+def test_labeling_scheme_round_trip():
+    scheme = LabelingScheme(
+        name="test",
+        factors=[Factor(name="color", labels=["red", "blue"])],
+        training_modes=["flat_tiny"],
+        description="A test scheme",
+    )
+    assert LabelingScheme.from_dict(scheme.to_dict()) == scheme
+
+
+def test_labeling_scheme_from_dict_defaults():
+    d = {"name": "minimal", "factors": [{"name": "f", "labels": ["a"]}]}
+    scheme = LabelingScheme.from_dict(d)
+    assert scheme.training_modes == []
+    assert scheme.description == ""
+    assert scheme.factors[0].shortcut_keys == []

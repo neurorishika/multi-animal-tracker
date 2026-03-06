@@ -71,6 +71,7 @@ class MainWindow(QMainWindow):
         self._trained_classifier = None
         self._last_training_settings = None
         self._current_knn_neighbors = []
+        self._stepper = None
 
         self._autosave_timer = QTimer(self)
         self._autosave_timer.setSingleShot(False)
@@ -701,6 +702,12 @@ class MainWindow(QMainWindow):
                 with open(self.project_path / "project.json", "w") as f:
                     json.dump(config, f, indent=2)
 
+                # Save labeling scheme if one was selected
+                scheme = project_info.get("scheme")
+                if scheme is not None:
+                    with open(self.project_path / "scheme.json", "w") as f:
+                        json.dump(scheme.to_dict(), f, indent=2)
+
                 self.classes = project_info.get("classes", []) or ["class_1", "class_2"]
                 self.rebuild_label_buttons()
                 self.setup_label_shortcuts()
@@ -980,13 +987,16 @@ class MainWindow(QMainWindow):
             shortcut.setParent(None)
         self._label_shortcuts = []
 
-        for i, class_name in enumerate(self.classes[:9], start=1):
-            shortcut = QShortcut(QKeySequence(str(i)), self)
-            shortcut.setAutoRepeat(False)
-            shortcut.activated.connect(
-                lambda c=class_name: self.assign_label_to_selected(c)
-            )
-            self._label_shortcuts.append(shortcut)
+        # Only install flat 1-9 label shortcuts when NOT in stepper (multi-factor) mode.
+        # In stepper mode, key routing goes through the stepper's handle_key().
+        if self._stepper is None:
+            for i, class_name in enumerate(self.classes[:9], start=1):
+                shortcut = QShortcut(QKeySequence(str(i)), self)
+                shortcut.setAutoRepeat(False)
+                shortcut.activated.connect(
+                    lambda c=class_name: self.assign_label_to_selected(c)
+                )
+                self._label_shortcuts.append(shortcut)
 
         explore_shortcut = QShortcut(QKeySequence("E"), self)
         explore_shortcut.setAutoRepeat(False)
@@ -1208,6 +1218,15 @@ class MainWindow(QMainWindow):
         self._history_refresh_pending = True
         self._history_refresh_timer.start()
 
+    def keyPressEvent(self, event):
+        """Route digit keys to stepper when in multi-factor labeling mode."""
+        if self._stepper is not None:
+            key_text = event.text()
+            if key_text and self._stepper.handle_key(key_text):
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
     def eventFilter(self, watched, event):
         """Handle clicks on history cards without QPushButton construction."""
         if event.type() == QEvent.MouseButtonRelease:
@@ -1293,6 +1312,13 @@ class MainWindow(QMainWindow):
         finally:
             self._end_command(0.12)
 
+    def _on_stepper_label_committed(self, composite_label: str) -> None:
+        """Called when the stepper completes all factors for the current image."""
+        if self.selected_point_index is None:
+            return
+        self._set_label_for_index(self.selected_point_index, composite_label)
+        self.on_next_image()
+
     def _set_label_for_index(self, index: int, label):
         """Set or clear label for an index and persist to DB."""
         if index < 0 or index >= len(self.image_paths):
@@ -1336,20 +1362,55 @@ class MainWindow(QMainWindow):
 
     def rebuild_label_buttons(self):
         """Rebuild class buttons shown in the left settings panel."""
+        # Clear existing widgets from the grid layout
         for i in reversed(range(self.label_buttons_layout.count())):
             widget = self.label_buttons_layout.itemAt(i).widget()
             if widget is not None:
                 widget.setParent(None)
 
-        for i, class_name in enumerate(self.classes[:9], start=1):
-            button = QPushButton(f"{i}: {class_name}")
-            button.setStyleSheet("text-align: left;")
-            button.clicked.connect(
-                lambda checked=False, c=class_name: self.assign_label_to_selected(c)
-            )
-            row = (i - 1) // 2
-            col = (i - 1) % 2
-            self.label_buttons_layout.addWidget(button, row, col)
+        # Determine if project uses a multi-factor labeling scheme
+        scheme = None
+        if self.project_path:
+            try:
+                from ..config.schemas import LabelingScheme
+
+                scheme_path = self.project_path / "scheme.json"
+                if scheme_path.exists():
+                    import json as _json
+
+                    with open(scheme_path) as _f:
+                        scheme = LabelingScheme.from_dict(_json.load(_f))
+            except Exception:
+                scheme = None
+
+        if scheme is not None and len(scheme.factors) > 1:
+            # Multi-factor: use FactorStepperWidget
+            self._stepper = None
+            try:
+                from .widgets.factor_stepper import _build_qt_widget
+
+                FactorStepperWidget = _build_qt_widget(scheme)
+                stepper = FactorStepperWidget(
+                    scheme, parent=self.label_buttons_container
+                )
+                stepper.label_committed.connect(self._on_stepper_label_committed)
+                stepper.skipped.connect(self.on_next_image)
+                self.label_buttons_layout.addWidget(stepper, 0, 0, 1, 2)
+                self._stepper = stepper
+            except Exception:
+                self._stepper = None
+        else:
+            # Single-factor or free-form: flat buttons
+            self._stepper = None
+            for i, class_name in enumerate(self.classes[:9], start=1):
+                button = QPushButton(f"{i}: {class_name}")
+                button.setStyleSheet("text-align: left;")
+                button.clicked.connect(
+                    lambda checked=False, c=class_name: self.assign_label_to_selected(c)
+                )
+                row = (i - 1) // 2
+                col = (i - 1) % 2
+                self.label_buttons_layout.addWidget(button, row, col)
 
     def set_explorer_mode(self, mode: str):
         """Set explorer mode to explore or labeling."""
@@ -1831,7 +1892,9 @@ class MainWindow(QMainWindow):
 
         dialog = EmbeddingDialog(self)
         if dialog.exec():
-            model_name, device, batch_size, force_recompute = dialog.get_settings()
+            model_name, device, batch_size, force_recompute, canonicalize_mat = (
+                dialog.get_settings()
+            )
 
             from ..jobs.task_workers import EmbeddingWorker
 
@@ -1842,6 +1905,7 @@ class MainWindow(QMainWindow):
                 batch_size,
                 db_path=self.db_path,
                 force_recompute=force_recompute,
+                canonicalize_mat=canonicalize_mat,
             )
             worker.signals.started.connect(
                 lambda: self.status.showMessage("Computing embeddings...")
@@ -1951,104 +2015,232 @@ class MainWindow(QMainWindow):
         self.threadpool.start(worker)
 
     def train_classifier(self):
-        """Train a classifier on labeled data."""
+        """Open ClassKitTrainingDialog, export dataset, run training, offer publish."""
         self._flush_pending_label_updates(force=True)
 
         if self.embeddings is None:
             QMessageBox.warning(
                 self,
                 "No Embeddings",
-                "Compute embeddings before training a classifier.",
+                "Compute embeddings before training.",
             )
             return
 
-        if not self.image_labels or len(self.image_labels) != len(self.image_paths):
-            QMessageBox.warning(
-                self,
-                "No Labels",
-                "No valid labels found. Label some points first.",
-            )
-            return
-
-        label_to_index = {name: idx for idx, name in enumerate(self.classes)}
-        labeled_indices = []
-        numeric_labels = []
-        for idx, label in enumerate(self.image_labels):
-            if label and label in label_to_index:
-                labeled_indices.append(idx)
-                numeric_labels.append(label_to_index[label])
-
-        if len(labeled_indices) < 4:
+        labeled_pairs = [
+            (p, l) for p, l in zip(self.image_paths, self.image_labels) if l
+        ]
+        if len(labeled_pairs) < 4:
             QMessageBox.warning(
                 self,
                 "Not Enough Labels",
-                "Need at least 4 labeled examples before training.",
+                "Need at least 4 labeled images.",
             )
             return
 
-        class_counts = {}
-        for value in numeric_labels:
-            class_counts[value] = class_counts.get(value, 0) + 1
-        if len(class_counts) < 2:
-            QMessageBox.warning(
-                self,
-                "Need Multiple Classes",
-                "Training requires labels from at least two classes.",
+        # Resolve scheme from project directory (if present)
+        scheme = None
+        if self.project_path:
+            try:
+                import json as _json
+
+                from ..config.schemas import LabelingScheme
+
+                scheme_path = self.project_path / "scheme.json"
+                if scheme_path.exists():
+                    with open(scheme_path) as _f:
+                        scheme = LabelingScheme.from_dict(_json.load(_f))
+            except Exception:
+                scheme = None
+
+        from .dialogs import ClassKitTrainingDialog
+
+        dialog = ClassKitTrainingDialog(scheme=scheme, parent=self)
+
+        def _do_train():
+            from pathlib import Path as _Path
+
+            from ...training.contracts import (
+                TinyHeadTailParams,
+                TrainingHyperParams,
+                TrainingRole,
+                TrainingRunSpec,
             )
-            return
+            from ..export.ultralytics_classify import export_ultralytics_classify
+            from ..jobs.task_workers import ClassKitTrainingWorker
 
-        from .dialogs import TrainingDialog
+            settings = dialog.get_settings()
+            mode = settings.get("mode") or "flat_tiny"
+            is_yolo = "yolo" in mode
+            multi_head = mode.startswith("multihead")
 
-        dialog = TrainingDialog(self)
-        if not dialog.exec():
-            return
-        settings = dialog.get_settings()
-        self._last_training_settings = settings
+            role_map = {
+                "flat_tiny": TrainingRole.CLASSIFY_FLAT_TINY,
+                "flat_yolo": TrainingRole.CLASSIFY_FLAT_YOLO,
+                "multihead_tiny": TrainingRole.CLASSIFY_MULTIHEAD_TINY,
+                "multihead_yolo": TrainingRole.CLASSIFY_MULTIHEAD_YOLO,
+            }
+            role = role_map.get(mode, TrainingRole.CLASSIFY_FLAT_TINY)
 
-        x = self.embeddings[np.array(labeled_indices, dtype=np.int64)]
-        y = np.array(numeric_labels, dtype=np.int64)
+            project_path = (
+                _Path(self.project_path) if self.project_path else _Path.cwd()
+            )
+            export_dir = project_path / ".classkit_train_export"
+            export_dir.mkdir(parents=True, exist_ok=True)
 
-        train_indices, val_indices = self._split_train_val_indices(
-            y,
-            val_fraction=settings["val_fraction"],
-        )
+            images = [_Path(p) for p, _ in labeled_pairs]
+            labels_str = [lbl for _, lbl in labeled_pairs]
+            unique = sorted(set(labels_str))
+            label_map_int = {s: i for i, s in enumerate(unique)}
+            int_labels = [label_map_int[lbl] for lbl in labels_str]
+            class_names = {i: s for s, i in label_map_int.items()}
 
-        train_embeddings = x[train_indices]
-        train_labels = y[train_indices]
-        val_embeddings = x[val_indices] if len(val_indices) > 0 else None
-        val_labels = y[val_indices] if len(val_indices) > 0 else None
+            val_frac = settings.get("val_fraction", 0.2)
+            n_val = max(1, int(len(images) * val_frac)) if val_frac > 0 else 0
+            train_imgs, train_lbl = images[n_val:], int_labels[n_val:]
+            val_imgs, val_lbl = images[:n_val], int_labels[:n_val]
 
-        from ..jobs.task_workers import TrainingWorker
+            export_ultralytics_classify(
+                export_dir,
+                train_imgs,
+                train_lbl,
+                val_imgs,
+                val_lbl,
+                class_names=class_names,
+            )
 
-        worker = TrainingWorker(
-            train_embeddings=train_embeddings,
-            train_labels=train_labels,
-            val_embeddings=val_embeddings,
-            val_labels=val_labels,
-            num_classes=len(self.classes),
-            model_type=settings["model_type"],
-            device=settings["device"],
-            hidden_dim=settings["hidden_dim"],
-            dropout=settings["dropout"],
-            batch_size=settings["batch_size"],
-            epochs=settings["epochs"],
-            lr=settings["lr"],
-            weight_decay=settings["weight_decay"],
-            early_stop_patience=settings["early_stop_patience"],
-            calibrate=settings["calibrate"],
-        )
+            def _make_spec(dataset_dir):
+                return TrainingRunSpec(
+                    role=role,
+                    source_datasets=[],
+                    derived_dataset_dir=str(dataset_dir),
+                    base_model=settings.get("base_model", "") if is_yolo else "",
+                    hyperparams=TrainingHyperParams(
+                        epochs=settings.get("epochs", 50),
+                        batch=settings.get("batch", 32),
+                        lr0=settings.get("lr", 0.001),
+                    ),
+                    tiny_params=TinyHeadTailParams(
+                        epochs=settings.get("epochs", 50),
+                        batch=settings.get("batch", 32),
+                        lr=settings.get("lr", 0.001),
+                    ),
+                    device=settings.get("device", "cpu"),
+                )
 
-        worker.signals.started.connect(
-            lambda: self.status.showMessage("Training embedding head classifier...")
-        )
-        worker.signals.progress.connect(self.on_training_progress)
-        worker.signals.success.connect(self.on_training_success)
-        worker.signals.error.connect(self.on_training_error)
-        worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
+            run_dir = project_path / ".classkit_runs" / mode
 
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.threadpool.start(worker)
+            if multi_head and scheme is not None:
+                specs = []
+                for fi, factor in enumerate(scheme.factors):
+                    factor_dir = project_path / f".classkit_train_export_f{fi}"
+                    factor_dir.mkdir(parents=True, exist_ok=True)
+                    factor_labels_raw = labels_str
+                    try:
+                        factor_labels = [
+                            (scheme.decode_label(lbl)[fi] if "|" in lbl else lbl)
+                            for lbl in factor_labels_raw
+                        ]
+                    except Exception:
+                        factor_labels = factor_labels_raw
+                    f_unique = sorted(set(factor_labels))
+                    f_map = {s: i for i, s in enumerate(f_unique)}
+                    f_int = [f_map[lbl] for lbl in factor_labels]
+                    f_names = {i: s for s, i in f_map.items()}
+                    f_train_imgs, f_train_lbl = images[n_val:], f_int[n_val:]
+                    f_val_imgs, f_val_lbl = images[:n_val], f_int[:n_val]
+                    export_ultralytics_classify(
+                        factor_dir,
+                        f_train_imgs,
+                        f_train_lbl,
+                        f_val_imgs,
+                        f_val_lbl,
+                        class_names=f_names,
+                    )
+                    specs.append(_make_spec(factor_dir))
+            else:
+                specs = [_make_spec(export_dir)]
+
+            worker = ClassKitTrainingWorker(
+                role=role, specs=specs, run_dir=str(run_dir), multi_head=multi_head
+            )
+            dialog._worker = worker
+
+            def _on_progress(pct: int, msg: str) -> None:
+                if pct > 0:
+                    dialog.progress_bar.setValue(pct)
+                if msg:
+                    dialog.append_log(msg)
+
+            def _on_success(results: list) -> None:
+                dialog._train_results = results
+                dialog.publish_btn.setEnabled(True)
+                dialog.append_log("Training complete.")
+                dialog.start_btn.setEnabled(True)
+                dialog.cancel_btn.setEnabled(False)
+
+            def _on_error(err: str) -> None:
+                dialog.append_log(f"ERROR: {err}")
+                dialog.start_btn.setEnabled(True)
+                dialog.cancel_btn.setEnabled(False)
+
+            worker.signals.progress.connect(_on_progress)
+            worker.signals.success.connect(_on_success)
+            worker.signals.error.connect(_on_error)
+
+            dialog.start_btn.setEnabled(False)
+            dialog.cancel_btn.setEnabled(True)
+            self.threadpool.start(worker)
+
+        scheme_name = scheme.name if scheme else "classkit"
+
+        def _on_publish():
+            results = getattr(dialog, "_train_results", None) or []
+            settings = dialog.get_settings()
+            mode = settings.get("mode") or "flat_tiny"
+            is_yolo = "yolo" in mode
+            multi_head = mode.startswith("multihead")
+            role_map = {
+                "flat_tiny": "classify_flat_tiny",
+                "flat_yolo": "classify_flat_yolo",
+                "multihead_tiny": "classify_multihead_tiny",
+                "multihead_yolo": "classify_multihead_yolo",
+            }
+            from ...training.contracts import TrainingRole
+            from ...training.model_publish import publish_trained_model
+
+            role_val = role_map.get(mode, "classify_flat_tiny")
+            role = TrainingRole(role_val)
+            for fi, result in enumerate(results):
+                artifact = result.get("artifact_path", "")
+                if not artifact:
+                    continue
+                try:
+                    publish_trained_model(
+                        role=role,
+                        artifact_path=artifact,
+                        size="tiny" if "tiny" in mode else "n",
+                        species=(
+                            self.project_path.name if self.project_path else "species"
+                        ),
+                        model_info=mode,
+                        trained_from_run_id="",
+                        dataset_fingerprint="",
+                        base_model=settings.get("base_model", "") if is_yolo else "",
+                        scheme_name=scheme_name,
+                        factor_index=fi if multi_head else None,
+                        factor_name=(
+                            scheme.factors[fi].name if (multi_head and scheme) else None
+                        ),
+                    )
+                    from pathlib import Path as _Path
+
+                    dialog.append_log(f"Published: {_Path(artifact).name}")
+                except Exception as exc:
+                    dialog.append_log(f"Publish error: {exc}")
+
+        dialog.start_btn.clicked.connect(_do_train)
+        dialog.publish_btn.clicked.connect(_on_publish)
+        dialog.exec()
 
     def _split_train_val_indices(self, y: np.ndarray, val_fraction: float):
         """Create stratified train/val index split from label vector."""
@@ -2487,24 +2679,41 @@ class MainWindow(QMainWindow):
         if cached:
             metadata = result.get("metadata", {})
             timestamp = metadata.get("timestamp", "unknown")
+            canon = metadata.get("canonicalization_summary", {})
+            canon_line = ""
+            if metadata.get("canonicalize_mat"):
+                canon_line = (
+                    f"\\nCanonicalized: yes "
+                    f"(applied {canon.get('applied_count', 0)}, skipped {canon.get('skipped_count', 0)})"
+                )
             QMessageBox.information(
                 self,
                 "Embeddings Loaded",
                 f"Loaded cached embeddings from {timestamp}\\n\\n"
                 + f"Shape: {self.embeddings.shape[0]:,} × {dimension}\\n"
                 + f"Model: {metadata.get('model_name', 'unknown')}\\n"
-                + f"Device: {metadata.get('device', 'unknown')}",
+                + f"Device: {metadata.get('device', 'unknown')}"
+                + canon_line,
             )
             self.status.showMessage(
                 f"Loaded {self.embeddings.shape[0]:,} cached embeddings"
             )
         else:
+            metadata = result.get("metadata", {})
+            canon = metadata.get("canonicalization_summary", {})
+            canon_line = ""
+            if metadata.get("canonicalize_mat"):
+                canon_line = (
+                    f"\\nCanonicalized with MAT metadata: "
+                    f"{canon.get('applied_count', 0)} applied, {canon.get('skipped_count', 0)} skipped"
+                )
             QMessageBox.information(
                 self,
                 "Embeddings Complete",
                 "Successfully computed embeddings.\\n\\n"
                 + f"Shape: {self.embeddings.shape[0]:,} × {dimension}\\n"
-                + "Cached for future use",
+                + "Cached for future use"
+                + canon_line,
             )
             self.status.showMessage(f"Computed {self.embeddings.shape[0]:,} embeddings")
 
