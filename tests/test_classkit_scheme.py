@@ -105,6 +105,7 @@ def test_head_tail_preset():
     assert len(scheme.factors) == 1
     assert set(scheme.factors[0].labels) == {"left", "right", "up", "down"}
     assert scheme.total_classes == 4
+    assert scheme.training_modes == ["flat_tiny", "flat_yolo"]
 
 
 def test_color_tag_preset_1factor():
@@ -112,6 +113,7 @@ def test_color_tag_preset_1factor():
     scheme = color_tag_preset(n_factors=1, colors=colors)
     assert scheme.total_classes == 5
     assert len(scheme.factors) == 1
+    assert scheme.training_modes == ["flat_tiny", "flat_yolo"]
 
 
 def test_color_tag_preset_2factor():
@@ -121,12 +123,24 @@ def test_color_tag_preset_2factor():
     assert len(scheme.factors) == 2
     assert scheme.factors[0].name == "tag_1"
     assert scheme.factors[1].name == "tag_2"
+    assert scheme.training_modes == [
+        "flat_tiny",
+        "flat_yolo",
+        "multihead_tiny",
+        "multihead_yolo",
+    ]
 
 
 def test_color_tag_preset_3factor():
     colors = ["red", "blue", "green", "yellow", "white"]
     scheme = color_tag_preset(n_factors=3, colors=colors)
     assert scheme.total_classes == 125
+    assert scheme.training_modes == [
+        "flat_tiny",
+        "flat_yolo",
+        "multihead_tiny",
+        "multihead_yolo",
+    ]
 
 
 def test_age_preset_default():
@@ -134,6 +148,7 @@ def test_age_preset_default():
     assert scheme.total_classes == 2
     assert "young" in scheme.factors[0].labels
     assert "old" in scheme.factors[0].labels
+    assert scheme.training_modes == ["flat_tiny", "flat_yolo"]
 
 
 def test_age_preset_extra_classes():

@@ -36,8 +36,9 @@ def color_tag_preset(n_factors: int, colors: list[str]) -> LabelingScheme:
     factors = [
         Factor(name=f"tag_{i + 1}", labels=list(colors)) for i in range(n_factors)
     ]
-    modes = ["flat_yolo", "multihead_yolo"]
     if n_factors == 1:
+        modes = ["flat_tiny", "flat_yolo"]
+    else:
         modes = ["flat_tiny", "flat_yolo", "multihead_tiny", "multihead_yolo"]
 
     total = len(colors) ** n_factors
