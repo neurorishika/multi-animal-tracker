@@ -121,6 +121,27 @@ class NewProjectDialog(QDialog):
         self.classes_edit.setMaximumHeight(100)
         form.addRow("<b>Classes (optional):</b>", self.classes_edit)
 
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("None (free-form labels)", "none")
+        self.preset_combo.addItem("Head / Tail direction (4 classes)", "head_tail")
+        self.preset_combo.addItem("Color tags — 1 factor (5 colors)", "color_tag_1")
+        self.preset_combo.addItem(
+            "Color tags — 2 factors (25 composites)", "color_tag_2"
+        )
+        self.preset_combo.addItem(
+            "Color tags — 3 factors (125 composites)", "color_tag_3"
+        )
+        self.preset_combo.addItem("Age (young / old)", "age")
+        form.addRow("<b>Labeling Preset:</b>", self.preset_combo)
+
+        self._scheme_info = QLabel("")
+        self._scheme_info.setWordWrap(True)
+        self._scheme_info.setStyleSheet("color: #888888; font-size: 11px;")
+        form.addRow("", self._scheme_info)
+
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        self._on_preset_changed()
+
         layout.addLayout(form)
 
         # Info box
@@ -144,6 +165,19 @@ class NewProjectDialog(QDialog):
         # Validation
         self.name_edit.textChanged.connect(self.validate_input)
         self.validate_input()
+
+    def _on_preset_changed(self):
+        key = self.preset_combo.currentData()
+        _DEFAULT_COLORS = ["red", "blue", "green", "yellow", "white"]
+        info_map = {
+            "none": "Free-form: define class labels manually after creating the project.",
+            "head_tail": "4 classes: left, right, up, down.",
+            "color_tag_1": f"5 classes: {', '.join(_DEFAULT_COLORS)}.",
+            "color_tag_2": "25 composite classes (tag_1 × tag_2).",
+            "color_tag_3": "125 composite classes (tag_1 × tag_2 × tag_3).",
+            "age": "2 classes: young, old.",
+        }
+        self._scheme_info.setText(info_map.get(key, ""))
 
     def browse_location(self):
         """Browse for project location."""
@@ -170,7 +204,23 @@ class NewProjectDialog(QDialog):
         classes_text = self.classes_edit.toPlainText().strip()
         classes = [c.strip() for c in classes_text.split("\\n") if c.strip()]
 
-        return {"name": name, "path": str(project_path), "classes": classes}
+        from ...classkit.presets import age_preset, color_tag_preset, head_tail_preset
+
+        _DEFAULT_COLORS = ["red", "blue", "green", "yellow", "white"]
+        key = self.preset_combo.currentData()
+        scheme_map = {
+            "head_tail": head_tail_preset(),
+            "color_tag_1": color_tag_preset(1, _DEFAULT_COLORS),
+            "color_tag_2": color_tag_preset(2, _DEFAULT_COLORS),
+            "color_tag_3": color_tag_preset(3, _DEFAULT_COLORS),
+            "age": age_preset(),
+        }
+        return {
+            "name": name,
+            "path": str(project_path),
+            "classes": classes,
+            "scheme": scheme_map.get(key),
+        }
 
 
 class EmbeddingDialog(QDialog):
@@ -267,6 +317,12 @@ class EmbeddingDialog(QDialog):
         self.force_recompute_check.setStyleSheet("color: #cccccc;")
         form.addRow("", self.force_recompute_check)
 
+        self.canonicalize_check = QCheckBox(
+            "Canonicalize MAT individual datasets using metadata.json when available"
+        )
+        self.canonicalize_check.setStyleSheet("color: #cccccc;")
+        form.addRow("", self.canonicalize_check)
+
         layout.addLayout(form)
 
         # Info
@@ -276,6 +332,7 @@ class EmbeddingDialog(QDialog):
             + "• <b>CLIP:</b> Good for semantic similarity<br>"
             + "• <b>ResNet/EfficientNet:</b> Faster, less memory<br><br>"
             + "<b>Device:</b> GPU is recommended for faster processing.<br>"
+            + "<b>Canonicalize:</b> Rotates/crops MAT individual-analysis crops using OBB metadata when available.<br>"
             + "<b>Cache:</b> Embeddings are cached automatically. Uncheck to recompute."
         )
         info = QLabel(info_text)
@@ -298,8 +355,9 @@ class EmbeddingDialog(QDialog):
         device = self.device_combo.currentData()
         batch_size = self.batch_spin.value()
         force_recompute = self.force_recompute_check.isChecked()
+        canonicalize_mat = self.canonicalize_check.isChecked()
 
-        return model_name, device, batch_size, force_recompute
+        return model_name, device, batch_size, force_recompute, canonicalize_mat
 
 
 class ClusterDialog(QDialog):
