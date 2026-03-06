@@ -16,6 +16,12 @@ class TrainingRole(str, Enum):
     HEADTAIL_YOLO = "headtail_yolo"
     HEADTAIL_TINY = "headtail_tiny"
 
+    # ClassKit classification roles
+    CLASSIFY_FLAT_YOLO = "classify_flat_yolo"
+    CLASSIFY_FLAT_TINY = "classify_flat_tiny"
+    CLASSIFY_MULTIHEAD_YOLO = "classify_multihead_yolo"
+    CLASSIFY_MULTIHEAD_TINY = "classify_multihead_tiny"
+
 
 @dataclass(slots=True)
 class SplitConfig:
