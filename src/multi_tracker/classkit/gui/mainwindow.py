@@ -1376,16 +1376,19 @@ class MainWindow(QMainWindow):
 
                 scheme_path = self.project_path / "scheme.json"
                 if scheme_path.exists():
-                    import json as _json
-
                     with open(scheme_path) as _f:
-                        scheme = LabelingScheme.from_dict(_json.load(_f))
+                        scheme = LabelingScheme.from_dict(json.load(_f))
             except Exception:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Failed to load scheme.json; falling back to flat buttons",
+                    exc_info=True,
+                )
                 scheme = None
 
         if scheme is not None and len(scheme.factors) > 1:
             # Multi-factor: use FactorStepperWidget
-            self._stepper = None
             try:
                 from .widgets.factor_stepper import _build_qt_widget
 
@@ -1398,6 +1401,12 @@ class MainWindow(QMainWindow):
                 self.label_buttons_layout.addWidget(stepper, 0, 0, 1, 2)
                 self._stepper = stepper
             except Exception:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Failed to build FactorStepperWidget; falling back to flat buttons",
+                    exc_info=True,
+                )
                 self._stepper = None
         else:
             # Single-factor or free-form: flat buttons
@@ -2041,15 +2050,19 @@ class MainWindow(QMainWindow):
         scheme = None
         if self.project_path:
             try:
-                import json as _json
-
                 from ..config.schemas import LabelingScheme
 
                 scheme_path = self.project_path / "scheme.json"
                 if scheme_path.exists():
                     with open(scheme_path) as _f:
-                        scheme = LabelingScheme.from_dict(_json.load(_f))
+                        scheme = LabelingScheme.from_dict(json.load(_f))
             except Exception:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Failed to load scheme.json; proceeding without scheme",
+                    exc_info=True,
+                )
                 scheme = None
 
         from .dialogs import ClassKitTrainingDialog
@@ -2094,10 +2107,14 @@ class MainWindow(QMainWindow):
             int_labels = [label_map_int[lbl] for lbl in labels_str]
             class_names = {i: s for s, i in label_map_int.items()}
 
+            # Stratified train/val split using existing helper
             val_frac = settings.get("val_fraction", 0.2)
-            n_val = max(1, int(len(images) * val_frac)) if val_frac > 0 else 0
-            train_imgs, train_lbl = images[n_val:], int_labels[n_val:]
-            val_imgs, val_lbl = images[:n_val], int_labels[:n_val]
+            y_arr = np.array(int_labels, dtype=np.int64)
+            train_idx, val_idx = self._split_train_val_indices(y_arr, val_frac)
+            train_imgs = [images[i] for i in train_idx]
+            train_lbl = [int_labels[i] for i in train_idx]
+            val_imgs = [images[i] for i in val_idx]
+            val_lbl = [int_labels[i] for i in val_idx]
 
             export_ultralytics_classify(
                 export_dir,
@@ -2134,20 +2151,29 @@ class MainWindow(QMainWindow):
                 for fi, factor in enumerate(scheme.factors):
                     factor_dir = project_path / f".classkit_train_export_f{fi}"
                     factor_dir.mkdir(parents=True, exist_ok=True)
-                    factor_labels_raw = labels_str
-                    try:
-                        factor_labels = [
-                            (scheme.decode_label(lbl)[fi] if "|" in lbl else lbl)
-                            for lbl in factor_labels_raw
-                        ]
-                    except Exception:
-                        factor_labels = factor_labels_raw
+                    # Project composite labels to this factor's values.
+                    # Non-composite labels in a multi-head context are invalid.
+                    factor_labels = []
+                    for lbl in labels_str:
+                        if "|" not in lbl:
+                            raise ValueError(
+                                f"Multi-head training requires composite labels "
+                                f"(pipe-separated), but found bare label: {lbl!r}. "
+                                f"Re-label images using the factor stepper."
+                            )
+                        factor_labels.append(scheme.decode_label(lbl)[fi])
                     f_unique = sorted(set(factor_labels))
                     f_map = {s: i for i, s in enumerate(f_unique)}
                     f_int = [f_map[lbl] for lbl in factor_labels]
                     f_names = {i: s for s, i in f_map.items()}
-                    f_train_imgs, f_train_lbl = images[n_val:], f_int[n_val:]
-                    f_val_imgs, f_val_lbl = images[:n_val], f_int[:n_val]
+                    f_y = np.array(f_int, dtype=np.int64)
+                    f_train_idx, f_val_idx = self._split_train_val_indices(
+                        f_y, val_frac
+                    )
+                    f_train_imgs = [images[i] for i in f_train_idx]
+                    f_train_lbl = [f_int[i] for i in f_train_idx]
+                    f_val_imgs = [images[i] for i in f_val_idx]
+                    f_val_lbl = [f_int[i] for i in f_val_idx]
                     export_ultralytics_classify(
                         factor_dir,
                         f_train_imgs,

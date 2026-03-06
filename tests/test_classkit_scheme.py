@@ -1,6 +1,11 @@
 from pathlib import Path
 
 from multi_tracker.classkit.config.schemas import Factor, LabelingScheme, ProjectConfig
+from multi_tracker.classkit.presets import (
+    age_preset,
+    color_tag_preset,
+    head_tail_preset,
+)
 
 
 def test_factor_has_name_and_labels():
@@ -90,13 +95,6 @@ def test_decode_label_wrong_parts_raises():
 
     with pytest.raises(ValueError, match="Expected 2 parts"):
         scheme.decode_label("red|blue|green")  # too many parts
-
-
-from multi_tracker.classkit.presets import (
-    age_preset,
-    color_tag_preset,
-    head_tail_preset,
-)
 
 
 def test_head_tail_preset():
