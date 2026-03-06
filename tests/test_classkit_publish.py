@@ -100,3 +100,28 @@ def test_publish_trained_model_includes_scheme_metadata(tmp_path):
     assert entry["scheme_name"] == "color_tags_2factor"
     assert entry["factor_index"] is None
     assert entry["factor_name"] is None
+
+
+def test_task_usage_for_classify_roles():
+    """CLASSIFY_* roles must not fall through to the legacy 'headtail' usage_role."""
+    from multi_tracker.training.model_publish import _task_usage_for_role
+
+    assert _task_usage_for_role(TrainingRole.CLASSIFY_FLAT_YOLO) == (
+        "classify",
+        "classify_yolo",
+    )
+    assert _task_usage_for_role(TrainingRole.CLASSIFY_FLAT_TINY) == (
+        "classify",
+        "classify_tiny",
+    )
+    assert _task_usage_for_role(TrainingRole.CLASSIFY_MULTIHEAD_YOLO) == (
+        "classify",
+        "classify_yolo",
+    )
+    assert _task_usage_for_role(TrainingRole.CLASSIFY_MULTIHEAD_TINY) == (
+        "classify",
+        "classify_tiny",
+    )
+    # Legacy HEADTAIL roles still map to "headtail" for backwards compat
+    assert _task_usage_for_role(TrainingRole.HEADTAIL_YOLO) == ("classify", "headtail")
+    assert _task_usage_for_role(TrainingRole.HEADTAIL_TINY) == ("classify", "headtail")

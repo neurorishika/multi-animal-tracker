@@ -50,6 +50,10 @@ def _task_usage_for_role(role: TrainingRole) -> tuple[str, str]:
         return "detect", "seq_detect"
     if role == TrainingRole.SEQ_CROP_OBB:
         return "obb", "seq_crop_obb"
+    if role in (TrainingRole.CLASSIFY_FLAT_YOLO, TrainingRole.CLASSIFY_MULTIHEAD_YOLO):
+        return "classify", "classify_yolo"
+    if role in (TrainingRole.CLASSIFY_FLAT_TINY, TrainingRole.CLASSIFY_MULTIHEAD_TINY):
+        return "classify", "classify_tiny"
     return "classify", "headtail"
 
 
