@@ -10,7 +10,9 @@ torchvision
 
 # Computer vision & deep learning
 timm
-faiss-cpu
+hnswlib
+usearch
+annoy
 pupil-apriltags
 ultralytics
 

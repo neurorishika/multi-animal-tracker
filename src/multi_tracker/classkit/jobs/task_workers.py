@@ -28,6 +28,7 @@ class IngestWorker(QRunnable):
 
     def __init__(self, source_path: Path, db_path: Path):
         super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.source_path = source_path
         self.db_path = db_path
         self.signals = TaskSignals()
@@ -48,7 +49,10 @@ class IngestWorker(QRunnable):
 
             # Scan and ingest
             self.signals.progress.emit(10, f"Scanning folder: {self.source_path}...")
-            image_paths = ingester.scan_folder(self.source_path)
+            # Prefer images/ subdirectory when present (PoseKit convention).
+            from ...classkit.data.ingest import scan_images as _scan
+
+            image_paths = list(_scan(self.source_path))
             self.signals.progress.emit(40, f"Found {len(image_paths):,} images")
 
             self.signals.progress.emit(50, "Computing image hashes...")
@@ -80,6 +84,7 @@ class EmbeddingWorker(QRunnable):
         canonicalize_mat: bool = False,
     ):
         super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.image_paths = image_paths
         self.model_name = model_name
         self.device = device
@@ -199,11 +204,12 @@ class EmbeddingWorker(QRunnable):
 class ClusteringWorker(QRunnable):
     """Worker for clustering embeddings."""
 
-    def __init__(self, embeddings, n_clusters: int = 500, gpu: bool = False):
+    def __init__(self, embeddings, n_clusters: int = 500, method: str = "minibatch"):
         super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.embeddings = embeddings
         self.n_clusters = n_clusters
-        self.gpu = gpu
+        self.method = method
         self.signals = TaskSignals()
 
     @Slot()
@@ -215,191 +221,44 @@ class ClusteringWorker(QRunnable):
                 2,
                 f"Input: {self.embeddings.shape[0]:,} vectors, dim={self.embeddings.shape[1]}",
             )
-            self.signals.progress.emit(4, f"Target: {self.n_clusters} clusters")
-
-            import platform
+            self.signals.progress.emit(
+                4, f"Target: {self.n_clusters} clusters  method={self.method}"
+            )
 
             import numpy as np
 
-            is_macos = platform.system() == "Darwin"
+            from ..cluster.clusterer import SKLearnClusterer
 
-            # On macOS, try metalfaiss first, then sklearn (FAISS causes segfaults)
-            if is_macos:
-                self.signals.progress.emit(
-                    6, "Detected macOS - using safe clustering backend..."
-                )
+            self.signals.progress.emit(8, f"Initializing {self.method} clusterer...")
+            clusterer = SKLearnClusterer(
+                n_clusters=self.n_clusters,
+                method=self.method,
+                verbose=False,
+            )
 
-                # Try metalfaiss (Metal-accelerated FAISS for Apple Silicon)
-                try:
-                    from ..cluster.metalfaiss_backend import load_metalfaiss_backend
+            self.signals.progress.emit(
+                20,
+                f"Fitting {self.embeddings.shape[0]:,} samples...",
+            )
+            assignments = clusterer.fit(self.embeddings)
 
-                    mx, AnyClustering, ClusteringParameters, backend_info = (
-                        load_metalfaiss_backend()
-                    )
+            self.signals.progress.emit(75, "Computing cluster statistics...")
+            stats = clusterer.compute_cluster_stats(self.embeddings, assignments)
 
-                    self.signals.progress.emit(
-                        8, "Using Metal-accelerated FAISS (metalfaiss)..."
-                    )
-                    if backend_info.get("shadow_path_removed"):
-                        self.signals.progress.emit(
-                            9,
-                            "Detected and bypassed local Faiss-mlx shadow path; using active environment backend.",
-                        )
-                    self.signals.progress.emit(
-                        10, "Converting embeddings to MLX format..."
-                    )
+            n_actual = len(np.unique(assignments))
+            self.signals.progress.emit(
+                90, f"Created {n_actual} clusters (requested {self.n_clusters})"
+            )
+            self.signals.progress.emit(100, "Clustering complete!")
 
-                    # Convert to list format (metalfaiss expects List[List[float]])
-                    embeddings_list = self.embeddings.astype(np.float32).tolist()
-                    d = self.embeddings.shape[1]
-
-                    self.signals.progress.emit(
-                        15,
-                        f"Initializing Metal k-means (d={d}, k={self.n_clusters})...",
-                    )
-                    params = ClusteringParameters(max_iterations=20)
-                    kmeans = AnyClustering.new(
-                        d=d, k=self.n_clusters, parameters=params
-                    )
-
-                    self.signals.progress.emit(
-                        20, f"Training on {len(embeddings_list):,} vectors..."
-                    )
-                    kmeans.train(embeddings_list)
-
-                    self.signals.progress.emit(70, "Computing cluster assignments...")
-                    centroids_mlx = kmeans.centroids()
-                    centers = np.array(centroids_mlx)
-
-                    # Compute assignments: find nearest centroid for each point
-                    embeddings_mlx = mx.array(self.embeddings.astype(np.float32))
-                    dists = mx.sum(
-                        mx.square(
-                            mx.subtract(embeddings_mlx[:, None], centroids_mlx[None])
-                        ),
-                        axis=2,
-                    )
-                    assignments = np.array(mx.argmin(dists, axis=1))
-
-                    self.signals.progress.emit(
-                        90, f"Clustered into {len(np.unique(assignments))} groups"
-                    )
-                    self.signals.progress.emit(100, "Metal clustering complete!")
-
-                    self.signals.success.emit(
-                        {
-                            "assignments": assignments,
-                            "centers": centers,
-                            "stats": {},
-                            "method": "metalfaiss",
-                        }
-                    )
-                    return
-
-                except ImportError as e:
-                    self.signals.progress.emit(
-                        8, f"Metal FAISS unavailable ({str(e)}), using sklearn..."
-                    )
-                except Exception as e:
-                    self.signals.progress.emit(
-                        8, f"Metal FAISS error: {str(e)}, falling back to sklearn..."
-                    )
-
-                # Fallback to sklearn on macOS
-                self.signals.progress.emit(
-                    10, "Using scikit-learn MiniBatchKMeans (CPU-based, stable)..."
-                )
-                from sklearn.cluster import MiniBatchKMeans
-
-                self.signals.progress.emit(
-                    15,
-                    f"Initializing MiniBatchKMeans with {self.n_clusters} clusters...",
-                )
-                kmeans = MiniBatchKMeans(
-                    n_clusters=self.n_clusters,
-                    batch_size=min(1024, self.embeddings.shape[0]),
-                    verbose=0,
-                    random_state=42,
-                    n_init=5,
-                )
-
-                self.signals.progress.emit(
-                    20,
-                    f"Fitting {self.embeddings.shape[0]:,} samples (batch_size={kmeans.batch_size})...",
-                )
-                self.signals.progress.emit(
-                    25, "This may take a few minutes for large datasets..."
-                )
-
-                assignments = kmeans.fit_predict(self.embeddings)
-                centers = kmeans.cluster_centers_
-
-                n_actual = len(np.unique(assignments))
-                self.signals.progress.emit(
-                    90, f"Created {n_actual} clusters (requested {self.n_clusters})"
-                )
-                self.signals.progress.emit(
-                    100,
-                    f"sklearn clustering complete! {len(assignments):,} points assigned",
-                )
-
-                self.signals.success.emit(
-                    {
-                        "assignments": assignments,
-                        "centers": centers,
-                        "stats": {},
-                        "method": "sklearn",
-                    }
-                )
-
-            else:
-                # On Linux/Windows, try FAISS
-                self.signals.progress.emit(
-                    8, "Using FAISS k-means (optimized for CPU/CUDA)..."
-                )
-
-                try:
-                    from ..cluster.clusterer import FAISSClusterer
-
-                    self.signals.progress.emit(10, "Initializing FAISS clusterer...")
-                    clusterer = FAISSClusterer(
-                        n_clusters=self.n_clusters, verbose=False
-                    )
-
-                    use_gpu = self.gpu
-                    if use_gpu:
-                        self.signals.progress.emit(15, "GPU acceleration enabled")
-
-                    self.signals.progress.emit(
-                        20,
-                        f"Running k-means on {self.embeddings.shape[0]:,} vectors...",
-                    )
-                    assignments = clusterer.fit(self.embeddings, gpu=use_gpu)
-
-                    self.signals.progress.emit(75, "Computing cluster statistics...")
-                    stats = clusterer.compute_cluster_stats(
-                        self.embeddings, assignments
-                    )
-
-                    self.signals.progress.emit(
-                        90, f"Computed stats for {len(set(assignments))} clusters"
-                    )
-                    self.signals.progress.emit(100, "FAISS clustering complete!")
-
-                    self.signals.success.emit(
-                        {
-                            "assignments": assignments,
-                            "centers": clusterer.cluster_centers,
-                            "stats": stats,
-                            "method": "faiss",
-                        }
-                    )
-
-                except Exception as e:
-                    self.signals.progress.emit(
-                        15, f"FAISS failed ({str(e)}), using sklearn..."
-                    )
-                    raise
+            self.signals.success.emit(
+                {
+                    "assignments": assignments,
+                    "centers": clusterer.cluster_centers,
+                    "stats": stats,
+                    "method": self.method,
+                }
+            )
 
         except Exception as e:
             traceback.print_exc()
@@ -413,6 +272,7 @@ class UMAPWorker(QRunnable):
 
     def __init__(self, embeddings, n_neighbors: int = 15, min_dist: float = 0.1):
         super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.embeddings = embeddings
         self.n_neighbors = n_neighbors
         self.min_dist = min_dist
@@ -490,6 +350,7 @@ class TrainingWorker(QRunnable):
         self.early_stop_patience = early_stop_patience
         self.calibrate = calibrate
         self.signals = TaskSignals()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
 
     @Slot()
     def run(self):
@@ -526,11 +387,20 @@ class TrainingWorker(QRunnable):
 
             self.signals.progress.emit(80, "Calibrating...")
 
-            if self.calibrate and self.val_embeddings is not None:
-                trainer.calibrate(self.val_embeddings, self.val_labels)
+            metrics = None
+            if self.val_embeddings is not None:
+                if self.calibrate:
+                    trainer.calibrate(self.val_embeddings, self.val_labels)
+
+                # Compute metrics on validation set
+                metrics = trainer.evaluate(
+                    self.val_embeddings, self.val_labels, calibrated=self.calibrate
+                )
 
             self.signals.progress.emit(100, "Complete!")
-            self.signals.success.emit({"trainer": trainer, "history": history})
+            self.signals.success.emit(
+                {"trainer": trainer, "history": history, "metrics": metrics}
+            )
 
         except Exception as e:
             traceback.print_exc()
@@ -551,6 +421,7 @@ class ClassKitTrainingWorker(QRunnable):
         multi_head: bool = False,
     ):
         super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.role = role
         self.specs = (
             specs  # list of TrainingRunSpec (one per factor if multi_head, else one)
@@ -630,8 +501,12 @@ class ExportWorker(QRunnable):
         val_fraction: float = 0.2,
         test_fraction: float = 0.0,
         copy_files: bool = True,
+        canonicalize: bool = False,
+        temp_dir: Optional[Path] = None,
+        label_expansion: Optional[Dict[str, Dict[str, str]]] = None,
     ):
         super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.image_paths = image_paths
         self.labels = labels
         self.output_path = output_path
@@ -640,6 +515,10 @@ class ExportWorker(QRunnable):
         self.val_fraction = float(val_fraction)
         self.test_fraction = float(test_fraction)
         self.copy_files = copy_files
+        self.canonicalize = canonicalize
+        self.temp_dir = temp_dir
+        # label_expansion: {"fliplr": {"left": "right", "right": "left"}, ...}
+        self.label_expansion: Dict[str, Dict[str, str]] = label_expansion or {}
         self.signals = TaskSignals()
 
     def _class_name(self, label: int) -> str:
@@ -682,6 +561,15 @@ class ExportWorker(QRunnable):
             self.signals.started.emit()
             self.signals.progress.emit(0, f"Exporting to {self.format}...")
 
+            # Ensure temp_dir exists when label expansion is requested
+            if self.label_expansion and self.temp_dir is None:
+                import tempfile
+
+                self._expansion_tmpdir = tempfile.mkdtemp(prefix="classkit_exp_")
+                self.temp_dir = Path(self._expansion_tmpdir)
+            else:
+                self._expansion_tmpdir = None
+
             valid = [
                 (img_path, int(label))
                 for img_path, label in zip(self.image_paths, self.labels)
@@ -693,6 +581,40 @@ class ExportWorker(QRunnable):
 
             image_paths = [item[0] for item in valid]
             labels = [item[1] for item in valid]
+
+            if self.canonicalize and self.temp_dir:
+                self.signals.progress.emit(10, "Canonicalizing images...")
+                from PIL import Image as PILImage
+
+                from ...core.canonicalization import MatMetadataCanonicalizer
+
+                canon = MatMetadataCanonicalizer(enabled=True)
+                new_paths = []
+                for i, p in enumerate(image_paths):
+                    if i % 10 == 0:
+                        self.signals.progress.emit(
+                            10 + int(40 * i / len(image_paths)),
+                            f"Canonicalizing {i}/{len(image_paths)}...",
+                        )
+
+                    try:
+                        pil_img = PILImage.open(str(p)).convert("RGB")
+                        canon_img = canon(str(p), pil_img)
+
+                        # Save to temp dir
+                        out_p = self.temp_dir / f"canon_{i}_{p.name}"
+                        if out_p.suffix.lower() not in {".jpg", ".png"}:
+                            out_p = out_p.with_suffix(".jpg")
+
+                        canon_img.save(out_p)
+                        new_paths.append(out_p)
+                    except Exception:
+                        # Fallback to original if transformation fails
+                        new_paths.append(p)
+
+                image_paths = new_paths
+                self.copy_files = True  # Must copy since they are in temp dir
+
             splits = self._build_splits()
             splits = [
                 split
@@ -701,6 +623,71 @@ class ExportWorker(QRunnable):
             ]
 
             class_names = {label: self._class_name(label) for label in set(labels)}
+
+            # ----------------------------------------------------------------
+            # Label-switching expansion: physically write flipped copies with
+            # the remapped label so the training split contains both the
+            # original and its mirror with correct labels.
+            # Only added to the train split to avoid leaking flipped versions
+            # into the evaluation set.
+            # ----------------------------------------------------------------
+            if self.label_expansion and self.temp_dir:
+                import cv2
+
+                # Build reverse name→int map so we can look up the remapped int label.
+                name_to_int = {v: k for k, v in class_names.items()}
+
+                # CV2 flip codes: 0=vertical (flipud), 1=horizontal (fliplr)
+                flip_code = {"fliplr": 1, "flipud": 0}
+
+                exp_dir = Path(self.temp_dir) / "label_expansion"
+                exp_dir.mkdir(parents=True, exist_ok=True)
+
+                extra_paths: List[Path] = []
+                extra_labels: List[int] = []
+                extra_splits: List[str] = []
+                n_exp = 0
+
+                for axis, mapping in self.label_expansion.items():
+                    if axis not in flip_code:
+                        continue
+                    code = flip_code[axis]
+
+                    for img_path, label_int, split in zip(image_paths, labels, splits):
+                        if split != "train":
+                            continue  # only expand training data
+                        src_name = class_names.get(label_int, "")
+                        dst_name = mapping.get(src_name)
+                        if dst_name is None:
+                            continue  # label not in this expansion rule
+                        dst_int = name_to_int.get(dst_name)
+                        if dst_int is None:
+                            # Destination class not yet in map — register it
+                            new_int = max(class_names.keys(), default=-1) + 1
+                            class_names[new_int] = dst_name
+                            name_to_int[dst_name] = new_int
+                            dst_int = new_int
+
+                        img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+                        if img is None:
+                            continue
+                        flipped = cv2.flip(img, code)
+                        stem = f"expn_{axis}_{n_exp}_{img_path.stem}"
+                        out_p = exp_dir / (stem + img_path.suffix)
+                        cv2.imwrite(str(out_p), flipped)
+                        extra_paths.append(out_p)
+                        extra_labels.append(dst_int)
+                        extra_splits.append("train")
+                        n_exp += 1
+
+                if n_exp:
+                    self.signals.progress.emit(
+                        55, f"Added {n_exp} label-expansion copies"
+                    )
+                    image_paths = image_paths + extra_paths
+                    labels = labels + extra_labels
+                    splits = splits + extra_splits
+                    self.copy_files = True  # expanded images live in temp_dir
 
             if self.format == "imagefolder":
                 from ..export.imagefolder import export_to_imagefolder
@@ -797,4 +784,350 @@ class ExportWorker(QRunnable):
             traceback.print_exc()
             self.signals.error.emit(str(e))
         finally:
+            self.signals.finished.emit()
+            # Clean up auto-created expansion temp dir (if we made it)
+            if getattr(self, "_expansion_tmpdir", None):
+                import shutil
+
+                try:
+                    shutil.rmtree(self._expansion_tmpdir, ignore_errors=True)
+                except Exception:
+                    pass
+                self._expansion_tmpdir = None
+
+
+class YoloInferenceWorker(QRunnable):
+    """Run YOLO classification inference on all images, return per-image probabilities."""
+
+    def __init__(
+        self,
+        model_path: Path,
+        image_paths: List[Path],
+        device: str = "cpu",
+        batch_size: int = 64,
+        canonicalize_mat: bool = False,
+    ):
+        super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
+        self.model_path = Path(model_path)
+        self.image_paths = list(image_paths)
+        self.device = device
+        self.batch_size = batch_size
+        self.canonicalize_mat = bool(canonicalize_mat)
+        self.signals = TaskSignals()
+
+    @Slot()
+    def run(self):
+        try:
+            self.signals.started.emit()
+            if self.model_path.suffix.lower() != ".pt":
+                raise ValueError(
+                    f"YoloInferenceWorker requires a .pt file; got {self.model_path.name}. "
+                    "Tiny CNN (.pth) models are not supported here."
+                )
+            import numpy as np
+            from ultralytics import YOLO
+
+            self.signals.progress.emit(
+                0, f"Loading YOLO model: {self.model_path.name}..."
+            )
+            model = YOLO(str(self.model_path))
+            class_names = (
+                [model.names[i] for i in sorted(model.names.keys())]
+                if hasattr(model, "names")
+                else []
+            )
+
+            num_images = len(self.image_paths)
+            self.signals.progress.emit(
+                5, f"Running inference on {num_images:,} images..."
+            )
+            all_probs = []
+
+            from PIL import Image as _PILImage
+
+            from ...core.canonicalization import MatMetadataCanonicalizer
+
+            canonicalizer = MatMetadataCanonicalizer(enabled=self.canonicalize_mat)
+
+            for batch_start in range(0, num_images, self.batch_size):
+                batch_paths = self.image_paths[
+                    batch_start : batch_start + self.batch_size
+                ]
+                if self.canonicalize_mat:
+                    batch_input = [
+                        canonicalizer(p, _PILImage.open(p).convert("RGB"))
+                        for p in batch_paths
+                    ]
+                else:
+                    batch_input = [str(p) for p in batch_paths]
+                results = model(batch_input, verbose=False, device=self.device)
+                for r in results:
+                    if r.probs is not None:
+                        all_probs.append(r.probs.data.cpu().numpy())
+                    else:
+                        n_cls = max(len(class_names), 1)
+                        all_probs.append(np.ones(n_cls) / n_cls)
+
+                done = batch_start + len(batch_paths)
+                pct = min(95, 5 + int(90 * done / num_images))
+                self.signals.progress.emit(pct, f"Processed {done:,}/{num_images:,}")
+
+            probs = np.array(all_probs)  # (N, num_classes)
+            self.signals.progress.emit(100, "Inference complete!")
+            self.signals.success.emit({"probs": probs, "class_names": class_names})
+
+        except Exception as e:
+            traceback.print_exc()
+            self.signals.error.emit(str(e))
+        finally:
+            self.signals.finished.emit()
+
+
+class LogitsUMAPWorker(QRunnable):
+    """Compute UMAP projection from a probability / logit matrix (N × C)."""
+
+    def __init__(self, probs, n_neighbors: int = 15, min_dist: float = 0.1):
+        super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
+        self.probs = probs
+        self.n_neighbors = n_neighbors
+        self.min_dist = min_dist
+        self.signals = TaskSignals()
+
+    @Slot()
+    def run(self):
+        try:
+            self.signals.started.emit()
+            n, c = self.probs.shape
+            self.signals.progress.emit(0, f"Input: {n:,} images × {c} classes")
+
+            from ..viz.umap_reduce import UMAPReducer
+
+            self.signals.progress.emit(
+                10,
+                f"Computing UMAP in model logits space (n_neighbors={self.n_neighbors})...",
+            )
+            reducer = UMAPReducer(
+                n_neighbors=min(self.n_neighbors, max(2, n - 1)),
+                min_dist=self.min_dist,
+                metric="euclidean",
+            )
+            coords = reducer.fit_transform(self.probs)
+            self.signals.progress.emit(100, "Model-space UMAP complete!")
+            self.signals.success.emit({"coords": coords})
+
+        except Exception as e:
+            traceback.print_exc()
+            self.signals.error.emit(str(e))
+        finally:
+            self.signals.finished.emit()
+
+
+class ALBatchWorker(QRunnable):
+    """Select the next active learning labeling batch using acquisition strategies."""
+
+    def __init__(
+        self,
+        embeddings,
+        probs,
+        labeled_mask,
+        cluster_assignments=None,
+        batch_size: int = 50,
+    ):
+        super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
+        self.embeddings = embeddings
+        self.probs = probs
+        self.labeled_mask = labeled_mask
+        self.cluster_assignments = cluster_assignments
+        self.batch_size = batch_size
+        self.signals = TaskSignals()
+
+    @Slot()
+    def run(self):
+        try:
+            self.signals.started.emit()
+            import numpy as np
+
+            from ..al.acquisition import BatchAcquisition, BatchConfig
+
+            self.signals.progress.emit(0, "Computing active learning batch...")
+            unlabeled_mask = ~self.labeled_mask
+
+            if unlabeled_mask.sum() == 0:
+                self.signals.success.emit(
+                    {"selected_indices": np.array([], dtype=int), "breakdown": {}}
+                )
+                return
+
+            cluster_densities = None
+            label_coverage = {}
+
+            if self.cluster_assignments is not None:
+                self.signals.progress.emit(20, "Computing cluster densities...")
+                try:
+                    from ..al.density import compute_cluster_densities
+
+                    cluster_densities = compute_cluster_densities(
+                        self.embeddings, self.cluster_assignments
+                    )
+                except Exception:
+                    pass
+
+                try:
+                    from ..train.metrics import compute_label_coverage
+
+                    labeled_int = np.where(self.labeled_mask, 0, -1)
+                    label_coverage = compute_label_coverage(
+                        labeled_int, self.cluster_assignments
+                    )
+                except Exception:
+                    pass
+
+            self.signals.progress.emit(50, "Running batch acquisition selection...")
+            cfg = BatchConfig(
+                batch_size=min(self.batch_size, int(unlabeled_mask.sum()))
+            )
+            acq = BatchAcquisition(cfg)
+            selected, breakdown = acq.select_batch(
+                embeddings=self.embeddings,
+                probs=self.probs,
+                unlabeled_mask=unlabeled_mask,
+                cluster_assignments=self.cluster_assignments,
+                label_coverage=label_coverage,
+                cluster_densities=cluster_densities,
+            )
+
+            self.signals.progress.emit(100, f"Selected {len(selected)} candidates!")
+            self.signals.success.emit(
+                {"selected_indices": selected, "breakdown": breakdown}
+            )
+
+        except Exception as e:
+            traceback.print_exc()
+            self.signals.error.emit(str(e))
+        finally:
+            self.signals.finished.emit()
+
+
+class TinyCNNInferenceWorker(QRunnable):
+    """Run tiny CNN classification inference on all project images.
+
+    Returns the same ``{"probs": ndarray, "class_names": list}`` contract as
+    ``YoloInferenceWorker`` so callers share a unified post-inference path.
+    """
+
+    def __init__(
+        self,
+        model_path: Path,
+        image_paths: List[Path],
+        class_names: List[str],
+        device: str = "cpu",
+        batch_size: int = 64,
+        canonicalize_mat: bool = False,
+    ):
+        super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
+        self.model_path = Path(model_path)
+        self.image_paths = list(image_paths)
+        self.class_names = list(class_names)
+        self.device = device
+        self.batch_size = batch_size
+        self.canonicalize_mat = bool(canonicalize_mat)
+        self.signals = TaskSignals()
+
+    @Slot()
+    def run(self):
+        try:
+            self.signals.started.emit()
+            import cv2
+            import numpy as np
+            import torch
+            import torch.nn.functional as F
+
+            from ...core.canonicalization import MatMetadataCanonicalizer
+            from ...training.tiny_model import load_tiny_classifier
+
+            self.signals.progress.emit(
+                0, f"Loading tiny CNN: {self.model_path.name}..."
+            )
+            model, ckpt = load_tiny_classifier(str(self.model_path), device=self.device)
+            input_w, input_h = ckpt.get("input_size", [128, 64])
+
+            # Prefer class names embedded in checkpoint over caller-supplied fallback
+            ckpt_names = ckpt.get("class_names")
+            resolved_names = list(ckpt_names) if ckpt_names else list(self.class_names)
+
+            num_images = len(self.image_paths)
+            self.signals.progress.emit(
+                5, f"Tiny CNN inference on {num_images:,} images..."
+            )
+
+            canonicalizer = MatMetadataCanonicalizer(enabled=self.canonicalize_mat)
+            all_probs: list = []
+
+            for batch_start in range(0, num_images, self.batch_size):
+                batch_paths = self.image_paths[
+                    batch_start : batch_start + self.batch_size
+                ]
+                batch_tensors = []
+
+                for p in batch_paths:
+                    try:
+                        if self.canonicalize_mat:
+                            from PIL import Image as _PIL
+
+                            pil_img = canonicalizer(p, _PIL.open(p).convert("RGB"))
+                            img = np.array(pil_img)
+                            if img.ndim == 2:
+                                img = np.stack([img] * 3, axis=-1)
+                            elif img.shape[2] == 4:
+                                img = img[:, :, :3]
+                        else:
+                            img = cv2.imread(str(p), cv2.IMREAD_COLOR)
+                            if img is None:
+                                batch_tensors.append(torch.zeros(3, input_h, input_w))
+                                continue
+                            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        img = cv2.resize(
+                            img, (input_w, input_h), interpolation=cv2.INTER_LINEAR
+                        )
+                        t = (
+                            torch.from_numpy(img.copy()).permute(2, 0, 1).float()
+                            / 255.0
+                        )
+                        batch_tensors.append(t)
+                    except Exception:
+                        batch_tensors.append(torch.zeros(3, input_h, input_w))
+
+                if not batch_tensors:
+                    continue
+
+                x = torch.stack(batch_tensors).to(self.device)
+                with torch.no_grad():
+                    logits = model(x)
+                    probs = F.softmax(logits, dim=1).cpu().numpy()
+                all_probs.append(probs)
+
+                done = batch_start + len(batch_paths)
+                pct = min(95, 5 + int(90 * done / num_images))
+                self.signals.progress.emit(pct, f"Processed {done:,}/{num_images:,}")
+
+            if all_probs:
+                result_probs = np.concatenate(all_probs, axis=0)
+            else:
+                n_cls = max(len(resolved_names), 1)
+                result_probs = np.full((num_images, n_cls), 1.0 / n_cls)
+
+            self.signals.progress.emit(100, "Tiny CNN inference complete!")
+            self.signals.success.emit(
+                {"probs": result_probs, "class_names": resolved_names}
+            )
+
+        except Exception as e:
+            traceback.print_exc()
+            self.signals.error.emit(str(e))
+        finally:
+            self.signals.finished.emit()
             self.signals.finished.emit()

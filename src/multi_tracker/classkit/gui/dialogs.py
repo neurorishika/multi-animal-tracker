@@ -2,8 +2,13 @@
 Polished dialogs for ClassKit
 """
 
+import subprocess
+import sys
 from pathlib import Path
+from typing import List, Optional, Tuple
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -12,19 +17,966 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSpinBox,
-    QTextEdit,
+    QSplitter,
+    QTabWidget,
     QVBoxLayout,
+    QWidget,
 )
 
-from ..cluster.metalfaiss_backend import probe_metalfaiss_backend
+from ..cluster.metalfaiss_backend import probe_ann_backend
+
+
+class _KeyCapture(QLineEdit):
+    """Drop-in replacement for QKeySequenceEdit.
+
+    ``QKeySequenceEdit`` registers with the macOS Text Services Manager (TSM)
+    as a text-input client.  On macOS + Python 3.13 + Qt 6 this registration
+    races with the TSM UI-server port and produces a SIGBUS crash.
+
+    This widget avoids all native IME / TSM hooks by:
+    • staying permanently read-only (no system text-input session),
+    • disabling the Qt input-method bridge (``WA_InputMethodEnabled = False``),
+    • capturing key presses directly in ``keyPressEvent``.
+
+    Public interface is compatible with ``QKeySequenceEdit``:
+    ``setKeySequence(QKeySequence)``, ``keySequence() -> QKeySequence``.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._seq = QKeySequence()
+        self._capturing = False
+        self.setReadOnly(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_InputMethodEnabled, False)
+        self.setPlaceholderText("click → press key")
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    # ── public interface MatchQKeySequenceEdit ────────────────────────────────
+
+    def setKeySequence(self, seq):
+        if not isinstance(seq, QKeySequence):
+            seq = QKeySequence(seq)
+        self._seq = seq
+        self._refresh()
+
+    def keySequence(self) -> QKeySequence:
+        return self._seq
+
+    # ── internal ──────────────────────────────────────────────────────────────
+
+    def _refresh(self):
+        self.setText(self._seq.toString() if self._seq else "")
+
+    def mousePressEvent(self, event):
+        self._capturing = True
+        self.setText("⌨  press key…")
+        self.setFocus()
+
+    def keyPressEvent(self, event):
+        if not self._capturing:
+            super().keyPressEvent(event)
+            return
+        key = event.key()
+        # Ignore bare modifier presses
+        if key in (
+            Qt.Key.Key_Control,
+            Qt.Key.Key_Shift,
+            Qt.Key.Key_Alt,
+            Qt.Key.Key_Meta,
+            Qt.Key.Key_unknown,
+        ):
+            return
+        self._seq = QKeySequence(int(event.modifiers()) | int(key))
+        self._capturing = False
+        self._refresh()
+
+    def focusOutEvent(self, event):
+        if self._capturing:
+            self._capturing = False
+            self._refresh()
+        super().focusOutEvent(event)
+
+
+_DARK_STYLE = """
+    QDialog { background-color: #1e1e1e; }
+    QGroupBox {
+        border: 1px solid #3e3e42; border-radius: 6px;
+        margin-top: 12px; padding-top: 12px; color: #cccccc;
+    }
+    QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }
+    QLabel { color: #cccccc; }
+    QLineEdit, QTextEdit, QPlainTextEdit, QListWidget {
+        background-color: #252526; color: #e0e0e0;
+        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
+    }
+    QLineEdit:focus, QTextEdit:focus { border: 1px solid #007acc; }
+    QComboBox, QSpinBox, QDoubleSpinBox {
+        background-color: #252526; color: #e0e0e0;
+        border: 1px solid #3e3e42; border-radius: 4px; padding: 6px;
+    }
+    QComboBox:focus, QSpinBox:focus { border: 1px solid #007acc; }
+    QCheckBox { color: #cccccc; }
+    QPushButton {
+        background-color: #0e639c; color: #ffffff;
+        border: none; border-radius: 4px;
+        padding: 8px 16px; font-weight: 500;
+    }
+    QPushButton:hover { background-color: #1177bb; }
+    QPushButton:pressed { background-color: #0d5a8f; }
+    QPushButton:disabled { background-color: #3e3e42; color: #888888; }
+"""
+
+CLASSKIT_IMAGES_SUBDIR = "images"
+CLASSKIT_SIEVE_THRESHOLD = 5000
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Startup chooser
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class StartupDialog(QDialog):
+    """Shown on cold start: open existing project, create new, or quit.
+
+    Cannot be dismissed via Escape or the window close button — the user must
+    make an explicit choice (Create, Open, or Quit).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Welcome to ClassKit")
+        self.setMinimumWidth(520)
+        self.setStyleSheet(_DARK_STYLE)
+        # Remove the OS-level close button so the only way out is the Quit button
+        self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.CustomizeWindowHint)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(18)
+
+        hdr = QLabel(
+            "<h2 style='color:#ffffff; margin:0;'>ClassKit</h2>"
+            "<p style='color:#888; margin:4px 0 0 0;'>Active Learning Dataset Builder</p>"
+        )
+        hdr.setStyleSheet("background:#252526; padding:16px; border-radius:6px;")
+        layout.addWidget(hdr)
+
+        btn_new = QPushButton("  Create New Project…")
+        btn_new.setMinimumHeight(42)
+        btn_new.clicked.connect(self._new)
+        layout.addWidget(btn_new)
+
+        btn_open = QPushButton("  Open Existing Project…")
+        btn_open.setMinimumHeight(42)
+        btn_open.setStyleSheet(
+            "QPushButton { background-color:#3e3e42; color:#e0e0e0; "
+            "border:none; border-radius:4px; padding:8px 16px; }"
+            "QPushButton:hover { background-color:#555558; }"
+        )
+        btn_open.clicked.connect(self._open)
+        layout.addWidget(btn_open)
+
+        btn_quit = QPushButton("  Quit")
+        btn_quit.setMinimumHeight(36)
+        btn_quit.setStyleSheet(
+            "QPushButton { background-color:transparent; color:#888; "
+            "border:1px solid #3e3e42; border-radius:4px; padding:6px 16px; }"
+            "QPushButton:hover { background-color:#2a2d2e; color:#cccccc; }"
+        )
+        btn_quit.clicked.connect(self._quit)
+        layout.addWidget(btn_quit)
+
+        self._choice: Optional[str] = None  # "new" | "open" | "quit"
+
+    # Block Escape key — only the explicit Quit button may close the app
+    def keyPressEvent(self, event):
+        from PySide6.QtCore import Qt as _Qt
+
+        if event.key() == _Qt.Key_Escape:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
+    def reject(self):
+        """Ignore implicit reject (Escape, window close) — use _quit() instead."""
+        pass
+
+    def _new(self):
+        self._choice = "new"
+        self.accept()
+
+    def _open(self):
+        self._choice = "open"
+        self.accept()
+
+    def _quit(self):
+        self._choice = "quit"
+        # Bypass the overridden reject() to actually close
+        QDialog.reject(self)
+
+    @property
+    def choice(self) -> Optional[str]:
+        return self._choice
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Add-source dialog (pick a folder of images, optionally run DataSieve)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class AddSourceDialog(QDialog):
+    """Pick one or more image source folders for a ClassKit project.
+
+    For each folder the user picks, the ``images/`` subdirectory is preferred
+    (if it exists and contains images), otherwise the root folder itself is
+    used — matching the PoseKit convention.
+
+    If a folder contains more images than ``CLASSKIT_SIEVE_THRESHOLD``, the
+    dialog offers to open DataSieve before continuing.
+    """
+
+    def __init__(self, existing_sources: Optional[List[Path]] = None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Image Sources")
+        self.setMinimumWidth(580)
+        self.setStyleSheet(_DARK_STYLE)
+
+        # Resolved image dirs already added (for duplicate checks).
+        self._existing: List[Path] = [
+            p.expanduser().resolve() for p in (existing_sources or [])
+        ]
+        # (dataset_root, resolved_images_dir, description)
+        self._sources: List[Tuple[Path, Path, str]] = []
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        info = QLabel(
+            "Add one or more folders containing images.  "
+            f"An <b>{CLASSKIT_IMAGES_SUBDIR}/</b> subdirectory is preferred when present; "
+            "otherwise the folder root is used."
+        )
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        self._list = QListWidget()
+        self._list.setMinimumHeight(120)
+        layout.addWidget(self._list)
+
+        btn_row = QHBoxLayout()
+        btn_add = QPushButton("Add Folder…")
+        btn_add.clicked.connect(self._browse)
+        btn_row.addWidget(btn_add)
+        btn_row.addStretch(1)
+        self._btn_remove = QPushButton("Remove Selected")
+        self._btn_remove.setStyleSheet(
+            "QPushButton { background-color:#6b1c1c; color:#e0e0e0; "
+            "border:none; border-radius:4px; padding:8px 16px; }"
+            "QPushButton:hover { background-color:#8b2424; }"
+        )
+        self._btn_remove.clicked.connect(self._remove_selected)
+        self._btn_remove.setEnabled(False)
+        btn_row.addWidget(self._btn_remove)
+        layout.addLayout(btn_row)
+
+        self._list.itemSelectionChanged.connect(
+            lambda: self._btn_remove.setEnabled(bool(self._list.selectedItems()))
+        )
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Done")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    # ------------------------------------------------------------------
+    def _browse(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Select folder containing images", str(Path.home())
+        )
+        if not path:
+            return
+
+        d = Path(path).expanduser().resolve()
+
+        # Prefer images/ subdirectory (PoseKit convention)
+        candidate = d / CLASSKIT_IMAGES_SUBDIR
+        if candidate.is_dir() and self._has_images(candidate):
+            resolved = candidate
+            location_note = f"(from {CLASSKIT_IMAGES_SUBDIR}/ subdirectory)"
+        else:
+            resolved = d
+            location_note = "(folder root)"
+
+        count = self._count_images(resolved)
+        if count == 0:
+            QMessageBox.warning(
+                self,
+                "No Images Found",
+                f"No images were found in:\n{resolved}\n\n"
+                "Please select a folder that contains .jpg / .jpeg / .png files.",
+            )
+            return
+
+        # Duplicate check
+        if resolved in self._existing or any(
+            r == resolved for _, r, _ in self._sources
+        ):
+            QMessageBox.warning(
+                self, "Already Added", "That folder has already been added."
+            )
+            return
+
+        # DataSieve check
+        if count > CLASSKIT_SIEVE_THRESHOLD:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Large Dataset Detected")
+            msg.setText(
+                f"This folder contains {count:,} images — that is a lot to label.\n\n"
+                "DataSieve can reduce near-duplicates and create a smaller "
+                "representative subset before labeling."
+            )
+            msg.setInformativeText(
+                "Open this folder in DataSieve now, or add it as-is?"
+            )
+            btn_sieve = msg.addButton("Open in DataSieve", QMessageBox.AcceptRole)
+            btn_add = msg.addButton("Add Anyway", QMessageBox.DestructiveRole)
+            msg.addButton(QMessageBox.Cancel)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == btn_sieve:
+                try:
+                    subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-m",
+                            "multi_tracker.tools.data_sieve.gui",
+                            str(d),
+                        ],
+                        start_new_session=True,
+                    )
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self, "Launch Failed", f"Could not launch DataSieve:\n{exc}"
+                    )
+                return
+            if clicked != btn_add:
+                return
+
+        self._sources.append((d, resolved, d.name))
+        item = QListWidgetItem(f"{d.name}  —  {count:,} images  {location_note}\n{d}")
+        self._list.addItem(item)
+
+    def _remove_selected(self):
+        for item in self._list.selectedItems():
+            row = self._list.row(item)
+            self._list.takeItem(row)
+            if row < len(self._sources):
+                self._sources.pop(row)
+
+    @staticmethod
+    def _has_images(folder: Path) -> bool:
+        exts = {".jpg", ".jpeg", ".png"}
+        return any(p.suffix.lower() in exts for p in folder.iterdir() if p.is_file())
+
+    @staticmethod
+    def _count_images(folder: Path) -> int:
+        exts = {".jpg", ".jpeg", ".png"}
+        return sum(
+            1 for p in folder.iterdir() if p.is_file() and p.suffix.lower() in exts
+        )
+
+    @property
+    def sources(self) -> List[Tuple[Path, Path, str]]:
+        """List of (dataset_root, resolved_images_dir, description)."""
+        return list(self._sources)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Class / labeling-scheme editor dialog  (polished two-panel design)
+# ──────────────────────────────────────────────────────────────────────────────
+
+_BTN_ADD = (
+    "QPushButton { background-color:#1a4a1a; padding:4px 12px; border-radius:4px; }"
+    "QPushButton:hover { background-color:#235a23; }"
+)
+_BTN_DEL = (
+    "QPushButton { background-color:#4a1a1a; padding:4px 12px; border-radius:4px; }"
+    "QPushButton:hover { background-color:#6b2424; }"
+)
+_BTN_NEUTRAL = (
+    "QPushButton { background-color:#3e3e42; color:#e0e0e0; padding:4px 12px; border-radius:4px; }"
+    "QPushButton:hover { background-color:#555558; }"
+)
+
+
+class _LabelRow(QWidget):
+    """A single label row: name QLineEdit + QKeySequenceEdit for shortcut."""
+
+    def __init__(self, label: str = "", shortcut: str = "", parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+
+        self._name_edit = QLineEdit(label)
+        self._name_edit.setPlaceholderText("label name")
+        self._name_edit.setMinimumWidth(120)
+        row.addWidget(self._name_edit, 2)
+
+        key_lbl = QLabel("key:")
+        key_lbl.setStyleSheet("color:#777; font-size:11px;")
+        key_lbl.setFixedWidth(28)
+        row.addWidget(key_lbl)
+
+        self._key_edit = _KeyCapture()
+        if shortcut:
+            try:
+                self._key_edit.setKeySequence(QKeySequence(shortcut))
+            except Exception:
+                pass
+        self._key_edit.setFixedWidth(110)
+        self._key_edit.setToolTip(
+            "Press any key: letters, digits, arrows, symbols (e.g. ↑ ↓ ← →, Space, +, -, …)"
+        )
+        row.addWidget(self._key_edit)
+
+        self._btn_del = QPushButton("✕")
+        self._btn_del.setFixedSize(26, 26)
+        self._btn_del.setStyleSheet(_BTN_DEL)
+        self._btn_del.setToolTip("Remove this label")
+        row.addWidget(self._btn_del)
+
+    def label(self) -> str:
+        return self._name_edit.text().strip()
+
+    def shortcut(self) -> str:
+        ks = self._key_edit.keySequence()
+        return ks.toString() if ks else ""
+
+    def delete_button(self) -> QPushButton:
+        return self._btn_del
+
+
+class ClassEditorDialog(QDialog):
+    """Polished two-panel labeling class / multi-factor scheme editor.
+
+    Left panel: factor list with add/remove/rename controls.
+    Right panel: per-label rows, each with a name field and QKeySequenceEdit
+    shortcut capture (supports letters, digits, arrows, symbols, etc.).
+    """
+
+    _DEFAULT_COLORS = ["red", "blue", "green", "yellow", "white"]
+    _PRESETS = {
+        "head_tail": [
+            {
+                "name": "direction",
+                "labels": ["left", "right", "up", "down"],
+                "shortcuts": ["A", "D", "W", "S"],
+            },
+        ],
+        "color_tag_1": [
+            {"name": "tag_1", "labels": _DEFAULT_COLORS, "shortcuts": []},
+        ],
+        "color_tag_2": [
+            {"name": "tag_1", "labels": _DEFAULT_COLORS, "shortcuts": []},
+            {"name": "tag_2", "labels": _DEFAULT_COLORS, "shortcuts": []},
+        ],
+        "color_tag_3": [
+            {"name": "tag_1", "labels": _DEFAULT_COLORS, "shortcuts": []},
+            {"name": "tag_2", "labels": _DEFAULT_COLORS, "shortcuts": []},
+            {"name": "tag_3", "labels": _DEFAULT_COLORS, "shortcuts": []},
+        ],
+        "age": [
+            {"name": "age", "labels": ["young", "old"], "shortcuts": []},
+        ],
+    }
+
+    def __init__(
+        self,
+        classes: Optional[List[str]] = None,
+        scheme_dict: Optional[dict] = None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Classes & Labeling Scheme")
+        self.resize(820, 540)
+        self.setMinimumWidth(680)
+        self.setMinimumHeight(400)
+        self.setStyleSheet(_DARK_STYLE)
+
+        # ── internal state ─────────────────────────────────────────────
+        self._factors: List[dict] = []
+
+        if scheme_dict and scheme_dict.get("factors"):
+            self._factors = [
+                {
+                    "name": f.get("name", f"factor_{i}"),
+                    "labels": list(f.get("labels", [])),
+                    "shortcuts": list(f.get("shortcut_keys", [])),
+                }
+                for i, f in enumerate(scheme_dict["factors"])
+            ]
+        elif classes:
+            self._factors = [
+                {"name": "class", "labels": list(classes), "shortcuts": []}
+            ]
+        else:
+            self._factors = [
+                {"name": "class", "labels": ["class_1", "class_2"], "shortcuts": []}
+            ]
+
+        # ── outer layout ────────────────────────────────────────────────
+        outer = QVBoxLayout(self)
+        outer.setSpacing(8)
+
+        # Preset bar at the top
+        preset_bar = QHBoxLayout()
+        lbl_preset = QLabel("Quick preset:")
+        lbl_preset.setStyleSheet("color:#888; font-size:11px;")
+        preset_bar.addWidget(lbl_preset)
+        self._preset_combo = QComboBox()
+        self._preset_combo.setMaximumWidth(320)
+        self._preset_combo.addItem("— choose preset —", None)
+        self._preset_combo.addItem("Head / Tail  (4 directions · A D W S)", "head_tail")
+        self._preset_combo.addItem("Color tag — 1 factor  (5 colors)", "color_tag_1")
+        self._preset_combo.addItem(
+            "Color tag — 2 factors  (25 composites)", "color_tag_2"
+        )
+        self._preset_combo.addItem(
+            "Color tag — 3 factors  (125 composites)", "color_tag_3"
+        )
+        self._preset_combo.addItem("Age  (young / old)", "age")
+        preset_bar.addWidget(self._preset_combo)
+        btn_apply_preset = QPushButton("Apply")
+        btn_apply_preset.setMaximumWidth(70)
+        btn_apply_preset.clicked.connect(self._apply_preset)
+        preset_bar.addWidget(btn_apply_preset)
+        preset_bar.addStretch(1)
+        outer.addLayout(preset_bar)
+
+        # ── main splitter ───────────────────────────────────────────────
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(4)
+        splitter.setStyleSheet("QSplitter::handle { background-color:#3e3e42; }")
+        outer.addWidget(splitter, 1)
+
+        # ──── LEFT PANEL: factor list ───────────────────────────────────
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 4, 0)
+        left_layout.setSpacing(6)
+
+        left_header = QLabel("<b>Factors</b>")
+        left_layout.addWidget(left_header)
+
+        self._factor_list = QListWidget()
+        self._factor_list.setMinimumWidth(150)
+        self._factor_list.setMaximumWidth(220)
+        self._factor_list.setStyleSheet(
+            "QListWidget { background:#252526; border:1px solid #3e3e42; border-radius:4px; }"
+            "QListWidget::item { padding:6px 10px; color:#cccccc; }"
+            "QListWidget::item:selected { background-color:#094771; color:#ffffff; }"
+        )
+        self._factor_list.currentRowChanged.connect(self._on_factor_selected)
+        left_layout.addWidget(self._factor_list, 1)
+
+        left_btn_row = QHBoxLayout()
+        btn_add_factor = QPushButton("+ Factor")
+        btn_add_factor.setStyleSheet(_BTN_ADD)
+        btn_add_factor.clicked.connect(self._add_factor)
+        btn_add_factor.setToolTip("Add a new factor")
+        left_btn_row.addWidget(btn_add_factor)
+        self._btn_del_factor = QPushButton("− Factor")
+        self._btn_del_factor.setStyleSheet(_BTN_DEL)
+        self._btn_del_factor.clicked.connect(self._remove_selected_factor)
+        self._btn_del_factor.setToolTip("Remove selected factor")
+        left_btn_row.addWidget(self._btn_del_factor)
+        left_layout.addLayout(left_btn_row)
+        splitter.addWidget(left_widget)
+
+        # ──── RIGHT PANEL: factor detail ────────────────────────────────
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(4, 0, 0, 0)
+        right_layout.setSpacing(6)
+
+        # Factor name row
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Factor name:"))
+        self._factor_name_edit = QLineEdit()
+        self._factor_name_edit.setPlaceholderText("e.g. direction")
+        self._factor_name_edit.setMaximumWidth(200)
+        self._factor_name_edit.textChanged.connect(self._on_name_edited)
+        name_row.addWidget(self._factor_name_edit)
+        name_row.addStretch(1)
+        right_layout.addLayout(name_row)
+
+        # Label rows in a scroll area
+        lbl_header = QHBoxLayout()
+        lbl_header.addWidget(QLabel("<b>Labels</b>"))
+        lbl_header.addWidget(
+            QLabel(
+                "<i style='color:#777; font-size:11px;'>"
+                "  Key: letter, digit, arrow (↑↓←→), symbol (+  −  Space …)</i>"
+            )
+        )
+        lbl_header.addStretch(1)
+        btn_add_label = QPushButton("+ Label")
+        btn_add_label.setStyleSheet(_BTN_ADD)
+        btn_add_label.setMaximumWidth(80)
+        btn_add_label.clicked.connect(self._add_label_row)
+        lbl_header.addWidget(btn_add_label)
+        right_layout.addLayout(lbl_header)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setStyleSheet(
+            "QScrollArea { border:1px solid #3e3e42; border-radius:4px; background:#252526; }"
+        )
+        self._labels_container = QWidget()
+        self._labels_layout = QVBoxLayout(self._labels_container)
+        self._labels_layout.setContentsMargins(8, 8, 8, 8)
+        self._labels_layout.setSpacing(4)
+        self._labels_layout.addStretch(1)
+        scroll_area.setWidget(self._labels_container)
+        right_layout.addWidget(scroll_area, 1)
+
+        splitter.addWidget(right_widget)
+        splitter.setSizes([180, 600])
+
+        # ── bottom buttons ───────────────────────────────────────────────
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self._do_accept)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+
+        # ── populate ─────────────────────────────────────────────────────
+        self._current_factor_idx: int = -1
+        self._label_rows: List[_LabelRow] = []
+        self._populating = False
+        self._populate_factor_list()
+        if self._factors:
+            self._factor_list.setCurrentRow(0)
+
+    # ── factor list management ───────────────────────────────────────────
+
+    def _populate_factor_list(self):
+        self._factor_list.blockSignals(True)
+        self._factor_list.clear()
+        for f in self._factors:
+            self._factor_list.addItem(f.get("name", "factor"))
+        self._factor_list.blockSignals(False)
+
+    def _on_factor_selected(self, row: int):
+        if row < 0 or row >= len(self._factors):
+            self._factor_name_edit.clear()
+            self._clear_label_rows()
+            self._current_factor_idx = -1
+            return
+        # Save current edits first
+        self._flush_current_factor()
+        self._current_factor_idx = row
+        self._load_factor_into_panel(self._factors[row])
+
+    def _flush_current_factor(self):
+        """Write panel state back to self._factors[_current_factor_idx]."""
+        idx = self._current_factor_idx
+        if idx < 0 or idx >= len(self._factors):
+            return
+        self._factors[idx]["name"] = self._factor_name_edit.text().strip() or "factor"
+        self._factors[idx]["labels"] = [
+            r.label() for r in self._label_rows if r.label()
+        ]
+        self._factors[idx]["shortcuts"] = [
+            r.shortcut() for r in self._label_rows if r.label()
+        ]
+        # Keep list item label in sync
+        item = self._factor_list.item(idx)
+        if item:
+            item.setText(self._factors[idx]["name"])
+
+    def _load_factor_into_panel(self, factor: dict):
+        self._populating = True
+        self._factor_name_edit.setText(factor.get("name", ""))
+        self._clear_label_rows()
+        labels = factor.get("labels", [])
+        shortcuts = factor.get("shortcuts", [])
+        for i, lbl in enumerate(labels):
+            key = shortcuts[i] if i < len(shortcuts) else ""
+            self._append_label_row(lbl, key)
+        self._populating = False
+
+    def _on_name_edited(self, text: str):
+        idx = self._current_factor_idx
+        if idx < 0 or self._populating:
+            return
+        if idx < len(self._factors):
+            self._factors[idx]["name"] = text.strip() or "factor"
+        item = self._factor_list.item(idx)
+        if item:
+            item.setText(text.strip() or "factor")
+
+    def _add_factor(self):
+        self._flush_current_factor()
+        new_name = f"factor_{len(self._factors) + 1}"
+        self._factors.append(
+            {"name": new_name, "labels": ["label_1"], "shortcuts": [""]}
+        )
+        self._populate_factor_list()
+        self._factor_list.setCurrentRow(len(self._factors) - 1)
+
+    def _remove_selected_factor(self):
+        idx = self._factor_list.currentRow()
+        if idx < 0 or len(self._factors) <= 1:
+            QMessageBox.information(
+                self, "Cannot Remove", "A scheme must have at least one factor."
+            )
+            return
+        self._flush_current_factor()
+        self._factors.pop(idx)
+        self._current_factor_idx = -1
+        self._populate_factor_list()
+        new_row = min(idx, len(self._factors) - 1)
+        self._factor_list.setCurrentRow(new_row)
+
+    # ── label row management ─────────────────────────────────────────────
+
+    def _clear_label_rows(self):
+        for row in self._label_rows:
+            row.setParent(None)
+        self._label_rows = []
+
+    def _append_label_row(self, label: str = "", shortcut: str = ""):
+        row = _LabelRow(label, shortcut, self._labels_container)
+        # Insert before the trailing stretch item
+        insert_pos = max(0, self._labels_layout.count() - 1)
+        self._labels_layout.insertWidget(insert_pos, row)
+        self._label_rows.append(row)
+        row.delete_button().clicked.connect(lambda: self._remove_label_row(row))
+
+    def _add_label_row(self):
+        self._append_label_row("", "")
+
+    def _remove_label_row(self, row: "_LabelRow"):
+        if len(self._label_rows) <= 1:
+            QMessageBox.information(
+                self, "Cannot Remove", "A factor must have at least one label."
+            )
+            return
+        self._label_rows.remove(row)
+        row.setParent(None)
+
+    # ── preset loading ─────────────────────────────────────────────────────
+
+    def _apply_preset(self):
+        key = self._preset_combo.currentData()
+        if key is None:
+            return
+        preset = self._PRESETS.get(key)
+        if preset is None:
+            return
+        reply = QMessageBox.question(
+            self,
+            "Apply Preset",
+            f"Replace current scheme with the '{key}' preset?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        self._current_factor_idx = -1
+        self._factors = [dict(f) for f in preset]
+        self._populate_factor_list()
+        self._clear_label_rows()
+        if self._factors:
+            self._factor_list.setCurrentRow(0)
+
+    # ── result accessors ────────────────────────────────────────────────────
+
+    def _do_accept(self):
+        self._flush_current_factor()
+        for i, f in enumerate(self._factors):
+            if not f.get("labels"):
+                QMessageBox.warning(
+                    self,
+                    "Empty Labels",
+                    f"Factor '{f.get('name', i + 1)}' has no labels. "
+                    "Add at least one label or remove the factor.",
+                )
+                return
+        self.accept()
+
+    @property
+    def flat_classes(self) -> List[str]:
+        """Labels of the first factor (single-factor / flat-class mode)."""
+        if not self._factors:
+            return ["class_1", "class_2"]
+        return self._factors[0].get("labels", [])
+
+    def get_scheme_dict(self) -> Optional[dict]:
+        """Return a scheme dict compatible with ``LabelingScheme.from_dict()``."""
+        factors = self._factors
+        if len(factors) == 1:
+            f = factors[0]
+            return {
+                "name": f.get("name", "custom"),
+                "description": "Custom 1-factor labeling scheme",
+                "factors": [
+                    {
+                        "name": f.get("name", "class"),
+                        "labels": f.get("labels", []),
+                        "shortcut_keys": f.get("shortcuts", []),
+                    }
+                ],
+                "training_modes": ["flat_tiny", "flat_yolo"],
+            }
+        modes = ["flat_tiny", "flat_yolo", "multihead_tiny", "multihead_yolo"]
+        return {
+            "name": "_".join(f.get("name", "f") for f in factors),
+            "description": f"{len(factors)}-factor labeling scheme",
+            "factors": [
+                {
+                    "name": f.get("name", f"factor_{i}"),
+                    "labels": f.get("labels", []),
+                    "shortcut_keys": f.get("shortcuts", []),
+                }
+                for i, f in enumerate(factors)
+            ],
+            "training_modes": modes,
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Keyboard shortcut editor dialog
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class ShortcutEditorDialog(QDialog):
+    """Edit keyboard shortcut assignments for non-label global actions.
+
+    Shows a table of action → current key.  The user clicks a row and types a
+    new key (single character or Qt key name via QKeySequenceEdit).
+    """
+
+    # Default global action shortcuts (name, default_key_sequence)
+    DEFAULT_SHORTCUTS = [
+        ("Explore mode", "E"),
+        ("Labeling mode", "L"),
+        ("Sample next candidates", "Space"),
+        ("Previous unlabeled", "Left"),
+        ("Next unlabeled", "Right"),
+        ("Undo last label (Ctrl+Z)", "Ctrl+Z"),
+    ]
+
+    def __init__(self, current: Optional[dict] = None, parent=None):
+        """
+        Args:
+            current: dict mapping action name → key sequence string.
+                     Falls back to DEFAULT_SHORTCUTS for missing entries.
+        """
+        super().__init__(parent)
+        self.setWindowTitle("Keyboard Shortcuts")
+        self.setMinimumWidth(500)
+        self.setStyleSheet(_DARK_STYLE)
+
+        self._shortcuts: dict = {name: seq for name, seq in self.DEFAULT_SHORTCUTS}
+        if current:
+            self._shortcuts.update(current)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(10)
+
+        hdr = QLabel("<b>Global Navigation Shortcuts</b>")
+        layout.addWidget(hdr)
+
+        info = QLabel(
+            "Click a row and press the desired key combination.  "
+            "All key types are supported: letters, digits, "
+            "<b>arrow keys</b> (↑ ↓ ← →), <b>symbols</b> (+  −  Space  Tab …), "
+            "and modifier combos (Ctrl+Z, Shift+Left, …).  "
+            "Label-specific shortcuts are defined in the <b>Class Scheme Editor</b>."
+        )
+        info.setWordWrap(True)
+        info.setStyleSheet("color:#888; font-size:11px;")
+        layout.addWidget(info)
+
+        # Row list
+        form = QFormLayout()
+        form.setSpacing(8)
+        self._key_edits: dict = {}
+        for name, default_key in self.DEFAULT_SHORTCUTS:
+            current_key = self._shortcuts.get(name, default_key)
+            edit = _KeyCapture()
+            try:
+                edit.setKeySequence(QKeySequence(current_key))
+            except Exception:
+                pass
+            self._key_edits[name] = edit
+            form.addRow(QLabel(name), edit)
+        layout.addLayout(form)
+
+        btn_reset = QPushButton("Reset to Defaults")
+        btn_reset.setStyleSheet(
+            "QPushButton { background-color:#3e3e42; color:#e0e0e0; "
+            "border:none; border-radius:4px; padding:6px 14px; }"
+            "QPushButton:hover { background-color:#555558; }"
+        )
+        btn_reset.clicked.connect(self._reset_defaults)
+        layout.addWidget(btn_reset)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _reset_defaults(self):
+        for name, default_key in self.DEFAULT_SHORTCUTS:
+            edit = self._key_edits.get(name)
+            if edit is not None:
+                try:
+                    edit.setKeySequence(QKeySequence(default_key))
+                except Exception:
+                    pass
+
+    def get_shortcuts(self) -> dict:
+        """Return dict of action_name → key sequence string."""
+        out = {}
+        for name, edit in self._key_edits.items():
+            ks = edit.keySequence()
+            out[name] = ks.toString() if ks else self._shortcuts.get(name, "")
+        return out
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Thin wrapper so a raw scheme dict looks like a LabelingScheme (for mainwindow)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class _SchemeWrapper:
+    """Wraps a raw scheme dict to satisfy the ``scheme.to_dict()`` contract."""
+
+    def __init__(self, d: dict):
+        self._d = d
+
+    def to_dict(self) -> dict:
+        return self._d
+
+    @property
+    def factors(self):
+        return self._d.get("factors", [])
 
 
 class NewProjectDialog(QDialog):
@@ -33,68 +985,20 @@ class NewProjectDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Create New Project")
-        self.setMinimumWidth(500)
+        self.setMinimumWidth(520)
+        self.setStyleSheet(_DARK_STYLE)
 
-        # Apply styling
-        self.setStyleSheet("""
-            QDialog {
-                background-color: #1e1e1e;
-            }
-            QLabel {
-                color: #cccccc;
-                font-size: 13px;
-            }
-            QLineEdit {
-                background-color: #252526;
-                color: #e0e0e0;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-                padding: 8px;
-                font-size: 13px;
-            }
-            QLineEdit:focus {
-                border: 1px solid #007acc;
-            }
-            QTextEdit {
-                background-color: #252526;
-                color: #e0e0e0;
-                border: 1px solid #3e3e42;
-                border-radius: 4px;
-                padding: 8px;
-            }
-            QPushButton {
-                background-color: #0e639c;
-                color: #ffffff;
-                border: none;
-                border-radius: 4px;
-                padding: 8px 16px;
-                font-weight: 500;
-            }
-            QPushButton:hover {
-                background-color: #1177bb;
-            }
-            QGroupBox {
-                border: 1px solid #3e3e42;
-                border-radius: 6px;
-                margin-top: 12px;
-                padding-top: 12px;
-                color: #cccccc;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 6px;
-            }
-        """)
+        # Scheme from the embedded ClassEditorDialog (overrides preset when set)
+        self._custom_scheme: Optional[dict] = None
 
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
 
         # Header
-        header = QLabel("<h2 style='color: #ffffff;'>Create New Project</h2>")
+        header = QLabel("<h2 style='color:#ffffff; margin:0;'>Create New Project</h2>")
         layout.addWidget(header)
 
-        # Form
+        # ── name + location ──────────────────────────────────────────
         form = QFormLayout()
         form.setSpacing(12)
 
@@ -102,87 +1006,133 @@ class NewProjectDialog(QDialog):
         self.name_edit.setPlaceholderText("MyDataset")
         form.addRow("<b>Project Name:</b>", self.name_edit)
 
-        # Location selector
-        location_layout = QHBoxLayout()
+        location_row = QHBoxLayout()
         self.location_edit = QLineEdit()
-        self.location_edit.setPlaceholderText("Select project location...")
+        self.location_edit.setPlaceholderText("Select project location…")
         self.location_edit.setText(str(Path.home() / "ClassKit" / "projects"))
-
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self.browse_location)
-
-        location_layout.addWidget(self.location_edit, 1)
-        location_layout.addWidget(browse_btn)
-        form.addRow("<b>Location:</b>", location_layout)
-
-        # Classes
-        self.classes_edit = QTextEdit()
-        self.classes_edit.setPlaceholderText(
-            "Enter class names, one per line:\\ndog\\ncat\\nbird"
-        )
-        self.classes_edit.setMaximumHeight(100)
-        form.addRow("<b>Classes (optional):</b>", self.classes_edit)
-
-        self.preset_combo = QComboBox()
-        self.preset_combo.addItem("None (free-form labels)", "none")
-        self.preset_combo.addItem("Head / Tail direction (4 classes)", "head_tail")
-        self.preset_combo.addItem("Color tags — 1 factor (5 colors)", "color_tag_1")
-        self.preset_combo.addItem(
-            "Color tags — 2 factors (25 composites)", "color_tag_2"
-        )
-        self.preset_combo.addItem(
-            "Color tags — 3 factors (125 composites)", "color_tag_3"
-        )
-        self.preset_combo.addItem("Age (young / old)", "age")
-        form.addRow("<b>Labeling Preset:</b>", self.preset_combo)
-
-        self._scheme_info = QLabel("")
-        self._scheme_info.setWordWrap(True)
-        self._scheme_info.setStyleSheet("color: #888888; font-size: 11px;")
-        form.addRow("", self._scheme_info)
-
-        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
-        self._on_preset_changed()
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setMaximumWidth(90)
+        browse_btn.clicked.connect(self._browse_location)
+        location_row.addWidget(self.location_edit, 1)
+        location_row.addWidget(browse_btn)
+        form.addRow("<b>Location:</b>", location_row)
 
         layout.addLayout(form)
 
+        # ── scheme section ───────────────────────────────────────────
+        scheme_group = QGroupBox("Labeling Scheme")
+        scheme_vlayout = QVBoxLayout(scheme_group)
+        scheme_vlayout.setSpacing(10)
+
+        # Quick-preset row
+        preset_row = QHBoxLayout()
+        self.preset_combo = QComboBox()
+        self.preset_combo.addItem("None — define manually after creation", "none")
+        self.preset_combo.addItem("Head / Tail  (4 directions · A D W S)", "head_tail")
+        self.preset_combo.addItem("Color tag — 1 factor  (5 colors)", "color_tag_1")
+        self.preset_combo.addItem(
+            "Color tag — 2 factors  (25 composites)", "color_tag_2"
+        )
+        self.preset_combo.addItem(
+            "Color tag — 3 factors  (125 composites)", "color_tag_3"
+        )
+        self.preset_combo.addItem("Age  (young / old)", "age")
+        self.preset_combo.currentIndexChanged.connect(self._on_preset_changed)
+        preset_row.addWidget(QLabel("Quick preset:"))
+        preset_row.addWidget(self.preset_combo, 1)
+        scheme_vlayout.addLayout(preset_row)
+
+        self._scheme_info = QLabel("")
+        self._scheme_info.setWordWrap(True)
+        self._scheme_info.setStyleSheet("color:#888; font-size:11px; padding-left:4px;")
+        scheme_vlayout.addWidget(self._scheme_info)
+
+        # Divider
+        div = QFrame()
+        div.setFrameShape(QFrame.HLine)
+        div.setStyleSheet("color:#3e3e42;")
+        scheme_vlayout.addWidget(div)
+
+        # Full scheme editor button row
+        editor_row = QHBoxLayout()
+        editor_row.addWidget(QLabel("Or open the full scheme editor:"))
+        editor_row.addStretch(1)
+        self._btn_define_scheme = QPushButton("Define Full Scheme…")
+        self._btn_define_scheme.setStyleSheet(_BTN_NEUTRAL)
+        self._btn_define_scheme.clicked.connect(self._open_scheme_editor)
+        editor_row.addWidget(self._btn_define_scheme)
+        scheme_vlayout.addLayout(editor_row)
+
+        # Custom-scheme status label
+        self._custom_scheme_lbl = QLabel("")
+        self._custom_scheme_lbl.setStyleSheet(
+            "color:#4ec94e; font-size:11px; padding-left:4px;"
+        )
+        self._custom_scheme_lbl.setWordWrap(True)
+        scheme_vlayout.addWidget(self._custom_scheme_lbl)
+
+        layout.addWidget(scheme_group)
+
         # Info box
         info = QLabel(
-            "<b>Tip:</b> You can add or modify classes later.\\n"
-            + "The project will be created as a new folder at the specified location."
+            "<b>Tip:</b> You can always reconfigure the scheme later from the "
+            "left panel.  The project folder will be created at the specified location."
         )
         info.setWordWrap(True)
         info.setStyleSheet(
-            "padding: 12px; background-color: #252526; border-radius: 6px; "
-            + "border-left: 3px solid #0e639c; color: #aaaaaa; line-height: 1.6;"
+            "padding:10px; background-color:#252526; border-radius:6px; "
+            "border-left:3px solid #0e639c; color:#aaaaaa; line-height:1.6;"
         )
         layout.addWidget(info)
 
         # Buttons
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        self.buttons.button(QDialogButtonBox.Ok).setText("Create Project")
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
 
         # Validation
-        self.name_edit.textChanged.connect(self.validate_input)
-        self.validate_input()
+        self.name_edit.textChanged.connect(self._validate)
+        self._validate()
+        self._on_preset_changed()
+
+    # ── helpers ──────────────────────────────────────────────────────────
 
     def _on_preset_changed(self):
         key = self.preset_combo.currentData()
-        _DEFAULT_COLORS = ["red", "blue", "green", "yellow", "white"]
+        _C = ["red", "blue", "green", "yellow", "white"]
         info_map = {
-            "none": "Free-form: define class labels manually after creating the project.",
-            "head_tail": "4 classes: left, right, up, down.",
-            "color_tag_1": f"5 classes: {', '.join(_DEFAULT_COLORS)}.",
-            "color_tag_2": "25 composite classes (tag_1 × tag_2).",
-            "color_tag_3": "125 composite classes (tag_1 × tag_2 × tag_3).",
-            "age": "2 classes: young, old.",
+            "none": "Free-form — define labels manually after the project is created.",
+            "head_tail": "1 factor · 4 labels: left, right, up, down  (keys A D W S).",
+            "color_tag_1": f"1 factor · 5 labels: {', '.join(_C)}.",
+            "color_tag_2": "2 factors × 5 colors = 25 composite labels.",
+            "color_tag_3": "3 factors × 5 colors = 125 composite labels.",
+            "age": "1 factor · 2 labels: young, old.",
         }
         self._scheme_info.setText(info_map.get(key, ""))
+        # Reset custom scheme when user picks a preset
+        if self._custom_scheme is not None:
+            self._custom_scheme = None
+            self._custom_scheme_lbl.setText("")
+            self._btn_define_scheme.setText("Define Full Scheme…")
 
-    def browse_location(self):
-        """Browse for project location."""
+    def _open_scheme_editor(self):
+        dlg = ClassEditorDialog(parent=self)
+        if dlg.exec():
+            self._custom_scheme = dlg.get_scheme_dict()
+            factors = self._custom_scheme.get("factors", [])
+            total_labels = sum(len(f.get("labels", [])) for f in factors)
+            factor_names = ", ".join(f.get("name", "?") for f in factors)
+            self._custom_scheme_lbl.setText(
+                f"✓ Custom scheme: {len(factors)} factor(s)  ·  {total_labels} labels  "
+                f"({factor_names})"
+            )
+            self._btn_define_scheme.setText("Edit Full Scheme…")
+            # Reset preset combo to "none" to avoid confusion
+            self.preset_combo.setCurrentIndex(0)
+
+    def _browse_location(self):
         folder = QFileDialog.getExistingDirectory(
             self,
             "Select Project Location",
@@ -191,37 +1141,52 @@ class NewProjectDialog(QDialog):
         if folder:
             self.location_edit.setText(folder)
 
-    def validate_input(self):
-        """Validate form inputs."""
+    def _validate(self):
+        ok = self.buttons.button(QDialogButtonBox.Ok)
+        ok.setEnabled(len(self.name_edit.text().strip()) > 0)
+
+    # ── result ───────────────────────────────────────────────────────────
+
+    def get_project_info(self) -> dict:
+        """Return project configuration dict."""
         name = self.name_edit.text().strip()
-        ok_button = self.buttons.button(QDialogButtonBox.Ok)
-        ok_button.setEnabled(len(name) > 0)
+        project_path = Path(self.location_edit.text()) / name
 
-    def get_project_info(self):
-        """Get project configuration."""
-        name = self.name_edit.text().strip()
-        location = Path(self.location_edit.text())
-        project_path = location / name
+        # Custom scheme (from editor) takes priority over quick preset
+        if self._custom_scheme is not None:
+            scheme_dict = self._custom_scheme
+            classes: List[str] = []
+            for f in scheme_dict.get("factors", []):
+                classes.extend(f.get("labels", []))
+            return {
+                "name": name,
+                "path": str(project_path),
+                "classes": classes,
+                "scheme": _SchemeWrapper(scheme_dict),
+            }
 
-        classes_text = self.classes_edit.toPlainText().strip()
-        classes = [c.strip() for c in classes_text.split("\\n") if c.strip()]
-
+        # Quick preset path
         from ...classkit.presets import age_preset, color_tag_preset, head_tail_preset
 
-        _DEFAULT_COLORS = ["red", "blue", "green", "yellow", "white"]
+        _C = ["red", "blue", "green", "yellow", "white"]
         key = self.preset_combo.currentData()
-        scheme_map = {
+        preset_map = {
             "head_tail": head_tail_preset(),
-            "color_tag_1": color_tag_preset(1, _DEFAULT_COLORS),
-            "color_tag_2": color_tag_preset(2, _DEFAULT_COLORS),
-            "color_tag_3": color_tag_preset(3, _DEFAULT_COLORS),
+            "color_tag_1": color_tag_preset(1, _C),
+            "color_tag_2": color_tag_preset(2, _C),
+            "color_tag_3": color_tag_preset(3, _C),
             "age": age_preset(),
         }
+        scheme_obj = preset_map.get(key)
+        classes = []
+        if scheme_obj is not None:
+            for f in scheme_obj.factors:
+                classes.extend(f.labels)
         return {
             "name": name,
             "path": str(project_path),
             "classes": classes,
-            "scheme": scheme_map.get(key),
+            "scheme": scheme_obj,
         }
 
 
@@ -371,13 +1336,11 @@ class ClusterDialog(QDialog):
         self.setMinimumWidth(500)
 
         # Detect available backends
-        import platform
-
-        is_macos = platform.system() == "Darwin"
-
-        metalfaiss_probe = probe_metalfaiss_backend()
-        metalfaiss_installed = metalfaiss_probe["installed"]
-        metalfaiss_backend_ready = metalfaiss_probe["ready"]
+        ann_probe = probe_ann_backend()
+        ann_ready = (
+            ann_probe.get("hdbscan_available", False)
+            or ann_probe.get("best_ann") != "numpy"
+        )
 
         layout = QVBoxLayout(self)
         layout.setSpacing(16)
@@ -394,73 +1357,24 @@ class ClusterDialog(QDialog):
         form.addRow("<b>Number of Clusters:</b>", self.n_clusters_spin)
 
         self.gpu_combo = QComboBox()
-
-        if is_macos:
-            if metalfaiss_backend_ready:
-                self.gpu_combo.addItem("Metal-accelerated (metalfaiss)", False)
-            else:
-                self.gpu_combo.addItem("CPU (sklearn - stable)", False)
-        else:
-            self.gpu_combo.addItem("CPU (FAISS)", False)
-            self.gpu_combo.addItem("GPU (FAISS-CUDA)", True)
+        self.gpu_combo.addItem("CPU (scikit-learn)", False)
+        if ann_ready:
+            self.gpu_combo.addItem(f"Accelerated ({ann_probe['best_ann']})", True)
 
         form.addRow("<b>Backend:</b>", self.gpu_combo)
 
         layout.addLayout(form)
 
-        # Build info message based on platform and available backends
-        if is_macos:
-            if metalfaiss_backend_ready:
-                source_note = ""
-                if metalfaiss_probe.get("local_path_added"):
-                    source_note = "<br><br><b>Source:</b> Local Faiss-mlx checkout detected and loaded."
-                info_text = (
-                    "<b>Metal FAISS detected.</b><br>"
-                    + "Using GPU-accelerated clustering via Apple Metal.<br><br>"
-                    + "<b>Tips:</b><br>"
-                    + "• Metal is 5-10× faster than CPU clustering<br>"
-                    + "• Use 100s-1000s of clusters for best results<br>"
-                    + "• Clusters ≠ classes (fine-grained visual structure)"
-                    + source_note
-                )
-            elif metalfaiss_installed:
-                details = (
-                    metalfaiss_probe.get("error")
-                    or "Unknown backend initialization error"
-                )
-                origin = metalfaiss_probe.get("origin") or "unknown"
-                remediation = metalfaiss_probe.get("remediation")
-                shadow_note = ""
-                if metalfaiss_probe.get("likely_local_shadow"):
-                    shadow_note = (
-                        "<br><br><b>Likely cause:</b> a local Faiss-mlx checkout is shadowing site-packages "
-                        "and missing compiled modules (for example: metalfaiss.index_pointer)."
-                    )
-                remediation_note = (
-                    f"<br><br><b>How to fix:</b> {remediation}" if remediation else ""
-                )
-                info_text = (
-                    "<b>MetalFaiss package detected, but runtime backend is unavailable.</b><br>"
-                    + "Clustering will fall back to sklearn in this session.<br><br>"
-                    + f"<b>Import source:</b> <code>{origin}</code><br>"
-                    + f"<b>Error:</b> <code>{details}</code>"
-                    + shadow_note
-                    + remediation_note
-                )
-            else:
-                info_text = (
-                    "<b>Metal FAISS not installed</b><br>"
-                    + "Using sklearn (CPU-based, slower but stable).<br><br>"
-                    + "<b>For faster clustering, install:</b><br>"
-                    + "<code>pip install mlx metalfaiss</code><br><br>"
-                    + "See METALFAISS_SETUP.md for details."
-                )
-        else:
-            info_text = (
-                "<b>Tips:</b><br>"
-                + "• Use many clusters (100s-1000s) to capture visual modes<br>"
-                + "• Clusters ≠ classes (fine-grained structure)<br>"
-                + "• GPU mode requires CUDA-enabled FAISS"
+        # Build info message
+        info_text = (
+            "<b>Clustering Tips:</b><br>"
+            + "• Use many clusters (100s-1000s) to capture visual modes<br>"
+            + "• Clusters ≠ classes (fine-grained structure)<br>"
+            + f"• Current Best Backend: <b>{ann_probe.get('best_ann', 'numpy')}</b>"
+        )
+        if ann_probe.get("hdbscan_available"):
+            info_text += (
+                "<br>• HDBSCAN (density-based) is available for advanced users."
             )
 
         info = QLabel(info_text)
@@ -484,14 +1398,15 @@ class ClusterDialog(QDialog):
 class ClassKitTrainingDialog(QDialog):
     """Training dialog for ClassKit: flat or multi-head, tiny CNN or YOLO-classify."""
 
-    def __init__(self, scheme=None, parent=None):
+    def __init__(self, scheme=None, n_labeled: int = 0, parent=None):
         super().__init__(parent)
         self._scheme = scheme
+        self._n_labeled = n_labeled
         self._train_results = None
         self._worker = None
         self.setWindowTitle("Train Classifier")
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(520)
+        self.setMinimumWidth(640)
+        self.setMinimumHeight(560)
         self._build_ui()
 
     def _build_ui(self):
@@ -504,10 +1419,15 @@ class ClassKitTrainingDialog(QDialog):
         header = QLabel(
             f"<h2 style='color:#ffffff;margin:0'>Train Classifier</h2>"
             f"<p style='color:#888;margin:4px 0 0 0'>Scheme: <b>{name}</b>"
-            f" &nbsp;|&nbsp; Classes: <b>{total}</b></p>"
+            f" &nbsp;|&nbsp; Classes: <b>{total}</b>"
+            f" &nbsp;|&nbsp; Labeled samples: <b>{self._n_labeled}</b></p>"
         )
         header.setStyleSheet("background: #252526; padding: 10px; border-radius: 4px;")
         layout.addWidget(header)
+
+        # Tabs container — must be created before any tab widget is referenced below
+        self.tabs = QTabWidget()
+        self.general_tab = QWidget()
 
         form = QFormLayout()
         form.setSpacing(8)
@@ -534,9 +1454,20 @@ class ClassKitTrainingDialog(QDialog):
 
         # Base model (YOLO only)
         self.base_model_combo = QComboBox()
-        for m in ["yolo11n-cls.pt", "yolo11s-cls.pt", "yolo11m-cls.pt"]:
+        for m in [
+            "yolo26n-cls.pt",
+            "yolo26s-cls.pt",
+            "yolo26m-cls.pt",
+            "yolo26l-cls.pt",
+            "yolo26x-cls.pt",
+        ]:
             self.base_model_combo.addItem(m, m)
-        form.addRow("<b>Base Model (YOLO):</b>", self.base_model_combo)
+        self.base_model_combo.setToolTip(
+            "Pretrained YOLO backbone to fine-tune.\n"
+            "'n' = nano (fastest, least RAM)  'x' = extra-large (most accurate, needs GPU)"
+        )
+        self._base_model_row_label = QLabel("<b>Base Model (YOLO):</b>")
+        form.addRow(self._base_model_row_label, self.base_model_combo)
 
         # Hyperparams
         self.epochs_spin = QSpinBox()
@@ -563,7 +1494,246 @@ class ClassKitTrainingDialog(QDialog):
         self.val_fraction_spin.setValue(0.2)
         form.addRow("<b>Val Fraction:</b>", self.val_fraction_spin)
 
-        layout.addLayout(form)
+        self.patience_spin = QSpinBox()
+        self.patience_spin.setRange(0, 500)
+        self.patience_spin.setValue(10)
+        form.addRow("<b>Patience:</b>", self.patience_spin)
+
+        # Tooltips for General tab fields
+        self.epochs_spin.setToolTip(
+            "Training epochs. More = slower but potentially better.\nDefault: 50."
+        )
+        self.batch_spin.setToolTip(
+            "Mini-batch size.\nTiny CNN: 32 typical.  YOLO: 16 on GPU, 8 on CPU."
+        )
+        self.lr_spin.setToolTip(
+            "Initial learning rate. 0.001 is a robust default for both Tiny and YOLO."
+        )
+        self.val_fraction_spin.setToolTip(
+            "Fraction of labeled images reserved for validation (0.2 = 20%).\n"
+            "Set to 0 only if you have very few labels."
+        )
+        self.patience_spin.setToolTip(
+            "Early stopping: halt if val accuracy doesn't improve for N consecutive epochs.\n"
+            "Set to 0 to disable early stopping."
+        )
+
+        # Mode description label (updated by _on_mode_changed)
+        self._mode_desc_label = QLabel("")
+        self._mode_desc_label.setWordWrap(True)
+        self._mode_desc_label.setStyleSheet(
+            "color: #888; font-size: 11px; padding: 4px 8px; "
+            "border-left: 2px solid #3e3e42; margin-top: 2px;"
+        )
+
+        layout_gen = QVBoxLayout(self.general_tab)
+        layout_gen.addLayout(form)
+        layout_gen.addWidget(self._mode_desc_label)
+        layout_gen.addStretch()
+        self.tabs.addTab(self.general_tab, "General")
+
+        # Tab 2: Tiny Architecture
+        self.tiny_tab = QWidget()
+        tiny_layout = QVBoxLayout(self.tiny_tab)
+        tiny_form = QFormLayout()
+
+        self.tiny_layers_spin = QSpinBox()
+        self.tiny_layers_spin.setRange(1, 10)
+        self.tiny_layers_spin.setValue(1)
+        tiny_form.addRow("<b>Hidden Layers:</b>", self.tiny_layers_spin)
+
+        self.tiny_dim_spin = QSpinBox()
+        self.tiny_dim_spin.setRange(16, 1024)
+        self.tiny_dim_spin.setValue(64)
+        self.tiny_dim_spin.setSingleStep(16)
+        tiny_form.addRow("<b>Hidden Dim:</b>", self.tiny_dim_spin)
+
+        self.tiny_dropout_spin = QDoubleSpinBox()
+        self.tiny_dropout_spin.setRange(0.0, 0.9)
+        self.tiny_dropout_spin.setValue(0.2)
+        self.tiny_dropout_spin.setSingleStep(0.05)
+        tiny_form.addRow("<b>Dropout:</b>", self.tiny_dropout_spin)
+
+        self.tiny_width_spin = QSpinBox()
+        self.tiny_width_spin.setRange(32, 512)
+        self.tiny_width_spin.setValue(128)
+        self.tiny_width_spin.setSingleStep(32)
+        tiny_form.addRow("<b>Input Width:</b>", self.tiny_width_spin)
+
+        self.tiny_height_spin = QSpinBox()
+        self.tiny_height_spin.setRange(32, 512)
+        self.tiny_height_spin.setValue(64)
+        self.tiny_height_spin.setSingleStep(32)
+        tiny_form.addRow("<b>Input Height:</b>", self.tiny_height_spin)
+
+        # Tooltips for Tiny Architecture fields
+        self.tiny_layers_spin.setToolTip("Number of hidden layers in the MLP head.")
+        self.tiny_dim_spin.setToolTip(
+            "Neurons per hidden layer. Larger = more capacity, slower."
+        )
+        self.tiny_dropout_spin.setToolTip(
+            "Dropout regularization probability (0 = disabled)."
+        )
+        self.tiny_width_spin.setToolTip(
+            "Input image width (px). Match to your typical crop size."
+        )
+        self.tiny_height_spin.setToolTip(
+            "Input image height (px). Match to your typical crop size."
+        )
+
+        tiny_layout.addLayout(tiny_form)
+        tiny_layout.addStretch()
+        self._tiny_tab_idx = self.tabs.addTab(self.tiny_tab, "Tiny Architecture")
+
+        # Tab 3: Space & Augmentations
+        self.aug_tab = QWidget()
+        aug_layout = QVBoxLayout(self.aug_tab)
+
+        space_group = QGroupBox("Training Space")
+        space_layout = QHBoxLayout(space_group)
+        self.space_combo = QComboBox()
+        self.space_combo.addItem("Original (raw frames)", "original")
+        self.space_combo.addItem("Canonical (rotation corrected)", "canonical")
+        space_layout.addWidget(QLabel("<b>Space:</b>"))
+        space_layout.addWidget(self.space_combo)
+        aug_layout.addWidget(space_group)
+
+        aug_group = QGroupBox("Augmentations")
+        aug_form = QFormLayout(aug_group)
+
+        self.flip_lr_spin = QDoubleSpinBox()
+        self.flip_lr_spin.setRange(0.0, 1.0)
+        self.flip_lr_spin.setValue(0.5)
+        aug_form.addRow("<b>Horizontal Flip Prob:</b>", self.flip_lr_spin)
+
+        self.flip_ud_spin = QDoubleSpinBox()
+        self.flip_ud_spin.setRange(0.0, 1.0)
+        self.flip_ud_spin.setValue(0.0)
+        aug_form.addRow("<b>Vertical Flip Prob:</b>", self.flip_ud_spin)
+
+        self.rotate_spin = QDoubleSpinBox()
+        self.rotate_spin.setRange(0.0, 180.0)
+        self.rotate_spin.setValue(0.0)
+        aug_form.addRow("<b>Max Rotation (deg):</b>", self.rotate_spin)
+
+        aug_layout.addWidget(aug_group)
+
+        # ---- Label-Switching Expansion (advanced, collapsible) ----
+        exp_group = QGroupBox("Label-Switching Expansion  (advanced)")
+        exp_group.setCheckable(True)
+        exp_group.setChecked(False)
+        exp_group.setToolTip(
+            "Generate deterministic mirrored copies of training images with remapped labels.\n"
+            "Useful when a flip transforms one class into another (e.g. 'left' ↔ 'right'\n"
+            "on a horizontal flip).  Expanded copies are only added to the train split."
+        )
+        exp_vbox = QVBoxLayout(exp_group)
+
+        exp_note = QLabel(
+            "<i>Each row: source label → destination label when that flip is applied.<br>"
+            "Pairs are applied to train images only; evaluation data is never flipped.</i>"
+        )
+        exp_note.setWordWrap(True)
+        exp_note.setStyleSheet("color:#aaa; font-size:11px;")
+        exp_vbox.addWidget(exp_note)
+
+        # -- Horizontal flip (LR) mapping rows --
+        lr_hdr_row = QHBoxLayout()
+        lr_hdr_row.addWidget(QLabel("<b>Horizontal flip (LR) mappings:</b>"))
+        lr_add_btn = QPushButton("+ Add pair")
+        lr_add_btn.setFixedWidth(90)
+        lr_hdr_row.addWidget(lr_add_btn)
+        lr_hdr_row.addStretch()
+        exp_vbox.addLayout(lr_hdr_row)
+
+        self._lr_mapping_rows: List[Tuple[QLineEdit, QLineEdit]] = []
+        self._lr_rows_widget = QWidget()
+        self._lr_rows_layout = QVBoxLayout(self._lr_rows_widget)
+        self._lr_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._lr_rows_layout.setSpacing(3)
+        exp_vbox.addWidget(self._lr_rows_widget)
+
+        def _add_lr_row(src_text="", dst_text=""):
+            row_w = QWidget()
+            row_h = QHBoxLayout(row_w)
+            row_h.setContentsMargins(0, 0, 0, 0)
+            src = QLineEdit(src_text)
+            src.setPlaceholderText("source class")
+            arr = QLabel("→")
+            dst = QLineEdit(dst_text)
+            dst.setPlaceholderText("destination class")
+            rm = QPushButton("✕")
+            rm.setFixedWidth(28)
+            rm.setStyleSheet("color:#c00;")
+            row_h.addWidget(src)
+            row_h.addWidget(arr)
+            row_h.addWidget(dst)
+            row_h.addWidget(rm)
+            self._lr_rows_layout.addWidget(row_w)
+            pair = (src, dst)
+            self._lr_mapping_rows.append(pair)
+            rm.clicked.connect(
+                lambda: (
+                    self._lr_mapping_rows.remove(pair),
+                    row_w.setParent(None),
+                )
+            )
+
+        lr_add_btn.clicked.connect(_add_lr_row)
+        self._add_lr_row = _add_lr_row  # expose for programmatic seeding
+
+        # -- Vertical flip (UD) mapping rows --
+        ud_hdr_row = QHBoxLayout()
+        ud_hdr_row.addWidget(QLabel("<b>Vertical flip (UD) mappings:</b>"))
+        ud_add_btn = QPushButton("+ Add pair")
+        ud_add_btn.setFixedWidth(90)
+        ud_hdr_row.addWidget(ud_add_btn)
+        ud_hdr_row.addStretch()
+        exp_vbox.addLayout(ud_hdr_row)
+
+        self._ud_mapping_rows: List[Tuple[QLineEdit, QLineEdit]] = []
+        self._ud_rows_widget = QWidget()
+        self._ud_rows_layout = QVBoxLayout(self._ud_rows_widget)
+        self._ud_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._ud_rows_layout.setSpacing(3)
+        exp_vbox.addWidget(self._ud_rows_widget)
+
+        def _add_ud_row(src_text="", dst_text=""):
+            row_w = QWidget()
+            row_h = QHBoxLayout(row_w)
+            row_h.setContentsMargins(0, 0, 0, 0)
+            src = QLineEdit(src_text)
+            src.setPlaceholderText("source class")
+            arr = QLabel("→")
+            dst = QLineEdit(dst_text)
+            dst.setPlaceholderText("destination class")
+            rm = QPushButton("✕")
+            rm.setFixedWidth(28)
+            rm.setStyleSheet("color:#c00;")
+            row_h.addWidget(src)
+            row_h.addWidget(arr)
+            row_h.addWidget(dst)
+            row_h.addWidget(rm)
+            self._ud_rows_layout.addWidget(row_w)
+            pair = (src, dst)
+            self._ud_mapping_rows.append(pair)
+            rm.clicked.connect(
+                lambda: (
+                    self._ud_mapping_rows.remove(pair),
+                    row_w.setParent(None),
+                )
+            )
+
+        ud_add_btn.clicked.connect(_add_ud_row)
+        self._add_ud_row = _add_ud_row  # expose for programmatic seeding
+
+        aug_layout.addWidget(exp_group)
+        self._exp_group = exp_group  # so get_settings() can check isChecked()
+
+        aug_layout.addStretch()
+        self.tabs.addTab(self.aug_tab, "Space & Augmentations")
+
+        layout.addWidget(self.tabs)
 
         # Log panel
         self.log_view = QPlainTextEdit()
@@ -618,7 +1788,42 @@ class ClassKitTrainingDialog(QDialog):
 
     def _on_mode_changed(self):
         mode = self.mode_combo.currentData() or ""
-        self.base_model_combo.setVisible("yolo" in mode)
+        is_yolo = "yolo" in mode
+        is_tiny = "tiny" in mode
+
+        # Show/hide YOLO base-model form row
+        self.base_model_combo.setVisible(is_yolo)
+        if hasattr(self, "_base_model_row_label"):
+            self._base_model_row_label.setVisible(is_yolo)
+
+        # Show/hide Tiny Architecture tab
+        if hasattr(self, "_tiny_tab_idx"):
+            self.tabs.setTabVisible(self._tiny_tab_idx, is_tiny)
+            # If tiny tab was active and is now hidden, fall back to General
+            if not is_tiny and self.tabs.currentIndex() == self._tiny_tab_idx:
+                self.tabs.setCurrentIndex(0)
+
+        # Update mode description
+        _desc = {
+            "flat_tiny": (
+                "Tiny CNN — lightweight MLP trained on image crops. Fast to train; "
+                "ideal for rapid iteration and CPU-only environments."
+            ),
+            "flat_yolo": (
+                "YOLO Classify — fine-tuned pretrained backbone. Higher accuracy; "
+                "GPU strongly recommended. Slower to train."
+            ),
+            "multihead_tiny": (
+                "Multi-head Tiny CNN — one independent model per factor in the labeling scheme. "
+                "Each factor is trained separately."
+            ),
+            "multihead_yolo": (
+                "Multi-head YOLO Classify — one fine-tuned backbone per factor. "
+                "Highest accuracy; GPU required."
+            ),
+        }
+        if hasattr(self, "_mode_desc_label"):
+            self._mode_desc_label.setText(_desc.get(mode, ""))
 
     def _on_cancel(self):
         if self._worker is not None:
@@ -630,6 +1835,24 @@ class ClassKitTrainingDialog(QDialog):
             self.log_view.ensureCursorVisible()
 
     def get_settings(self) -> dict:
+        # Build label_expansion dict from UI rows (only when group is checked)
+        label_expansion: dict = {}
+        if self._exp_group.isChecked():
+            lr_map = {
+                s.text().strip(): d.text().strip()
+                for s, d in self._lr_mapping_rows
+                if s.text().strip() and d.text().strip()
+            }
+            if lr_map:
+                label_expansion["fliplr"] = lr_map
+            ud_map = {
+                s.text().strip(): d.text().strip()
+                for s, d in self._ud_mapping_rows
+                if s.text().strip() and d.text().strip()
+            }
+            if ud_map:
+                label_expansion["flipud"] = ud_map
+
         return {
             "mode": self.mode_combo.currentData(),
             "device": self.device_combo.currentData(),
@@ -638,6 +1861,20 @@ class ClassKitTrainingDialog(QDialog):
             "batch": self.batch_spin.value(),
             "lr": self.lr_spin.value(),
             "val_fraction": self.val_fraction_spin.value(),
+            "patience": self.patience_spin.value(),
+            # Tiny Architecture
+            "tiny_layers": self.tiny_layers_spin.value(),
+            "tiny_dim": self.tiny_dim_spin.value(),
+            "tiny_dropout": self.tiny_dropout_spin.value(),
+            "tiny_width": self.tiny_width_spin.value(),
+            "tiny_height": self.tiny_height_spin.value(),
+            # Space & Augmentations
+            "training_space": self.space_combo.currentData(),
+            "flipud": self.flip_ud_spin.value(),
+            "fliplr": self.flip_lr_spin.value(),
+            "rotate": self.rotate_spin.value(),
+            # Label-switching expansion
+            "label_expansion": label_expansion,
         }
 
 
@@ -780,3 +2017,235 @@ class ExportDialog(QDialog):
             "val_fraction": float(self.val_fraction_spin.value()),
             "test_fraction": float(self.test_fraction_spin.value()),
         }
+
+
+class ModelHistoryDialog(QDialog):
+    """Browse and load past trained models registered in the project DB."""
+
+    def __init__(self, model_entries: list, project_path=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Model History")
+        self.setMinimumSize(860, 580)
+        self.setStyleSheet("background-color: #1e1e1e; color: #cccccc;")
+        self._entries = model_entries
+        self._project_path = project_path
+        self._selected_entry = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        header = QLabel("Select a trained model to load for inference and analysis.")
+        header.setStyleSheet("color: #aaaaaa; font-size: 12px;")
+        layout.addWidget(header)
+
+        from PySide6.QtCore import Qt as _Qt
+        from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
+
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Timestamp", "Mode", "Classes", "Val Acc", "Canonicalize"]
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeToContents
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeToContents
+        )
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeToContents
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            4, QHeaderView.ResizeToContents
+        )
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet(
+            "QTableWidget { background-color: #252526; color: #cccccc; "
+            "gridline-color: #3a3a3a; border: none; }"
+            "QTableWidget::item:selected { background-color: #094771; }"
+            "QHeaderView::section { background-color: #2d2d2d; color: #cccccc; "
+            "padding: 4px; border: none; border-right: 1px solid #3a3a3a; }"
+        )
+
+        for row, entry in enumerate(model_entries):
+            self.table.insertRow(row)
+            ts = str(entry.get("timestamp", ""))[:19]
+            mode = str(entry.get("mode", ""))
+            names = ", ".join(entry.get("class_names") or [])
+            acc = entry.get("best_val_acc")
+            acc_str = f"{acc:.3f}" if acc is not None else "—"
+            canon = "Yes" if entry.get("canonicalize_mat") else "No"
+
+            for col, text in enumerate([ts, mode, names, acc_str, canon]):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(_Qt.AlignVCenter | _Qt.AlignLeft)
+                self.table.setItem(row, col, item)
+
+        self.table.doubleClicked.connect(self._on_double_click)
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        layout.addWidget(self.table, 1)
+
+        # Detail panel
+        self.detail_label = QLabel("")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setFixedHeight(90)
+        self.detail_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.detail_label.setStyleSheet(
+            "background: #252526; color: #cccccc; font-size: 11px; "
+            "padding: 7px 10px; border-radius: 4px;"
+        )
+        layout.addWidget(self.detail_label)
+
+        btn_row = QHBoxLayout()
+
+        self.export_btn = QPushButton("📤  Export to models/")
+        self.export_btn.setFixedHeight(36)
+        self.export_btn.setStyleSheet(
+            "QPushButton { background-color: #3a3a3a; color: #cccccc; border-radius: 4px; "
+            "padding: 0 14px; }"
+            "QPushButton:hover { background-color: #4a6b4a; color: white; }"
+        )
+        self.export_btn.setToolTip(
+            "Copy this model's artifact files to a directory of your choice"
+        )
+        self.export_btn.clicked.connect(self._export_selected)
+
+        btn_row.addWidget(self.export_btn)
+        btn_row.addStretch(1)
+
+        self.load_btn = QPushButton("▶  Load & Run Inference")
+        self.load_btn.setFixedHeight(36)
+        self.load_btn.setStyleSheet(
+            "QPushButton { background-color: #0e639c; color: white; border-radius: 4px; "
+            "padding: 0 16px; font-weight: bold; }"
+            "QPushButton:hover { background-color: #1177bb; }"
+            "QPushButton:disabled { background-color: #3a3a3a; color: #666; }"
+        )
+        self.load_btn.clicked.connect(self._accept_selection)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setFixedHeight(36)
+        cancel_btn.setStyleSheet(
+            "QPushButton { background-color: #3a3a3a; color: #cccccc; border-radius: 4px; "
+            "padding: 0 16px; }"
+            "QPushButton:hover { background-color: #4a4a4a; }"
+        )
+        cancel_btn.clicked.connect(self.reject)
+
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(self.load_btn)
+        layout.addLayout(btn_row)
+
+        if model_entries:
+            self.table.selectRow(0)
+
+    def _on_double_click(self, index):
+        self._accept_selection()
+
+    def _accept_selection(self):
+        row = self.table.currentRow()
+        if 0 <= row < len(self._entries):
+            self._selected_entry = self._entries[row]
+            self.accept()
+
+    def selected_entry(self):
+        """Return the chosen model cache entry dict, or None if dialog was cancelled."""
+        return self._selected_entry
+
+    def _on_selection_changed(self):
+        """Update the detail panel when the table selection changes."""
+        row = self.table.currentRow()
+        if not (0 <= row < len(self._entries)):
+            self.detail_label.setText("")
+            return
+        entry = self._entries[row]
+        ts = str(entry.get("timestamp", ""))
+        mode = str(entry.get("mode", ""))
+        names = entry.get("class_names") or []
+        acc = entry.get("best_val_acc")
+        acc_str = f"{acc:.4f}" if acc is not None else "—"
+        artifact_paths = entry.get("artifact_paths") or []
+        filenames = [Path(p).name for p in artifact_paths]
+        classes_html = ", ".join(names) if names else "—"
+        files_html = (
+            "  ".join(f"<span style='color:#9cdcfe'>{f}</span>" for f in filenames)
+            if filenames
+            else "—"
+        )
+        canon = "Yes" if entry.get("canonicalize_mat") else "No"
+        self.detail_label.setText(
+            f"<b>{mode}</b> &nbsp;&bull;&nbsp; Val acc: <b>{acc_str}</b>"
+            f" &nbsp;&bull;&nbsp; Canonicalize: <b>{canon}</b><br>"
+            f"<span style='color:#888'>Classes:</span> {classes_html}<br>"
+            f"<span style='color:#888'>Files:</span> {files_html}<br>"
+            f"<span style='color:#555;font-size:10px'>{ts}</span>"
+        )
+
+    def _export_selected(self):
+        """Copy the selected model's artifact files to a user-chosen directory."""
+        import shutil
+
+        row = self.table.currentRow()
+        if not (0 <= row < len(self._entries)):
+            return
+        entry = self._entries[row]
+        artifact_paths = entry.get("artifact_paths") or []
+        if not artifact_paths:
+            QMessageBox.warning(
+                self, "No Artifacts", "No model files are recorded for this entry."
+            )
+            return
+
+        default_dir = ""
+        if self._project_path:
+            models_dir = Path(str(self._project_path)) / "models"
+            try:
+                models_dir.mkdir(parents=True, exist_ok=True)
+                default_dir = str(models_dir)
+            except Exception:
+                default_dir = str(self._project_path)
+
+        dest_dir = QFileDialog.getExistingDirectory(
+            self, "Export Model Files to Directory", default_dir
+        )
+        if not dest_dir:
+            return
+
+        copied, failed = [], []
+        for src in artifact_paths:
+            src_path = Path(src)
+            if src_path.exists():
+                dst = Path(dest_dir) / src_path.name
+                try:
+                    shutil.copy2(str(src_path), str(dst))
+                    copied.append(dst.name)
+                except Exception as exc:
+                    failed.append(f"{src_path.name}: {exc}")
+            else:
+                failed.append(f"{src_path.name}: file not found")
+
+        if copied:
+            self.detail_label.setText(
+                f"<span style='color:#4ec9b0'>✓ Exported → {dest_dir}:</span> "
+                + "  ".join(f"<b>{f}</b>" for f in copied)
+                + (
+                    f"<br><span style='color:#f88'>Skipped: {'; '.join(failed)}</span>"
+                    if failed
+                    else ""
+                )
+            )
+            QMessageBox.information(
+                self,
+                "Export Complete",
+                f"Exported {len(copied)} file(s) to:\n{dest_dir}"
+                + ("\n\nSkipped:\n" + "\n".join(failed) if failed else ""),
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "Export Failed",
+                "No model files could be exported.\n\n" + "\n".join(failed),
+            )

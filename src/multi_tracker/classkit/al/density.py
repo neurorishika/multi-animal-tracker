@@ -2,23 +2,23 @@
 Density estimation utilities for active learning.
 
 Used for representativeness and cluster-based selection.
+Backed by hnswlib (if available) with a numpy brute-force fallback.
 """
 
-try:
-    import faiss
-    import numpy as np
-except ImportError:
-    np = None
-    faiss = None
+from __future__ import annotations
 
-from typing import Optional
+import importlib.util
+from typing import Optional, Tuple, Union
+
+import numpy as np
 
 
 def compute_knn_density(
-    embeddings: np.ndarray, k: int = 10, return_indices: bool = False
-) -> np.ndarray:
-    """
-    Compute density proxy as mean distance to k nearest neighbors.
+    embeddings: np.ndarray,
+    k: int = 10,
+    return_indices: bool = False,
+) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+    """Compute density proxy as mean distance to k nearest neighbors.
 
     Lower distance = higher density (more "typical" samples).
     Higher distance = lower density (more "unusual" samples).
@@ -30,32 +30,34 @@ def compute_knn_density(
 
     Returns:
         densities: (N,) mean kNN distances
-        (optional) indices: (N, k) neighbor indices
+        indices (optional): (N, k) neighbor indices
     """
-    if faiss is None:
-        raise ImportError("faiss required for density computation")
-
     N, D = embeddings.shape
-    embeddings_f32 = np.ascontiguousarray(embeddings.astype(np.float32))
+    emb = np.ascontiguousarray(embeddings.astype(np.float32))
+    k_search = min(k + 1, N)  # +1 to exclude self
 
-    # Build index
-    index = faiss.IndexFlatL2(D)
-    index.add(embeddings_f32)
+    if importlib.util.find_spec("hnswlib") is not None:
+        import hnswlib
 
-    # Query k+1 to exclude self
-    k_search = min(k + 1, N)
-    distances, indices = index.search(embeddings_f32, k_search)
+        idx = hnswlib.Index(space="l2", dim=D)
+        idx.init_index(max_elements=N, ef_construction=100, M=16)
+        idx.add_items(emb)
+        idx.set_ef(max(k_search, 50))
+        indices, distances = idx.knn_query(emb, k=k_search)
+        # hnswlib returns (labels, distances); exclude self (col 0)
+        distances = distances[:, 1:]
+        indices = indices[:, 1:]
+    else:
+        # numpy brute-force
+        dists_all = np.linalg.norm(emb[:, None] - emb[None], axis=2)
+        order = np.argsort(dists_all, axis=1)
+        indices = order[:, 1:k_search]
+        distances = np.take_along_axis(dists_all, indices, axis=1)
 
-    # Exclude self (first neighbor, distance ~0)
-    distances = distances[:, 1:]
-    indices = indices[:, 1:]
-
-    # Mean distance as density proxy
     densities = distances.mean(axis=1)
 
     if return_indices:
         return densities, indices
-
     return densities
 
 

@@ -48,6 +48,7 @@ class SieveWorker(QThread):
         self.config = config
         self.core = DataSieveCore()
         self._is_running = True
+        self.temp_dir = None
 
     def _sanitize_items_for_qt(self, items):
         sanitized = []
@@ -100,26 +101,27 @@ class SieveWorker(QThread):
             img = cv2.imread(item["path"], cv2.IMREAD_GRAYSCALE)
             if img is None:
                 if idx == 1 or idx % 250 == 0 or idx == total:
-                    self._emit_stage_progress(15, 30, idx, total, "Quality filter")
+                    self._emit_stage_progress(25, 40, idx, total, "Quality filter")
                 continue
             blur_score = float(cv2.Laplacian(img, cv2.CV_64F).var())
             contrast_score = float(img.std())
             if blur_score >= min_blur and contrast_score >= min_contrast:
                 kept.append(item)
             if idx == 1 or idx % 250 == 0 or idx == total:
-                self._emit_stage_progress(15, 30, idx, total, "Quality filter")
+                self._emit_stage_progress(25, 40, idx, total, "Quality filter")
         return kept
 
     def run(self):
         try:
-            self.progress.emit(0, "Step 1/6: Loading dataset metadata")
+            self.progress.emit(0, "Step 1/7: Loading dataset metadata")
             self.status.emit("Loading dataset...")
             loaded = self.core.load_dataset(self.dataset_path)
             loaded_count = len(loaded)
-            self.progress.emit(15, f"Step 1/6 complete: loaded {loaded_count:,} images")
+            self.progress.emit(10, f"Step 1/7 complete: loaded {loaded_count:,} images")
 
             stats = {
                 "loaded": loaded_count,
+                "after_canonicalization": loaded_count,
                 "after_quality": loaded_count,
                 "after_temporal": loaded_count,
                 "after_dedup": loaded_count,
@@ -129,13 +131,80 @@ class SieveWorker(QThread):
             duplicate_clusters = []
 
             if not self._is_running:
+                self.stop()
                 return
 
             dataset = loaded
             self.status.emit(f"Loaded {len(dataset)} images.")
 
+            if self.config.get("canonicalize_enabled"):
+                import tempfile
+
+                from ..core.canonicalization import get_canon_transform
+
+                self.temp_dir = tempfile.mkdtemp(prefix="datasieve_canon_")
+                self.progress.emit(10, "Step 2/7: Applying canonicalization")
+                self.status.emit("Applying canonicalization...")
+
+                canon_dataset = []
+                total = len(dataset)
+                for idx, item in enumerate(dataset):
+                    if not self._is_running:
+                        self.stop()
+                        return
+
+                    if item.get("annotations"):
+                        img = cv2.imread(item["path"])
+                        if img is not None:
+                            # Use the first annotation for canonicalization
+                            ann = item["annotations"][0]
+                            # Use new flexible API: pass annotation dict and custom angle field
+                            transform = get_canon_transform(
+                                item["path"],
+                                annotation=ann,
+                                angle_field="tracking_theta",
+                            )
+
+                            if transform is not None:
+                                M = transform["affine"]
+                                out_w = transform["canon_w"]
+                                out_h = transform["canon_h"]
+
+                                # Perform the warp with the correct canonical dimensions
+                                canonical_img = cv2.warpAffine(img, M, (out_w, out_h))
+
+                                temp_path = Path(self.temp_dir) / item["filename"]
+                                cv2.imwrite(str(temp_path), canonical_img)
+
+                                new_item = item.copy()
+                                # Track original path so Process Dataset can restore it later
+                                new_item["original_path"] = item["path"]
+                                new_item["path"] = str(temp_path)
+                                canon_dataset.append(new_item)
+                            else:
+                                canon_dataset.append(item)
+                        else:
+                            canon_dataset.append(item)
+                    else:
+                        canon_dataset.append(item)
+
+                    if idx == 1 or idx % 100 == 0 or idx == total:
+                        self._emit_stage_progress(
+                            10, 25, idx, total, "Canonicalization"
+                        )
+
+                dataset = canon_dataset
+                stats["after_canonicalization"] = len(dataset)
+                self.progress.emit(25, "Step 2/7 complete: canonicalization applied")
+            else:
+                self.progress.emit(25, "Step 2/7 skipped: canonicalization disabled")
+
+            if not self._is_running:
+                self.stop()
+                return
+
             if self.config.get("quality_enabled"):
-                self.progress.emit(15, "Step 2/6: Running quality filter")
+                self.progress.emit(25, "Step 3/7: Running quality filter")
                 self.status.emit("Applying quality filter (blur + contrast)...")
                 before = list(dataset)
                 dataset = self._quality_filter(dataset)
@@ -145,20 +214,21 @@ class SieveWorker(QThread):
                 stats["after_quality"] = len(dataset)
                 self.status.emit(f"Remaining after quality: {len(dataset)}")
                 self.progress.emit(
-                    30,
-                    f"Step 2/6 complete: quality {len(before):,} → {len(dataset):,}",
+                    40,
+                    f"Step 3/7 complete: quality {len(before):,} → {len(dataset):,}",
                 )
             else:
                 stats["after_quality"] = len(dataset)
-                self.progress.emit(30, "Step 2/6 skipped: quality filter disabled")
+                self.progress.emit(40, "Step 3/7 skipped: quality filter disabled")
 
             if not self._is_running:
+                self.stop()
                 return
 
             if self.config.get("temporal_enabled"):
                 interval = self.config.get("temporal_interval", 1)
                 if interval > 1:
-                    self.progress.emit(30, "Step 3/6: Applying temporal subsampling")
+                    self.progress.emit(40, "Step 4/7: Applying temporal subsampling")
                     self.status.emit(f"Applying temporal subsampling (1/{interval})...")
                     before = list(dataset)
                     dataset = self.core.temporal_subsample(dataset, interval)
@@ -167,16 +237,17 @@ class SieveWorker(QThread):
                     )
                     self.status.emit(f"Remaining after temporal: {len(dataset)}")
                     self.progress.emit(
-                        45,
-                        f"Step 3/6 complete: temporal {len(before):,} → {len(dataset):,}",
+                        55,
+                        f"Step 4/7 complete: temporal {len(before):,} → {len(dataset):,}",
                     )
                 else:
-                    self.progress.emit(45, "Step 3/6 skipped: interval is 1")
+                    self.progress.emit(55, "Step 4/7 skipped: interval is 1")
             else:
-                self.progress.emit(45, "Step 3/6 skipped: temporal filter disabled")
+                self.progress.emit(55, "Step 4/7 skipped: temporal filter disabled")
             stats["after_temporal"] = len(dataset)
 
             if not self._is_running:
+                self.stop()
                 return
 
             if self.config.get("dedup_enabled"):
@@ -194,7 +265,7 @@ class SieveWorker(QThread):
                 color_threshold = (
                     float(raw_color_threshold) / 100.0 if preserve_color else None
                 )
-                self.progress.emit(45, f"Step 4/6: Deduplicating with {method}")
+                self.progress.emit(55, f"Step 5/7: Deduplicating with {method}")
                 self.status.emit(
                     (
                         f"Removing duplicates (method={method}, threshold={raw_threshold}, "
@@ -208,7 +279,7 @@ class SieveWorker(QThread):
                     threshold=threshold,
                     method=method,
                     progress_callback=lambda cur, tot: self._emit_stage_progress(
-                        45, 80, cur, tot, "Deduplication"
+                        55, 85, cur, tot, "Deduplication"
                     ),
                     return_groups=True,
                     color_threshold=color_threshold,
@@ -218,20 +289,21 @@ class SieveWorker(QThread):
                 )
                 self.status.emit(f"Remaining after deduplication: {len(dataset)}")
                 self.progress.emit(
-                    80,
-                    f"Step 4/6 complete: dedup {len(before):,} → {len(dataset):,}",
+                    85,
+                    f"Step 5/7 complete: dedup {len(before):,} → {len(dataset):,}",
                 )
             else:
-                self.progress.emit(80, "Step 4/6 skipped: deduplication disabled")
+                self.progress.emit(85, "Step 5/7 skipped: deduplication disabled")
             stats["after_dedup"] = len(dataset)
 
             if not self._is_running:
+                self.stop()
                 return
 
             if self.config.get("diversity_enabled"):
                 target = self.config.get("diversity_target", 1000)
                 if len(dataset) > target:
-                    self.progress.emit(80, "Step 5/6: Running diversity sampling")
+                    self.progress.emit(85, "Step 6/7: Running diversity sampling")
                     self.status.emit(
                         f"Applying diversity sampling (target={target})..."
                     )
@@ -243,18 +315,19 @@ class SieveWorker(QThread):
                     self.status.emit(f"Remaining after diversity: {len(dataset)}")
                     self.progress.emit(
                         95,
-                        f"Step 5/6 complete: diversity {len(before):,} → {len(dataset):,}",
+                        f"Step 6/7 complete: diversity {len(before):,} → {len(dataset):,}",
                     )
                 else:
                     self.progress.emit(
                         95,
-                        f"Step 5/6 skipped: current set ({len(dataset):,}) <= target ({target:,})",
+                        f"Step 6/7 skipped: current set ({len(dataset):,}) <= target ({target:,})",
                     )
             else:
-                self.progress.emit(95, "Step 5/6 skipped: diversity sampling disabled")
+                self.progress.emit(95, "Step 6/7 skipped: diversity sampling disabled")
             stats["after_diversity"] = len(dataset)
 
             if not self._is_running:
+                self.stop()
                 return
 
             # Remove large integer/object fields before Qt signal crossing.
@@ -265,7 +338,7 @@ class SieveWorker(QThread):
                 item.pop("features", None)
 
             selected_sanitized = self._sanitize_items_for_qt(dataset)
-            self.progress.emit(100, "Step 6/6 complete: Finalized and ready to review")
+            self.progress.emit(100, "Step 7/7 complete: Finalized and ready to review")
             result = {
                 "selected_dataset": selected_sanitized,
                 "stats": stats,
@@ -277,9 +350,14 @@ class SieveWorker(QThread):
 
         except Exception as exc:
             self.error.emit(str(exc))
+        finally:
+            self.stop()
 
     def stop(self):
         self._is_running = False
+        if self.temp_dir:
+            shutil.rmtree(self.temp_dir, ignore_errors=True)
+            self.temp_dir = None
 
 
 class PreviewListWidget(QListWidget):
@@ -786,6 +864,13 @@ class DataSieveWindow(QMainWindow):
             "Filters blurry or low-contrast crops before sampling. Useful on noisy extraction pipelines.",
         )
 
+        self.chk_canonicalize = QCheckBox("Canonicalize images (align orientation)")
+        layout.addWidget(self.chk_canonicalize)
+        self._add_help(
+            layout,
+            "Aligns all images to a standard orientation (e.g., facing right). Requires `metadata.json` from `multi-animal-tracker` export.",
+        )
+
         self.lbl_estimate = QLabel("Estimated kept images: n/a")
         self.lbl_estimate.setStyleSheet("font-weight: 600;")
         layout.addWidget(self.lbl_estimate)
@@ -801,6 +886,7 @@ class DataSieveWindow(QMainWindow):
         self.chk_preserve_color.stateChanged.connect(self.update_live_estimate)
         self.chk_diversity.stateChanged.connect(self.update_live_estimate)
         self.chk_quality.stateChanged.connect(self.update_live_estimate)
+        self.chk_canonicalize.stateChanged.connect(self.update_live_estimate)
         self.spin_temporal.valueChanged.connect(self.update_live_estimate)
         self.spin_dedup.valueChanged.connect(self.update_live_estimate)
         self.spin_color_threshold.valueChanged.connect(self.update_live_estimate)
@@ -1200,6 +1286,7 @@ class DataSieveWindow(QMainWindow):
             "quality_enabled": self.chk_quality.isChecked(),
             "quality_min_blur": self.spin_quality_blur.value(),
             "quality_min_contrast": self.spin_quality_contrast.value(),
+            "canonicalize_enabled": self.chk_canonicalize.isChecked(),
         }
 
         self.btn_process.setEnabled(False)
@@ -1280,6 +1367,7 @@ class DataSieveWindow(QMainWindow):
                 [
                     "Run Summary:",
                     f"• Loaded: {loaded:,}",
+                    f"• After canonicalization: {s.get('after_canonicalization', loaded):,}",
                     f"• After quality: {s.get('after_quality', loaded):,}",
                     f"• After temporal: {s.get('after_temporal', loaded):,}",
                     f"• After dedup: {s.get('after_dedup', loaded):,}",

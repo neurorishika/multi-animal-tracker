@@ -3,6 +3,7 @@ Core logic for Data Sieve tool.
 Includes perceptual hashing, duplicate removal, and diversity sampling.
 """
 
+import json
 import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -162,6 +163,13 @@ class DataSieveCore:
         if not folder.exists():
             return []
 
+        # Check for metadata.json in parent directory
+        metadata_path = folder.parent / "metadata.json"
+        metadata = None
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                metadata = json.load(f)
+
         pattern = re.compile(r"did(\d+)\.png")
 
         # Sort files to ensure deterministic order
@@ -177,15 +185,27 @@ class DataSieveCore:
                 frame_idx = det_id // 10000
                 det_idx = det_id % 10000
 
-                dataset.append(
-                    {
-                        "path": img_path,
-                        "filename": filename,
-                        "det_id": det_id,
-                        "frame_idx": frame_idx,
-                        "det_idx": det_idx,
-                    }
-                )
+                item = {
+                    "path": img_path,
+                    "filename": filename,
+                    "det_id": det_id,
+                    "frame_idx": frame_idx,
+                    "det_idx": det_idx,
+                    "annotations": [],
+                }
+
+                if metadata:
+                    # Find matching frame in metadata
+                    for frame_data in metadata.get("frames", []):
+                        if frame_data["frame_id"] == frame_idx:
+                            # Find matching annotation
+                            for ann in frame_data.get("annotations", []):
+                                # Heuristic: match based on detection index if available,
+                                # otherwise we might need a more robust matching strategy.
+                                # For now, we assume one detection per frame in this context.
+                                item["annotations"].append(ann)
+                            break
+                dataset.append(item)
             else:
                 # Fallback for other formats if needed, or skip
                 # For now, skip non-matching files

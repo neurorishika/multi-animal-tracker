@@ -15,9 +15,20 @@ def compute_image_hash(path: Path) -> str:
 
 
 def scan_images(
-    root: Union[str, Path], extensions: List[str] = None
+    root: Union[str, Path],
+    extensions: List[str] = None,
+    images_subdir: str = "images",
 ) -> Generator[Path, None, None]:
-    """recursively yield image paths from root directory."""
+    """Yield image paths from *root* or its ``images/`` subdirectory.
+
+    Preference order (matching PoseKit convention):
+    1. If ``root/images/`` exists and contains images, scan **only** that
+       directory (non-recursively).
+    2. Otherwise scan ``root`` itself (non-recursively).
+
+    This intentionally avoids deep recursive scans so that project metadata
+    folders, label outputs, and preview caches are never accidentally ingested.
+    """
     root = Path(root)
     if not root.exists():
         return
@@ -25,12 +36,24 @@ def scan_images(
     if extensions is None:
         extensions = [".jpg", ".png", ".jpeg"]
 
-    # Standardize extensions to lowercase for checking
     valid_exts = {e.lower() for e in extensions}
 
-    for path in root.rglob("*"):
+    # Prefer the images/ subdirectory when it contains images.
+    images_dir = root / images_subdir
+    if images_dir.is_dir():
+        candidates = [
+            p.resolve()
+            for p in images_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in valid_exts
+        ]
+        if candidates:
+            yield from iter(candidates)
+            return
+
+    # Fall back to the root folder itself (non-recursive).
+    for path in root.iterdir():
         if path.is_file() and path.suffix.lower() in valid_exts:
-            yield path
+            yield path.resolve()
 
 
 class IngestWorker:

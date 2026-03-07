@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 import shutil
 import subprocess
@@ -214,6 +215,8 @@ def _train_tiny_headtail(
     best_val_acc = -1.0
     best_state = None
     epochs = max(1, int(spec.tiny_params.epochs))
+    patience = max(1, int(spec.tiny_params.patience))
+    patience_counter = 0
     history = []
 
     for epoch in range(epochs):
@@ -257,6 +260,9 @@ def _train_tiny_headtail(
             best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
+            patience_counter = 0
+        else:
+            patience_counter += 1
 
         _safe_log(
             log_cb,
@@ -264,6 +270,10 @@ def _train_tiny_headtail(
         )
         if progress_cb:
             progress_cb(epoch + 1, epochs)
+
+        if patience_counter >= patience:
+            _safe_log(log_cb, f"Early stopping triggered at epoch {epoch + 1}")
+            break
 
     if best_state is not None:
         model.load_state_dict(best_state, strict=True)
@@ -330,8 +340,10 @@ def _train_tiny_classify(
     input_h = int(spec.tiny_params.input_height)
 
     class TinyDataset(Dataset):
-        def __init__(self, items):
+        def __init__(self, items, augment=False, profile=None):
             self.items = items
+            self.augment = augment
+            self.profile = profile
 
         def __len__(self):
             return len(self.items)
@@ -342,51 +354,55 @@ def _train_tiny_classify(
             if img is None:
                 raise RuntimeError(f"Could not read image: {path}")
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+            if self.augment and self.profile and self.profile.enabled:
+                # Flip UD
+                if self.profile.flipud > 0 and random.random() < self.profile.flipud:
+                    img = cv2.flip(img, 0)
+                # Flip LR
+                if self.profile.fliplr > 0 and random.random() < self.profile.fliplr:
+                    img = cv2.flip(img, 1)
+                # Rotation
+                if self.profile.rotate > 0:
+                    angle = random.uniform(-self.profile.rotate, self.profile.rotate)
+                    M = cv2.getRotationMatrix2D(
+                        (img.shape[1] // 2, img.shape[0] // 2), angle, 1.0
+                    )
+                    img = cv2.warpAffine(img, M, (img.shape[1], img.shape[0]))
+
             if img.shape[1] != input_w or img.shape[0] != input_h:
                 img = cv2.resize(
                     img, (input_w, input_h), interpolation=cv2.INTER_LINEAR
                 )
-            x = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
+            x = torch.from_numpy(img.copy()).permute(2, 0, 1).float() / 255.0
             y = torch.tensor(label, dtype=torch.long)
             return x, y
 
-    class TinyClassifier(nn.Module):
-        def __init__(self, n_classes: int):
-            super().__init__()
-            self.features = nn.Sequential(
-                nn.Conv2d(3, 16, 3, stride=2, padding=1),
-                nn.BatchNorm2d(16),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(16, 32, 3, stride=2, padding=1),
-                nn.BatchNorm2d(32),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(32, 64, 3, stride=2, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(64, 64, 3, stride=2, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(inplace=True),
-                nn.AdaptiveAvgPool2d(1),
-            )
-            self.classifier = nn.Sequential(
-                nn.Flatten(),
-                nn.Dropout(0.2),
-                nn.Linear(64, n_classes),
+    from .tiny_model import _build_tiny_classifier_class
+
+    _TinyClassifier = _build_tiny_classifier_class()
+
+    class _TinyClassifierCompat(_TinyClassifier):
+        """Thin wrapper accepting a params object instead of kwargs."""
+
+        def __init__(self, n_classes, params):
+            super().__init__(
+                n_classes=n_classes,
+                hidden_layers=params.hidden_layers,
+                hidden_dim=params.hidden_dim,
+                dropout=params.dropout,
             )
 
-        def forward(self, x):
-            return self.classifier(self.features(x))
-
-    model = TinyClassifier(num_classes).to(device)
+    model = _TinyClassifierCompat(num_classes, spec.tiny_params).to(device)
     train_loader = DataLoader(
-        TinyDataset(train_samples),
+        TinyDataset(train_samples, augment=True, profile=spec.augmentation_profile),
         batch_size=max(1, int(spec.tiny_params.batch)),
         shuffle=True,
         num_workers=0,
     )
     val_loader = (
         DataLoader(
-            TinyDataset(val_samples),
+            TinyDataset(val_samples, augment=False),
             batch_size=max(1, int(spec.tiny_params.batch)),
             shuffle=False,
             num_workers=0,
@@ -405,6 +421,8 @@ def _train_tiny_classify(
     best_val_acc = -1.0
     best_state = None
     epochs = max(1, int(spec.tiny_params.epochs))
+    patience = max(1, int(spec.tiny_params.patience))
+    patience_counter = 0
     history = []
 
     for epoch in range(epochs):
@@ -444,6 +462,9 @@ def _train_tiny_classify(
             best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
             }
+            patience_counter = 0
+        else:
+            patience_counter += 1
 
         _safe_log(
             log_cb,
@@ -451,6 +472,10 @@ def _train_tiny_classify(
         )
         if progress_cb:
             progress_cb(epoch + 1, epochs)
+
+        if val_loader and patience_counter >= patience:
+            _safe_log(log_cb, f"Early stopping triggered at epoch {epoch + 1}")
+            break
 
     if best_state is not None:
         model.load_state_dict(best_state, strict=True)
@@ -466,6 +491,9 @@ def _train_tiny_classify(
             "model_state_dict": model.state_dict(),
             "input_size": [input_w, input_h],
             "num_classes": num_classes,
+            "class_names": sorted(
+                d.name for d in (dataset_dir / "train").iterdir() if d.is_dir()
+            ),
             "best_val_acc": float(best_val_acc),
             "history": history,
         },

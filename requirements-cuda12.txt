@@ -8,5 +8,7 @@ tensorrt-cu12
 tensorrt-cu12-bindings
 tensorrt-cu12-libs
 
-faiss-gpu
+hnswlib
+usearch
+annoy
 cupy-cuda12x

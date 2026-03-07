@@ -66,14 +66,33 @@ class TinyHeadTailParams:
     weight_decay: float = 1e-2
     input_width: int = 128
     input_height: int = 64
+    # Architecture params
+    hidden_layers: int = 1
+    hidden_dim: int = 64
+    dropout: float = 0.2
+    # Early stopping
+    patience: int = 10
 
 
 @dataclass(slots=True)
 class AugmentationProfile:
-    """Augmentation settings for Ultralytics training."""
+    """Augmentation settings for training."""
 
     enabled: bool = True
+    flipud: float = 0.0
+    fliplr: float = 0.5
+    rotate: float = 0.0
+    brightness: float = 0.0
+    contrast: float = 0.0
     args: dict[str, Any] = field(default_factory=dict)
+    # Label-switching expansion rules.
+    # Maps flip axis name → {source_class_name: target_class_name}.
+    # When set, ExportWorker physically writes extra flipped copies with the
+    # remapped label so the model is trained on both the original and its
+    # mirror with the correct label — useful for directional/orientation labels.
+    # Example:  {"fliplr": {"left": "right", "right": "left"},
+    #            "flipud": {"up": "down", "down": "up"}}
+    label_expansion: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -95,6 +114,7 @@ class TrainingRunSpec:
     hyperparams: TrainingHyperParams
     device: str = "auto"
     seed: int = 42
+    training_space: str = "original"  # "original" or "canonical"
     augmentation_profile: AugmentationProfile = field(
         default_factory=AugmentationProfile
     )

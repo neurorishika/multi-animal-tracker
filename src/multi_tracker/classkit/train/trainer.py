@@ -308,7 +308,7 @@ class EmbeddingHeadTrainer:
 
     def load(self, path: Path):
         """Load model and calibrator."""
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
         # Recreate model
         self.model = create_head(

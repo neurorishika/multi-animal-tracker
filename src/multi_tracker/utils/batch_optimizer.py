@@ -135,9 +135,6 @@ class BatchOptimizer:
             "yolo26s": 50,  # Small: ~50MB
             "yolo26m": 120,  # Medium: ~120MB
             "yolo26l": 200,  # Large: ~200MB
-            "yolo11n": 20,
-            "yolo11s": 50,
-            "yolo11m": 120,
         }
 
         # Extract model size from name

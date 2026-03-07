@@ -111,10 +111,21 @@ def _build_qt_widget(scheme: LabelingScheme):  # pragma: no cover
             self._back_btn = QPushButton("< Back")
             self._back_btn.setFixedWidth(80)
             self._back_btn.clicked.connect(self._on_back)
+
+            self._unknown_btn = QPushButton("[0] Unknown")
+            self._unknown_btn.setFixedWidth(100)
+            self._unknown_btn.setStyleSheet("color: #aaa;")
+            self._unknown_btn.clicked.connect(
+                lambda: self.label_committed.emit("unknown")
+            )
+
             self._skip_btn = QPushButton("Skip >")
             self._skip_btn.setFixedWidth(80)
             self._skip_btn.clicked.connect(self.skipped.emit)
+
             nav_row.addWidget(self._back_btn)
+            nav_row.addStretch()
+            nav_row.addWidget(self._unknown_btn)
             nav_row.addStretch()
             nav_row.addWidget(self._skip_btn)
             self._outer.addLayout(nav_row)
@@ -151,6 +162,8 @@ def _build_qt_widget(scheme: LabelingScheme):  # pragma: no cover
                 key = factor.shortcut_keys[i] if i < len(factor.shortcut_keys) else None
                 if key:
                     self._shortcut_map[key] = label
+                    self._shortcut_map[key.lower()] = label
+                    self._shortcut_map[key.upper()] = label
 
             self._back_btn.setEnabled(self._state.current_factor_index > 0)
 
@@ -173,7 +186,15 @@ def _build_qt_widget(scheme: LabelingScheme):  # pragma: no cover
 
         def handle_key(self, key: str) -> bool:
             """Call from parent keyPressEvent. Returns True if key was consumed."""
-            label = self._shortcut_map.get(key.lower())
+            if key == "0":
+                self.label_committed.emit("unknown")
+                return True
+            # Check both original and lowercase to be safe
+            label = (
+                self._shortcut_map.get(key)
+                or self._shortcut_map.get(key.lower())
+                or self._shortcut_map.get(key.upper())
+            )
             if label:
                 self._on_pick(label)
                 return True

@@ -35,6 +35,7 @@ class Worker(QRunnable):
 
     def __init__(self, fn: Callable, *args: Any, **kwargs: Any):
         super(Worker, self).__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         # Store constructor arguments (re-used for processing)
         self.fn = fn
         self.args = args

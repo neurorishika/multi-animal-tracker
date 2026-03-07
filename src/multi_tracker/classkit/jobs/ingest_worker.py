@@ -29,6 +29,7 @@ class IngestWorker(QRunnable):
         device: str = "cuda",
     ):
         super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.image_dir = image_dir
         self.db_path = db_path
         self.model_name = model_name

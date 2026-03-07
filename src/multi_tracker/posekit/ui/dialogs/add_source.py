@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -17,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from ..constants import DEFAULT_DATASET_IMAGES_DIR
+from ..constants import DEFAULT_DATASET_IMAGES_DIR, LARGE_DATASET_SIEVE_THRESHOLD
 from ..utils import list_images
 
 
@@ -131,6 +133,46 @@ class AddSourceDialog(QDialog):
                     "Already Added",
                     f"This dataset is already registered as source '{src.source_id}'.",
                 )
+                return
+
+        # Warn when the folder is very large and offer to open DataSieve instead.
+        if count > LARGE_DATASET_SIEVE_THRESHOLD:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Large Dataset Detected")
+            msg.setText(
+                f"This folder contains {count:,} images — that is a lot to label by hand.\n\n"
+                "DataSieve can reduce near-duplicates and create a smaller representative "
+                "subset before labeling."
+            )
+            msg.setInformativeText(
+                "Open this folder in DataSieve now, or continue adding it as-is?"
+            )
+            btn_sieve = msg.addButton("Open in DataSieve", QMessageBox.AcceptRole)
+            btn_add = msg.addButton("Add Anyway", QMessageBox.DestructiveRole)
+            msg.addButton(QMessageBox.Cancel)
+            msg.exec()
+
+            clicked = msg.clickedButton()
+            if clicked == btn_sieve:
+                try:
+                    subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-m",
+                            "multi_tracker.tools.data_sieve.gui",
+                            str(d),
+                        ],
+                        start_new_session=True,
+                    )
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self,
+                        "Launch Failed",
+                        f"Could not launch DataSieve:\n{exc}",
+                    )
+                return
+            if clicked != btn_add:
                 return
 
         self._selected_dir = d

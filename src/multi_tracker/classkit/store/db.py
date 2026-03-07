@@ -85,7 +85,56 @@ class ClassKitDB:
                     num_images INTEGER,
                     n_neighbors INTEGER,
                     min_dist REAL,
+                    kind TEXT DEFAULT 'embedding',
                     coords_path TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    meta_json TEXT
+                )
+            """)
+
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS candidate_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    num_images INTEGER,
+                    candidate_indices_json TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    meta_json TEXT
+                )
+            """)
+
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS prediction_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    num_images INTEGER,
+                    num_classes INTEGER,
+                    class_names_json TEXT,
+                    active_model_mode TEXT,
+                    canonicalize_mat INTEGER DEFAULT 0,
+                    model_cache_id INTEGER,
+                    probs_path TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    meta_json TEXT
+                )
+            """)
+
+            # Migrate umap_cache: add 'kind' column if absent (live DB upgrade)
+            try:
+                c.execute(
+                    "ALTER TABLE umap_cache ADD COLUMN kind TEXT DEFAULT 'embedding'"
+                )
+                conn.commit()
+            except Exception:
+                pass  # column already exists
+
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS model_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mode TEXT NOT NULL,
+                    artifact_paths_json TEXT NOT NULL,
+                    class_names_json TEXT,
+                    canonicalize_mat INTEGER DEFAULT 0,
+                    best_val_acc REAL,
+                    num_classes INTEGER,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     meta_json TEXT
                 )
@@ -93,19 +142,46 @@ class ClassKitDB:
             conn.commit()
 
     def add_images(self, paths: List[Path], hashes: List[str] = None):
-        """Batch insert images."""
+        """Batch insert images, storing resolved absolute paths."""
         if hashes is None:
             hashes = [None] * len(paths)
 
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
-            # Use executemany for speed
-            data = [(str(p), h) for p, h in zip(paths, hashes)]
+            # Resolve paths to canonical absolute form to prevent duplicates
+            # caused by symlinks or relative path representations.
+            data = [(str(Path(p).resolve()), h) for p, h in zip(paths, hashes)]
             c.executemany(
                 "INSERT OR IGNORE INTO images (file_path, file_hash) VALUES (?, ?)",
                 data,
             )
             conn.commit()
+
+    def migrate_paths_to_resolved(self) -> int:
+        """One-time migration: ensure all stored file_path values are resolved absolute paths.
+
+        Returns the number of rows updated.
+        """
+        from pathlib import Path
+
+        updated = 0
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("SELECT id, file_path FROM images")
+            rows = c.fetchall()
+            for row_id, stored_path in rows:
+                try:
+                    resolved = str(Path(stored_path).resolve())
+                except Exception:
+                    continue
+                if resolved != stored_path:
+                    c.execute(
+                        "UPDATE images SET file_path = ? WHERE id = ?",
+                        (resolved, row_id),
+                    )
+                    updated += 1
+            conn.commit()
+        return updated
 
     def get_unlabeled(self, limit: int = 100) -> List[Tuple[Any]]:
         with sqlite3.connect(self.db_path) as conn:
@@ -118,6 +194,27 @@ class ClassKitDB:
             c = conn.cursor()
             c.execute("UPDATE images SET label = ? WHERE file_path = ?", (label, path))
             conn.commit()
+
+    def update_labels_batch(self, updates: Dict[str, Optional[str]]) -> int:
+        """Batch update labels for multiple images in a single transaction.
+
+        Returns the total number of rows affected.
+        Uses an explicit per-row count to work around sqlite3 executemany rowcount
+        inconsistencies across Python versions.
+        """
+        if not updates:
+            return 0
+
+        updated_count = 0
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            for path, label in updates.items():
+                c.execute(
+                    "UPDATE images SET label = ? WHERE file_path = ?", (label, path)
+                )
+                updated_count += c.rowcount
+            conn.commit()
+        return updated_count
 
     def get_image_path_by_id(self, idx: int) -> Optional[str]:
         """Get path for image at index (0-based ID or offset-based in list).
@@ -464,14 +561,15 @@ class ClassKitDB:
         coords: np.ndarray,
         n_neighbors: int,
         min_dist: float,
+        kind: str = "embedding",
         meta: Optional[Dict[str, Any]] = None,
     ) -> int:
-        """Persist UMAP coordinates for reuse."""
+        """Persist UMAP coordinates for reuse. kind='embedding' or 'model'."""
         cache_dir = self.db_path.parent / "umap"
         cache_dir.mkdir(exist_ok=True)
 
         timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
-        coords_path = cache_dir / f"coords_{timestamp}.npy"
+        coords_path = cache_dir / f"coords_{kind}_{timestamp}.npy"
         np.save(coords_path, coords)
 
         with sqlite3.connect(self.db_path) as conn:
@@ -479,13 +577,14 @@ class ClassKitDB:
             c.execute(
                 """
                 INSERT INTO umap_cache
-                (num_images, n_neighbors, min_dist, coords_path, meta_json)
-                VALUES (?, ?, ?, ?, ?)
+                (num_images, n_neighbors, min_dist, kind, coords_path, meta_json)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     self.count_images(),
                     int(n_neighbors),
                     float(min_dist),
+                    kind,
                     str(coords_path),
                     json.dumps(meta) if meta else None,
                 ),
@@ -493,16 +592,22 @@ class ClassKitDB:
             conn.commit()
             return c.lastrowid
 
-    def get_most_recent_umap_cache(self) -> Optional[Dict[str, Any]]:
-        """Load most recent cached UMAP projection if still valid."""
+    def get_most_recent_umap_cache(
+        self, kind: str = "embedding"
+    ) -> Optional[Dict[str, Any]]:
+        """Load most recent cached UMAP projection of the given kind if still valid."""
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
-            c.execute("""
+            c.execute(
+                """
                 SELECT num_images, n_neighbors, min_dist, coords_path, timestamp, meta_json
                 FROM umap_cache
+                WHERE kind = ?
                 ORDER BY timestamp DESC
                 LIMIT 1
-                """)
+                """,
+                (kind,),
+            )
             row = c.fetchone()
             if not row:
                 return None
@@ -520,6 +625,60 @@ class ClassKitDB:
                 "coords": coords,
                 "n_neighbors": n_neighbors,
                 "min_dist": min_dist,
+                "timestamp": timestamp,
+            }
+            if meta_json:
+                payload.update(json.loads(meta_json))
+            return payload
+
+    def save_candidate_cache(
+        self,
+        candidate_indices: List[int],
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Persist current labeling candidate indices for reuse."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                INSERT INTO candidate_cache
+                (num_images, candidate_indices_json, meta_json)
+                VALUES (?, ?, ?)
+                """,
+                (
+                    self.count_images(),
+                    json.dumps(candidate_indices),
+                    json.dumps(meta) if meta else None,
+                ),
+            )
+            conn.commit()
+            return c.lastrowid
+
+    def get_most_recent_candidate_cache(self) -> Optional[Dict[str, Any]]:
+        """Load most recent cached candidate set if still valid."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT num_images, candidate_indices_json, timestamp, meta_json
+                FROM candidate_cache
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """)
+            row = c.fetchone()
+            if not row:
+                return None
+
+            num_images, indices_json, timestamp, meta_json = row
+            if num_images != self.count_images():
+                return None
+
+            try:
+                indices = json.loads(indices_json)
+            except Exception:
+                return None
+
+            payload = {
+                "candidate_indices": indices,
                 "timestamp": timestamp,
             }
             if meta_json:
@@ -568,3 +727,177 @@ class ClassKitDB:
 
     def close(self):
         pass
+
+    # ── Prediction cache ────────────────────────────────────────────────
+
+    def save_prediction_cache(
+        self,
+        probs: np.ndarray,
+        class_names: List[str],
+        active_model_mode: str = "",
+        canonicalize_mat: bool = False,
+        model_cache_id: Optional[int] = None,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Persist per-image probability matrix (N, C) to disk and record metadata."""
+        cache_dir = self.db_path.parent / "predictions"
+        cache_dir.mkdir(exist_ok=True)
+        timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+        probs_path = cache_dir / f"probs_{active_model_mode}_{timestamp}.npy"
+        np.save(probs_path, probs)
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                INSERT INTO prediction_cache
+                (num_images, num_classes, class_names_json, active_model_mode,
+                 canonicalize_mat, model_cache_id, probs_path, meta_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(probs.shape[0]),
+                    int(probs.shape[1]),
+                    json.dumps(list(class_names)),
+                    str(active_model_mode),
+                    int(bool(canonicalize_mat)),
+                    model_cache_id,
+                    str(probs_path),
+                    json.dumps(meta) if meta else None,
+                ),
+            )
+            conn.commit()
+            return c.lastrowid
+
+    def get_most_recent_prediction_cache(self) -> Optional[Dict[str, Any]]:
+        """Load the most recent prediction cache if num_images still matches."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT num_images, num_classes, class_names_json, active_model_mode,
+                       canonicalize_mat, model_cache_id, probs_path, timestamp, meta_json
+                FROM prediction_cache
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)
+            row = c.fetchone()
+        if not row:
+            return None
+        (
+            num_images,
+            num_classes,
+            names_json,
+            mode,
+            canon,
+            model_id,
+            probs_path,
+            timestamp,
+            meta_json,
+        ) = row
+        if num_images != self.count_images():
+            return None
+        path = Path(probs_path)
+        if not path.exists():
+            return None
+        probs = np.load(path)
+        try:
+            class_names = json.loads(names_json) if names_json else []
+        except Exception:
+            class_names = []
+        payload = {
+            "probs": probs,
+            "class_names": class_names,
+            "active_model_mode": mode,
+            "canonicalize_mat": bool(canon),
+            "model_cache_id": model_id,
+            "num_classes": num_classes,
+            "timestamp": timestamp,
+        }
+        if meta_json:
+            try:
+                payload.update(json.loads(meta_json))
+            except Exception:
+                pass
+        return payload
+
+    # ── Model cache ──────────────────────────────────────────────────────────
+
+    def save_model_cache(
+        self,
+        mode: str,
+        artifact_paths: List[str],
+        class_names: List[str],
+        canonicalize_mat: bool = False,
+        best_val_acc: float = 0.0,
+        num_classes: int = 0,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> int:
+        """Persist a trained model record with its artifact paths and metadata."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                """
+                INSERT INTO model_cache
+                (mode, artifact_paths_json, class_names_json,
+                 canonicalize_mat, best_val_acc, num_classes, meta_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(mode),
+                    json.dumps([str(p) for p in artifact_paths]),
+                    json.dumps(list(class_names)),
+                    int(bool(canonicalize_mat)),
+                    float(best_val_acc),
+                    int(num_classes),
+                    json.dumps(meta) if meta else None,
+                ),
+            )
+            conn.commit()
+            return c.lastrowid
+
+    def list_model_caches(self) -> List[Dict[str, Any]]:
+        """Return all model cache entries ordered newest-first."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT id, mode, artifact_paths_json, class_names_json,
+                       canonicalize_mat, best_val_acc, num_classes, timestamp, meta_json
+                FROM model_cache
+                ORDER BY timestamp DESC
+                """)
+            rows = c.fetchall()
+
+        results = []
+        for row in rows:
+            id_, mode, paths_json, names_json, canon, acc, n_cls, ts, meta_json = row
+            try:
+                artifact_paths = json.loads(paths_json)
+            except Exception:
+                artifact_paths = []
+            try:
+                class_names = json.loads(names_json) if names_json else []
+            except Exception:
+                class_names = []
+            entry: Dict[str, Any] = {
+                "id": id_,
+                "mode": mode,
+                "artifact_paths": artifact_paths,
+                "class_names": class_names,
+                "canonicalize_mat": bool(canon),
+                "best_val_acc": float(acc) if acc is not None else None,
+                "num_classes": int(n_cls) if n_cls else 0,
+                "timestamp": ts,
+            }
+            if meta_json:
+                try:
+                    entry["meta"] = json.loads(meta_json)
+                except Exception:
+                    pass
+            # Only include entries where at least the first artifact still exists
+            if artifact_paths and Path(artifact_paths[0]).exists():
+                results.append(entry)
+        return results
+
+    def get_most_recent_model_cache(self) -> Optional[Dict[str, Any]]:
+        """Return the most recent model cache entry whose artifact still exists."""
+        entries = self.list_model_caches()
+        return entries[0] if entries else None

@@ -8,9 +8,9 @@ tensorrt-cu13
 tensorrt-cu13-bindings
 tensorrt-cu13-libs
 
-# CUDA 13 + Python 3.13 commonly lacks prebuilt faiss-gpu wheels.
-# Use faiss-cpu in this profile for stable installs.
-faiss-cpu
+hnswlib
+usearch
+annoy
 
 --pre
 -f https://pip.cupy.dev/pre

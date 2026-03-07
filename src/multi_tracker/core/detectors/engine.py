@@ -550,9 +550,7 @@ class YOLOOBBDetector:
         self._configure_ultralytics_logging()
 
         model_path = Path(model_path_str).expanduser().resolve()
-        use_builtin = model_path_str.startswith(
-            ("yolov8", "yolov11", "yolo26", "yolo11")
-        )
+        use_builtin = model_path_str.startswith(("yolo26"))
         if use_builtin:
             model = YOLO(model_path_str, task=task)
         else:

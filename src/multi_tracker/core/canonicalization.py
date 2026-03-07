@@ -209,29 +209,52 @@ class MatMetadataCanonicalizer:
             return img_pil
 
 
-def get_canon_transform(image_path: "str | Path", margin: float = 1.3) -> "dict | None":
+def get_canon_transform(
+    image_path: str | Path,
+    margin: float = 1.3,
+    annotation: dict | None = None,
+    angle_field: str | None = None,
+) -> dict | None:
     """Compute the canonicalization affine transforms for an image without applying them.
 
-    Returns a ``dict`` with:
+    Args:
+        image_path: Path to the original image.
+        margin: Expansion factor around the animal bounding box.
+        annotation: Optional pre-loaded annotation dict. If None, it is resolved from disk.
+        angle_field: Optional field name for the orientation angle (overrides 'theta').
 
+    Returns a ``dict`` with:
     * ``"affine"`` – 2×3 :class:`numpy.ndarray` mapping **original → canonical** pixel coords.
     * ``"inv_affine"`` – 2×3 :class:`numpy.ndarray` mapping **canonical → original** pixel coords.
     * ``"canon_w"``, ``"canon_h"`` – output (canonicalized) image dimensions.
 
     Returns ``None`` if metadata is unavailable or the annotation count is ambiguous.
-    Use this to convert saved keypoint coordinates between original and canonical spaces.
     """
-    metadata_path, annotations = _resolve_annotations_for_image(
-        Path(image_path).expanduser().resolve()
-    )
-    if not metadata_path or len(annotations) != 1:
-        return None
+    if annotation is None:
+        metadata_path, annotations = _resolve_annotations_for_image(
+            Path(image_path).expanduser().resolve()
+        )
+        if not metadata_path or len(annotations) != 1:
+            return None
+        ann = annotations[0]
+    else:
+        ann = annotation
 
-    ann = annotations[0]
     canonical = ann.get("canonicalization", {})
     center = canonical.get("center_px")
     size = canonical.get("size_px")
-    angle = canonical.get("angle_rad", ann.get("theta"))
+
+    # Order of precedence:
+    # 1. explicit canonicalization.angle_rad
+    # 2. custom angle_field provided as argument
+    # 3. standard 'theta' field
+    angle = canonical.get("angle_rad")
+    if angle is None:
+        if angle_field:
+            angle = ann.get(angle_field)
+        if angle is None:
+            angle = ann.get("theta")
+
     if (
         not isinstance(center, (list, tuple))
         or len(center) != 2

@@ -118,8 +118,19 @@ class ExplorerView(QGraphicsView):
                 base_radius * 2,
             )
             item.setBrush(QBrush(base_color))
-            item.setPen(QPen(Qt.NoPen))
-            item.setZValue(1)
+
+            # Highlight low confidence (uncertain) points
+            confidence = (
+                self._confidences[idx]
+                if self._confidences and idx < len(self._confidences)
+                else None
+            )
+            if not self.labeling_mode and confidence is not None and confidence < 0.6:
+                item.setPen(QPen(QColor(255, 255, 255), max(1.0, 1.5 * radius_scale)))
+                item.setZValue(4)
+            else:
+                item.setPen(QPen(Qt.NoPen))
+                item.setZValue(1)
 
     def set_selected_index(self, selected_index: int | None) -> bool:
         """Update selected point styling without rebuilding the full scene.
@@ -156,6 +167,7 @@ class ExplorerView(QGraphicsView):
     def update_state(
         self,
         labels: list = None,
+        confidences: list = None,
         candidate_indices: list = None,
         round_labeled_indices: list = None,
         selected_index: int = None,
@@ -173,6 +185,7 @@ class ExplorerView(QGraphicsView):
             return False
 
         self._labels = labels
+        self._confidences = confidences
         self.selected_index = selected_index
         self.candidate_indices = set(candidate_indices or [])
         self.round_labeled_indices = set(round_labeled_indices or [])
