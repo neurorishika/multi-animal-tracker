@@ -753,6 +753,7 @@ class TrackingWorker(QThread):
         # calling pose_backend.predict_batch.  Larger values → better GPU utilisation
         # at the cost of slightly delayed writes.  64 is a good default.
         _POSE_CROSS_FRAME_BATCH = int(params.get("POSE_PRECOMPUTE_BATCH_SIZE", 64))
+        _pose_bg_color = int(params.get("POSE_BACKGROUND_COLOR", 128))
 
         total_frames = max(1, end_frame - start_frame + 1)
         precompute_start_ts = time.time()
@@ -792,6 +793,15 @@ class TrackingWorker(QThread):
                         gkpts = np.asarray(kpts, dtype=np.float32).copy()
                         gkpts[:, 0] += float(x0)
                         gkpts[:, 1] += float(y0)
+                        all_obbs = pf.get("all_obb_corners", [])
+                        if len(all_obbs) > 1:
+                            from multi_tracker.core.tracking.pose_features import (
+                                filter_keypoints_by_foreign_obbs,
+                            )
+
+                            gkpts = filter_keypoints_by_foreign_obbs(
+                                gkpts, all_obbs, target_idx=det_idx
+                            )
                     else:
                         gkpts = kpts
                     pose_outputs[det_idx] = {"keypoints": gkpts}
@@ -856,6 +866,10 @@ class TrackingWorker(QThread):
                     )
 
                 # Build per-frame record (crop extraction only — no inference yet)
+                _all_obb_corners = [
+                    np.asarray(c, dtype=np.float32)
+                    for c in (filtered_obb_corners or [])
+                ]
                 pf: dict = {
                     "frame_idx": frame_idx,
                     "det_ids": detection_ids,
@@ -863,14 +877,32 @@ class TrackingWorker(QThread):
                     "crops": [],
                     "crop_to_det": [],
                     "crop_offsets": {},
+                    "all_obb_corners": _all_obb_corners,
                 }
                 if ret and meas and filtered_obb_corners:
+                    from multi_tracker.core.tracking.pose_features import (
+                        apply_foreign_obb_mask,
+                    )
+
                     for det_idx, corners in enumerate(filtered_obb_corners):
                         corners_arr = np.asarray(corners, dtype=np.float32)
                         crop, crop_offset = self._extract_expanded_obb_crop(
                             frame, corners_arr, padding_fraction
                         )
                         if crop is not None and crop.size > 0:
+                            if len(_all_obb_corners) > 1:
+                                other_corners = [
+                                    _all_obb_corners[j]
+                                    for j in range(len(_all_obb_corners))
+                                    if j != det_idx
+                                ]
+                                crop = apply_foreign_obb_mask(
+                                    crop,
+                                    crop_offset[0],
+                                    crop_offset[1],
+                                    other_corners,
+                                    background_color=_pose_bg_color,
+                                )
                             pf["crops"].append(crop)
                             pf["crop_to_det"].append(det_idx)
                             pf["crop_offsets"][det_idx] = crop_offset
@@ -1330,7 +1362,9 @@ class TrackingWorker(QThread):
         track_states, missed_frames = ["lost"] * N, [0] * N
         self.trajectories_full = [[] for _ in range(N)]
         trajectories_pruned = [[] for _ in range(N)]
-        position_deques = [deque(maxlen=2) for _ in range(N)]
+        position_deques = [
+            deque(maxlen=2) for _ in range(N)
+        ]  # entries: (x, y, frame_count)
         orientation_last, last_shape_info = [None] * N, [None] * N
         track_pose_prototypes = [None] * N
         track_avg_step = [0.0] * N
@@ -2067,7 +2101,11 @@ class TrackingWorker(QThread):
                     shapes,
                     self.kf_manager,
                     last_shape_info,
-                    meas_ori_directed=None,
+                    meas_ori_directed=(
+                        detection_directed_mask
+                        if len(detection_directed_mask) == len(meas)
+                        else None
+                    ),
                     association_data=association_data,
                 )
 
@@ -2087,6 +2125,7 @@ class TrackingWorker(QThread):
                     )
                 )
                 next_trajectory_id = next_id
+                respawned_matches = {r for r in rows if track_states[r] == "lost"}
 
                 # Conditionally compute confidence metrics (for performance)
                 save_confidence = params.get("SAVE_CONFIDENCE_METRICS", True)
@@ -2120,8 +2159,8 @@ class TrackingWorker(QThread):
                 # --- KF Update & State Update ---
                 total_cost = 0.0
                 for r, c in zip(rows, cols):
-                    x = float(meas[c][0])
-                    y = float(meas[c][1])
+                    meas_x = float(meas[c][0])
+                    meas_y = float(meas[c][1])
                     measured_theta = float(meas[c][2])
                     directed_heading = bool(
                         c < len(detection_directed_mask)
@@ -2145,22 +2184,40 @@ class TrackingWorker(QThread):
                     else:
                         pose_direction_fallback_count += 1
 
-                    # Vectorized manager handles the reshaping and indexing internally
+                    if r in respawned_matches:
+                        # Hard KF reset: Phase 3 assigns a new trajectory ID so
+                        # the KF must also start clean — mirrors the free_dets loop.
+                        self.trajectories_full[r].clear()
+                        trajectories_pruned[r].clear()
+                        position_deques[r].clear()
+                        track_avg_step[r] = 0.0
+                        local_counts[r] = 0
+                        orientation_last[r] = theta_for_tracking
+                        track_pose_prototypes[r] = None
+                        self.kf_manager.initialize_filter(
+                            r,
+                            np.array(
+                                [meas_x, meas_y, theta_for_tracking, 0.0, 0.0],
+                                dtype=np.float32,
+                            ),
+                        )
+
                     corrected_meas = np.asarray(
-                        [x, y, theta_for_tracking], dtype=np.float32
+                        [meas_x, meas_y, theta_for_tracking], dtype=np.float32
                     )
                     self.kf_manager.correct(r, corrected_meas)
+                    track_x = float(self.kf_manager.X[r, 0])
+                    track_y = float(self.kf_manager.X[r, 1])
+                    if not (np.isfinite(track_x) and np.isfinite(track_y)):
+                        track_x, track_y = meas_x, meas_y
 
                     tracking_continuity[r] += 1
-                    position_deques[r].append((x, y))
-                    speed = (
-                        math.hypot(
-                            position_deques[r][1][0] - position_deques[r][0][0],
-                            position_deques[r][1][1] - position_deques[r][0][1],
-                        )
-                        if len(position_deques[r]) == 2
-                        else 0
-                    )
+                    position_deques[r].append((track_x, track_y, self.frame_count))
+                    if len(position_deques[r]) == 2:
+                        (px1, py1, pf1), (px2, py2, pf2) = position_deques[r]
+                        speed = math.hypot(px2 - px1, py2 - py1) / max(1, pf2 - pf1)
+                    else:
+                        speed = 0
                     orientation_last[r] = self._smooth_orientation(
                         r,
                         theta_for_tracking,
@@ -2235,7 +2292,7 @@ class TrackingWorker(QThread):
                         theta_out = (theta_out + np.pi) % (2 * np.pi)
 
                     # Update trajectory with actual frame index
-                    pt = (int(x), int(y), theta_out, actual_frame_index)
+                    pt = (int(track_x), int(track_y), theta_out, actual_frame_index)
                     self.trajectories_full[r].append(pt)
                     trajectories_pruned[r].append(pt)
 
@@ -2360,6 +2417,8 @@ class TrackingWorker(QThread):
                                 missed_frames[track_idx],
                                 tracking_continuity[track_idx],
                             ) = ("active", 0, 0)
+                            self.trajectories_full[track_idx].clear()
+                            trajectories_pruned[track_idx].clear()
                             trajectory_ids[track_idx] = next_trajectory_id
                             orientation_last[track_idx] = theta_init
                             last_shape_info[track_idx] = (
@@ -2378,7 +2437,11 @@ class TrackingWorker(QThread):
                             track_avg_step[track_idx] = 0.0
                             position_deques[track_idx].clear()
                             position_deques[track_idx].append(
-                                (float(meas[d_idx][0]), float(meas[d_idx][1]))
+                                (
+                                    float(meas[d_idx][0]),
+                                    float(meas[d_idx][1]),
+                                    self.frame_count,
+                                )
                             )
                             local_counts[track_idx] = 0
                             next_trajectory_id += 1
@@ -2410,8 +2473,8 @@ class TrackingWorker(QThread):
                 if (
                     detection_initialized
                     and meas
-                    and "cols" in dir()
-                    and "rows" in dir()
+                    and "cols" in locals()
+                    and "rows" in locals()
                 ):
                     # Create mapping from detection index to track info
                     det_to_track = {}
@@ -2709,7 +2772,7 @@ class TrackingWorker(QThread):
                 new_deg = old_deg + math.copysign(p["MAX_ORIENT_DELTA_STOPPED"], delta)
             final_theta = math.radians(new_deg)
         elif speed >= p["VELOCITY_THRESHOLD"] and p["INSTANT_FLIP_ORIENTATION"]:
-            (x1, y1), (x2, y2) = position_deques[r]
+            (x1, y1, _), (x2, y2, _) = position_deques[r]
             ang = math.atan2(y2 - y1, x2 - x1)
             diff = (ang - theta + math.pi) % (2 * math.pi) - math.pi
             if abs(diff) > math.pi / 2:

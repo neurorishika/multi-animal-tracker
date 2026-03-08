@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -62,6 +63,11 @@ from PySide6.QtWidgets import (
 from multi_tracker.core.tracking.optimizer import DetectionCacheBuilderWorker
 
 from ..core.identity.analysis import IndividualDatasetGenerator
+from ..core.identity.pose_quality import (
+    apply_quality_to_dataframe,
+    apply_temporal_pose_postprocessing,
+    calibrate_body_length_prior,
+)
 from ..core.identity.properties_export import (
     POSE_SUMMARY_COLUMNS,
     augment_trajectories_with_pose_cache,
@@ -572,6 +578,14 @@ class InterpolatedCropsWorker(QThread):
                 needed_frames = sorted(frame_tasks.keys())
                 total_frames = len(needed_frames)
                 current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                # Accumulate pose crops across multiple frames before running
+                # inference.  One large batch call is far faster than one
+                # predict_batch call per frame (GPU utilisation is the bottleneck).
+                _pose_batch_size = int(
+                    self.params.get("INTERP_POSE_INFERENCE_BATCH_SIZE", 64)
+                )
+                _pending_crops: list = []
+                _pending_entries: list = []
                 for idx, f in enumerate(needed_frames, start=1):
                     if self._should_stop():
                         return
@@ -581,16 +595,17 @@ class InterpolatedCropsWorker(QThread):
                     current_pos = f + 1
                     if not ret or frame is None:
                         continue
-                    frame_pose_tasks = []
-                    for task in frame_tasks[f]:
-                        filename = ""
-                        corners = gen.ellipse_to_obb_corners(
-                            task["cx"],
-                            task["cy"],
-                            task["w"],
-                            task["h"],
-                            task["theta"],
+                    # Pre-compute all OBB corners for this frame so that
+                    # foreign-OBB masking can exclude overlapping animals.
+                    _frame_all_corners = [
+                        gen.ellipse_to_obb_corners(
+                            t["cx"], t["cy"], t["w"], t["h"], t["theta"]
                         )
+                        for t in frame_tasks[f]
+                    ]
+                    for task_idx, task in enumerate(frame_tasks[f]):
+                        filename = ""
+                        corners = _frame_all_corners[task_idx]
                         if save_interpolated_outputs:
                             filename = gen.save_interpolated_crop(
                                 frame=frame,
@@ -639,34 +654,50 @@ class InterpolatedCropsWorker(QThread):
                             pose_crop = None
                             pose_crop_info = None
                             try:
+                                _other_corners = [
+                                    c
+                                    for ci, c in enumerate(_frame_all_corners)
+                                    if ci != task_idx
+                                ]
                                 pose_crop, pose_crop_info = (
                                     gen._extract_obb_masked_crop(
                                         frame,
                                         corners,
                                         frame.shape[0],
                                         frame.shape[1],
+                                        other_corners_list=(
+                                            _other_corners if _other_corners else None
+                                        ),
                                     )
                                 )
                             except Exception:
                                 pose_crop = None
                                 pose_crop_info = None
                             if pose_crop is not None and pose_crop.size > 0:
-                                frame_pose_tasks.append(
+                                _pending_crops.append(pose_crop)
+                                _pending_entries.append(
                                     {
                                         "task": task,
                                         "filename": filename,
-                                        "crop": pose_crop,
                                         "crop_info": pose_crop_info,
                                     }
                                 )
 
-                    if pose_backend is not None and frame_pose_tasks:
+                    # Flush the pose batch when it reaches the target size or on the
+                    # last frame so we never carry unprocessed crops past finalization.
+                    _flush_batch = (
+                        pose_backend is not None
+                        and _pending_crops
+                        and (
+                            len(_pending_crops) >= _pose_batch_size
+                            or idx == total_frames
+                        )
+                    )
+                    if _flush_batch:
                         if self._should_stop():
                             return
-                        pose_results = pose_backend.predict_batch(
-                            [entry["crop"] for entry in frame_pose_tasks]
-                        )
-                        for pidx, entry in enumerate(frame_pose_tasks):
+                        pose_results = pose_backend.predict_batch(_pending_crops)
+                        for pidx, entry in enumerate(_pending_entries):
                             pose_out = (
                                 pose_results[pidx] if pidx < len(pose_results) else None
                             )
@@ -721,6 +752,8 @@ class InterpolatedCropsWorker(QThread):
                             }
                             pose_row.update(pose_wide)
                             interp_pose_rows.append(pose_row)
+                        _pending_crops.clear()
+                        _pending_entries.clear()
 
                     if idx % 25 == 0 or idx == total_frames:
                         progress = int((idx / total_frames) * 100)
@@ -2181,6 +2214,8 @@ class MainWindow(QMainWindow):
         self.detection_test_result = None  # Store detection test result
         self.current_video_path = None
         self.detected_sizes = None  # Store detected object sizes for statistics
+        self.batch_videos = []  # List of video paths for batch mode
+        self.current_batch_index = -1
 
         # ROI optimization tracking
         self.roi_crop_warning_shown = (
@@ -2703,8 +2738,61 @@ class MainWindow(QMainWindow):
             "color: #6a6a6a; font-size: 10px; font-style: italic;"
         )
         fl.addRow("", self.label_fps_info)
-
         vl_files.addLayout(fl)
+
+        # Batch Mode Section
+        self.g_batch = QGroupBox("Batch Mode (Multiple Videos)")
+        self.g_batch.setCheckable(True)
+        self.g_batch.setChecked(False)
+        self.g_batch.toggled.connect(self._on_batch_mode_toggled)
+        vl_batch = QVBoxLayout(self.g_batch)
+
+        # Warning label (always visible when group is open)
+        self.lbl_batch_warning = QLabel(
+            "⚠️ All videos in this batch will use the parameters currently selected for the Keystone video."
+        )
+        self.lbl_batch_warning.setWordWrap(True)
+        self.lbl_batch_warning.setStyleSheet(
+            "color: #f39c12; font-weight: bold; font-size: 11px; margin-bottom: 5px;"
+        )
+        vl_batch.addWidget(self.lbl_batch_warning)
+
+        # Container for the rest of the batch UI
+        self.container_batch = QWidget()
+        v_container = QVBoxLayout(self.container_batch)
+        v_container.setContentsMargins(0, 0, 0, 0)
+
+        batch_help = self._create_help_label(
+            "The 'Keystone' video (top of list) defines the tracking parameters. "
+            "Additional videos will save their own results using these shared settings."
+        )
+        v_container.addWidget(batch_help)
+
+        self.list_batch_videos = QListWidget()
+        self.list_batch_videos.setMaximumHeight(150)
+        self.list_batch_videos.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.list_batch_videos.itemClicked.connect(self._on_batch_video_selected)
+        self.list_batch_videos.itemDoubleClicked.connect(self._on_batch_video_selected)
+        v_container.addWidget(self.list_batch_videos)
+
+        batch_btns = QHBoxLayout()
+        self.btn_add_batch = QPushButton("Add Additional Videos...")
+        self.btn_add_batch.clicked.connect(self._add_videos_to_batch)
+        batch_btns.addWidget(self.btn_add_batch)
+
+        self.btn_remove_batch = QPushButton("Remove Selected")
+        self.btn_remove_batch.clicked.connect(self._remove_from_batch)
+        batch_btns.addWidget(self.btn_remove_batch)
+
+        self.btn_clear_batch = QPushButton("Clear Additional")
+        self.btn_clear_batch.clicked.connect(self._clear_batch)
+        batch_btns.addWidget(self.btn_clear_batch)
+        v_container.addLayout(batch_btns)
+
+        vl_batch.addWidget(self.container_batch)
+        self.container_batch.setVisible(False)  # Default hidden
+
+        vl_files.addWidget(self.g_batch)
         form.addWidget(g_files)
 
         # ============================================================
@@ -4738,6 +4826,81 @@ class MainWindow(QMainWindow):
             self.lbl_relink_pose_max_distance, self.spin_relink_pose_max_distance
         )
 
+        self.spin_pose_export_min_valid_fraction = QDoubleSpinBox()
+        self.spin_pose_export_min_valid_fraction.setRange(0.0, 1.0)
+        self.spin_pose_export_min_valid_fraction.setSingleStep(0.05)
+        self.spin_pose_export_min_valid_fraction.setDecimals(2)
+        self.spin_pose_export_min_valid_fraction.setValue(0.5)
+        self.spin_pose_export_min_valid_fraction.setToolTip(
+            "Minimum fraction of valid keypoints required for a pose row to be accepted.\n"
+            "Rows below this threshold have all confidence values zeroed but are kept\n"
+            "in the output with quality flags. Only active when pose extraction is enabled.\n"
+            "Range: 0.0–1.0. Recommended: 0.3–0.6."
+        )
+        self.lbl_pose_export_min_valid_fraction = QLabel("Min valid keypoint fraction")
+        f_pp.addRow(
+            self.lbl_pose_export_min_valid_fraction,
+            self.spin_pose_export_min_valid_fraction,
+        )
+
+        self.spin_pose_export_min_valid_keypoints = QSpinBox()
+        self.spin_pose_export_min_valid_keypoints.setRange(1, 50)
+        self.spin_pose_export_min_valid_keypoints.setValue(3)
+        self.spin_pose_export_min_valid_keypoints.setToolTip(
+            "Minimum absolute count of valid keypoints required for a pose row to be accepted.\n"
+            "Both this threshold and the fraction threshold must be satisfied."
+        )
+        self.lbl_pose_export_min_valid_keypoints = QLabel("Min valid keypoints (count)")
+        f_pp.addRow(
+            self.lbl_pose_export_min_valid_keypoints,
+            self.spin_pose_export_min_valid_keypoints,
+        )
+
+        self.spin_relink_min_pose_quality = QDoubleSpinBox()
+        self.spin_relink_min_pose_quality.setRange(0.0, 1.0)
+        self.spin_relink_min_pose_quality.setSingleStep(0.05)
+        self.spin_relink_min_pose_quality.setDecimals(2)
+        self.spin_relink_min_pose_quality.setValue(0.4)
+        self.spin_relink_min_pose_quality.setToolTip(
+            "Minimum pose quality score required at both endpoints of a candidate\n"
+            "fragment pair before pose distance contributes to relinking score.\n"
+            "Below this threshold, relinking uses motion-only scoring."
+        )
+        self.lbl_relink_min_pose_quality = QLabel("Min pose quality for relinking")
+        f_pp.addRow(
+            self.lbl_relink_min_pose_quality,
+            self.spin_relink_min_pose_quality,
+        )
+
+        self.spin_pose_postproc_max_gap = QSpinBox()
+        self.spin_pose_postproc_max_gap.setRange(0, 50)
+        self.spin_pose_postproc_max_gap.setValue(5)
+        self.spin_pose_postproc_max_gap.setToolTip(
+            "Maximum consecutive missing frames to gap-fill via linear interpolation\n"
+            "during pose temporal post-processing. Set to 0 to disable gap-filling."
+        )
+        self.lbl_pose_postproc_max_gap = QLabel("Pose postproc max gap (frames)")
+        f_pp.addRow(
+            self.lbl_pose_postproc_max_gap,
+            self.spin_pose_postproc_max_gap,
+        )
+
+        self.spin_pose_temporal_outlier_zscore = QDoubleSpinBox()
+        self.spin_pose_temporal_outlier_zscore.setRange(0.0, 20.0)
+        self.spin_pose_temporal_outlier_zscore.setSingleStep(0.5)
+        self.spin_pose_temporal_outlier_zscore.setDecimals(1)
+        self.spin_pose_temporal_outlier_zscore.setValue(3.0)
+        self.spin_pose_temporal_outlier_zscore.setToolTip(
+            "Rolling z-score threshold for temporal keypoint outlier suppression.\n"
+            "Keypoint positions deviating beyond this threshold from their local\n"
+            "rolling mean are zeroed. Set to 0.0 to disable. Recommended: 2.5–5.0."
+        )
+        self.lbl_pose_temporal_outlier_zscore = QLabel("Pose temporal outlier z-score")
+        f_pp.addRow(
+            self.lbl_pose_temporal_outlier_zscore,
+            self.spin_pose_temporal_outlier_zscore,
+        )
+
         # Z-score based velocity breaking
         self.spin_max_velocity_zscore = QDoubleSpinBox()
         self.spin_max_velocity_zscore.setRange(0.0, 10.0)
@@ -5150,14 +5313,6 @@ class MainWindow(QMainWindow):
         f_config = QFormLayout(self.g_dataset_config)
         f_config.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
-        # Dataset name
-        self.line_dataset_name = QLineEdit()
-        self.line_dataset_name.setPlaceholderText("e.g., my_dataset_v1")
-        self.line_dataset_name.setToolTip(
-            "Name for the dataset (used for folder and zip file naming)."
-        )
-        f_config.addRow("Dataset name", self.line_dataset_name)
-
         # Class name
         self.line_dataset_class_name = QLineEdit()
         self.line_dataset_class_name.setPlaceholderText("e.g., ant")
@@ -5168,19 +5323,6 @@ class MainWindow(QMainWindow):
             "Examples: ant, bee, mouse, fish, etc."
         )
         f_config.addRow("Class label", self.line_dataset_class_name)
-
-        # Output directory
-        h_output = QHBoxLayout()
-        self.line_dataset_output = QLineEdit()
-        self.line_dataset_output.setPlaceholderText("Select output directory...")
-        self.line_dataset_output.setToolTip(
-            "Directory where the dataset will be saved."
-        )
-        self.btn_browse_output = QPushButton("Browse...")
-        self.btn_browse_output.clicked.connect(self._select_dataset_output_dir)
-        h_output.addWidget(self.line_dataset_output)
-        h_output.addWidget(self.btn_browse_output)
-        f_config.addRow("Output directory", h_output)
 
         vl_content.addWidget(self.g_dataset_config)
 
@@ -5402,27 +5544,6 @@ class MainWindow(QMainWindow):
         )
         ind_output_layout = QFormLayout(self.ind_output_group)
         ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
-        # Dataset name
-        self.line_individual_dataset_name = QLineEdit()
-        self.line_individual_dataset_name.setPlaceholderText("individual_dataset")
-        self.line_individual_dataset_name.setToolTip(
-            "Name for this dataset. Timestamp will be appended automatically."
-        )
-        ind_output_layout.addRow("Dataset name", self.line_individual_dataset_name)
-
-        # Output directory
-        h_ind_output = QHBoxLayout()
-        self.line_individual_output = QLineEdit()
-        self.line_individual_output.setPlaceholderText("Select output directory...")
-        self.line_individual_output.setToolTip(
-            "Directory where individual crops will be saved."
-        )
-        self.btn_browse_ind_output = QPushButton("Browse...")
-        self.btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
-        h_ind_output.addWidget(self.line_individual_output)
-        h_ind_output.addWidget(self.btn_browse_ind_output)
-        ind_output_layout.addRow("Output directory", h_ind_output)
 
         # Output format
         self.combo_individual_format = QComboBox()
@@ -5756,6 +5877,7 @@ class MainWindow(QMainWindow):
             self._sync_video_pose_overlay_controls
         )
         self.chk_enable_pose_extractor.toggled.connect(self._on_runtime_context_changed)
+        self.chk_enable_pose_extractor.toggled.connect(self._on_cleaning_toggled)
         fl_pose.addRow(self.chk_enable_pose_extractor)
 
         self.combo_pose_model_type = QComboBox()
@@ -5964,14 +6086,6 @@ class MainWindow(QMainWindow):
         # Hide/show entire content container
         self.active_learning_content.setVisible(enabled)
 
-    def _select_dataset_output_dir(self):
-        """Browse for dataset output directory."""
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Dataset Output Directory"
-        )
-        if directory:
-            self.line_dataset_output.setText(directory)
-
     def _open_training_dialog(self):
         class_name = self.line_dataset_class_name.text().strip() or "object"
         dialog = TrainYoloDialog(self, class_name=class_name)
@@ -6060,6 +6174,10 @@ class MainWindow(QMainWindow):
         """Called when DetectionCacheBuilderWorker finishes."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
+
+        if getattr(self, "_stop_all_requested", False):
+            return
+
         if not ok:
             QMessageBox.critical(
                 self,
@@ -6077,6 +6195,10 @@ class MainWindow(QMainWindow):
         """Called when DetectionCacheBuilderWorker finishes building the preview cache."""
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
+
+        if getattr(self, "_stop_all_requested", False):
+            return
+
         if not ok:
             QMessageBox.critical(
                 self,
@@ -6263,11 +6385,14 @@ class MainWindow(QMainWindow):
             )
             return
 
+        video_path = self.file_line.text().strip()
+        start_dir = os.path.dirname(video_path) if video_path else ""
+
         # Browse for dataset directory
         directory = QFileDialog.getExistingDirectory(
             self,
             "Select Dataset Directory",
-            self.line_dataset_output.text() if self.line_dataset_output.text() else "",
+            start_dir,
         )
 
         if not directory:
@@ -6392,11 +6517,12 @@ class MainWindow(QMainWindow):
 
     def _open_pose_label_ui(self):
         """Open a dataset folder in PoseKit Labeler."""
-        start_dir = (
-            self.line_individual_output.text().strip()
-            or self.line_dataset_output.text().strip()
-            or str(Path.home())
-        )
+        video_path = self.file_line.text().strip()
+        if video_path:
+            start_dir = os.path.dirname(video_path)
+        else:
+            start_dir = str(Path.home())
+
         directory = QFileDialog.getExistingDirectory(
             self,
             "Select Pose Dataset Folder",
@@ -7551,14 +7677,6 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to compute median color: {e}")
             QMessageBox.warning(self, "Error", f"Failed to compute median color:\n{e}")
 
-    def _select_individual_output_dir(self):
-        """Browse for individual dataset output directory."""
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Individual Dataset Output Directory"
-        )
-        if directory:
-            self.line_individual_output.setText(directory)
-
     def _on_yolo_batching_toggled(self, state):
         """Enable/disable YOLO batching controls based on checkbox."""
         if self._runtime_requires_fixed_yolo_batch():
@@ -7676,6 +7794,25 @@ class MainWindow(QMainWindow):
         self.spin_min_overlap_frames.setEnabled(enabled)
         self.chk_cleanup_temp_files.setEnabled(enabled)
 
+        # Pose quality widgets — visible only when post-processing AND pose export are active
+        pose_enabled = enabled and self._is_pose_export_enabled()
+        self.spin_pose_export_min_valid_fraction.setVisible(pose_enabled)
+        self.lbl_pose_export_min_valid_fraction.setVisible(pose_enabled)
+        self.spin_pose_export_min_valid_keypoints.setVisible(pose_enabled)
+        self.lbl_pose_export_min_valid_keypoints.setVisible(pose_enabled)
+        self.spin_relink_min_pose_quality.setVisible(pose_enabled)
+        self.lbl_relink_min_pose_quality.setVisible(pose_enabled)
+        self.spin_pose_postproc_max_gap.setVisible(pose_enabled)
+        self.lbl_pose_postproc_max_gap.setVisible(pose_enabled)
+        self.spin_pose_temporal_outlier_zscore.setVisible(pose_enabled)
+        self.lbl_pose_temporal_outlier_zscore.setVisible(pose_enabled)
+
+        self.spin_pose_export_min_valid_fraction.setEnabled(pose_enabled)
+        self.spin_pose_export_min_valid_keypoints.setEnabled(pose_enabled)
+        self.spin_relink_min_pose_quality.setEnabled(pose_enabled)
+        self.spin_pose_postproc_max_gap.setEnabled(pose_enabled)
+        self.spin_pose_temporal_outlier_zscore.setEnabled(pose_enabled)
+
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
     # =========================================================================
@@ -7700,6 +7837,16 @@ class MainWindow(QMainWindow):
             self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
         )
         if fp:
+            # If batch mode is checked, update the keystone
+            if self.g_batch.isChecked():
+                if not self.batch_videos:
+                    self.batch_videos = [fp]
+                else:
+                    if fp in self.batch_videos:
+                        self.batch_videos.remove(fp)
+                    self.batch_videos.insert(0, fp)
+                self._sync_batch_list_ui()
+
             self._setup_video_file(fp)
 
     def _setup_video_file(self, fp, skip_config_load=False):
@@ -7712,6 +7859,11 @@ class MainWindow(QMainWindow):
         """
         self.file_line.setText(fp)
         self.current_video_path = fp
+
+        # Reset caches for the new video
+        self.current_detection_cache_path = None
+        self.current_individual_properties_cache_path = None
+
         if self.roi_selection_active:
             self.clear_roi()
 
@@ -7735,6 +7887,13 @@ class MainWindow(QMainWindow):
         # Initialize video player
         self._init_video_player(fp)
 
+        # Update window title
+        self.setWindowTitle(f"Multi-Animal-Tracker - {os.path.basename(fp)}")
+
+        # Update Start/End frame spins
+        self.spin_start_frame.setValue(0)
+        self.spin_end_frame.setValue(self.video_total_frames - 1)
+
         # Auto-load config if it exists for this video (unless explicitly skipped)
         if not skip_config_load:
             config_path = get_video_config_path(fp)
@@ -7743,25 +7902,124 @@ class MainWindow(QMainWindow):
                 self.config_status_label.setText(
                     f"✓ Loaded: {os.path.basename(config_path)}"
                 )
-                self.config_status_label.setStyleSheet(
-                    "color: #4a9eff; font-style: italic; font-size: 10px;"
-                )
-                logger.info(
-                    f"Video selected: {fp} (auto-loaded config from {config_path})"
-                )
-            else:
-                self.config_status_label.setText(
-                    "No config found (using current settings)"
-                )
-                self.config_status_label.setStyleSheet(
-                    "color: #f39c12; font-style: italic; font-size: 10px;"
-                )
-                logger.info(
-                    f"Video selected: {fp} (no config found, using current settings)"
-                )
+        else:
+            self.config_status_label.setText(
+                "ℹ️ Using current UI parameters (Keystone)"
+            )
+            self.config_status_label.setStyleSheet(
+                "color: #f39c12; font-style: italic; font-size: 10px;"
+            )
 
-        # Enable full UI now that a video is loaded
+        # Enable controls
         self._apply_ui_state("idle")
+
+    def _on_batch_mode_toggled(self, checked):
+        """Handle showing/hiding batch controls and syncing keystone video."""
+        self.container_batch.setVisible(checked)
+        if checked:
+            self._sync_keystone_to_batch()
+        else:
+            # If turning off batch mode, keep the current video but reset batch tracking state
+            self.current_batch_index = -1
+
+    def _sync_keystone_to_batch(self):
+        """Ensure the currently loaded video is the FIRST item in the batch list."""
+        video_path = self.file_line.text().strip()
+        if not video_path:
+            return
+
+        if not self.batch_videos:
+            self.batch_videos = [video_path]
+        else:
+            # If current video is already in list, move it to top
+            if video_path in self.batch_videos:
+                self.batch_videos.remove(video_path)
+            self.batch_videos.insert(0, video_path)
+
+        self._sync_batch_list_ui()
+
+    def _sync_batch_list_ui(self):
+        """Refresh the batch list widget with markers for the keystone."""
+        self.list_batch_videos.clear()
+        current_fp = (
+            os.path.normpath(self.file_line.text().strip())
+            if self.file_line.text().strip()
+            else ""
+        )
+
+        for i, fp in enumerate(self.batch_videos):
+            norm_fp = os.path.normpath(fp)
+            if i == 0:
+                item_text = f"⭐ KEYSTONE: {fp}"
+            else:
+                item_text = fp
+
+            if norm_fp == current_fp:
+                item_text = f"▶ CURRENT: {item_text}"
+
+            item = QListWidgetItem(item_text)
+            item.setToolTip(fp)
+
+            if norm_fp == current_fp:
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+
+            self.list_batch_videos.addItem(item)
+
+            if norm_fp == current_fp:
+                self.list_batch_videos.setCurrentItem(item)
+
+    def _add_videos_to_batch(self):
+        """Add additional videos to the batch list."""
+        fps, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Additional Videos",
+            "",
+            "Video Files (*.mp4 *.avi *.mov *.mkv)",
+        )
+        if fps:
+            for fp in fps:
+                if fp not in self.batch_videos:
+                    self.batch_videos.append(fp)
+            self._sync_batch_list_ui()
+
+    def _on_batch_video_selected(self, *args):
+        """Load a video from the batch list for preview/tuning."""
+        row = self.list_batch_videos.currentRow()
+        if 0 <= row < len(self.batch_videos):
+            fp = self.batch_videos[row]
+            # If it's already the current video, do nothing
+            if fp == self.current_video_path:
+                return
+
+            # Skip config load so we keep using the keystone's parameters in the UI
+            self._setup_video_file(fp, skip_config_load=True)
+            self._sync_batch_list_ui()
+
+    def _remove_from_batch(self):
+        """Remove selected additional video from the batch list."""
+        row = self.list_batch_videos.currentRow()
+        if row == 0:
+            QMessageBox.information(
+                self,
+                "Cannot Remove",
+                "The Keystone video cannot be removed from the batch.",
+            )
+            return
+        if row > 0:
+            self.batch_videos.pop(row)
+            self._sync_batch_list_ui()
+
+    def _clear_batch(self):
+        """Clear all additional videos, keeping only the keystone."""
+        if len(self.batch_videos) > 1:
+            self.batch_videos = [self.batch_videos[0]]
+            self._sync_batch_list_ui()
+
+    def _process_batch(self):
+        """DEPRECATED: Now handled by the standard 'Start Full Tracking' logic when batch mode is on."""
+        pass
 
     def select_csv(self: object) -> object:
         """select_csv method documentation."""
@@ -10136,6 +10394,9 @@ class MainWindow(QMainWindow):
 
         # Stop all active workers and subprocess-like threads.
         self._request_qthread_stop(
+            getattr(self, "_cache_builder_worker", None), "DetectionCacheBuilderWorker"
+        )
+        self._request_qthread_stop(
             getattr(self, "merge_worker", None), "MergeWorker", timeout_ms=1200
         )
         self._request_qthread_stop(self.dataset_worker, "DatasetGenerationWorker")
@@ -10143,6 +10404,7 @@ class MainWindow(QMainWindow):
         self._request_qthread_stop(self.tracking_worker, "TrackingWorker")
         self._stop_csv_writer()
 
+        self._cleanup_thread_reference("_cache_builder_worker")
         self._cleanup_thread_reference("merge_worker")
         self._cleanup_thread_reference("dataset_worker")
         self._cleanup_thread_reference("interp_worker")
@@ -10365,6 +10627,9 @@ class MainWindow(QMainWindow):
                 remember_state=False,
             )
             self.btn_start.setEnabled(False)
+            self.btn_preview.setEnabled(False)
+            if hasattr(self, "btn_param_helper"):
+                self.btn_param_helper.setEnabled(False)
             self._set_video_interaction_enabled(False)
             self.g_video_player.setVisible(False)
             self._show_video_logo_placeholder()
@@ -10373,6 +10638,9 @@ class MainWindow(QMainWindow):
         if state == "idle":
             self._set_interactive_widgets_enabled(True)
             self.btn_start.setEnabled(True)
+            self.btn_preview.setEnabled(True)
+            if hasattr(self, "btn_param_helper"):
+                self.btn_param_helper.setEnabled(True)
             self._set_video_interaction_enabled(True)
             self._sync_contextual_controls()
             return
@@ -11733,6 +12001,17 @@ class MainWindow(QMainWindow):
                     # No merge needed, do cleanup now
                     # Pass the correct CSV path based on what we processed
                     self._finish_tracking_session(final_csv_path=processed_csv_path)
+        else:
+            logger.error("Tracking did not finish normally.")
+            QMessageBox.warning(
+                self,
+                "Tracking Failed",
+                "An error occurred during tracking. Check logs for details.",
+            )
+            if self.g_batch.isChecked():
+                self.current_batch_index = -1
+                logger.info("Batch mode aborted due to error.")
+            self._finish_tracking_session(final_csv_path=None)
 
     def _is_pose_export_enabled(self) -> bool:
         """Return True when pose extraction export should be produced."""
@@ -11808,6 +12087,118 @@ class MainWindow(QMainWindow):
                 final_csv_path,
             )
             return None
+
+        # Extract pose labels from the merged DataFrame
+        import re as _re
+
+        _kpt_re = _re.compile(r"^PoseKpt_(.+)_X$")
+        pose_labels = [
+            m.group(1) for col in with_pose_df.columns if (m := _kpt_re.match(str(col)))
+        ]
+
+        if pose_labels:
+            params = self.get_parameters_dict()
+            # Resolve anterior/posterior indices for body-length calibration
+            from multi_tracker.core.tracking.pose_features import (
+                resolve_pose_group_indices,
+            )
+
+            kpt_names = []
+            try:
+                from multi_tracker.core.identity.properties_cache import (
+                    IndividualPropertiesCache,
+                )
+
+                _cache_path = str(
+                    self.current_individual_properties_cache_path or ""
+                ).strip()
+                if _cache_path and os.path.exists(_cache_path):
+                    _cache = IndividualPropertiesCache(_cache_path, mode="r")
+                    try:
+                        kpt_names = [
+                            str(v)
+                            for v in (
+                                _cache.metadata.get("pose_keypoint_names", []) or []
+                            )
+                        ]
+                    finally:
+                        _cache.close()
+            except Exception:
+                pass
+            anterior_indices = resolve_pose_group_indices(
+                params.get("POSE_DIRECTION_ANTERIOR_KEYPOINTS", []), kpt_names
+            )
+            posterior_indices = resolve_pose_group_indices(
+                params.get("POSE_DIRECTION_POSTERIOR_KEYPOINTS", []), kpt_names
+            )
+
+            # Calibrate body-length prior from high-confidence frames
+            body_length_prior = None
+            if anterior_indices and posterior_indices:
+                try:
+                    body_length_prior = calibrate_body_length_prior(
+                        with_pose_df,
+                        pose_labels,
+                        anterior_indices,
+                        posterior_indices,
+                        min_valid_conf=float(
+                            params.get("POSE_MIN_KPT_CONF_VALID", 0.2)
+                        ),
+                    )
+                    if body_length_prior.is_valid:
+                        logger.info(
+                            "Body-length prior calibrated: median=%.1f px, MAD=%.1f px, n=%d",
+                            body_length_prior.median_px,
+                            body_length_prior.mad_px,
+                            body_length_prior.n_samples,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Body-length prior calibration failed; skipping anatomy check."
+                    )
+                    body_length_prior = None
+
+            # Per-frame quality gate
+            try:
+                with_pose_df = apply_quality_to_dataframe(
+                    with_pose_df,
+                    pose_labels,
+                    params,
+                    body_length_prior=body_length_prior,
+                    anterior_indices=anterior_indices if anterior_indices else None,
+                    posterior_indices=posterior_indices if posterior_indices else None,
+                )
+            except Exception:
+                logger.exception("Pose quality gating failed; using unfiltered pose.")
+
+            # Temporal post-processing per trajectory
+            max_gap = int(params.get("POSE_POSTPROC_MAX_GAP", 5))
+            z_threshold = float(params.get("POSE_TEMPORAL_OUTLIER_ZSCORE", 3.0))
+            if z_threshold > 0.0 and "TrajectoryID" in with_pose_df.columns:
+                try:
+                    parts = []
+                    for _, traj_group in with_pose_df.groupby(
+                        "TrajectoryID", sort=False
+                    ):
+                        parts.append(
+                            apply_temporal_pose_postprocessing(
+                                traj_group,
+                                pose_labels,
+                                max_gap=max_gap,
+                                z_score_threshold=z_threshold,
+                            )
+                        )
+                    if parts:
+                        with_pose_df = (
+                            pd.concat(parts, ignore_index=True)
+                            .sort_values(["TrajectoryID", "FrameID"], kind="stable")
+                            .reset_index(drop=True)
+                        )
+                except Exception:
+                    logger.exception(
+                        "Pose temporal post-processing failed; using unfiltered pose."
+                    )
+
         return with_pose_df
 
     def _export_pose_augmented_csv(self, final_csv_path):
@@ -12025,6 +12416,35 @@ class MainWindow(QMainWindow):
         else:
             self._show_session_summary()
 
+        # --- Batch Mode Continuation ---
+        if self.g_batch.isChecked() and self.current_batch_index >= 0:
+            self.current_batch_index += 1
+            if self.current_batch_index < len(self.batch_videos):
+                # Load next video
+                fp = self.batch_videos[self.current_batch_index]
+                self.list_batch_videos.setCurrentRow(self.current_batch_index)
+
+                # We MUST skip_config_load here to preserve the keystone parameters
+                # currently in the UI so they are applied to this video.
+                self._setup_video_file(fp, skip_config_load=True)
+
+                # Small delay to ensure UI updates before starting next
+                logger.info(
+                    f"Batch Mode: Starting next video ({self.current_batch_index + 1}/{len(self.batch_videos)})"
+                )
+                QTimer.singleShot(1000, lambda: self.start_tracking(preview_mode=False))
+            else:
+                # Batch complete
+                self.current_batch_index = -1
+                QMessageBox.information(
+                    self,
+                    "Batch Complete",
+                    f"Finished processing {len(self.batch_videos)} videos.",
+                )
+        else:
+            # Ensure reset if batch mode is disabled mid-run or not used
+            self.current_batch_index = -1
+
     def _generate_interpolated_individual_crops(self, csv_path):
         """Post-pass interpolation for occluded segments in individual dataset."""
         try:
@@ -12179,9 +12599,37 @@ class MainWindow(QMainWindow):
     ) -> object:
         """start_tracking method documentation."""
         if not preview_mode:
-            if not self.save_config():
+            # If batch mode group is checked, initialize batch processing
+            if self.g_batch.isChecked():
+                if self.current_batch_index < 0:
+                    res = QMessageBox.question(
+                        self,
+                        "Start Batch Process",
+                        f"This will process {len(self.batch_videos)} videos sequentially using the CURRENT parameters.\n\n"
+                        "Each video will have its own CSV and configuration file saved in its source directory.\n\n"
+                        "Continue?",
+                        QMessageBox.Yes | QMessageBox.No,
+                    )
+                    if res == QMessageBox.No:
+                        return
+
+                    # Start at the first video (Keystone)
+                    self.current_batch_index = 0
+                    self._sync_keystone_to_batch()
+                    fp = self.batch_videos[0]
+                    self.list_batch_videos.setCurrentRow(0)
+
+                    # Ensure the keystone video is loaded WITHOUT overwriting current UI params
+                    if self.current_video_path != fp:
+                        self._setup_video_file(fp, skip_config_load=True)
+
+            # Save config for the CURRENTLY LOADED video (this persists the keystone's params to the current video)
+            # In batch mode, we automatically overwrite to avoid halting the automated process.
+            if not self.save_config(prompt_if_exists=not self.g_batch.isChecked()):
                 # User cancelled config save, abort tracking
+                self.current_batch_index = -1  # Reset batch if cancelled
                 return
+
         video_fp = self.file_line.text()
         if not video_fp:
             QMessageBox.warning(self, "No video", "Please select a video file first.")
@@ -12778,6 +13226,11 @@ class MainWindow(QMainWindow):
             "MAX_OCCLUSION_GAP": self.spin_max_occlusion_gap.value(),
             "ENABLE_TRACKLET_RELINKING": self.chk_enable_tracklet_relinking.isChecked(),
             "RELINK_POSE_MAX_DISTANCE": self.spin_relink_pose_max_distance.value(),
+            "POSE_EXPORT_MIN_VALID_FRACTION": self.spin_pose_export_min_valid_fraction.value(),
+            "POSE_EXPORT_MIN_VALID_KEYPOINTS": self.spin_pose_export_min_valid_keypoints.value(),
+            "RELINK_MIN_POSE_QUALITY": self.spin_relink_min_pose_quality.value(),
+            "POSE_POSTPROC_MAX_GAP": self.spin_pose_postproc_max_gap.value(),
+            "POSE_TEMPORAL_OUTLIER_ZSCORE": self.spin_pose_temporal_outlier_zscore.value(),
             "MAX_VELOCITY_ZSCORE": self.spin_max_velocity_zscore.value(),
             "VELOCITY_ZSCORE_WINDOW": self.spin_velocity_zscore_window.value(),
             "VELOCITY_ZSCORE_MIN_VELOCITY": self.spin_velocity_zscore_min_vel.value()
@@ -12868,9 +13321,18 @@ class MainWindow(QMainWindow):
             "MIN_OVERLAP_FRAMES": self.spin_min_overlap_frames.value(),
             # Dataset generation parameters
             "ENABLE_DATASET_GENERATION": self.chk_enable_dataset_gen.isChecked(),
-            "DATASET_NAME": self.line_dataset_name.text(),
+            "DATASET_NAME": "",
             "DATASET_CLASS_NAME": self.line_dataset_class_name.text(),
-            "DATASET_OUTPUT_DIR": self.line_dataset_output.text(),
+            "DATASET_OUTPUT_DIR": (
+                os.path.join(
+                    os.path.dirname(self.current_video_path),
+                    f"{os.path.splitext(os.path.basename(self.current_video_path))[0]}_datasets",
+                    "active_learning",
+                    datetime.now().strftime("%Y%m%d_%H%M%S"),
+                )
+                if self.current_video_path
+                else ""
+            ),
             "DATASET_MAX_FRAMES": self.spin_dataset_max_frames.value(),
             "DATASET_CONF_THRESHOLD": self.spin_dataset_conf_threshold.value(),
             # Dataset-specific YOLO parameters from advanced config (for export, not tracking)
@@ -12931,9 +13393,16 @@ class MainWindow(QMainWindow):
             # Real-time Individual Dataset Generation parameters
             "ENABLE_INDIVIDUAL_DATASET": individual_image_save_enabled,
             "ENABLE_INDIVIDUAL_IMAGE_SAVE": individual_image_save_enabled,
-            "INDIVIDUAL_DATASET_NAME": self.line_individual_dataset_name.text().strip()
-            or "individual_dataset",
-            "INDIVIDUAL_DATASET_OUTPUT_DIR": self.line_individual_output.text(),
+            "INDIVIDUAL_DATASET_NAME": "",
+            "INDIVIDUAL_DATASET_OUTPUT_DIR": (
+                os.path.join(
+                    os.path.dirname(self.current_video_path),
+                    f"{os.path.splitext(os.path.basename(self.current_video_path))[0]}_datasets",
+                    "individual_crops",
+                )
+                if self.current_video_path
+                else ""
+            ),
             "INDIVIDUAL_OUTPUT_FORMAT": self.combo_individual_format.currentText().lower(),
             "INDIVIDUAL_SAVE_INTERVAL": self.spin_individual_interval.value(),
             "INDIVIDUAL_INTERPOLATE_OCCLUSIONS": self.chk_individual_interpolate.isChecked(),
@@ -13454,6 +13923,21 @@ class MainWindow(QMainWindow):
             self.spin_relink_pose_max_distance.setValue(
                 get_cfg("relink_pose_max_distance", default=0.45)
             )
+            self.spin_pose_export_min_valid_fraction.setValue(
+                get_cfg("pose_export_min_valid_fraction", default=0.5)
+            )
+            self.spin_pose_export_min_valid_keypoints.setValue(
+                get_cfg("pose_export_min_valid_keypoints", default=3)
+            )
+            self.spin_relink_min_pose_quality.setValue(
+                get_cfg("relink_min_pose_quality", default=0.4)
+            )
+            self.spin_pose_postproc_max_gap.setValue(
+                get_cfg("pose_postproc_max_gap", default=5)
+            )
+            self.spin_pose_temporal_outlier_zscore.setValue(
+                get_cfg("pose_temporal_outlier_zscore", default=3.0)
+            )
             self.spin_max_velocity_zscore.setValue(
                 get_cfg("max_velocity_zscore", default=0.0)
             )
@@ -13591,15 +14075,9 @@ class MainWindow(QMainWindow):
             self.chk_enable_dataset_gen.setChecked(
                 get_cfg("enable_dataset_generation", default=False)
             )
-            self.line_dataset_name.setText(get_cfg("dataset_name", default=""))
             self.line_dataset_class_name.setText(
                 get_cfg("dataset_class_name", default="object")
             )
-            # Skip output directory in preset mode
-            if not preset_mode:
-                self.line_dataset_output.setText(
-                    get_cfg("dataset_output_dir", default="")
-                )
             self.spin_dataset_max_frames.setValue(
                 get_cfg("dataset_max_frames", default=100)
             )
@@ -13782,14 +14260,6 @@ class MainWindow(QMainWindow):
                     default=False,
                 )
             )
-            self.line_individual_dataset_name.setText(
-                get_cfg("individual_dataset_name", default="individual_dataset")
-            )
-            # Skip output directory in preset mode
-            if not preset_mode:
-                self.line_individual_output.setText(
-                    get_cfg("individual_dataset_output_dir", default="")
-                )
             format_text = get_cfg("individual_output_format", default="png").upper()
             format_idx = self.combo_individual_format.findText(format_text)
             if format_idx >= 0:
@@ -14091,6 +14561,11 @@ class MainWindow(QMainWindow):
                 "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
                 "enable_tracklet_relinking": self.chk_enable_tracklet_relinking.isChecked(),
                 "relink_pose_max_distance": self.spin_relink_pose_max_distance.value(),
+                "pose_export_min_valid_fraction": self.spin_pose_export_min_valid_fraction.value(),
+                "pose_export_min_valid_keypoints": self.spin_pose_export_min_valid_keypoints.value(),
+                "relink_min_pose_quality": self.spin_relink_min_pose_quality.value(),
+                "pose_postproc_max_gap": self.spin_pose_postproc_max_gap.value(),
+                "pose_temporal_outlier_zscore": self.spin_pose_temporal_outlier_zscore.value(),
                 "max_velocity_zscore": self.spin_max_velocity_zscore.value(),
                 "velocity_zscore_window": self.spin_velocity_zscore_window.value(),
                 "velocity_zscore_min_velocity": self.spin_velocity_zscore_min_vel.value(),
@@ -14148,15 +14623,10 @@ class MainWindow(QMainWindow):
             {
                 # === DATASET GENERATION ===
                 "enable_dataset_generation": self.chk_enable_dataset_gen.isChecked(),
-                "dataset_name": self.line_dataset_name.text(),
                 "dataset_class_name": self.line_dataset_class_name.text(),
                 "dataset_max_frames": self.spin_dataset_max_frames.value(),
             }
         )
-
-        # Dataset output directory (device-specific)
-        if not preset_mode:
-            cfg["dataset_output_dir"] = self.line_dataset_output.text()
 
         cfg.update(
             {
@@ -14234,15 +14704,9 @@ class MainWindow(QMainWindow):
                 # === REAL-TIME INDIVIDUAL DATASET ===
                 "enable_individual_dataset": self._is_individual_image_save_enabled(),
                 "enable_individual_image_save": self._is_individual_image_save_enabled(),
-                "individual_dataset_name": self.line_individual_dataset_name.text().strip()
-                or "individual_dataset",
                 "individual_output_format": self.combo_individual_format.currentText().lower(),
             }
         )
-
-        # Individual output directory (device-specific)
-        if not preset_mode:
-            cfg["individual_dataset_output_dir"] = self.line_individual_output.text()
 
         cfg.update(
             {
@@ -14427,41 +14891,35 @@ class MainWindow(QMainWindow):
                 self.dataset_worker.deleteLater()
                 self.dataset_worker = None
 
-            # Validate parameters
-            dataset_name = self.line_dataset_name.text().strip()
-            output_dir = self.line_dataset_output.text().strip()
-
-            if not dataset_name:
-                QMessageBox.warning(
-                    self, "Dataset Generation Error", "Please enter a dataset name."
-                )
-                return
-
-            if not output_dir:
-                QMessageBox.warning(
-                    self,
-                    "Dataset Generation Error",
-                    "Please select an output directory.",
-                )
-                return
-
-            if not os.path.exists(output_dir):
-                QMessageBox.warning(
-                    self,
-                    "Dataset Generation Error",
-                    f"Output directory does not exist: {output_dir}",
-                )
-                return
-
             video_path = self.file_line.text()
-            # Use override path if provided (e.g. valid processed CSV), otherwise fallback to UI field
-            csv_path = override_csv_path if override_csv_path else self.csv_line.text()
-
             if not video_path or not os.path.exists(video_path):
                 QMessageBox.warning(
                     self, "Dataset Generation Error", "Source video file not found."
                 )
                 return
+
+            # Validate parameters
+            # Auto-compute output directory
+            output_dir = os.path.join(
+                os.path.dirname(video_path),
+                f"{os.path.splitext(os.path.basename(video_path))[0]}_datasets",
+                "active_learning",
+                datetime.now().strftime("%Y%m%d_%H%M%S"),
+            )
+
+            if not os.path.exists(output_dir):
+                try:
+                    os.makedirs(output_dir, exist_ok=True)
+                except Exception as e:
+                    QMessageBox.warning(
+                        self,
+                        "Dataset Generation Error",
+                        f"Could not create output directory: {output_dir}\nError: {e}",
+                    )
+                    return
+
+            # Use override path if provided (e.g. valid processed CSV), otherwise fallback to UI field
+            csv_path = override_csv_path if override_csv_path else self.csv_line.text()
 
             if not csv_path or not os.path.exists(csv_path):
                 QMessageBox.warning(
@@ -14493,7 +14951,7 @@ class MainWindow(QMainWindow):
                 csv_path=csv_path,
                 detection_cache_path=self.current_detection_cache_path,
                 output_dir=output_dir,
-                dataset_name=dataset_name,
+                dataset_name="",
                 class_name=class_name,
                 params=params,
                 max_frames=max_frames,

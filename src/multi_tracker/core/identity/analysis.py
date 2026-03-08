@@ -5,6 +5,8 @@ Extracts regions around detections for downstream processing.
 
 import json
 import logging
+import queue
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
@@ -77,6 +79,11 @@ class IndividualDatasetGenerator:
         self.total_saved = 0
         self.crops_dir = None
         self.metadata = []
+
+        # Async write thread — keeps disk I/O off the tracking/interpolation thread.
+        # A sentinel value of None is pushed to the queue to signal shutdown.
+        self._write_queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._write_thread: Optional[threading.Thread] = None
 
         # Initialize output directory
         if self.enabled and self.output_dir:
@@ -171,7 +178,10 @@ class IndividualDatasetGenerator:
             from datetime import datetime
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            dataset_folder_name = f"{self.dataset_name}_{timestamp}"
+            if self.dataset_name and str(self.dataset_name).strip():
+                dataset_folder_name = f"{self.dataset_name}_{timestamp}"
+            else:
+                dataset_folder_name = timestamp
         self.crops_dir = self.output_dir / dataset_folder_name / "images"
         self.crops_dir.mkdir(parents=True, exist_ok=True)
 
@@ -189,6 +199,33 @@ class IndividualDatasetGenerator:
                 pass
 
         logger.info(f"Individual dataset output directory: {self.crops_dir}")
+        self._start_write_thread()
+
+    def _start_write_thread(self) -> None:
+        """Start the background thread that drains the write queue."""
+        if self._write_thread is not None and self._write_thread.is_alive():
+            return
+        self._write_thread = threading.Thread(
+            target=self._write_worker, daemon=True, name="IndivDatasetWriter"
+        )
+        self._write_thread.start()
+
+    def _write_worker(self) -> None:
+        """Background worker: pop (crop, filepath, fmt, quality) tuples and write."""
+        while True:
+            item = self._write_queue.get()
+            if item is None:  # sentinel — shut down
+                break
+            crop, filepath, fmt, quality = item
+            try:
+                if fmt == "jpg":
+                    cv2.imwrite(
+                        str(filepath), crop, [cv2.IMWRITE_JPEG_QUALITY, quality]
+                    )
+                else:
+                    cv2.imwrite(str(filepath), crop)
+            except Exception as exc:
+                logger.warning("Async crop write failed (%s): %s", filepath, exc)
 
     def process_frame(
         self,
@@ -406,7 +443,9 @@ class IndividualDatasetGenerator:
             filename_override=filename,
         )
 
-    def _extract_obb_masked_crop(self, frame, corners, frame_h, frame_w):
+    def _extract_obb_masked_crop(
+        self, frame, corners, frame_h, frame_w, other_corners_list=None
+    ):
         """
         Extract a crop with only the OBB region visible.
 
@@ -474,6 +513,22 @@ class IndividualDatasetGenerator:
         background = cv2.bitwise_and(background, mask_inv)
         masked_crop = cv2.add(masked_crop, background)
 
+        # Option 1: suppress other animals' OBB regions before pose inference
+        if other_corners_list:
+            from multi_tracker.core.tracking.pose_features import apply_foreign_obb_mask
+
+            masked_crop = apply_foreign_obb_mask(
+                masked_crop,
+                x_min,
+                y_min,
+                other_corners_list,
+                background_color=(
+                    int(self.background_color)
+                    if isinstance(self.background_color, (int, float))
+                    else 128
+                ),
+            )
+
         crop_info = {
             "crop_size": (crop_w, crop_h),
             "crop_bbox": (x_min, y_min, x_max, y_max),
@@ -537,13 +592,11 @@ class IndividualDatasetGenerator:
 
             filepath = self.crops_dir / filename
 
-            # Save image
-            if self.output_format == "jpg":
-                cv2.imwrite(
-                    str(filepath), crop, [cv2.IMWRITE_JPEG_QUALITY, self.jpg_quality]
-                )
-            else:
-                cv2.imwrite(str(filepath), crop)
+            # Enqueue the write instead of blocking the calling thread.
+            # The background worker (_write_worker) performs the actual imwrite.
+            self._write_queue.put(
+                (crop.copy(), filepath, self.output_format, self.jpg_quality)
+            )
 
             # Store metadata
             metadata["filename"] = filename
@@ -566,6 +619,13 @@ class IndividualDatasetGenerator:
         """
         if not self.enabled or self.crops_dir is None:
             return None
+
+        # Drain the async write queue before writing metadata so that all crops
+        # are guaranteed to be on disk when the JSON is finalized.
+        if self._write_thread is not None and self._write_thread.is_alive():
+            self._write_queue.put(None)  # sentinel
+            self._write_thread.join()
+            self._write_thread = None
 
         # Save metadata JSON
         dataset_info = {

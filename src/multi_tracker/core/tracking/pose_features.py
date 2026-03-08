@@ -458,3 +458,112 @@ def resolve_tracking_theta(
         except Exception:
             pass
     return collapse_obb_axis_theta(measured_theta, reference_theta)
+
+
+# ---------------------------------------------------------------------------
+# Multi-animal crop contamination utilities
+# ---------------------------------------------------------------------------
+
+
+def apply_foreign_obb_mask(
+    crop: np.ndarray,
+    x_offset: int,
+    y_offset: int,
+    other_corners_list,
+    background_color: int = 128,
+) -> np.ndarray:
+    """Fill pixels in *crop* that belong to other animals' OBB regions.
+
+    Shifts each foreign OBB from frame coordinates into crop-local coordinates
+    and fills the polygon with *background_color* using ``cv2.fillPoly``.
+
+    Args:
+        crop: BGR (or grayscale) image crop extracted from the full frame.
+        x_offset: Horizontal offset of the crop's top-left corner in frame coords.
+        y_offset: Vertical offset of the crop's top-left corner in frame coords.
+        other_corners_list: Sequence of (4, 2) float32 arrays of OBB corners in
+            *frame* coordinates for every other detected animal.
+        background_color: Scalar fill value for suppressed regions (0–255).
+
+    Returns:
+        Modified copy of *crop* with foreign-animal regions filled.
+    """
+    if crop is None or not other_corners_list:
+        return crop
+
+    import cv2 as _cv2
+
+    out = crop.copy()
+    crop_h, crop_w = out.shape[:2]
+    fill = int(np.clip(background_color, 0, 255))
+    fill_color = (fill, fill, fill) if out.ndim == 3 else fill
+
+    for corners in other_corners_list:
+        try:
+            arr = np.asarray(corners, dtype=np.float32)
+            if arr.shape != (4, 2):
+                continue
+            local = arr.copy()
+            local[:, 0] -= float(x_offset)
+            local[:, 1] -= float(y_offset)
+            local[:, 0] = np.clip(local[:, 0], 0, crop_w - 1)
+            local[:, 1] = np.clip(local[:, 1], 0, crop_h - 1)
+            poly = local.astype(np.int32)
+            _cv2.fillPoly(out, [poly], fill_color)
+        except Exception:
+            continue
+
+    return out
+
+
+def filter_keypoints_by_foreign_obbs(
+    keypoints,
+    all_corners_list,
+    target_idx: int,
+) -> np.ndarray:
+    """Zero confidence of keypoints that fall inside another animal's OBB.
+
+    Operates on *global frame coordinates* (after crop back-projection).
+
+    Args:
+        keypoints: [K, 3] float32 array of (x, y, conf) in frame coordinates.
+        all_corners_list: List of (4, 2) float32 OBB corner arrays for every
+            detection in the frame (including the target).
+        target_idx: Index into *all_corners_list* identifying the current
+            animal — its own OBB is skipped.
+
+    Returns:
+        Modified copy of *keypoints* with contaminated entries having conf=0.
+        X/Y coordinates are preserved.
+    """
+    if keypoints is None:
+        return keypoints
+
+    import cv2 as _cv2
+
+    arr = np.asarray(keypoints, dtype=np.float32).copy()
+    if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+        return arr
+    if not all_corners_list:
+        return arr
+
+    for j, corners in enumerate(all_corners_list):
+        if j == target_idx:
+            continue
+        try:
+            poly = np.asarray(corners, dtype=np.float32)
+            if poly.shape != (4, 2):
+                continue
+            for k in range(len(arr)):
+                if arr[k, 2] <= 0.0:
+                    continue
+                x, y = float(arr[k, 0]), float(arr[k, 1])
+                if not (math.isfinite(x) and math.isfinite(y)):
+                    continue
+                dist = _cv2.pointPolygonTest(poly, (x, y), measureDist=False)
+                if dist >= 0.0:
+                    arr[k, 2] = 0.0
+        except Exception:
+            continue
+
+    return arr

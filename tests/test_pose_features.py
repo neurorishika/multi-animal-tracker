@@ -8,9 +8,11 @@ import numpy as np
 import pytest
 
 from multi_tracker.core.tracking.pose_features import (
+    apply_foreign_obb_mask,
     build_pose_detection_keypoint_map,
     compute_detection_pose_features,
     compute_pose_geometry_from_keypoints,
+    filter_keypoints_by_foreign_obbs,
     normalize_pose_keypoints,
     normalize_theta,
     parse_pose_group_tokens,
@@ -295,3 +297,176 @@ def test_compute_detection_pose_features_empty():
     out_kpts, out_vis = compute_detection_pose_features([], {}, [0], [1], [], 0.2)
     assert out_kpts == []
     assert len(out_vis) == 0
+
+
+# ---------------------------------------------------------------------------
+# apply_foreign_obb_mask
+# ---------------------------------------------------------------------------
+
+
+def _square_corners(x0, y0, size):
+    """Helper: axis-aligned square OBB corners as float32 (4, 2)."""
+    return np.array(
+        [[x0, y0], [x0 + size, y0], [x0 + size, y0 + size], [x0, y0 + size]],
+        dtype=np.float32,
+    )
+
+
+def test_apply_foreign_obb_mask_no_list_returns_crop():
+    crop = np.ones((50, 50, 3), dtype=np.uint8) * 200
+    result = apply_foreign_obb_mask(crop, 0, 0, [])
+    assert np.array_equal(result, crop)
+
+
+def test_apply_foreign_obb_mask_none_crop_returns_none():
+    result = apply_foreign_obb_mask(None, 0, 0, [_square_corners(0, 0, 10)])
+    assert result is None
+
+
+def test_apply_foreign_obb_mask_fills_foreign_region():
+    """Pixels inside the foreign OBB should be set to background_color."""
+    crop = np.ones((100, 100, 3), dtype=np.uint8) * 200
+    # Foreign OBB occupies top-left 30x30 of the frame; crop starts at (0, 0)
+    other = [_square_corners(0, 0, 30)]
+    result = apply_foreign_obb_mask(crop, 0, 0, other, background_color=128)
+    # Center of the foreign OBB should be filled
+    assert result[15, 15, 0] == 128
+    # Outside the OBB should be untouched
+    assert result[50, 50, 0] == 200
+
+
+def test_apply_foreign_obb_mask_applies_offset():
+    """Crop offset shifts foreign OBB into local coordinates correctly."""
+    crop = np.ones((50, 50, 3), dtype=np.uint8) * 200
+    # Foreign animal at frame coords (80, 80)–(110, 110); crop starts at (80, 80)
+    other = [_square_corners(80, 80, 30)]
+    result = apply_foreign_obb_mask(crop, 80, 80, other, background_color=0)
+    # Local (0,0) maps to frame (80,80) — should be filled
+    assert result[5, 5, 0] == 0
+    # Pixels that mapped outside the crop (clipped) should also be affected
+
+
+def test_apply_foreign_obb_mask_returns_copy():
+    """Original crop must not be mutated."""
+    crop = np.ones((50, 50, 3), dtype=np.uint8) * 200
+    other = [_square_corners(0, 0, 30)]
+    result = apply_foreign_obb_mask(crop, 0, 0, other, background_color=0)
+    assert result[10, 10, 0] == 0
+    assert crop[10, 10, 0] == 200  # original unchanged
+
+
+def test_apply_foreign_obb_mask_ignores_bad_shape():
+    """A corners array with wrong shape should be silently skipped."""
+    crop = np.ones((50, 50, 3), dtype=np.uint8) * 200
+    bad = [np.array([[0, 0], [10, 10]], dtype=np.float32)]  # shape (2, 2) not (4, 2)
+    result = apply_foreign_obb_mask(crop, 0, 0, bad, background_color=0)
+    # Crop should be unchanged since bad polygon was skipped
+    assert np.all(result == 200)
+
+
+def test_apply_foreign_obb_mask_grayscale():
+    """Grayscale (2-D) crops should be handled without error."""
+    crop = np.ones((50, 50), dtype=np.uint8) * 200
+    other = [_square_corners(0, 0, 20)]
+    result = apply_foreign_obb_mask(crop, 0, 0, other, background_color=50)
+    assert result[10, 10] == 50
+    assert result[40, 40] == 200
+
+
+# ---------------------------------------------------------------------------
+# filter_keypoints_by_foreign_obbs
+# ---------------------------------------------------------------------------
+
+
+def _make_kpts(*xys_conf):
+    """Build (K, 3) keypoints array from (x, y, conf) tuples."""
+    return np.array(xys_conf, dtype=np.float32)
+
+
+def _rect_obb(x0, y0, x1, y1):
+    """Axis-aligned rectangle as (4, 2) float32 OBB corners."""
+    return np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=np.float32)
+
+
+def test_filter_keypoints_by_foreign_obbs_none_returns_none():
+    result = filter_keypoints_by_foreign_obbs(None, [_rect_obb(0, 0, 50, 50)], 0)
+    assert result is None
+
+
+def test_filter_keypoints_by_foreign_obbs_empty_list():
+    kpts = _make_kpts((10.0, 10.0, 0.9))
+    result = filter_keypoints_by_foreign_obbs(kpts, [], 0)
+    assert result[0, 2] == pytest.approx(0.9)
+
+
+def test_filter_keypoints_by_foreign_obbs_zero_conf_kpt_skipped():
+    """Keypoints already at zero confidence should not be evaluated."""
+    kpts = _make_kpts((10.0, 10.0, 0.0))
+    all_obbs = [_rect_obb(100, 100, 200, 200), _rect_obb(0, 0, 50, 50)]
+    result = filter_keypoints_by_foreign_obbs(kpts, all_obbs, target_idx=0)
+    # conf was 0 going in; should remain 0, not touched
+    assert result[0, 2] == pytest.approx(0.0)
+
+
+def test_filter_keypoints_by_foreign_obbs_own_obb_skipped():
+    """Keypoints inside the target animal's own OBB should NOT be zeroed."""
+    # Target animal OBB covers (0–50, 0–50); target_idx=0
+    kpts = _make_kpts((10.0, 10.0, 0.9))  # inside own OBB
+    all_obbs = [_rect_obb(0, 0, 50, 50)]
+    result = filter_keypoints_by_foreign_obbs(kpts, all_obbs, target_idx=0)
+    assert result[0, 2] == pytest.approx(0.9)
+
+
+def test_filter_keypoints_by_foreign_obbs_foreign_obb_zeroes_conf():
+    """A keypoint inside another animal's OBB should have its conf zeroed."""
+    # Animal 0 at (0,0)–(50,50); animal 1 at (100,100)–(200,200)
+    # Keypoint at (120, 120) is inside animal 1's OBB
+    kpts = _make_kpts((120.0, 120.0, 0.8))
+    all_obbs = [_rect_obb(0, 0, 50, 50), _rect_obb(100, 100, 200, 200)]
+    result = filter_keypoints_by_foreign_obbs(kpts, all_obbs, target_idx=0)
+    assert result[0, 2] == pytest.approx(0.0)
+    # X/Y preserved
+    assert result[0, 0] == pytest.approx(120.0)
+    assert result[0, 1] == pytest.approx(120.0)
+
+
+def test_filter_keypoints_by_foreign_obbs_outside_foreign_obb_unchanged():
+    """A keypoint clearly outside all foreign OBBs should retain its conf."""
+    kpts = _make_kpts((10.0, 10.0, 0.85))  # inside own (target) OBB
+    all_obbs = [_rect_obb(0, 0, 50, 50), _rect_obb(100, 100, 200, 200)]
+    result = filter_keypoints_by_foreign_obbs(kpts, all_obbs, target_idx=0)
+    assert result[0, 2] == pytest.approx(0.85)
+
+
+def test_filter_keypoints_by_foreign_obbs_multiple_keypoints_mixed():
+    """Only keypoints inside foreign OBBs should be zeroed; others unchanged."""
+    # Target at (0,0)–(50,50); foreign at (80,80)–(130,130)
+    kpts = _make_kpts(
+        (10.0, 10.0, 0.9),  # inside own OBB — keep
+        (100.0, 100.0, 0.7),  # inside foreign OBB — zero
+        (200.0, 200.0, 0.6),  # outside all — keep
+    )
+    all_obbs = [_rect_obb(0, 0, 50, 50), _rect_obb(80, 80, 130, 130)]
+    result = filter_keypoints_by_foreign_obbs(kpts, all_obbs, target_idx=0)
+    assert result[0, 2] == pytest.approx(0.9)
+    assert result[1, 2] == pytest.approx(0.0)
+    assert result[2, 2] == pytest.approx(0.6)
+
+
+def test_filter_keypoints_by_foreign_obbs_returns_copy():
+    """Original keypoints array must not be mutated."""
+    kpts = _make_kpts((100.0, 100.0, 0.8))
+    all_obbs = [_rect_obb(0, 0, 50, 50), _rect_obb(80, 80, 130, 130)]
+    result = filter_keypoints_by_foreign_obbs(kpts, all_obbs, target_idx=0)
+    assert result[0, 2] == pytest.approx(0.0)
+    assert kpts[0, 2] == pytest.approx(0.8)  # original unchanged
+
+
+def test_filter_keypoints_by_foreign_obbs_ignores_bad_shape():
+    """OBB arrays with wrong shape should be silently skipped."""
+    kpts = _make_kpts((10.0, 10.0, 0.9))
+    bad_obb = np.array([[0, 0], [10, 10]], dtype=np.float32)  # shape (2, 2)
+    all_obbs = [_rect_obb(0, 0, 50, 50), bad_obb]
+    result = filter_keypoints_by_foreign_obbs(kpts, all_obbs, target_idx=0)
+    # Bad OBB skipped, own OBB skipped (target_idx=0) — conf unchanged
+    assert result[0, 2] == pytest.approx(0.9)

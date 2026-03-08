@@ -555,7 +555,6 @@ class TrackingOptimizer(QThread):
         tracking_continuity = [0] * N
 
         # ── Parameter-derived constants (constant across the loop) ────────────
-        _max_dist = params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
         _body_size = max(
             params.get("REFERENCE_BODY_SIZE", 20.0) * params.get("RESIZE_FACTOR", 1.0),
             5.0,
@@ -736,6 +735,11 @@ class TrackingOptimizer(QThread):
                     shapes,
                     kf_manager,
                     last_shape_info,
+                    meas_ori_directed=(
+                        detection_directed_mask
+                        if len(detection_directed_mask) == len(meas)
+                        else None
+                    ),
                     association_data=_association_data,
                 )
                 matched_r, matched_c, free_dets, next_trajectory_id, _ = (
@@ -752,6 +756,7 @@ class TrackingOptimizer(QThread):
                         _spatial_candidates,
                     )
                 )
+                respawned_matches = {r for r in matched_r if track_states[r] == "lost"}
 
                 # Snapshot predicted positions BEFORE correct() for innovation
                 # scoring (how far the KF prediction was from the measurement).
@@ -783,7 +788,10 @@ class TrackingOptimizer(QThread):
                         ),
                     )
                     m_cor = np.array([m[0], m[1], theta_cor], dtype=np.float32)
-                    if track_states[r] == "lost":
+                    if r in respawned_matches:
+                        _prev_positions.pop(r, None)
+                        _prev_vecs.pop(r, None)
+                        track_avg_step[r] = 0.0
                         kf_manager.initialize_filter(
                             r,
                             np.array(
@@ -792,17 +800,13 @@ class TrackingOptimizer(QThread):
                             ),
                         )
                     kf_manager.correct(r, m_cor)
+                    curr = kf_manager.X[r, :2].copy()
                     orientation_last[r] = _pf_normalize_theta(float(kf_manager.X[r, 2]))
                     # Update track_avg_step EMA — mirrors worker.py speed tracking
                     # so the advanced cost matrix gets accurate motion gate values.
                     _det_conf = float(_confs[c]) if _confs and c < len(_confs) else 0.0
                     if r in _prev_positions and _det_conf >= _high_conf_thresh:
-                        _step = float(
-                            np.linalg.norm(
-                                np.array([m[0], m[1]], dtype=np.float32)
-                                - _prev_positions[r]
-                            )
-                        )
+                        _step = float(np.linalg.norm(curr - _prev_positions[r]))
                         track_avg_step[r] = (
                             _feature_alpha * float(track_avg_step[r])
                             + (1.0 - _feature_alpha) * _step
@@ -1503,6 +1507,11 @@ class TrackingPreviewWorker(QThread):
                         shapes,
                         kf_manager,
                         last_shape_info,
+                        meas_ori_directed=(
+                            detection_directed_mask
+                            if len(detection_directed_mask) == len(meas)
+                            else None
+                        ),
                         association_data=_association_data,
                     )
                     matched_r, matched_c, free_dets, next_trajectory_id, _ = (
@@ -1532,6 +1541,7 @@ class TrackingPreviewWorker(QThread):
                         )
                         m_cor = np.array([m[0], m[1], theta_cor], dtype=np.float32)
                         if track_states[r] == "lost":
+                            trail[r].clear()
                             kf_manager.initialize_filter(
                                 r,
                                 np.array(
@@ -1577,6 +1587,7 @@ class TrackingPreviewWorker(QThread):
                                         dtype=np.float32,
                                     ),
                                 )
+                                trail[r].clear()
                                 orientation_last[r] = _pf_normalize_theta(theta_cor)
                                 track_states[r] = "active"
                                 missed_frames[r] = 0

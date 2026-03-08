@@ -2047,55 +2047,53 @@ def interpolate_trajectories(
 
     logger.info(f"Interpolating trajectories using {method} method (max_gap={max_gap})")
 
-    result_df = trajectories_df.copy()
+    # Pre-compute confidence columns once from the input DataFrame instead of
+    # recomputing (and mutating) the growing result_df on every iteration.
+    confidence_cols = [
+        col
+        for col in trajectories_df.columns
+        if col.lower().endswith("confidence") or col == "PositionUncertainty"
+    ]
 
-    # Process each trajectory separately
-    for traj_id in result_df["TrajectoryID"].unique():
-        mask = result_df["TrajectoryID"] == traj_id
-        traj_data = result_df[mask].copy()
+    # Accumulate per-trajectory results in a list and concat once at the end.
+    # The old pattern (filter + concat inside the loop) is O(T × n); this is O(n).
+    interpolated_parts: list = []
 
-        # Sort by FrameID and remove duplicates (keep first occurrence)
+    for traj_id, traj_data in trajectories_df.groupby("TrajectoryID", sort=False):
         traj_data = traj_data.sort_values("FrameID").reset_index(drop=True)
 
-        # Check for and remove duplicate FrameIDs
+        # Remove duplicate FrameIDs (keep first occurrence)
         if traj_data["FrameID"].duplicated().any():
             n_duplicates = traj_data["FrameID"].duplicated().sum()
             logger.warning(
                 f"Trajectory {traj_id} has {n_duplicates} duplicate FrameID(s). "
                 f"Keeping first occurrence of each frame."
             )
-            traj_data = traj_data.drop_duplicates(subset="FrameID", keep="first")
-            traj_data = traj_data.reset_index(drop=True)
+            traj_data = traj_data.drop_duplicates(
+                subset="FrameID", keep="first"
+            ).reset_index(drop=True)
 
-        # Get frame range
         min_frame = traj_data["FrameID"].min()
         max_frame = traj_data["FrameID"].max()
 
-        # Create complete frame range
-        all_frames = np.arange(min_frame, max_frame + 1)
+        # Fast-path: no gaps possible — skip reindex and interpolation entirely.
+        if len(traj_data) >= max_frame - min_frame + 1:
+            interpolated_parts.append(traj_data)
+            continue
 
-        # Reindex to include all frames
+        all_frames = np.arange(min_frame, max_frame + 1)
         traj_data = traj_data.set_index("FrameID").reindex(all_frames).reset_index()
         traj_data["TrajectoryID"] = traj_id
 
-        # Fill State column for interpolated frames
-        # Frames added by reindex will have NaN for State - set them to "occluded"
         if "State" in traj_data.columns:
             traj_data["State"] = traj_data["State"].fillna("occluded")
         else:
             traj_data["State"] = "occluded"
 
-        # Ensure confidence columns exist (will be NaN for interpolated frames)
-        confidence_cols = [
-            col
-            for col in result_df.columns
-            if col.lower().endswith("confidence") or col == "PositionUncertainty"
-        ]
         for col in confidence_cols:
             if col not in traj_data.columns:
                 traj_data[col] = np.nan
 
-        # Interpolate X and Y positions
         for col in ["X", "Y"]:
             traj_data[col] = _interpolate_column(
                 traj_data["FrameID"].values,
@@ -2104,7 +2102,6 @@ def interpolate_trajectories(
                 max_gap=max_gap,
             )
 
-        # Interpolate Theta using circular interpolation
         traj_data["Theta"] = _interpolate_angle(
             traj_data["FrameID"].values,
             traj_data["Theta"].values,
@@ -2112,13 +2109,9 @@ def interpolate_trajectories(
             max_gap=max_gap,
         )
 
-        # Remove old rows for this trajectory
-        result_df = result_df[result_df["TrajectoryID"] != traj_id]
+        interpolated_parts.append(traj_data)
 
-        # Append the interpolated data
-        result_df = pd.concat([result_df, traj_data], ignore_index=True)
-
-    # Sort the final result by TrajectoryID and FrameID
+    result_df = pd.concat(interpolated_parts, ignore_index=True)
     result_df = result_df.sort_values(["TrajectoryID", "FrameID"]).reset_index(
         drop=True
     )
@@ -2146,66 +2139,11 @@ def _relink_pose_labels(df: pd.DataFrame) -> list[str]:
 def _normalize_pose_keypoints_window(
     window_df: pd.DataFrame, pose_labels: list[str], min_valid_conf: float
 ):
-    if window_df is None or window_df.empty or not pose_labels:
-        return None, 0.0
+    from multi_tracker.core.identity.pose_quality import (
+        normalize_pose_keypoints_for_relink,
+    )
 
-    keypoints = np.full((len(pose_labels), 3), np.nan, dtype=np.float32)
-    keypoints[:, 2] = 0.0
-    valid_points = []
-    valid_weights = []
-
-    for idx, label in enumerate(pose_labels):
-        x_col = f"PoseKpt_{label}_X"
-        y_col = f"PoseKpt_{label}_Y"
-        c_col = f"PoseKpt_{label}_Conf"
-        if (
-            x_col not in window_df.columns
-            or y_col not in window_df.columns
-            or c_col not in window_df.columns
-        ):
-            continue
-
-        vals = window_df[[x_col, y_col, c_col]].copy()
-        vals = vals.replace([np.inf, -np.inf], np.nan).dropna()
-        if vals.empty:
-            continue
-        vals = vals[vals[c_col] >= float(min_valid_conf)]
-        if vals.empty:
-            continue
-
-        x = float(vals[x_col].median())
-        y = float(vals[y_col].median())
-        conf = float(vals[c_col].median())
-        keypoints[idx] = np.array([x, y, conf], dtype=np.float32)
-        valid_points.append((x, y))
-        valid_weights.append(max(1e-6, conf))
-
-    if not valid_points:
-        return None, 0.0
-
-    pts_arr = np.asarray(valid_points, dtype=np.float64)
-    w_arr = np.asarray(valid_weights, dtype=np.float64)
-    cx = float(np.average(pts_arr[:, 0], weights=w_arr))
-    cy = float(np.average(pts_arr[:, 1], weights=w_arr))
-    centered = pts_arr - np.array([[cx, cy]], dtype=np.float64)
-    radii = np.sqrt(np.sum(centered**2, axis=1))
-    scale = float(np.median(radii[radii > 1e-6])) if np.any(radii > 1e-6) else 1.0
-    scale = max(scale, 1.0)
-
-    normalized = np.full((len(pose_labels), 3), np.nan, dtype=np.float32)
-    normalized[:, 2] = 0.0
-    valid_counter = 0
-    for idx in range(len(pose_labels)):
-        x, y, conf = keypoints[idx]
-        if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(conf)):
-            continue
-        normalized[idx, 0] = np.float32((float(x) - cx) / scale)
-        normalized[idx, 1] = np.float32((float(y) - cy) / scale)
-        normalized[idx, 2] = np.float32(conf)
-        valid_counter += 1
-
-    visibility = float(valid_counter) / float(len(pose_labels)) if pose_labels else 0.0
-    return normalized, float(np.clip(visibility, 0.0, 1.0))
+    return normalize_pose_keypoints_for_relink(window_df, pose_labels, min_valid_conf)
 
 
 def _pose_paired_distance_relink(det_pose, track_pose, min_shared: int = 3):
@@ -2246,6 +2184,19 @@ def _pose_paired_distance_relink(det_pose, track_pose, min_shared: int = 3):
             np.sort(dists_arr)[:-cutoff] if cutoff < len(dists_arr) else dists_arr
         )
     return float(np.mean(dists_arr))
+
+
+def _get_window_quality(window_df: pd.DataFrame, fallback_visibility: float) -> float:
+    """Extract mean PoseQualityScore from a window df, falling back to visibility."""
+    if (
+        window_df is not None
+        and not window_df.empty
+        and "PoseQualityScore" in window_df.columns
+    ):
+        scores = window_df["PoseQualityScore"].dropna()
+        if not scores.empty:
+            return float(scores.mean())
+    return float(fallback_visibility)
 
 
 def _build_relink_fragment_summaries(
@@ -2316,6 +2267,9 @@ def _build_relink_fragment_summaries(
             end_window, pose_labels, min_pose_conf
         )
 
+        start_quality = _get_window_quality(start_window, start_vis)
+        end_quality = _get_window_quality(end_window, end_vis)
+
         traj_id_int = int(traj_id)
         fragments.append(
             {
@@ -2344,6 +2298,8 @@ def _build_relink_fragment_summaries(
                 "end_pose": end_pose,
                 "start_pose_visibility": start_vis,
                 "end_pose_visibility": end_vis,
+                "start_quality": start_quality,
+                "end_quality": end_quality,
             }
         )
         fragment_frames[traj_id_int] = frag_df
@@ -2375,6 +2331,7 @@ def relink_trajectories_with_pose(
     max_vel_break = float(max(1e-6, params.get("MAX_VELOCITY_BREAK", 100.0)))
     agreement_distance = float(max(1e-6, params.get("AGREEMENT_DISTANCE", 15.0)))
     pose_max_distance = float(max(1e-6, params.get("RELINK_POSE_MAX_DISTANCE", 0.45)))
+    min_pose_quality = float(max(0.0, params.get("RELINK_MIN_POSE_QUALITY", 0.4)))
     heading_gate = float(np.pi / 3.0)
     min_motion_speed = 1e-3
 
@@ -2412,10 +2369,18 @@ def relink_trajectories_with_pose(
                 heading_norm = float(heading_diff / np.pi)
 
             pose_norm = 0.0
-            if src["end_pose"] is not None and dst["start_pose"] is not None:
-                pose_dist = _pose_paired_distance_relink(
-                    src["end_pose"], dst["start_pose"]
-                )
+            src_end_pose = (
+                src["end_pose"]
+                if src.get("end_quality", 1.0) >= min_pose_quality
+                else None
+            )
+            dst_start_pose = (
+                dst["start_pose"]
+                if dst.get("start_quality", 1.0) >= min_pose_quality
+                else None
+            )
+            if src_end_pose is not None and dst_start_pose is not None:
+                pose_dist = _pose_paired_distance_relink(src_end_pose, dst_start_pose)
                 if pose_dist is not None:
                     if pose_dist > pose_max_distance:
                         continue
@@ -2546,22 +2511,23 @@ def _interpolate_column(frames, values, method="linear", max_gap=10):
         logger.warning(f"Interpolation failed: {e}, keeping original values")
         return values
 
-    # Interpolate all frames
     result = values.copy()
 
-    # Only interpolate within gaps smaller than max_gap
+    # Build a single boolean mask covering every position that falls inside a
+    # within-limit gap, then call interp_func once with all those positions.
+    # This replaces N_gap individual calls with one vectorised call, which is
+    # substantially faster for scipy interp1d / CubicSpline.
+    fill_mask = np.zeros(len(frames), dtype=bool)
     for i in range(len(valid_indices) - 1):
-        start_idx = valid_indices[i]
-        end_idx = valid_indices[i + 1]
-        gap_size = end_idx - start_idx - 1
+        gap_size = valid_indices[i + 1] - valid_indices[i] - 1
+        if 0 < gap_size <= max_gap:
+            fill_mask[valid_indices[i] + 1 : valid_indices[i + 1]] = True
 
-        if gap_size > 0 and gap_size <= max_gap:
-            # Interpolate this gap
-            gap_frames = frames[start_idx + 1 : end_idx]
-            try:
-                result[start_idx + 1 : end_idx] = interp_func(gap_frames)
-            except Exception:
-                pass  # Keep NaN if interpolation fails
+    if fill_mask.any():
+        try:
+            result[fill_mask] = interp_func(frames[fill_mask])
+        except Exception:
+            pass  # Keep NaN if interpolation fails
 
     return result
 
