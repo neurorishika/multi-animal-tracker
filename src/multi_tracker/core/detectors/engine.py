@@ -142,6 +142,8 @@ class YOLOOBBDetector:
         self.detect_model = None
         self.headtail_model = None
         self.headtail_backend = "none"
+        self.headtail_class_names = None  # populated for classkit_tiny N-class models
+        self.headtail_input_size = None  # (w, h) used during classkit_tiny training
         self.obb_predict_device = None
         self.detect_predict_device = None
         self.headtail_predict_device = None
@@ -153,7 +155,6 @@ class YOLOOBBDetector:
         self.onnx_imgsz = None
         self.onnx_batch_size = 1
         self.tensorrt_batch_size = 1
-        self._shapely_warning_shown = False  # Track if we've warned about shapely
         self.obb_mode = str(self.params.get("YOLO_OBB_MODE", "direct")).strip().lower()
         if self.obb_mode not in {"direct", "sequential"}:
             self.obb_mode = "direct"
@@ -609,7 +610,17 @@ class YOLOOBBDetector:
         return _TinyHeadClassifier(input_size=input_size)
 
     def _try_load_tiny_head_classifier(self, model_path_str: str):
-        """Load HeadTail.ipynb tiny classifier from .pth/.pt checkpoint/state dict."""
+        """Load a tiny head-tail classifier (.pth checkpoint).
+
+        Supports two checkpoint formats:
+        * **Notebook/legacy binary** – produced by ``_train_tiny_headtail`` in runner.py.
+          Classifier has a single output (sigmoid). Returns ``(model, None, input_size)``.
+        * **ClassKit N-class** – produced by ``_train_tiny_classify`` in runner.py.
+          Classifier has N outputs (softmax). Stores ``class_names`` alongside the model.
+          Returns ``(model, class_names, input_size)``.
+
+        Returns ``None`` when the file is not a recognised tiny checkpoint.
+        """
         import torch
 
         model_path = Path(model_path_str).expanduser().resolve()
@@ -619,19 +630,27 @@ class YOLOOBBDetector:
             return None
 
         try:
-            checkpoint = torch.load(str(model_path), map_location="cpu")
+            checkpoint = torch.load(
+                str(model_path), map_location="cpu", weights_only=False
+            )
         except Exception:
             return None
 
         state_dict = None
         input_size = (128, 64)
+        class_names = None
+
         if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
             state_dict = checkpoint.get("model_state_dict")
             maybe_size = checkpoint.get("input_size")
             if isinstance(maybe_size, (list, tuple)) and len(maybe_size) == 2:
                 input_size = (int(maybe_size[0]), int(maybe_size[1]))
+            # ClassKit checkpoints include class_names
+            raw_names = checkpoint.get("class_names")
+            if isinstance(raw_names, (list, tuple)) and raw_names:
+                class_names = [str(n) for n in raw_names]
         elif isinstance(checkpoint, (dict, OrderedDict)):
-            # Raw state dict save path used in HeadTail.ipynb
+            # Raw state-dict save path used in old HeadTail notebooks
             state_dict = checkpoint
         else:
             return None
@@ -644,20 +663,59 @@ class YOLOOBBDetector:
         if not any(str(k).startswith("features.") for k in keys):
             return None
 
-        model = self._build_tiny_head_classifier(input_size=input_size)
-        model.load_state_dict(state_dict, strict=True)
+        # Detect N-class vs binary by inspecting the last Linear output size.
+        linear_classifier_keys = sorted(
+            [k for k in keys if k.startswith("classifier.") and k.endswith(".weight")],
+            key=lambda k: int(k.split(".")[1]),
+        )
+        if not linear_classifier_keys:
+            return None
+        last_weight = state_dict[linear_classifier_keys[-1]]
+        n_out = int(last_weight.shape[0])
+
+        if n_out == 1:
+            # Binary notebook-format model – use the local minimal architecture.
+            try:
+                model = self._build_tiny_head_classifier(input_size=input_size)
+                model.load_state_dict(state_dict, strict=True)
+            except Exception:
+                return None
+        else:
+            # ClassKit N-class model – reconstruct via training.tiny_model.
+            try:
+                from multi_tracker.training.tiny_model import rebuild_from_checkpoint
+
+                model = rebuild_from_checkpoint({"model_state_dict": state_dict})
+            except Exception as exc:
+                logger.warning(
+                    "Failed to load ClassKit tiny head-tail classifier: %s", exc
+                )
+                return None
+
         model.to(self.device)
         model.eval()
-        return model
+        return model, class_names, input_size
 
     def _load_headtail_model(self, model_path_str: str):
         """Load optional head-tail model (tiny .pth or YOLO classify)."""
-        tiny_model = self._try_load_tiny_head_classifier(model_path_str)
-        if tiny_model is not None:
-            self.headtail_backend = "tiny"
-            self.headtail_model = tiny_model
+        tiny_result = self._try_load_tiny_head_classifier(model_path_str)
+        if tiny_result is not None:
+            tiny_model, class_names, input_size = tiny_result
+            self.headtail_class_names = class_names
+            self.headtail_input_size = input_size
             self.headtail_predict_device = None
-            logger.info("Loaded notebook tiny head-tail classifier.")
+            if class_names is not None:
+                self.headtail_backend = "classkit_tiny"
+                self.headtail_model = tiny_model
+                logger.info(
+                    "Loaded ClassKit tiny head-tail classifier (%d classes: %s).",
+                    len(class_names),
+                    ", ".join(class_names[:8]),
+                )
+            else:
+                self.headtail_backend = "tiny"
+                self.headtail_model = tiny_model
+                logger.info("Loaded notebook tiny head-tail classifier.")
             return
 
         model, predict_device = self._load_model_for_task(
@@ -681,8 +739,11 @@ class YOLOOBBDetector:
 
         if self.headtail_model_path:
             self._load_headtail_model(self.headtail_model_path)
-            if self.headtail_backend == "tiny":
-                logger.info("Head-tail tiny classifier model loaded.")
+            if self.headtail_backend not in ("yolo", "none"):
+                logger.info(
+                    "Head-tail tiny classifier model loaded (%s).",
+                    self.headtail_backend,
+                )
             else:
                 logger.info("YOLO head-tail classify model loaded.")
 
@@ -757,30 +818,73 @@ class YOLOOBBDetector:
             results = results[:1]
         return results
 
+    def _crops_to_tensor(self, source_crops, target_hw=None):
+        """Convert a list of BGR ndarray crops to a float32 RGB tensor [N,3,H,W]."""
+        import torch
+
+        tensors = []
+        for crop in source_crops:
+            c = np.asarray(crop)
+            if c.ndim == 2:
+                c = np.stack([c, c, c], axis=-1)
+            # Tracking frames are BGR; tiny models are trained on RGB crops.
+            if c.ndim == 3 and c.shape[2] == 3:
+                c = c[:, :, ::-1].copy()
+            if target_hw is not None:
+                import cv2
+
+                w, h = int(target_hw[0]), int(target_hw[1])
+                if c.shape[1] != w or c.shape[0] != h:
+                    c = cv2.resize(c, (w, h), interpolation=cv2.INTER_LINEAR)
+            t = torch.from_numpy(c).permute(2, 0, 1).float() / 255.0
+            tensors.append(t)
+        return torch.stack(tensors, dim=0)
+
     def _predict_headtail_results(self, source_crops):
         """Run head-tail classification in batches when possible."""
         if self.headtail_model is None or not source_crops:
             return []
 
-        if getattr(self, "headtail_backend", "yolo") == "tiny":
+        backend = getattr(self, "headtail_backend", "yolo")
+
+        if backend == "tiny":
             import torch
 
-            tensors = []
-            for crop in source_crops:
-                c = np.asarray(crop)
-                if c.ndim == 2:
-                    c = np.stack([c, c, c], axis=-1)
-                # Notebook training pipeline labels canonical crops from RGB frames.
-                # Tracking frames here are BGR, so convert to RGB for tiny-classifier parity.
-                if c.ndim == 3 and c.shape[2] == 3:
-                    c = c[:, :, ::-1].copy()
-                t = torch.from_numpy(c).permute(2, 0, 1).float() / 255.0
-                tensors.append(t)
-            batch = torch.stack(tensors, dim=0).to(self.device)
+            batch = self._crops_to_tensor(source_crops).to(self.device)
             with torch.inference_mode():
                 logits = self.headtail_model(batch)
                 probs = torch.sigmoid(logits).squeeze(1).detach().cpu().numpy()
             return probs
+
+        if backend == "classkit_tiny":
+            import torch
+            import torch.nn.functional as F
+
+            target_hw = getattr(self, "headtail_input_size", None)
+            batch = self._crops_to_tensor(source_crops, target_hw=target_hw).to(
+                self.device
+            )
+            class_names = getattr(self, "headtail_class_names", None) or []
+            with torch.inference_mode():
+                logits = self.headtail_model(batch)  # [B, n_classes]
+                softmax = F.softmax(logits, dim=1)  # [B, n_classes]
+                top1_conf, top1_idx = softmax.max(dim=1)  # [B]
+                top1_conf = top1_conf.detach().cpu().numpy()
+                top1_idx = top1_idx.detach().cpu().numpy()
+
+            p_right_arr = []
+            for cls_idx, conf in zip(top1_idx, top1_conf):
+                label = self._label_from_top1(int(cls_idx), class_names)
+                direction = self._headtail_class_to_direction(
+                    label, cls_idx=int(cls_idx), names=class_names
+                )
+                if direction == "right":
+                    p_right_arr.append(float(conf))
+                elif direction == "left":
+                    p_right_arr.append(1.0 - float(conf))
+                else:
+                    p_right_arr.append(0.5)  # unknown class — abstain
+            return np.array(p_right_arr, dtype=np.float32)
 
         predict_device = getattr(self, "headtail_predict_device", self.device)
         try:
@@ -985,7 +1089,7 @@ class YOLOOBBDetector:
         if cls_results is None or len(cls_results) == 0:
             return heading_hints, directed_mask
 
-        if getattr(self, "headtail_backend", "yolo") == "tiny":
+        if getattr(self, "headtail_backend", "yolo") in ("tiny", "classkit_tiny"):
             probs = np.asarray(cls_results, dtype=np.float32).reshape(-1)
             n_eval = min(len(canonical_meta), len(probs))
             for j in range(n_eval):
@@ -2261,3 +2365,31 @@ def create_detector(params: object) -> object:
     else:
         logger.info("Creating background subtraction detector")
         return ObjectDetector(params)
+
+
+class DetectionFilter:
+    """
+    Lightweight post-hoc filter for cached raw YOLO detections.
+
+    Contains only confidence thresholding and OBB IOU NMS — the exact same logic
+    used by YOLOOBBDetector.filter_raw_detections — with no model loading.  Safe
+    to instantiate cheaply inside inner optimizer loops.
+
+    Usage::
+
+        filt = DetectionFilter(params)
+        meas, sizes, shapes, confs, corners, *_ = filt.filter_raw_detections(
+            raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners
+        )
+    """
+
+    def __init__(self, params):
+        self.params = params
+
+    # Assign the pure-logic methods from YOLOOBBDetector by reference.
+    # None of them access YOLO-model state; they only read self.params and call
+    # each other, so they work identically when bound to DetectionFilter instances.
+    _compute_obb_iou = YOLOOBBDetector._compute_obb_iou
+    _compute_obb_iou_batch = YOLOOBBDetector._compute_obb_iou_batch
+    _filter_overlapping_detections = YOLOOBBDetector._filter_overlapping_detections
+    filter_raw_detections = YOLOOBBDetector.filter_raw_detections

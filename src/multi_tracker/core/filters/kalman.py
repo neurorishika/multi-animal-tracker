@@ -128,9 +128,13 @@ class KalmanFilterManager:
         )
 
         # Maximum velocity constraint (pixels/frame, as multiplier of body size)
+        # Uses the scaled body size because the KF state lives in resized pixel space.
         reference_body_size = params.get("REFERENCE_BODY_SIZE", 20.0)
+        resize_factor = params.get("RESIZE_FACTOR", 1.0)
         max_velocity_multiplier = params.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0)
-        self.max_velocity = max_velocity_multiplier * reference_body_size
+        self.max_velocity = (
+            max_velocity_multiplier * reference_body_size * resize_factor
+        )
 
         # 1. Initialize State (N, 5)
         self.X = np.zeros((self.num_targets, self.dim_s), dtype=np.float32)
@@ -141,10 +145,19 @@ class KalmanFilterManager:
         self.P = np.stack([self.init_P.copy() for _ in range(num_targets)])
 
         # 3. Process Noise Parameters
-        q_sigma = params.get("KALMAN_NOISE_COVARIANCE", 0.03)
-        # High noise forward, low noise sideways (anisotropic)
-        q_long_multiplier = params.get("KALMAN_LONGITUDINAL_NOISE_MULTIPLIER", 5.0)
-        q_lat_multiplier = params.get("KALMAN_LATERAL_NOISE_MULTIPLIER", 0.1)
+        q_sigma = float(params.get("KALMAN_NOISE_COVARIANCE", 0.03))
+        # High noise forward, low noise sideways (anisotropic).
+        # If KALMAN_ANISOTROPY_RATIO is set the lateral multiplier is derived as
+        # long / ratio — user specifies the *shape* of the noise ellipse (biology),
+        # and the optimizer tunes the *scale* via KALMAN_LONGITUDINAL_NOISE_MULTIPLIER.
+        q_long_multiplier = float(
+            params.get("KALMAN_LONGITUDINAL_NOISE_MULTIPLIER", 5.0)
+        )
+        if "KALMAN_ANISOTROPY_RATIO" in params:
+            ratio = max(float(params["KALMAN_ANISOTROPY_RATIO"]), 1.0)
+            q_lat_multiplier = q_long_multiplier / ratio
+        else:
+            q_lat_multiplier = float(params.get("KALMAN_LATERAL_NOISE_MULTIPLIER", 0.1))
         self.q_long = q_sigma * q_long_multiplier
         self.q_lat = q_sigma * q_lat_multiplier
 
@@ -153,11 +166,13 @@ class KalmanFilterManager:
 
         # 4. Measurement Noise
         r_val = params.get("KALMAN_MEASUREMENT_NOISE_COVARIANCE", 0.1)
-        self.R = np.eye(self.dim_m, dtype=np.float32) * r_val
+        self.R = (np.eye(self.dim_m, dtype=np.float32) * float(r_val)).astype(
+            np.float32
+        )
 
         # 5. Transition Matrix F with Friction (Damping)
         # Prevents overshoot when an animal stops suddenly
-        damp = params.get("KALMAN_DAMPING", 0.95)
+        damp = float(params.get("KALMAN_DAMPING", 0.95))
         self.F = np.array(
             [
                 [1, 0, 0, damp, 0],
@@ -189,6 +204,13 @@ class KalmanFilterManager:
             self.X, self.P = _predict_kernel(
                 self.X, self.P, self.F, self.Q_base, self.q_long, self.q_lat
             )
+            # Cap per-diagonal covariance to prevent Mahalanobis distances from
+            # collapsing toward zero for tracks that have been coasting many frames.
+            # Position variance growing to 10,000+ makes essentially every detection
+            # in the frame look like a valid match, corrupting assignment.
+            _p_max = float(self.params.get("KALMAN_MAX_COVARIANCE_DIAGONAL", 1000.0))
+            _diag = np.arange(self.dim_s)
+            np.clip(self.P[:, _diag, _diag], 0.1, _p_max, out=self.P[:, _diag, _diag])
         else:
             # Basic NumPy Fallback (Standard isotropic prediction)
             for i in range(self.num_targets):
@@ -213,6 +235,11 @@ class KalmanFilterManager:
                 for j in range(5):
                     if self.P[i, j, j] < 0.1:
                         self.P[i, j, j] = 0.1
+
+            # Cap diagonal covariance (mirrors the Numba-path cap above)
+            _p_max = float(self.params.get("KALMAN_MAX_COVARIANCE_DIAGONAL", 1000.0))
+            _diag = np.arange(self.dim_s)
+            np.clip(self.P[:, _diag, _diag], 0.1, _p_max, out=self.P[:, _diag, _diag])
 
         # Apply age-dependent velocity damping AFTER prediction
         # Young tracks have their velocity heavily damped toward zero

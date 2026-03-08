@@ -292,10 +292,13 @@ class TrackAssigner:
             S_inv_batch,
             track_uncertainty,
             track_avg_step,
-            max(
-                self.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
-                / max(self.params.get("W_POSITION", 1.0), 1e-6),
-                50.0,
+            min(
+                max(
+                    self.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
+                    / max(self.params.get("W_POSITION", 1.0), 1e-6),
+                    50.0,
+                ),
+                self.params.get("MAX_DISTANCE_THRESHOLD", 1000.0) * 3.0,
             ),
         )
 
@@ -447,7 +450,12 @@ class TrackAssigner:
 
         MAX_DIST = p.get("MAX_DISTANCE_THRESHOLD", 1000.0)
         cull_threshold = (
-            max(MAX_DIST / p["W_POSITION"], 50.0) if p["W_POSITION"] > 0 else 1e6
+            min(
+                max(MAX_DIST / max(p.get("W_POSITION", 1.0), 1e-6), 50.0),
+                MAX_DIST * 3.0,  # never search beyond 3× the hard distance limit
+            )
+            if p.get("W_POSITION", 1.0) > 0
+            else 1e6
         )
 
         if self._advanced_association_enabled(association_data):
@@ -554,9 +562,46 @@ class TrackAssigner:
         if M == 0:
             return [], [], [], next_trajectory_id, []
 
-        THRESH = p.get("CONTINUITY_THRESHOLD", 10)
+        # KALMAN_MATURITY_AGE is a frame count — use it to gate Phase-1 (Hungarian)
+        # vs Phase-2 (greedy). CONTINUITY_THRESHOLD stores a pixel value for the
+        # recovery search distance and must NOT be used here.
+        THRESH = p.get("KALMAN_MATURITY_AGE", 10)
         MAX_DIST = p["MAX_DISTANCE_THRESHOLD"]
         USE_GREEDY = p.get("ENABLE_GREEDY_ASSIGNMENT", False)
+
+        # Velocity-plausibility gate for established (Phase-1) tracks.
+        #
+        # After predict(), kf_manager.X[r, :2] is already at the KF-predicted
+        # position for this frame — it includes the track's own velocity step.
+        # The "innovation" (distance from predicted pos → matched detection) must
+        # therefore be bounded by at most one frame of maximum physical movement.
+        # Any larger innovation means the solver is trying to snap the track to a
+        # detection that requires a physically impossible acceleration — almost
+        # always a cross-identity swap.  When rejected, the track is simply left
+        # unmatched and treated as occluded for this frame.
+        #
+        #   VEL_GATE = KALMAN_MAX_VELOCITY_MULTIPLIER × body_size (pixels / frame)
+        #
+        # Phase-2 (unstable) and Phase-3 (respawn) use the looser MAX_DIST gate
+        # because those tracks do not yet have a reliable velocity estimate.
+        _body_size = p.get("REFERENCE_BODY_SIZE", 20.0) * p.get("RESIZE_FACTOR", 1.0)
+        VEL_GATE = p.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0) * _body_size
+
+        # Pre-gate: block any (track, detection) pair whose raw Euclidean distance
+        # exceeds MAX_DIST before the Hungarian algorithm runs.
+        # When USE_MAHALANOBIS=True and a track's covariance P is large (coasting),
+        # Mahalanobis distances collapse toward zero for ALL detections — even those
+        # on the other side of the arena.  These near-zero costs corrupt the global
+        # optimisation, causing perfectly-tracked nearby tracks to lose their
+        # detections to the uncertain coasting track.  Setting cost=1e9 here
+        # prevents physically impossible assignments from being selected.
+        meas_xy = np.array([meas[j][:2] for j in range(M)], dtype=np.float32)
+        raw_dist_mat = np.linalg.norm(
+            np.asarray(kf_manager.X[:N, :2], dtype=np.float32)[:, None, :]
+            - meas_xy[None, :, :],
+            axis=2,
+        )  # shape (N, M)
+        cost[raw_dist_mat >= MAX_DIST] = 1e9
 
         # 1. Split tracks by state
         est = [
@@ -576,11 +621,11 @@ class TrackAssigner:
         # Phase 1: Established Tracks
         if est:
             if USE_GREEDY:
-                # Optimized Greedy
+                # Optimized Greedy — velocity gate applied to established tracks.
                 track_det_costs = []
                 for r in est:
                     for c in range(M):
-                        if cost[r, c] < MAX_DIST:
+                        if cost[r, c] < MAX_DIST and raw_dist_mat[r, c] < VEL_GATE:
                             track_det_costs.append((cost[r, c], r, c))
                 track_det_costs.sort()
                 assigned_r = set()
@@ -590,21 +635,24 @@ class TrackAssigner:
                         assigned_dets.add(c)
                         assigned_r.add(r)
             else:
-                # Hungarian
+                # Hungarian — velocity gate replaces the old raw_dist < MAX_DIST check.
                 rows, cols = linear_sum_assignment(cost[est, :])
                 for r_idx, c in zip(rows, cols):
                     r = est[r_idx]
-                    if cost[r, c] < MAX_DIST:
+                    if cost[r, c] < MAX_DIST and raw_dist_mat[r, c] < VEL_GATE:
                         all_assignments.append((r, c))
                         assigned_dets.add(c)
 
-        # Phase 2: Unstable Tracks
+        # Phase 2: Unstable Tracks — keep looser MAX_DIST gate (velocity not yet reliable).
         for r in sorted(unst, key=lambda i: tracking_continuity[i], reverse=True):
             avail = [j for j in range(M) if j not in assigned_dets]
             if not avail:
                 break
             best_c = avail[np.argmin(cost[r, avail])]
-            if cost[r, best_c] < MAX_DIST:
+            raw_dist = float(
+                np.linalg.norm(np.asarray(meas[best_c][:2]) - kf_manager.X[r, :2])
+            )
+            if cost[r, best_c] < MAX_DIST and raw_dist < MAX_DIST:
                 all_assignments.append((r, best_c))
                 assigned_dets.add(best_c)
 
@@ -639,7 +687,7 @@ class TrackAssigner:
                     if dist < best_c_val:
                         best_c_val, best_r = dist, r
 
-                if best_r is not None and best_c_val < MAX_DIST * 2.0:
+                if best_r is not None and best_c_val < MAX_DIST:
                     all_assignments.append((best_r, c))
                     assigned_dets.add(c)
                     lost.remove(best_r)

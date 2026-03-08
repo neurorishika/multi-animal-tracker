@@ -59,6 +59,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from multi_tracker.core.tracking.optimizer import DetectionCacheBuilderWorker
+
 from ..core.identity.analysis import IndividualDatasetGenerator
 from ..core.identity.properties_export import (
     POSE_SUMMARY_COLUMNS,
@@ -92,6 +94,7 @@ from ..utils.gpu_utils import (
     TENSORRT_AVAILABLE,
     TORCH_CUDA_AVAILABLE,
 )
+from .dialogs.parameter_helper import ParameterHelperDialog
 from .dialogs.train_yolo_dialog import TrainYoloDialog
 from .widgets.histograms import HistogramPanel
 
@@ -4113,6 +4116,17 @@ class MainWindow(QMainWindow):
         vl_core.addLayout(f_core)
         vbox.addWidget(g_core)
 
+        # Parameter Helper Button
+        self.btn_param_helper = QPushButton("Auto-Tune Tracking Parameters...")
+        self.btn_param_helper.clicked.connect(self._open_parameter_helper)
+        self.btn_param_helper.setStyleSheet(
+            "background-color: #0e639c; color: white; font-weight: bold; padding: 5px; margin-top: 5px;"
+        )
+        self.btn_param_helper.setToolTip(
+            "Run automated bayesian search to find optimal tracking parameters for your video."
+        )
+        vbox.addWidget(self.btn_param_helper)
+
         # Create accordion for advanced tracking settings
         self.tracking_accordion = AccordionContainer()
 
@@ -4131,6 +4145,8 @@ class MainWindow(QMainWindow):
 
         self.spin_kalman_noise = QDoubleSpinBox()
         self.spin_kalman_noise.setRange(0.0, 1.0)
+        self.spin_kalman_noise.setDecimals(4)
+        self.spin_kalman_noise.setSingleStep(0.001)
         self.spin_kalman_noise.setValue(0.03)
         self.spin_kalman_noise.setToolTip(
             "Process noise covariance (0.0-1.0) for motion prediction.\n"
@@ -4143,6 +4159,8 @@ class MainWindow(QMainWindow):
 
         self.spin_kalman_meas = QDoubleSpinBox()
         self.spin_kalman_meas.setRange(0.0, 1.0)
+        self.spin_kalman_meas.setDecimals(4)
+        self.spin_kalman_meas.setSingleStep(0.001)
         self.spin_kalman_meas.setValue(0.1)
         self.spin_kalman_meas.setToolTip(
             "Measurement noise covariance (0.0-1.0).\n"
@@ -4155,9 +4173,9 @@ class MainWindow(QMainWindow):
         )
 
         self.spin_kalman_damping = QDoubleSpinBox()
-        self.spin_kalman_damping.setRange(0.5, 0.99)
+        self.spin_kalman_damping.setRange(0.5, 0.999)
         self.spin_kalman_damping.setSingleStep(0.01)
-        self.spin_kalman_damping.setDecimals(2)
+        self.spin_kalman_damping.setDecimals(3)
         self.spin_kalman_damping.setValue(0.95)
         self.spin_kalman_damping.setToolTip(
             "Velocity damping coefficient (0.5-0.99).\n"
@@ -5992,6 +6010,224 @@ class MainWindow(QMainWindow):
         dialog = TrainYoloDialog(self, class_name=class_name)
         dialog.exec()
 
+    def _find_or_plan_optimizer_cache_path(
+        self, video_path: str, params: dict, start_frame: int, end_frame: int
+    ) -> tuple:
+        """
+        Return (cache_path, already_valid) where:
+          - cache_path  : best path to use (existing covering cache, or new build target)
+          - already_valid: True when that path exists AND covers start_frame..end_frame
+
+        Search order:
+          1. current_detection_cache_path (set by the last tracking run in this session)
+          2. Any *.npz file in the same directory whose name starts with the video stem
+             and is a compatible DetectionCache that covers the requested range
+          3. A freshly-computed optimizer-specific path (write target for new build)
+        """
+        import glob
+        import re
+
+        from multi_tracker.data.detection_cache import DetectionCache
+
+        def _is_valid(path: str) -> bool:
+            """Return True if *path* is a compatible cache covering the frame range."""
+            if not path or not os.path.exists(path):
+                return False
+            try:
+                dc = DetectionCache(path, mode="r")
+                ok = dc.is_compatible() and dc.covers_frame_range(
+                    start_frame, end_frame
+                )
+                dc.close()
+                return ok
+            except Exception:
+                return False
+
+        # 1. Production cache from current session
+        if _is_valid(self.current_detection_cache_path):
+            return self.current_detection_cache_path, True
+
+        # 2. Scan directory for any *.npz starting with the video stem
+        video_dir = os.path.dirname(video_path) or "."
+        stem = os.path.splitext(os.path.basename(video_path))[0]
+        candidates = sorted(
+            glob.glob(os.path.join(video_dir, f"{stem}*.npz")),
+            key=os.path.getmtime,
+            reverse=True,  # newest first
+        )
+        for candidate in candidates:
+            if _is_valid(candidate):
+                return candidate, True
+
+        # 3. Fallback: compute a write-target path for a new detection-only build
+        model_raw = os.path.splitext(
+            os.path.basename(params.get("YOLO_MODEL_PATH", "model"))
+        )[0]
+        model = re.sub(r"[^A-Za-z0-9_-]", "_", model_raw)
+        resize = int(params.get("RESIZE_FACTOR", 1.0) * 100)
+        new_path = os.path.join(video_dir, f"{stem}_{model}_r{resize}_opt_cache.npz")
+        return new_path, False
+
+    def _build_optimizer_detection_cache(
+        self, video_path: str, cache_path: str, params: dict
+    ):
+        """Spin up a DetectionCacheBuilderWorker and show progress in the main window."""
+        self._cache_builder_worker = DetectionCacheBuilderWorker(
+            video_path,
+            cache_path,
+            params,
+            self.spin_start_frame.value(),
+            self.spin_end_frame.value(),
+        )
+        self._cache_builder_worker.progress_signal.connect(self.on_progress_update)
+        self._cache_builder_worker.finished_signal.connect(
+            self._on_optimizer_cache_built
+        )
+        self.progress_bar.setVisible(True)
+        self.progress_label.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Building detection cache for optimizer...")
+        self._cache_builder_worker.start()
+
+    def _on_optimizer_cache_built(self, ok: bool, cache_path: str):
+        """Called when DetectionCacheBuilderWorker finishes."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        if not ok:
+            QMessageBox.critical(
+                self,
+                "Detection Failed",
+                "Could not build the detection cache. Check that the YOLO model "
+                "path is correct and that the video is readable.",
+            )
+            return
+        # Store built cache as the current cache so _open_parameter_helper finds it
+        self.current_detection_cache_path = cache_path
+        # Re-open the helper now that the cache is ready
+        self._open_parameter_helper()
+
+    def _on_preview_cache_built(self, ok: bool, cache_path: str):
+        """Called when DetectionCacheBuilderWorker finishes building the preview cache."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        if not ok:
+            QMessageBox.critical(
+                self,
+                "Detection Failed",
+                "Could not build the detection cache. Check that the YOLO model "
+                "path is correct and that the video is readable.",
+            )
+            return
+        self.current_detection_cache_path = cache_path
+        video_path = getattr(
+            self, "_pending_preview_video_path", self.file_line.text().strip()
+        )
+        self.start_preview_on_video(video_path)
+
+    def _open_parameter_helper(self):
+        """Open the tracking parameter selection helper dialog."""
+        video_path = self.file_line.text().strip()
+        if not video_path or not os.path.exists(video_path):
+            QMessageBox.warning(self, "No Video", "Please load a video first.")
+            return
+
+        start_frame = self.spin_start_frame.value()
+        end_frame = self.spin_end_frame.value()
+
+        if (end_frame - start_frame) > 1000:
+            QMessageBox.warning(
+                self,
+                "Range Too Large",
+                "The selected range is very large. For faster optimization, "
+                "please select a smaller slice (e.g., 100-500 frames) using "
+                "the 'Start Frame' and 'End Frame' boxes.",
+            )
+            return
+
+        params = self.get_parameters_dict()
+
+        cache_path, already_valid = self._find_or_plan_optimizer_cache_path(
+            video_path, params, start_frame, end_frame
+        )
+
+        if not already_valid:
+            # No suitable cache found — build one
+            res = QMessageBox.question(
+                self,
+                "Detection Required",
+                "No detection cache covering frames "
+                f"{start_frame}–{end_frame} was found.\n\n"
+                "Run a quick detection-only scan now?\n"
+                "(No config save, no pose inference, no CSV output — "
+                "detections only.)",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if res == QMessageBox.Yes:
+                self._build_optimizer_detection_cache(video_path, cache_path, params)
+            return  # dialog opens via _on_optimizer_cache_built when ready
+
+        dialog = ParameterHelperDialog(
+            video_path, cache_path, start_frame, end_frame, params, self
+        )
+
+        if dialog.exec() == QDialog.Accepted:
+            new_params = dialog.get_selected_params()
+            if new_params:
+                # Update UI elements with new parameters
+                if "YOLO_CONFIDENCE_THRESHOLD" in new_params:
+                    self.spin_yolo_confidence.setValue(
+                        new_params["YOLO_CONFIDENCE_THRESHOLD"]
+                    )
+                if "YOLO_IOU_THRESHOLD" in new_params:
+                    self.spin_yolo_iou.setValue(new_params["YOLO_IOU_THRESHOLD"])
+                if "MAX_DISTANCE_MULTIPLIER" in new_params:
+                    self.spin_max_dist.setValue(new_params["MAX_DISTANCE_MULTIPLIER"])
+                if "KALMAN_NOISE_COVARIANCE" in new_params:
+                    self.spin_kalman_noise.setValue(
+                        new_params["KALMAN_NOISE_COVARIANCE"]
+                    )
+                if "KALMAN_MEASUREMENT_NOISE_COVARIANCE" in new_params:
+                    self.spin_kalman_meas.setValue(
+                        new_params["KALMAN_MEASUREMENT_NOISE_COVARIANCE"]
+                    )
+
+                # Weights
+                if "W_POSITION" in new_params:
+                    self.spin_Wp.setValue(new_params["W_POSITION"])
+                if "W_ORIENTATION" in new_params:
+                    self.spin_Wo.setValue(new_params["W_ORIENTATION"])
+                if "W_AREA" in new_params:
+                    self.spin_Wa.setValue(new_params["W_AREA"])
+                if "W_ASPECT" in new_params:
+                    self.spin_Wasp.setValue(new_params["W_ASPECT"])
+
+                # Kalman dynamics & lifecycle
+                if "KALMAN_DAMPING" in new_params:
+                    self.spin_kalman_damping.setValue(new_params["KALMAN_DAMPING"])
+                if "KALMAN_MATURITY_AGE" in new_params:
+                    self.spin_kalman_maturity_age.setValue(
+                        new_params["KALMAN_MATURITY_AGE"]
+                    )
+                if "KALMAN_MAX_VELOCITY_MULTIPLIER" in new_params:
+                    self.spin_kalman_max_velocity.setValue(
+                        new_params["KALMAN_MAX_VELOCITY_MULTIPLIER"]
+                    )
+                if "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER" in new_params:
+                    self.spin_kalman_longitudinal_noise.setValue(
+                        new_params["KALMAN_LONGITUDINAL_NOISE_MULTIPLIER"]
+                    )
+                if "LOST_THRESHOLD_FRAMES" in new_params:
+                    self.spin_lost_thresh.setValue(new_params["LOST_THRESHOLD_FRAMES"])
+
+                # Signals from setValue() calls above fire _on_parameter_changed
+                # automatically, which calls get_parameters_dict() and emits
+                # parameters_changed — no extra sync call needed.
+                QMessageBox.information(
+                    self,
+                    "Parameters Applied",
+                    "The optimized parameters have been applied to the UI.",
+                )
+
     def _refresh_xanylabeling_envs(self):
         """Scan for conda environments starting with 'x-anylabeling-'."""
         self.combo_xanylabeling_env.clear()
@@ -6903,7 +7139,7 @@ class MainWindow(QMainWindow):
                 and not self._sleap_experimental_features_enabled()
             ):
                 # Show warning that runtime will revert to native
-                from PyQt5.QtWidgets import QMessageBox
+                from PySide6.QtWidgets import QMessageBox
 
                 QMessageBox.warning(
                     self,
@@ -12057,14 +12293,7 @@ class MainWindow(QMainWindow):
         # Reset first frame flag for auto-fit
         self._tracking_first_frame = True
         self.csv_writer_thread = None
-        self.tracking_worker = TrackingWorker(
-            video_path,
-            csv_writer_thread=None,
-            video_output_path=None,
-            backward_mode=False,
-            detection_cache_path=None,  # No caching in preview mode
-            preview_mode=True,  # Preview mode - frame-by-frame only
-        )
+
         params = self.get_parameters_dict()
         if not self._validate_yolo_model_requirements(
             params, mode_label="tracking preview"
@@ -12072,6 +12301,57 @@ class MainWindow(QMainWindow):
             return
         # Preview should always render frames regardless of visualization-free toggle
         params["VISUALIZATION_FREE_MODE"] = False
+
+        # Reuse an existing detection cache when one covers the current frame
+        # range — this ensures preview uses the same detections as the autotune
+        # preview instead of re-running live YOLO inference, which can produce
+        # slightly different detection sets and cause visible jumps.
+        start_frame = params.get("START_FRAME", 0)
+        end_frame = params.get("END_FRAME", 0)
+        cache_path, cache_valid = self._find_or_plan_optimizer_cache_path(
+            video_path, params, start_frame, end_frame
+        )
+
+        if not cache_valid:
+            res = QMessageBox.question(
+                self,
+                "Build Detection Cache",
+                "No detection cache found for this frame range.\n\n"
+                "Build one now for a consistent preview?\n"
+                "(Detection-only scan — no CSV output, no config save.)",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if res == QMessageBox.Yes:
+                self._pending_preview_video_path = video_path
+                self._cache_builder_worker = DetectionCacheBuilderWorker(
+                    video_path,
+                    cache_path,
+                    params,
+                    start_frame,
+                    end_frame,
+                )
+                self._cache_builder_worker.progress_signal.connect(
+                    self.on_progress_update
+                )
+                self._cache_builder_worker.finished_signal.connect(
+                    self._on_preview_cache_built
+                )
+                self.progress_bar.setVisible(True)
+                self.progress_label.setVisible(True)
+                self.progress_bar.setValue(0)
+                self.progress_label.setText("Building detection cache for preview...")
+                self._cache_builder_worker.start()
+                return  # Will resume via _on_preview_cache_built
+
+        self.tracking_worker = TrackingWorker(
+            video_path,
+            csv_writer_thread=None,
+            video_output_path=None,
+            backward_mode=False,
+            detection_cache_path=cache_path if cache_valid else None,
+            preview_mode=True,
+            use_cached_detections=cache_valid,
+        )
         self.tracking_worker.set_parameters(params)
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
@@ -12581,6 +12861,7 @@ class MainWindow(QMainWindow):
             "MAX_OBJECT_SIZE": max_object_size_pixels,
             "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
             "MAX_DISTANCE_THRESHOLD": max_distance_pixels,
+            "MAX_DISTANCE_MULTIPLIER": self.spin_max_dist.value(),
             "ENABLE_POSTPROCESSING": self.enable_postprocessing.isChecked(),
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
             "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
@@ -12612,6 +12893,13 @@ class MainWindow(QMainWindow):
             "KALMAN_MAX_VELOCITY_MULTIPLIER": self.spin_kalman_max_velocity.value(),
             "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER": self.spin_kalman_longitudinal_noise.value(),
             "KALMAN_LATERAL_NOISE_MULTIPLIER": self.spin_kalman_lateral_noise.value(),
+            # Derived anisotropy ratio for the autotune domain banner.
+            # Lateral = Longitudinal / ratio, so ratio = long / lat (clamped ≥ 1).
+            "KALMAN_ANISOTROPY_RATIO": max(
+                1.0,
+                self.spin_kalman_longitudinal_noise.value()
+                / max(self.spin_kalman_lateral_noise.value(), 1e-6),
+            ),
             "RESIZE_FACTOR": self.spin_resize.value(),
             "ENABLE_CONSERVATIVE_SPLIT": self.chk_conservative_split.isChecked(),
             "MERGE_AREA_THRESHOLD": self.spin_merge_threshold.value(),
@@ -15424,5 +15712,7 @@ class MainWindow(QMainWindow):
         plt.plot(fps_list)
         plt.xlabel("Frame Index")
         plt.ylabel("FPS")
+        plt.title("Tracking FPS Over Time")
+        plt.show()
         plt.title("Tracking FPS Over Time")
         plt.show()

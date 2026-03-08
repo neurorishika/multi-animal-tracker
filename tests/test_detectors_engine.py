@@ -124,7 +124,6 @@ def test_tensorrt_engine_path_is_model_adjacent_and_stable_across_ids(
         det.device = "cuda:0"
         det.use_tensorrt = False
         det.tensorrt_model_path = None
-        det._shapely_warning_shown = False
         det._try_load_tensorrt_model(str(model_path))
         assert det.use_tensorrt
         assert det.tensorrt_model_path is not None
@@ -176,7 +175,6 @@ def test_tensorrt_engine_path_is_batch_specific(tmp_path: Path, monkeypatch) -> 
         det.use_tensorrt = False
         det.tensorrt_model_path = None
         det.tensorrt_batch_size = 1
-        det._shapely_warning_shown = False
         det._try_load_tensorrt_model(str(model_path))
         assert det.use_tensorrt
         assert det.tensorrt_model_path is not None
@@ -232,7 +230,6 @@ def test_onnx_artifact_path_is_batch_specific_and_model_adjacent(
         det.onnx_model_path = None
         det.onnx_imgsz = None
         det.onnx_batch_size = 1
-        det._shapely_warning_shown = False
         det._try_load_onnx_model(str(model_path))
         assert det.use_onnx
         assert det.onnx_model_path is not None
@@ -287,7 +284,6 @@ def test_filter_raw_detections_applies_conf_size_and_target_limit() -> None:
         "MIN_OBJECT_SIZE": 40.0,
         "MAX_OBJECT_SIZE": 200.0,
     }
-    det._shapely_warning_shown = False
 
     meas = [
         np.array([10.0, 10.0, 0.0], dtype=np.float32),
@@ -326,7 +322,6 @@ def test_filter_raw_detections_applies_roi_mask() -> None:
         "MAX_TARGETS": 4,
         "ENABLE_SIZE_FILTERING": False,
     }
-    det._shapely_warning_shown = False
 
     roi = np.zeros((20, 20), dtype=np.uint8)
     roi[:, :10] = 255
@@ -362,7 +357,6 @@ def test_filter_raw_detections_filters_heading_hints_consistently() -> None:
         "MAX_TARGETS": 4,
         "ENABLE_SIZE_FILTERING": False,
     }
-    det._shapely_warning_shown = False
 
     meas = [
         np.array([5.0, 10.0, 0.0], dtype=np.float32),

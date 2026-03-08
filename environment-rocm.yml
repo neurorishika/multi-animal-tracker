@@ -27,7 +27,12 @@ dependencies:
 - opencv
 - scikit-image
 - pillow
-- shapely
+
+ # Hyperparameter optimization
+- optuna
+- optunahub
+- cmaes
+
 
   # Efficiency - CPU and GPU (ROCm)
 - numba

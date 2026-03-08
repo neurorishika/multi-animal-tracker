@@ -738,6 +738,11 @@ class TrackingWorker(QThread):
                 str(pose_cache_path), mode="w"
             )
 
+        # Cross-frame batch size: accumulate this many crops across frames before
+        # calling pose_backend.predict_batch.  Larger values → better GPU utilisation
+        # at the cost of slightly delayed writes.  64 is a good default.
+        _POSE_CROSS_FRAME_BATCH = int(params.get("POSE_PRECOMPUTE_BATCH_SIZE", 64))
+
         total_frames = max(1, end_frame - start_frame + 1)
         precompute_start_ts = time.time()
         cancelled = False
@@ -747,13 +752,55 @@ class TrackingWorker(QThread):
             f"Pose precompute: processing {total_frames} frame(s)...",
         )
 
+        # Accumulators for cross-frame batching
+        _pending: list = []  # list of per-frame dicts
+        _flat_crops: list = []  # every pending crop in arrival order
+
+        def _flush_pose_batch():
+            """Run inference on all accumulated crops and write results to cache."""
+            if not _pending:
+                return
+            if _flat_crops and pose_backend:
+                all_pred = pose_backend.predict_batch(_flat_crops)
+            else:
+                all_pred = []
+            out_offset = 0
+            for pf in _pending:
+                n_crops = len(pf["crops"])
+                batch_slice = all_pred[out_offset : out_offset + n_crops]
+                out_offset += n_crops
+                pose_outputs: list = [{} for _ in range(pf["n_dets"])]
+                for ci, det_idx in enumerate(pf["crop_to_det"]):
+                    if ci >= len(batch_slice):
+                        break
+                    out = batch_slice[ci]
+                    kpts = out.keypoints
+                    crop_offset = pf["crop_offsets"].get(det_idx)
+                    if kpts is not None and crop_offset is not None and len(kpts) > 0:
+                        x0, y0 = crop_offset
+                        gkpts = np.asarray(kpts, dtype=np.float32).copy()
+                        gkpts[:, 0] += float(x0)
+                        gkpts[:, 1] += float(y0)
+                    else:
+                        gkpts = kpts
+                    pose_outputs[det_idx] = {"keypoints": gkpts}
+                kp_list = [
+                    pose_outputs[d].get("keypoints", None) for d in range(pf["n_dets"])
+                ]
+                if pose_cache_writer:
+                    pose_cache_writer.add_frame(
+                        pf["frame_idx"], pf["det_ids"], pose_keypoints=kp_list
+                    )
+            _pending.clear()
+            _flat_crops.clear()
+
         try:
             for rel_idx, frame_idx in enumerate(range(start_frame, end_frame + 1)):
                 if self._stop_requested:
                     cancelled = True
                     break
 
-                # Get detections
+                # Get filtered detections from cache
                 (
                     raw_meas,
                     raw_sizes,
@@ -788,14 +835,7 @@ class TrackingWorker(QThread):
 
                 # Read frame
                 ret, frame = video_cap.read()
-                if not ret:
-                    if pose_cache_writer:
-                        pose_cache_writer.add_frame(
-                            frame_idx, detection_ids or [], pose_keypoints=[]
-                        )
-                    continue
-
-                if resize_f < 1.0:
+                if ret and resize_f < 1.0:
                     frame = cv2.resize(
                         frame,
                         (0, 0),
@@ -804,65 +844,38 @@ class TrackingWorker(QThread):
                         interpolation=cv2.INTER_AREA,
                     )
 
-                # Extract crops once
-                pose_keypoints = []
-
-                if meas and filtered_obb_corners:
-                    crops = []
-                    crop_to_det = []
-                    crop_offsets = {}
-
+                # Build per-frame record (crop extraction only — no inference yet)
+                pf: dict = {
+                    "frame_idx": frame_idx,
+                    "det_ids": detection_ids,
+                    "n_dets": len(meas),
+                    "crops": [],
+                    "crop_to_det": [],
+                    "crop_offsets": {},
+                }
+                if ret and meas and filtered_obb_corners:
                     for det_idx, corners in enumerate(filtered_obb_corners):
                         corners_arr = np.asarray(corners, dtype=np.float32)
                         crop, crop_offset = self._extract_expanded_obb_crop(
                             frame, corners_arr, padding_fraction
                         )
                         if crop is not None and crop.size > 0:
-                            crops.append(crop)
-                            crop_to_det.append(det_idx)
-                            crop_offsets[det_idx] = crop_offset
+                            pf["crops"].append(crop)
+                            pf["crop_to_det"].append(det_idx)
+                            pf["crop_offsets"][det_idx] = crop_offset
 
-                    if crops:
-                        if self._stop_requested:
-                            cancelled = True
-                            break
+                _pending.append(pf)
+                _flat_crops.extend(pf["crops"])
 
-                        if pose_backend:
-                            pose_outputs = [{} for _ in range(len(meas))]
-                            pred_outputs = pose_backend.predict_batch(crops)
-                            for crop_idx, det_idx in enumerate(crop_to_det):
-                                if crop_idx < len(pred_outputs):
-                                    out = pred_outputs[crop_idx]
-                                    crop_offset = crop_offsets.get(det_idx)
-                                    kpts = out.keypoints
-                                    if (
-                                        kpts is not None
-                                        and crop_offset is not None
-                                        and len(kpts) > 0
-                                    ):
-                                        x0, y0 = crop_offset
-                                        gkpts = np.asarray(
-                                            kpts, dtype=np.float32
-                                        ).copy()
-                                        gkpts[:, 0] += float(x0)
-                                        gkpts[:, 1] += float(y0)
-                                    else:
-                                        gkpts = kpts
-                                    pose_outputs[det_idx] = {"keypoints": gkpts}
-
-                            for det_idx in range(len(meas)):
-                                out = pose_outputs[det_idx]
-                                pose_keypoints.append(out.get("keypoints", None))
-
-                if pose_cache_writer:
-                    pose_cache_writer.add_frame(
-                        frame_idx,
-                        detection_ids,
-                        pose_keypoints=pose_keypoints,
-                    )
+                is_last = rel_idx == total_frames - 1
+                if len(_flat_crops) >= _POSE_CROSS_FRAME_BATCH or is_last:
+                    if self._stop_requested:
+                        cancelled = True
+                        break
+                    _flush_pose_batch()
 
                 processed_count = rel_idx + 1
-                if rel_idx % 10 == 0 or rel_idx == total_frames - 1:
+                if rel_idx % 10 == 0 or is_last:
                     elapsed = max(1e-6, time.time() - precompute_start_ts)
                     rate_fps = processed_count / elapsed
                     remaining = max(0, total_frames - processed_count)
@@ -884,7 +897,7 @@ class TrackingWorker(QThread):
             if cancelled or self._stop_requested:
                 logger.info("Unified precompute cancelled.")
                 self.progress_signal.emit(0, "Precompute cancelled.")
-                return None, False, None, False
+                return None, False  # was incorrectly returning 4 values before
 
             # Save caches
             if pose_cache_writer:
@@ -1297,7 +1310,13 @@ class TrackingWorker(QThread):
         assigner = TrackAssigner(p, worker=self)
 
         N = p["MAX_TARGETS"]
-        track_states, missed_frames = ["active"] * N, [0] * N
+        # Start all tracks as "lost" so the free_dets loop bootstraps each slot
+        # from the first frame's real detections via initialize_filter.  Starting
+        # as "active" with a zero-initialised KF state causes every track to sit
+        # at (0, 0) = top-left corner for LOST_THRESHOLD_FRAMES frames before it
+        # can be properly placed — producing a warm-up gap that the optimizer and
+        # TrackingPreviewWorker do not have, and causing parameter divergence.
+        track_states, missed_frames = ["lost"] * N, [0] * N
         self.trajectories_full = [[] for _ in range(N)]
         trajectories_pruned = [[] for _ in range(N)]
         position_deques = [deque(maxlen=2) for _ in range(N)]
