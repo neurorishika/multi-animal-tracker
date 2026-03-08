@@ -194,10 +194,16 @@ class TrackAssigner:
     def _advanced_association_enabled(self, association_data) -> bool:
         if not association_data:
             return False
-        return bool(
-            association_data.get("detection_pose_keypoints") is not None
-            or association_data.get("track_pose_prototypes") is not None
-        )
+        # A list full of None values means pose is disabled — only activate the
+        # advanced cost matrix when there is at least one actual (non-None) keypoint
+        # or prototype.  Using the key's mere presence (e.g. [None, None, …]) caused
+        # the worker to always take the advanced path while the optimizer/preview took
+        # the simple Numba path, making tuned parameters diverge in production.
+        kpts = association_data.get("detection_pose_keypoints")
+        protos = association_data.get("track_pose_prototypes")
+        has_kpts = kpts is not None and any(k is not None for k in kpts)
+        has_protos = protos is not None and any(p is not None for p in protos)
+        return has_kpts or has_protos
 
     def _compute_stage1_gate(
         self,
@@ -588,20 +594,38 @@ class TrackAssigner:
         VEL_GATE = p.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0) * _body_size
 
         # Pre-gate: block any (track, detection) pair whose raw Euclidean distance
-        # exceeds MAX_DIST before the Hungarian algorithm runs.
+        # exceeds the per-track gate before the Hungarian algorithm runs.
         # When USE_MAHALANOBIS=True and a track's covariance P is large (coasting),
         # Mahalanobis distances collapse toward zero for ALL detections — even those
         # on the other side of the arena.  These near-zero costs corrupt the global
         # optimisation, causing perfectly-tracked nearby tracks to lose their
         # detections to the uncertain coasting track.  Setting cost=1e9 here
         # prevents physically impossible assignments from being selected.
+        #
+        # Young tracks (continuity < KALMAN_MATURITY_AGE) have noisy KF predictions
+        # because they lack reliable velocity estimates; their predictions can drift
+        # far from the actual animal within a few frames.  We expand the gate for
+        # those tracks only, using KALMAN_YOUNG_GATE_MULTIPLIER, so the caller
+        # does not need to inflate MAX_DISTANCE_THRESHOLD globally (which would also
+        # widen the gate for mature tracks and increase swap probability there).
+        # Default is 1.0 so that existing configs without this key keep the old
+        # behaviour (uniform MAX_DIST gate for all tracks).  The auto-tuner's
+        # _DEFAULTS starts at 1.5, giving it the right search direction without
+        # breaking runs that haven't been re-tuned.
+        _young_mult = max(1.0, float(p.get("KALMAN_YOUNG_GATE_MULTIPLIER", 1.0)))
+        _per_track_gate = np.where(
+            np.array([tracking_continuity[r] for r in range(N)], dtype=np.float32)
+            < THRESH,
+            MAX_DIST * _young_mult,
+            MAX_DIST,
+        )  # shape (N,); young tracks get wider gate
         meas_xy = np.array([meas[j][:2] for j in range(M)], dtype=np.float32)
         raw_dist_mat = np.linalg.norm(
             np.asarray(kf_manager.X[:N, :2], dtype=np.float32)[:, None, :]
             - meas_xy[None, :, :],
             axis=2,
         )  # shape (N, M)
-        cost[raw_dist_mat >= MAX_DIST] = 1e9
+        cost[raw_dist_mat >= _per_track_gate[:, None]] = 1e9
 
         # 1. Split tracks by state
         est = [
@@ -643,7 +667,7 @@ class TrackAssigner:
                         all_assignments.append((r, c))
                         assigned_dets.add(c)
 
-        # Phase 2: Unstable Tracks — keep looser MAX_DIST gate (velocity not yet reliable).
+        # Phase 2: Unstable Tracks — expanded per-track gate (velocity not yet reliable).
         for r in sorted(unst, key=lambda i: tracking_continuity[i], reverse=True):
             avail = [j for j in range(M) if j not in assigned_dets]
             if not avail:
@@ -652,7 +676,7 @@ class TrackAssigner:
             raw_dist = float(
                 np.linalg.norm(np.asarray(meas[best_c][:2]) - kf_manager.X[r, :2])
             )
-            if cost[r, best_c] < MAX_DIST and raw_dist < MAX_DIST:
+            if cost[r, best_c] < MAX_DIST and raw_dist < float(_per_track_gate[r]):
                 all_assignments.append((r, best_c))
                 assigned_dets.add(best_c)
 

@@ -76,5 +76,15 @@
     "scheme_name": "direction",
     "factor_index": null,
     "factor_name": null
+  },
+  "YOLO-classify/orientation/20260308-151413_26s_20260307_094622_tiny_head_tail_flat_tiny.pth": {
+    "size": "26s",
+    "species": "20260307",
+    "model_info": "094622_tiny_head_tail_flat_tiny",
+    "added_at": "2026-03-08T15:14:13",
+    "source_path": "/Users/neurorishika/Projects/MBL/Module 4/multi-animal-tracker/models/tiny-classify/direction/20260307-094622_tiny_head_tail_flat_tiny.pth",
+    "stored_filename": "20260308-151413_26s_20260307_094622_tiny_head_tail_flat_tiny.pth",
+    "task_family": "classify",
+    "usage_role": "headtail"
   }
 }

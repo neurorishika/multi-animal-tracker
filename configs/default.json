@@ -87,8 +87,6 @@
   "interpolation_method": "Linear",
   "interpolation_max_gap": 5,
   "cleanup_temp_files": true,
-  "enable_histograms": false,
-  "histogram_history_frames": 300,
   "show_track_markers": true,
   "show_orientation_lines": true,
   "show_trajectory_trails": true,

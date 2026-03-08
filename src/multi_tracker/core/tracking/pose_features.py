@@ -305,19 +305,29 @@ def compute_detection_pose_features(
     posterior_indices,
     ignore_indices,
     min_valid_conf,
-) -> Tuple[List, np.ndarray]:
+    return_headings: bool = False,
+) -> tuple:
     """Compute normalized pose keypoints and visibility for each detection.
 
     For each detection ID, look up pose keypoints in *pose_keypoint_map* and
     compute a normalized keypoint array plus a visibility score.
 
-    Returns:
+    Args:
+        return_headings: when True, return a 3-tuple with an extra
+            ``list[float | None]`` of per-detection pose headings.
+
+    Returns (return_headings=False):
         detection_pose_keypoints : list[ndarray | None], length == len(detection_ids)
         detection_pose_visibility : float32 ndarray, length == len(detection_ids)
+
+    Returns (return_headings=True):
+        detection_pose_keypoints, detection_pose_visibility,
+        detection_pose_headings : list[float | None]
     """
     n = len(detection_ids)
     detection_pose_keypoints = [None] * n
     detection_pose_visibility = np.zeros(n, dtype=np.float32)
+    detection_pose_headings: List[Optional[float]] = [None] * n
 
     for det_idx in range(n):
         try:
@@ -340,4 +350,111 @@ def compute_detection_pose_features(
         detection_pose_keypoints[det_idx] = normalize_pose_keypoints(
             keypoints, min_valid_conf, ignore_indices=ignore_indices
         )
+        detection_pose_headings[det_idx] = features.get("heading")
+    if return_headings:
+        return (
+            detection_pose_keypoints,
+            detection_pose_visibility,
+            detection_pose_headings,
+        )
     return detection_pose_keypoints, detection_pose_visibility
+
+
+# ---------------------------------------------------------------------------
+# Theta-disambiguation helpers (pure functions mirroring TrackingWorker methods)
+# ---------------------------------------------------------------------------
+
+
+def circular_abs_diff_rad(a: float, b: float) -> float:
+    """Absolute circular difference between two angles in radians."""
+    d = (float(a) - float(b) + math.pi) % (2 * math.pi) - math.pi
+    return abs(d)
+
+
+def collapse_obb_axis_theta(theta_axis: float, reference_theta) -> float:
+    """Resolve 180-degree OBB axis ambiguity.
+
+    Picks *theta_axis* or *theta_axis + pi* — whichever is angularly closer to
+    *reference_theta*.  Returns ``normalize_theta(theta_axis)`` when
+    *reference_theta* is None or non-finite.
+    """
+    theta0 = normalize_theta(theta_axis)
+    theta1 = normalize_theta(theta0 + math.pi)
+    if reference_theta is None:
+        return theta0
+    try:
+        ref = float(reference_theta)
+        if not math.isfinite(ref):
+            return theta0
+        ref = normalize_theta(ref)
+    except Exception:
+        return theta0
+    d0 = circular_abs_diff_rad(theta0, ref)
+    d1 = circular_abs_diff_rad(theta1, ref)
+    return theta0 if d0 <= d1 else theta1
+
+
+def select_directed_heading(
+    pose_heading,
+    pose_directed: bool,
+    headtail_heading,
+    headtail_directed: bool,
+    pose_overrides_headtail: bool = True,
+) -> Tuple[float, bool]:
+    """Choose directed heading source (pose / head-tail) by precedence.
+
+    Returns ``(heading_radians, is_directed)``.
+    """
+    try:
+        pose_valid = bool(pose_directed) and math.isfinite(float(pose_heading))
+    except Exception:
+        pose_valid = False
+    try:
+        headtail_valid = bool(headtail_directed) and math.isfinite(
+            float(headtail_heading)
+        )
+    except Exception:
+        headtail_valid = False
+    if pose_overrides_headtail:
+        if pose_valid:
+            return float(pose_heading), True
+        if headtail_valid:
+            return float(headtail_heading), True
+        return float("nan"), False
+    if headtail_valid:
+        return float(headtail_heading), True
+    if pose_valid:
+        return float(pose_heading), True
+    return float("nan"), False
+
+
+def resolve_tracking_theta(
+    track_idx: int,
+    measured_theta: float,
+    pose_directed: bool,
+    orientation_last,
+    fallback_theta=None,
+) -> float:
+    """Resolve directed vs axis-aligned orientation for one track.
+
+    Mirrors ``TrackingWorker._resolve_tracking_theta`` as a pure function.
+    *orientation_last* is a list indexed by track index whose entries are
+    the last committed theta (float) or None.
+    """
+    if pose_directed:
+        return normalize_theta(measured_theta)
+    reference_theta = None
+    if orientation_last is not None:
+        try:
+            if 0 <= int(track_idx) < len(orientation_last):
+                reference_theta = orientation_last[int(track_idx)]
+        except Exception:
+            pass
+    if reference_theta is None and fallback_theta is not None:
+        try:
+            candidate = float(fallback_theta)
+            if math.isfinite(candidate):
+                reference_theta = candidate
+        except Exception:
+            pass
+    return collapse_obb_axis_theta(measured_theta, reference_theta)

@@ -424,3 +424,28 @@ def test_pose_rejection_is_more_permissive_with_weak_visibility() -> None:
 
     assert float(strict_cost[0, 0]) >= 1e6
     assert float(permissive_cost[0, 0]) < 1e6
+
+
+def test_advanced_association_disabled_when_all_keypoints_none():
+    """All-None keypoint list must NOT trigger the advanced cost matrix path."""
+    params = _params()
+    params["MAX_TARGETS"] = 2
+    assigner = TrackAssigner(params)
+    data_all_none = {
+        "detection_pose_keypoints": [None, None],
+        "track_pose_prototypes": [None, None],
+    }
+    assert not assigner._advanced_association_enabled(data_all_none)
+
+
+def test_advanced_association_enabled_when_keypoint_present():
+    """Non-None keypoint must trigger the advanced cost matrix path."""
+    params = _params()
+    params["MAX_TARGETS"] = 2
+    assigner = TrackAssigner(params)
+    kpt = np.zeros((4, 3), dtype=np.float32)
+    data_with_kpt = {
+        "detection_pose_keypoints": [kpt, None],
+        "track_pose_prototypes": [None, None],
+    }
+    assert assigner._advanced_association_enabled(data_with_kpt)

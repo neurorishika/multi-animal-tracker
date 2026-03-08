@@ -138,11 +138,12 @@ class ParameterHelperDialog(QDialog):
         left.addWidget(hdr)
 
         # ── Domain Constraints ────────────────────────────────────────────────
-        # Physical parameters the user MUST set correctly — not tuned by the
-        # optimiser because they depend on animal biology / experimental setup,
-        # not on the tracker algorithm.  Changing them invalidates cached results.
+        # Read-only summary of the physical parameters that are set in the Main
+        # Window tracking tab ("Track Continuity" section).  The optimiser uses
+        # these values as fixed constraints and never tunes them.  If any look
+        # wrong, close this dialog, adjust them in the Main Window, and reopen.
         domain_box = QGroupBox(
-            "Physical Constraints  —  set from your animal / experiment knowledge"
+            "Physical Constraints  \u2014  read from Main Window (close & adjust there if needed)"
         )
         domain_box.setStyleSheet(
             "QGroupBox { border: 1px solid #7a5f20; border-radius: 4px;"
@@ -150,77 +151,39 @@ class ParameterHelperDialog(QDialog):
             "QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }"
         )
         domain_lay = QHBoxLayout(domain_box)
-        domain_lay.setSpacing(12)
+        domain_lay.setSpacing(0)
         domain_lay.setContentsMargins(8, 4, 8, 4)
 
         _body_px = self.base_params.get(
             "REFERENCE_BODY_SIZE", 20.0
         ) * self.base_params.get("RESIZE_FACTOR", 1.0)
-        body_lbl = QLabel(
-            f"Body size:  <b>{_body_px:.1f} px</b>"
-            f"  <span style='color:#888; font-weight:normal;'>"
-            f"(REFERENCE_BODY_SIZE × RESIZE_FACTOR — change in Main Window)</span>"
+        _vel_mult = self.base_params.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0)
+        _aniso = self.base_params.get("KALMAN_ANISOTROPY_RATIO", 10.0)
+        _recovery_mult = self.base_params.get("CONTINUITY_THRESHOLD", _body_px) / max(
+            _body_px, 1e-6
         )
-        body_lbl.setTextFormat(Qt.RichText)
-        body_lbl.setToolTip(
-            "Effective animal body size in pixels used to scale distance gates.\n"
-            "Computed as REFERENCE_BODY_SIZE × RESIZE_FACTOR.\n"
-            "Change these values in the Main Window before opening the tuner."
-        )
-        domain_lay.addWidget(body_lbl)
 
-        vel_lbl = QLabel("Max velocity (× body / frame):")
-        vel_lbl.setToolTip(
-            "How many body-lengths your animal can physically move in one frame.\n"
-            "This is a hard physical plausibility gate — the optimiser uses this\n"
-            "value as-is and never tunes it.  Set it based on your animal:\n"
-            "  Slow larva / worm  →  0.3 – 0.8\n"
-            "  Walking ant / fly  →  0.8 – 2.0\n"
-            "  Fast fish / mouse  →  2.0 – 4.0\n"
-            "Too high: ghost tracks can steal detections across the arena.\n"
-            "Too low: fast animals are flagged lost on every frame."
+        summary = QLabel(
+            f"\u25cf\u00a0Body size: <b>{_body_px:.1f}\u00a0px</b>"
+            f"\u2002\u2502\u2002"
+            f"\u25cf\u00a0Max velocity: <b>{_vel_mult:.1f}\u00d7\u00a0body/frame</b>"
+            f"\u2002\u2502\u2002"
+            f"\u25cf\u00a0Recovery distance: <b>{_recovery_mult:.1f}\u00d7\u00a0body</b>"
+            f"\u2002\u2502\u2002"
+            f"\u25cf\u00a0Motion anisotropy\u00a0(fwd\u00f7lat): <b>{_aniso:.1f}</b>"
         )
-        domain_lay.addWidget(vel_lbl)
-
-        self.spin_vel_mult = QDoubleSpinBox()
-        self.spin_vel_mult.setRange(0.1, 5.0)
-        self.spin_vel_mult.setSingleStep(0.1)
-        self.spin_vel_mult.setDecimals(1)
-        self.spin_vel_mult.setValue(
-            self.base_params.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0)
+        summary.setTextFormat(Qt.RichText)
+        summary.setStyleSheet("font-size: 11px; color: #ddd; font-weight: normal;")
+        summary.setToolTip(
+            "These values come directly from the Main Window tracking tab.\n"
+            "Body size         \u2192 REFERENCE_BODY_SIZE \u00d7 RESIZE_FACTOR\n"
+            "Max velocity      \u2192 'Max speed' spinbox (Kalman section)\n"
+            "Recovery distance \u2192 'Recovery search distance' spinbox\n"
+            "Motion anisotropy \u2192 derived from Longitudinal \u00f7 Lateral noise spinboxes\n\n"
+            "Close this dialog, change those values, then reopen to use different constraints.\n"
+            "Changing them will invalidate any cached autotune results."
         )
-        self.spin_vel_mult.setFixedWidth(72)
-        self.spin_vel_mult.setToolTip(vel_lbl.toolTip())
-        self.spin_vel_mult.valueChanged.connect(
-            lambda v: self.base_params.update({"KALMAN_MAX_VELOCITY_MULTIPLIER": v})
-        )
-        domain_lay.addWidget(self.spin_vel_mult)
-
-        ani_lbl = QLabel("Motion anisotropy (forward ÷ lateral):")
-        ani_lbl.setToolTip(
-            "How many times more the animal moves forward than sideways per frame.\n"
-            "This shapes the Kalman noise ellipse — the optimiser scales it, you orient it.\n"
-            "  1.0  = fully isotropic (crabs, humans walking any direction)\n"
-            "  3–5  = mildly forward-biased (fish, mice)\n"
-            " 10–30  = clearly directional (walking flies, beetles)\n"
-            " 50–100 = strongly forward-directed (ants on trails)\n"
-            "Lateral noise = Longitudinal noise ÷ this ratio."
-        )
-        domain_lay.addWidget(ani_lbl)
-
-        self.spin_anisotropy = QDoubleSpinBox()
-        self.spin_anisotropy.setRange(1.0, 100.0)
-        self.spin_anisotropy.setSingleStep(1.0)
-        self.spin_anisotropy.setDecimals(1)
-        self.spin_anisotropy.setValue(
-            self.base_params.get("KALMAN_ANISOTROPY_RATIO", 10.0)
-        )
-        self.spin_anisotropy.setFixedWidth(72)
-        self.spin_anisotropy.setToolTip(ani_lbl.toolTip())
-        self.spin_anisotropy.valueChanged.connect(
-            lambda v: self.base_params.update({"KALMAN_ANISOTROPY_RATIO": v})
-        )
-        domain_lay.addWidget(self.spin_anisotropy)
+        domain_lay.addWidget(summary)
         domain_lay.addStretch()
         left.addWidget(domain_box)
 
@@ -1281,8 +1244,11 @@ class ParameterHelperDialog(QDialog):
     def _compute_state_key(self) -> str:
         """SHA-256 of base_params (tunable keys + domain constraints) + frame range.
 
-        Domain params (KALMAN_MAX_VELOCITY_MULTIPLIER) are included separately so
-        that changing the physical velocity cap correctly invalidates cached results.
+        Domain params are physical constraints read from the Main Window that the
+        optimiser never tunes but that change the meaning of the score: body size
+        (via REFERENCE_BODY_SIZE × RESIZE_FACTOR), max velocity, recovery distance,
+        and motion anisotropy.  Changing any of them in the Main Window will
+        invalidate cached results when the dialog is reopened.
         """
         subset = {
             k: self.base_params[k]
@@ -1296,6 +1262,9 @@ class ParameterHelperDialog(QDialog):
             "KALMAN_ANISOTROPY_RATIO": self.base_params.get(
                 "KALMAN_ANISOTROPY_RATIO", 10.0
             ),
+            "CONTINUITY_THRESHOLD": self.base_params.get("CONTINUITY_THRESHOLD", 0.0),
+            "REFERENCE_BODY_SIZE": self.base_params.get("REFERENCE_BODY_SIZE", 20.0),
+            "RESIZE_FACTOR": self.base_params.get("RESIZE_FACTOR", 1.0),
         }
         payload = json.dumps(
             {

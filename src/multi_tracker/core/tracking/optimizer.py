@@ -16,6 +16,27 @@ from PySide6.QtCore import QThread, Signal
 from multi_tracker.core.assigners.hungarian import TrackAssigner
 from multi_tracker.core.detectors.engine import DetectionFilter
 from multi_tracker.core.filters.kalman import KalmanFilterManager
+from multi_tracker.core.tracking.pose_features import (
+    build_pose_detection_keypoint_map as _pf_build_keypoint_map,
+)
+from multi_tracker.core.tracking.pose_features import (  # noqa: F401 (re-exported via parity path)
+    collapse_obb_axis_theta as _pf_collapse_obb_axis,
+)
+from multi_tracker.core.tracking.pose_features import (
+    compute_detection_pose_features as _pf_compute_det_features,
+)
+from multi_tracker.core.tracking.pose_features import (
+    load_pose_context_from_params as _pf_load_pose_context,
+)
+from multi_tracker.core.tracking.pose_features import (
+    normalize_theta as _pf_normalize_theta,
+)
+from multi_tracker.core.tracking.pose_features import (
+    resolve_tracking_theta as _pf_resolve_tracking_theta,
+)
+from multi_tracker.core.tracking.pose_features import (
+    select_directed_heading as _pf_select_directed_heading,
+)
 from multi_tracker.data.detection_cache import DetectionCache
 
 logger = logging.getLogger(__name__)
@@ -34,6 +55,7 @@ _PARAM_RANGES: Dict[str, tuple] = {
     "KALMAN_DAMPING": ("float", 0.70, 0.999),
     "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER": ("float", 1.0, 20.0),
     "KALMAN_INITIAL_VELOCITY_RETENTION": ("float", 0.0, 1.0),
+    "KALMAN_YOUNG_GATE_MULTIPLIER": ("float", 1.0, 4.0),
     "LOST_THRESHOLD_FRAMES": ("int", 2, 25),
     "KALMAN_MATURITY_AGE": ("int", 1, 20),
 }
@@ -177,6 +199,41 @@ class TrackingOptimizer(QThread):
         resize_f = self.base_params.get("RESIZE_FACTOR", 1.0)
         scaled_body_size = ref_size * resize_f
 
+        # Pre-load pose data once so _run_tracking_loop never touches the NPZ.
+        # Opening and reading the pose cache per-trial (and per-frame) is the
+        # dominant cost when pose is enabled; the data never changes between trials.
+        self._pose_run_context = (
+            None,
+            [],
+            [],
+            [],
+            False,
+        )  # (cache, ant, post, ign, enabled)
+        self._pose_frame_cache: dict = {}  # {frame_idx: {det_id: keypoints}}
+        _pose_ctx = _pf_load_pose_context(self.base_params)
+        if (
+            _pose_ctx[0] is not None and _pose_ctx[4]
+        ):  # cache opened and direction enabled
+            _tmp_cache, _ant, _post, _ign, _enabled = _pose_ctx
+            self._pose_run_context = (None, _ant, _post, _ign, _enabled)
+            for _fi in range(self.start_frame, self.end_frame + 1):
+                self._pose_frame_cache[_fi] = _pf_build_keypoint_map(_tmp_cache, _fi)
+            try:
+                _tmp_cache.close()
+            except Exception:
+                pass
+            logger.info(
+                "Optimizer: pre-loaded pose keypoints for %d frames into memory.",
+                len(self._pose_frame_cache),
+            )
+        else:
+            # Pose disabled or cache absent — release any opened file immediately.
+            if _pose_ctx[0] is not None:
+                try:
+                    _pose_ctx[0].close()
+                except Exception:
+                    pass
+
         # Seed the first trial with the user's current production settings so the
         # surrogate model has an immediate reference point and explores outward from it.
         # Values are clamped to each parameter's valid range so that base_params with
@@ -196,6 +253,7 @@ class TrackingOptimizer(QThread):
             "KALMAN_DAMPING": 0.95,
             "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER": 5.0,
             "KALMAN_INITIAL_VELOCITY_RETENTION": 0.2,
+            "KALMAN_YOUNG_GATE_MULTIPLIER": 1.5,
             "LOST_THRESHOLD_FRAMES": 10,
             "KALMAN_MATURITY_AGE": 5,
         }
@@ -366,6 +424,11 @@ class TrackingOptimizer(QThread):
                     "KALMAN_INITIAL_VELOCITY_RETENTION", 0.0, 1.0
                 )
 
+            if self.tuning_config.get("KALMAN_YOUNG_GATE_MULTIPLIER"):
+                trial_params["KALMAN_YOUNG_GATE_MULTIPLIER"] = trial.suggest_float(
+                    "KALMAN_YOUNG_GATE_MULTIPLIER", 1.0, 4.0
+                )
+
             if self.tuning_config.get("LOST_THRESHOLD_FRAMES"):
                 trial_params["LOST_THRESHOLD_FRAMES"] = trial.suggest_int(
                     "LOST_THRESHOLD_FRAMES", 2, 25
@@ -418,6 +481,7 @@ class TrackingOptimizer(QThread):
 
         results.sort(key=lambda x: x.score)
         self.cache.close()
+        self._pose_frame_cache = None  # free memory after optimization
         try:
             self.result_signal.emit(results)
             self.finished_signal.emit()
@@ -446,12 +510,41 @@ class TrackingOptimizer(QThread):
         assigner = TrackAssigner(params)
         _roi_mask = params.get("ROI_MASK", None)
 
+        # --- Pose context: use pre-loaded in-memory data when available ---
+        # _pose_run_context is populated once in run() before study.optimize();
+        # if it is not set (e.g. called standalone), fall back to live load.
+        if hasattr(self, "_pose_run_context") and self._pose_run_context is not None:
+            _, _pose_anterior, _pose_posterior, _pose_ignore, _pose_enabled = (
+                self._pose_run_context
+            )
+            _pose_frame_data = getattr(self, "_pose_frame_cache", {})
+        else:
+            (
+                _tmp_pose_cache,
+                _pose_anterior,
+                _pose_posterior,
+                _pose_ignore,
+                _pose_enabled,
+            ) = _pf_load_pose_context(params)
+            _pose_frame_data = {}
+            if _tmp_pose_cache is not None:
+                for _fi in range(self.start_frame, self.end_frame + 1):
+                    _pose_frame_data[_fi] = _pf_build_keypoint_map(_tmp_pose_cache, _fi)
+                try:
+                    _tmp_pose_cache.close()
+                except Exception:
+                    pass
+        _pose_min_conf = float(params.get("POSE_MIN_KPT_CONF_VALID", 0.2))
+        track_pose_prototypes: list = [None] * params["MAX_TARGETS"]
+
         # ── Composite objective accumulators (one per scored dimension) ──────────
         # Each dimension is normalised to [0, 1]; lower = better.
         _coverage_sum = 0.0  # sum of (active_tracks / N) per frame
         _occlusion_sum = 0.0  # sum of (occluded_tracks / N) per frame
-        _assign_cost_sum = 0.0  # sum of per-assignment normalised costs
+        _assign_cost_sum = 0.0  # sum of per-assignment body-size-normalised costs
         _assign_count = 0  # total matched pairs seen
+        _suspicious_assign_count = 0  # assignments at > 2 × body_size (far-field)
+        _det_count_sum = 0  # total post-filter detections across frames
         # ─────────────────────────────────────────────────────────────────────────
 
         N = params["MAX_TARGETS"]
@@ -509,6 +602,11 @@ class TrackingOptimizer(QThread):
         trajectory_ids = list(range(N))
         next_trajectory_id = N
         last_shape_info = [None] * N
+        # Last committed theta per slot; used for OBB axis-flip disambiguation.
+        orientation_last: list = [None] * N
+        # Per-track EMA of inter-frame step size — mirrors worker.py track_avg_step.
+        # Used by the advanced cost matrix to scale the motion gate adaptively.
+        track_avg_step = np.zeros(N, dtype=np.float32)
         lost_threshold = params.get("LOST_THRESHOLD_FRAMES", 5)
         n_frames = self.end_frame - self.start_frame + 1
 
@@ -518,102 +616,234 @@ class TrackingOptimizer(QThread):
             else range(self.start_frame, self.end_frame + 1)
         )
         frame_positions: Dict[int, np.ndarray] = {}
-        _first_frame = True
 
         for f_idx in frame_order:
             if self._stop_requested:
                 break
 
-            raw_meas, raw_sizes, raw_shapes, raw_confs, raw_obb, *_ = (
-                self.cache.get_frame(f_idx)
-            )
-            filtered = det_filter.filter_raw_detections(
+            (
                 raw_meas,
                 raw_sizes,
                 raw_shapes,
                 raw_confs,
                 raw_obb,
-                roi_mask=_roi_mask,
-            )
-            meas, _, shapes, _confs, _obb_out, *_ = filtered
+                raw_det_ids,
+                raw_heading_hints,
+                raw_directed_mask,
+            ) = self.cache.get_frame(f_idx)
+            # Pass heading hints when present so directed-OBB data flows through
+            # filter/NMS, exactly mirroring the TrackingWorker cached-path.
+            if raw_heading_hints:
+                filtered = det_filter.filter_raw_detections(
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confs,
+                    raw_obb,
+                    roi_mask=_roi_mask,
+                    detection_ids=raw_det_ids,
+                    heading_hints=raw_heading_hints,
+                    directed_mask=raw_directed_mask,
+                )
+                (
+                    meas,
+                    _,
+                    shapes,
+                    _confs,
+                    _obb_out,
+                    detection_ids,
+                    _headtail_hints,
+                    _headtail_directed,
+                ) = filtered
+            else:
+                filtered = det_filter.filter_raw_detections(
+                    raw_meas,
+                    raw_sizes,
+                    raw_shapes,
+                    raw_confs,
+                    raw_obb,
+                    roi_mask=_roi_mask,
+                    detection_ids=raw_det_ids,
+                )
+                meas, _, shapes, _confs, _obb_out, detection_ids = filtered
+                _headtail_hints, _headtail_directed = [], []
 
-            # Predict MUST be called every frame regardless of detection count
-            # to correctly advance KF state in time.
-            kf_manager.predict()
+            # --- Per-frame pose features (from in-memory pre-loaded dict) ---
+            _det_pose_kpts: list = [None] * len(meas)
+            _det_pose_vis = np.zeros(len(meas), dtype=np.float32)
+            _det_pose_headings: list = [None] * len(meas)
+            if _pose_enabled and meas and detection_ids:
+                _frame_kpt_map = _pose_frame_data.get(f_idx, {})
+                _det_pose_kpts, _det_pose_vis, _det_pose_headings = (
+                    _pf_compute_det_features(
+                        [int(d) for d in detection_ids],
+                        _frame_kpt_map,
+                        _pose_anterior,
+                        _pose_posterior,
+                        _pose_ignore,
+                        _pose_min_conf,
+                        return_headings=True,
+                    )
+                )
+            _association_data: dict = {
+                "detection_pose_keypoints": _det_pose_kpts,
+                "detection_pose_visibility": _det_pose_vis,
+                "track_pose_prototypes": track_pose_prototypes,
+                "track_avg_step": track_avg_step.copy(),
+            }
+            # Build per-detection directed mask, mirroring worker.py heading logic.
+            detection_directed_mask = np.zeros(len(meas), dtype=np.uint8)
+            if len(meas) > 0:
+                _pose_overrides_ht = bool(params.get("POSE_OVERRIDES_HEADTAIL", True))
+                for _di in range(len(meas)):
+                    _ph = (
+                        _det_pose_headings[_di]
+                        if _di < len(_det_pose_headings)
+                        else None
+                    )
+                    _pd = _ph is not None and math.isfinite(float(_ph))
+                    _hth = (
+                        float(_headtail_hints[_di])
+                        if _headtail_hints and _di < len(_headtail_hints)
+                        else math.nan
+                    )
+                    _htd = (
+                        bool(_headtail_directed[_di])
+                        if _headtail_directed and _di < len(_headtail_directed)
+                        else False
+                    )
+                    _, _is_dir = _pf_select_directed_heading(
+                        float(_ph) if _pd else math.nan,
+                        _pd,
+                        _hth,
+                        _htd,
+                        _pose_overrides_ht,
+                    )
+                    if _is_dir:
+                        detection_directed_mask[_di] = 1
 
             if meas:
-                # ── First-frame bootstrap ─────────────────────────────────────
-                # All tracks start as "lost" at (0,0).  On the very first frame
-                # we bypass the normal cost-matrix / assignment pipeline and
-                # directly initialise up to N tracks from the detections.  This
-                # mirrors what the real TrackingWorker does and avoids the
-                # distance-gate deadlock where respawn from (0,0) fails because
-                # real detections are hundreds of pixels from the origin.
-                if _first_frame:
-                    _first_frame = False
-                    n_init = min(N, len(meas))
-                    matched_r = list(range(n_init))
-                    matched_c = list(range(n_init))
-                    free_dets = list(range(n_init, len(meas)))
-                    for r, c in zip(matched_r, matched_c):
-                        m = np.asarray(meas[c], dtype=np.float32)
+                # Advance KF only when detections exist — mirrors worker.py where
+                # get_predictions() (which calls predict()) is gated on
+                # `detection_initialized and meas`.
+                kf_manager.predict()
+
+                # ── Cost matrix + Hungarian assignment ──────────────────────────
+                cost, _spatial_candidates = assigner.compute_cost_matrix(
+                    N,
+                    meas,
+                    kf_manager.X,
+                    shapes,
+                    kf_manager,
+                    last_shape_info,
+                    association_data=_association_data,
+                )
+                matched_r, matched_c, free_dets, next_trajectory_id, _ = (
+                    assigner.assign_tracks(
+                        cost,
+                        N,
+                        len(meas),
+                        meas,
+                        track_states,
+                        tracking_continuity,
+                        kf_manager,
+                        trajectory_ids,
+                        next_trajectory_id,
+                        _spatial_candidates,
+                    )
+                )
+
+                # Snapshot predicted positions BEFORE correct() for innovation
+                # scoring (how far the KF prediction was from the measurement).
+                _pre_correct: Dict[int, np.ndarray] = {
+                    r: kf_manager.X[r, :2].copy() for r in matched_r
+                }
+
+                # For Phase-3 respawned tracks (lost→matched), init state first.
+                _feature_alpha = float(params.get("TRACK_FEATURE_EMA_ALPHA", 0.85))
+                _high_conf_thresh = float(
+                    params.get("ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD", 0.7)
+                )
+                for r, c in zip(matched_r, matched_c):
+                    m = np.asarray(meas[c], dtype=np.float32)
+                    _pose_d = (
+                        bool(detection_directed_mask[c])
+                        if c < len(detection_directed_mask)
+                        else False
+                    )
+                    # Match worker.py: pass KF-predicted theta as fallback for
+                    # OBB axis-flip disambiguation when orientation_last is None.
+                    theta_cor = _pf_resolve_tracking_theta(
+                        r,
+                        m[2],
+                        _pose_d,
+                        orientation_last,
+                        fallback_theta=(
+                            float(kf_manager.X[r, 2]) if r < len(kf_manager.X) else None
+                        ),
+                    )
+                    m_cor = np.array([m[0], m[1], theta_cor], dtype=np.float32)
+                    if track_states[r] == "lost":
                         kf_manager.initialize_filter(
                             r,
-                            np.array([m[0], m[1], m[2], 0.0, 0.0], dtype=np.float32),
+                            np.array(
+                                [m_cor[0], m_cor[1], theta_cor, 0.0, 0.0],
+                                dtype=np.float32,
+                            ),
                         )
-                        kf_manager.correct(r, m)
-                        track_states[r] = "active"
-                        missed_frames[r] = 0
-                        last_shape_info[r] = shapes[c] if c < len(shapes) else None
-                else:
-                    # ── Normal frames: cost matrix + Hungarian assignment ──────
-                    cost, _ = assigner.compute_cost_matrix(
-                        N, meas, kf_manager.X, shapes, kf_manager, last_shape_info
-                    )
-                    matched_r, matched_c, free_dets, next_trajectory_id, _ = (
-                        assigner.assign_tracks(
-                            cost,
-                            N,
-                            len(meas),
-                            meas,
-                            track_states,
-                            tracking_continuity,
-                            kf_manager,
-                            trajectory_ids,
-                            next_trajectory_id,
-                        )
-                    )
-
-                    # Snapshot predicted positions BEFORE correct() for innovation
-                    # scoring (how far the KF prediction was from the measurement).
-                    _pre_correct: Dict[int, np.ndarray] = {
-                        r: kf_manager.X[r, :2].copy() for r in matched_r
-                    }
-
-                    # For Phase-3 respawned tracks (lost→matched), init state first
-                    for r, c in zip(matched_r, matched_c):
-                        m = np.asarray(meas[c], dtype=np.float32)
-                        if track_states[r] == "lost":
-                            kf_manager.initialize_filter(
-                                r,
-                                np.array(
-                                    [m[0], m[1], m[2], 0.0, 0.0], dtype=np.float32
-                                ),
-                            )
-                        kf_manager.correct(r, m)
-
-                    # Innovation cost: skip freshly-respawned "lost" tracks (no prior).
-                    for r, c in zip(matched_r, matched_c):
-                        if track_states[r] == "lost":
-                            continue
-                        pixel_dist = float(
+                    kf_manager.correct(r, m_cor)
+                    orientation_last[r] = _pf_normalize_theta(float(kf_manager.X[r, 2]))
+                    # Update track_avg_step EMA — mirrors worker.py speed tracking
+                    # so the advanced cost matrix gets accurate motion gate values.
+                    _det_conf = float(_confs[c]) if _confs and c < len(_confs) else 0.0
+                    if r in _prev_positions and _det_conf >= _high_conf_thresh:
+                        _step = float(
                             np.linalg.norm(
-                                np.asarray(meas[c][:2], dtype=np.float32)
-                                - _pre_correct[r]
+                                np.array([m[0], m[1]], dtype=np.float32)
+                                - _prev_positions[r]
                             )
                         )
-                        _assign_cost_sum += pixel_dist / max(_max_dist, 1e-6)
-                        _assign_count += 1
+                        track_avg_step[r] = (
+                            _feature_alpha * float(track_avg_step[r])
+                            + (1.0 - _feature_alpha) * _step
+                        )
+
+                # Innovation cost: skip freshly-respawned "lost" tracks (no prior).
+                for r, c in zip(matched_r, matched_c):
+                    if track_states[r] == "lost":
+                        continue
+                    pixel_dist = float(
+                        np.linalg.norm(
+                            np.asarray(meas[c][:2], dtype=np.float32) - _pre_correct[r]
+                        )
+                    )
+                    # Normalise by 2 × reference body size — a fixed physical scale.
+                    # Using MAX_DISTANCE_THRESHOLD here would be maladaptive: the
+                    # optimizer could inflate MAX_DISTANCE_MULTIPLIER to make long-
+                    # range (bad) assignments appear cheap. A match one body-length
+                    # away scores ~0.5; anything beyond 2 body-lengths is capped 1.0.
+                    _assign_cost_sum += min(
+                        pixel_dist / max(2.0 * _body_size, 1e-6), 1.0
+                    )
+                    # Only flag the assignment as suspicious for MATURE tracks.
+                    # Young tracks (continuity < KALMAN_MATURITY_AGE) legitimately
+                    # use a wider gate because their KF predictions are unreliable;
+                    # penalising them here would push KALMAN_YOUNG_GATE_MULTIPLIER
+                    # toward 1.0, defeating its purpose.
+                    _is_young = tracking_continuity[r] < params.get(
+                        "KALMAN_MATURITY_AGE", 5
+                    )
+                    if pixel_dist > 2.0 * _body_size and not _is_young:
+                        _suspicious_assign_count += 1
+                    _assign_count += 1
+
+                # Keep track pose prototypes current for next frame's association.
+                for r, c in zip(matched_r, matched_c):
+                    proto = _det_pose_kpts[c] if c < len(_det_pose_kpts) else None
+                    if proto is not None:
+                        track_pose_prototypes[r] = np.asarray(
+                            proto, dtype=np.float32
+                        ).copy()
 
                 matched_r_set = set(matched_r)
                 for r in matched_r:
@@ -630,6 +860,65 @@ class TrackingOptimizer(QThread):
                             track_states[r] = "occluded"
                 for r, c in zip(matched_r, matched_c):
                     last_shape_info[r] = shapes[c]
+
+                # ── Free detections → respawn lost tracks ────────────────────────
+                # assigner.assign_tracks() Phase-3 uses a distance gate that fails
+                # when lost tracks are at (0, 0) on the first frame (or after a long
+                # gap).  This explicit loop mirrors worker.py lines 2324-2391, which
+                # has no distance check and simply claims the first available lost slot.
+                for d_idx in free_dets:
+                    for track_idx in range(N):
+                        if track_states[track_idx] == "lost":
+                            _pose_d_f = (
+                                bool(detection_directed_mask[d_idx])
+                                if d_idx < len(detection_directed_mask)
+                                else False
+                            )
+                            theta_init = _pf_resolve_tracking_theta(
+                                track_idx,
+                                float(meas[d_idx][2]),
+                                _pose_d_f,
+                                orientation_last,
+                                fallback_theta=(
+                                    float(kf_manager.X[track_idx, 2])
+                                    if track_idx < len(kf_manager.X)
+                                    else None
+                                ),
+                            )
+                            kf_manager.initialize_filter(
+                                track_idx,
+                                np.array(
+                                    [
+                                        meas[d_idx][0],
+                                        meas[d_idx][1],
+                                        theta_init,
+                                        0.0,
+                                        0.0,
+                                    ],
+                                    dtype=np.float32,
+                                ),
+                            )
+                            track_states[track_idx] = "active"
+                            missed_frames[track_idx] = 0
+                            tracking_continuity[track_idx] = 0
+                            trajectory_ids[track_idx] = next_trajectory_id
+                            next_trajectory_id += 1
+                            orientation_last[track_idx] = theta_init
+                            last_shape_info[track_idx] = (
+                                shapes[d_idx] if d_idx < len(shapes) else None
+                            )
+                            track_pose_prototypes[track_idx] = (
+                                np.asarray(
+                                    _det_pose_kpts[d_idx], dtype=np.float32
+                                ).copy()
+                                if (
+                                    d_idx < len(_det_pose_kpts)
+                                    and _det_pose_kpts[d_idx] is not None
+                                )
+                                else None
+                            )
+                            track_avg_step[track_idx] = 0.0
+                            break
             else:
                 for r in range(N):
                     if track_states[r] != "lost":
@@ -651,6 +940,7 @@ class TrackingOptimizer(QThread):
             _occlusion_sum += (
                 sum(1 for r in range(N) if track_states[r] == "occluded") / N
             )
+            _det_count_sum += len(meas)
 
             # ── Inter-frame velocity + direction-reversal (ID-swap penalty) ─────────
             # Two complementary signals are tracked:
@@ -730,10 +1020,35 @@ class TrackingOptimizer(QThread):
         # The spread penalty (std of sub-scores × 0.3) punishes configurations
         # that ace one dimension at the expense of another, driving the optimiser
         # toward balanced solutions rather than degenerate extremes.
-        coverage_cost = 1.0 - _coverage_sum / max(n_frames, 1)
+        #
+        # Anti-exploitation design principles applied to each sub-score:
+        #
+        #  coverage    – includes a detection-density penalty so that lowering
+        #                YOLO_CONFIDENCE_THRESHOLD past the point of collecting
+        #                genuine detections (mean > 1.2×N) does not help.
+        #
+        #  assignment  – residuals are normalised by 2×body_size, not by the
+        #                tunable MAX_DISTANCE_THRESHOLD.  Inflating the gate cannot
+        #                shrink the score.
+        #
+        #  fragmentation – blends raw continuity (70%) with the suspicious-assign
+        #                rate (30%) so that greedy far-field matching that keeps
+        #                tracks alive does not yield a low fragmentation score.
+        _cov_frac = _coverage_sum / max(n_frames, 1)
+        # Penalise mean detection count well above N: indicates the confidence
+        # threshold is too permissive and is flooding the assigner with noise.
+        _mean_dets = _det_count_sum / max(n_frames, 1)
+        _det_excess = min(
+            max(_mean_dets / max(N, 1.0) - 1.2, 0.0) / max(N * 0.5, 1.0), 1.0
+        )
+        coverage_cost = 0.80 * (1.0 - _cov_frac) + 0.20 * _det_excess
         assign_cost = _assign_cost_sum / _assign_count if _assign_count > 0 else 1.0
-        mean_max_cont = sum(_max_continuity) / max(N, 1)
-        frag_cost = 1.0 - min(mean_max_cont / max(n_frames, 1), 1.0)
+        _cont_frac = min(sum(_max_continuity) / max(N, 1) / max(n_frames, 1), 1.0)
+        _suspicious_rate = _suspicious_assign_count / max(_assign_count, 1)
+        # Fragmentation: 70% raw continuity + 30% suspicious-assignment rate.
+        # Long runs built on plausible close matches score well; runs sustained
+        # only by wide-gate greedy matching score poorly.
+        frag_cost = 0.70 * (1.0 - _cont_frac) + 0.30 * _suspicious_rate
         occlusion_cost = _occlusion_sum / max(n_frames, 1)
         # Velocity sub-score: two-component blend.
         #
@@ -1018,6 +1333,19 @@ class TrackingPreviewWorker(QThread):
             _roi_mask = self.params.get("ROI_MASK", None)
 
             N = self.params["MAX_TARGETS"]
+
+            # --- Pose context ---
+            (
+                _pose_cache,
+                _pose_anterior,
+                _pose_posterior,
+                _pose_ignore,
+                _pose_enabled,
+            ) = _pf_load_pose_context(self.params)
+            _pose_min_conf = float(self.params.get("POSE_MIN_KPT_CONF_VALID", 0.2))
+            _pose_kpt_map: dict = {}
+            _pose_kpt_map_frame = None
+            track_pose_prototypes: list = [None] * N
             # Start all tracks as "lost" so Phase-3 bootstraps each slot from the
             # first frame's real detections via initialize_filter.  Starting as
             # "active" with a zero-initialised KF state causes every track to sit
@@ -1025,6 +1353,8 @@ class TrackingPreviewWorker(QThread):
             track_states, tracking_continuity = ["lost"] * N, [0] * N
             missed_frames = [0] * N
             trajectory_ids, next_trajectory_id = list(range(N)), N
+            # Last committed theta per slot for OBB axis-flip disambiguation.
+            orientation_last: list = [None] * N
             last_shape_info = [None] * N
             lost_threshold = self.params.get("LOST_THRESHOLD_FRAMES", 5)
 
@@ -1060,23 +1390,120 @@ class TrackingPreviewWorker(QThread):
                 if not ret:
                     break
 
-                raw_meas, raw_sizes, raw_shapes, raw_confs, raw_obb, *_ = (
-                    cache.get_frame(f_idx)
-                )
-                filtered = det_filter.filter_raw_detections(
+                (
                     raw_meas,
                     raw_sizes,
                     raw_shapes,
                     raw_confs,
                     raw_obb,
-                    roi_mask=_roi_mask,
-                )
-                meas, _, shapes, _confs, _obb_out, *_ = filtered
+                    raw_det_ids,
+                    raw_heading_hints,
+                    raw_directed_mask,
+                ) = cache.get_frame(f_idx)
+                if raw_heading_hints:
+                    filtered = det_filter.filter_raw_detections(
+                        raw_meas,
+                        raw_sizes,
+                        raw_shapes,
+                        raw_confs,
+                        raw_obb,
+                        roi_mask=_roi_mask,
+                        detection_ids=raw_det_ids,
+                        heading_hints=raw_heading_hints,
+                        directed_mask=raw_directed_mask,
+                    )
+                    (
+                        meas,
+                        _,
+                        shapes,
+                        _confs,
+                        _obb_out,
+                        detection_ids,
+                        _headtail_hints,
+                        _headtail_directed,
+                    ) = filtered
+                else:
+                    filtered = det_filter.filter_raw_detections(
+                        raw_meas,
+                        raw_sizes,
+                        raw_shapes,
+                        raw_confs,
+                        raw_obb,
+                        roi_mask=_roi_mask,
+                        detection_ids=raw_det_ids,
+                    )
+                    meas, _, shapes, _confs, _obb_out, detection_ids = filtered
+                    _headtail_hints, _headtail_directed = [], []
 
                 kf_manager.predict()
+
+                # --- Per-frame pose features ---
+                _det_pose_kpts: list = [None] * len(meas)
+                _det_pose_vis = np.zeros(len(meas), dtype=np.float32)
+                _det_pose_headings: list = [None] * len(meas)
+                if _pose_enabled and meas and detection_ids:
+                    if _pose_kpt_map_frame != f_idx:
+                        _pose_kpt_map = _pf_build_keypoint_map(_pose_cache, f_idx)
+                        _pose_kpt_map_frame = f_idx
+                    _det_pose_kpts, _det_pose_vis, _det_pose_headings = (
+                        _pf_compute_det_features(
+                            [int(d) for d in detection_ids],
+                            _pose_kpt_map,
+                            _pose_anterior,
+                            _pose_posterior,
+                            _pose_ignore,
+                            _pose_min_conf,
+                            return_headings=True,
+                        )
+                    )
+                _association_data: dict = {
+                    "detection_pose_keypoints": _det_pose_kpts,
+                    "detection_pose_visibility": _det_pose_vis,
+                    "track_pose_prototypes": track_pose_prototypes,
+                    "track_avg_step": np.zeros(N, dtype=np.float32),
+                }
+                # Build per-detection directed mask, mirroring worker.py.
+                detection_directed_mask = np.zeros(len(meas), dtype=np.uint8)
+                if len(meas) > 0:
+                    _pose_overrides_ht = bool(
+                        self.params.get("POSE_OVERRIDES_HEADTAIL", True)
+                    )
+                    for _di in range(len(meas)):
+                        _ph = (
+                            _det_pose_headings[_di]
+                            if _di < len(_det_pose_headings)
+                            else None
+                        )
+                        _pd = _ph is not None and math.isfinite(float(_ph))
+                        _hth = (
+                            float(_headtail_hints[_di])
+                            if _headtail_hints and _di < len(_headtail_hints)
+                            else math.nan
+                        )
+                        _htd = (
+                            bool(_headtail_directed[_di])
+                            if _headtail_directed and _di < len(_headtail_directed)
+                            else False
+                        )
+                        _, _is_dir = _pf_select_directed_heading(
+                            float(_ph) if _pd else math.nan,
+                            _pd,
+                            _hth,
+                            _htd,
+                            _pose_overrides_ht,
+                        )
+                        if _is_dir:
+                            detection_directed_mask[_di] = 1
+
                 if meas:
                     cost, _ = assigner.compute_cost_matrix(
-                        N, meas, kf_manager.X, shapes, kf_manager, last_shape_info
+                        N,
+                        meas,
+                        kf_manager.X,
+                        shapes,
+                        kf_manager,
+                        last_shape_info,
+                        association_data=_association_data,
                     )
                     matched_r, matched_c, free_dets, next_trajectory_id, _ = (
                         assigner.assign_tracks(
@@ -1094,14 +1521,36 @@ class TrackingPreviewWorker(QThread):
                     # For Phase-3 respawned tracks (lost→matched), initialize before correct()
                     for r, c in zip(matched_r, matched_c):
                         m = np.asarray(meas[c], dtype=np.float32)
+                        # Disambiguate OBB axis-flip before committing to KF.
+                        _pose_d = (
+                            bool(detection_directed_mask[c])
+                            if c < len(detection_directed_mask)
+                            else False
+                        )
+                        theta_cor = _pf_resolve_tracking_theta(
+                            r, m[2], _pose_d, orientation_last
+                        )
+                        m_cor = np.array([m[0], m[1], theta_cor], dtype=np.float32)
                         if track_states[r] == "lost":
                             kf_manager.initialize_filter(
                                 r,
                                 np.array(
-                                    [m[0], m[1], m[2], 0.0, 0.0], dtype=np.float32
+                                    [m_cor[0], m_cor[1], theta_cor, 0.0, 0.0],
+                                    dtype=np.float32,
                                 ),
                             )
-                        kf_manager.correct(r, m)
+                        kf_manager.correct(r, m_cor)
+                        orientation_last[r] = _pf_normalize_theta(
+                            float(kf_manager.X[r, 2])
+                        )
+
+                    # Keep per-track pose prototypes current.
+                    for r, c in zip(matched_r, matched_c):
+                        proto = _det_pose_kpts[c] if c < len(_det_pose_kpts) else None
+                        if proto is not None:
+                            track_pose_prototypes[r] = np.asarray(
+                                proto, dtype=np.float32
+                            ).copy()
 
                     # Initialize lost tracks from unmatched detections — mirrors worker.py
                     newly_initialized: set = set()
@@ -1113,18 +1562,38 @@ class TrackingPreviewWorker(QThread):
                                 and track_states[r] == "lost"
                             ):
                                 m = np.asarray(meas[d_idx], dtype=np.float32)
+                                _pose_d = (
+                                    bool(detection_directed_mask[d_idx])
+                                    if d_idx < len(detection_directed_mask)
+                                    else False
+                                )
+                                theta_cor = _pf_resolve_tracking_theta(
+                                    r, m[2], _pose_d, orientation_last
+                                )
                                 kf_manager.initialize_filter(
                                     r,
                                     np.array(
-                                        [m[0], m[1], m[2], 0.0, 0.0], dtype=np.float32
+                                        [m[0], m[1], theta_cor, 0.0, 0.0],
+                                        dtype=np.float32,
                                     ),
                                 )
+                                orientation_last[r] = _pf_normalize_theta(theta_cor)
                                 track_states[r] = "active"
                                 missed_frames[r] = 0
                                 tracking_continuity[r] = 0
                                 trajectory_ids[r] = next_trajectory_id
                                 next_trajectory_id += 1
                                 newly_initialized.add(r)
+                                # Seed pose prototype from unmatched detection.
+                                proto = (
+                                    _det_pose_kpts[d_idx]
+                                    if d_idx < len(_det_pose_kpts)
+                                    else None
+                                )
+                                if proto is not None:
+                                    track_pose_prototypes[r] = np.asarray(
+                                        proto, dtype=np.float32
+                                    ).copy()
                                 break
                 else:
                     matched_r, matched_c, newly_initialized = [], [], set()
@@ -1161,7 +1630,9 @@ class TrackingPreviewWorker(QThread):
                 for r in range(N):
                     if track_states[r] == "lost":
                         continue
-                    col = traj_colors[r % len(traj_colors)]
+                    # Color is keyed by trajectory_id, not slot index, so the same
+                    # animal keeps its color even if it moves to a different slot.
+                    col = traj_colors[trajectory_ids[r] % len(traj_colors)]
                     # Dim occluded tracks
                     draw_col = (
                         tuple(int(c * 0.5) for c in col)
@@ -1220,4 +1691,9 @@ class TrackingPreviewWorker(QThread):
         finally:
             cap.release()
             cache.close()
+            if _pose_cache is not None:
+                try:
+                    _pose_cache.close()
+                except Exception:
+                    pass
             self.finished_signal.emit()

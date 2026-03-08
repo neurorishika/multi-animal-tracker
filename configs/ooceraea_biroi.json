@@ -85,8 +85,6 @@
   "video_marker_size": 0.1,
   "video_text_scale": 3.0,
   "video_arrow_length": 0.5,
-  "enable_histograms": false,
-  "histogram_history_frames": 300,
   "show_track_markers": true,
   "show_orientation_lines": true,
   "show_trajectory_trails": true,

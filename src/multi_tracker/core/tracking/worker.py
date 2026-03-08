@@ -20,6 +20,18 @@ from multi_tracker.core.background.model import BackgroundModel
 from multi_tracker.core.detectors.engine import create_detector
 from multi_tracker.core.filters.kalman import KalmanFilterManager
 from multi_tracker.core.identity.analysis import IndividualDatasetGenerator
+from multi_tracker.core.tracking.pose_features import (
+    build_pose_detection_keypoint_map as _pf_build_keypoint_map,
+)
+from multi_tracker.core.tracking.pose_features import (
+    compute_pose_geometry_from_keypoints as _pf_compute_geometry,
+)
+from multi_tracker.core.tracking.pose_features import (
+    normalize_pose_keypoints as _pf_normalize_keypoints,
+)
+from multi_tracker.core.tracking.pose_features import (
+    resolve_pose_group_indices as _pf_resolve_indices,
+)
 from multi_tracker.data.detection_cache import DetectionCache
 from multi_tracker.utils.batch_optimizer import BatchOptimizer
 from multi_tracker.utils.frame_prefetcher import FramePrefetcher
@@ -41,7 +53,6 @@ class TrackingWorker(QThread):
     frame_signal = Signal(np.ndarray)
     finished_signal = Signal(bool, list, list)
     progress_signal = Signal(int, str)
-    histogram_data_signal = Signal(dict)
     stats_signal = Signal(dict)  # Real-time FPS/ETA stats
     warning_signal = Signal(str, str)  # (title, message) for UI warnings
     pose_exported_model_resolved_signal = Signal(str)
@@ -1537,13 +1548,13 @@ class TrackingWorker(QThread):
                 names = pose_props_cache.metadata.get("pose_keypoint_names", [])
                 if isinstance(names, (list, tuple)):
                     pose_keypoint_names = [str(v) for v in names]
-                pose_ignore_indices = self._resolve_pose_group_indices(
+                pose_ignore_indices = _pf_resolve_indices(
                     p.get("POSE_IGNORE_KEYPOINTS", []), pose_keypoint_names
                 )
-                pose_direction_anterior_indices = self._resolve_pose_group_indices(
+                pose_direction_anterior_indices = _pf_resolve_indices(
                     p.get("POSE_DIRECTION_ANTERIOR_KEYPOINTS", []), pose_keypoint_names
                 )
-                pose_direction_posterior_indices = self._resolve_pose_group_indices(
+                pose_direction_posterior_indices = _pf_resolve_indices(
                     p.get("POSE_DIRECTION_POSTERIOR_KEYPOINTS", []), pose_keypoint_names
                 )
                 if (
@@ -1938,7 +1949,7 @@ class TrackingWorker(QThread):
             # Optional pose-based geometry features and direction override.
             if pose_direction_enabled and meas and detection_ids:
                 if pose_frame_keypoints_map_frame != actual_frame_index:
-                    pose_frame_keypoints_map = self._build_pose_detection_keypoint_map(
+                    pose_frame_keypoints_map = _pf_build_keypoint_map(
                         pose_props_cache, actual_frame_index
                     )
                     pose_frame_keypoints_map_frame = actual_frame_index
@@ -1951,7 +1962,7 @@ class TrackingWorker(QThread):
                     except Exception:
                         continue
                     keypoints = pose_frame_keypoints_map.get(det_id)
-                    pose_features = self._compute_pose_geometry_from_keypoints(
+                    pose_features = _pf_compute_geometry(
                         keypoints,
                         pose_direction_anterior_indices,
                         pose_direction_posterior_indices,
@@ -1962,7 +1973,7 @@ class TrackingWorker(QThread):
                         continue
                     visibility = float(pose_features.get("visibility", 0.0) or 0.0)
                     detection_pose_visibility[det_idx] = visibility
-                    detection_pose_keypoints[det_idx] = self._normalize_pose_keypoints(
+                    detection_pose_keypoints[det_idx] = _pf_normalize_keypoints(
                         keypoints,
                         pose_min_valid_conf,
                         ignore_indices=pose_ignore_indices,
@@ -2032,11 +2043,6 @@ class TrackingWorker(QThread):
                         cv2.drawContours(overlay, contours, -1, (255, 255, 0), 2)
             else:
                 overlay = None
-
-            hist_velocities = []
-            hist_sizes = []
-            hist_orientations = []
-            hist_costs = []
 
             if detection_initialized and meas:
                 # --- Assignment ---
@@ -2272,12 +2278,6 @@ class TrackingWorker(QThread):
                     current_cost = cost[r, c]
                     total_cost += current_cost
 
-                    # Populate histogram lists (this part is correct)
-                    hist_velocities.append(speed)
-                    hist_sizes.append(sizes[c])
-                    hist_orientations.append(theta_out)
-                    hist_costs.append(current_cost)
-
                 # --- CSV for Unmatched & Final Respawn (Identical to Original) ---
                 if self.csv_writer_thread:
                     for r in unmatched:
@@ -2491,16 +2491,6 @@ class TrackingWorker(QThread):
             track_start = time.time()
             # (All the tracking state updates happen here - already in code)
             profile_times["tracking_update"] += time.time() - track_start
-
-            # Only emit histogram data if the feature is enabled in the GUI
-            if params.get("ENABLE_HISTOGRAMS", False):
-                histogram_payload = {
-                    "velocities": hist_velocities,
-                    "sizes": hist_sizes,
-                    "orientations": hist_orientations,
-                    "assignment_costs": hist_costs,
-                }
-                self.histogram_data_signal.emit(histogram_payload)
 
             # Emit progress signal periodically to avoid overwhelming the GUI thread
             # We also check that total_frames is valid

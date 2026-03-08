@@ -1,0 +1,297 @@
+"""Unit tests for the shared pose_features module."""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import pytest
+
+from multi_tracker.core.tracking.pose_features import (
+    build_pose_detection_keypoint_map,
+    compute_detection_pose_features,
+    compute_pose_geometry_from_keypoints,
+    normalize_pose_keypoints,
+    normalize_theta,
+    parse_pose_group_tokens,
+    resolve_pose_group_indices,
+)
+
+# ---------------------------------------------------------------------------
+# normalize_theta
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_theta_zero():
+    assert abs(normalize_theta(0.0)) < 1e-6
+
+
+def test_normalize_theta_full_rotation_wraps_to_zero():
+    assert abs(normalize_theta(2 * math.pi)) < 1e-6
+
+
+def test_normalize_theta_negative_pi_becomes_pi():
+    assert abs(normalize_theta(-math.pi) - math.pi) < 1e-6
+
+
+def test_normalize_theta_negative_two_pi():
+    assert abs(normalize_theta(-2 * math.pi)) < 1e-6
+
+
+def test_normalize_theta_three_halves_pi():
+    expected = 3 * math.pi / 2
+    assert abs(normalize_theta(-math.pi / 2) - expected) < 1e-6
+
+
+def test_normalize_theta_invalid_input_returns_zero():
+    assert abs(normalize_theta("bad")) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# parse_pose_group_tokens
+# ---------------------------------------------------------------------------
+
+
+def test_parse_pose_group_tokens_none():
+    assert parse_pose_group_tokens(None) == []
+
+
+def test_parse_pose_group_tokens_empty_string():
+    assert parse_pose_group_tokens("") == []
+
+
+def test_parse_pose_group_tokens_string_mixed():
+    result = parse_pose_group_tokens("0, head, 2")
+    assert result == [0, "head", 2]
+
+
+def test_parse_pose_group_tokens_list():
+    result = parse_pose_group_tokens([1, "tail", 3])
+    assert result == [1, "tail", 3]
+
+
+def test_parse_pose_group_tokens_single_int():
+    assert parse_pose_group_tokens(5) == [5]
+
+
+# ---------------------------------------------------------------------------
+# resolve_pose_group_indices
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_pose_group_indices_by_name():
+    names = ["thorax", "head", "abdomen"]
+    result = resolve_pose_group_indices(["head", "thorax"], names)
+    assert set(result) == {0, 1}
+
+
+def test_resolve_pose_group_indices_by_int():
+    names = ["a", "b", "c"]
+    assert resolve_pose_group_indices([0, 2], names) == [0, 2]
+
+
+def test_resolve_pose_group_indices_deduplicates():
+    names = ["a", "b"]
+    assert resolve_pose_group_indices([0, 0, 1], names) == [0, 1]
+
+
+def test_resolve_pose_group_indices_out_of_range_skipped():
+    names = ["a", "b"]
+    assert resolve_pose_group_indices([0, 5], names) == [0]
+
+
+def test_resolve_pose_group_indices_unknown_name_skipped():
+    names = ["a", "b"]
+    assert resolve_pose_group_indices(["a", "unknown"], names) == [0]
+
+
+def test_resolve_pose_group_indices_empty_spec():
+    names = ["a", "b"]
+    assert resolve_pose_group_indices(None, names) == []
+
+
+def test_resolve_pose_group_indices_empty_names():
+    assert resolve_pose_group_indices([0], []) == []
+
+
+# ---------------------------------------------------------------------------
+# build_pose_detection_keypoint_map
+# ---------------------------------------------------------------------------
+
+
+def test_build_pose_detection_keypoint_map_none_cache():
+    assert build_pose_detection_keypoint_map(None, 0) == {}
+
+
+class _FakePoseCache:
+    """Minimal stub matching the IndividualPropertiesCache.get_frame interface."""
+
+    def __init__(self, data):
+        self._data = (
+            data  # {frame_idx: {"detection_ids": [...], "pose_keypoints": [...]}}
+        )
+
+    def get_frame(self, frame_idx):
+        return self._data.get(
+            int(frame_idx), {"detection_ids": [], "pose_keypoints": []}
+        )
+
+
+def test_build_pose_detection_keypoint_map_basic():
+    kpts = np.array([[1.0, 2.0, 0.9]], dtype=np.float32)
+    cache = _FakePoseCache({7: {"detection_ids": [42], "pose_keypoints": [kpts]}})
+    result = build_pose_detection_keypoint_map(cache, 7)
+    assert 42 in result
+    np.testing.assert_array_equal(result[42], kpts)
+
+
+def test_build_pose_detection_keypoint_map_missing_frame():
+    cache = _FakePoseCache({})
+    assert build_pose_detection_keypoint_map(cache, 99) == {}
+
+
+# ---------------------------------------------------------------------------
+# compute_pose_geometry_from_keypoints
+# ---------------------------------------------------------------------------
+
+
+def test_compute_pose_geometry_from_keypoints_basic_heading():
+    # anterior at (10, 0), posterior at (0, 0) => heading ~= 0 rad
+    kpts = np.array([[10.0, 0.0, 0.9], [0.0, 0.0, 0.9]], dtype=np.float32)
+    result = compute_pose_geometry_from_keypoints(kpts, [0], [1], min_valid_conf=0.1)
+    assert result is not None
+    assert result["heading"] is not None
+    assert abs(result["heading"]) < 0.1 or abs(result["heading"] - 2 * math.pi) < 0.1
+
+
+def test_compute_pose_geometry_from_keypoints_body_length():
+    kpts = np.array([[10.0, 0.0, 0.9], [0.0, 0.0, 0.9]], dtype=np.float32)
+    result = compute_pose_geometry_from_keypoints(kpts, [0], [1], min_valid_conf=0.1)
+    assert result is not None
+    assert result["body_length"] == pytest.approx(10.0, abs=0.1)
+
+
+def test_compute_pose_geometry_from_keypoints_full_visibility():
+    kpts = np.array([[10.0, 0.0, 0.9], [0.0, 0.0, 0.9]], dtype=np.float32)
+    result = compute_pose_geometry_from_keypoints(kpts, [0], [1], min_valid_conf=0.1)
+    assert result is not None
+    assert result["visibility"] == pytest.approx(1.0, abs=0.01)
+
+
+def test_compute_pose_geometry_from_keypoints_low_conf_heading_is_none():
+    # Both keypoints below min_valid_conf
+    kpts = np.array([[10.0, 0.0, 0.05], [0.0, 0.0, 0.05]], dtype=np.float32)
+    result = compute_pose_geometry_from_keypoints(kpts, [0], [1], min_valid_conf=0.1)
+    assert result is not None
+    assert result["heading"] is None
+
+
+def test_compute_pose_geometry_from_keypoints_none_input():
+    assert compute_pose_geometry_from_keypoints(None, [0], [1], 0.2) is None
+
+
+def test_compute_pose_geometry_from_keypoints_invalid_shape():
+    kpts = np.array([1.0, 2.0], dtype=np.float32)  # 1-D, invalid
+    assert compute_pose_geometry_from_keypoints(kpts, [0], [1], 0.2) is None
+
+
+def test_compute_pose_geometry_from_keypoints_ignore_indices():
+    # kpt[0] is anterior at (10, 0) but ignored; kpt[2] is at (8, 0) above conf
+    kpts = np.array(
+        [[10.0, 0.0, 0.9], [0.0, 0.0, 0.9], [8.0, 0.0, 0.9]],
+        dtype=np.float32,
+    )
+    result = compute_pose_geometry_from_keypoints(
+        kpts, [0, 2], [1], min_valid_conf=0.1, ignore_indices=[0]
+    )
+    assert result is not None
+    # Only kpt[2] (8,0) is valid for anterior after ignore; heading ~= 0
+    assert result["heading"] is not None
+
+
+# ---------------------------------------------------------------------------
+# normalize_pose_keypoints
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_pose_keypoints_none_input():
+    assert normalize_pose_keypoints(None, 0.2) is None
+
+
+def test_normalize_pose_keypoints_invalid_shape():
+    assert normalize_pose_keypoints(np.array([1.0, 2.0]), 0.2) is None
+
+
+def test_normalize_pose_keypoints_all_low_conf():
+    kpts = np.array([[2.0, 0.0, 0.05], [-2.0, 0.0, 0.05]], dtype=np.float32)
+    assert normalize_pose_keypoints(kpts, min_valid_conf=0.1) is None
+
+
+def test_normalize_pose_keypoints_centered():
+    # Two equal-confidence points symmetric about origin after centering
+    kpts = np.array([[2.0, 0.0, 0.9], [-2.0, 0.0, 0.9]], dtype=np.float32)
+    out = normalize_pose_keypoints(kpts, min_valid_conf=0.1)
+    assert out is not None
+    # Centroid x should sum to zero after centering
+    assert abs(float(out[0, 0]) + float(out[1, 0])) < 1e-5
+
+
+def test_normalize_pose_keypoints_invalid_entries_become_nan():
+    kpts = np.array([[2.0, 0.0, 0.9], [-2.0, 0.0, 0.05]], dtype=np.float32)
+    out = normalize_pose_keypoints(kpts, min_valid_conf=0.1)
+    assert out is not None
+    # kpt[1] had low conf — its x/y should be nan
+    assert np.isnan(out[1, 0])
+    assert np.isnan(out[1, 1])
+
+
+def test_normalize_pose_keypoints_conf_preserved():
+    kpts = np.array([[2.0, 0.0, 0.85], [-2.0, 0.0, 0.75]], dtype=np.float32)
+    out = normalize_pose_keypoints(kpts, min_valid_conf=0.1)
+    assert out is not None
+    assert out[0, 2] == pytest.approx(0.85, abs=1e-5)
+    assert out[1, 2] == pytest.approx(0.75, abs=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# compute_detection_pose_features
+# ---------------------------------------------------------------------------
+
+
+def test_compute_detection_pose_features_no_match():
+    kpt_map = {}
+    kpts, vis = compute_detection_pose_features([12345], kpt_map, [0], [1], [], 0.2)
+    assert kpts == [None]
+    assert vis[0] == pytest.approx(0.0)
+
+
+def test_compute_detection_pose_features_with_match():
+    det_id = 42
+    kpts_raw = np.array([[10.0, 0.0, 0.9], [0.0, 0.0, 0.9]], dtype=np.float32)
+    kpt_map = {det_id: kpts_raw}
+    out_kpts, out_vis = compute_detection_pose_features(
+        [det_id], kpt_map, [0], [1], [], 0.2
+    )
+    assert out_kpts[0] is not None
+    assert out_vis[0] > 0.0
+
+
+def test_compute_detection_pose_features_partial_match():
+    det_ids = [1, 2, 3]
+    kpts_raw = np.array([[10.0, 0.0, 0.9], [0.0, 0.0, 0.9]], dtype=np.float32)
+    kpt_map = {2: kpts_raw}  # only middle detection has pose
+    out_kpts, out_vis = compute_detection_pose_features(
+        det_ids, kpt_map, [0], [1], [], 0.2
+    )
+    assert out_kpts[0] is None
+    assert out_kpts[1] is not None
+    assert out_kpts[2] is None
+    assert out_vis[0] == pytest.approx(0.0)
+    assert out_vis[1] > 0.0
+    assert out_vis[2] == pytest.approx(0.0)
+
+
+def test_compute_detection_pose_features_empty():
+    out_kpts, out_vis = compute_detection_pose_features([], {}, [0], [1], [], 0.2)
+    assert out_kpts == []
+    assert len(out_vis) == 0

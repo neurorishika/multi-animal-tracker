@@ -96,7 +96,6 @@ from ..utils.gpu_utils import (
 )
 from .dialogs.parameter_helper import ParameterHelperDialog
 from .dialogs.train_yolo_dialog import TrainYoloDialog
-from .widgets.histograms import HistogramPanel
 
 try:
     from ..posekit.ui.dialogs.utils import get_available_devices
@@ -2156,8 +2155,6 @@ class MainWindow(QMainWindow):
         self.roi_current_mode = "circle"  # 'circle' or 'polygon'
         self.roi_current_zone_type = "include"  # 'include' or 'exclude'
 
-        self.histogram_panel = None
-        self.histogram_window = None
         self.current_worker = None
 
         self.tracking_worker = None
@@ -2480,7 +2477,7 @@ class MainWindow(QMainWindow):
         self.setup_tracking_ui()
         self.tabs.addTab(self.tab_tracking, "Track Movement")
 
-        # Tab 5: Data (Post-proc, Histograms)
+        # Tab 5: Data (Post-proc)
         self.tab_data = QWidget()
         self.setup_data_ui()
         self.tabs.addTab(self.tab_data, "Clean Results")
@@ -4058,8 +4055,9 @@ class MainWindow(QMainWindow):
         vl_core = QVBoxLayout(g_core)
         vl_core.addWidget(
             self._create_help_label(
-                "These control basic track-to-detection matching. Max assignment distance sets how far an animal can "
-                "move between frames. Recovery search distance helps reconnect lost tracks."
+                "These control basic track-to-detection matching. Max movement sets how far an animal can "
+                "move between frames. Max speed gates Kalman predictions to physically plausible values. "
+                "Recovery search distance helps reconnect lost tracks."
             )
         )
         f_core = QFormLayout(None)
@@ -4101,6 +4099,23 @@ class MainWindow(QMainWindow):
         f_core.addRow(
             "Recovery search distance (body lengths)",
             self.spin_continuity_thresh,
+        )
+
+        self.spin_kalman_max_velocity = QDoubleSpinBox()
+        self.spin_kalman_max_velocity.setRange(0.5, 10.0)
+        self.spin_kalman_max_velocity.setSingleStep(0.1)
+        self.spin_kalman_max_velocity.setDecimals(1)
+        self.spin_kalman_max_velocity.setValue(2.0)
+        self.spin_kalman_max_velocity.setToolTip(
+            "Maximum speed constraint (× body size per frame).\n"
+            "Limits how fast any Kalman prediction can move.\n"
+            "velocity_max = this_value × reference_body_size (pixels/frame)\n"
+            "Lower = more conservative, Higher = allows faster movement.\n"
+            "Recommended: 1.5-3.0 depending on animal speed"
+        )
+        f_core.addRow(
+            "Max speed (body lengths/frame)",
+            self.spin_kalman_max_velocity,
         )
 
         self.chk_enable_backward = QCheckBox("Run reverse pass for better accuracy")
@@ -4225,23 +4240,6 @@ class MainWindow(QMainWindow):
             self.spin_kalman_initial_velocity_retention,
         )
 
-        self.spin_kalman_max_velocity = QDoubleSpinBox()
-        self.spin_kalman_max_velocity.setRange(0.5, 10.0)
-        self.spin_kalman_max_velocity.setSingleStep(0.1)
-        self.spin_kalman_max_velocity.setDecimals(1)
-        self.spin_kalman_max_velocity.setValue(2.0)
-        self.spin_kalman_max_velocity.setToolTip(
-            "Maximum velocity constraint (body size multiplier).\n"
-            "Prevents unrealistic predictions during occlusions.\n"
-            "velocity_max = this_value × reference_body_size (pixels/frame)\n"
-            "Lower = more conservative, Higher = allows faster movement.\n"
-            "Recommended: 1.5-3.0 depending on animal speed"
-        )
-        f_kf.addRow(
-            "What maximum speed should prediction allow (body lengths/frame)?",
-            self.spin_kalman_max_velocity,
-        )
-
         # Anisotropic process noise
         aniso_label = QLabel("Should forward and sideways uncertainty differ?")
         aniso_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
@@ -4289,7 +4287,8 @@ class MainWindow(QMainWindow):
         l_weights.addWidget(
             self._create_help_label(
                 "This is the core assignment cost used after motion gating. Position does most of the work; "
-                "orientation and coarse box geometry help break ties without relying on appearance."
+                "orientation and coarse box geometry help break ties. The track feature settings control how "
+                "per-track appearance summaries adapt over time."
             )
         )
 
@@ -4347,6 +4346,35 @@ class MainWindow(QMainWindow):
             "This makes the matcher respect predicted velocity and uncertainty."
         )
         l_weights.addWidget(self.chk_use_mahal)
+
+        f_w2 = QFormLayout(None)
+
+        self.spin_track_feature_ema_alpha = QDoubleSpinBox()
+        self.spin_track_feature_ema_alpha.setRange(0.0, 0.99)
+        self.spin_track_feature_ema_alpha.setDecimals(2)
+        self.spin_track_feature_ema_alpha.setSingleStep(0.01)
+        self.spin_track_feature_ema_alpha.setValue(0.85)
+        self.spin_track_feature_ema_alpha.setToolTip(
+            "EMA retention for the per-track pose prototype and step-size summary.\n"
+            "Higher = slower adaptation (more stable but lags sudden changes).\n"
+            "Lower = faster adaptation (more responsive but noisier).\n"
+            "Recommended: 0.80-0.95"
+        )
+        f_w2.addRow("Track feature EMA", self.spin_track_feature_ema_alpha)
+
+        self.spin_assoc_high_conf_threshold = QDoubleSpinBox()
+        self.spin_assoc_high_conf_threshold.setRange(0.0, 1.0)
+        self.spin_assoc_high_conf_threshold.setDecimals(2)
+        self.spin_assoc_high_conf_threshold.setSingleStep(0.05)
+        self.spin_assoc_high_conf_threshold.setValue(0.7)
+        self.spin_assoc_high_conf_threshold.setToolTip(
+            "Minimum detection confidence required before updating the per-track\n"
+            "high-confidence step-size summary.\n"
+            "Recommended: 0.6-0.8"
+        )
+        f_w2.addRow("High-conf update threshold", self.spin_assoc_high_conf_threshold)
+
+        l_weights.addLayout(f_w2)
         g_weights.setContentLayout(l_weights)
         vbox.addWidget(g_weights)
 
@@ -4427,14 +4455,14 @@ class MainWindow(QMainWindow):
         g_assign.setContentLayout(vl_assign)
         vbox.addWidget(g_assign)
 
-        # Solver and adaptation
-        g_solver = CollapsibleGroupBox("How should assignment adapt over time?")
+        # Assignment algorithm
+        g_solver = CollapsibleGroupBox("Which assignment algorithm should be used?")
         self.tracking_accordion.addCollapsible(g_solver)
         vl_solver = QVBoxLayout()
         vl_solver.addWidget(
             self._create_help_label(
-                "These settings control how assignments are solved and how quickly the tracker updates "
-                "its internal motion and pose summaries."
+                "These settings select the core assignment algorithm and whether to use spatial indexing "
+                "to speed up matching for larger groups."
             )
         )
         f_solver = QFormLayout(None)
@@ -4457,30 +4485,6 @@ class MainWindow(QMainWindow):
             "Usually only helpful for larger groups."
         )
         f_solver.addRow(self.chk_spatial_optimization)
-
-        self.spin_track_feature_ema_alpha = QDoubleSpinBox()
-        self.spin_track_feature_ema_alpha.setRange(0.0, 0.99)
-        self.spin_track_feature_ema_alpha.setDecimals(2)
-        self.spin_track_feature_ema_alpha.setSingleStep(0.01)
-        self.spin_track_feature_ema_alpha.setValue(0.85)
-        self.spin_track_feature_ema_alpha.setToolTip(
-            "EMA retention for the per-track pose prototype and step-size summary.\n"
-            "Higher = slower adaptation."
-        )
-        f_solver.addRow("Track feature EMA", self.spin_track_feature_ema_alpha)
-
-        self.spin_assoc_high_conf_threshold = QDoubleSpinBox()
-        self.spin_assoc_high_conf_threshold.setRange(0.0, 1.0)
-        self.spin_assoc_high_conf_threshold.setDecimals(2)
-        self.spin_assoc_high_conf_threshold.setSingleStep(0.05)
-        self.spin_assoc_high_conf_threshold.setValue(0.7)
-        self.spin_assoc_high_conf_threshold.setToolTip(
-            "Minimum detection confidence required before updating the per-track\n"
-            "high-confidence step-size summary."
-        )
-        f_solver.addRow(
-            "High-conf update threshold", self.spin_assoc_high_conf_threshold
-        )
 
         vl_solver.addLayout(f_solver)
         g_solver.setContentLayout(vl_solver)
@@ -5096,43 +5100,6 @@ class MainWindow(QMainWindow):
         self.lbl_video_pose_line_thickness.setVisible(False)
         self.spin_video_pose_line_thickness.setVisible(False)
         self.lbl_video_pose_disabled_hint.setVisible(False)
-
-        # Histograms
-        g_hist = QGroupBox("Which live metrics should be displayed?")
-        vl_hist = QVBoxLayout(g_hist)
-        vl_hist.addWidget(
-            self._create_help_label(
-                "Collect and visualize statistics during tracking. Useful for monitoring behavior patterns in real-time. "
-                "History window controls how many recent frames to include in the analysis."
-            )
-        )
-        f_hist = QFormLayout(None)
-        self.enable_histograms = QCheckBox("Collect live analytics")
-        self.enable_histograms.setToolTip(
-            "Collect real-time statistics during tracking.\n"
-            "Tracks speed, direction, and spatial distributions.\n"
-            "Slight performance overhead but useful for monitoring."
-        )
-        f_hist.addRow(self.enable_histograms)
-
-        self.spin_histogram_history = QSpinBox()
-        self.spin_histogram_history.setRange(50, 5000)
-        self.spin_histogram_history.setValue(300)
-        self.spin_histogram_history.setToolTip(
-            "Number of frames to include in rolling statistics (50-5000).\n"
-            "Larger window = smoother trends but slower response.\n"
-            "Recommended: 100-500 frames for most videos."
-        )
-        f_hist.addRow(
-            "How many frames in live analytics history?", self.spin_histogram_history
-        )
-
-        self.btn_show_histograms = QPushButton("Open Plot Window")
-        self.btn_show_histograms.setCheckable(True)
-        self.btn_show_histograms.clicked.connect(self.toggle_histogram_window)
-        f_hist.addRow(self.btn_show_histograms)
-        vl_hist.addLayout(f_hist)
-        vbox.addWidget(g_hist)
 
         vbox.addStretch()
         scroll.setWidget(content)
@@ -9937,35 +9904,6 @@ class MainWindow(QMainWindow):
             ),
         )
 
-    def toggle_histogram_window(self: object) -> object:
-        """toggle_histogram_window method documentation."""
-        if self.histogram_window is None:
-            if self.histogram_panel is None:
-                self.histogram_panel = HistogramPanel(
-                    history_frames=self.spin_histogram_history.value()
-                )
-            self.histogram_window = QMainWindow()
-            self.histogram_window.setWindowTitle("Real-Time Parameter Histograms")
-            self.histogram_window.setCentralWidget(self.histogram_panel)
-            self.histogram_window.resize(900, 700)
-            self.histogram_window.setStyleSheet(self.styleSheet())
-
-            def on_close():
-                self.btn_show_histograms.setChecked(False)
-                self.histogram_window.hide()
-
-            self.histogram_window.closeEvent = lambda event: (
-                on_close(),
-                event.accept(),
-            )
-
-        if self.btn_show_histograms.isChecked():
-            self.histogram_window.show()
-            self.histogram_window.raise_()
-            self.histogram_window.activateWindow()
-        else:
-            self.histogram_window.hide()
-
     def toggle_preview(self: object, checked: object) -> object:
         """toggle_preview method documentation."""
         if checked:
@@ -12212,32 +12150,6 @@ class MainWindow(QMainWindow):
 
         return None, None
 
-    @Slot(dict)
-    def on_histogram_data(self: object, histogram_data: object) -> object:
-        """on_histogram_data method documentation."""
-        if (
-            self.enable_histograms.isChecked()
-            and self.histogram_window is not None
-            and self.histogram_window.isVisible()
-        ):
-
-            current_history = self.spin_histogram_history.value()
-            if self.histogram_panel.history_frames != current_history:
-                self.histogram_panel.set_history_frames(current_history)
-
-            if "velocities" in histogram_data:
-                self.histogram_panel.update_velocity_data(histogram_data["velocities"])
-            if "sizes" in histogram_data:
-                self.histogram_panel.update_size_data(histogram_data["sizes"])
-            if "orientations" in histogram_data:
-                self.histogram_panel.update_orientation_data(
-                    histogram_data["orientations"]
-                )
-            if "assignment_costs" in histogram_data:
-                self.histogram_panel.update_assignment_cost_data(
-                    histogram_data["assignment_costs"]
-                )
-
     def start_backward_tracking(self: object) -> object:
         """start_backward_tracking method documentation."""
         if self._stop_all_requested:
@@ -12356,7 +12268,6 @@ class MainWindow(QMainWindow):
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
-        self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
         self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
         self.tracking_worker.pose_exported_model_resolved_signal.connect(
@@ -12688,7 +12599,6 @@ class MainWindow(QMainWindow):
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
-        self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
         self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
         self.tracking_worker.pose_exported_model_resolved_signal.connect(
@@ -12947,8 +12857,6 @@ class MainWindow(QMainWindow):
             "SHOW_KALMAN_UNCERTAINTY": self.chk_show_kalman_uncertainty.isChecked(),
             "VISUALIZATION_FREE_MODE": self.chk_visualization_free.isChecked(),
             "zoom_factor": self.slider_zoom.value() / 100.0,
-            "ENABLE_HISTOGRAMS": self.enable_histograms.isChecked(),
-            "HISTOGRAM_HISTORY_FRAMES": self.spin_histogram_history.value(),
             "ROI_MASK": self.roi_mask,
             "REFERENCE_BODY_SIZE": reference_body_size,
             # Conservative trajectory merging parameters (in resized coordinate space)
@@ -13647,14 +13555,6 @@ class MainWindow(QMainWindow):
                 self._update_video_pose_color_button()
             self._sync_video_pose_overlay_controls()
 
-            # === REAL-TIME ANALYTICS ===
-            self.enable_histograms.setChecked(
-                get_cfg("enable_histograms", default=False)
-            )
-            self.spin_histogram_history.setValue(
-                get_cfg("histogram_history_frames", default=300)
-            )
-
             # === VISUALIZATION OVERLAYS ===
             self.chk_show_circles.setChecked(
                 get_cfg("show_track_markers", "show_circles", default=True)
@@ -14223,9 +14123,6 @@ class MainWindow(QMainWindow):
                 "video_pose_point_radius": self.spin_video_pose_point_radius.value(),
                 "video_pose_point_thickness": self.spin_video_pose_point_thickness.value(),
                 "video_pose_line_thickness": self.spin_video_pose_line_thickness.value(),
-                # === REAL-TIME ANALYTICS ===
-                "enable_histograms": self.enable_histograms.isChecked(),
-                "histogram_history_frames": self.spin_histogram_history.value(),
                 # === VISUALIZATION OVERLAYS ===
                 "show_track_markers": self.chk_show_circles.isChecked(),
                 "show_orientation_lines": self.chk_show_orientation.isChecked(),
