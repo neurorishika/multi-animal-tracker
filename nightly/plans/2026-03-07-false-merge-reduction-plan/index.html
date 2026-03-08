@@ -1,0 +1,3127 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="User and developer documentation for Multi-Animal-Tracker and PoseKit">
+      
+      
+      
+        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-07-false-merge-reduction-plan/">
+      
+      
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.43">
+    
+    
+      
+        <title>False-Merge Reduction Implementation Plan - Multi-Animal-Tracker Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.0253249f.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#false-merge-reduction-implementation-plan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-header__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Multi-Animal-Tracker Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              False-Merge Reduction Implementation Plan
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../user-guide/overview/" class="md-tabs__link">
+          
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../developer-guide/architecture/" class="md-tabs__link">
+          
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/api-index/" class="md-tabs__link">
+          
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-nav__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Multi-Animal-Tracker Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/environments/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Environments and Makefile
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/integrations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Integrations
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/platforms/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Platform Notes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    User Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            User Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/overview/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Overview
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/workflow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    End-to-End Workflow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/detection-modes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Detection Modes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/tracking-and-merging/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking and Merging
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/post-processing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Post-processing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/configuration-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/compute-runtimes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Compute Runtimes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/outputs-and-csv-schema/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Outputs and CSV Schema
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/dataset-generation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Dataset Generation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/individual-analysis/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Individual Analysis
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/posekit-labeler/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    PoseKit Labeler
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/troubleshooting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Developer Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Developer Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/architecture/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Architecture
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/module-map/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Module Map
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/data-flow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Flow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Algorithm Deep Dive
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/gpu-backends/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    GPU Backends
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/runtime-integration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Runtime Integration
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CUDA Dependency Updates
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/performance-tuning/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Tuning
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/confidence-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Confidence Metrics
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/extending-detection/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Detection
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/extending-identity/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Identity
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/code-health/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Code Health & Auditing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Reference
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-index/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API Index
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ui-components-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ui-components-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-app/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (App)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-core/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Core)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-data/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Data)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-gui/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (GUI)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-utils/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Utils)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CLI Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/technical-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Technical Reference (LaTeX)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/changelog/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Changelog
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/faq/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FAQ
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#goal" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goal
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Non-Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#current-relevant-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      Current Relevant Pipeline
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      Design Principles
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#signals-to-use" class="md-nav__link">
+    <span class="md-ellipsis">
+      Signals To Use
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Signals To Use">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#already-available" class="md-nav__link">
+    <span class="md-ellipsis">
+      Already Available
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recommended-new-signals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended New Signals
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proposed-phases" class="md-nav__link">
+    <span class="md-ellipsis">
+      Proposed Phases
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-0-instrumentation-and-diagnostics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 0: Instrumentation and Diagnostics
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 0: Instrumentation and Diagnostics">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#objective" class="md-nav__link">
+    <span class="md-ellipsis">
+      Objective
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Changes
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#primary-files" class="md-nav__link">
+    <span class="md-ellipsis">
+      Primary Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliverable" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliverable
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-1-ambiguity-window-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 1: Ambiguity Window Detection
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 1: Ambiguity Window Detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#objective_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Objective
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rationale" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rationale
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#candidate-triggers" class="md-nav__link">
+    <span class="md-ellipsis">
+      Candidate Triggers
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#implementation-sketch" class="md-nav__link">
+    <span class="md-ellipsis">
+      Implementation Sketch
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#primary-files_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Primary Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliverable_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliverable
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-2-multi-cue-false-merge-break-scoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 2: Multi-Cue False-Merge Break Scoring
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 2: Multi-Cue False-Merge Break Scoring">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#objective_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      Objective
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rationale_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rationale
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#candidate-cues" class="md-nav__link">
+    <span class="md-ellipsis">
+      Candidate Cues
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#decision-rule" class="md-nav__link">
+    <span class="md-ellipsis">
+      Decision Rule
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#implementation-sketch_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Implementation Sketch
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#primary-files_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      Primary Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliverable_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliverable
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-2a-optional-appearance-change-point-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 2A: Optional Appearance Change-Point Detection
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 2A: Optional Appearance Change-Point Detection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#objective_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      Objective
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rationale_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rationale
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#best-placement-in-the-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      Best Placement In The Pipeline
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#data-source-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data Source Strategy
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#crop-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Crop Strategy
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recommended-methods" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Methods
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#change-point-logic" class="md-nav__link">
+    <span class="md-ellipsis">
+      Change-Point Logic
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#suggested-parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Suggested Parameters
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#primary-files_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      Primary Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliverable_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliverable
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-2a-implementation-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 2A Implementation Checklist
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 2A Implementation Checklist">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#recommended-first-implementation-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended First Implementation Boundary
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#1-shared-signature-utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Shared Signature Utilities
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-appearance-change-point-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Appearance Change-Point Module
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-geometry-source-decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Geometry Source Decision
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-crop-extraction-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Crop Extraction Path
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-video-and-cache-access-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Video and Cache Access Strategy
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-signature-series-construction" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. Signature Series Construction
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-change-point-detection-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. Change-Point Detection Policy
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#8-integration-point-in-mainwindow" class="md-nav__link">
+    <span class="md-ellipsis">
+      8. Integration Point In MainWindow
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#9-parameter-wiring" class="md-nav__link">
+    <span class="md-ellipsis">
+      9. Parameter Wiring
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#10-stats-and-logging" class="md-nav__link">
+    <span class="md-ellipsis">
+      10. Stats and Logging
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#11-testing-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      11. Testing Checklist
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-documentation-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      12. Documentation Checklist
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#13-exact-first-slice-to-implement" class="md-nav__link">
+    <span class="md-ellipsis">
+      13. Exact First Slice To Implement
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-3-hardening-forwardbackward-merge-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 3: Hardening Forward/Backward Merge Resolution
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 3: Hardening Forward/Backward Merge Resolution">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#objective_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      Objective
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rationale_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rationale
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#new-gating-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      New Gating Rules
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#suggested-new-parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Suggested New Parameters
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#primary-files_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      Primary Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliverable_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliverable
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-4-conservative-relinking-with-strong-reject-option" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 4: Conservative Relinking With Strong Reject Option
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 4: Conservative Relinking With Strong Reject Option">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#objective_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      Objective
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rationale_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rationale
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#changes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Changes
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#candidate-upgrade-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      Candidate Upgrade Path
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#suggested-new-parameters_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Suggested New Parameters
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#primary-files_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      Primary Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliverable_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliverable
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-5-local-replay-around-suspect-events" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 5: Local Replay Around Suspect Events
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 5: Local Replay Around Suspect Events">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#objective_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      Objective
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rationale_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rationale
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hypotheses-to-compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      Hypotheses To Compare
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#scoring-terms" class="md-nav__link">
+    <span class="md-ellipsis">
+      Scoring Terms
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recommended-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Scope
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#primary-files_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      Primary Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliverable_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliverable
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-implementation-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      Recommended Implementation Order
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proposed-parameter-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      Proposed Parameter Surface
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      Validation Plan
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#test-assets" class="md-nav__link">
+    <span class="md-ellipsis">
+      Test Assets
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Test Assets">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      Metrics
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#acceptance-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      Acceptance Criteria
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-and-documentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing and Documentation
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testing and Documentation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      New Tests
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#documentation-updates-after-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Documentation Updates After Implementation
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#concrete-first-slice" class="md-nav__link">
+    <span class="md-ellipsis">
+      Concrete First Slice
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Open Questions
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Summary
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/plans/2026-03-07-false-merge-reduction-plan.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="false-merge-reduction-implementation-plan">False-Merge Reduction Implementation Plan<a class="headerlink" href="#false-merge-reduction-implementation-plan" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-03-07
+<strong>Branch:</strong> <code>mat-pose-integration</code>
+<strong>Status:</strong> Proposed - ready for phased implementation</p>
+<hr />
+<h2 id="goal">Goal<a class="headerlink" href="#goal" title="Permanent link">&para;</a></h2>
+<p>Reduce false trajectory merges as aggressively as practical, even if that increases fragmentation. The system should prefer splitting an uncertain continuity link over preserving a long but incorrect identity chain.</p>
+<p>This plan assumes a <strong>split-first, relink-later</strong> philosophy:</p>
+<ul>
+<li>False merges are more harmful than extra fragments.</li>
+<li>Relinking may remain conservative and incomplete.</li>
+<li>Stronger re-identification methods can be added later, but they are not required for this phase.</li>
+</ul>
+<hr />
+<h2 id="non-goals">Non-Goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Do not make merge or relink decisions based on appearance embeddings as positive identity evidence.</li>
+<li>Do not attempt full re-identification across the entire video.</li>
+<li>Do not optimize for the longest possible trajectories.</li>
+<li>Do not make risky joins simply because they are plausible.</li>
+</ul>
+<p>Appearance features may be explored later for manual review or offline analysis. If appearance enters this plan at all, it should do so only as <strong>split-only negative evidence</strong> through change-point detection, never as positive evidence for merging or relinking.</p>
+<hr />
+<h2 id="current-relevant-pipeline">Current Relevant Pipeline<a class="headerlink" href="#current-relevant-pipeline" title="Permanent link">&para;</a></h2>
+<p>The current stack already includes several conservative pieces:</p>
+<ul>
+<li>Velocity and z-score based splitting in <code>src/multi_tracker/core/post/processing.py</code></li>
+<li>Conservative forward/backward resolution in <code>src/multi_tracker/core/post/processing.py</code></li>
+<li>Spatial redundancy removal and overlap-aware merging in <code>src/multi_tracker/core/post/processing.py</code></li>
+<li>Greedy motion/pose-based fragment relinking in <code>src/multi_tracker/core/post/processing.py</code></li>
+<li>Confidence and uncertainty persistence from <code>src/multi_tracker/core/tracking/worker.py</code></li>
+<li>Forward/backward consistency scoring in <code>src/multi_tracker/core/tracking/optimizer.py</code></li>
+</ul>
+<p>This plan builds on that foundation by adding stronger negative evidence, more explicit ambiguity modeling, and stricter merge/relink gating.</p>
+<hr />
+<h2 id="design-principles">Design Principles<a class="headerlink" href="#design-principles" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Continuity must be earned.</strong> A trajectory should continue only when multiple cues support continuity.</li>
+<li><strong>Ambiguous windows are hostile territory.</strong> Crossings, contacts, and short occlusions should be treated as likely failure zones.</li>
+<li><strong>Negative evidence matters more than positive evidence.</strong> Motion jumps, uncertainty spikes, pose discontinuities, and ambiguous assignments should veto continuity.</li>
+<li><strong>Relinking should reject by default.</strong> If a candidate join is not clearly correct, it should remain split.</li>
+<li><strong>DetectionID is not a temporal identity signal.</strong> It is frame-local and should only be used for overlap reconciliation, not long-term identity continuity.</li>
+<li><strong>Appearance may veto continuity, but should not create it.</strong> A temporally weird crop jump can justify a split, but should not justify a merge.</li>
+</ol>
+<hr />
+<h2 id="signals-to-use">Signals To Use<a class="headerlink" href="#signals-to-use" title="Permanent link">&para;</a></h2>
+<h3 id="already-available">Already Available<a class="headerlink" href="#already-available" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>X</code>, <code>Y</code>, <code>Theta</code>, <code>FrameID</code>, <code>State</code></li>
+<li><code>DetectionConfidence</code></li>
+<li><code>AssignmentConfidence</code></li>
+<li><code>PositionUncertainty</code></li>
+<li><code>DetectionID</code> (frame-local only)</li>
+<li>Pose keypoints and pose confidence in pose-augmented CSVs</li>
+</ul>
+<h3 id="recommended-new-signals">Recommended New Signals<a class="headerlink" href="#recommended-new-signals" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Normalized assignment cost per matched track</li>
+<li>Kalman innovation magnitude per update</li>
+<li>Per-frame nearest-neighbor distance between active tracks</li>
+<li>Per-frame OBB overlap or center-distance crowding score</li>
+<li>Optional assignment margin: best cost vs second-best cost</li>
+<li>Optional split-only appearance change metrics:</li>
+<li>pHash or dHash jump magnitude on canonicalized OBB crops</li>
+<li>grayscale or HSV histogram distance jump</li>
+<li>cheap low-dimensional crop embedding distance if it remains dataset-agnostic</li>
+</ul>
+<p>These signals are useful because false merges usually happen around ambiguous assignments, not during stable isolated motion.</p>
+<p>The appearance signals are intentionally listed as optional and <strong>negative-only</strong>. They are not meant to prove identity, only to flag temporal discontinuities that are suspicious enough to split.</p>
+<hr />
+<h2 id="proposed-phases">Proposed Phases<a class="headerlink" href="#proposed-phases" title="Permanent link">&para;</a></h2>
+<h2 id="phase-0-instrumentation-and-diagnostics">Phase 0: Instrumentation and Diagnostics<a class="headerlink" href="#phase-0-instrumentation-and-diagnostics" title="Permanent link">&para;</a></h2>
+<h3 id="objective">Objective<a class="headerlink" href="#objective" title="Permanent link">&para;</a></h3>
+<p>Add the missing tracking diagnostics needed to identify high-risk continuity failures.</p>
+<h3 id="changes">Changes<a class="headerlink" href="#changes" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Persist normalized assignment cost to tracking CSV output.</li>
+<li>Persist Kalman innovation magnitude or a closely related residual metric.</li>
+<li>Persist crowding features when possible:</li>
+<li>nearest-neighbor distance</li>
+<li>optional OBB overlap fraction</li>
+<li>optional assignment margin</li>
+<li>Extend post-processing stats so new split causes are counted separately.</li>
+</ul>
+<h3 id="primary-files">Primary Files<a class="headerlink" href="#primary-files" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>src/multi_tracker/core/tracking/worker.py</code></li>
+<li><code>src/multi_tracker/core/assigners/hungarian.py</code></li>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+<li><code>docs/developer-guide/confidence-metrics.md</code></li>
+</ul>
+<h3 id="deliverable">Deliverable<a class="headerlink" href="#deliverable" title="Permanent link">&para;</a></h3>
+<p>A richer per-frame CSV that makes risky handoffs measurable instead of implicit.</p>
+<hr />
+<h2 id="phase-1-ambiguity-window-detection">Phase 1: Ambiguity Window Detection<a class="headerlink" href="#phase-1-ambiguity-window-detection" title="Permanent link">&para;</a></h2>
+<h3 id="objective_1">Objective<a class="headerlink" href="#objective_1" title="Permanent link">&para;</a></h3>
+<p>Detect windows where identity continuity is inherently unreliable and treat them as high-risk for false merges.</p>
+<h3 id="rationale">Rationale<a class="headerlink" href="#rationale" title="Permanent link">&para;</a></h3>
+<p>Most false merges happen during close approaches, body contacts, short occlusions, or low-margin assignments. These windows should be marked explicitly and used to raise split sensitivity.</p>
+<h3 id="candidate-triggers">Candidate Triggers<a class="headerlink" href="#candidate-triggers" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Two active tracks move within a distance threshold based on body size.</li>
+<li>OBBs overlap beyond a threshold.</li>
+<li>Assignment confidence drops below a threshold.</li>
+<li>Assignment margin becomes small.</li>
+<li>Position uncertainty spikes.</li>
+<li>State transitions into or out of <code>occluded</code> or <code>lost</code> near another animal.</li>
+</ul>
+<h3 id="implementation-sketch">Implementation Sketch<a class="headerlink" href="#implementation-sketch" title="Permanent link">&para;</a></h3>
+<p>Add a helper that produces per-frame or per-row risk flags, for example:</p>
+<ul>
+<li><code>RiskCrowding</code></li>
+<li><code>RiskLowAssignmentConfidence</code></li>
+<li><code>RiskHighUncertainty</code></li>
+<li><code>RiskOcclusionBoundary</code></li>
+<li><code>RiskAmbiguousWindow</code></li>
+</ul>
+<p>These flags can be computed either during tracking output or in post-processing from the final CSV and optional pose-augmented CSV.</p>
+<h3 id="primary-files_1">Primary Files<a class="headerlink" href="#primary-files_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>src/multi_tracker/core/tracking/worker.py</code></li>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+</ul>
+<h3 id="deliverable_1">Deliverable<a class="headerlink" href="#deliverable_1" title="Permanent link">&para;</a></h3>
+<p>A reusable ambiguity-window signal that later phases can use for split and relink gating.</p>
+<hr />
+<h2 id="phase-2-multi-cue-false-merge-break-scoring">Phase 2: Multi-Cue False-Merge Break Scoring<a class="headerlink" href="#phase-2-multi-cue-false-merge-break-scoring" title="Permanent link">&para;</a></h2>
+<h3 id="objective_2">Objective<a class="headerlink" href="#objective_2" title="Permanent link">&para;</a></h3>
+<p>Replace single-cue break logic with a multi-cue score that prefers splitting when continuity becomes untrustworthy.</p>
+<h3 id="rationale_1">Rationale<a class="headerlink" href="#rationale_1" title="Permanent link">&para;</a></h3>
+<p>Velocity alone is too brittle. False merges often show up as a combination of moderate anomalies rather than one extreme jump.</p>
+<h3 id="candidate-cues">Candidate Cues<a class="headerlink" href="#candidate-cues" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Velocity z-score</li>
+<li>Heading jump</li>
+<li>Acceleration or jerk spike</li>
+<li>Curvature spike</li>
+<li>Assignment confidence drop</li>
+<li>Assignment cost spike</li>
+<li>Position uncertainty spike</li>
+<li>Ambiguity-window membership</li>
+<li>Pose discontinuity when pose data exists</li>
+</ul>
+<h3 id="decision-rule">Decision Rule<a class="headerlink" href="#decision-rule" title="Permanent link">&para;</a></h3>
+<p>Use a weighted score with a multi-cue requirement. Example:</p>
+<p><code>break_score = motion + geometry + uncertainty + assignment + pose + ambiguity</code></p>
+<p>Recommended policy:</p>
+<ul>
+<li>Split only if the total score exceeds a threshold.</li>
+<li>Also require either:</li>
+<li>at least two independent cues to fire, or</li>
+<li>a single extreme anomaly inside an ambiguity window.</li>
+</ul>
+<p>This avoids overfragmenting clean trajectories while still being much more aggressive near risky events.</p>
+<h3 id="implementation-sketch_1">Implementation Sketch<a class="headerlink" href="#implementation-sketch_1" title="Permanent link">&para;</a></h3>
+<p>Add a new helper such as:</p>
+<ul>
+<li><code>_compute_false_merge_breaks(...)</code></li>
+</ul>
+<p>Then integrate it into:</p>
+<ul>
+<li><code>process_trajectories_from_csv(...)</code></li>
+<li><code>process_trajectories(...)</code></li>
+</ul>
+<p>Track new counters in <code>stats</code>, for example:</p>
+<ul>
+<li><code>broken_ambiguity</code></li>
+<li><code>broken_assignment_confidence</code></li>
+<li><code>broken_uncertainty</code></li>
+<li><code>broken_pose_discontinuity</code></li>
+<li><code>broken_multicue</code></li>
+</ul>
+<h3 id="primary-files_2">Primary Files<a class="headerlink" href="#primary-files_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+<li><code>src/multi_tracker/gui/main_window.py</code></li>
+</ul>
+<h3 id="deliverable_2">Deliverable<a class="headerlink" href="#deliverable_2" title="Permanent link">&para;</a></h3>
+<p>A new break pass that is more conservative than the current velocity-only approach and explicitly optimized for reducing false merges.</p>
+<hr />
+<h2 id="phase-2a-optional-appearance-change-point-detection">Phase 2A: Optional Appearance Change-Point Detection<a class="headerlink" href="#phase-2a-optional-appearance-change-point-detection" title="Permanent link">&para;</a></h2>
+<h3 id="objective_3">Objective<a class="headerlink" href="#objective_3" title="Permanent link">&para;</a></h3>
+<p>Add a cheap image-based change-point detector that can split trajectories when the visual content of the tracked OBB crop changes too abruptly over time.</p>
+<h3 id="rationale_2">Rationale<a class="headerlink" href="#rationale_2" title="Permanent link">&para;</a></h3>
+<p>This is useful for false-merge prevention because a bad swap often produces a sudden crop discontinuity even when motion alone remains plausible. The key constraint is that appearance must be used only as <strong>negative evidence</strong> for splitting, not as positive evidence for merging.</p>
+<h3 id="best-placement-in-the-pipeline">Best Placement In The Pipeline<a class="headerlink" href="#best-placement-in-the-pipeline" title="Permanent link">&para;</a></h3>
+<p>The best insertion point is:</p>
+<ul>
+<li><strong>after interpolation</strong></li>
+<li><strong>after forward/backward resolution if backward tracking is enabled</strong></li>
+<li><strong>before conservative relinking</strong></li>
+</ul>
+<p>Concretely, the easiest place to integrate this in the current application flow is alongside the final pose-augmented relink pipeline in <code>src/multi_tracker/gui/main_window.py</code>, immediately before <code>relink_trajectories_with_pose(...)</code> runs.</p>
+<p>Recommended flow:</p>
+<ol>
+<li>build final merged trajectory DataFrame</li>
+<li>interpolate trajectories</li>
+<li>build pose-augmented DataFrame if available</li>
+<li>run appearance change-point split pass</li>
+<li>run conservative relinking on the already-split result</li>
+</ol>
+<p>This avoids two bad outcomes:</p>
+<ul>
+<li>running too early, before interpolation has produced the temporal support needed for continuity checks</li>
+<li>running too late, after relinking has already stitched a bad merge back together</li>
+</ul>
+<h3 id="data-source-strategy">Data Source Strategy<a class="headerlink" href="#data-source-strategy" title="Permanent link">&para;</a></h3>
+<p>The change-point pass should extract crops from raw video frames using per-row geometry from the final trajectory table.</p>
+<p>Preferred geometry source order:</p>
+<ol>
+<li>exact OBB geometry from detection cache when <code>DetectionID</code> is present</li>
+<li>interpolated width, height, and angle across gaps when exact detections are missing</li>
+<li>fallback to track-local median size if width and height cannot be reconstructed exactly</li>
+</ol>
+<p>This means interpolation remains useful: it provides a dense temporal path for crop extraction, even across short gaps.</p>
+<h3 id="crop-strategy">Crop Strategy<a class="headerlink" href="#crop-strategy" title="Permanent link">&para;</a></h3>
+<ul>
+<li>use masked OBB crops, not loose axis-aligned crops</li>
+<li>canonicalize orientation so the animal is compared in a consistent frame</li>
+<li>keep the crop cheap and deterministic</li>
+<li>ignore frames where crop extraction is too unstable or too small</li>
+</ul>
+<p>Existing repository helpers already support much of this:</p>
+<ul>
+<li>OBB masked crop extraction in <code>src/multi_tracker/core/identity/analysis.py</code></li>
+<li>lightweight perceptual hashing in <code>src/multi_tracker/tools/data_sieve/core.py</code></li>
+</ul>
+<h3 id="recommended-methods">Recommended Methods<a class="headerlink" href="#recommended-methods" title="Permanent link">&para;</a></h3>
+<p>Start with the cheapest robust options first:</p>
+<ol>
+<li>pHash over canonicalized masked OBB crops</li>
+<li>dHash as a simpler gradient-sensitive fallback</li>
+<li>grayscale or HSV histogram distance as a secondary cue</li>
+</ol>
+<p>If a learned embedding is later tested, it should remain optional and off by default unless it proves stable on real data.</p>
+<h3 id="change-point-logic">Change-Point Logic<a class="headerlink" href="#change-point-logic" title="Permanent link">&para;</a></h3>
+<p>Per trajectory:</p>
+<ul>
+<li>compute a crop signature per valid frame</li>
+<li>compute frame-to-frame or window-to-window signature distance</li>
+<li>smooth distances with a short robust window</li>
+<li>flag change-points when the appearance jump is large relative to the local baseline</li>
+</ul>
+<p>Recommended policy:</p>
+<ul>
+<li>do not split on appearance alone in normal frames</li>
+<li>allow appearance to trigger a split only when one of the following is also true:</li>
+<li>the frame lies inside an ambiguity window</li>
+<li>motion or uncertainty cues are also abnormal</li>
+<li>the jump is extreme and persists for multiple frames</li>
+</ul>
+<p>This keeps the method aligned with the overall split-first but artifact-aware design.</p>
+<h3 id="suggested-parameters">Suggested Parameters<a class="headerlink" href="#suggested-parameters" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>ENABLE_APPEARANCE_CHANGEPOINT_SPLITTING</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_METHOD</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_THRESHOLD</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_WINDOW</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_REQUIRE_AMBIGUITY</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_MIN_VALID_CROPS</code></li>
+</ul>
+<p>These should remain advanced or config-only at first.</p>
+<h3 id="primary-files_3">Primary Files<a class="headerlink" href="#primary-files_3" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>src/multi_tracker/gui/main_window.py</code></li>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+<li>optional new helper module under <code>src/multi_tracker/core/post/</code></li>
+<li><code>src/multi_tracker/core/identity/analysis.py</code></li>
+<li><code>src/multi_tracker/tools/data_sieve/core.py</code></li>
+</ul>
+<h3 id="deliverable_3">Deliverable<a class="headerlink" href="#deliverable_3" title="Permanent link">&para;</a></h3>
+<p>An optional split-only appearance change-point pass that catches temporally weird crop jumps before relinking.</p>
+<hr />
+<h2 id="phase-2a-implementation-checklist">Phase 2A Implementation Checklist<a class="headerlink" href="#phase-2a-implementation-checklist" title="Permanent link">&para;</a></h2>
+<p>The checklist below is intentionally ordered so the first slice can land without forcing a full architecture refactor.</p>
+<h3 id="recommended-first-implementation-boundary">Recommended First Implementation Boundary<a class="headerlink" href="#recommended-first-implementation-boundary" title="Permanent link">&para;</a></h3>
+<p>Ship the first version with these constraints:</p>
+<ul>
+<li>use pHash only</li>
+<li>use appearance only as split veto, never as merge or relink evidence</li>
+<li>run only in the final CSV path before relinking</li>
+<li>require either ambiguity-window support or another anomaly cue before splitting</li>
+<li>skip UI controls initially and keep the feature config-only</li>
+</ul>
+<p>That keeps the first implementation small, measurable, and easy to disable.</p>
+<h3 id="1-shared-signature-utilities">1. Shared Signature Utilities<a class="headerlink" href="#1-shared-signature-utilities" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Create a lightweight shared signature utility instead of importing <code>DataSieveCore</code> directly into post-processing.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Move or duplicate only the small hash helpers needed from <code>src/multi_tracker/tools/data_sieve/core.py</code>.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Recommended destination:</li>
+<li><code>src/multi_tracker/core/post/appearance_signatures.py</code></li>
+<li>or <code>src/multi_tracker/utils/image_signatures.py</code></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Implement these helpers as pure functions:</li>
+<li><code>compute_phash(image, hash_size=8)</code></li>
+<li><code>compute_dhash(image, hash_size=8)</code></li>
+<li><code>compute_hist_signature(image, bins=32)</code></li>
+<li><code>signature_distance(sig1, sig2, method="phash")</code></li>
+<li><code>hamming_distance(hash1, hash2)</code></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep the implementation free of heavyweight DataSieve-only dependencies.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> If <code>DataSieveCore</code> continues to expose these methods, make it delegate to the shared helpers to avoid logic drift.</li>
+</ul>
+<h3 id="2-appearance-change-point-module">2. Appearance Change-Point Module<a class="headerlink" href="#2-appearance-change-point-module" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Create a dedicated helper module rather than bloating <code>processing.py</code> further.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Recommended file:</li>
+<li><code>src/multi_tracker/core/post/appearance_changepoints.py</code></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add one public entry point:</li>
+<li><code>split_trajectories_with_appearance_changepoints(...)</code></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add private helpers with narrow responsibilities:</li>
+<li><code>_resolve_row_geometry(...)</code></li>
+<li><code>_extract_canonical_crop(...)</code></li>
+<li><code>_compute_row_signature(...)</code></li>
+<li><code>_compute_trajectory_signature_series(...)</code></li>
+<li><code>_detect_signature_changepoints(...)</code></li>
+<li><code>_split_trajectory_at_frames(...)</code></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep the module DataFrame-in/DataFrame-out so it composes cleanly with the existing post-processing path.</li>
+</ul>
+<h3 id="3-geometry-source-decision">3. Geometry Source Decision<a class="headerlink" href="#3-geometry-source-decision" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Decide whether to persist <code>Width</code> and <code>Height</code> all the way through the final CSV path.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> If yes, add them to the tracked trajectory DataFrame whenever available and preserve them through interpolation and save/load.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> If no, implement lazy reconstruction using this priority order:</li>
+<li>exact OBB corners from detection cache via <code>DetectionID</code></li>
+<li>size reconstruction via detection-cache shape info</li>
+<li>interpolated or track-median width and height fallback</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Reuse or adapt the existing detection-size lookup logic in <code>src/multi_tracker/gui/main_window.py</code> rather than inventing a second incompatible path.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add a guard for rows where geometry cannot be resolved reliably.</li>
+</ul>
+<h3 id="4-crop-extraction-path">4. Crop Extraction Path<a class="headerlink" href="#4-crop-extraction-path" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Reuse existing OBB masked crop behavior from <code>src/multi_tracker/core/identity/analysis.py</code> instead of inventing a new crop definition.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Extract common crop code into a shared helper if duplication becomes awkward.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Ensure crops are:</li>
+<li>masked to the OBB region</li>
+<li>padded consistently</li>
+<li>canonicalized by angle before hashing</li>
+<li>skipped if too small or mostly invalid</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add hard guards for unstable crops:</li>
+<li>minimum crop width and height</li>
+<li>finite center and angle</li>
+<li>finite width and height</li>
+<li>non-empty masked region</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep crop extraction deterministic so the same trajectory produces the same signatures across runs.</li>
+</ul>
+<h3 id="5-video-and-cache-access-strategy">5. Video and Cache Access Strategy<a class="headerlink" href="#5-video-and-cache-access-strategy" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Do not random-seek the video for every row.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Iterate frames in ascending <code>FrameID</code> order and process all trajectory rows belonging to the current frame.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Open the video once for the whole pass.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Open the detection cache once for the whole pass if it is available.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Gracefully skip the appearance pass if:</li>
+<li>the video path is missing</li>
+<li>the video cannot be opened</li>
+<li>the detection cache is unavailable and fallback geometry is insufficient</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Log whether the pass ran, skipped, or partially degraded.</li>
+</ul>
+<h3 id="6-signature-series-construction">6. Signature Series Construction<a class="headerlink" href="#6-signature-series-construction" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Restrict signature computation to rows with usable geometry and valid crops.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Prefer <code>State == "active"</code> rows for baseline continuity.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Allow interpolated rows to contribute only if crop geometry is credible.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Store per-row debugging fields in-memory while computing:</li>
+<li><code>AppearanceSignatureValid</code></li>
+<li><code>AppearanceDistancePrev</code></li>
+<li><code>AppearanceJumpScore</code></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Do not persist raw hash values to the final CSV unless there is a strong debugging need.</li>
+</ul>
+<h3 id="7-change-point-detection-policy">7. Change-Point Detection Policy<a class="headerlink" href="#7-change-point-detection-policy" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Start with consecutive-frame signature distances.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Smooth distances with a short median or robust rolling window.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Compute a local baseline and detect unusually large positive jumps.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Require one of the following before splitting:</li>
+<li>ambiguity-window membership</li>
+<li>co-occurring motion or uncertainty anomaly</li>
+<li>extreme jump persisted for multiple valid frames</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Never allow appearance alone in a normal low-risk region to create a split in the first version.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Emit candidate split frame IDs, not row offsets, so the splitter stays compatible with current DataFrame logic.</li>
+</ul>
+<h3 id="8-integration-point-in-mainwindow">8. Integration Point In MainWindow<a class="headerlink" href="#8-integration-point-in-mainwindow" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Integrate the new pass inside <code>MainWindow._relink_final_pose_augmented_csv(...)</code>.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Insert it after the final <code>relink_input_df</code> has been built and before <code>relink_trajectories_with_pose(...)</code> is called.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Recommended flow inside that method:</li>
+<li>load base final CSV</li>
+<li>build pose-augmented DataFrame if available</li>
+<li>run appearance change-point splitting on <code>relink_input_df</code></li>
+<li>feed the split result into <code>relink_trajectories_with_pose(...)</code></li>
+<li>rewrite final CSV and <code>_with_pose.csv</code> from the relinked result</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep the integration behind a parameter gate so the behavior can be disabled instantly.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Ensure the pass runs for both forward-only and forward/backward workflows, since both converge on this method.</li>
+</ul>
+<h3 id="9-parameter-wiring">9. Parameter Wiring<a class="headerlink" href="#9-parameter-wiring" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add config-only parameters to the parameter dictionary path first.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Recommended initial parameters:</li>
+<li><code>ENABLE_APPEARANCE_CHANGEPOINT_SPLITTING</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_METHOD</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_THRESHOLD</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_WINDOW</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_REQUIRE_AMBIGUITY</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_MIN_VALID_CROPS</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_MIN_CROP_SIZE</code></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Thread the parameters through <code>MainWindow.get_parameters_dict()</code> and config load/save.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Do not add UI controls in the first pass unless the feature stabilizes quickly.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> If a UI surface is later needed, put it under advanced post-processing settings.</li>
+</ul>
+<h3 id="10-stats-and-logging">10. Stats and Logging<a class="headerlink" href="#10-stats-and-logging" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add explicit counters for the new pass, for example:</li>
+<li><code>appearance_rows_considered</code></li>
+<li><code>appearance_valid_crops</code></li>
+<li><code>appearance_split_candidates</code></li>
+<li><code>broken_appearance_changepoint</code></li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Log how many trajectories were examined and how many were split.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Log the degrade mode when geometry or cache information is missing.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep logs concise enough for long jobs.</li>
+</ul>
+<h3 id="11-testing-checklist">11. Testing Checklist<a class="headerlink" href="#11-testing-checklist" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add <code>tests/test_post_processing_appearance_changepoints.py</code>.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Unit-test the shared signature helpers.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that stable synthetic crops do not trigger splits.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that an abrupt crop swap does trigger a split candidate.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that tiny or invalid crops are skipped cleanly.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that the pass is a no-op when disabled.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that the pass does not crash when video or cache inputs are unavailable.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that relinking receives the split result and not the original unsplit DataFrame.</li>
+</ul>
+<h3 id="12-documentation-checklist">12. Documentation Checklist<a class="headerlink" href="#12-documentation-checklist" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Update this plan if helper names or integration points change during implementation.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add a short developer note after implementation explaining:</li>
+<li>why appearance is split-only here</li>
+<li>why the pass runs before relinking</li>
+<li>which crop geometry fallbacks are used</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Update <code>docs/developer-guide/confidence-metrics.md</code> only if new persisted debug fields become user-visible.</li>
+</ul>
+<h3 id="13-exact-first-slice-to-implement">13. Exact First Slice To Implement<a class="headerlink" href="#13-exact-first-slice-to-implement" title="Permanent link">&para;</a></h3>
+<ul class="task-list">
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Create <code>appearance_signatures.py</code> with pHash and Hamming distance only.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Create <code>appearance_changepoints.py</code> with one public <code>split_trajectories_with_appearance_changepoints(...)</code> function.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Reuse the existing masked OBB crop behavior.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Use only pHash in the first pass.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Require ambiguity support or another anomaly cue before splitting.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Call the new function from <code>MainWindow._relink_final_pose_augmented_csv(...)</code> before <code>relink_trajectories_with_pose(...)</code>.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add one focused test file covering stable crops, abrupt swaps, and disabled-mode no-op behavior.</li>
+</ul>
+<p>If this first slice works well, then add dHash or histogram distance, stronger geometry persistence, and more detailed debug outputs in follow-up patches.</p>
+<hr />
+<h2 id="phase-3-hardening-forwardbackward-merge-resolution">Phase 3: Hardening Forward/Backward Merge Resolution<a class="headerlink" href="#phase-3-hardening-forwardbackward-merge-resolution" title="Permanent link">&para;</a></h2>
+<h3 id="objective_4">Objective<a class="headerlink" href="#objective_4" title="Permanent link">&para;</a></h3>
+<p>Make forward/backward consensus merging much stricter so ambiguous overlaps do not collapse into false continuity.</p>
+<h3 id="rationale_3">Rationale<a class="headerlink" href="#rationale_3" title="Permanent link">&para;</a></h3>
+<p>The current resolver already emphasizes agreement, but false merges can still survive if overlap evidence is sparse or fragmented.</p>
+<h3 id="new-gating-rules">New Gating Rules<a class="headerlink" href="#new-gating-rules" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Require both absolute agreement count and agreement ratio.</li>
+<li>Require a minimum contiguous run of agreeing frames, not just scattered agreement.</li>
+<li>Require agreement near overlap boundaries when possible.</li>
+<li>Penalize alternating agree/disagree patterns.</li>
+<li>Reject merges if overlap occurs mostly inside a flagged ambiguity window.</li>
+<li>Prefer splitting when disagreement density is high, even if total agreement count passes threshold.</li>
+</ul>
+<h3 id="suggested-new-parameters">Suggested New Parameters<a class="headerlink" href="#suggested-new-parameters" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>MIN_OVERLAP_AGREEMENT_RATIO</code></li>
+<li><code>MIN_CONTIGUOUS_AGREEMENT_FRAMES</code></li>
+<li><code>MAX_DISAGREEMENT_SWITCHES</code></li>
+<li><code>MERGE_REJECT_IN_AMBIGUOUS_WINDOWS</code></li>
+</ul>
+<h3 id="primary-files_4">Primary Files<a class="headerlink" href="#primary-files_4" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+</ul>
+<h3 id="deliverable_4">Deliverable<a class="headerlink" href="#deliverable_4" title="Permanent link">&para;</a></h3>
+<p>A forward/backward merge stage that is less willing to average through ambiguous overlaps and more willing to preserve fragments.</p>
+<hr />
+<h2 id="phase-4-conservative-relinking-with-strong-reject-option">Phase 4: Conservative Relinking With Strong Reject Option<a class="headerlink" href="#phase-4-conservative-relinking-with-strong-reject-option" title="Permanent link">&para;</a></h2>
+<h3 id="objective_5">Objective<a class="headerlink" href="#objective_5" title="Permanent link">&para;</a></h3>
+<p>Keep relinking conservative and explicitly biased toward leaving fragments unmatched unless continuity is very clear.</p>
+<h3 id="rationale_4">Rationale<a class="headerlink" href="#rationale_4" title="Permanent link">&para;</a></h3>
+<p>If the splitter becomes stronger, relinking must not undo those gains by greedily reconnecting risky fragments.</p>
+<h3 id="changes_1">Changes<a class="headerlink" href="#changes_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Keep motion and pose only; do not introduce appearance.</li>
+<li>Replace greedy pairing with a global matching step when feasible.</li>
+<li>Add a hard reject threshold so unmatched fragments remain unmatched by default.</li>
+<li>Prevent relinking across strong ambiguity windows unless the motion and pose score is exceptionally good.</li>
+<li>Penalize relinking across uncertainty spikes or low-confidence regions.</li>
+</ul>
+<h3 id="candidate-upgrade-path">Candidate Upgrade Path<a class="headerlink" href="#candidate-upgrade-path" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Tighten current greedy relinking thresholds.</li>
+<li>Add explicit rejection criteria.</li>
+<li>Replace greedy chain-building with Hungarian or min-cost flow over fragment endpoints.</li>
+</ol>
+<h3 id="suggested-new-parameters_1">Suggested New Parameters<a class="headerlink" href="#suggested-new-parameters_1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>RELINK_MAX_SCORE</code></li>
+<li><code>RELINK_REJECT_IN_AMBIGUOUS_WINDOWS</code></li>
+<li><code>RELINK_MAX_UNCERTAINTY</code></li>
+<li><code>RELINK_MIN_ASSIGNMENT_CONFIDENCE</code></li>
+</ul>
+<h3 id="primary-files_5">Primary Files<a class="headerlink" href="#primary-files_5" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+<li><code>src/multi_tracker/gui/main_window.py</code></li>
+</ul>
+<h3 id="deliverable_5">Deliverable<a class="headerlink" href="#deliverable_5" title="Permanent link">&para;</a></h3>
+<p>A relinking stage that preserves precision even if recall is modest.</p>
+<hr />
+<h2 id="phase-5-local-replay-around-suspect-events">Phase 5: Local Replay Around Suspect Events<a class="headerlink" href="#phase-5-local-replay-around-suspect-events" title="Permanent link">&para;</a></h2>
+<h3 id="objective_6">Objective<a class="headerlink" href="#objective_6" title="Permanent link">&para;</a></h3>
+<p>Use the detection cache to re-evaluate short windows around suspected merge points with stricter hypotheses.</p>
+<h3 id="rationale_5">Rationale<a class="headerlink" href="#rationale_5" title="Permanent link">&para;</a></h3>
+<p>False merges are often local mistakes. A short replay window can compare competing explanations without rerunning the entire video.</p>
+<h3 id="hypotheses-to-compare">Hypotheses To Compare<a class="headerlink" href="#hypotheses-to-compare" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>H0</code>: continuity is correct; keep one chain</li>
+<li><code>H1</code>: continuity failed; split into two fragments</li>
+</ul>
+<h3 id="scoring-terms">Scoring Terms<a class="headerlink" href="#scoring-terms" title="Permanent link">&para;</a></h3>
+<ul>
+<li>cumulative assignment cost</li>
+<li>uncertainty growth</li>
+<li>number of occlusion frames</li>
+<li>motion smoothness</li>
+<li>pose continuity if available</li>
+<li>penalty for passing through ambiguity windows as one identity</li>
+</ul>
+<h3 id="recommended-scope">Recommended Scope<a class="headerlink" href="#recommended-scope" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Start with short windows around only the highest-confidence suspect events.</li>
+<li>Keep this phase optional behind a parameter flag.</li>
+</ul>
+<h3 id="primary-files_6">Primary Files<a class="headerlink" href="#primary-files_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+<li><code>src/multi_tracker/core/tracking/optimizer.py</code></li>
+<li>optional new helper module under <code>src/multi_tracker/core/post/</code></li>
+</ul>
+<h3 id="deliverable_6">Deliverable<a class="headerlink" href="#deliverable_6" title="Permanent link">&para;</a></h3>
+<p>A principled tie-breaker for difficult local cases without requiring full global replay.</p>
+<hr />
+<h2 id="recommended-implementation-order">Recommended Implementation Order<a class="headerlink" href="#recommended-implementation-order" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Phase 0 instrumentation</li>
+<li>Phase 1 ambiguity windows</li>
+<li>Phase 2 multi-cue split scoring</li>
+<li>Phase 2A optional appearance change-point splitting</li>
+<li>Phase 3 stricter forward/backward merge gating</li>
+<li>Phase 4 conservative relinking upgrades</li>
+<li>Phase 5 optional local replay</li>
+</ol>
+<p>This order is intentional:</p>
+<ul>
+<li>It improves observability first.</li>
+<li>It reduces false merges before relinking changes.</li>
+<li>It keeps higher-cost replay work until the core heuristics are validated.</li>
+</ul>
+<hr />
+<h2 id="proposed-parameter-surface">Proposed Parameter Surface<a class="headerlink" href="#proposed-parameter-surface" title="Permanent link">&para;</a></h2>
+<p>The following parameters should be added only as needed and kept hidden or advanced by default until stabilized:</p>
+<ul>
+<li><code>ENABLE_FALSE_MERGE_GUARD</code></li>
+<li><code>FALSE_MERGE_REQUIRE_MULTI_CUE</code></li>
+<li><code>FALSE_MERGE_BREAK_SCORE_THRESHOLD</code></li>
+<li><code>FALSE_MERGE_AMBIGUITY_DISTANCE_MULTIPLIER</code></li>
+<li><code>FALSE_MERGE_UNCERTAINTY_ZSCORE_THRESHOLD</code></li>
+<li><code>FALSE_MERGE_ASSIGNMENT_COST_ZSCORE_THRESHOLD</code></li>
+<li><code>ENABLE_APPEARANCE_CHANGEPOINT_SPLITTING</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_METHOD</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_THRESHOLD</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_WINDOW</code></li>
+<li><code>APPEARANCE_CHANGEPOINT_REQUIRE_AMBIGUITY</code></li>
+<li><code>MIN_OVERLAP_AGREEMENT_RATIO</code></li>
+<li><code>MIN_CONTIGUOUS_AGREEMENT_FRAMES</code></li>
+<li><code>MAX_DISAGREEMENT_SWITCHES</code></li>
+<li><code>RELINK_MAX_SCORE</code></li>
+<li><code>RELINK_REJECT_IN_AMBIGUOUS_WINDOWS</code></li>
+<li><code>ENABLE_LOCAL_REPLAY_ON_SUSPECT_WINDOWS</code></li>
+</ul>
+<p>The UI should expose only the minimal stable subset at first. The rest can stay in config or experimental settings until the behavior is well understood.</p>
+<hr />
+<h2 id="validation-plan">Validation Plan<a class="headerlink" href="#validation-plan" title="Permanent link">&para;</a></h2>
+<h2 id="test-assets">Test Assets<a class="headerlink" href="#test-assets" title="Permanent link">&para;</a></h2>
+<p>Build a small benchmark set of short clips with known failure modes:</p>
+<ul>
+<li>simple isolated motion</li>
+<li>crossings without contact</li>
+<li>crossings with contact</li>
+<li>short occlusion and re-emergence</li>
+<li>dense crowding</li>
+<li>turning events without identity swaps</li>
+</ul>
+<h3 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h3>
+<ul>
+<li>false merges per 1000 frames</li>
+<li>number of split points near manually marked swap events</li>
+<li>fragment count increase relative to baseline</li>
+<li>relink precision on benchmark fragments</li>
+<li>forward/backward consistency improvement</li>
+<li>regression rate on clean isolated clips</li>
+</ul>
+<h3 id="acceptance-criteria">Acceptance Criteria<a class="headerlink" href="#acceptance-criteria" title="Permanent link">&para;</a></h3>
+<ul>
+<li>false merges decrease substantially on crowded and crossing clips</li>
+<li>overfragmentation increase remains acceptable on clean clips</li>
+<li>relinking precision does not fall below the current conservative baseline</li>
+<li>no major regression in processing time for default settings</li>
+</ul>
+<hr />
+<h2 id="testing-and-documentation">Testing and Documentation<a class="headerlink" href="#testing-and-documentation" title="Permanent link">&para;</a></h2>
+<h3 id="new-tests">New Tests<a class="headerlink" href="#new-tests" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>tests/test_post_processing_false_merge_breaks.py</code></li>
+<li><code>tests/test_post_processing_appearance_changepoints.py</code></li>
+<li><code>tests/test_post_processing_merge_gating.py</code></li>
+<li><code>tests/test_tracklet_relinking_conservative.py</code></li>
+<li>optional replay-focused tests if Phase 5 lands</li>
+</ul>
+<h3 id="documentation-updates-after-implementation">Documentation Updates After Implementation<a class="headerlink" href="#documentation-updates-after-implementation" title="Permanent link">&para;</a></h3>
+<ul>
+<li>update <code>docs/developer-guide/confidence-metrics.md</code></li>
+<li>update <code>docs/developer-guide/tracking-optimization.md</code> if new metrics are surfaced in tuning</li>
+<li>add a developer note describing ambiguity windows and the split-first philosophy</li>
+</ul>
+<hr />
+<h2 id="concrete-first-slice">Concrete First Slice<a class="headerlink" href="#concrete-first-slice" title="Permanent link">&para;</a></h2>
+<p>The most practical first implementation slice is:</p>
+<ol>
+<li>Log one or two new diagnostics from tracking:</li>
+<li>normalized assignment cost</li>
+<li>nearest-neighbor distance or crowding score</li>
+<li>Add ambiguity-window detection in post-processing.</li>
+<li>Add a multi-cue break helper that uses:</li>
+<li>velocity z-score</li>
+<li>assignment confidence or cost anomaly</li>
+<li>uncertainty spike</li>
+<li>ambiguity-window membership</li>
+<li>Optionally add a pHash-based change-point veto before relinking.</li>
+<li>Tighten merge gating to require agreement ratio plus contiguous agreement.</li>
+<li>Leave relinking conservative and mostly unchanged for the first pass.</li>
+</ol>
+<p>This slice should deliver the highest reduction in false merges with the lowest architectural disruption.</p>
+<hr />
+<h2 id="open-questions">Open Questions<a class="headerlink" href="#open-questions" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Should nearest-neighbor distance be computed during tracking or reconstructed later from the final CSV?</li>
+<li>Is assignment margin available cheaply enough to log without materially slowing tracking?</li>
+<li>Should ambiguity windows be computed at the frame level, the trajectory-row level, or both?</li>
+<li>Should local replay reuse existing optimizer code paths, or remain isolated in post-processing?</li>
+<li>Which advanced thresholds deserve UI exposure versus remaining config-only?</li>
+</ul>
+<hr />
+<h2 id="summary">Summary<a class="headerlink" href="#summary" title="Permanent link">&para;</a></h2>
+<p>The core strategy is to stop asking post-processing to prove identity and instead ask it to prove that continuity is still trustworthy. If continuity cannot be defended with motion, geometry, uncertainty, assignment quality, and optional pose continuity, the system should split.</p>
+<p>That bias is the right one for this repository because conservative relinking already exists, stronger re-identification can be added later, and false merges are more damaging than extra fragments.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.83f73b43.min.js"></script>
+      
+    
+  </body>
+</html>
