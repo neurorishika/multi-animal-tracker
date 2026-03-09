@@ -130,6 +130,5 @@
   "pose_export_min_valid_keypoints": 3,
   "relink_min_pose_quality": 0.4,
   "pose_postproc_max_gap": 5,
-  "pose_temporal_outlier_zscore": 3.0,
-  "pose_background_color": 128
+  "pose_temporal_outlier_zscore": 3.0
 }

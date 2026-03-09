@@ -67,6 +67,7 @@ from ..core.identity.pose_quality import (
     apply_quality_to_dataframe,
     apply_temporal_pose_postprocessing,
     calibrate_body_length_prior,
+    calibrate_edge_length_priors,
 )
 from ..core.identity.properties_export import (
     POSE_SUMMARY_COLUMNS,
@@ -762,7 +763,6 @@ class InterpolatedCropsWorker(QThread):
                             f"Interpolating occlusions... {idx}/{total_frames}",
                         )
                         del frame
-                        gc.collect()
 
             mapping_path = None
             roi_csv_path = None
@@ -12132,6 +12132,27 @@ class MainWindow(QMainWindow):
                 params.get("POSE_DIRECTION_POSTERIOR_KEYPOINTS", []), kpt_names
             )
 
+            # Load skeleton edges from the skeleton JSON for anatomy checks
+            skeleton_edges = []
+            try:
+                _skel_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
+                if _skel_file and os.path.exists(_skel_file):
+                    with open(_skel_file, "r", encoding="utf-8") as _sf:
+                        _skel_data = json.load(_sf)
+                    for _edge in _skel_data.get(
+                        "skeleton_edges", _skel_data.get("edges", [])
+                    ):
+                        if isinstance(_edge, (list, tuple)) and len(_edge) >= 2:
+                            try:
+                                skeleton_edges.append((int(_edge[0]), int(_edge[1])))
+                            except Exception:
+                                pass
+            except Exception:
+                logger.exception(
+                    "Failed to load skeleton edges for anatomy check; skipping."
+                )
+                skeleton_edges = []
+
             # Calibrate body-length prior from high-confidence frames
             body_length_prior = None
             if anterior_indices and posterior_indices:
@@ -12158,6 +12179,29 @@ class MainWindow(QMainWindow):
                     )
                     body_length_prior = None
 
+            # Calibrate per-edge length priors from high-confidence frames
+            edge_length_priors = None
+            if skeleton_edges:
+                try:
+                    edge_length_priors = calibrate_edge_length_priors(
+                        with_pose_df,
+                        pose_labels,
+                        skeleton_edges,
+                        min_valid_conf=float(
+                            params.get("POSE_MIN_KPT_CONF_VALID", 0.2)
+                        ),
+                    )
+                    if edge_length_priors.is_valid:
+                        logger.info(
+                            "Edge-length priors calibrated for %d edges.",
+                            len(edge_length_priors.priors),
+                        )
+                except Exception:
+                    logger.exception(
+                        "Edge-length prior calibration failed; skipping skeleton check."
+                    )
+                    edge_length_priors = None
+
             # Per-frame quality gate
             try:
                 with_pose_df = apply_quality_to_dataframe(
@@ -12167,6 +12211,8 @@ class MainWindow(QMainWindow):
                     body_length_prior=body_length_prior,
                     anterior_indices=anterior_indices if anterior_indices else None,
                     posterior_indices=posterior_indices if posterior_indices else None,
+                    skeleton_edges=skeleton_edges if skeleton_edges else None,
+                    edge_length_priors=edge_length_priors,
                 )
             except Exception:
                 logger.exception("Pose quality gating failed; using unfiltered pose.")
@@ -12399,22 +12445,35 @@ class MainWindow(QMainWindow):
         self.label_current_fps.setVisible(False)
         self.label_elapsed_time.setVisible(False)
         self.label_eta.setVisible(False)
-        self._set_ui_controls_enabled(True)
-        self.btn_start.blockSignals(True)
-        self.btn_start.setChecked(False)
-        self.btn_start.blockSignals(False)
-        self.btn_start.setText("Start Full Tracking")
-        self._apply_ui_state("idle" if self.current_video_path else "no_video")
-        logger.info("✓ Tracking session complete.")
 
-        # Show end-of-session summary. If the dataset worker is still running,
-        # defer the summary until it finishes so we can include its result.
-        if getattr(self, "_dataset_was_started", False) and self._is_worker_running(
-            self.dataset_worker
-        ):
-            self._show_summary_on_dataset_done = True
+        # Determine if we are continuing a batch
+        is_batch_continuing = (
+            self.g_batch.isChecked()
+            and self.current_batch_index >= 0
+            and (self.current_batch_index + 1) < len(self.batch_videos)
+        )
+
+        if not is_batch_continuing:
+            self._set_ui_controls_enabled(True)
+            self.btn_start.blockSignals(True)
+            self.btn_start.setChecked(False)
+            self.btn_start.blockSignals(False)
+            self.btn_start.setText("Start Full Tracking")
+            self._apply_ui_state("idle" if self.current_video_path else "no_video")
+            logger.info("✓ Tracking session complete.")
+
+            # Show end-of-session summary. If the dataset worker is still running,
+            # defer the summary until it finishes so we can include its result.
+            if getattr(self, "_dataset_was_started", False) and self._is_worker_running(
+                self.dataset_worker
+            ):
+                self._show_summary_on_dataset_done = True
+            else:
+                self._show_session_summary()
         else:
-            self._show_session_summary()
+            logger.info("✓ Video complete. Continuing batch...")
+            # Disable deferred summary for intermediate batch items so it doesn't block
+            self._show_summary_on_dataset_done = False
 
         # --- Batch Mode Continuation ---
         if self.g_batch.isChecked() and self.current_batch_index >= 0:
@@ -13328,7 +13387,6 @@ class MainWindow(QMainWindow):
                     os.path.dirname(self.current_video_path),
                     f"{os.path.splitext(os.path.basename(self.current_video_path))[0]}_datasets",
                     "active_learning",
-                    datetime.now().strftime("%Y%m%d_%H%M%S"),
                 )
                 if self.current_video_path
                 else ""
@@ -14904,7 +14962,6 @@ class MainWindow(QMainWindow):
                 os.path.dirname(video_path),
                 f"{os.path.splitext(os.path.basename(video_path))[0]}_datasets",
                 "active_learning",
-                datetime.now().strftime("%Y%m%d_%H%M%S"),
             )
 
             if not os.path.exists(output_dir):

@@ -172,14 +172,20 @@ class IndividualDatasetGenerator:
     def _setup_output_directory(self):
         """Create output directory structure."""
         run_id = self.params.get("INDIVIDUAL_DATASET_RUN_ID")
+
+        name_part = str(self.dataset_name).strip() if self.dataset_name else ""
+
         if run_id:
-            dataset_folder_name = f"{self.dataset_name}_{run_id}"
+            if name_part:
+                dataset_folder_name = f"{name_part}_{run_id}"
+            else:
+                dataset_folder_name = run_id
         else:
             from datetime import datetime
 
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            if self.dataset_name and str(self.dataset_name).strip():
-                dataset_folder_name = f"{self.dataset_name}_{timestamp}"
+            if name_part:
+                dataset_folder_name = f"{name_part}_{timestamp}"
             else:
                 dataset_folder_name = timestamp
         self.crops_dir = self.output_dir / dataset_folder_name / "images"
@@ -522,11 +528,7 @@ class IndividualDatasetGenerator:
                 x_min,
                 y_min,
                 other_corners_list,
-                background_color=(
-                    int(self.background_color)
-                    if isinstance(self.background_color, (int, float))
-                    else 128
-                ),
+                background_color=self.background_color,
             )
 
         crop_info = {

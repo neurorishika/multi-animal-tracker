@@ -470,7 +470,7 @@ def apply_foreign_obb_mask(
     x_offset: int,
     y_offset: int,
     other_corners_list,
-    background_color: int = 128,
+    background_color=128,
 ) -> np.ndarray:
     """Fill pixels in *crop* that belong to other animals' OBB regions.
 
@@ -483,7 +483,8 @@ def apply_foreign_obb_mask(
         y_offset: Vertical offset of the crop's top-left corner in frame coords.
         other_corners_list: Sequence of (4, 2) float32 arrays of OBB corners in
             *frame* coordinates for every other detected animal.
-        background_color: Scalar fill value for suppressed regions (0–255).
+        background_color: Fill value — either a scalar (0–255) applied to all
+            channels, or a (B, G, R) tuple for colour crops.
 
     Returns:
         Modified copy of *crop* with foreign-animal regions filled.
@@ -495,8 +496,14 @@ def apply_foreign_obb_mask(
 
     out = crop.copy()
     crop_h, crop_w = out.shape[:2]
-    fill = int(np.clip(background_color, 0, 255))
-    fill_color = (fill, fill, fill) if out.ndim == 3 else fill
+
+    # Resolve fill colour — accept scalar int or (B, G, R) tuple
+    if isinstance(background_color, (list, tuple)) and len(background_color) == 3:
+        bgr = tuple(int(np.clip(c, 0, 255)) for c in background_color)
+        fill_color = bgr if out.ndim == 3 else int(bgr[0])
+    else:
+        fill = int(np.clip(background_color, 0, 255))
+        fill_color = (fill, fill, fill) if out.ndim == 3 else fill
 
     for corners in other_corners_list:
         try:

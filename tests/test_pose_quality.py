@@ -686,3 +686,147 @@ class TestApplyTemporalPosePostprocessing:
             df, _LABELS, max_gap=2, z_score_threshold=5.0
         )
         assert len(result) == 5
+
+
+# ---------------------------------------------------------------------------
+# calibrate_edge_length_priors + EdgeLengthPriors in assess_pose_row
+# ---------------------------------------------------------------------------
+
+from multi_tracker.core.identity.pose_quality import (
+    EdgeLengthPriors,
+    calibrate_edge_length_priors,
+)
+
+
+def _edge_df(n_rows: int = 30) -> pd.DataFrame:
+    """Build a minimal DataFrame with two keypoints connected by an edge."""
+    rows = []
+    for _ in range(n_rows):
+        rows.append(
+            {
+                "PoseKpt_head_X": 10.0,
+                "PoseKpt_head_Y": 10.0,
+                "PoseKpt_head_Conf": 0.9,
+                "PoseKpt_tail_X": 10.0,
+                "PoseKpt_tail_Y": 30.0,  # distance = 20 px
+                "PoseKpt_tail_Conf": 0.9,
+                "PoseMeanConf": 0.9,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def test_calibrate_edge_length_priors_returns_invalid_for_empty_df():
+    result = calibrate_edge_length_priors(
+        pd.DataFrame(), ["head", "tail"], [(0, 1)], 0.2
+    )
+    assert not result.is_valid
+    assert result.priors == {}
+
+
+def test_calibrate_edge_length_priors_returns_invalid_for_no_edges():
+    df = _edge_df()
+    result = calibrate_edge_length_priors(df, ["head", "tail"], [], 0.2)
+    assert not result.is_valid
+
+
+def test_calibrate_edge_length_priors_correct_median():
+    df = _edge_df(30)
+    result = calibrate_edge_length_priors(df, ["head", "tail"], [(0, 1)], 0.2)
+    assert result.is_valid
+    key = (0, 1)
+    assert key in result.priors
+    assert result.priors[key]["median_px"] == pytest.approx(20.0, abs=0.5)
+    assert result.priors[key]["n_samples"] == 30
+
+
+def test_calibrate_edge_length_priors_invalid_below_20_samples():
+    df = _edge_df(10)  # only 10 rows → not enough samples
+    result = calibrate_edge_length_priors(df, ["head", "tail"], [(0, 1)], 0.2)
+    assert not result.is_valid
+    assert result.priors[(0, 1)]["n_samples"] == 10
+
+
+def test_calibrate_edge_length_priors_canonical_key_ordering():
+    """Edge (1, 0) and (0, 1) should produce the same canonical key."""
+    df = _edge_df(30)
+    r1 = calibrate_edge_length_priors(df, ["head", "tail"], [(0, 1)], 0.2)
+    r2 = calibrate_edge_length_priors(df, ["head", "tail"], [(1, 0)], 0.2)
+    assert r1.priors == r2.priors
+
+
+def test_assess_pose_row_edge_outlier_flag():
+    """A keypoint arrangement that breaks the skeleton edge prior should be flagged."""
+    prior = EdgeLengthPriors(
+        priors={(0, 1): {"median_px": 20.0, "mad_px": 1.0, "n_samples": 30}},
+        is_valid=True,
+    )
+    # distance = 200 px; z = (200 - 20) / 1 = 180 >> threshold
+    kpts = np.array([[10.0, 10.0, 0.9], [10.0, 210.0, 0.9]], dtype=np.float32)
+    result = assess_pose_row(
+        kpts,
+        min_valid_conf=0.2,
+        min_valid_fraction=0.5,
+        min_valid_keypoints=1,
+        skeleton_edges=[(0, 1)],
+        edge_length_priors=prior,
+        edge_length_z_threshold=4.0,
+    )
+    assert any("edge_outlier" in f for f in result.quality_flags)
+    # Quality score penalised
+    assert result.quality_score < 0.9 * 0.9  # lower than unflagged would be
+
+
+def test_assess_pose_row_normal_edge_no_flag():
+    """An edge within the expected range should not trigger the outlier flag."""
+    prior = EdgeLengthPriors(
+        priors={(0, 1): {"median_px": 20.0, "mad_px": 2.0, "n_samples": 30}},
+        is_valid=True,
+    )
+    # distance = 21 px; z = (21 - 20) / 2 = 0.5 << threshold
+    kpts = np.array([[10.0, 10.0, 0.9], [10.0, 31.0, 0.9]], dtype=np.float32)
+    result = assess_pose_row(
+        kpts,
+        min_valid_conf=0.2,
+        min_valid_fraction=0.5,
+        min_valid_keypoints=1,
+        skeleton_edges=[(0, 1)],
+        edge_length_priors=prior,
+        edge_length_z_threshold=4.0,
+    )
+    assert not any("edge_outlier" in f for f in result.quality_flags)
+
+
+def test_assess_pose_row_edge_skipped_when_prior_invalid():
+    """Edge priors that are not valid should not affect quality scoring."""
+    prior = EdgeLengthPriors(priors={}, is_valid=False)
+    kpts = np.array([[10.0, 10.0, 0.9], [10.0, 210.0, 0.9]], dtype=np.float32)
+    result = assess_pose_row(
+        kpts,
+        min_valid_conf=0.2,
+        min_valid_fraction=0.5,
+        min_valid_keypoints=1,
+        skeleton_edges=[(0, 1)],
+        edge_length_priors=prior,
+    )
+    assert not any("edge_outlier" in f for f in result.quality_flags)
+
+
+def test_assess_pose_row_edge_skipped_when_keypoint_invalid():
+    """Edge check is skipped for keypoints that failed the confidence gate."""
+    prior = EdgeLengthPriors(
+        priors={(0, 1): {"median_px": 20.0, "mad_px": 1.0, "n_samples": 30}},
+        is_valid=True,
+    )
+    # Tail keypoint has low confidence — edge check should be skipped
+    kpts = np.array([[10.0, 10.0, 0.9], [10.0, 210.0, 0.05]], dtype=np.float32)
+    result = assess_pose_row(
+        kpts,
+        min_valid_conf=0.2,
+        min_valid_fraction=0.0,  # allow partial so row is not rejected first
+        min_valid_keypoints=0,
+        skeleton_edges=[(0, 1)],
+        edge_length_priors=prior,
+        edge_length_z_threshold=4.0,
+    )
+    assert not any("edge_outlier" in f for f in result.quality_flags)

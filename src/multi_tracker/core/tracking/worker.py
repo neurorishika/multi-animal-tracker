@@ -753,7 +753,12 @@ class TrackingWorker(QThread):
         # calling pose_backend.predict_batch.  Larger values → better GPU utilisation
         # at the cost of slightly delayed writes.  64 is a good default.
         _POSE_CROSS_FRAME_BATCH = int(params.get("POSE_PRECOMPUTE_BATCH_SIZE", 64))
-        _pose_bg_color = int(params.get("POSE_BACKGROUND_COLOR", 128))
+        _bg_raw = params.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
+        _pose_bg_color = (
+            tuple(int(c) for c in _bg_raw)
+            if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
+            else (0, 0, 0)
+        )
 
         total_frames = max(1, end_frame - start_frame + 1)
         precompute_start_ts = time.time()

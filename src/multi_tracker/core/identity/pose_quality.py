@@ -8,8 +8,9 @@ and any script-based pipeline.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -48,6 +49,19 @@ class BodyLengthPrior:
     is_valid: bool  # True only when n_samples >= 20
 
 
+@dataclass
+class EdgeLengthPriors:
+    """Per-skeleton-edge length calibration priors.
+
+    ``priors`` maps a canonical edge key ``(min_idx, max_idx)`` to a dict with
+    keys ``median_px``, ``mad_px``, and ``n_samples``.  ``is_valid`` is True
+    when at least one edge has been calibrated with >= 20 samples.
+    """
+
+    priors: Dict[Tuple[int, int], Dict]
+    is_valid: bool
+
+
 # ---------------------------------------------------------------------------
 # assess_pose_row
 # ---------------------------------------------------------------------------
@@ -63,6 +77,9 @@ def assess_pose_row(
     anterior_indices: Optional[List[int]] = None,
     posterior_indices: Optional[List[int]] = None,
     body_length_z_threshold: float = 3.5,
+    skeleton_edges: Optional[List[Tuple[int, int]]] = None,
+    edge_length_priors: Optional[EdgeLengthPriors] = None,
+    edge_length_z_threshold: float = 4.0,
 ) -> PoseQualityResult:
     """Assess pose quality for a single keypoint array.
 
@@ -82,6 +99,10 @@ def assess_pose_row(
         posterior_indices: Keypoint indices defining the posterior region.
         body_length_z_threshold: Z-score threshold above which body length is
             flagged as an outlier.
+        skeleton_edges: List of (i, j) index pairs defining connected keypoints.
+        edge_length_priors: Calibrated per-edge length priors for anatomy checks.
+        edge_length_z_threshold: MAD-based z-score above which an edge length is
+            flagged as an anatomical outlier.
 
     Returns:
         PoseQualityResult with cleaned keypoints and quality metadata.
@@ -212,6 +233,39 @@ def assess_pose_row(
                 body_length_outlier = True
 
     # ------------------------------------------------------------------
+    # 6b. Per-edge skeleton length check
+    # ------------------------------------------------------------------
+    n_edge_outliers = 0
+    if (
+        not rejected
+        and skeleton_edges
+        and edge_length_priors is not None
+        and edge_length_priors.is_valid
+    ):
+        for edge in skeleton_edges:
+            try:
+                ei, ej = int(edge[0]), int(edge[1])
+            except Exception:
+                continue
+            if ei >= K or ej >= K:
+                continue
+            if not (valid_mask[ei] and valid_mask[ej]):
+                continue
+            key = (min(ei, ej), max(ei, ej))
+            prior = edge_length_priors.priors.get(key)
+            if prior is None or int(prior.get("n_samples", 0)) < 20:
+                continue
+            dx = float(cleaned[ei, 0]) - float(cleaned[ej, 0])
+            dy = float(cleaned[ei, 1]) - float(cleaned[ej, 1])
+            edge_len = math.sqrt(dx * dx + dy * dy)
+            denom = max(float(prior.get("mad_px", 1.0)), 1.0)
+            z = abs(edge_len - float(prior["median_px"])) / denom
+            if z > float(edge_length_z_threshold):
+                n_edge_outliers += 1
+        if n_edge_outliers > 0:
+            flags.append(f"edge_outlier:{n_edge_outliers}")
+
+    # ------------------------------------------------------------------
     # 7. quality_score computation
     # ------------------------------------------------------------------
     if rejected:
@@ -223,6 +277,9 @@ def assess_pose_row(
         quality_score = valid_fraction * mean_conf
         if body_length_outlier:
             quality_score *= 0.7
+        if n_edge_outliers > 0:
+            # Each outlier edge applies a 15% penalty, capped at 50% total
+            quality_score *= max(0.5, 1.0 - 0.15 * n_edge_outliers)
         quality_score = float(np.clip(quality_score, 0.0, 1.0))
 
     # ------------------------------------------------------------------
@@ -333,6 +390,98 @@ def calibrate_body_length_prior(
 
 
 # ---------------------------------------------------------------------------
+# calibrate_edge_length_priors
+# ---------------------------------------------------------------------------
+
+
+def calibrate_edge_length_priors(
+    df: pd.DataFrame,
+    pose_labels: List[str],
+    skeleton_edges: List[Tuple[int, int]],
+    min_valid_conf: float,
+    high_conf_floor: float = 0.7,
+) -> EdgeLengthPriors:
+    """Estimate per-skeleton-edge length distributions from high-confidence frames.
+
+    For each edge (i, j) defined in *skeleton_edges*, measures the pixel
+    distance between the two keypoints in every high-confidence row and
+    computes the median and MAD of those distances.
+
+    Args:
+        df: DataFrame with PoseKpt_{label}_X/Y/Conf columns and PoseMeanConf.
+        pose_labels: Ordered list of keypoint label strings.
+        skeleton_edges: List of (i, j) keypoint index pairs.
+        min_valid_conf: Minimum confidence to treat a keypoint as valid.
+        high_conf_floor: Minimum PoseMeanConf to include a row in calibration.
+
+    Returns:
+        EdgeLengthPriors; is_valid=True when at least one edge has >= 20 samples.
+    """
+    _invalid = EdgeLengthPriors(priors={}, is_valid=False)
+
+    if df is None or df.empty or not pose_labels or not skeleton_edges:
+        return _invalid
+
+    # Filter to high-confidence rows
+    if "PoseMeanConf" in df.columns:
+        try:
+            high_conf_df = df[df["PoseMeanConf"] >= float(high_conf_floor)]
+        except Exception:
+            high_conf_df = df
+    else:
+        high_conf_df = df
+
+    if high_conf_df.empty:
+        return _invalid
+
+    # Accumulate distances per canonical edge key
+    edge_samples: Dict[Tuple[int, int], List[float]] = {}
+    K = len(pose_labels)
+
+    for _, row in high_conf_df.iterrows():
+        kpts = _extract_keypoints_from_row(row, pose_labels)
+        if kpts is None or len(kpts) < K:
+            continue
+        for edge in skeleton_edges:
+            try:
+                ei, ej = int(edge[0]), int(edge[1])
+            except Exception:
+                continue
+            if ei >= K or ej >= K:
+                continue
+            xi, yi, ci = float(kpts[ei, 0]), float(kpts[ei, 1]), float(kpts[ei, 2])
+            xj, yj, cj = float(kpts[ej, 0]), float(kpts[ej, 1]), float(kpts[ej, 2])
+            if ci < float(min_valid_conf) or cj < float(min_valid_conf):
+                continue
+            if not (math.isfinite(xi) and math.isfinite(yi)):
+                continue
+            if not (math.isfinite(xj) and math.isfinite(yj)):
+                continue
+            dist = math.sqrt((xi - xj) ** 2 + (yi - yj) ** 2)
+            if dist <= 0.0:
+                continue
+            key = (min(ei, ej), max(ei, ej))
+            edge_samples.setdefault(key, []).append(dist)
+
+    priors: Dict[Tuple[int, int], Dict] = {}
+    any_valid = False
+    for key, samples in edge_samples.items():
+        n = len(samples)
+        arr = np.asarray(samples, dtype=np.float64)
+        median_px = float(np.median(arr))
+        mad_px = float(np.median(np.abs(arr - median_px)))
+        priors[key] = {
+            "median_px": median_px,
+            "mad_px": mad_px,
+            "n_samples": n,
+        }
+        if n >= 20:
+            any_valid = True
+
+    return EdgeLengthPriors(priors=priors, is_valid=any_valid)
+
+
+# ---------------------------------------------------------------------------
 # normalize_pose_keypoints_for_relink
 # ---------------------------------------------------------------------------
 
@@ -431,6 +580,8 @@ def apply_quality_to_dataframe(
     body_length_prior: Optional[BodyLengthPrior] = None,
     anterior_indices: Optional[List[int]] = None,
     posterior_indices: Optional[List[int]] = None,
+    skeleton_edges: Optional[List[Tuple[int, int]]] = None,
+    edge_length_priors: Optional[EdgeLengthPriors] = None,
 ) -> pd.DataFrame:
     """Apply pose quality assessment to all rows of a trajectory DataFrame.
 
@@ -447,6 +598,9 @@ def apply_quality_to_dataframe(
         body_length_prior: Optional prior for body-length outlier filtering.
         anterior_indices: Anterior keypoint indices for body-length calc.
         posterior_indices: Posterior keypoint indices for body-length calc.
+        skeleton_edges: List of (i, j) index pairs for connected-keypoint
+            anatomy checks.
+        edge_length_priors: Calibrated per-edge length priors.
 
     Returns:
         Modified copy of df with added/updated quality columns.
@@ -517,6 +671,8 @@ def apply_quality_to_dataframe(
             body_length_prior=body_length_prior,
             anterior_indices=anterior_indices,
             posterior_indices=posterior_indices,
+            skeleton_edges=skeleton_edges,
+            edge_length_priors=edge_length_priors,
         )
 
         # Write cleaned confidences back

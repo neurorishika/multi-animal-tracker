@@ -373,6 +373,17 @@ def test_apply_foreign_obb_mask_grayscale():
     assert result[40, 40] == 200
 
 
+def test_apply_foreign_obb_mask_bgr_tuple_color():
+    """Passing a (B, G, R) tuple fills the region with the correct colour."""
+    crop = np.ones((50, 50, 3), dtype=np.uint8) * 200
+    other = [_square_corners(0, 0, 20)]
+    result = apply_foreign_obb_mask(crop, 0, 0, other, background_color=(10, 20, 30))
+    assert result[10, 10, 0] == 10  # B
+    assert result[10, 10, 1] == 20  # G
+    assert result[10, 10, 2] == 30  # R
+    assert result[40, 40, 0] == 200  # outside OBB unchanged
+
+
 # ---------------------------------------------------------------------------
 # filter_keypoints_by_foreign_obbs
 # ---------------------------------------------------------------------------
