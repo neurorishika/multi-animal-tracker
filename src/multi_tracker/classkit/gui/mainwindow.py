@@ -3383,6 +3383,9 @@ class MainWindow(QMainWindow):
             from ..jobs.task_workers import ClassKitTrainingWorker, ExportWorker
 
             settings = dialog.get_settings()
+            # Persist latest training settings so post-train inference reuses
+            # the selected training device/runtime choices.
+            self._last_training_settings = dict(settings)
             mode = settings.get("mode") or "flat_tiny"
             is_yolo = "yolo" in mode
             multi_head = mode.startswith("multihead")

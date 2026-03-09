@@ -513,7 +513,7 @@ class ClassEditorDialog(QDialog):
         parent=None,
     ):
         super().__init__(parent)
-        self.setWindowTitle("Edit Classes & Labeling Scheme")
+        self.setWindowTitle("Edit Classes and Labeling Scheme")
         self.resize(820, 540)
         self.setMinimumWidth(680)
         self.setMinimumHeight(400)
@@ -1469,8 +1469,32 @@ class ClassKitTrainingDialog(QDialog):
         self._populate_modes()
         form.addRow("<b>Training Mode:</b>", self.mode_combo)
 
-        # Compute Runtime — canonical runtimes filtered to tiny_classify capabilities
-        self.device_combo = QComboBox()  # kept as attribute alias for backward compat
+        # Training device (PyTorch execution target during optimization)
+        self.device_combo = QComboBox()
+        self.device_combo.addItem("CPU", "cpu")
+        try:
+            from ...utils.gpu_utils import (
+                MPS_AVAILABLE,
+                ROCM_AVAILABLE,
+                TORCH_CUDA_AVAILABLE,
+            )
+
+            if TORCH_CUDA_AVAILABLE:
+                self.device_combo.addItem("CUDA GPU", "cuda")
+            if ROCM_AVAILABLE:
+                self.device_combo.addItem("ROCm GPU", "rocm")
+            if MPS_AVAILABLE:
+                self.device_combo.addItem("Apple Silicon (MPS)", "mps")
+                self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
+        except Exception:
+            pass
+        self.device_combo.setToolTip(
+            "Hardware device used for model training (PyTorch backend)."
+        )
+        form.addRow("<b>Training Device:</b>", self.device_combo)
+
+        # Inference runtime (used by TinyCNN inference after training / on load)
+        self.compute_runtime_combo = QComboBox()
         try:
             from ...core.runtime.compute_runtime import (
                 runtime_label,
@@ -1478,21 +1502,31 @@ class ClassKitTrainingDialog(QDialog):
             )
 
             _runtimes = supported_runtimes_for_pipeline("tiny_classify")
-            _default_idx = 0
-            for _i, _rt in enumerate(_runtimes):
-                self.device_combo.addItem(runtime_label(_rt), _rt)
-                if _rt in ("mps", "cuda") and _default_idx == 0:
-                    _default_idx = _i
-            if _default_idx > 0:
-                self.device_combo.setCurrentIndex(_default_idx)
+            for _rt in _runtimes:
+                self.compute_runtime_combo.addItem(runtime_label(_rt), _rt)
+
+            # Choose a sensible default based on selected training device.
+            _train_dev = str(self.device_combo.currentData() or "cpu").strip().lower()
+            if _train_dev == "mps":
+                _preferred_rt = "mps"
+            elif _train_dev == "rocm":
+                _preferred_rt = "onnx_rocm" if "onnx_rocm" in _runtimes else "rocm"
+            elif _train_dev == "cuda":
+                _preferred_rt = "onnx_cuda" if "onnx_cuda" in _runtimes else "cuda"
+            else:
+                _preferred_rt = "cpu"
+
+            _idx = self.compute_runtime_combo.findData(_preferred_rt)
+            if _idx >= 0:
+                self.compute_runtime_combo.setCurrentIndex(_idx)
         except Exception:
-            self.device_combo.addItem("CPU", "cpu")
-        self.device_combo.setToolTip(
-            "Compute runtime for training AND inference.\n"
-            "ONNX / TensorRT runtimes require a sibling .onnx file\n"
-            "(auto-exported by the trainer alongside the .pth checkpoint)."
+            self.compute_runtime_combo.addItem("CPU", "cpu")
+
+        self.compute_runtime_combo.setToolTip(
+            "Runtime used for Tiny CNN inference in ClassKit (and MAT integration).\n"
+            "ONNX / TensorRT runtimes use exported artifacts (auto-exported after training)."
         )
-        form.addRow("<b>Compute Runtime:</b>", self.device_combo)
+        form.addRow("<b>Inference Runtime:</b>", self.compute_runtime_combo)
 
         # Base model (YOLO only)
         self.base_model_combo = QComboBox()
@@ -1881,7 +1915,7 @@ class ClassKitTrainingDialog(QDialog):
         aug_layout.addStretch()
         self._aug_scroll.setWidget(aug_scroll_content)
         aug_tab_layout.addWidget(self._aug_scroll)
-        self.tabs.addTab(self.aug_tab, "Space & Augmentations")
+        self.tabs.addTab(self.aug_tab, "Space and Augmentations")
 
         layout.addWidget(self.tabs, 1)
 
@@ -2070,23 +2104,16 @@ class ClassKitTrainingDialog(QDialog):
         fliplr_value = 0.0 if expansion_enabled else self.flip_lr_spin.value()
         rotate_value = 0.0 if expansion_enabled else self.rotate_spin.value()
 
-        # Map canonical runtime → plain PyTorch device string for training.
-        _rt = str(self.device_combo.currentData() or "cpu")
-        _torch_dev_map = {
-            "cuda": "cuda",
-            "mps": "mps",
-            "rocm": "cuda",
-            "onnx_cpu": "cpu",
-            "onnx_cuda": "cuda",
-            "onnx_rocm": "cuda",
-            "tensorrt": "cuda",
-        }
-        _torch_device = _torch_dev_map.get(_rt, "cpu")
+        _rt = str(self.compute_runtime_combo.currentData() or "cpu")
+        _train_device = str(self.device_combo.currentData() or "cpu")
+        if _train_device == "rocm":
+            # PyTorch ROCm uses the CUDA device namespace.
+            _train_device = "cuda"
 
         return {
             "mode": self.mode_combo.currentData(),
             "compute_runtime": _rt,
-            "device": _torch_device,
+            "device": _train_device,
             "base_model": self.base_model_combo.currentData(),
             "epochs": self.epochs_spin.value(),
             "batch": self.batch_spin.value(),
@@ -2361,14 +2388,14 @@ class ModelHistoryDialog(QDialog):
             "QPushButton:hover { background-color: #4a6b4a; color: white; }"
         )
         self.export_btn.setToolTip(
-            "Copy this model's artifact files to a directory of your choice"
+            "Copy this model's artifact files to the project models/ directory"
         )
         self.export_btn.clicked.connect(self._export_selected)
         btn_row.addWidget(self.export_btn)
 
         btn_row.addStretch(1)
 
-        self.load_btn = QPushButton("Load & Run Inference")
+        self.load_btn = QPushButton("Load and Run Inference")
         self.load_btn.setFixedHeight(36)
         self.load_btn.setStyleSheet(
             "QPushButton { background-color: #0e639c; color: white; border-radius: 4px; "
@@ -2609,7 +2636,7 @@ class ModelHistoryDialog(QDialog):
             )
 
     def _export_selected(self):
-        """Copy the selected model's artifact files to a user-chosen directory."""
+        """Copy selected artifacts to project ``models/`` using descriptive names."""
         import shutil
 
         entry = self._get_selected_entry()
@@ -2622,26 +2649,68 @@ class ModelHistoryDialog(QDialog):
             )
             return
 
-        default_dir = ""
+        # Export is intentionally non-interactive: always use project-local models/.
         if self._project_path:
-            models_dir = Path(str(self._project_path)) / "models"
-            try:
-                models_dir.mkdir(parents=True, exist_ok=True)
-                default_dir = str(models_dir)
-            except Exception:
-                default_dir = str(self._project_path)
-
-        dest_dir = QFileDialog.getExistingDirectory(
-            self, "Export Model Files to Directory", default_dir
-        )
-        if not dest_dir:
+            dest_dir = Path(str(self._project_path)) / "models"
+        else:
+            dest_dir = Path.cwd() / "models"
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Export Failed",
+                f"Could not create export directory:\n{dest_dir}\n\n{exc}",
+            )
             return
 
+        def _slug(text: object, max_len: int = 48) -> str:
+            raw = str(text or "").strip().lower()
+            out = "".join(ch if ch.isalnum() else "_" for ch in raw).strip("_")
+            if not out:
+                return ""
+            while "__" in out:
+                out = out.replace("__", "_")
+            return out[:max_len]
+
+        mode_slug = _slug(entry.get("mode", "model"), max_len=32) or "model"
+        class_names = entry.get("class_names") or []
+        class_slug = "-".join(
+            part for part in (_slug(name, max_len=16) for name in class_names) if part
+        )
+        if not class_slug:
+            class_slug = "classes"
+        if len(class_slug) > 48:
+            class_slug = f"{max(1, len(class_names))}cls"
+        ts_raw = str(entry.get("timestamp", "")).strip()
+        ts_slug = "".join(ch for ch in ts_raw if ch.isdigit())[:14] or "unknown"
+        base_stem = f"classkit_{mode_slug}_{class_slug}_{ts_slug}"
+
         copied, failed = [], []
-        for src in artifact_paths:
+        total_artifacts = len(artifact_paths)
+        for idx, src in enumerate(artifact_paths):
             src_path = Path(src)
             if src_path.exists():
-                dst = Path(dest_dir) / src_path.name
+                ext = src_path.suffix or ".bin"
+                hint = _slug(src_path.stem, max_len=24)
+                if hint in {"", "best", "last", "weights", "model", "checkpoint"}:
+                    hint = ""
+
+                if total_artifacts == 1:
+                    desired_name = f"{base_stem}{ext}"
+                else:
+                    desired_name = (
+                        f"{base_stem}_{hint}{ext}"
+                        if hint
+                        else f"{base_stem}_f{idx + 1}{ext}"
+                    )
+
+                dst = dest_dir / desired_name
+                suffix_counter = 1
+                while dst.exists():
+                    dst = dest_dir / f"{dst.stem}_{suffix_counter}{ext}"
+                    suffix_counter += 1
+
                 try:
                     shutil.copy2(str(src_path), str(dst))
                     copied.append(dst.name)
