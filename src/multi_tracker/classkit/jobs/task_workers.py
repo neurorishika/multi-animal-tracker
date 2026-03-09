@@ -2,6 +2,7 @@
 Specialized worker classes for ClassKit background tasks.
 """
 
+import shutil
 import traceback
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -828,44 +829,129 @@ class YoloInferenceWorker(QRunnable):
         self,
         model_path: Path,
         image_paths: List[Path],
-        device: str = "cpu",
+        compute_runtime: str = "cpu",
         batch_size: int = 64,
         canonicalize_mat: bool = False,
+        # Deprecated — use compute_runtime instead.
+        device: str = "",
     ):
         super().__init__()
         self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.model_path = Path(model_path)
         self.image_paths = list(image_paths)
-        self.device = device
+        if not compute_runtime or compute_runtime == "cpu":
+            if device and device not in ("", "cpu"):
+                compute_runtime = device
+        self.compute_runtime = str(compute_runtime or "cpu")
         self.batch_size = batch_size
         self.canonicalize_mat = bool(canonicalize_mat)
         self.signals = TaskSignals()
+
+    @staticmethod
+    def _torch_device(rt: str) -> str:
+        if rt in ("cuda", "onnx_cuda", "tensorrt"):
+            return "cuda"
+        if rt == "mps":
+            return "mps"
+        if rt in ("rocm", "onnx_rocm"):
+            return "cuda"  # PyTorch uses "cuda" namespace for ROCm.
+        return "cpu"
 
     @Slot()
     def run(self):
         try:
             self.signals.started.emit()
-            if self.model_path.suffix.lower() != ".pt":
-                raise ValueError(
-                    f"YoloInferenceWorker requires a .pt file; got {self.model_path.name}. "
-                    "Tiny CNN (.pth) models are not supported here."
-                )
             import numpy as np
             from ultralytics import YOLO
 
+            from ...core.runtime.compute_runtime import _normalize_runtime
+
+            rt = _normalize_runtime(self.compute_runtime)
+            use_onnx = rt.startswith("onnx_")
+            use_tensorrt = rt == "tensorrt"
+
+            model_path = self.model_path
+            model_suffix = model_path.suffix.lower()
+
+            if model_suffix == ".pth":
+                raise ValueError(
+                    f"YoloInferenceWorker requires a YOLO classify artifact (.pt/.onnx/.engine/.trt); got {model_path.name}. "
+                    "Tiny CNN (.pth) models are not supported here."
+                )
+
+            if model_suffix == ".pt" and (use_onnx or use_tensorrt):
+                artifact_suffix = ".onnx" if use_onnx else ".engine"
+                artifact_path = model_path.with_name(
+                    f"{model_path.stem}_classify_b1{artifact_suffix}"
+                )
+                needs_export = (not artifact_path.exists()) or (
+                    artifact_path.stat().st_mtime_ns < model_path.stat().st_mtime_ns
+                )
+                if needs_export:
+                    self.signals.progress.emit(
+                        1,
+                        f"Preparing YOLO classify {artifact_suffix} runtime artifact...",
+                    )
+                    export_model = YOLO(str(model_path), task="classify")
+                    if use_onnx:
+                        export_path = export_model.export(
+                            format="onnx",
+                            dynamic=False,
+                            simplify=False,
+                            opset=17,
+                            batch=1,
+                            verbose=False,
+                        )
+                    else:
+                        export_device = self._torch_device(rt)
+                        export_model.to(export_device)
+                        export_path = export_model.export(
+                            format="engine",
+                            device=export_device,
+                            half=True,
+                            workspace=4,
+                            dynamic=False,
+                            batch=1,
+                            verbose=False,
+                        )
+                    exported = Path(export_path).expanduser().resolve()
+                    if not exported.exists():
+                        raise RuntimeError(
+                            f"YOLO runtime export output missing: {exported}"
+                        )
+                    if exported != artifact_path:
+                        shutil.copy2(str(exported), str(artifact_path))
+                model_path = artifact_path
+
+            if model_path.suffix.lower() not in {".pt", ".onnx", ".engine", ".trt"}:
+                raise ValueError(
+                    f"Unsupported YOLO model artifact for inference: {model_path.name}"
+                )
+
             self.signals.progress.emit(
-                0, f"Loading YOLO model: {self.model_path.name}..."
+                0, f"Loading YOLO model ({rt}): {model_path.name}..."
             )
-            model = YOLO(str(self.model_path))
+            model = YOLO(str(model_path), task="classify")
             class_names = (
                 [model.names[i] for i in sorted(model.names.keys())]
                 if hasattr(model, "names")
                 else []
             )
 
+            predict_device = None
+            if model_path.suffix.lower() == ".pt":
+                # Place native PyTorch model on requested torch device.
+                # For exported runtimes, device routing is backend/provider-driven.
+                predict_device = self._torch_device(rt)
+                try:
+                    model.to(predict_device)
+                    predict_device = None
+                except Exception:
+                    pass
+
             num_images = len(self.image_paths)
             self.signals.progress.emit(
-                5, f"Running inference on {num_images:,} images..."
+                5, f"Running inference on {num_images:,} images ({rt})..."
             )
             all_probs = []
 
@@ -886,7 +972,10 @@ class YoloInferenceWorker(QRunnable):
                     ]
                 else:
                     batch_input = [str(p) for p in batch_paths]
-                results = model(batch_input, verbose=False, device=self.device)
+                kwargs = {"verbose": False}
+                if predict_device is not None:
+                    kwargs["device"] = predict_device
+                results = model(batch_input, **kwargs)
                 for r in results:
                     if r.probs is not None:
                         all_probs.append(r.probs.data.cpu().numpy())
@@ -1290,6 +1379,7 @@ class TinyCNNInferenceWorker(QRunnable):
             traceback.print_exc()
             self.signals.error.emit(str(e))
         finally:
+            self.signals.finished.emit()
             self.signals.finished.emit()
             self.signals.finished.emit()
             self.signals.finished.emit()

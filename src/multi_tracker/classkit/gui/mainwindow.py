@@ -4656,14 +4656,16 @@ class MainWindow(QMainWindow):
         """Run YOLO inference on all images in background and update confidences."""
         if not self.image_paths:
             return
-        device = (self._last_training_settings or {}).get("device", "cpu")
+        compute_runtime = (self._last_training_settings or {}).get(
+            "compute_runtime", "cpu"
+        )
 
         from ..jobs.task_workers import YoloInferenceWorker
 
         worker = YoloInferenceWorker(
             model_path,
             self.image_paths,
-            device=device,
+            compute_runtime=compute_runtime,
             batch_size=64,
             canonicalize_mat=self._yolo_canonicalize_mat,
         )

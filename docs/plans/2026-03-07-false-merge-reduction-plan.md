@@ -1,768 +1,702 @@
-# False-Merge Reduction Implementation Plan
+# Swap-Resistant Continuity Plan
 
-**Date:** 2026-03-07
+**Date:** 2026-03-09
 **Branch:** `mat-pose-integration`
-**Status:** Proposed - ready for phased implementation
+**Status:** Proposed - replaces the earlier broad false-merge plan
 
 ---
 
-## Goal
+## Why This Plan Exists
 
-Reduce false trajectory merges as aggressively as practical, even if that increases fragmentation. The system should prefer splitting an uncertain continuity link over preserving a long but incorrect identity chain.
+The current tracker is already reasonably good. The main problem is not general tracking collapse; it is **occasional identity swaps** that appear during close interactions, especially when:
 
-This plan assumes a **split-first, relink-later** philosophy:
+- two animals walk together in a stable tandem-like configuration
+- several animals cluster in a small region
+- detections remain available but individual visibility flickers
+- short occlusions or contact events create ambiguous continuity
 
-- False merges are more harmful than extra fragments.
-- Relinking may remain conservative and incomplete.
-- Stronger re-identification methods can be added later, but they are not required for this phase.
+That matters because the right fix is not to globally split more aggressively. A naive split-first policy would reduce some false merges, but it would also overfragment legitimate tandem walking and normal social clustering.
 
----
+This rewrite therefore changes the emphasis:
 
-## Non-Goals
-
-- Do not make merge or relink decisions based on appearance embeddings as positive identity evidence.
-- Do not attempt full re-identification across the entire video.
-- Do not optimize for the longest possible trajectories.
-- Do not make risky joins simply because they are plausible.
-
-Appearance features may be explored later for manual review or offline analysis. If appearance enters this plan at all, it should do so only as **split-only negative evidence** through change-point detection, never as positive evidence for merging or relinking.
+- target **swap seams**, not all close-contact frames
+- distinguish **structured proximity** from **identity ambiguity**
+- treat cluster interiors as low-information regions where identity should often be deferred
+- make re-assignment decisions mainly at **entry and exit boundaries**
+- keep appearance as optional negative-only evidence, not a primary solution
 
 ---
 
-## Current Relevant Pipeline
+## Executive Summary
 
-The current stack already includes several conservative pieces:
+The new plan is to make the pipeline **interaction-aware**.
 
-- Velocity and z-score based splitting in `src/multi_tracker/core/post/processing.py`
-- Conservative forward/backward resolution in `src/multi_tracker/core/post/processing.py`
-- Spatial redundancy removal and overlap-aware merging in `src/multi_tracker/core/post/processing.py`
-- Greedy motion/pose-based fragment relinking in `src/multi_tracker/core/post/processing.py`
-- Confidence and uncertainty persistence from `src/multi_tracker/core/tracking/worker.py`
-- Forward/backward consistency scoring in `src/multi_tracker/core/tracking/optimizer.py`
+Instead of treating all crowding as one generic risk signal, the post-processing path should classify each trajectory row into one of four regimes:
 
-This plan builds on that foundation by adding stronger negative evidence, more explicit ambiguity modeling, and stricter merge/relink gating.
+1. **Isolated**: continuity is trustworthy; normal motion-based tracking rules apply.
+2. **Tandem**: two animals are close but moving coherently; continuity should usually be preserved, not split.
+3. **Cluster**: local identity is genuinely ambiguous due to crowding, overlap, or visibility flicker; do not trust interior continuity too much.
+4. **Recovery**: the first frames after a tandem or cluster dissolves; this is the highest-risk swap boundary and should receive the strongest checks.
+
+This is the central design decision behind the entire plan.
+
+---
+
+## Audit Of The Previous Plan
+
+The previous document contained several correct instincts, but it was too broad for the actual problem now facing this repository.
+
+### What Was Right
+
+- It correctly prioritised false merges over trajectory length.
+- It correctly treated appearance as dangerous if used as positive merge evidence.
+- It correctly identified ambiguity, uncertainty, and assignment quality as the signals that matter most.
+- It correctly aimed to harden relinking instead of trusting it to solve everything.
+
+### What Was Missing
+
+The previous plan did not clearly separate three distinct cases:
+
+1. **Animals are close, but identity is still stable.**
+   Tandem walking often falls into this category.
+
+2. **Animals are close, and identity is temporarily unknowable.**
+   Dense clusters with flickering visibility fall into this category.
+
+3. **Animals are leaving a close interaction, and continuity must be re-earned.**
+   This is where many swaps actually happen.
+
+Without that separation, the old plan risked turning all close contact into generic danger. That would be too blunt for ants and similar species, where proximity is normal biology.
+
+### Main Conclusion From The Audit
+
+The codebase should not ask, "Are animals close?" and then split more.
+
+It should ask:
+
+- "Is this a stable tandem?"
+- "Is this a genuinely ambiguous cluster?"
+- "Are we at the boundary where identities can swap?"
+
+That is the basis of the new plan.
+
+---
+
+## Core Strategy
+
+The repository should move to a **boundary-focused, interaction-aware continuity model**.
+
+The practical policy is:
+
+- preserve continuity in isolated motion
+- preserve continuity in stable tandem motion unless there is strong contradictory evidence
+- avoid making strong identity claims inside ambiguous clusters
+- apply the strongest swap checks at cluster or tandem exit boundaries
+- relink only when continuity is clearly re-established
+
+This plan therefore aims to reduce ID swaps by changing **where** we spend conservatism:
+
+- less aggression inside normal social contact
+- much more aggression at the boundaries where identities separate again
 
 ---
 
 ## Design Principles
 
-1. **Continuity must be earned.** A trajectory should continue only when multiple cues support continuity.
-2. **Ambiguous windows are hostile territory.** Crossings, contacts, and short occlusions should be treated as likely failure zones.
-3. **Negative evidence matters more than positive evidence.** Motion jumps, uncertainty spikes, pose discontinuities, and ambiguous assignments should veto continuity.
-4. **Relinking should reject by default.** If a candidate join is not clearly correct, it should remain split.
-5. **DetectionID is not a temporal identity signal.** It is frame-local and should only be used for overlap reconciliation, not long-term identity continuity.
-6. **Appearance may veto continuity, but should not create it.** A temporally weird crop jump can justify a split, but should not justify a merge.
+1. **Close proximity is not itself an error.**
+   For social insects, proximity is common. The pipeline must model it, not penalise it blindly.
+
+2. **Continuity inside an ambiguous cluster is provisional.**
+   When visibility flickers and multiple animals overlap, the tracker should avoid overcommitting to identity.
+
+3. **Swap prevention is a boundary problem first.**
+   Most damaging merges happen when animals enter, cross within, or exit an interaction zone.
+
+4. **Tandem and cluster are different states.**
+   A two-animal coherent pair should not be treated the same as a multi-animal unstable cluster.
+
+5. **Relinking must be precision-first.**
+   Unmatched fragments are acceptable. A confident but wrong join is not.
+
+6. **Appearance stays optional and negative-only.**
+   If used at all, it should support vetoing suspicious continuity, never creating it.
+
+---
+
+## Current Code Reality
+
+This plan is designed around the current architecture rather than an imagined rewrite.
+
+Relevant existing hooks already exist in these files:
+
+- `src/multi_tracker/core/tracking/worker.py`
+- `src/multi_tracker/core/assigners/hungarian.py`
+- `src/multi_tracker/core/post/processing.py`
+- `src/multi_tracker/gui/main_window.py`
+
+Important current facts:
+
+- final post-processing already flows through `process_trajectories(...)` and `process_trajectories_from_csv(...)`
+- final pose-aware relinking is centralised in `MainWindow._relink_final_pose_augmented_csv(...)`
+- relinking is currently greedy and based on motion plus optional pose in `relink_trajectories_with_pose(...)`
+- confidence-style outputs already exist, including `AssignmentConfidence` and `PositionUncertainty`
+- the optimiser already acknowledges that generic crowding penalties are often unhelpful for ants and similar datasets
+
+This means the first implementation should extend the existing post-processing and relink path, not invent a parallel pipeline.
+
+---
+
+## Failure Model We Should Optimise For
+
+We should explicitly optimise for this narrow failure mode:
+
+- tracking is mostly correct during isolated motion
+- the tracker enters a close-interaction window
+- detections continue, but visibility flickers or assignments become low-margin
+- continuity through that window is plausible but not trustworthy
+- when animals separate, a wrong identity chain is preserved
+
+That is the failure mode this plan is built to catch.
+
+The plan is **not** designed to solve full-video re-identification, nor to prove identity across long unobserved gaps.
+
+---
+
+## New Operational Model
+
+### Regime Labels
+
+Each trajectory row should be annotated with an interaction regime derived in post-processing:
+
+- `isolated`
+- `tandem`
+- `cluster`
+- `recovery`
+
+These labels should be pipeline-internal at first. They can be persisted later if they prove useful.
+
+### Regime Definitions
+
+#### `isolated`
+
+Use when the animal is well-separated and assignment quality is normal.
+
+Policy:
+
+- normal motion and uncertainty checks apply
+- false-merge scoring can be active
+- continuity may be trusted if multiple signals agree
+
+#### `tandem`
+
+Use when two animals remain close over multiple frames but show structured, coherent movement rather than unstable mixing.
+
+Typical clues:
+
+- only two animals involved
+- distance remains low but stable
+- headings are broadly aligned
+- both remain detectable most frames
+- assignment confidence may soften slightly, but not collapse
+
+Policy:
+
+- do not split merely because the pair is close
+- suppress generic crowding-based split pressure
+- raise suspicion only if one of the animals flickers, swaps heading abruptly, or exits the pair with contradictory motion
+
+#### `cluster`
+
+Use when local identity is not reliable enough to defend frame-by-frame continuity.
+
+Typical clues:
+
+- three or more animals in the local component, or two animals with repeated visibility flicker and overlap
+- low assignment margin or unstable assignment confidence
+- repeated transitions among `active`, `occluded`, and `lost`
+- uncertainty spikes during continued close contact
+
+Policy:
+
+- avoid using cluster interior motion anomalies as direct split triggers
+- treat continuity through the interior as provisional
+- shift decision weight toward cluster entry and exit boundaries
+
+#### `recovery`
+
+Use for the first short window after a tandem or cluster state ends.
+
+Policy:
+
+- this is the strongest anti-swap check region
+- require continuity to be re-earned using position, velocity, heading, pose, and assignment evidence
+- lower the threshold for boundary-focused split decisions here
+- do not let generic relinking override a rejected recovery boundary
 
 ---
 
 ## Signals To Use
 
-### Already Available
+### Existing Signals We Should Leverage Better
 
 - `X`, `Y`, `Theta`, `FrameID`, `State`
 - `DetectionConfidence`
 - `AssignmentConfidence`
 - `PositionUncertainty`
-- `DetectionID` (frame-local only)
-- Pose keypoints and pose confidence in pose-augmented CSVs
+- `DetectionID` for frame-local reconciliation only
+- pose keypoints and pose quality when present
 
-### Recommended New Signals
+### New Signals Worth Adding First
 
-- Normalized assignment cost per matched track
-- Kalman innovation magnitude per update
-- Per-frame nearest-neighbor distance between active tracks
-- Per-frame OBB overlap or center-distance crowding score
-- Optional assignment margin: best cost vs second-best cost
-- Optional split-only appearance change metrics:
-  - pHash or dHash jump magnitude on canonicalized OBB crops
-  - grayscale or HSV histogram distance jump
-  - cheap low-dimensional crop embedding distance if it remains dataset-agnostic
+- normalized assignment cost
+- assignment margin where available
+- Kalman innovation magnitude or a similar residual
+- nearest-neighbor distance among active tracks
+- local visibility flicker score over a short window
+- interaction component size per frame
 
-These signals are useful because false merges usually happen around ambiguous assignments, not during stable isolated motion.
+### Signals To Avoid Over-Trusting
 
-The appearance signals are intentionally listed as optional and **negative-only**. They are not meant to prove identity, only to flag temporal discontinuities that are suspicious enough to split.
+- raw proximity alone
+- motion spikes inside stable tandem movement
+- motion spikes inside dense cluster interiors
+- appearance similarity as positive identity evidence
 
 ---
 
-## Proposed Phases
+## Proposed Implementation Plan
 
-## Phase 0: Instrumentation and Diagnostics
+## Phase 0: Instrument The Real Swap Signals
 
-### Objective
+### Phase 0 Objective
 
-Add the missing tracking diagnostics needed to identify high-risk continuity failures.
+Persist the minimum additional diagnostics needed to tell normal close contact apart from actual identity danger.
 
-### Changes
+### Phase 0 Changes
 
-- Persist normalized assignment cost to tracking CSV output.
-- Persist Kalman innovation magnitude or a closely related residual metric.
-- Persist crowding features when possible:
-  - nearest-neighbor distance
-  - optional OBB overlap fraction
-  - optional assignment margin
-- Extend post-processing stats so new split causes are counted separately.
+- Persist normalized assignment cost.
+- Persist assignment margin if it is cheap to extract.
+- Persist Kalman innovation magnitude or an equivalent update residual.
+- Persist nearest-neighbor distance for active tracks.
+- Add a lightweight visibility flicker metric computed over a short trailing window.
 
-### Primary Files
+### Phase 0 Rationale
+
+Today the pipeline has confidence-like fields, but not enough direct evidence about ambiguous handoffs. Without that, later split logic will remain heuristic in the wrong way.
+
+### Phase 0 Primary Files
 
 - `src/multi_tracker/core/tracking/worker.py`
 - `src/multi_tracker/core/assigners/hungarian.py`
 - `src/multi_tracker/core/post/processing.py`
 - `docs/developer-guide/confidence-metrics.md`
 
-### Deliverable
+### Phase 0 Deliverable
 
-A richer per-frame CSV that makes risky handoffs measurable instead of implicit.
+A CSV and post-processing input set that can measure instability explicitly instead of inferring it indirectly.
 
 ---
 
-## Phase 1: Ambiguity Window Detection
+## Phase 1: Detect Interaction Regimes Instead Of Generic Crowding
 
-### Objective
+### Phase 1 Objective
 
-Detect windows where identity continuity is inherently unreliable and treat them as high-risk for false merges.
+Add a dedicated regime detector that classifies rows into `isolated`, `tandem`, `cluster`, or `recovery`.
 
-### Rationale
+### Phase 1 Rationale
 
-Most false merges happen during close approaches, body contacts, short occlusions, or low-margin assignments. These windows should be marked explicitly and used to raise split sensitivity.
+This is the most important architectural change in the plan. If the pipeline cannot distinguish tandem from cluster, the rest of the logic will stay too blunt.
 
-### Candidate Triggers
+### Phase 1 Implementation Sketch
 
-- Two active tracks move within a distance threshold based on body size.
-- OBBs overlap beyond a threshold.
-- Assignment confidence drops below a threshold.
-- Assignment margin becomes small.
-- Position uncertainty spikes.
-- State transitions into or out of `occluded` or `lost` near another animal.
+Create a helper module that works on the final trajectory table and returns:
 
-### Implementation Sketch
+- a row-level `InteractionRegime`
+- a per-frame interaction component identifier
+- regime transition markers for entry and exit boundaries
 
-Add a helper that produces per-frame or per-row risk flags, for example:
+Recommended helper file:
 
-- `RiskCrowding`
-- `RiskLowAssignmentConfidence`
-- `RiskHighUncertainty`
-- `RiskOcclusionBoundary`
-- `RiskAmbiguousWindow`
+- `src/multi_tracker/core/post/interaction_events.py`
 
-These flags can be computed either during tracking output or in post-processing from the final CSV and optional pose-augmented CSV.
+Recommended public entry point:
 
-### Primary Files
+- `annotate_interaction_regimes(df, params)`
 
-- `src/multi_tracker/core/tracking/worker.py`
+### Phase 1 Initial Heuristics
+
+Classify a component as likely `tandem` when:
+
+- exactly two tracks participate
+- inter-animal distance stays below a threshold for several frames
+- motion direction remains broadly aligned
+- visibility remains mostly stable
+- there is no repeated identity-style flicker
+
+Classify a component as likely `cluster` when one or more of the following hold:
+
+- three or more tracks are involved
+- repeated visibility flicker occurs during continued proximity
+- assignment confidence and margin are unstable for several frames
+- uncertainty remains elevated inside the component
+
+Classify `recovery` for the first short post-interaction window after `tandem` or `cluster` ends.
+
+### Phase 1 Primary Files
+
+- new: `src/multi_tracker/core/post/interaction_events.py`
 - `src/multi_tracker/core/post/processing.py`
 
-### Deliverable
+### Phase 1 Deliverable
 
-A reusable ambiguity-window signal that later phases can use for split and relink gating.
+A reusable state annotation layer that later split and relink logic can use.
 
 ---
 
-## Phase 2: Multi-Cue False-Merge Break Scoring
+## Phase 2: Replace Global Split Pressure With Boundary-Focused Break Logic
 
-### Objective
+### Phase 2 Objective
 
-Replace single-cue break logic with a multi-cue score that prefers splitting when continuity becomes untrustworthy.
+Stop treating all ambiguous frames the same. Split mainly at the seams where an identity chain becomes undefendable.
 
-### Rationale
+### Phase 2 Rationale
 
-Velocity alone is too brittle. False merges often show up as a combination of moderate anomalies rather than one extreme jump.
+The current risk is not that cluster interiors are always wrong. The risk is that the pipeline silently carries one identity through an ambiguous interaction and then keeps it after separation.
 
-### Candidate Cues
+### Phase 2 Decision Policy By Regime
 
-- Velocity z-score
-- Heading jump
-- Acceleration or jerk spike
-- Curvature spike
-- Assignment confidence drop
-- Assignment cost spike
-- Position uncertainty spike
-- Ambiguity-window membership
-- Pose discontinuity when pose data exists
+#### `isolated` Policy
 
-### Decision Rule
+Use the normal multi-cue break score.
 
-Use a weighted score with a multi-cue requirement. Example:
+Candidate cues:
 
-`break_score = motion + geometry + uncertainty + assignment + pose + ambiguity`
+- velocity z-score
+- heading jump
+- uncertainty spike
+- assignment cost spike
+- assignment margin collapse
 
-Recommended policy:
+#### `tandem` Policy
 
-- Split only if the total score exceeds a threshold.
-- Also require either:
-  - at least two independent cues to fire, or
-  - a single extreme anomaly inside an ambiguity window.
+Reduce split sensitivity.
 
-This avoids overfragmenting clean trajectories while still being much more aggressive near risky events.
+Only split if there is strong contradictory evidence such as:
 
-### Implementation Sketch
+- repeated visibility flicker affecting only one participant
+- a sharp recovery-boundary mismatch when the pair separates
+- a simultaneous motion and assignment anomaly that persists
 
-Add a new helper such as:
+#### `cluster` Policy
 
-- `_compute_false_merge_breaks(...)`
+Suppress most interior split triggers.
 
-Then integrate it into:
+Specifically:
 
-- `process_trajectories_from_csv(...)`
-- `process_trajectories(...)`
+- do not split on velocity anomaly alone
+- do not split on generic proximity alone
+- do not split on uncertainty alone if the component is still in active cluster state
 
-Track new counters in `stats`, for example:
+Instead, record candidate concern points and defer actual identity decisions to entry and exit boundaries.
 
-- `broken_ambiguity`
-- `broken_assignment_confidence`
-- `broken_uncertainty`
-- `broken_pose_discontinuity`
-- `broken_multicue`
+#### `recovery` Policy
 
-### Primary Files
+Increase split sensitivity.
+
+This is where a bad continuity chain should be broken if it cannot be defended.
+
+### Phase 2 Recommended Helper
+
+- `_compute_boundary_break_candidates(...)`
+
+This helper should accept regime labels and use different thresholds by regime.
+
+### Phase 2 Primary Files
+
+- `src/multi_tracker/core/post/processing.py`
+- optional new helper: `src/multi_tracker/core/post/boundary_breaks.py`
+
+### Phase 2 Deliverable
+
+A split pass that is less trigger-happy during normal social contact but much stricter at post-contact swap seams.
+
+---
+
+## Phase 3: Add Boundary Re-Anchoring For Interaction Exits
+
+### Phase 3 Objective
+
+When animals leave a tandem or cluster event, explicitly solve a small local continuity problem instead of relying on naive greedy fragment linking.
+
+### Phase 3 Rationale
+
+The current relinker in `processing.py` is greedy and works best when the fragments it sees are already clean. It should not bear the entire burden of disambiguating cluster exits.
+
+### Phase 3 Strategy
+
+For each interaction event boundary:
+
+- collect short pre-boundary anchor summaries
+- collect short post-boundary candidate summaries
+- score plausible continuations using motion, heading, uncertainty, and pose if available
+- accept only low-cost matches
+- leave uncertain exits unmatched instead of forcing continuity
+
+This should be a local mini-assignment, not a full-video identity solver.
+
+### Phase 3 Recommended Module
+
+- `src/multi_tracker/core/post/interaction_anchoring.py`
+
+Recommended public entry point:
+
+- `resolve_interaction_boundaries(df, regime_table, params)`
+
+### Phase 3 Important Constraint
+
+Do not allow the later general relinker to override an explicit rejection made here.
+
+### Phase 3 Primary Files
+
+- new: `src/multi_tracker/core/post/interaction_anchoring.py`
+- `src/multi_tracker/core/post/processing.py`
+- `src/multi_tracker/gui/main_window.py`
+
+### Phase 3 Deliverable
+
+A precise, boundary-local defence against swaps at the exact point where animals separate.
+
+---
+
+## Phase 4: Harden General Relinking So It Cannot Undo Good Splits
+
+### Phase 4 Objective
+
+Keep the existing relinker conservative and make it subordinate to the new boundary logic.
+
+### Phase 4 Changes
+
+- add a hard reject threshold for motion-plus-pose relinking
+- prevent relinking across recently rejected recovery boundaries
+- penalise relinking over low-margin or high-uncertainty gaps
+- prefer leaving fragments unmatched rather than greedily chaining them
+- consider replacing greedy pairing with Hungarian matching only if the first hard-reject version is still too permissive
+
+### Phase 4 Rationale
+
+Boundary anchoring and general fragment relinking are different jobs. The first handles known high-risk seams. The second cleans up easy residual fragments.
+
+### Phase 4 Primary Files
 
 - `src/multi_tracker/core/post/processing.py`
 - `src/multi_tracker/gui/main_window.py`
 
-### Deliverable
+### Phase 4 Deliverable
 
-A new break pass that is more conservative than the current velocity-only approach and explicitly optimized for reducing false merges.
-
----
-
-## Phase 2A: Optional Appearance Change-Point Detection
-
-### Objective
-
-Add a cheap image-based change-point detector that can split trajectories when the visual content of the tracked OBB crop changes too abruptly over time.
-
-### Rationale
-
-This is useful for false-merge prevention because a bad swap often produces a sudden crop discontinuity even when motion alone remains plausible. The key constraint is that appearance must be used only as **negative evidence** for splitting, not as positive evidence for merging.
-
-### Best Placement In The Pipeline
-
-The best insertion point is:
-
-- **after interpolation**
-- **after forward/backward resolution if backward tracking is enabled**
-- **before conservative relinking**
-
-Concretely, the easiest place to integrate this in the current application flow is alongside the final pose-augmented relink pipeline in `src/multi_tracker/gui/main_window.py`, immediately before `relink_trajectories_with_pose(...)` runs.
-
-Recommended flow:
-
-1. build final merged trajectory DataFrame
-2. interpolate trajectories
-3. build pose-augmented DataFrame if available
-4. run appearance change-point split pass
-5. run conservative relinking on the already-split result
-
-This avoids two bad outcomes:
-
-- running too early, before interpolation has produced the temporal support needed for continuity checks
-- running too late, after relinking has already stitched a bad merge back together
-
-### Data Source Strategy
-
-The change-point pass should extract crops from raw video frames using per-row geometry from the final trajectory table.
-
-Preferred geometry source order:
-
-1. exact OBB geometry from detection cache when `DetectionID` is present
-2. interpolated width, height, and angle across gaps when exact detections are missing
-3. fallback to track-local median size if width and height cannot be reconstructed exactly
-
-This means interpolation remains useful: it provides a dense temporal path for crop extraction, even across short gaps.
-
-### Crop Strategy
-
-- use masked OBB crops, not loose axis-aligned crops
-- canonicalize orientation so the animal is compared in a consistent frame
-- keep the crop cheap and deterministic
-- ignore frames where crop extraction is too unstable or too small
-
-Existing repository helpers already support much of this:
-
-- OBB masked crop extraction in `src/multi_tracker/core/identity/analysis.py`
-- lightweight perceptual hashing in `src/multi_tracker/tools/data_sieve/core.py`
-
-### Recommended Methods
-
-Start with the cheapest robust options first:
-
-1. pHash over canonicalized masked OBB crops
-2. dHash as a simpler gradient-sensitive fallback
-3. grayscale or HSV histogram distance as a secondary cue
-
-If a learned embedding is later tested, it should remain optional and off by default unless it proves stable on real data.
-
-### Change-Point Logic
-
-Per trajectory:
-
-- compute a crop signature per valid frame
-- compute frame-to-frame or window-to-window signature distance
-- smooth distances with a short robust window
-- flag change-points when the appearance jump is large relative to the local baseline
-
-Recommended policy:
-
-- do not split on appearance alone in normal frames
-- allow appearance to trigger a split only when one of the following is also true:
-  - the frame lies inside an ambiguity window
-  - motion or uncertainty cues are also abnormal
-  - the jump is extreme and persists for multiple frames
-
-This keeps the method aligned with the overall split-first but artifact-aware design.
-
-### Suggested Parameters
-
-- `ENABLE_APPEARANCE_CHANGEPOINT_SPLITTING`
-- `APPEARANCE_CHANGEPOINT_METHOD`
-- `APPEARANCE_CHANGEPOINT_THRESHOLD`
-- `APPEARANCE_CHANGEPOINT_WINDOW`
-- `APPEARANCE_CHANGEPOINT_REQUIRE_AMBIGUITY`
-- `APPEARANCE_CHANGEPOINT_MIN_VALID_CROPS`
-
-These should remain advanced or config-only at first.
-
-### Primary Files
-
-- `src/multi_tracker/gui/main_window.py`
-- `src/multi_tracker/core/post/processing.py`
-- optional new helper module under `src/multi_tracker/core/post/`
-- `src/multi_tracker/core/identity/analysis.py`
-- `src/multi_tracker/tools/data_sieve/core.py`
-
-### Deliverable
-
-An optional split-only appearance change-point pass that catches temporally weird crop jumps before relinking.
+A relinker that preserves the gains from earlier split decisions instead of smoothing them away.
 
 ---
 
-## Phase 2A Implementation Checklist
+## Phase 5: Add Optional Population Guardrails
 
-The checklist below is intentionally ordered so the first slice can land without forcing a full architecture refactor.
+### Phase 5 Objective
 
-### Recommended First Implementation Boundary
+Use known animal count as a validator when the experiment provides it.
 
-Ship the first version with these constraints:
+### Phase 5 Rationale
 
-- use pHash only
-- use appearance only as split veto, never as merge or relink evidence
-- run only in the final CSV path before relinking
-- require either ambiguity-window support or another anomaly cue before splitting
-- skip UI controls initially and keep the feature config-only
+For many colony or arena experiments, the number of animals is known. That is valuable as a guardrail, but it should not be the main anti-swap mechanism.
 
-That keeps the first implementation small, measurable, and easy to disable.
+### Phase 5 Policy
 
-### 1. Shared Signature Utilities
+- if `MAX_EXPECTED_ANIMALS` is configured, use it to flag impossible post-processing states
+- use it after split, anchoring, and relink passes
+- default to warning or flagging before any automatic enforcement
 
-- [ ] Create a lightweight shared signature utility instead of importing `DataSieveCore` directly into post-processing.
-- [ ] Move or duplicate only the small hash helpers needed from `src/multi_tracker/tools/data_sieve/core.py`.
-- [ ] Recommended destination:
-  - `src/multi_tracker/core/post/appearance_signatures.py`
-  - or `src/multi_tracker/utils/image_signatures.py`
-- [ ] Implement these helpers as pure functions:
-  - `compute_phash(image, hash_size=8)`
-  - `compute_dhash(image, hash_size=8)`
-  - `compute_hist_signature(image, bins=32)`
-  - `signature_distance(sig1, sig2, method="phash")`
-  - `hamming_distance(hash1, hash2)`
-- [ ] Keep the implementation free of heavyweight DataSieve-only dependencies.
-- [ ] If `DataSieveCore` continues to expose these methods, make it delegate to the shared helpers to avoid logic drift.
+### Phase 5 Important Limitation
 
-### 2. Appearance Change-Point Module
+Population count does not tell us who is who. It only helps catch obviously invalid outcomes.
 
-- [ ] Create a dedicated helper module rather than bloating `processing.py` further.
-- [ ] Recommended file:
-  - `src/multi_tracker/core/post/appearance_changepoints.py`
-- [ ] Add one public entry point:
-  - `split_trajectories_with_appearance_changepoints(...)`
-- [ ] Add private helpers with narrow responsibilities:
-  - `_resolve_row_geometry(...)`
-  - `_extract_canonical_crop(...)`
-  - `_compute_row_signature(...)`
-  - `_compute_trajectory_signature_series(...)`
-  - `_detect_signature_changepoints(...)`
-  - `_split_trajectory_at_frames(...)`
-- [ ] Keep the module DataFrame-in/DataFrame-out so it composes cleanly with the existing post-processing path.
-
-### 3. Geometry Source Decision
-
-- [ ] Decide whether to persist `Width` and `Height` all the way through the final CSV path.
-- [ ] If yes, add them to the tracked trajectory DataFrame whenever available and preserve them through interpolation and save/load.
-- [ ] If no, implement lazy reconstruction using this priority order:
-  - exact OBB corners from detection cache via `DetectionID`
-  - size reconstruction via detection-cache shape info
-  - interpolated or track-median width and height fallback
-- [ ] Reuse or adapt the existing detection-size lookup logic in `src/multi_tracker/gui/main_window.py` rather than inventing a second incompatible path.
-- [ ] Add a guard for rows where geometry cannot be resolved reliably.
-
-### 4. Crop Extraction Path
-
-- [ ] Reuse existing OBB masked crop behavior from `src/multi_tracker/core/identity/analysis.py` instead of inventing a new crop definition.
-- [ ] Extract common crop code into a shared helper if duplication becomes awkward.
-- [ ] Ensure crops are:
-  - masked to the OBB region
-  - padded consistently
-  - canonicalized by angle before hashing
-  - skipped if too small or mostly invalid
-- [ ] Add hard guards for unstable crops:
-  - minimum crop width and height
-  - finite center and angle
-  - finite width and height
-  - non-empty masked region
-- [ ] Keep crop extraction deterministic so the same trajectory produces the same signatures across runs.
-
-### 5. Video and Cache Access Strategy
-
-- [ ] Do not random-seek the video for every row.
-- [ ] Iterate frames in ascending `FrameID` order and process all trajectory rows belonging to the current frame.
-- [ ] Open the video once for the whole pass.
-- [ ] Open the detection cache once for the whole pass if it is available.
-- [ ] Gracefully skip the appearance pass if:
-  - the video path is missing
-  - the video cannot be opened
-  - the detection cache is unavailable and fallback geometry is insufficient
-- [ ] Log whether the pass ran, skipped, or partially degraded.
-
-### 6. Signature Series Construction
-
-- [ ] Restrict signature computation to rows with usable geometry and valid crops.
-- [ ] Prefer `State == "active"` rows for baseline continuity.
-- [ ] Allow interpolated rows to contribute only if crop geometry is credible.
-- [ ] Store per-row debugging fields in-memory while computing:
-  - `AppearanceSignatureValid`
-  - `AppearanceDistancePrev`
-  - `AppearanceJumpScore`
-- [ ] Do not persist raw hash values to the final CSV unless there is a strong debugging need.
-
-### 7. Change-Point Detection Policy
-
-- [ ] Start with consecutive-frame signature distances.
-- [ ] Smooth distances with a short median or robust rolling window.
-- [ ] Compute a local baseline and detect unusually large positive jumps.
-- [ ] Require one of the following before splitting:
-  - ambiguity-window membership
-  - co-occurring motion or uncertainty anomaly
-  - extreme jump persisted for multiple valid frames
-- [ ] Never allow appearance alone in a normal low-risk region to create a split in the first version.
-- [ ] Emit candidate split frame IDs, not row offsets, so the splitter stays compatible with current DataFrame logic.
-
-### 8. Integration Point In MainWindow
-
-- [ ] Integrate the new pass inside `MainWindow._relink_final_pose_augmented_csv(...)`.
-- [ ] Insert it after the final `relink_input_df` has been built and before `relink_trajectories_with_pose(...)` is called.
-- [ ] Recommended flow inside that method:
-  - load base final CSV
-  - build pose-augmented DataFrame if available
-  - run appearance change-point splitting on `relink_input_df`
-  - feed the split result into `relink_trajectories_with_pose(...)`
-  - rewrite final CSV and `_with_pose.csv` from the relinked result
-- [ ] Keep the integration behind a parameter gate so the behavior can be disabled instantly.
-- [ ] Ensure the pass runs for both forward-only and forward/backward workflows, since both converge on this method.
-
-### 9. Parameter Wiring
-
-- [ ] Add config-only parameters to the parameter dictionary path first.
-- [ ] Recommended initial parameters:
-  - `ENABLE_APPEARANCE_CHANGEPOINT_SPLITTING`
-  - `APPEARANCE_CHANGEPOINT_METHOD`
-  - `APPEARANCE_CHANGEPOINT_THRESHOLD`
-  - `APPEARANCE_CHANGEPOINT_WINDOW`
-  - `APPEARANCE_CHANGEPOINT_REQUIRE_AMBIGUITY`
-  - `APPEARANCE_CHANGEPOINT_MIN_VALID_CROPS`
-  - `APPEARANCE_CHANGEPOINT_MIN_CROP_SIZE`
-- [ ] Thread the parameters through `MainWindow.get_parameters_dict()` and config load/save.
-- [ ] Do not add UI controls in the first pass unless the feature stabilizes quickly.
-- [ ] If a UI surface is later needed, put it under advanced post-processing settings.
-
-### 10. Stats and Logging
-
-- [ ] Add explicit counters for the new pass, for example:
-  - `appearance_rows_considered`
-  - `appearance_valid_crops`
-  - `appearance_split_candidates`
-  - `broken_appearance_changepoint`
-- [ ] Log how many trajectories were examined and how many were split.
-- [ ] Log the degrade mode when geometry or cache information is missing.
-- [ ] Keep logs concise enough for long jobs.
-
-### 11. Testing Checklist
-
-- [ ] Add `tests/test_post_processing_appearance_changepoints.py`.
-- [ ] Unit-test the shared signature helpers.
-- [ ] Test that stable synthetic crops do not trigger splits.
-- [ ] Test that an abrupt crop swap does trigger a split candidate.
-- [ ] Test that tiny or invalid crops are skipped cleanly.
-- [ ] Test that the pass is a no-op when disabled.
-- [ ] Test that the pass does not crash when video or cache inputs are unavailable.
-- [ ] Test that relinking receives the split result and not the original unsplit DataFrame.
-
-### 12. Documentation Checklist
-
-- [ ] Update this plan if helper names or integration points change during implementation.
-- [ ] Add a short developer note after implementation explaining:
-  - why appearance is split-only here
-  - why the pass runs before relinking
-  - which crop geometry fallbacks are used
-- [ ] Update `docs/developer-guide/confidence-metrics.md` only if new persisted debug fields become user-visible.
-
-### 13. Exact First Slice To Implement
-
-- [ ] Create `appearance_signatures.py` with pHash and Hamming distance only.
-- [ ] Create `appearance_changepoints.py` with one public `split_trajectories_with_appearance_changepoints(...)` function.
-- [ ] Reuse the existing masked OBB crop behavior.
-- [ ] Use only pHash in the first pass.
-- [ ] Require ambiguity support or another anomaly cue before splitting.
-- [ ] Call the new function from `MainWindow._relink_final_pose_augmented_csv(...)` before `relink_trajectories_with_pose(...)`.
-- [ ] Add one focused test file covering stable crops, abrupt swaps, and disabled-mode no-op behavior.
-
-If this first slice works well, then add dHash or histogram distance, stronger geometry persistence, and more detailed debug outputs in follow-up patches.
-
----
-
-## Phase 3: Hardening Forward/Backward Merge Resolution
-
-### Objective
-
-Make forward/backward consensus merging much stricter so ambiguous overlaps do not collapse into false continuity.
-
-### Rationale
-
-The current resolver already emphasizes agreement, but false merges can still survive if overlap evidence is sparse or fragmented.
-
-### New Gating Rules
-
-- Require both absolute agreement count and agreement ratio.
-- Require a minimum contiguous run of agreeing frames, not just scattered agreement.
-- Require agreement near overlap boundaries when possible.
-- Penalize alternating agree/disagree patterns.
-- Reject merges if overlap occurs mostly inside a flagged ambiguity window.
-- Prefer splitting when disagreement density is high, even if total agreement count passes threshold.
-
-### Suggested New Parameters
-
-- `MIN_OVERLAP_AGREEMENT_RATIO`
-- `MIN_CONTIGUOUS_AGREEMENT_FRAMES`
-- `MAX_DISAGREEMENT_SWITCHES`
-- `MERGE_REJECT_IN_AMBIGUOUS_WINDOWS`
-
-### Primary Files
-
-- `src/multi_tracker/core/post/processing.py`
-
-### Deliverable
-
-A forward/backward merge stage that is less willing to average through ambiguous overlaps and more willing to preserve fragments.
-
----
-
-## Phase 4: Conservative Relinking With Strong Reject Option
-
-### Objective
-
-Keep relinking conservative and explicitly biased toward leaving fragments unmatched unless continuity is very clear.
-
-### Rationale
-
-If the splitter becomes stronger, relinking must not undo those gains by greedily reconnecting risky fragments.
-
-### Changes
-
-- Keep motion and pose only; do not introduce appearance.
-- Replace greedy pairing with a global matching step when feasible.
-- Add a hard reject threshold so unmatched fragments remain unmatched by default.
-- Prevent relinking across strong ambiguity windows unless the motion and pose score is exceptionally good.
-- Penalize relinking across uncertainty spikes or low-confidence regions.
-
-### Candidate Upgrade Path
-
-1. Tighten current greedy relinking thresholds.
-2. Add explicit rejection criteria.
-3. Replace greedy chain-building with Hungarian or min-cost flow over fragment endpoints.
-
-### Suggested New Parameters
-
-- `RELINK_MAX_SCORE`
-- `RELINK_REJECT_IN_AMBIGUOUS_WINDOWS`
-- `RELINK_MAX_UNCERTAINTY`
-- `RELINK_MIN_ASSIGNMENT_CONFIDENCE`
-
-### Primary Files
+### Phase 5 Primary Files
 
 - `src/multi_tracker/core/post/processing.py`
 - `src/multi_tracker/gui/main_window.py`
 
-### Deliverable
+### Phase 5 Deliverable
 
-A relinking stage that preserves precision even if recall is modest.
+A sanity layer that can suppress the most obvious oversplitting mistakes in count-known experiments.
 
 ---
 
-## Phase 5: Local Replay Around Suspect Events
+## Phase 6: Optional Appearance Veto Near Recovery Boundaries
 
-### Objective
+### Phase 6 Objective
 
-Use the detection cache to re-evaluate short windows around suspected merge points with stricter hypotheses.
+Add appearance only as a narrow, negative-only cue near recovery seams after the structural fixes above are in place.
 
-### Rationale
+### Phase 6 Rationale
 
-False merges are often local mistakes. A short replay window can compare competing explanations without rerunning the entire video.
+Appearance is still useful, but it should not be one of the first changes. The core problem here is state modelling, not missing embeddings.
 
-### Hypotheses To Compare
+### Phase 6 Recommended Scope
 
-- `H0`: continuity is correct; keep one chain
-- `H1`: continuity failed; split into two fragments
+- run only near `recovery` windows or explicitly flagged boundary candidates
+- use only as a veto for suspicious continuity
+- never use to create a positive merge or relink decision
+- keep it config-only and off by default in the first implementation
 
-### Scoring Terms
+### Phase 6 Suggested Helpers
 
-- cumulative assignment cost
-- uncertainty growth
-- number of occlusion frames
-- motion smoothness
-- pose continuity if available
-- penalty for passing through ambiguity windows as one identity
+- `src/multi_tracker/core/post/appearance_signatures.py`
+- `src/multi_tracker/core/post/appearance_changepoints.py`
 
-### Recommended Scope
+### Phase 6 Deliverable
 
-- Start with short windows around only the highest-confidence suspect events.
-- Keep this phase optional behind a parameter flag.
-
-### Primary Files
-
-- `src/multi_tracker/core/post/processing.py`
-- `src/multi_tracker/core/tracking/optimizer.py`
-- optional new helper module under `src/multi_tracker/core/post/`
-
-### Deliverable
-
-A principled tie-breaker for difficult local cases without requiring full global replay.
+An optional last-layer veto for stubborn swap cases, without turning the tracker into an appearance-driven system.
 
 ---
 
 ## Recommended Implementation Order
 
-1. Phase 0 instrumentation
-2. Phase 1 ambiguity windows
-3. Phase 2 multi-cue split scoring
-4. Phase 2A optional appearance change-point splitting
-5. Phase 3 stricter forward/backward merge gating
-6. Phase 4 conservative relinking upgrades
-7. Phase 5 optional local replay
+1. Phase 0: instrumentation
+2. Phase 1: interaction regime detection
+3. Phase 2: boundary-focused break logic
+4. Phase 3: interaction boundary anchoring
+5. Phase 4: conservative relinking hardening
+6. Phase 5: optional population guardrails
+7. Phase 6: optional appearance veto
 
-This order is intentional:
+This order is intentional.
 
-- It improves observability first.
-- It reduces false merges before relinking changes.
-- It keeps higher-cost replay work until the core heuristics are validated.
-
----
-
-## Proposed Parameter Surface
-
-The following parameters should be added only as needed and kept hidden or advanced by default until stabilized:
-
-- `ENABLE_FALSE_MERGE_GUARD`
-- `FALSE_MERGE_REQUIRE_MULTI_CUE`
-- `FALSE_MERGE_BREAK_SCORE_THRESHOLD`
-- `FALSE_MERGE_AMBIGUITY_DISTANCE_MULTIPLIER`
-- `FALSE_MERGE_UNCERTAINTY_ZSCORE_THRESHOLD`
-- `FALSE_MERGE_ASSIGNMENT_COST_ZSCORE_THRESHOLD`
-- `ENABLE_APPEARANCE_CHANGEPOINT_SPLITTING`
-- `APPEARANCE_CHANGEPOINT_METHOD`
-- `APPEARANCE_CHANGEPOINT_THRESHOLD`
-- `APPEARANCE_CHANGEPOINT_WINDOW`
-- `APPEARANCE_CHANGEPOINT_REQUIRE_AMBIGUITY`
-- `MIN_OVERLAP_AGREEMENT_RATIO`
-- `MIN_CONTIGUOUS_AGREEMENT_FRAMES`
-- `MAX_DISAGREEMENT_SWITCHES`
-- `RELINK_MAX_SCORE`
-- `RELINK_REJECT_IN_AMBIGUOUS_WINDOWS`
-- `ENABLE_LOCAL_REPLAY_ON_SUSPECT_WINDOWS`
-
-The UI should expose only the minimal stable subset at first. The rest can stay in config or experimental settings until the behavior is well understood.
-
----
-
-## Validation Plan
-
-## Test Assets
-
-Build a small benchmark set of short clips with known failure modes:
-
-- simple isolated motion
-- crossings without contact
-- crossings with contact
-- short occlusion and re-emergence
-- dense crowding
-- turning events without identity swaps
-
-### Metrics
-
-- false merges per 1000 frames
-- number of split points near manually marked swap events
-- fragment count increase relative to baseline
-- relink precision on benchmark fragments
-- forward/backward consistency improvement
-- regression rate on clean isolated clips
-
-### Acceptance Criteria
-
-- false merges decrease substantially on crowded and crossing clips
-- overfragmentation increase remains acceptable on clean clips
-- relinking precision does not fall below the current conservative baseline
-- no major regression in processing time for default settings
-
----
-
-## Testing and Documentation
-
-### New Tests
-
-- `tests/test_post_processing_false_merge_breaks.py`
-- `tests/test_post_processing_appearance_changepoints.py`
-- `tests/test_post_processing_merge_gating.py`
-- `tests/test_tracklet_relinking_conservative.py`
-- optional replay-focused tests if Phase 5 lands
-
-### Documentation Updates After Implementation
-
-- update `docs/developer-guide/confidence-metrics.md`
-- update `docs/developer-guide/tracking-optimization.md` if new metrics are surfaced in tuning
-- add a developer note describing ambiguity windows and the split-first philosophy
+- It first improves observability.
+- Then it adds the missing biological state model.
+- Then it changes split logic.
+- Only after that does it touch relinking and appearance.
 
 ---
 
 ## Concrete First Slice
 
-The most practical first implementation slice is:
+The first implementation should stay narrow and measurable.
 
-1. Log one or two new diagnostics from tracking:
+### First Slice Contents
+
+1. Persist two or three missing diagnostics:
    - normalized assignment cost
-   - nearest-neighbor distance or crowding score
-2. Add ambiguity-window detection in post-processing.
-3. Add a multi-cue break helper that uses:
-   - velocity z-score
-   - assignment confidence or cost anomaly
-   - uncertainty spike
-   - ambiguity-window membership
-4. Optionally add a pHash-based change-point veto before relinking.
-5. Tighten merge gating to require agreement ratio plus contiguous agreement.
-6. Leave relinking conservative and mostly unchanged for the first pass.
+   - assignment margin if cheap
+   - nearest-neighbor distance
+2. Add row-level interaction regime detection:
+   - `isolated`
+   - `tandem`
+   - `cluster`
+   - `recovery`
+3. Add a boundary-focused split helper that:
+   - is conservative in `tandem`
+   - suppresses cluster-interior motion splits
+   - is aggressive in `recovery`
+4. Prevent general relinking from reconnecting fragments across a rejected recovery boundary.
 
-This slice should deliver the highest reduction in false merges with the lowest architectural disruption.
+### Why This Is The Right First Slice
+
+It directly addresses the real failure mode without committing the project to appearance pipelines, global re-identification, or an oversized architecture refactor.
+
+---
+
+## Suggested Parameter Surface
+
+These should remain config-only or advanced at first.
+
+- `ENABLE_SWAP_RESISTANT_CONTINUITY`
+- `INTERACTION_TANDEM_MAX_DISTANCE_MULTIPLIER`
+- `INTERACTION_TANDEM_MIN_DURATION_FRAMES`
+- `INTERACTION_CLUSTER_MIN_SIZE`
+- `INTERACTION_CLUSTER_MIN_DURATION_FRAMES`
+- `INTERACTION_RECOVERY_WINDOW_FRAMES`
+- `BOUNDARY_BREAK_SCORE_THRESHOLD`
+- `BOUNDARY_BREAK_RECOVERY_MULTIPLIER`
+- `BOUNDARY_BREAK_TANDEM_MULTIPLIER`
+- `BOUNDARY_BREAK_CLUSTER_INTERIOR_SUPPRESS`
+- `ENABLE_INTERACTION_BOUNDARY_ANCHORING`
+- `INTERACTION_ANCHOR_LOOKBACK_FRAMES`
+- `INTERACTION_ANCHOR_LOOKAHEAD_FRAMES`
+- `INTERACTION_ANCHOR_MAX_COST`
+- `RELINK_RESPECT_REJECTED_BOUNDARIES`
+- `MAX_EXPECTED_ANIMALS`
+- `POPULATION_CEILING_ENFORCE_MODE`
+- `ENABLE_APPEARANCE_BOUNDARY_VETO`
+
+---
+
+## Testing Plan
+
+### New Tests
+
+- `tests/test_post_processing_interaction_regimes.py`
+- `tests/test_post_processing_boundary_breaks.py`
+- `tests/test_post_processing_interaction_anchoring.py`
+- `tests/test_tracklet_relinking_conservative.py`
+- optional later: `tests/test_post_processing_appearance_changepoints.py`
+
+### Required Test Cases
+
+1. Stable isolated motion does not fragment.
+2. Stable tandem walking does not split purely because of proximity.
+3. A two-animal tandem that separates cleanly preserves identity through the boundary.
+4. A dense cluster with visibility flicker does not create interior motion-based split spam.
+5. A bad post-cluster continuity chain is split at recovery.
+6. General relinking cannot rejoin fragments across an explicitly rejected recovery seam.
+7. Population guardrails warn or flag impossible active counts when configured.
+
+---
+
+## Validation Metrics
+
+The previous plan measured false merges broadly. This plan should measure boundary performance specifically.
+
+Recommended metrics:
+
+- ID swaps per 1000 frames
+- swap rate at interaction exits
+- fragmentation increase outside interaction windows
+- fragmentation increase inside tandem windows
+- relink precision on post-interaction fragments
+- number of rejected recovery joins left unmatched
+- regression rate on clean isolated clips
+
+The critical acceptance criterion is:
+
+**swap reduction must improve materially without causing tandem walking to explode into fragments.**
+
+---
+
+## Documentation Updates After Implementation
+
+- update `docs/developer-guide/confidence-metrics.md` for any new persisted diagnostics
+- add a short developer note describing the four interaction regimes
+- document that crowding is no longer treated as a single generic post-processing concept
+- document that appearance, if enabled, is a recovery-boundary veto only
 
 ---
 
 ## Open Questions
 
-- Should nearest-neighbor distance be computed during tracking or reconstructed later from the final CSV?
-- Is assignment margin available cheaply enough to log without materially slowing tracking?
-- Should ambiguity windows be computed at the frame level, the trajectory-row level, or both?
-- Should local replay reuse existing optimizer code paths, or remain isolated in post-processing?
-- Which advanced thresholds deserve UI exposure versus remaining config-only?
+1. Should `InteractionRegime` remain pipeline-internal, or be persisted to the final CSV for downstream review?
+2. What is the cleanest heuristic boundary between `tandem` and small unstable two-animal `cluster` events?
+3. Is assignment margin cheap enough to log on all paths, or should it remain optional?
+4. Should interaction boundary anchoring live as a separate module, or as a tightly gated mode of post-processing relinking?
+5. For species with strong pose signals, should pose be mandatory at recovery boundaries when available?
 
 ---
 
-## Summary
+## Final Recommendation
 
-The core strategy is to stop asking post-processing to prove identity and instead ask it to prove that continuity is still trustworthy. If continuity cannot be defended with motion, geometry, uncertainty, assignment quality, and optional pose continuity, the system should split.
+The repository does not need a broad "more splitting everywhere" strategy.
 
-That bias is the right one for this repository because conservative relinking already exists, stronger re-identification can be added later, and false merges are more damaging than extra fragments.
+It needs a **swap-resistant continuity strategy** built around the fact that close contact has multiple meanings:
+
+- isolated motion is easy
+- tandem motion is structured and often legitimate
+- cluster interiors are ambiguous and should be treated cautiously
+- exit boundaries are where identity must be re-earned
+
+That is the right abstraction for this codebase, for this species mix, and for the specific problem of occasional ID swaps in otherwise decent tracking.

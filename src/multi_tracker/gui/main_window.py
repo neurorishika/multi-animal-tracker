@@ -1415,6 +1415,17 @@ def _run_preview_detection_job(
                             (255, 200, 0),
                             1,
                         )
+                # In sequential mode, stage-2 OBB can occasionally yield zero
+                # usable detections in preview. Fall back to stage-1 detect box
+                # dimensions so body-size auto-set remains functional.
+                if len(filtered_obb_corners) == 0 and len(det_xyxy) > 0:
+                    for di in range(len(det_xyxy)):
+                        x1f, y1f, x2f, y2f = [float(v) for v in det_xyxy[di]]
+                        w_box = max(1.0, x2f - x1f)
+                        h_box = max(1.0, y2f - y1f)
+                        major_axis = max(w_box, h_box)
+                        minor_axis = min(w_box, h_box)
+                        detected_dimensions.append((major_axis, minor_axis))
 
         for i, corners in enumerate(filtered_obb_corners):
             corners = np.asarray(corners, dtype=np.float32)

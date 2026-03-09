@@ -545,6 +545,121 @@ class YOLOOBBDetector:
         except Exception:
             pass
 
+    def _prepare_runtime_artifact_for_task(self, model_path_str: str, task: str) -> str:
+        """Resolve/export runtime artifact for auxiliary YOLO tasks.
+
+        This keeps sequential stage-1 detect/classify aligned with the selected
+        MAT compute runtime. Explicit runtime artifacts (.onnx/.engine/.trt)
+        are used as-is. For local .pt checkpoints, ONNX/TensorRT artifacts are
+        exported lazily when requested by runtime flags.
+        """
+        if not model_path_str:
+            return model_path_str
+
+        # Built-in model aliases are loaded directly by ultralytics.
+        if str(model_path_str).startswith(("yolo26", "yolov8", "yolov11")):
+            return model_path_str
+
+        model_path = Path(model_path_str).expanduser().resolve()
+        if not model_path.exists() or not model_path.is_file():
+            return model_path_str
+
+        suffix = model_path.suffix.lower()
+        if suffix in {".onnx", ".engine", ".trt"}:
+            return str(model_path)
+        if suffix != ".pt":
+            return model_path_str
+
+        try:
+            from ultralytics import YOLO
+
+            from multi_tracker.utils.gpu_utils import (
+                ONNXRUNTIME_AVAILABLE,
+                TENSORRT_AVAILABLE,
+            )
+
+            enable_onnx_runtime = bool(self.params.get("ENABLE_ONNX_RUNTIME", False))
+            enable_tensorrt = bool(self.params.get("ENABLE_TENSORRT", False)) and str(
+                self.device
+            ).startswith("cuda")
+
+            # Make stage artifact names unambiguous when direct/crop/detect models differ.
+            task_tag = str(task or "task").strip().lower().replace(" ", "_")
+
+            # Prefer ONNX when requested, matching primary OBB runtime preference.
+            if enable_onnx_runtime and ONNXRUNTIME_AVAILABLE:
+                onnx_path = model_path.with_name(
+                    f"{model_path.stem}_{task_tag}_b1.onnx"
+                )
+                needs_build = (not onnx_path.exists()) or (
+                    onnx_path.stat().st_mtime_ns < model_path.stat().st_mtime_ns
+                )
+                if needs_build:
+                    logger.info("Exporting %s model to ONNX runtime artifact...", task)
+                    if task == "detect":
+                        seq_detect_imgsz = int(
+                            self.params.get("YOLO_SEQ_DETECT_IMGSZ", 0)
+                        )
+                        onnx_imgsz = (
+                            seq_detect_imgsz
+                            if seq_detect_imgsz > 0
+                            else self._resolve_onnx_imgsz(model_path=model_path)
+                        )
+                    else:
+                        onnx_imgsz = self._resolve_onnx_imgsz(model_path=model_path)
+                    base_model = YOLO(str(model_path), task=task)
+                    export_path = base_model.export(
+                        format="onnx",
+                        imgsz=int(onnx_imgsz),
+                        dynamic=False,
+                        simplify=False,
+                        nms=False,
+                        opset=17,
+                        batch=1,
+                        verbose=False,
+                    )
+                    out_path = Path(export_path).expanduser().resolve()
+                    if out_path.exists() and out_path != onnx_path:
+                        shutil.copy2(str(out_path), str(onnx_path))
+                if onnx_path.exists():
+                    return str(onnx_path)
+
+            if enable_tensorrt and TENSORRT_AVAILABLE:
+                engine_path = model_path.with_name(
+                    f"{model_path.stem}_{task_tag}_b1.engine"
+                )
+                needs_build = (not engine_path.exists()) or (
+                    engine_path.stat().st_mtime_ns < model_path.stat().st_mtime_ns
+                )
+                if needs_build:
+                    logger.info(
+                        "Building TensorRT runtime artifact for %s model...", task
+                    )
+                    base_model = YOLO(str(model_path), task=task)
+                    base_model.to(self.device)
+                    export_path = base_model.export(
+                        format="engine",
+                        device=self.device,
+                        half=True,
+                        workspace=4,
+                        dynamic=False,
+                        batch=1,
+                        verbose=False,
+                    )
+                    out_path = Path(export_path).expanduser().resolve()
+                    if out_path.exists() and out_path != engine_path:
+                        shutil.copy2(str(out_path), str(engine_path))
+                if engine_path.exists():
+                    return str(engine_path)
+        except Exception as exc:
+            logger.warning(
+                "Aux runtime artifact preparation failed for %s model (%s). Using source checkpoint.",
+                task,
+                exc,
+            )
+
+        return model_path_str
+
     def _load_model_for_task(self, model_path_str: str, task: str):
         """Load an auxiliary YOLO model for detect/classify tasks."""
         if not model_path_str:
@@ -553,14 +668,18 @@ class YOLOOBBDetector:
 
         self._configure_ultralytics_logging()
 
-        model_path = Path(model_path_str).expanduser().resolve()
-        use_builtin = model_path_str.startswith(("yolo26"))
+        runtime_model_path_str = self._prepare_runtime_artifact_for_task(
+            model_path_str, task
+        )
+
+        model_path = Path(runtime_model_path_str).expanduser().resolve()
+        use_builtin = runtime_model_path_str.startswith(("yolo26", "yolov8", "yolov11"))
         if use_builtin:
-            model = YOLO(model_path_str, task=task)
+            model = YOLO(runtime_model_path_str, task=task)
         else:
             if not model_path.exists():
                 raise FileNotFoundError(
-                    f"YOLO {task} model file not found: {model_path_str}"
+                    f"YOLO {task} model file not found: {runtime_model_path_str}"
                 )
             model = YOLO(str(model_path), task=task)
         is_pytorch_checkpoint = use_builtin or model_path.suffix.lower() == ".pt"
