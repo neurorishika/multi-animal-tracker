@@ -979,6 +979,15 @@ def resolve_trajectories(
         max_gap=3,
     )
 
+    # FINAL DEDUPLICATION: Run a second redundancy pass after all merging and stitching.
+    # _merge_overlapping_agreeing_trajectories can produce new disagree-source fragments
+    # that partially overlap with the main merged trajectories.  Stitching can also
+    # lengthen trajectories, making some surviving fragments newly redundant (>70%).
+    # This pass catches any duplicates that slipped through the first pass.
+    result_trajectories = _remove_spatially_redundant_trajectories(
+        result_trajectories, AGREEMENT_DISTANCE, MIN_OVERLAP_FRAMES
+    )
+
     # FINAL CLEANING: Now that stitching is done, remove trajectories that are still too short
     result_trajectories = [t for t in result_trajectories if len(t) >= MIN_LENGTH]
     result_trajectories = _clean_trajectories(result_trajectories, MIN_LENGTH)

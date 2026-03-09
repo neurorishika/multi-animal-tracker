@@ -205,3 +205,123 @@ def test_different_animals_crossing_are_not_merged_into_one_trajectory() -> None
             f"Trajectory {traj_id} has a jump of {max_jump:.1f} px — "
             "indicates two animals' data were incorrectly merged."
         )
+
+
+def test_merged_trajectory_absorbs_surviving_unmerged_duplicate() -> None:
+    """
+    After _merge_overlapping_agreeing_trajectories extends a fragment into a longer
+    trajectory, that longer trajectory may become ≥70% spatially redundant with an
+    unmerged fragment that survived the first (pre-merge) redundancy-removal pass.
+    A second redundancy-removal pass at the end of the pipeline must clean this up.
+
+    Setup
+    -----
+    Three trajectory fragments, all for the same animal moving rightward (x = frame):
+      F1 : frames  1-40  (forward fragment)
+      F2 : frames 35-80  (forward fragment, overlaps F1)
+      B  : frames  1-80  (unmerged backward, slightly noisy)
+
+    First redundancy pass (before merge):
+      B has 80 frames.  It agrees with F1 on ~32 frames (40% of B) → NOT removed.
+      It agrees with F2 on ~36 frames (45% of B) → NOT removed.
+
+    _merge_overlapping_agreeing_trajectories extends F1+F2 → M (frames 1-80).
+    Now B agrees with M on ~72 frames (90% of B) → should be removed by a final pass.
+    Without the final pass, B survives as a duplicate trajectory.
+    """
+    n = 80
+    xs = list(range(1, n + 1))  # x = frame index (linear motion)
+
+    def make_traj(tid, frames, noise=0.0):
+        rng = np.random.default_rng(tid)
+        ns = rng.uniform(-noise, noise, len(frames))
+        return pd.DataFrame(
+            {
+                "TrajectoryID": tid,
+                "FrameID": list(frames),
+                "X": [float(xs[f - 1]) + float(ns[i]) for i, f in enumerate(frames)],
+                "Y": [0.0] * len(frames),
+                "Theta": [0.0] * len(frames),
+                "State": ["active"] * len(frames),
+            }
+        )
+
+    # Forward fragments (clean, no noise)
+    f1 = make_traj(0, range(1, 41))  # frames 1-40
+    f2 = make_traj(1, range(35, 81))  # frames 35-80 (overlaps F1)
+    # Backward: same animal, slight noise (all within agreement_distance=5)
+    b = make_traj(2, range(1, 81), noise=1.5)  # frames 1-80
+
+    forward = pd.concat([f1, f2], ignore_index=True)
+    backward = b.copy()
+    backward["TrajectoryID"] = 0
+
+    params = {
+        "AGREEMENT_DISTANCE": 5.0,
+        "MIN_OVERLAP_FRAMES": 5,
+        "MIN_TRAJECTORY_LENGTH": 5,
+    }
+    actual = run_resolve_trajectories(
+        {"forward": forward, "backward": backward}, params
+    )
+
+    assert not actual.empty
+    n_traj = actual["TrajectoryID"].nunique()
+    assert n_traj == 1, (
+        f"Expected 1 trajectory after merge absorbs the unmerged duplicate, got {n_traj}. "
+        "A final redundancy-removal pass is needed after merging/stitching."
+    )
+
+
+def test_same_animal_not_double_represented_after_merge() -> None:
+    """
+    An animal tracked by both forward and backward passes should appear as exactly
+    ONE trajectory after merging, not two overlapping copies.
+
+    This can happen when an unmerged backward trajectory survives redundancy removal
+    (because it only agrees with the merged trajectory on ~60-65% of frames) and then
+    escapes _merge_overlapping_agreeing_trajectories too (because the passes noise makes
+    the ratio look borderline). A second redundancy-removal pass after all merging and
+    stitching catches these late-stage duplicates.
+    """
+    n = 60
+    # One animal moving right, tracked identically by both passes
+    # Add mild noise to backward so the two passes don't perfectly agree
+    rng = np.random.default_rng(42)
+    noise = rng.uniform(-1.5, 1.5, n)  # noise within agreement_distance=5
+
+    fwd = pd.DataFrame(
+        {
+            "TrajectoryID": 0,
+            "FrameID": list(range(1, n + 1)),
+            "X": [float(f) for f in range(1, n + 1)],
+            "Y": [0.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+    # Backward trajectory: same animal but slightly offset (< agreement_distance)
+    bwd = pd.DataFrame(
+        {
+            "TrajectoryID": 0,
+            "FrameID": list(range(1, n + 1)),
+            "X": [float(f) + float(noise[f - 1]) for f in range(1, n + 1)],
+            "Y": [0.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+
+    params = {
+        "AGREEMENT_DISTANCE": 5.0,
+        "MIN_OVERLAP_FRAMES": 5,
+        "MIN_TRAJECTORY_LENGTH": 5,
+    }
+    actual = run_resolve_trajectories({"forward": fwd, "backward": bwd}, params)
+
+    assert not actual.empty
+    n_traj = actual["TrajectoryID"].nunique()
+    assert n_traj == 1, (
+        f"Expected 1 trajectory (one animal, two consistent passes), got {n_traj}. "
+        "The same animal should not appear as multiple trajectories after merging."
+    )
