@@ -137,3 +137,71 @@ def test_merge_theta_avoids_orthogonal_artifact_for_pi_ambiguous_pairs() -> None
         np.abs(np.arctan2(np.sin(theta - np.pi), np.cos(theta - np.pi))),
     )
     assert float(np.max(dist_to_axis)) < 1e-6
+
+
+def test_different_animals_crossing_are_not_merged_into_one_trajectory() -> None:
+    """
+    Two animals crossing paths should remain as separate trajectories after merging.
+
+    Bug: _merge_overlapping_agreeing_trajectories only required `agreeing >= min_overlap`
+    (count), not a ratio. Two different animals that are briefly close (e.g. at a
+    crossing for 5+ frames) would be merged, producing a single trajectory that jumps
+    between both animals' positions.
+    """
+    n = 100
+    # Animal A moves right: x = 1..100, y = 0
+    fwd_a = pd.DataFrame(
+        {
+            "TrajectoryID": 0,
+            "FrameID": list(range(1, n + 1)),
+            "X": [float(f) for f in range(1, n + 1)],
+            "Y": [0.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+    bwd_a = fwd_a.copy()  # forward and backward agree perfectly for animal A
+
+    # Animal B moves left: x = 100..1, y = 0
+    fwd_b = pd.DataFrame(
+        {
+            "TrajectoryID": 1,
+            "FrameID": list(range(1, n + 1)),
+            "X": [float(n + 1 - f) for f in range(1, n + 1)],
+            "Y": [0.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+    bwd_b = fwd_b.copy()
+
+    forward = pd.concat([fwd_a, fwd_b], ignore_index=True)
+    backward = pd.concat([bwd_a, bwd_b], ignore_index=True)
+
+    params = {
+        "AGREEMENT_DISTANCE": 5.0,
+        "MIN_OVERLAP_FRAMES": 5,
+        "MIN_TRAJECTORY_LENGTH": 5,
+    }
+    actual = run_resolve_trajectories(
+        {"forward": forward, "backward": backward}, params
+    )
+
+    assert not actual.empty
+    n_traj = actual["TrajectoryID"].nunique()
+    assert n_traj == 2, (
+        f"Expected 2 trajectories (one per animal), got {n_traj}. "
+        "Different animals crossing paths should not be merged into one."
+    )
+
+    # Each trajectory should span all frames without large position jumps
+    for traj_id, group in actual.groupby("TrajectoryID"):
+        group = group.sort_values("FrameID")
+        x = group["X"].dropna().to_numpy(dtype=float)
+        if len(x) < 2:
+            continue
+        max_jump = float(np.max(np.abs(np.diff(x))))
+        assert max_jump <= 5.0, (
+            f"Trajectory {traj_id} has a jump of {max_jump:.1f} px — "
+            "indicates two animals' data were incorrectly merged."
+        )

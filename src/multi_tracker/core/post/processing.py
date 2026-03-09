@@ -1432,6 +1432,17 @@ def _merge_overlapping_agreeing_trajectories(
                 if agreeing < required_matches:
                     continue
 
+                # Require that a majority of the overlapping frames actually agree.
+                # Without this ratio check, two different animals that briefly pass
+                # near each other (e.g. at a crossing) accumulate enough agreeing
+                # frames to satisfy the count threshold, causing their trajectories
+                # to be incorrectly merged and producing visible position jumps.
+                # DetectionID evidence is strong enough to waive this ratio check.
+                if detection_id_matches < 2:
+                    agreement_ratio = agreeing / len(common_frames)
+                    if agreement_ratio < 0.5:
+                        continue
+
                 # Log if we found DetectionID matches
                 if detection_id_matches > 0:
                     logger.debug(
