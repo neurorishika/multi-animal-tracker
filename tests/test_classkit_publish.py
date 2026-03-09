@@ -49,15 +49,6 @@ def test_repo_dir_multihead_tiny(tmp_path):
     assert d == tmp_path / "tiny-classify" / "multihead" / "color2"
 
 
-def test_existing_headtail_roles_unchanged(tmp_path):
-    """Backwards compat: existing head-tail roles still map correctly."""
-    with patch(
-        "multi_tracker.training.model_publish.get_models_root", return_value=tmp_path
-    ):
-        d = _repo_dir_for_role(TrainingRole.HEADTAIL_YOLO)
-    assert d == tmp_path / "YOLO-classify" / "orientation"
-
-
 def test_publish_trained_model_includes_scheme_metadata(tmp_path):
     """publish_trained_model accepts and stores scheme_name, factor_index, factor_name."""
     import json
@@ -103,7 +94,7 @@ def test_publish_trained_model_includes_scheme_metadata(tmp_path):
 
 
 def test_task_usage_for_classify_roles():
-    """CLASSIFY_* roles must not fall through to the legacy 'headtail' usage_role."""
+    """CLASSIFY_* roles must resolve to explicit classify usage_role values."""
     from multi_tracker.training.model_publish import _task_usage_for_role
 
     assert _task_usage_for_role(TrainingRole.CLASSIFY_FLAT_YOLO) == (
@@ -122,6 +113,3 @@ def test_task_usage_for_classify_roles():
         "classify",
         "classify_tiny",
     )
-    # Legacy HEADTAIL roles still map to "headtail" for backwards compat
-    assert _task_usage_for_role(TrainingRole.HEADTAIL_YOLO) == ("classify", "headtail")
-    assert _task_usage_for_role(TrainingRole.HEADTAIL_TINY) == ("classify", "headtail")

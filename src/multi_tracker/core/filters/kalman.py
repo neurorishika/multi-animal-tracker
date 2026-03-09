@@ -56,6 +56,8 @@ def _predict_kernel(X, P, F, Q_base, q_long, q_lat):
 def _correct_kernel(X, P, H, R, identity_mat, track_idx, measurement, max_velocity):
     """
     Corrects state using Joseph Form for stability and circular angle logic.
+    Uses K_eff (effective gain) when innovation is clipped so that the
+    covariance update remains consistent with the actually-applied correction.
     """
     x = X[track_idx].reshape(5, 1)
     p = P[track_idx]
@@ -65,33 +67,54 @@ def _correct_kernel(X, P, H, R, identity_mat, track_idx, measurement, max_veloci
     y = z - (H @ x)
 
     # --- Circular Angle Wrap ---
-    # Ensures a turn from 359 deg to 1 deg is seen as 2 deg, not -358 deg
     if y[2, 0] > np.pi:
         y[2, 0] -= 2 * np.pi
     elif y[2, 0] < -np.pi:
         y[2, 0] += 2 * np.pi
 
-    # Innovation Covariance
+    # Innovation Covariance & Kalman Gain (computed before any clipping)
     S = (H @ p @ H.T) + R
-
-    # Kalman Gain
     K = p @ H.T @ np.linalg.inv(S)
 
-    # Update State
+    # --- Innovation Clipping ---
+    # Cap position innovation to max_velocity.  Build K_eff by scaling the
+    # position-measurement columns of K so the Joseph-form covariance update
+    # stays consistent with the correction actually applied.
+    pos_innov_sq = y[0, 0] ** 2 + y[1, 0] ** 2
+    clip_scale = 1.0
+    if pos_innov_sq > max_velocity**2:
+        clip_scale = max_velocity / np.sqrt(pos_innov_sq)
+        y[0, 0] *= clip_scale
+        y[1, 0] *= clip_scale
+
+    K_eff = K.copy()
+    if clip_scale < 1.0:
+        for row_i in range(5):
+            K_eff[row_i, 0] *= clip_scale
+            K_eff[row_i, 1] *= clip_scale
+
+    # Update State (K @ y_clipped == K_eff @ y_orig)
     X[track_idx] = (x + (K @ y)).flatten()
 
     # Apply velocity constraint after correction
     vx, vy = X[track_idx, 3], X[track_idx, 4]
     speed = np.sqrt(vx**2 + vy**2)
+    vel_scale = 1.0
     if speed > max_velocity:
-        scale = max_velocity / speed
-        X[track_idx, 3] *= scale
-        X[track_idx, 4] *= scale
+        vel_scale = max_velocity / speed
+        X[track_idx, 3] *= vel_scale
+        X[track_idx, 4] *= vel_scale
 
-    # Joseph Form Covariance Update: P = (I-KH)P(I-KH)^T + KRK^T
-    # Guarantees P remains positive-definite
-    IKH = identity_mat - (K @ H)
-    P[track_idx] = (IKH @ p @ IKH.T) + (K @ R @ K.T)
+    # Joseph Form Covariance Update using K_eff: consistent with clipped correction
+    IKH = identity_mat - (K_eff @ H)
+    P[track_idx] = (IKH @ p @ IKH.T) + (K_eff @ R @ K_eff.T)
+
+    # Propagate velocity cap through P: D P D.T where D=diag(1,1,1,vs,vs)
+    if vel_scale < 1.0:
+        P[track_idx, 3, :] *= vel_scale
+        P[track_idx, 4, :] *= vel_scale
+        P[track_idx, :, 3] *= vel_scale
+        P[track_idx, :, 4] *= vel_scale
 
     return X, P
 
@@ -173,10 +196,11 @@ class KalmanFilterManager:
         # 5. Transition Matrix F with Friction (Damping)
         # Prevents overshoot when an animal stops suddenly
         damp = float(params.get("KALMAN_DAMPING", 0.95))
+        # x_new = x + vx (full step), vx_new = damp * vx (friction only on velocity)
         self.F = np.array(
             [
-                [1, 0, 0, damp, 0],
-                [0, 1, 0, 0, damp],
+                [1, 0, 0, 1.0, 0],
+                [0, 1, 0, 0, 1.0],
                 [0, 0, 1, 0, 0],
                 [0, 0, 0, damp, 0],
                 [0, 0, 0, 0, damp],
@@ -255,19 +279,26 @@ class KalmanFilterManager:
                     + (1.0 - self.initial_velocity_retention) * age_ratio
                 )
 
-                # Damp velocity estimates
-                self.X[i, 3] *= velocity_retention  # vx
-                self.X[i, 4] *= velocity_retention  # vy
+                # Damp velocity estimates; propagate through P: D P D.T where D=diag(1,1,1,vr,vr)
+                vr = velocity_retention
+                self.X[i, 3] *= vr  # vx
+                self.X[i, 4] *= vr  # vy
+                self.P[i, 3, :] *= vr
+                self.P[i, 4, :] *= vr
+                self.P[i, :, 3] *= vr
+                self.P[i, :, 4] *= vr
 
-            # Apply maximum velocity constraint
-            # This prevents unrealistic predictions during occlusions or poor measurements
+            # Apply maximum velocity constraint; propagate through P.
             vx, vy = self.X[i, 3], self.X[i, 4]
             speed = np.sqrt(vx**2 + vy**2)
             if speed > self.max_velocity:
-                # Scale down velocity while preserving direction
                 scale = self.max_velocity / speed
                 self.X[i, 3] *= scale
                 self.X[i, 4] *= scale
+                self.P[i, 3, :] *= scale
+                self.P[i, 4, :] *= scale
+                self.P[i, :, 3] *= scale
+                self.P[i, :, 4] *= scale
 
         return self.X[:, :3].copy()
 
@@ -300,18 +331,31 @@ class KalmanFilterManager:
                 y[2, 0] += 2 * np.pi
             S = self.H @ p @ self.H.T + self.R
             K = p @ self.H.T @ np.linalg.inv(S)
+            # Innovation clipping with K_eff for consistent covariance update
+            pos_innov_sq = float(y[0, 0] ** 2 + y[1, 0] ** 2)
+            clip_scale = 1.0
+            if pos_innov_sq > self.max_velocity**2:
+                clip_scale = self.max_velocity / np.sqrt(pos_innov_sq)
+                y[0, 0] *= clip_scale
+                y[1, 0] *= clip_scale
+            K_eff = K.copy()
+            if clip_scale < 1.0:
+                K_eff[:, 0] *= clip_scale
+                K_eff[:, 1] *= clip_scale
             self.X[track_idx] = (x + (K @ y)).flatten()
-            IKH = self.identity_mat - (K @ self.H)
-            self.P[track_idx] = IKH @ p @ IKH.T + (K @ self.R @ K.T)
-
-            # Apply velocity constraint after correction
-            # This prevents the filter from learning unrealistic velocities from noisy measurements
+            IKH = self.identity_mat - (K_eff @ self.H)
+            self.P[track_idx] = IKH @ p @ IKH.T + (K_eff @ self.R @ K_eff.T)
+            # Velocity constraint + covariance propagation
             vx, vy = self.X[track_idx, 3], self.X[track_idx, 4]
             speed = np.sqrt(vx**2 + vy**2)
             if speed > self.max_velocity:
-                scale = self.max_velocity / speed
-                self.X[track_idx, 3] *= scale
-                self.X[track_idx, 4] *= scale
+                vel_scale = self.max_velocity / speed
+                self.X[track_idx, 3] *= vel_scale
+                self.X[track_idx, 4] *= vel_scale
+                self.P[track_idx, 3, :] *= vel_scale
+                self.P[track_idx, 4, :] *= vel_scale
+                self.P[track_idx, :, 3] *= vel_scale
+                self.P[track_idx, :, 4] *= vel_scale
 
         # Increment track age after successful update
         self.track_ages[track_idx] += 1

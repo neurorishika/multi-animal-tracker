@@ -12,6 +12,8 @@ from PySide6.QtCore import QEvent, QSize, Qt, QThreadPool, QTimer, Slot
 from PySide6.QtGui import QAction, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -36,6 +38,8 @@ from PySide6.QtWidgets import (
 )
 
 from multi_tracker.core.canonicalization import MatMetadataCanonicalizer
+
+from .color_utils import best_text_color, build_category_color_map, to_hex
 
 
 class MainWindow(QMainWindow):
@@ -83,7 +87,9 @@ class MainWindow(QMainWindow):
         self._model_probs = None  # (N, C) per-image class probabilities
         self._model_class_names = None  # class names from (YOLO/tiny) model
         self.umap_model_coords = None  # UMAP computed in model logits space
+        self.pca_model_coords = None  # PCA computed in model logits/probability space
         self._show_model_umap = False  # Explorer toggle: embedding vs model UMAP
+        self._show_model_pca = False  # Explorer toggle: embedding vs model PCA
         self._al_candidates = None  # np.ndarray of selected AL batch indices
         self._yolo_canonicalize_mat = (
             False  # Whether loaded model was trained on canonical views
@@ -92,7 +98,8 @@ class MainWindow(QMainWindow):
         self._current_knn_neighbors = []
         self._stepper = None
         self._custom_shortcuts: dict = {}  # action_name → key sequence string
-        self._canonicalize_enabled = False
+        self._canonicalize_enabled = True
+        self._outline_threshold = 0.60
 
         # Display enhancement settings (sync with PoseKit)
         self.clahe_clip = 2.0
@@ -154,7 +161,7 @@ class MainWindow(QMainWindow):
             QWidget {
                 background-color: #1e1e1e;
                 color: #e0e0e0;
-                font-family: "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+                font-family: "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
                 font-size: 11px;
             }
             QListWidget {
@@ -329,24 +336,13 @@ class MainWindow(QMainWindow):
         load_checkpoint_action.triggered.connect(self.load_classifier_checkpoint)
         compute_menu.addAction(load_checkpoint_action)
 
-        predict_unlabeled_action = QAction("Predict &Unlabeled...", self)
-        predict_unlabeled_action.triggered.connect(self.predict_unlabeled_images)
-        compute_menu.addAction(predict_unlabeled_action)
-
-        model_history_action = QAction("&Model History...", self)
+        model_history_action = QAction("&Previously Trained Models...", self)
         model_history_action.setShortcut("Ctrl+Shift+H")
         model_history_action.setStatusTip(
             "Browse and load past trained models registered in this project"
         )
         model_history_action.triggered.connect(self._open_model_history)
         compute_menu.addAction(model_history_action)
-
-        compute_menu.addSeparator()
-
-        replot_model_action = QAction("Replot UMAP (&Model Space)...", self)
-        replot_model_action.setShortcut("Ctrl+Shift+M")
-        replot_model_action.triggered.connect(self._replot_umap_model_space)
-        compute_menu.addAction(replot_model_action)
 
         build_al_action = QAction("Build Active &Learning Batch...", self)
         build_al_action.setShortcut("Ctrl+Shift+B")
@@ -366,7 +362,7 @@ class MainWindow(QMainWindow):
         self.act_canonicalize = QAction("Canonical &View (MAT Metadata)", self)
         self.act_canonicalize.setShortcut("Ctrl+Shift+C")
         self.act_canonicalize.setCheckable(True)
-        self.act_canonicalize.setChecked(False)
+        self.act_canonicalize.setChecked(True)
         self.act_canonicalize.setStatusTip(
             "Toggle canonical (rotation-corrected) image display in the preview panel"
         )
@@ -439,11 +435,6 @@ class MainWindow(QMainWindow):
         cluster_btn.triggered.connect(self.cluster_data)
         toolbar.addAction(cluster_btn)
 
-        umap_btn = QAction("UMAP", self)
-        umap_btn.setStatusTip("Compute UMAP projection")
-        umap_btn.triggered.connect(self.compute_umap)
-        toolbar.addAction(umap_btn)
-
         toolbar.addSeparator()
 
         # Training section
@@ -452,22 +443,7 @@ class MainWindow(QMainWindow):
         train_btn.triggered.connect(self.train_classifier)
         toolbar.addAction(train_btn)
 
-        load_ckpt_btn = QAction("Load Ckpt", self)
-        load_ckpt_btn.setStatusTip("Load a classifier checkpoint")
-        load_ckpt_btn.triggered.connect(self.load_classifier_checkpoint)
-        toolbar.addAction(load_ckpt_btn)
-
-        predict_btn = QAction("Predict", self)
-        predict_btn.setStatusTip("Predict labels for unlabeled images")
-        predict_btn.triggered.connect(self.predict_unlabeled_images)
-        toolbar.addAction(predict_btn)
-
-        replot_btn = QAction("Model UMAP", self)
-        replot_btn.setStatusTip("Replot UMAP in trained model logits space")
-        replot_btn.triggered.connect(self._replot_umap_model_space)
-        toolbar.addAction(replot_btn)
-
-        history_btn = QAction("History", self)
+        history_btn = QAction("Previously Trained Models", self)
         history_btn.setStatusTip("Browse and load past trained models")
         history_btn.triggered.connect(self._open_model_history)
         toolbar.addAction(history_btn)
@@ -629,6 +605,7 @@ class MainWindow(QMainWindow):
         explorer_layout.setSpacing(8)
 
         self.explorer = ExplorerView()
+        self.explorer.set_uncertainty_outline_threshold(self._outline_threshold)
         self.explorer.point_clicked.connect(self.on_explorer_point_clicked)
         self.explorer.point_hovered.connect(self.on_explorer_point_hovered)
         self.explorer.empty_double_clicked.connect(
@@ -645,18 +622,36 @@ class MainWindow(QMainWindow):
         self.btn_umap_embedding.setCheckable(True)
         self.btn_umap_embedding.setChecked(True)
         self.btn_umap_embedding.setFixedWidth(110)
-        self.btn_umap_embedding.clicked.connect(lambda: self._switch_umap_view(False))
+        self.btn_umap_embedding.clicked.connect(
+            lambda: self._switch_projection_space("embedding")
+        )
         umap_toggle_row.addWidget(self.btn_umap_embedding)
-        self.btn_umap_model = QPushButton("Model Logits")
+        self.btn_umap_model = QPushButton("Model UMAP")
         self.btn_umap_model.setCheckable(True)
         self.btn_umap_model.setChecked(False)
         self.btn_umap_model.setEnabled(False)
         self.btn_umap_model.setFixedWidth(110)
         self.btn_umap_model.setToolTip(
-            "Switch explorer to UMAP of trained model predictions (run 'Model UMAP' first)"
+            "Switch explorer to UMAP of trained model predictions (computed automatically after checkpoint load)"
         )
-        self.btn_umap_model.clicked.connect(lambda: self._switch_umap_view(True))
+        self.btn_umap_model.clicked.connect(
+            lambda: self._switch_projection_space("model_umap")
+        )
         umap_toggle_row.addWidget(self.btn_umap_model)
+
+        self.btn_pca_model = QPushButton("Model PCA")
+        self.btn_pca_model.setCheckable(True)
+        self.btn_pca_model.setChecked(False)
+        self.btn_pca_model.setEnabled(False)
+        self.btn_pca_model.setFixedWidth(110)
+        self.btn_pca_model.setToolTip(
+            "Switch explorer to PCA of model predictions (computed on demand)"
+        )
+        self.btn_pca_model.clicked.connect(
+            lambda: self._switch_projection_space("model_pca")
+        )
+        umap_toggle_row.addWidget(self.btn_pca_model)
+
         umap_toggle_row.addStretch(1)
         explorer_layout.addLayout(umap_toggle_row)
 
@@ -690,10 +685,29 @@ class MainWindow(QMainWindow):
         self.mode_toggle_lbl = QLabel("Mode:")
         self.label_controls_row.addWidget(self.mode_toggle_lbl)
 
-        self.btn_toggle_mode = QPushButton("Explore")
-        self.btn_toggle_mode.setFixedWidth(100)
-        self.btn_toggle_mode.clicked.connect(self.toggle_explorer_mode)
-        self.label_controls_row.addWidget(self.btn_toggle_mode)
+        self.view_mode_combo = QComboBox()
+        self.view_mode_combo.addItem("Explore (clusters)", "explore")
+        self.view_mode_combo.addItem("Labeling (labels)", "labeling")
+        self.view_mode_combo.addItem("Predictions", "predictions")
+        self.view_mode_combo.currentIndexChanged.connect(self.on_view_mode_changed)
+        self.label_controls_row.addWidget(self.view_mode_combo)
+
+        self.label_controls_row.addSpacing(8)
+        self.label_controls_row.addWidget(QLabel("Outline <"))
+        self.outline_threshold_spin = QDoubleSpinBox()
+        self.outline_threshold_spin.setRange(0.0, 1.0)
+        self.outline_threshold_spin.setSingleStep(0.05)
+        self.outline_threshold_spin.setDecimals(2)
+        self.outline_threshold_spin.setValue(self._outline_threshold)
+        self.outline_threshold_spin.setFixedWidth(72)
+        self.outline_threshold_spin.setToolTip(
+            "Confidence threshold for white uncertainty outlines in Explorer mode.\n"
+            "Set to 0 to disable uncertainty outlines."
+        )
+        self.outline_threshold_spin.valueChanged.connect(
+            self.on_outline_threshold_changed
+        )
+        self.label_controls_row.addWidget(self.outline_threshold_spin)
 
         explorer_layout.addLayout(self.label_controls_row)
 
@@ -881,7 +895,7 @@ class MainWindow(QMainWindow):
             "Matches the orientation used when 'Canonicalize' is enabled in embedding computation."
         )
         self.cb_canonicalize.setStyleSheet("color: #cccccc;")
-        self.cb_canonicalize.setChecked(False)
+        self.cb_canonicalize.setChecked(True)
         self.cb_canonicalize.toggled.connect(self._toggle_canonicalize)
         canon_row.addWidget(self.cb_canonicalize)
         canon_row.addStretch()
@@ -1161,7 +1175,9 @@ class MainWindow(QMainWindow):
             f"<b>Clusters:</b> {n_clusters if n_clusters else 'not clustered'}<br>"
         )
         info_html += f"<b>UMAP:</b> {'ready' if self.umap_coords is not None else 'not computed'}<br>"
-        info_html += f"<b>Current Mode:</b> {'Explore' if self.explorer_mode == 'explore' else 'Labeling'}<br>"
+        info_html += (
+            f"<b>Current Mode:</b> {self._mode_display_name(self.explorer_mode)}<br>"
+        )
         info_html += (
             f"<b>Candidate Set:</b> {len(self.candidate_indices)} points"
             if self.candidate_indices
@@ -1386,12 +1402,15 @@ class MainWindow(QMainWindow):
                         self.image_confidences = list(
                             self._model_probs.max(axis=1).astype(float)
                         )
-                        self.btn_umap_model.setEnabled(True)
+                        self._set_model_projection_buttons_enabled(True)
                         self._update_al_status()
                         # Also restore model-space UMAP if available
                         cached_mumap = db.get_most_recent_umap_cache(kind="model")
                         if cached_mumap:
                             self.umap_model_coords = cached_mumap["coords"]
+                        cached_mpca = db.get_most_recent_umap_cache(kind="model_pca")
+                        if cached_mpca:
+                            self.pca_model_coords = cached_mpca["coords"]
                     elif self._ask_yes_no(
                         "Load Trained YOLO Model",
                         f"A published YOLO classifier was found.\n"
@@ -1442,11 +1461,14 @@ class MainWindow(QMainWindow):
                         self.image_confidences = list(
                             self._model_probs.max(axis=1).astype(float)
                         )
-                        self.btn_umap_model.setEnabled(True)
+                        self._set_model_projection_buttons_enabled(True)
                         self._update_al_status()
                         cached_mumap = _db2.get_most_recent_umap_cache(kind="model")
                         if cached_mumap:
                             self.umap_model_coords = cached_mumap["coords"]
+                        cached_mpca = _db2.get_most_recent_umap_cache(kind="model_pca")
+                        if cached_mpca:
+                            self.pca_model_coords = cached_mpca["coords"]
                     else:
                         _recent = _db2.get_most_recent_model_cache()
                         if _recent and self._ask_yes_no(
@@ -1543,6 +1565,13 @@ class MainWindow(QMainWindow):
         label_shortcut.setAutoRepeat(False)
         label_shortcut.activated.connect(lambda: self.set_explorer_mode("labeling"))
         self._label_shortcuts.append(label_shortcut)
+
+        prediction_shortcut = QShortcut(_key("Predictions mode"), self)
+        prediction_shortcut.setAutoRepeat(False)
+        prediction_shortcut.activated.connect(
+            lambda: self.set_explorer_mode("predictions")
+        )
+        self._label_shortcuts.append(prediction_shortcut)
 
         sample_shortcut = QShortcut(_key("Sample next candidates"), self)
         sample_shortcut.setAutoRepeat(False)
@@ -1954,6 +1983,8 @@ class MainWindow(QMainWindow):
         else:
             # Single-factor or free-form: flat buttons
             self._stepper = None
+            class_color_map = build_category_color_map([*self.classes, "unknown"])
+
             # Use all project classes, not just first 9
             for i, class_name in enumerate(self.classes):
                 # Determine display shortcut
@@ -1963,7 +1994,17 @@ class MainWindow(QMainWindow):
 
                 btn_text = f"[{shortcut}] {class_name}" if shortcut else class_name
                 button = QPushButton(btn_text)
-                button.setStyleSheet("text-align: left; padding: 4px;")
+                bg = class_color_map.get(class_name)
+                if bg is None:
+                    bg = class_color_map.get(str(class_name), None)
+                if bg is None:
+                    bg = class_color_map.get("unknown")
+                fg = best_text_color(bg)
+                button.setStyleSheet(
+                    "text-align: left; padding: 4px; "
+                    f"background-color: {to_hex(bg)}; color: {to_hex(fg)};"
+                    "border: 1px solid #2f2f2f;"
+                )
                 button.clicked.connect(
                     lambda checked=False, c=class_name: self.assign_label_to_selected(c)
                 )
@@ -1977,7 +2018,13 @@ class MainWindow(QMainWindow):
             # Always add 'unknown' button at the end
             unknown_shortcut = "0"
             unknown_btn = QPushButton(f"[{unknown_shortcut}] unknown")
-            unknown_btn.setStyleSheet("text-align: left; padding: 4px; color: #aaa;")
+            unknown_bg = class_color_map.get("unknown")
+            unknown_fg = best_text_color(unknown_bg)
+            unknown_btn.setStyleSheet(
+                "text-align: left; padding: 4px; "
+                f"background-color: {to_hex(unknown_bg)}; color: {to_hex(unknown_fg)};"
+                "border: 1px solid #2f2f2f;"
+            )
             unknown_btn.clicked.connect(
                 lambda checked=False: self.assign_label_to_selected("unknown")
             )
@@ -2003,20 +2050,50 @@ class MainWindow(QMainWindow):
                 if class_name:
                     widget.setVisible(text in class_name.lower())
 
-    def set_explorer_mode(self, mode: str):
-        """Set explorer mode to explore or labeling."""
-        if mode not in {"explore", "labeling"}:
-            return
-        self.explorer_mode = mode
+    @staticmethod
+    def _mode_display_name(mode: str) -> str:
+        return {
+            "explore": "Explore",
+            "labeling": "Labeling",
+            "predictions": "Predictions",
+        }.get(str(mode), str(mode))
 
-        # Update toggle button if exists
-        if hasattr(self, "btn_toggle_mode"):
-            self.btn_toggle_mode.setText("Explore" if mode == "explore" else "Labeling")
-            self.btn_toggle_mode.setStyleSheet(
-                "background: #3e3e42; font-weight: bold;"
-                if mode == "explore"
-                else "background: #0e639c; font-weight: bold;"
+    def _prediction_labels_for_plot(self) -> list:
+        """Return per-image predicted class labels for prediction-colored explorer mode."""
+        if self._model_probs is None:
+            return [None] * len(self.image_paths)
+
+        probs = np.asarray(self._model_probs)
+        if probs.ndim != 2:
+            return [None] * len(self.image_paths)
+
+        num_images = len(self.image_paths)
+        out = [None] * num_images
+        eval_n = min(num_images, probs.shape[0])
+
+        names = list(self._model_class_names or [])
+        for i in range(eval_n):
+            pred_idx = int(np.argmax(probs[i]))
+            if 0 <= pred_idx < len(names):
+                out[i] = names[pred_idx]
+            else:
+                out[i] = f"pred_{pred_idx}"
+        return out
+
+    def set_explorer_mode(self, mode: str):
+        """Set explorer mode to cluster, labeling, or prediction coloring."""
+        if mode not in {"explore", "labeling", "predictions"}:
+            return
+
+        if mode == "predictions" and self._model_probs is None:
+            QMessageBox.information(
+                self,
+                "Predictions Unavailable",
+                "Load a checkpoint first. Predictions and model-space UMAP are computed automatically on load.",
             )
+            return
+
+        self.explorer_mode = mode
 
         # Label assignment is only allowed in labeling mode.
         labels_enabled = mode == "labeling"
@@ -2035,18 +2112,31 @@ class MainWindow(QMainWindow):
         self.request_update_explorer_plot()
         self.update_knn_panel(self.selected_point_index)
         self.update_context_panel()
-        self.status.showMessage(
-            f"Mode: {'Explore' if mode == 'explore' else 'Labeling'}"
-        )
+        self.status.showMessage(f"Mode: {self._mode_display_name(mode)}")
 
     def on_view_mode_changed(self, index):
         """Handle mode selection from combo box."""
         mode = self.view_mode_combo.itemData(index)
         self.set_explorer_mode(mode)
 
+    def on_outline_threshold_changed(self, value: float) -> None:
+        """Apply uncertainty outline threshold used by Explorer point styling."""
+        self._outline_threshold = float(value)
+        if hasattr(self, "explorer") and self.explorer is not None:
+            self.explorer.set_uncertainty_outline_threshold(self._outline_threshold)
+            self.request_update_explorer_plot()
+        self.status.showMessage(
+            f"Uncertainty outline threshold: {self._outline_threshold:.2f}"
+        )
+
     def toggle_explorer_mode(self):
-        """Toggle between explore and labeling modes."""
-        new_mode = "labeling" if self.explorer_mode == "explore" else "explore"
+        """Cycle explore -> labeling -> predictions -> explore."""
+        cycle = ["explore", "labeling", "predictions"]
+        try:
+            idx = cycle.index(self.explorer_mode)
+        except ValueError:
+            idx = 0
+        new_mode = cycle[(idx + 1) % len(cycle)]
         self.set_explorer_mode(new_mode)
 
     def on_sample_next_triggered(self):
@@ -2365,7 +2455,9 @@ class MainWindow(QMainWindow):
         if not self._begin_command():
             return
         if self.explorer_mode != "labeling":
-            self.status.showMessage("Label assignment is disabled in Explore mode")
+            self.status.showMessage(
+                "Label assignment is disabled outside Labeling mode"
+            )
             self._end_command(0.08)
             return
 
@@ -2403,8 +2495,15 @@ class MainWindow(QMainWindow):
 
             # Drop from candidate list once labeled
             self.candidate_indices = [i for i in self.candidate_indices if i != index]
-            if self.candidate_indices:
-                self.selected_point_index = self.candidate_indices[0]
+            labels = self.image_labels or []
+            next_unlabeled = None
+            for i in self.candidate_indices:
+                if i >= len(labels) or not labels[i]:
+                    next_unlabeled = i
+                    break
+
+            if next_unlabeled is not None:
+                self.selected_point_index = next_unlabeled
                 self.request_preview_for_index(
                     self.selected_point_index, source="next-unlabeled"
                 )
@@ -2423,6 +2522,8 @@ class MainWindow(QMainWindow):
 
         if next_action == "sample":
             QTimer.singleShot(0, self.sample_candidates_for_labeling)
+        elif next_action == "al":
+            QTimer.singleShot(0, self._build_al_batch)
         elif next_action == "train":
             QTimer.singleShot(0, self.train_classifier)
 
@@ -2433,9 +2534,10 @@ class MainWindow(QMainWindow):
         message.setWindowTitle("Labeling Set Complete")
         message.setText("All points in the current labeling set are labeled.")
         message.setInformativeText(
-            "Choose what to do next: sample another set per cluster or move on to training."
+            "Choose what to do next: sample more smart selections, build an Active Learning batch, or start training."
         )
         sample_btn = message.addButton("Sample Another Set", QMessageBox.AcceptRole)
+        al_btn = message.addButton("Build AL Batch", QMessageBox.ActionRole)
         train_btn = message.addButton("Train Classifier", QMessageBox.ActionRole)
         message.addButton(QMessageBox.Close)
         message.setDefaultButton(sample_btn)
@@ -2444,6 +2546,8 @@ class MainWindow(QMainWindow):
         clicked = message.clickedButton()
         if clicked == sample_btn:
             return "sample"
+        if clicked == al_btn:
+            return "al"
         if clicked == train_btn:
             return "train"
         return None
@@ -2454,20 +2558,29 @@ class MainWindow(QMainWindow):
             return
 
         # Choose which UMAP coordinates to display
-        coords = (
-            self.umap_model_coords
-            if (self._show_model_umap and self.umap_model_coords is not None)
-            else self.umap_coords
-        )
+        if self._show_model_umap and self.umap_model_coords is not None:
+            coords = self.umap_model_coords
+        elif self._show_model_pca and self.pca_model_coords is not None:
+            coords = self.pca_model_coords
+        else:
+            coords = self.umap_coords
         if coords is None:
             return
 
         if self.explorer_mode == "explore":
             color_values = self.cluster_assignments
             candidate_indices = []
-        else:
-            color_values = self.image_labels
+        elif self.explorer_mode == "labeling":
+            seeded_labels = list(self.image_labels or [])
+            seeded_labels.extend(list(self.classes or []))
+            seeded_labels.append("unknown")
+            color_values = seeded_labels
             candidate_indices = self.candidate_indices
+        else:
+            seeded_preds = self._prediction_labels_for_plot()
+            seeded_preds.extend(list(self._model_class_names or []))
+            color_values = seeded_preds
+            candidate_indices = []
 
         if not force_fit:
             if self.explorer.update_state(
@@ -2997,7 +3110,7 @@ class MainWindow(QMainWindow):
         lines = [
             "<div style='line-height:1.5; color:#bcbcbc;'>",
             "<b>Controls:</b><br>",
-            f"• <b>{active.get('Labeling mode', 'L')}</b> / <b>{active.get('Explore mode', 'E')}</b>: toggle modes<br>",
+            f"• <b>{active.get('Explore mode', 'E')}</b> / <b>{active.get('Labeling mode', 'L')}</b> / <b>{active.get('Predictions mode', 'P')}</b>: set mode<br>",
             f"• <b>{label_instr}</b>: assign class<br>",
             "• <b>0</b>: mark as unknown<br>",
             f"• <b>{active.get('Sample next candidates', 'Space')}</b>: sample candidates<br>",
@@ -3246,8 +3359,15 @@ class MainWindow(QMainWindow):
 
         from .dialogs import ClassKitTrainingDialog
 
+        project_class_choices = sorted(
+            {str(lbl).strip() for _, lbl in labeled_pairs if str(lbl).strip()}
+        )
+
         dialog = ClassKitTrainingDialog(
-            scheme=scheme, n_labeled=len(labeled_pairs), parent=self
+            scheme=scheme,
+            n_labeled=len(labeled_pairs),
+            class_choices=project_class_choices,
+            parent=self,
         )
 
         def _do_train():
@@ -3331,6 +3451,11 @@ class MainWindow(QMainWindow):
                         dropout=settings.get("tiny_dropout", 0.2),
                         input_width=settings.get("tiny_width", 128),
                         input_height=settings.get("tiny_height", 64),
+                        class_rebalance_mode=settings.get(
+                            "tiny_rebalance_mode", "none"
+                        ),
+                        class_rebalance_power=settings.get("tiny_rebalance_power", 1.0),
+                        label_smoothing=settings.get("tiny_label_smoothing", 0.0),
                     ),
                     device=settings.get("device", "cpu"),
                     training_space="canonical" if use_canonical else "original",
@@ -3388,16 +3513,22 @@ class MainWindow(QMainWindow):
                         ]
                         if artifact_paths:
                             all_classes = sorted(set(labels_str))
-                            best_acc = max(
-                                (r.get("best_val_acc", 0.0) or 0.0 for r in results),
-                                default=0.0,
-                            )
+                            acc_values = []
+                            for r in results:
+                                value = r.get("best_val_acc")
+                                if value is None:
+                                    continue
+                                try:
+                                    acc_values.append(float(value))
+                                except Exception:
+                                    continue
+                            best_acc = max(acc_values) if acc_values else None
                             _db.save_model_cache(
                                 mode=mode,
                                 artifact_paths=artifact_paths,
                                 class_names=all_classes,
                                 canonicalize_mat=use_canonical,
-                                best_val_acc=float(best_acc),
+                                best_val_acc=best_acc,
                                 num_classes=len(all_classes),
                             )
                     except Exception:
@@ -3790,11 +3921,20 @@ class MainWindow(QMainWindow):
                     probs = trainer.predict_proba(self.embeddings, calibrated=True)
                     self._model_probs = probs
                     self._model_class_names = list(self.classes)
+                    self.umap_model_coords = None
+                    self.pca_model_coords = None
+                    self._show_model_umap = False
+                    self._show_model_pca = False
+                    self.btn_umap_embedding.setChecked(True)
+                    self.btn_umap_model.setChecked(False)
+                    if hasattr(self, "btn_pca_model"):
+                        self.btn_pca_model.setChecked(False)
                     self.image_confidences = list(probs.max(axis=1).astype(float))
                     self.update_explorer_plot()
-                    self.btn_umap_model.setEnabled(True)
+                    self._set_model_projection_buttons_enabled(True)
                     self._update_al_status()
                     self._evaluate_model_on_labeled()
+                    QTimer.singleShot(100, self._replot_umap_model_space)
 
                 QMessageBox.information(
                     self, "Checkpoint Loaded", f"Loaded embedding head: {path.name}"
@@ -3840,12 +3980,13 @@ class MainWindow(QMainWindow):
                     path,
                     on_success=lambda r: (
                         self._evaluate_model_on_labeled(),
+                        QTimer.singleShot(100, self._replot_umap_model_space),
                         QMessageBox.information(
                             self,
                             "YOLO Model Loaded",
                             f"Loaded: {path.name}\n"
                             f"Inference on {len(self.image_paths):,} images complete.\n"
-                            "Metrics tab updated. Use 'Model UMAP' to replot.",
+                            "Metrics tab updated. Model UMAP is being computed automatically.",
                         ),
                     ),
                 )
@@ -3996,7 +4137,7 @@ class MainWindow(QMainWindow):
     def on_explorer_point_clicked(self, index):
         """Handle point click in explorer."""
         if self.explorer_mode != "labeling":
-            self.status.showMessage("Selection is disabled in Explore mode")
+            self.status.showMessage("Selection is disabled outside Labeling mode")
             return
         self.selected_point_index = index
         self.current_image_index = index
@@ -4042,8 +4183,12 @@ class MainWindow(QMainWindow):
                     # In labeling mode only advance to unlabeled candidates.
                     labels = self.image_labels or []
                     unlabeled = [i for i in pool if i >= len(labels) or not labels[i]]
+                    unlabeled_set = set(unlabeled)
                     if not unlabeled:
                         # All candidates are labeled — prompt for next action.
+                        self.selected_point_index = None
+                        self.hover_locked = False
+                        self.request_update_explorer_selection(None)
                         next_action = self._prompt_after_label_set_complete()
                     else:
                         # Find the next unlabeled item after the current position.
@@ -4055,11 +4200,16 @@ class MainWindow(QMainWindow):
                         candidate = None
                         for offset in range(1, len(pool) + 1):
                             idx = pool[(current_pos + offset) % len(pool)]
-                            if idx in unlabeled:
+                            if idx in unlabeled_set:
                                 candidate = idx
                                 break
                         if candidate is not None:
                             self.selected_point_index = candidate
+                        else:
+                            self.selected_point_index = None
+                            self.hover_locked = False
+                            self.request_update_explorer_selection(None)
+                            next_action = self._prompt_after_label_set_complete()
                         # else: all unlabeled already tried, handled by empty check above
                 else:
                     try:
@@ -4072,14 +4222,17 @@ class MainWindow(QMainWindow):
                 self.selected_point_index = min(
                     len(self.image_paths) - 1, (self.selected_point_index or 0) + 1
                 )
-            self.hover_locked = True
-            self.request_preview_for_index(self.selected_point_index, source="next")
-            self.request_update_explorer_selection(self.selected_point_index)
+            if self.selected_point_index is not None:
+                self.hover_locked = True
+                self.request_preview_for_index(self.selected_point_index, source="next")
+                self.request_update_explorer_selection(self.selected_point_index)
         finally:
             self._end_command(0.08)
 
         if next_action == "sample":
             QTimer.singleShot(0, self.sample_candidates_for_labeling)
+        elif next_action == "al":
+            QTimer.singleShot(0, self._build_al_batch)
         elif next_action == "train":
             QTimer.singleShot(0, self.train_classifier)
 
@@ -4087,6 +4240,7 @@ class MainWindow(QMainWindow):
         """Navigate to previous candidate or point."""
         if not self._begin_command():
             return
+        next_action = None
         try:
             if self.selected_point_index is None:
                 self.status.showMessage(
@@ -4096,12 +4250,41 @@ class MainWindow(QMainWindow):
 
             pool = self._get_navigation_pool()
             if pool:
-                try:
-                    current_pos = pool.index(self.selected_point_index)
-                    prev_pos = (current_pos - 1) % len(pool)
-                except ValueError:
-                    prev_pos = 0
-                self.selected_point_index = pool[prev_pos]
+                if self.explorer_mode == "labeling":
+                    # In labeling mode only move through unlabeled candidates.
+                    labels = self.image_labels or []
+                    unlabeled = [i for i in pool if i >= len(labels) or not labels[i]]
+                    unlabeled_set = set(unlabeled)
+                    if not unlabeled:
+                        self.selected_point_index = None
+                        self.hover_locked = False
+                        self.request_update_explorer_selection(None)
+                        next_action = self._prompt_after_label_set_complete()
+                    else:
+                        try:
+                            current_pos = pool.index(self.selected_point_index)
+                        except ValueError:
+                            current_pos = 0
+                        candidate = None
+                        for offset in range(1, len(pool) + 1):
+                            idx = pool[(current_pos - offset) % len(pool)]
+                            if idx in unlabeled_set:
+                                candidate = idx
+                                break
+                        if candidate is not None:
+                            self.selected_point_index = candidate
+                        else:
+                            self.selected_point_index = None
+                            self.hover_locked = False
+                            self.request_update_explorer_selection(None)
+                            next_action = self._prompt_after_label_set_complete()
+                else:
+                    try:
+                        current_pos = pool.index(self.selected_point_index)
+                        prev_pos = (current_pos - 1) % len(pool)
+                    except ValueError:
+                        prev_pos = 0
+                    self.selected_point_index = pool[prev_pos]
             else:
                 current = (
                     self.selected_point_index
@@ -4109,11 +4292,19 @@ class MainWindow(QMainWindow):
                     else 0
                 )
                 self.selected_point_index = max(0, current - 1)
-            self.hover_locked = True
-            self.request_preview_for_index(self.selected_point_index, source="prev")
-            self.request_update_explorer_selection(self.selected_point_index)
+            if self.selected_point_index is not None:
+                self.hover_locked = True
+                self.request_preview_for_index(self.selected_point_index, source="prev")
+                self.request_update_explorer_selection(self.selected_point_index)
         finally:
             self._end_command(0.08)
+
+        if next_action == "sample":
+            QTimer.singleShot(0, self.sample_candidates_for_labeling)
+        elif next_action == "al":
+            QTimer.singleShot(0, self._build_al_batch)
+        elif next_action == "train":
+            QTimer.singleShot(0, self.train_classifier)
 
     def refresh_view(self):
         """Refresh current view."""
@@ -4379,8 +4570,16 @@ class MainWindow(QMainWindow):
             probs = trainer.predict_proba(self.embeddings, calibrated=True)
             self._model_probs = probs
             self._model_class_names = list(self.classes)
+            self.umap_model_coords = None
+            self.pca_model_coords = None
+            self._show_model_umap = False
+            self._show_model_pca = False
+            self.btn_umap_embedding.setChecked(True)
+            self.btn_umap_model.setChecked(False)
+            if hasattr(self, "btn_pca_model"):
+                self.btn_pca_model.setChecked(False)
             self.image_confidences = list(probs.max(axis=1).astype(float))
-            self.btn_umap_model.setEnabled(True)
+            self._set_model_projection_buttons_enabled(True)
             self._update_al_status()
             self.update_explorer_plot()
 
@@ -4469,8 +4668,16 @@ class MainWindow(QMainWindow):
         def _inference_success(result):
             self._model_probs = result["probs"]
             self._model_class_names = result["class_names"]
+            self.umap_model_coords = None
+            self.pca_model_coords = None
+            self._show_model_umap = False
+            self._show_model_pca = False
+            self.btn_umap_embedding.setChecked(True)
+            self.btn_umap_model.setChecked(False)
+            if hasattr(self, "btn_pca_model"):
+                self.btn_pca_model.setChecked(False)
             self.image_confidences = list(self._model_probs.max(axis=1).astype(float))
-            self.btn_umap_model.setEnabled(True)
+            self._set_model_projection_buttons_enabled(True)
             self._update_al_status()
             self.update_explorer_plot()
             self.status.showMessage(
@@ -4499,7 +4706,9 @@ class MainWindow(QMainWindow):
         """Run TinyCNN inference on all images in background and update confidences."""
         if not self.image_paths:
             return
-        device = (self._last_training_settings or {}).get("device", "cpu")
+        compute_runtime = (self._last_training_settings or {}).get(
+            "compute_runtime", "cpu"
+        )
 
         from ..jobs.task_workers import TinyCNNInferenceWorker
 
@@ -4507,7 +4716,7 @@ class MainWindow(QMainWindow):
             model_path,
             self.image_paths,
             class_names,
-            device=device,
+            compute_runtime=compute_runtime,
             batch_size=64,
             canonicalize_mat=self._yolo_canonicalize_mat,
         )
@@ -4515,8 +4724,16 @@ class MainWindow(QMainWindow):
         def _tiny_success(result):
             self._model_probs = result["probs"]
             self._model_class_names = result["class_names"]
+            self.umap_model_coords = None
+            self.pca_model_coords = None
+            self._show_model_umap = False
+            self._show_model_pca = False
+            self.btn_umap_embedding.setChecked(True)
+            self.btn_umap_model.setChecked(False)
+            if hasattr(self, "btn_pca_model"):
+                self.btn_pca_model.setChecked(False)
             self.image_confidences = list(self._model_probs.max(axis=1).astype(float))
-            self.btn_umap_model.setEnabled(True)
+            self._set_model_projection_buttons_enabled(True)
             self._update_al_status()
             self.update_explorer_plot()
             self.status.showMessage(
@@ -4561,8 +4778,16 @@ class MainWindow(QMainWindow):
                 merged = {"probs": all_probs, "class_names": all_names}
                 self._model_probs = all_probs
                 self._model_class_names = all_names
+                self.umap_model_coords = None
+                self.pca_model_coords = None
+                self._show_model_umap = False
+                self._show_model_pca = False
+                self.btn_umap_embedding.setChecked(True)
+                self.btn_umap_model.setChecked(False)
+                if hasattr(self, "btn_pca_model"):
+                    self.btn_pca_model.setChecked(False)
                 self.image_confidences = list(all_probs.max(axis=1).astype(float))
-                self.btn_umap_model.setEnabled(True)
+                self._set_model_projection_buttons_enabled(True)
                 self._update_al_status()
                 self.update_explorer_plot()
                 self.status.showMessage(
@@ -4589,7 +4814,12 @@ class MainWindow(QMainWindow):
                 self, "No History", "No trained models found in project history yet."
             )
             return
-        dlg = ModelHistoryDialog(entries, project_path=self.project_path, parent=self)
+        dlg = ModelHistoryDialog(
+            entries,
+            project_path=self.project_path,
+            db_path=self.db_path,
+            parent=self,
+        )
         if dlg.exec() and dlg.selected_entry():
             self._load_model_from_cache_entry(dlg.selected_entry())
 
@@ -4646,13 +4876,31 @@ class MainWindow(QMainWindow):
             idx_arr = np.array(labeled_indices)[valid]
             y_true = y_true[valid]
 
-            # Map YOLO class names to our class indices for probs alignment
+            probs_rows = np.asarray(self._model_probs[idx_arr])
+
+            # Align model probability columns to project class order by name.
+            # Missing classes remain all-zero instead of throwing index errors.
             if self._model_class_names:
-                name_to_col = {n: i for i, n in enumerate(self._model_class_names)}
-                cols = [name_to_col.get(c, i) for i, c in enumerate(self.classes)]
-                probs_subset = self._model_probs[idx_arr][:, cols]
+                name_to_col = {
+                    str(name): i for i, name in enumerate(self._model_class_names)
+                }
+                probs_subset = np.zeros(
+                    (len(idx_arr), len(self.classes)), dtype=probs_rows.dtype
+                )
+                for target_col, class_name in enumerate(self.classes):
+                    source_col = name_to_col.get(str(class_name))
+                    if source_col is None:
+                        continue
+                    if 0 <= int(source_col) < probs_rows.shape[1]:
+                        probs_subset[:, target_col] = probs_rows[:, int(source_col)]
             else:
-                probs_subset = self._model_probs[idx_arr]
+                # Fallback when model classes are unknown: clamp width safely.
+                usable_cols = min(probs_rows.shape[1], len(self.classes))
+                probs_subset = np.zeros(
+                    (len(idx_arr), len(self.classes)), dtype=probs_rows.dtype
+                )
+                if usable_cols > 0:
+                    probs_subset[:, :usable_cols] = probs_rows[:, :usable_cols]
 
             y_pred = probs_subset.argmax(axis=1)
             metrics = compute_metrics(y_pred, y_true, class_names=self.classes)
@@ -4784,35 +5032,69 @@ class MainWindow(QMainWindow):
         except Exception as fig_exc:
             self.metrics_figure_label.setText(f"Figure error: {fig_exc}")
 
-    # ================== Model-Space UMAP ==================
+    # ================== Model-Space Projections ==================
 
-    def _switch_umap_view(self, use_model: bool):
-        """Toggle explorer between embedding UMAP and model-logits UMAP."""
-        if use_model and self.umap_model_coords is None:
+    def _set_model_projection_buttons_enabled(self, enabled: bool) -> None:
+        """Enable/disable model-space projection toggles together."""
+        self.btn_umap_model.setEnabled(enabled)
+        if hasattr(self, "btn_pca_model"):
+            self.btn_pca_model.setEnabled(enabled)
+
+    def _switch_projection_space(self, target: str) -> None:
+        """Switch explorer between embedding UMAP, model UMAP, and model PCA."""
+        target = str(target or "embedding")
+
+        if target == "model_umap" and self.umap_model_coords is None:
+            if self._model_probs is not None:
+                self._replot_umap_model_space(auto_switch=True)
+                return
             QMessageBox.information(
                 self,
                 "No Model UMAP",
-                "Load a model and run 'Model UMAP' (toolbar) or\n"
-                "Compute → Replot UMAP (Model Space) first.",
+                "Load a model checkpoint first. Model-space UMAP is computed automatically.",
             )
-            self.btn_umap_model.setChecked(False)
-            self.btn_umap_embedding.setChecked(True)
-            return
-        self._show_model_umap = use_model
-        self.btn_umap_model.setChecked(use_model)
-        self.btn_umap_embedding.setChecked(not use_model)
-        self.update_explorer_plot(force_fit=True)
-        label = "Model Logits" if use_model else "Embeddings"
-        self.status.showMessage(f"Explorer: UMAP space → {label}")
+            target = "embedding"
 
-    def _replot_umap_model_space(self):
+        if target == "model_pca" and self.pca_model_coords is None:
+            if self._model_probs is not None:
+                self._replot_pca_model_space(auto_switch=True)
+                return
+            QMessageBox.information(
+                self,
+                "No Model PCA",
+                "Load a model checkpoint first, then compute model-space PCA.",
+            )
+            target = "embedding"
+
+        self._show_model_umap = target == "model_umap"
+        self._show_model_pca = target == "model_pca"
+
+        self.btn_umap_embedding.setChecked(target == "embedding")
+        self.btn_umap_model.setChecked(target == "model_umap")
+        if hasattr(self, "btn_pca_model"):
+            self.btn_pca_model.setChecked(target == "model_pca")
+
+        self.update_explorer_plot(force_fit=True)
+
+        label = {
+            "embedding": "Embeddings (UMAP)",
+            "model_umap": "Model Logits (UMAP)",
+            "model_pca": "Model Logits (PCA)",
+        }.get(target, target)
+        self.status.showMessage(f"Explorer space → {label}")
+
+    def _switch_umap_view(self, use_model: bool):
+        """Backward-compatible wrapper for old callers."""
+        self._switch_projection_space("model_umap" if use_model else "embedding")
+
+    def _replot_umap_model_space(self, auto_switch: bool = True):
         """Compute UMAP from current model probabilities and switch explorer to it."""
         if self._model_probs is None:
             QMessageBox.warning(
                 self,
                 "No Model Predictions",
-                "Load a model first (toolbar 'Load Ckpt' or train one),\n"
-                "then 'Predict' or run YOLO inference before replotting.",
+                "Load a model first (Load Ckpt or train one).\n"
+                "Predictions are computed automatically during model load.",
             )
             return
 
@@ -4826,8 +5108,9 @@ class MainWindow(QMainWindow):
 
         def _on_model_umap_success(result):
             self.umap_model_coords = result["coords"]
-            self.btn_umap_model.setEnabled(True)
-            self._switch_umap_view(True)
+            self._set_model_projection_buttons_enabled(True)
+            if auto_switch:
+                self._switch_projection_space("model_umap")
             self.status.showMessage(
                 "Model-space UMAP ready — Explorer switched to model view"
             )
@@ -4862,6 +5145,57 @@ class MainWindow(QMainWindow):
         worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
         self._threadpool_start(worker)
         self.status.showMessage("Computing model-space UMAP…")
+        self.tabs.setCurrentIndex(0)
+
+    def _replot_pca_model_space(self, auto_switch: bool = True):
+        """Compute PCA from current model probabilities and optionally switch to it."""
+        if self._model_probs is None:
+            QMessageBox.warning(
+                self,
+                "No Model Predictions",
+                "Load a model first (Load Ckpt or train one).",
+            )
+            return
+
+        from ..jobs.task_workers import LogitsPCAWorker
+
+        worker = LogitsPCAWorker(self._model_probs)
+
+        def _on_model_pca_success(result):
+            self.pca_model_coords = result["coords"]
+            self._set_model_projection_buttons_enabled(True)
+            if auto_switch:
+                self._switch_projection_space("model_pca")
+            self.status.showMessage("Model-space PCA ready")
+
+            if self.db_path:
+                try:
+                    from ..store.db import ClassKitDB
+
+                    ClassKitDB(self.db_path).save_umap_cache(
+                        result["coords"],
+                        n_neighbors=2,
+                        min_dist=0.0,
+                        kind="model_pca",
+                    )
+                except Exception:
+                    pass
+
+        worker.signals.success.connect(_on_model_pca_success)
+        worker.signals.error.connect(
+            lambda e: QMessageBox.critical(self, "PCA Error", f"Model PCA failed:\n{e}")
+        )
+        worker.signals.progress.connect(
+            lambda p, m: (
+                self.progress_bar.setValue(p),
+                self.status.showMessage(f"[Model PCA] {m}") if m else None,
+            )
+        )
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
+        self._threadpool_start(worker)
+        self.status.showMessage("Computing model-space PCA…")
         self.tabs.setCurrentIndex(0)
 
     # ================== Active Learning Batch Builder ==================

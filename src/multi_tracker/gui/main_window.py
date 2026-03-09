@@ -14,7 +14,6 @@ import math
 import os
 import re
 import shutil
-import tempfile
 import time
 from collections import defaultdict
 from datetime import datetime
@@ -100,6 +99,19 @@ from ..utils.gpu_utils import (
     ROCM_AVAILABLE,
     TENSORRT_AVAILABLE,
     TORCH_CUDA_AVAILABLE,
+)
+from ..utils.pose_visualization import (
+    is_renderable_pose_keypoint,
+    normalize_pose_render_min_conf,
+)
+from ..utils.video_artifacts import (
+    build_detection_cache_path,
+    build_optimizer_detection_cache_path,
+    build_tracking_session_log_path,
+    candidate_artifact_base_dirs,
+    choose_writable_artifact_base_dir,
+    find_existing_detection_cache_path,
+    iter_detection_cache_candidates,
 )
 from .dialogs.parameter_helper import ParameterHelperDialog
 from .dialogs.train_yolo_dialog import TrainYoloDialog
@@ -1491,7 +1503,7 @@ def get_models_directory() -> object:
     """
     Get the path to the default YOLO OBB model repository.
 
-    Returns models/YOLO-obb (direct OBB models).
+    Returns models/obb (direct OBB models).
     Creates the directory if it doesn't exist.
     """
     return get_yolo_model_repository_directory(
@@ -1518,13 +1530,17 @@ def get_yolo_model_repository_directory(
     models_root = get_models_root_directory()
 
     if ur == "seq_detect" or tf == "detect":
-        repo_dir = os.path.join(models_root, "YOLO-detect")
+        repo_dir = os.path.join(models_root, "detection")
     elif ur == "seq_crop_obb":
-        repo_dir = os.path.join(models_root, "YOLO-obb", "cropped")
-    elif ur == "headtail" or tf == "classify":
-        repo_dir = os.path.join(models_root, "YOLO-classify", "orientation")
+        repo_dir = os.path.join(models_root, "obb", "cropped")
+    elif ur == "headtail":
+        # Parent dir; YOLO/ and tiny/ subdirs are resolved at import time.
+        repo_dir = os.path.join(models_root, "classification", "orientation")
+    elif ur == "colortag" or (tf == "classify" and ur not in ("headtail",)):
+        # Parent dir; YOLO/ and tiny/ subdirs are resolved at import time.
+        repo_dir = os.path.join(models_root, "classification", "colortag")
     else:
-        repo_dir = os.path.join(models_root, "YOLO-obb")
+        repo_dir = os.path.join(models_root, "obb")
 
     os.makedirs(repo_dir, exist_ok=True)
     return repo_dir
@@ -1535,19 +1551,23 @@ def get_pose_models_directory(backend: str | None = None) -> object:
     Get the local pose-model repository directory.
 
     Layout:
-      models/YOLO-pose/
-      models/SLEAP/
+      models/pose/YOLO/
+      models/pose/SLEAP/
+      models/pose/ViTPose/
     """
-    project_root = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    )
-    models_root = os.path.join(project_root, "models")
-    os.makedirs(models_root, exist_ok=True)
+    models_root = get_models_root_directory()
+    pose_root = os.path.join(models_root, "pose")
+    os.makedirs(pose_root, exist_ok=True)
     if not backend:
-        return models_root
+        return pose_root
     key = str(backend or "").strip().lower()
-    backend_dirname = "SLEAP" if key == "sleap" else "YOLO-pose"
-    backend_dir = os.path.join(models_root, backend_dirname)
+    if key == "sleap":
+        backend_dirname = "SLEAP"
+    elif key == "vitpose":
+        backend_dirname = "ViTPose"
+    else:
+        backend_dirname = "YOLO"
+    backend_dir = os.path.join(pose_root, backend_dirname)
     os.makedirs(backend_dir, exist_ok=True)
     return backend_dir
 
@@ -1561,17 +1581,10 @@ def resolve_pose_model_path(model_path: object, backend: str | None = None) -> o
     if os.path.isabs(path_str) and os.path.exists(path_str):
         return path_str
 
-    candidates = []
-    models_root = get_pose_models_directory()
-    candidates.append(os.path.join(models_root, path_str))
+    models_root = get_models_root_directory()
+    candidates = [os.path.join(models_root, path_str)]
     if backend:
         candidates.append(os.path.join(get_pose_models_directory(backend), path_str))
-    # Backward compatibility with older models/pose/{yolo,sleap} layout.
-    legacy_pose_root = os.path.join(models_root, "pose")
-    candidates.append(os.path.join(legacy_pose_root, path_str))
-    if backend:
-        legacy_backend = "sleap" if str(backend).strip().lower() == "sleap" else "yolo"
-        candidates.append(os.path.join(legacy_pose_root, legacy_backend, path_str))
     for candidate in candidates:
         if os.path.exists(candidate):
             return candidate
@@ -1585,9 +1598,9 @@ def make_pose_model_path_relative(model_path: object) -> object:
     """Convert absolute pose-model paths under models/ into relative paths."""
     if not model_path or not os.path.isabs(str(model_path)):
         return model_path
-    pose_root = get_pose_models_directory()
+    models_root = get_models_root_directory()
     try:
-        rel_path = os.path.relpath(str(model_path), pose_root)
+        rel_path = os.path.relpath(str(model_path), models_root)
         if not rel_path.startswith(".."):
             return rel_path
     except (ValueError, TypeError):
@@ -1617,39 +1630,10 @@ def resolve_model_path(model_path: object) -> object:
     if os.path.isabs(path_str) and os.path.exists(path_str):
         return path_str
 
-    candidates = []
     models_root = get_models_root_directory()
-    candidates.append(os.path.join(models_root, path_str))
-    # Backward-compatible default lookup under YOLO-obb root.
-    candidates.append(os.path.join(get_models_directory(), path_str))
-    # Role-specific repository lookups.
-    candidates.append(
-        os.path.join(
-            get_yolo_model_repository_directory(
-                task_family="detect", usage_role="seq_detect"
-            ),
-            path_str,
-        )
-    )
-    candidates.append(
-        os.path.join(
-            get_yolo_model_repository_directory(
-                task_family="obb", usage_role="seq_crop_obb"
-            ),
-            path_str,
-        )
-    )
-    candidates.append(
-        os.path.join(
-            get_yolo_model_repository_directory(
-                task_family="classify", usage_role="headtail"
-            ),
-            path_str,
-        )
-    )
-    for candidate in candidates:
-        if os.path.exists(candidate):
-            return candidate
+    candidate = os.path.join(models_root, path_str)
+    if os.path.exists(candidate):
+        return candidate
 
     # If relative path doesn't exist in models dir, try as-is
     if os.path.exists(path_str):
@@ -1674,19 +1658,9 @@ def make_model_path_relative(model_path: object) -> object:
     if not model_path or not os.path.isabs(model_path):
         return model_path
 
-    models_dir = get_models_directory()
     models_root = get_models_root_directory()
 
-    # Prefer legacy YOLO-obb-root relative paths for backward compatibility.
-    try:
-        rel_path = os.path.relpath(model_path, models_dir)
-        # If relpath doesn't start with .., it's inside models_dir
-        if not rel_path.startswith(".."):
-            return rel_path
-    except (ValueError, TypeError):
-        pass
-
-    # For role-specific repositories, store path relative to models/ root.
+    # Store path relative to models/ root (e.g. obb/model.pt, detection/model.pt).
     try:
         rel_path = os.path.relpath(model_path, models_root)
         if not rel_path.startswith(".."):
@@ -1719,16 +1693,6 @@ def _normalize_yolo_model_metadata(metadata: object) -> object:
     species = _sanitize_model_token(normalized.get("species", ""))
     model_info = _sanitize_model_token(normalized.get("model_info", ""))
 
-    # Legacy migration path: identifier/id -> species + model_info
-    legacy_identifier = normalized.get("identifier") or normalized.get("id") or ""
-    if (not species or not model_info) and legacy_identifier:
-        legacy_identifier = _sanitize_model_token(legacy_identifier)
-        parts = [p for p in legacy_identifier.split("_") if p]
-        if not species and parts:
-            species = parts[0]
-        if not model_info:
-            model_info = "_".join(parts[1:]) if len(parts) > 1 else "model"
-
     if species:
         normalized["species"] = species
     if model_info:
@@ -1744,10 +1708,6 @@ def _normalize_yolo_model_metadata(metadata: object) -> object:
         normalized["usage_role"] = usage_role
     else:
         normalized.pop("usage_role", None)
-
-    # Drop deprecated fields
-    normalized.pop("identifier", None)
-    normalized.pop("id", None)
     return normalized
 
 
@@ -1755,37 +1715,13 @@ def load_yolo_model_registry() -> object:
     """Load YOLO model metadata registry (path -> metadata)."""
     registry_path = get_yolo_model_registry_path()
     if not os.path.exists(registry_path):
-        legacy_path = os.path.join(get_models_directory(), "model_registry.json")
-        if os.path.exists(legacy_path):
-            try:
-                with open(legacy_path, "r") as f:
-                    legacy_data = json.load(f)
-                if isinstance(legacy_data, dict):
-                    save_yolo_model_registry(legacy_data)
-            except Exception:
-                pass
-        if not os.path.exists(registry_path):
-            return {}
+        return {}
     try:
         with open(registry_path, "r") as f:
             data = json.load(f)
         if not isinstance(data, dict):
             return {}
-
-        migrated = {}
-        changed = False
-        for k, v in data.items():
-            key = str(k)
-            norm = _normalize_yolo_model_metadata(v)
-            migrated[key] = norm
-            if norm != v:
-                changed = True
-
-        if changed:
-            save_yolo_model_registry(migrated)
-            logger.info("Migrated YOLO model registry to species/model_info schema")
-
-        return migrated
+        return {str(k): _normalize_yolo_model_metadata(v) for k, v in data.items()}
     except Exception as e:
         logger.warning(f"Failed to load YOLO model registry: {e}")
         return {}
@@ -1805,11 +1741,7 @@ def get_yolo_model_metadata(model_path: object) -> object:
     """Get metadata for a model path if registered."""
     rel_path = make_model_path_relative(model_path)
     registry = load_yolo_model_registry()
-    if rel_path in registry:
-        return _normalize_yolo_model_metadata(registry[rel_path])
-    # Backward compatibility: if absolute path was stored in older versions
-    abs_path = resolve_model_path(model_path)
-    return _normalize_yolo_model_metadata(registry.get(abs_path, {}))
+    return _normalize_yolo_model_metadata(registry.get(rel_path, {}))
 
 
 def register_yolo_model(model_path: object, metadata: object) -> object:
@@ -3630,34 +3562,12 @@ class MainWindow(QMainWindow):
         self.lbl_obb_mode_warning.setVisible(False)
         f_yolo.addRow("", self.lbl_obb_mode_warning)
 
-        self.yolo_direct_model_widget = QWidget()
-        vl_direct_model = QVBoxLayout(self.yolo_direct_model_widget)
-        vl_direct_model.setContentsMargins(0, 0, 0, 0)
-        vl_direct_model.setSpacing(4)
         self.combo_yolo_model = QComboBox()
         self._refresh_yolo_model_combo()
         self.combo_yolo_model.currentIndexChanged.connect(self.on_yolo_model_changed)
-        self.combo_yolo_model.setToolTip(
-            "Direct-mode YOLO OBB model.\n"
-            "Select 'Custom Model...' to import into models/YOLO-obb."
-        )
-        vl_direct_model.addWidget(self.combo_yolo_model)
-        self.yolo_custom_model_widget = QWidget()
-        h_cust = QHBoxLayout(self.yolo_custom_model_widget)
-        h_cust.setContentsMargins(0, 0, 0, 0)
-        self.yolo_custom_model_line = QLineEdit()
-        self.btn_yolo_custom_model = QPushButton("...")
-        self.btn_yolo_custom_model.clicked.connect(self.select_yolo_custom_model)
-        h_cust.addWidget(self.yolo_custom_model_line)
-        h_cust.addWidget(self.btn_yolo_custom_model)
-        self.yolo_custom_model_widget.setVisible(False)
-        vl_direct_model.addWidget(self.yolo_custom_model_widget)
-        f_yolo.addRow("Direct OBB model", self.yolo_direct_model_widget)
+        self.combo_yolo_model.setToolTip("Direct-mode YOLO OBB model.")
+        f_yolo.addRow("Direct OBB model", self.combo_yolo_model)
 
-        self.yolo_detect_model_widget = QWidget()
-        vl_detect_model = QVBoxLayout(self.yolo_detect_model_widget)
-        vl_detect_model.setContentsMargins(0, 0, 0, 0)
-        vl_detect_model.setSpacing(4)
         self.combo_yolo_detect_model = QComboBox()
         self._refresh_yolo_detect_model_combo()
         self.combo_yolo_detect_model.currentIndexChanged.connect(
@@ -3666,25 +3576,8 @@ class MainWindow(QMainWindow):
         self.combo_yolo_detect_model.setToolTip(
             "Sequential stage-1 model (axis-aligned detect)."
         )
-        vl_detect_model.addWidget(self.combo_yolo_detect_model)
-        self.yolo_detect_custom_model_widget = QWidget()
-        h_detect_cust = QHBoxLayout(self.yolo_detect_custom_model_widget)
-        h_detect_cust.setContentsMargins(0, 0, 0, 0)
-        self.yolo_detect_custom_model_line = QLineEdit()
-        self.btn_yolo_detect_custom_model = QPushButton("...")
-        self.btn_yolo_detect_custom_model.clicked.connect(
-            self.select_yolo_detect_custom_model
-        )
-        h_detect_cust.addWidget(self.yolo_detect_custom_model_line)
-        h_detect_cust.addWidget(self.btn_yolo_detect_custom_model)
-        self.yolo_detect_custom_model_widget.setVisible(False)
-        vl_detect_model.addWidget(self.yolo_detect_custom_model_widget)
-        f_yolo.addRow("Seq detect model", self.yolo_detect_model_widget)
+        f_yolo.addRow("Seq detect model", self.combo_yolo_detect_model)
 
-        self.yolo_crop_obb_model_widget = QWidget()
-        vl_crop_obb_model = QVBoxLayout(self.yolo_crop_obb_model_widget)
-        vl_crop_obb_model.setContentsMargins(0, 0, 0, 0)
-        vl_crop_obb_model.setSpacing(4)
         self.combo_yolo_crop_obb_model = QComboBox()
         self._refresh_yolo_crop_obb_model_combo()
         self.combo_yolo_crop_obb_model.currentIndexChanged.connect(
@@ -3693,25 +3586,20 @@ class MainWindow(QMainWindow):
         self.combo_yolo_crop_obb_model.setToolTip(
             "Sequential stage-2 OBB model trained on cropped detections."
         )
-        vl_crop_obb_model.addWidget(self.combo_yolo_crop_obb_model)
-        self.yolo_crop_obb_custom_model_widget = QWidget()
-        h_crop_obb_cust = QHBoxLayout(self.yolo_crop_obb_custom_model_widget)
-        h_crop_obb_cust.setContentsMargins(0, 0, 0, 0)
-        self.yolo_crop_obb_custom_model_line = QLineEdit()
-        self.btn_yolo_crop_obb_custom_model = QPushButton("...")
-        self.btn_yolo_crop_obb_custom_model.clicked.connect(
-            self.select_yolo_crop_obb_custom_model
-        )
-        h_crop_obb_cust.addWidget(self.yolo_crop_obb_custom_model_line)
-        h_crop_obb_cust.addWidget(self.btn_yolo_crop_obb_custom_model)
-        self.yolo_crop_obb_custom_model_widget.setVisible(False)
-        vl_crop_obb_model.addWidget(self.yolo_crop_obb_custom_model_widget)
-        f_yolo.addRow("Seq crop OBB model", self.yolo_crop_obb_model_widget)
+        f_yolo.addRow("Seq crop OBB model", self.combo_yolo_crop_obb_model)
 
-        self.yolo_headtail_model_widget = QWidget()
-        vl_headtail_model = QVBoxLayout(self.yolo_headtail_model_widget)
-        vl_headtail_model.setContentsMargins(0, 0, 0, 0)
-        vl_headtail_model.setSpacing(4)
+        # Head-tail classifier — type selects subdirectory (YOLO vs tiny)
+        self.combo_yolo_headtail_model_type = QComboBox()
+        self.combo_yolo_headtail_model_type.addItems(["YOLO", "tiny"])
+        self.combo_yolo_headtail_model_type.setToolTip(
+            "Architecture family of the head-tail classifier.\n"
+            "YOLO → models/classification/orientation/YOLO/\n"
+            "tiny → models/classification/orientation/tiny/"
+        )
+        self.combo_yolo_headtail_model_type.currentIndexChanged.connect(
+            self._on_headtail_model_type_changed
+        )
+
         self.combo_yolo_headtail_model = QComboBox()
         self._refresh_yolo_headtail_model_combo()
         self.combo_yolo_headtail_model.currentIndexChanged.connect(
@@ -3720,20 +3608,14 @@ class MainWindow(QMainWindow):
         self.combo_yolo_headtail_model.setToolTip(
             "Optional head-tail classifier used to direct orientation along OBB major axis."
         )
-        vl_headtail_model.addWidget(self.combo_yolo_headtail_model)
-        self.yolo_headtail_custom_model_widget = QWidget()
-        h_headtail_cust = QHBoxLayout(self.yolo_headtail_custom_model_widget)
-        h_headtail_cust.setContentsMargins(0, 0, 0, 0)
-        self.yolo_headtail_custom_model_line = QLineEdit()
-        self.btn_yolo_headtail_custom_model = QPushButton("...")
-        self.btn_yolo_headtail_custom_model.clicked.connect(
-            self.select_yolo_headtail_custom_model
-        )
-        h_headtail_cust.addWidget(self.yolo_headtail_custom_model_line)
-        h_headtail_cust.addWidget(self.btn_yolo_headtail_custom_model)
-        self.yolo_headtail_custom_model_widget.setVisible(False)
-        vl_headtail_model.addWidget(self.yolo_headtail_custom_model_widget)
-        f_yolo.addRow("Head-tail model", self.yolo_headtail_model_widget)
+
+        self.headtail_model_row_widget = QWidget()
+        _headtail_row = QHBoxLayout(self.headtail_model_row_widget)
+        _headtail_row.setContentsMargins(0, 0, 0, 0)
+        _headtail_row.setSpacing(4)
+        _headtail_row.addWidget(self.combo_yolo_headtail_model_type, 0)
+        _headtail_row.addWidget(self.combo_yolo_headtail_model, 1)
+        f_yolo.addRow("Head-tail model", self.headtail_model_row_widget)
 
         self.chk_pose_overrides_headtail = QCheckBox(
             "Pose orientation overrides head-tail"
@@ -5881,7 +5763,7 @@ class MainWindow(QMainWindow):
         fl_pose.addRow(self.chk_enable_pose_extractor)
 
         self.combo_pose_model_type = QComboBox()
-        self.combo_pose_model_type.addItems(["YOLO", "SLEAP"])
+        self.combo_pose_model_type.addItems(["YOLO", "SLEAP", "ViTPose"])
         self.combo_pose_model_type.setToolTip("Pose backend for individual analysis.")
         self.combo_pose_model_type.currentIndexChanged.connect(
             self._sync_pose_backend_ui
@@ -5901,17 +5783,14 @@ class MainWindow(QMainWindow):
         fl_pose.addRow("Pose runtime", self.combo_pose_runtime_flavor)
         self._set_form_row_visible(fl_pose, self.combo_pose_runtime_flavor, False)
 
-        h_pose_model = QHBoxLayout()
-        self.line_pose_model_dir = QLineEdit()
-        self.line_pose_model_dir.setPlaceholderText("Select pose model path...")
-        self.line_pose_model_dir.textChanged.connect(
-            self._on_pose_model_dir_text_changed
+        self.combo_pose_model = QComboBox()
+        self.combo_pose_model.setToolTip(
+            "Pose model for individual analysis.\n"
+            "Choose an imported model or select '＋ Add New Model…' to browse and import."
         )
-        self.btn_browse_pose_model_dir = QPushButton("Browse...")
-        self.btn_browse_pose_model_dir.clicked.connect(self._select_pose_model_dir)
-        h_pose_model.addWidget(self.line_pose_model_dir)
-        h_pose_model.addWidget(self.btn_browse_pose_model_dir)
-        fl_pose.addRow("Pose model path", h_pose_model)
+        self.combo_pose_model.currentIndexChanged.connect(self.on_pose_model_changed)
+        self._refresh_pose_model_combo()
+        fl_pose.addRow("Pose model", self.combo_pose_model)
 
         self.spin_pose_min_kpt_conf_valid = QDoubleSpinBox()
         self.spin_pose_min_kpt_conf_valid.setRange(0.0, 1.0)
@@ -6101,11 +5980,10 @@ class MainWindow(QMainWindow):
 
         Search order:
           1. current_detection_cache_path (set by the last tracking run in this session)
-          2. Any *.npz file in the same directory whose name starts with the video stem
-             and is a compatible DetectionCache that covers the requested range
-          3. A freshly-computed optimizer-specific path (write target for new build)
+             2. Any compatible detection cache in the video's dedicated cache directory,
+                 with legacy flat files still considered as a fallback
+             3. A freshly-computed optimizer-specific path in the dedicated cache directory
         """
-        import glob
         import re
 
         from multi_tracker.data.detection_cache import DetectionCache
@@ -6128,17 +6006,20 @@ class MainWindow(QMainWindow):
         if _is_valid(self.current_detection_cache_path):
             return self.current_detection_cache_path, True
 
-        # 2. Scan directory for any *.npz starting with the video stem
-        video_dir = os.path.dirname(video_path) or "."
-        stem = os.path.splitext(os.path.basename(video_path))[0]
-        candidates = sorted(
-            glob.glob(os.path.join(video_dir, f"{stem}*.npz")),
-            key=os.path.getmtime,
-            reverse=True,  # newest first
+        csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        artifact_base_dirs = candidate_artifact_base_dirs(
+            video_path,
+            preferred_base_dirs=[csv_dir],
         )
-        for candidate in candidates:
-            if _is_valid(candidate):
-                return candidate, True
+
+        # 2. Scan known cache directories plus legacy flat directories.
+        for candidate in iter_detection_cache_candidates(
+            video_path,
+            artifact_base_dirs=artifact_base_dirs,
+        ):
+            candidate_str = str(candidate)
+            if _is_valid(candidate_str):
+                return candidate_str, True
 
         # 3. Fallback: compute a write-target path for a new detection-only build
         model_raw = os.path.splitext(
@@ -6146,8 +6027,17 @@ class MainWindow(QMainWindow):
         )[0]
         model = re.sub(r"[^A-Za-z0-9_-]", "_", model_raw)
         resize = int(params.get("RESIZE_FACTOR", 1.0) * 100)
-        new_path = os.path.join(video_dir, f"{stem}_{model}_r{resize}_opt_cache.npz")
-        return new_path, False
+        artifact_base_dir = choose_writable_artifact_base_dir(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        new_path = build_optimizer_detection_cache_path(
+            video_path,
+            model,
+            resize,
+            artifact_base_dir=artifact_base_dir,
+        )
+        return str(new_path), False
 
     def _build_optimizer_detection_cache(
         self, video_path: str, cache_path: str, params: dict
@@ -6691,51 +6581,73 @@ class MainWindow(QMainWindow):
 
     def _ensure_pose_model_path_store(self):
         if not hasattr(self, "_pose_model_path_by_backend"):
-            self._pose_model_path_by_backend = {"yolo": "", "sleap": ""}
+            self._pose_model_path_by_backend = {"yolo": "", "sleap": "", "vitpose": ""}
 
     def _current_pose_backend_key(self):
         if not hasattr(self, "combo_pose_model_type"):
             return "yolo"
         backend = self.combo_pose_model_type.currentText().strip().lower()
-        return "sleap" if backend == "sleap" else "yolo"
+        if backend == "sleap":
+            return "sleap"
+        if backend == "vitpose":
+            return "vitpose"
+        return "yolo"
 
     def _pose_model_path_for_backend(self, backend=None):
         self._ensure_pose_model_path_store()
         key = (backend or self._current_pose_backend_key()).strip().lower()
-        key = "sleap" if key == "sleap" else "yolo"
+        if key not in ("sleap", "vitpose"):
+            key = "yolo"
         return str(self._pose_model_path_by_backend.get(key, "")).strip()
 
-    def _set_pose_model_path_for_backend(self, path, backend=None, update_line=False):
+    def _set_pose_model_path_for_backend(self, path, backend=None, update_combo=False):
         self._ensure_pose_model_path_store()
         key = (backend or self._current_pose_backend_key()).strip().lower()
-        key = "sleap" if key == "sleap" else "yolo"
+        if key not in ("sleap", "vitpose"):
+            key = "yolo"
         value = str(path or "").strip()
         if value:
             resolved = str(resolve_pose_model_path(value, backend=key)).strip()
             if resolved and os.path.exists(resolved):
                 value = str(make_pose_model_path_relative(os.path.abspath(resolved)))
         self._pose_model_path_by_backend[key] = value
-        if update_line and hasattr(self, "line_pose_model_dir"):
-            self.line_pose_model_dir.blockSignals(True)
-            self.line_pose_model_dir.setText(value)
-            self.line_pose_model_dir.blockSignals(False)
+        if update_combo:
+            self._refresh_pose_model_combo(preferred_model_path=value)
 
-    def _on_pose_model_dir_text_changed(self, text):
-        self._set_pose_model_path_for_backend(
-            text, backend=self._current_pose_backend_key()
-        )
+    def _handle_add_new_pose_model(self):
+        """Browse for a pose model, import it if outside repo, refresh combo, and select it.
 
-    def _select_pose_model_dir(self):
-        """Select a pose model file/directory depending on backend."""
+        Restores the previous selection if the user cancels.
+        """
+        combo = getattr(self, "combo_pose_model", None)
+        prev_data = None
+        if combo is not None:
+            for i in range(combo.count()):
+                d = combo.itemData(i, Qt.UserRole)
+                if d and d not in ("__add_new__", "__none__"):
+                    prev_data = d
+                    break
+
+        def _restore():
+            if combo is not None:
+                combo.blockSignals(True)
+                self._set_model_selection_for_selector(combo, prev_data)
+                combo.blockSignals(False)
+
         backend = self.combo_pose_model_type.currentText().strip().lower()
-        backend_key = "sleap" if backend == "sleap" else "yolo"
+        backend_key = (
+            "sleap"
+            if backend == "sleap"
+            else ("vitpose" if backend == "vitpose" else "yolo")
+        )
         current = self._pose_model_path_for_backend(backend)
         if current:
             resolved_current = str(resolve_pose_model_path(current, backend=backend))
-            if os.path.isdir(resolved_current):
-                start = resolved_current
-            else:
-                start = os.path.dirname(resolved_current) or str(Path.home())
+            start = (
+                resolved_current
+                if os.path.isdir(resolved_current)
+                else (os.path.dirname(resolved_current) or str(Path.home()))
+            )
         else:
             start = get_pose_models_directory(backend_key)
 
@@ -6743,40 +6655,9 @@ class MainWindow(QMainWindow):
             selected = QFileDialog.getExistingDirectory(
                 self, "Select SLEAP Model Directory", start
             )
-            if selected:
-                selected_abs = os.path.abspath(selected)
-                pose_root = get_pose_models_directory(backend_key)
-                try:
-                    rel_path = os.path.relpath(selected_abs, pose_root)
-                    is_in_repo = not rel_path.startswith("..")
-                except (ValueError, TypeError):
-                    is_in_repo = False
-
-                if is_in_repo:
-                    final_path = make_pose_model_path_relative(selected_abs)
-                else:
-                    final_path = self._import_pose_model_to_repository(
-                        selected_abs, backend=backend_key
-                    )
-                    if not final_path:
-                        return
-                    QMessageBox.information(
-                        self,
-                        "Model Imported",
-                        f"SLEAP model imported to repository as:\n{final_path}",
-                    )
-                self._set_pose_model_path_for_backend(
-                    final_path, backend=backend, update_line=True
-                )
-            return
-
-        selected, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select YOLO Pose Weights",
-            start,
-            "PyTorch Weights (*.pt);;All Files (*)",
-        )
-        if selected:
+            if not selected:
+                _restore()
+                return
             selected_abs = os.path.abspath(selected)
             pose_root = get_pose_models_directory(backend_key)
             try:
@@ -6784,7 +6665,6 @@ class MainWindow(QMainWindow):
                 is_in_repo = not rel_path.startswith("..")
             except (ValueError, TypeError):
                 is_in_repo = False
-
             if is_in_repo:
                 final_path = make_pose_model_path_relative(selected_abs)
             else:
@@ -6792,23 +6672,62 @@ class MainWindow(QMainWindow):
                     selected_abs, backend=backend_key
                 )
                 if not final_path:
+                    _restore()
                     return
                 QMessageBox.information(
                     self,
-                    "Model Imported",
-                    f"Pose model imported to repository as:\n{final_path}",
+                    "Model Added",
+                    f"SLEAP model added to repository:\n{final_path}",
                 )
             self._set_pose_model_path_for_backend(
-                final_path, backend=backend, update_line=True
+                final_path, backend=backend, update_combo=True
             )
+            return
+
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Pose Weights",
+            start,
+            "PyTorch Weights (*.pt *.pth);;All Files (*)",
+        )
+        if not selected:
+            _restore()
+            return
+        selected_abs = os.path.abspath(selected)
+        pose_root = get_pose_models_directory(backend_key)
+        try:
+            rel_path = os.path.relpath(selected_abs, pose_root)
+            is_in_repo = not rel_path.startswith("..")
+        except (ValueError, TypeError):
+            is_in_repo = False
+        if is_in_repo:
+            final_path = make_pose_model_path_relative(selected_abs)
+        else:
+            final_path = self._import_pose_model_to_repository(
+                selected_abs, backend=backend_key
+            )
+            if not final_path:
+                _restore()
+                return
+            QMessageBox.information(
+                self,
+                "Model Added",
+                f"Pose model added to repository:\n{final_path}",
+            )
+        self._set_pose_model_path_for_backend(
+            final_path, backend=backend, update_combo=True
+        )
 
     def _import_pose_model_to_repository(self, source_path, backend="yolo"):
-        """Copy a selected pose model into models/{YOLO-pose|SLEAP} and return relative path."""
+        """Copy a selected pose model into models/pose/{YOLO|SLEAP|ViTPose} and return relative path."""
         src = str(source_path or "").strip()
         if not src or not os.path.exists(src):
             return None
 
-        backend_key = "sleap" if str(backend).strip().lower() == "sleap" else "yolo"
+        bk = str(backend).strip().lower()
+        backend_key = (
+            "sleap" if bk == "sleap" else ("vitpose" if bk == "vitpose" else "yolo")
+        )
         dest_dir = get_pose_models_directory(backend_key)
 
         try:
@@ -7429,21 +7348,10 @@ class MainWindow(QMainWindow):
                 self.pose_sleap_experimental_row_widget,
                 is_sleap,
             )
-        if hasattr(self, "line_pose_model_dir"):
-            if is_sleap:
-                self.line_pose_model_dir.setPlaceholderText(
-                    "Select SLEAP model directory (copied into models/SLEAP)..."
-                )
-            else:
-                self.line_pose_model_dir.setPlaceholderText(
-                    "Select YOLO pose weights (.pt, copied into models/YOLO-pose)..."
-                )
-            # Keep backend-specific pose paths independent.
-            self._set_pose_model_path_for_backend(
-                self._pose_model_path_for_backend(backend),
-                backend=backend,
-                update_line=True,
-            )
+        # Refresh pose model combo to show models for the selected backend.
+        self._refresh_pose_model_combo(
+            preferred_model_path=self._pose_model_path_for_backend(backend)
+        )
         self._on_runtime_context_changed()
 
     def _is_pose_inference_enabled(self) -> bool:
@@ -9515,9 +9423,7 @@ class MainWindow(QMainWindow):
         """Sanitize model metadata token for safe filename use."""
         return _sanitize_model_token(text)
 
-    def _format_yolo_model_label(
-        self, model_path: object, include_builtin_hints: bool = True
-    ) -> object:
+    def _format_yolo_model_label(self, model_path: object) -> object:
         """Build combo-box label for a model path, including metadata if available."""
         rel_path = make_model_path_relative(model_path)
         filename = os.path.basename(rel_path)
@@ -9544,15 +9450,6 @@ class MainWindow(QMainWindow):
             suffix_parts.append(task_family)
         if suffix_parts:
             return f"{filename} ({', '.join(suffix_parts)})"
-
-        if include_builtin_hints:
-            builtins = {
-                "yolo26s-obb.pt": "Balanced",
-                "yolo26n-obb.pt": "Fastest",
-                "yolov11s-obb.pt": "Legacy",
-            }
-            if filename in builtins:
-                return f"{filename} ({builtins[filename]})"
         return filename
 
     @staticmethod
@@ -9577,24 +9474,20 @@ class MainWindow(QMainWindow):
         combo: object,
         preferred_model_path: object = None,
         default_path: str = "",
-        include_obb_builtins: bool = False,
+        include_none: bool = False,
         task_family: str | None = None,
         usage_role: str | None = None,
         repository_dir: str | None = None,
+        recursive: bool = False,
     ) -> object:
         """Populate a YOLO-model combo with optional metadata role filtering."""
         selected_path = preferred_model_path
         if selected_path is None:
             selected_data = combo.currentData(Qt.UserRole)
-            if selected_data and selected_data != "__custom__":
+            if selected_data and selected_data not in ("__add_new__", "__none__"):
                 selected_path = str(selected_data)
 
         entries = {}
-        if include_obb_builtins:
-            for built_in in ("yolo26s-obb.pt", "yolo26n-obb.pt", "yolov11s-obb.pt"):
-                entries[built_in] = self._format_yolo_model_label(
-                    built_in, include_builtin_hints=True
-                )
 
         models_dir = str(
             repository_dir
@@ -9603,37 +9496,42 @@ class MainWindow(QMainWindow):
             )
         )
         try:
-            local_models = sorted(
-                f
-                for f in os.listdir(models_dir)
-                if os.path.splitext(f)[1].lower() in (".pt", ".pth")
-            )
+            if recursive:
+                local_model_paths = []
+                for dirpath, _dirnames, filenames in os.walk(models_dir):
+                    for fn in sorted(filenames):
+                        if os.path.splitext(fn)[1].lower() in (".pt", ".pth"):
+                            local_model_paths.append(os.path.join(dirpath, fn))
+            else:
+                local_model_paths = sorted(
+                    os.path.join(models_dir, f)
+                    for f in os.listdir(models_dir)
+                    if os.path.splitext(f)[1].lower() in (".pt", ".pth")
+                )
         except Exception as e:
             logger.warning(f"Failed to list YOLO model directory '{models_dir}': {e}")
-            local_models = []
+            local_model_paths = []
 
-        for filename in local_models:
-            rel_path = make_model_path_relative(os.path.join(models_dir, filename))
+        for model_abs in local_model_paths:
+            rel_path = make_model_path_relative(model_abs)
             metadata = get_yolo_model_metadata(rel_path) or {}
             if not self._yolo_model_matches_filter(
                 metadata, task_family=task_family, usage_role=usage_role
             ):
                 continue
-            entries[rel_path] = self._format_yolo_model_label(
-                rel_path,
-                include_builtin_hints=include_obb_builtins,
-            )
+            entries[rel_path] = self._format_yolo_model_label(rel_path)
 
         combo.blockSignals(True)
         combo.clear()
         for model_path, label in entries.items():
             combo.addItem(label, model_path)
-        combo.addItem("Custom Model...", "__custom__")
+        if include_none:
+            combo.insertItem(0, "— None —", "__none__")
+        combo.addItem("＋ Add New Model…", "__add_new__")
         combo.blockSignals(False)
 
         self._set_model_selection_for_selector(
             combo,
-            None,
             selected_path,
             default_path=default_path,
         )
@@ -9641,7 +9539,6 @@ class MainWindow(QMainWindow):
     def _set_model_selection_for_selector(
         self,
         combo: object,
-        custom_line: object,
         model_path: object,
         default_path: str = "",
     ) -> object:
@@ -9653,33 +9550,22 @@ class MainWindow(QMainWindow):
             item_data = combo.itemData(i, Qt.UserRole)
             if item_data == target_path:
                 combo.setCurrentIndex(i)
-                if custom_line is not None:
-                    custom_line.setText("")
                 return
 
-        custom_idx = combo.findData("__custom__", Qt.UserRole)
-        if custom_idx < 0:
-            custom_idx = combo.count() - 1
-        combo.setCurrentIndex(custom_idx)
-        if custom_line is not None:
-            custom_line.setText(target_path)
+        # Target not found — fall back to "— None —" or first item.
+        none_idx = combo.findData("__none__", Qt.UserRole)
+        if none_idx >= 0:
+            combo.setCurrentIndex(none_idx)
+        else:
+            combo.setCurrentIndex(0)
 
     def _get_selected_model_path_from_selector(
-        self, combo: object, custom_line: object, default_path: str = ""
+        self, combo: object, default_path: str = ""
     ) -> object:
         selected_data = combo.currentData(Qt.UserRole)
-        if selected_data and selected_data != "__custom__":
+        if selected_data and selected_data not in ("__add_new__", "__none__"):
             return str(selected_data)
-        if custom_line is not None and custom_line.text().strip():
-            return make_model_path_relative(custom_line.text().strip())
         return str(default_path or "")
-
-    @staticmethod
-    def _sync_selector_custom_visibility(
-        combo: object, custom_widget: object
-    ) -> object:
-        is_custom = combo.currentData(Qt.UserRole) == "__custom__"
-        custom_widget.setVisible(is_custom)
 
     def _import_yolo_model_to_repository(
         self,
@@ -9688,7 +9574,7 @@ class MainWindow(QMainWindow):
         usage_role: str | None = None,
         repository_dir: str | None = None,
     ) -> object:
-        """Import a YOLO model file into models/YOLO-obb with metadata."""
+        """Import a YOLO model file into models/obb with metadata."""
         src = str(source_path or "")
         if not src or not os.path.exists(src):
             return None
@@ -9803,12 +9689,12 @@ class MainWindow(QMainWindow):
         return rel_path
 
     def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
-        """Populate direct OBB model combo from built-ins + repository models."""
+        """Populate direct OBB model combo from repository models."""
         self._populate_yolo_model_combo(
             self.combo_yolo_model,
             preferred_model_path=preferred_model_path,
-            default_path="yolo26s-obb.pt",
-            include_obb_builtins=True,
+            default_path="",
+            include_none=False,
             task_family="obb",
             usage_role="obb_direct",
             repository_dir=get_yolo_model_repository_directory(
@@ -9821,7 +9707,7 @@ class MainWindow(QMainWindow):
             self.combo_yolo_detect_model,
             preferred_model_path=preferred_model_path,
             default_path="",
-            include_obb_builtins=False,
+            include_none=True,
             task_family="detect",
             usage_role="seq_detect",
             repository_dir=get_yolo_model_repository_directory(
@@ -9833,8 +9719,8 @@ class MainWindow(QMainWindow):
         self._populate_yolo_model_combo(
             self.combo_yolo_crop_obb_model,
             preferred_model_path=preferred_model_path,
-            default_path="yolo26s-obb.pt",
-            include_obb_builtins=True,
+            default_path="",
+            include_none=True,
             task_family="obb",
             usage_role="seq_crop_obb",
             repository_dir=get_yolo_model_repository_directory(
@@ -9843,79 +9729,154 @@ class MainWindow(QMainWindow):
         )
 
     def _refresh_yolo_headtail_model_combo(self, preferred_model_path: object = None):
+        ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
+        subdir = ht_type.currentText() if ht_type else "YOLO"
+        repo_dir = os.path.join(
+            get_yolo_model_repository_directory(
+                task_family="classify", usage_role="headtail"
+            ),
+            subdir,
+        )
+        os.makedirs(repo_dir, exist_ok=True)
         self._populate_yolo_model_combo(
             self.combo_yolo_headtail_model,
             preferred_model_path=preferred_model_path,
             default_path="",
-            include_obb_builtins=False,
+            include_none=True,
             task_family="classify",
             usage_role="headtail",
-            repository_dir=get_yolo_model_repository_directory(
-                task_family="classify", usage_role="headtail"
-            ),
+            repository_dir=repo_dir,
+        )
+
+    def _populate_pose_model_combo(
+        self,
+        combo: object,
+        backend: str,
+        preferred_model_path: object = None,
+    ) -> None:
+        """Populate the pose model combo for the given backend."""
+        selected_path = preferred_model_path
+        if selected_path is None:
+            selected_data = combo.currentData(Qt.UserRole)
+            if selected_data and selected_data not in ("__add_new__", "__none__"):
+                selected_path = str(selected_data)
+
+        backend_key = (
+            "sleap"
+            if backend == "sleap"
+            else ("vitpose" if backend == "vitpose" else "yolo")
+        )
+        repo_dir = get_pose_models_directory(backend_key)
+        os.makedirs(repo_dir, exist_ok=True)
+
+        entries = {}
+        try:
+            if backend_key == "sleap":
+                for name in sorted(os.listdir(repo_dir)):
+                    full = os.path.join(repo_dir, name)
+                    if os.path.isdir(full):
+                        rel = make_pose_model_path_relative(full)
+                        entries[rel] = name
+            else:
+                for fn in sorted(os.listdir(repo_dir)):
+                    if os.path.splitext(fn)[1].lower() in (".pt", ".pth"):
+                        full = os.path.join(repo_dir, fn)
+                        rel = make_pose_model_path_relative(full)
+                        entries[rel] = self._format_yolo_model_label(rel)
+        except Exception as e:
+            logger.warning(f"Failed to list pose model directory '{repo_dir}': {e}")
+
+        combo.blockSignals(True)
+        combo.clear()
+        for path, label in entries.items():
+            combo.addItem(label, path)
+        combo.insertItem(0, "— None —", "__none__")
+        combo.addItem("＋ Add New Model…", "__add_new__")
+        combo.blockSignals(False)
+
+        self._set_model_selection_for_selector(combo, selected_path, default_path="")
+
+    def _refresh_pose_model_combo(self, preferred_model_path: object = None) -> None:
+        """Refresh the pose model combo for the current backend."""
+        if not hasattr(self, "combo_pose_model"):
+            return
+        backend = self._current_pose_backend_key()
+        self._populate_pose_model_combo(
+            self.combo_pose_model,
+            backend=backend,
+            preferred_model_path=preferred_model_path,
+        )
+
+    def on_pose_model_changed(self, index: int) -> None:
+        """Handle selection change in the pose model combo."""
+        if not hasattr(self, "combo_pose_model"):
+            return
+        selected_data = self.combo_pose_model.itemData(index, Qt.UserRole)
+        if selected_data == "__add_new__":
+            self._handle_add_new_pose_model()
+            return
+        path = selected_data if selected_data and selected_data != "__none__" else ""
+        self._set_pose_model_path_for_backend(
+            path, backend=self._current_pose_backend_key(), update_combo=False
+        )
+
+    def _get_selected_pose_model_path(self) -> str:
+        """Return the currently selected pose model path from the combo."""
+        if not hasattr(self, "combo_pose_model"):
+            return self._pose_model_path_for_backend()
+        return self._get_selected_model_path_from_selector(
+            self.combo_pose_model, default_path=""
         )
 
     def _get_selected_yolo_model_path(self) -> object:
         """Return currently selected direct OBB model path."""
         if not hasattr(self, "combo_yolo_model"):
-            return "yolo26s-obb.pt"
+            return ""
         return self._get_selected_model_path_from_selector(
             self.combo_yolo_model,
-            getattr(self, "yolo_custom_model_line", None),
-            default_path="yolo26s-obb.pt",
+            default_path="",
         )
 
     def _get_selected_yolo_detect_model_path(self) -> object:
         return self._get_selected_model_path_from_selector(
             self.combo_yolo_detect_model,
-            getattr(self, "yolo_detect_custom_model_line", None),
             default_path="",
         )
 
     def _get_selected_yolo_crop_obb_model_path(self) -> object:
         return self._get_selected_model_path_from_selector(
             self.combo_yolo_crop_obb_model,
-            getattr(self, "yolo_crop_obb_custom_model_line", None),
-            default_path="yolo26s-obb.pt",
+            default_path="",
         )
 
     def _get_selected_yolo_headtail_model_path(self) -> object:
         return self._get_selected_model_path_from_selector(
             self.combo_yolo_headtail_model,
-            getattr(self, "yolo_headtail_custom_model_line", None),
             default_path="",
         )
 
     def _set_yolo_model_selection(self, model_path: object) -> object:
         self._set_model_selection_for_selector(
             self.combo_yolo_model,
-            getattr(self, "yolo_custom_model_line", None),
             model_path,
-            default_path="yolo26s-obb.pt",
         )
 
     def _set_yolo_detect_model_selection(self, model_path: object) -> object:
         self._set_model_selection_for_selector(
             self.combo_yolo_detect_model,
-            getattr(self, "yolo_detect_custom_model_line", None),
             model_path,
-            default_path="",
         )
 
     def _set_yolo_crop_obb_model_selection(self, model_path: object) -> object:
         self._set_model_selection_for_selector(
             self.combo_yolo_crop_obb_model,
-            getattr(self, "yolo_crop_obb_custom_model_line", None),
             model_path,
-            default_path="yolo26s-obb.pt",
         )
 
     def _set_yolo_headtail_model_selection(self, model_path: object) -> object:
         self._set_model_selection_for_selector(
             self.combo_yolo_headtail_model,
-            getattr(self, "yolo_headtail_custom_model_line", None),
             model_path,
-            default_path="",
         )
 
     def _on_yolo_mode_changed(self, _index: object) -> object:
@@ -9941,23 +9902,16 @@ class MainWindow(QMainWindow):
         )
 
         _set_row_visible(
-            getattr(self, "yolo_direct_model_widget", None),
+            getattr(self, "combo_yolo_model", None),
             not sequential,
         )
-        if hasattr(self, "yolo_custom_model_widget"):
-            self.yolo_custom_model_widget.setVisible(
-                bool(
-                    not sequential
-                    and self.combo_yolo_model.currentData(Qt.UserRole) == "__custom__"
-                )
-            )
 
         _set_row_visible(
-            getattr(self, "yolo_detect_model_widget", None),
+            getattr(self, "combo_yolo_detect_model", None),
             sequential,
         )
         _set_row_visible(
-            getattr(self, "yolo_crop_obb_model_widget", None),
+            getattr(self, "combo_yolo_crop_obb_model", None),
             sequential,
         )
         _set_row_visible(
@@ -9965,35 +9919,19 @@ class MainWindow(QMainWindow):
             sequential,
         )
         _set_row_visible(
-            getattr(self, "yolo_headtail_model_widget", None),
+            getattr(self, "headtail_model_row_widget", None),
             True,
         )
         _set_row_visible(getattr(self, "chk_pose_overrides_headtail", None), True)
-        if hasattr(self, "yolo_detect_custom_model_widget"):
-            self.yolo_detect_custom_model_widget.setVisible(
-                bool(
-                    sequential
-                    and self.combo_yolo_detect_model.currentData(Qt.UserRole)
-                    == "__custom__"
-                )
-            )
-        if hasattr(self, "yolo_crop_obb_custom_model_widget"):
-            self.yolo_crop_obb_custom_model_widget.setVisible(
-                bool(
-                    sequential
-                    and self.combo_yolo_crop_obb_model.currentData(Qt.UserRole)
-                    == "__custom__"
-                )
-            )
-        if hasattr(self, "yolo_headtail_custom_model_widget"):
-            self.yolo_headtail_custom_model_widget.setVisible(
-                self.combo_yolo_headtail_model.currentData(Qt.UserRole) == "__custom__"
-            )
         if hasattr(self, "spin_yolo_headtail_conf"):
             self.spin_yolo_headtail_conf.setEnabled(
                 bool(self._get_selected_yolo_headtail_model_path().strip())
             )
         self._update_obb_mode_warning()
+
+    def _on_headtail_model_type_changed(self, _index: object = None) -> None:
+        """Refresh the head-tail model combo when the user switches YOLO ↔ tiny."""
+        self._refresh_yolo_headtail_model_combo()
 
     def _update_obb_mode_warning(self) -> None:
         """Show a performance hint when device/mode is a suboptimal combination."""
@@ -10026,34 +9964,71 @@ class MainWindow(QMainWindow):
         self.lbl_obb_mode_warning.setVisible(bool(msg))
 
     def on_yolo_model_changed(self: object, index: object) -> object:
-        """Handle direct OBB selector custom-model visibility."""
-        self._sync_selector_custom_visibility(
-            self.combo_yolo_model, self.yolo_custom_model_widget
-        )
+        """Handle direct OBB model selection — triggers import when 'Add New' chosen."""
+        if self.combo_yolo_model.itemData(index, Qt.UserRole) == "__add_new__":
+            self._handle_add_new_yolo_model(
+                combo=self.combo_yolo_model,
+                refresh_callback=self._refresh_yolo_model_combo,
+                selection_callback=self._set_yolo_model_selection,
+                task_family="obb",
+                usage_role="obb_direct",
+                dialog_title="Add Direct OBB Model",
+            )
+            return
         self._on_yolo_mode_changed(index)
 
     def on_yolo_detect_model_changed(self: object, index: object) -> object:
-        self._sync_selector_custom_visibility(
-            self.combo_yolo_detect_model, self.yolo_detect_custom_model_widget
-        )
+        if self.combo_yolo_detect_model.itemData(index, Qt.UserRole) == "__add_new__":
+            self._handle_add_new_yolo_model(
+                combo=self.combo_yolo_detect_model,
+                refresh_callback=self._refresh_yolo_detect_model_combo,
+                selection_callback=self._set_yolo_detect_model_selection,
+                task_family="detect",
+                usage_role="seq_detect",
+                dialog_title="Add Sequential Detect Model",
+            )
+            return
         self._on_yolo_mode_changed(index)
 
     def on_yolo_crop_obb_model_changed(self: object, index: object) -> object:
-        self._sync_selector_custom_visibility(
-            self.combo_yolo_crop_obb_model, self.yolo_crop_obb_custom_model_widget
-        )
+        if self.combo_yolo_crop_obb_model.itemData(index, Qt.UserRole) == "__add_new__":
+            self._handle_add_new_yolo_model(
+                combo=self.combo_yolo_crop_obb_model,
+                refresh_callback=self._refresh_yolo_crop_obb_model_combo,
+                selection_callback=self._set_yolo_crop_obb_model_selection,
+                task_family="obb",
+                usage_role="seq_crop_obb",
+                dialog_title="Add Sequential Crop OBB Model",
+            )
+            return
         self._on_yolo_mode_changed(index)
 
     def on_yolo_headtail_model_changed(self: object, index: object) -> object:
-        self._sync_selector_custom_visibility(
-            self.combo_yolo_headtail_model, self.yolo_headtail_custom_model_widget
-        )
+        if self.combo_yolo_headtail_model.itemData(index, Qt.UserRole) == "__add_new__":
+            ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
+            subdir = ht_type.currentText() if ht_type else "YOLO"
+            repo_dir = os.path.join(
+                get_yolo_model_repository_directory(
+                    task_family="classify", usage_role="headtail"
+                ),
+                subdir,
+            )
+            os.makedirs(repo_dir, exist_ok=True)
+            self._handle_add_new_yolo_model(
+                combo=self.combo_yolo_headtail_model,
+                refresh_callback=self._refresh_yolo_headtail_model_combo,
+                selection_callback=self._set_yolo_headtail_model_selection,
+                task_family="classify",
+                usage_role="headtail",
+                dialog_title="Add Head-Tail Classifier",
+                repository_dir=repo_dir,
+            )
+            return
         self._on_yolo_mode_changed(index)
 
-    def _select_and_import_yolo_model(
+    def _handle_add_new_yolo_model(
         self,
-        selector_combo: object,
-        selector_line: object,
+        combo: object,
         refresh_callback: object,
         selection_callback: object,
         task_family: str,
@@ -10061,6 +10036,18 @@ class MainWindow(QMainWindow):
         dialog_title: str,
         repository_dir: str | None = None,
     ) -> object:
+        """Browse for a model, import it, refresh the combo, and select it.
+
+        Restores the previous selection if the user cancels.
+        """
+        # Remember what was selected before this action item was triggered.
+        prev_data = None
+        for i in range(combo.count()):
+            d = combo.itemData(i, Qt.UserRole)
+            if d not in ("__add_new__", "__none__", None):
+                prev_data = d
+                break
+
         start_dir = str(
             repository_dir
             or get_yolo_model_repository_directory(
@@ -10074,93 +10061,41 @@ class MainWindow(QMainWindow):
             "PyTorch Model Files (*.pt *.pth);;All Files (*)",
         )
         if not fp:
+            # Cancelled — restore previous selection silently.
+            combo.blockSignals(True)
+            self._set_model_selection_for_selector(combo, prev_data)
+            combo.blockSignals(False)
             return
 
-        models_dir = start_dir
         selected_abs = os.path.abspath(fp)
         try:
-            rel_path = os.path.relpath(selected_abs, models_dir)
-            is_in_repo = not rel_path.startswith("..")
+            rel_existing = os.path.relpath(selected_abs, start_dir)
+            is_in_repo = not rel_existing.startswith("..")
         except (ValueError, TypeError):
             is_in_repo = False
 
         if is_in_repo:
-            final_model_path = make_model_path_relative(selected_abs)
+            final_path = make_model_path_relative(selected_abs)
         else:
-            final_model_path = self._import_yolo_model_to_repository(
+            final_path = self._import_yolo_model_to_repository(
                 selected_abs,
                 task_family=task_family,
                 usage_role=usage_role,
-                repository_dir=models_dir,
+                repository_dir=start_dir,
             )
-            if not final_model_path:
+            if not final_path:
+                combo.blockSignals(True)
+                self._set_model_selection_for_selector(combo, prev_data)
+                combo.blockSignals(False)
                 return
             QMessageBox.information(
                 self,
-                "Model Imported",
-                f"Model imported to repository as:\n{os.path.basename(final_model_path)}",
+                "Model Added",
+                f"Model added to repository:\n{os.path.basename(final_path)}",
             )
 
-        refresh_callback(preferred_model_path=final_model_path)
-        selection_callback(final_model_path)
-        if selector_combo.currentData(Qt.UserRole) != "__custom__":
-            selector_line.setText("")
-
-    def select_yolo_custom_model(self: object) -> object:
-        self._select_and_import_yolo_model(
-            selector_combo=self.combo_yolo_model,
-            selector_line=self.yolo_custom_model_line,
-            refresh_callback=self._refresh_yolo_model_combo,
-            selection_callback=self._set_yolo_model_selection,
-            task_family="obb",
-            usage_role="obb_direct",
-            dialog_title="Select Direct OBB Model",
-            repository_dir=get_yolo_model_repository_directory(
-                task_family="obb", usage_role="obb_direct"
-            ),
-        )
-
-    def select_yolo_detect_custom_model(self: object) -> object:
-        self._select_and_import_yolo_model(
-            selector_combo=self.combo_yolo_detect_model,
-            selector_line=self.yolo_detect_custom_model_line,
-            refresh_callback=self._refresh_yolo_detect_model_combo,
-            selection_callback=self._set_yolo_detect_model_selection,
-            task_family="detect",
-            usage_role="seq_detect",
-            dialog_title="Select Sequential Detect Model",
-            repository_dir=get_yolo_model_repository_directory(
-                task_family="detect", usage_role="seq_detect"
-            ),
-        )
-
-    def select_yolo_crop_obb_custom_model(self: object) -> object:
-        self._select_and_import_yolo_model(
-            selector_combo=self.combo_yolo_crop_obb_model,
-            selector_line=self.yolo_crop_obb_custom_model_line,
-            refresh_callback=self._refresh_yolo_crop_obb_model_combo,
-            selection_callback=self._set_yolo_crop_obb_model_selection,
-            task_family="obb",
-            usage_role="seq_crop_obb",
-            dialog_title="Select Sequential Crop OBB Model",
-            repository_dir=get_yolo_model_repository_directory(
-                task_family="obb", usage_role="seq_crop_obb"
-            ),
-        )
-
-    def select_yolo_headtail_custom_model(self: object) -> object:
-        self._select_and_import_yolo_model(
-            selector_combo=self.combo_yolo_headtail_model,
-            selector_line=self.yolo_headtail_custom_model_line,
-            refresh_callback=self._refresh_yolo_headtail_model_combo,
-            selection_callback=self._set_yolo_headtail_model_selection,
-            task_family="classify",
-            usage_role="headtail",
-            dialog_title="Select Head-Tail Model",
-            repository_dir=get_yolo_model_repository_directory(
-                task_family="classify", usage_role="headtail"
-            ),
-        )
+        refresh_callback(preferred_model_path=final_path)
+        selection_callback(final_path)
 
     def toggle_preview(self: object, checked: object) -> object:
         """toggle_preview method documentation."""
@@ -11413,7 +11348,9 @@ class MainWindow(QMainWindow):
                 pose_fixed_color = (255, 255, 255)
         else:
             pose_fixed_color = (255, 255, 255)
-        pose_min_conf = float(params.get("POSE_MIN_KPT_CONF_VALID", 0.2))
+        pose_min_conf = normalize_pose_render_min_conf(
+            params.get("POSE_MIN_KPT_CONF_VALID", 0.2)
+        )
         pose_edges = []
         pose_column_triplets = []
         show_pose = bool(advanced_config.get("video_show_pose", True))
@@ -11653,13 +11590,18 @@ class MainWindow(QMainWindow):
                             c_kp = float(traj.get(c_col))
                         except Exception:
                             continue
-                        if np.isnan(x_kp) or np.isnan(y_kp) or np.isnan(c_kp):
+                        if not is_renderable_pose_keypoint(
+                            x_kp,
+                            y_kp,
+                            c_kp,
+                            pose_min_conf,
+                        ):
                             continue
                         kpts_arr[k_idx, 0] = x_kp
                         kpts_arr[k_idx, 1] = y_kp
                         kpts_arr[k_idx, 2] = c_kp
 
-                    valid_mask = ~np.isnan(kpts_arr[:, 2])
+                    valid_mask = np.isfinite(kpts_arr[:, 2])
                     if np.any(valid_mask):
                         pose_color = (
                             color if pose_color_mode == "track" else pose_fixed_color
@@ -11670,18 +11612,16 @@ class MainWindow(QMainWindow):
                                     continue
                                 if e0 >= len(kpts_arr) or e1 >= len(kpts_arr):
                                     continue
-                                if (
-                                    np.isnan(kpts_arr[e0, 2])
-                                    or np.isnan(kpts_arr[e1, 2])
-                                    or np.isnan(kpts_arr[e0, 0])
-                                    or np.isnan(kpts_arr[e0, 1])
-                                    or np.isnan(kpts_arr[e1, 0])
-                                    or np.isnan(kpts_arr[e1, 1])
-                                ):
-                                    continue
-                                if (
-                                    float(kpts_arr[e0, 2]) < pose_min_conf
-                                    or float(kpts_arr[e1, 2]) < pose_min_conf
+                                if not is_renderable_pose_keypoint(
+                                    kpts_arr[e0, 0],
+                                    kpts_arr[e0, 1],
+                                    kpts_arr[e0, 2],
+                                    pose_min_conf,
+                                ) or not is_renderable_pose_keypoint(
+                                    kpts_arr[e1, 0],
+                                    kpts_arr[e1, 1],
+                                    kpts_arr[e1, 2],
+                                    pose_min_conf,
                                 ):
                                     continue
                                 p0 = (
@@ -11700,11 +11640,11 @@ class MainWindow(QMainWindow):
                                     pose_line_thickness,
                                 )
                         for x_kp, y_kp, c_kp in kpts_arr:
-                            if (
-                                np.isnan(x_kp)
-                                or np.isnan(y_kp)
-                                or np.isnan(c_kp)
-                                or float(c_kp) < pose_min_conf
+                            if not is_renderable_pose_keypoint(
+                                x_kp,
+                                y_kp,
+                                c_kp,
+                                pose_min_conf,
                             ):
                                 continue
                             cv2.circle(
@@ -13066,28 +13006,40 @@ class MainWindow(QMainWindow):
             ).hexdigest()[:12]
             return f"bgsub_{resize_str}_{h}"
 
-        base_name = os.path.splitext(video_path)[0]
         model_id = get_inference_model_id()
         # Share the exact inference hash with downstream detector code so
         # TensorRT engine cache and raw detection cache are invalidated together.
         params["INFERENCE_MODEL_ID"] = model_id
-        base_prefix = os.path.basename(base_name) + "_detection_cache_"
-
-        # Choose a writable directory for cache (prefer video dir, then CSV dir, else temp)
-        cache_dir = os.path.dirname(video_path)
-        if not os.access(cache_dir, os.W_OK):
-            csv_dir = (
-                os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        artifact_base_dirs = candidate_artifact_base_dirs(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        artifact_base_dir = choose_writable_artifact_base_dir(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        if artifact_base_dir != Path(video_path).parent:
+            logger.warning(
+                "Video directory not writable; using artifact root: %s",
+                artifact_base_dir,
             )
-            if csv_dir and os.access(csv_dir, os.W_OK):
-                cache_dir = csv_dir
-            else:
-                cache_dir = tempfile.gettempdir()
-                logger.warning(
-                    f"Video directory not writable; using temp cache dir: {cache_dir}"
-                )
 
-        detection_cache_path = os.path.join(cache_dir, f"{base_prefix}{model_id}.npz")
+        existing_detection_cache = find_existing_detection_cache_path(
+            video_path,
+            model_id,
+            artifact_base_dirs=artifact_base_dirs,
+        )
+        if existing_detection_cache is not None:
+            detection_cache_path = str(existing_detection_cache)
+        else:
+            detection_cache_path = str(
+                build_detection_cache_path(
+                    video_path,
+                    model_id,
+                    artifact_base_dir=artifact_base_dir,
+                )
+            )
 
         # Do NOT delete old detection caches; keep all for reuse
         self.current_detection_cache_path = detection_cache_path
@@ -13139,13 +13091,13 @@ class MainWindow(QMainWindow):
             "sequential" if self.combo_yolo_obb_mode.currentIndex() == 1 else "direct"
         )
         yolo_direct_path = resolve_model_path(
-            self._get_selected_yolo_model_path() or "yolo26s-obb.pt"
+            self._get_selected_yolo_model_path() or ""
         )
         yolo_detect_path = resolve_model_path(
             self._get_selected_yolo_detect_model_path() or ""
         )
         yolo_crop_obb_path = resolve_model_path(
-            self._get_selected_yolo_crop_obb_model_path() or "yolo26s-obb.pt"
+            self._get_selected_yolo_crop_obb_model_path() or ""
         )
         yolo_headtail_path = resolve_model_path(
             self._get_selected_yolo_headtail_model_path() or ""
@@ -13667,7 +13619,7 @@ class MainWindow(QMainWindow):
             yolo_direct_model = get_cfg(
                 "yolo_obb_direct_model_path",
                 "yolo_model_path",
-                default="yolo26s-obb.pt",
+                default="",
             )
             yolo_detect_model = get_cfg("yolo_detect_model_path", default="")
             yolo_crop_obb_model = get_cfg(
@@ -14260,12 +14212,9 @@ class MainWindow(QMainWindow):
                 sleap_pose_model = legacy_pose_model
             self._set_pose_model_path_for_backend(yolo_pose_model, backend="yolo")
             self._set_pose_model_path_for_backend(sleap_pose_model, backend="sleap")
-            self._set_pose_model_path_for_backend(
-                self._pose_model_path_for_backend(
-                    self.combo_pose_model_type.currentText().strip().lower()
-                ),
-                backend=self.combo_pose_model_type.currentText().strip().lower(),
-                update_line=True,
+            active_backend = self.combo_pose_model_type.currentText().strip().lower()
+            self._refresh_pose_model_combo(
+                preferred_model_path=self._pose_model_path_for_backend(active_backend)
             )
             pose_runtime_flavor = derive_pose_runtime_settings(
                 self._selected_compute_runtime(),
@@ -14894,12 +14843,20 @@ class MainWindow(QMainWindow):
             logger.info("=" * 80)
             return
 
-        # Create log file next to the video
+        # Create a session log in the video's dedicated log directory.
         video_path = Path(video_path)
-        log_dir = video_path.parent
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"{video_path.stem}_tracking_{timestamp}.log"
-        log_path = log_dir / log_filename
+        csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        artifact_base_dir = choose_writable_artifact_base_dir(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        log_path = build_tracking_session_log_path(
+            video_path,
+            timestamp,
+            artifact_base_dir=artifact_base_dir,
+            create_dir=True,
+        )
 
         # Create file handler for session
         self.session_log_handler = logging.FileHandler(log_path, mode="w")

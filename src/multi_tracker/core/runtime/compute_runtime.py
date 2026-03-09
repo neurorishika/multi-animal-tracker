@@ -159,6 +159,24 @@ def _pipeline_supports_runtime(pipeline: str, runtime: str) -> bool:
             )
         return True
 
+    if p == "tiny_classify":
+        # TinyCNN: PyTorch runtimes always supported; ONNX/TRT require onnxruntime.
+        if rt == "onnx_cpu":
+            return bool(ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE)
+        if rt == "onnx_cuda":
+            return bool(
+                ONNXRUNTIME_CUDA_AVAILABLE
+                and _cuda_like_available()
+                and not ROCM_AVAILABLE
+            )
+        if rt == "onnx_rocm":
+            return bool(ONNXRUNTIME_ROCM_AVAILABLE and ROCM_AVAILABLE)
+        if rt == "tensorrt":
+            return bool(
+                TENSORRT_AVAILABLE and _cuda_like_available() and not ROCM_AVAILABLE
+            )
+        return True
+
     # Unknown pipeline: require generic capability only.
     if rt == "onnx_cpu":
         return bool(ONNXRUNTIME_CPU_AVAILABLE or ONNXRUNTIME_AVAILABLE)

@@ -16,6 +16,9 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+_HEADTAIL_DIRECTIONAL_CLASS_SET = frozenset({"left", "right"})
+_HEADTAIL_FIVE_CLASS_SET = frozenset({"up", "down", "left", "right", "unknown"})
+
 
 class ObjectDetector:
     """
@@ -613,7 +616,7 @@ class YOLOOBBDetector:
         """Load a tiny head-tail classifier (.pth checkpoint).
 
         Supports two checkpoint formats:
-        * **Notebook/legacy binary** – produced by ``_train_tiny_headtail`` in runner.py.
+                * **Notebook/legacy binary** – older single-output checkpoints.
           Classifier has a single output (sigmoid). Returns ``(model, None, input_size)``.
         * **ClassKit N-class** – produced by ``_train_tiny_classify`` in runner.py.
           Classifier has N outputs (softmax). Stores ``class_names`` alongside the model.
@@ -701,7 +704,14 @@ class YOLOOBBDetector:
         tiny_result = self._try_load_tiny_head_classifier(model_path_str)
         if tiny_result is not None:
             tiny_model, class_names, input_size = tiny_result
-            self.headtail_class_names = class_names
+            self.headtail_class_names = (
+                self._validate_headtail_class_names(
+                    class_names,
+                    source=f"head-tail checkpoint {Path(model_path_str).name}",
+                )
+                if class_names is not None
+                else None
+            )
             self.headtail_input_size = input_size
             self.headtail_predict_device = None
             if class_names is not None:
@@ -709,8 +719,8 @@ class YOLOOBBDetector:
                 self.headtail_model = tiny_model
                 logger.info(
                     "Loaded ClassKit tiny head-tail classifier (%d classes: %s).",
-                    len(class_names),
-                    ", ".join(class_names[:8]),
+                    len(self.headtail_class_names),
+                    ", ".join(self.headtail_class_names[:8]),
                 )
             else:
                 self.headtail_backend = "tiny"
@@ -720,6 +730,13 @@ class YOLOOBBDetector:
 
         model, predict_device = self._load_model_for_task(
             model_path_str, task="classify"
+        )
+        model_names = getattr(model, "names", None)
+        if model_names is None:
+            model_names = getattr(getattr(model, "model", None), "names", None)
+        self.headtail_class_names = self._validate_headtail_class_names(
+            model_names,
+            source=f"head-tail model {Path(model_path_str).name}",
         )
         self.headtail_backend = "yolo"
         self.headtail_model = model
@@ -872,19 +889,14 @@ class YOLOOBBDetector:
                 top1_conf = top1_conf.detach().cpu().numpy()
                 top1_idx = top1_idx.detach().cpu().numpy()
 
-            p_right_arr = []
+            classified = []
             for cls_idx, conf in zip(top1_idx, top1_conf):
                 label = self._label_from_top1(int(cls_idx), class_names)
                 direction = self._headtail_class_to_direction(
                     label, cls_idx=int(cls_idx), names=class_names
                 )
-                if direction == "right":
-                    p_right_arr.append(float(conf))
-                elif direction == "left":
-                    p_right_arr.append(1.0 - float(conf))
-                else:
-                    p_right_arr.append(0.5)  # unknown class — abstain
-            return np.array(p_right_arr, dtype=np.float32)
+                classified.append((direction, float(conf)))
+            return classified
 
         predict_device = getattr(self, "headtail_predict_device", self.device)
         try:
@@ -969,24 +981,77 @@ class YOLOOBBDetector:
             return str(names[int(cls_idx)]).strip().lower()
         return ""
 
+    def _ordered_headtail_class_names(self, names):
+        if isinstance(names, dict):
+            try:
+                ordered_items = sorted(names.items(), key=lambda kv: int(kv[0]))
+            except Exception:
+                ordered_items = list(names.items())
+            return [str(v) for _, v in ordered_items]
+        if isinstance(names, (list, tuple)):
+            return [str(v) for v in names]
+        return []
+
+    def _canonicalize_headtail_class_label(self, label: str):
+        text = str(label or "").strip().lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "left": "left",
+            "head_left": "left",
+            "right": "right",
+            "head_right": "right",
+            "up": "up",
+            "head_up": "up",
+            "down": "down",
+            "head_down": "down",
+            "unknown": "unknown",
+            "head_unknown": "unknown",
+        }
+        return aliases.get(text)
+
+    def _validate_headtail_class_names(self, class_names, *, source: str = "model"):
+        ordered = self._ordered_headtail_class_names(class_names)
+        if not ordered:
+            raise ValueError(
+                f"{source} is missing class names. Expected exactly left/right or up/down/left/right/unknown."
+            )
+
+        normalized = []
+        for raw_name in ordered:
+            token = self._canonicalize_headtail_class_label(raw_name)
+            if token is None:
+                raise ValueError(
+                    f"Unsupported head-tail class label {raw_name!r} in {source}. "
+                    "Expected exactly left/right or up/down/left/right/unknown."
+                )
+            normalized.append(token)
+
+        normalized_set = frozenset(normalized)
+        if len(normalized_set) != len(normalized):
+            raise ValueError(
+                f"Duplicate or aliased head-tail labels in {source}: {ordered}."
+            )
+        if normalized_set not in (
+            _HEADTAIL_DIRECTIONAL_CLASS_SET,
+            _HEADTAIL_FIVE_CLASS_SET,
+        ):
+            raise ValueError(
+                f"Unsupported head-tail class schema in {source}: {ordered}. "
+                "Expected exactly left/right or up/down/left/right/unknown."
+            )
+        return normalized
+
     def _headtail_class_to_direction(self, label: str, cls_idx=None, names=None):
-        text = str(label or "").strip().lower()
-        if "left" in text:
+        text = self._canonicalize_headtail_class_label(label)
+        if text == "left":
             return "left"
-        if "right" in text:
+        if text == "right":
             return "right"
+        if text in {"up", "down", "unknown"}:
+            return None
 
         # Fallback for unnamed binary classifiers.
         if names is not None:
-            if isinstance(names, dict):
-                ordered = [
-                    str(names[k]).strip().lower()
-                    for k in sorted(names.keys(), key=lambda x: int(x))
-                ]
-            elif isinstance(names, (list, tuple)):
-                ordered = [str(v).strip().lower() for v in names]
-            else:
-                ordered = []
+            ordered = self._ordered_headtail_class_names(names)
             if len(ordered) == 2:
                 if cls_idx is not None:
                     return "right" if int(cls_idx) == 1 else "left"
@@ -1089,7 +1154,8 @@ class YOLOOBBDetector:
         if cls_results is None or len(cls_results) == 0:
             return heading_hints, directed_mask
 
-        if getattr(self, "headtail_backend", "yolo") in ("tiny", "classkit_tiny"):
+        backend = getattr(self, "headtail_backend", "yolo")
+        if backend == "tiny":
             probs = np.asarray(cls_results, dtype=np.float32).reshape(-1)
             n_eval = min(len(canonical_meta), len(probs))
             for j in range(n_eval):
@@ -1099,6 +1165,21 @@ class YOLOOBBDetector:
                 if conf < conf_threshold:
                     continue
                 theta = axis_theta if p_right >= 0.5 else (axis_theta + np.pi)
+                heading_hints[i] = float(theta % (2.0 * np.pi))
+                directed_mask[i] = 1
+        elif backend == "classkit_tiny":
+            n_eval = min(len(canonical_meta), len(cls_results))
+            for j in range(n_eval):
+                i, axis_theta = canonical_meta[j]
+                try:
+                    direction, conf = cls_results[j]
+                except Exception:
+                    continue
+                if direction not in {"left", "right"}:
+                    continue
+                if float(conf) < conf_threshold:
+                    continue
+                theta = axis_theta if direction == "right" else (axis_theta + np.pi)
                 heading_hints[i] = float(theta % (2.0 * np.pi))
                 directed_mask[i] = 1
         else:
@@ -1116,7 +1197,9 @@ class YOLOOBBDetector:
                     top1_conf = float(getattr(probs, "top1conf", 0.0))
                     if top1 < 0 or top1_conf < conf_threshold:
                         continue
-                    names = getattr(result, "names", None)
+                    names = getattr(self, "headtail_class_names", None) or getattr(
+                        result, "names", None
+                    )
                     label = self._label_from_top1(top1, names)
                     direction = self._headtail_class_to_direction(
                         label, cls_idx=top1, names=names

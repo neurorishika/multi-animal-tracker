@@ -17,6 +17,9 @@ from multi_tracker.core.assigners.hungarian import TrackAssigner
 from multi_tracker.core.detectors.engine import DetectionFilter
 from multi_tracker.core.filters.kalman import KalmanFilterManager
 from multi_tracker.core.tracking.pose_features import (
+    build_detection_direction_overrides as _pf_build_direction_overrides,
+)
+from multi_tracker.core.tracking.pose_features import (
     build_pose_detection_keypoint_map as _pf_build_keypoint_map,
 )
 from multi_tracker.core.tracking.pose_features import (  # noqa: F401 (re-exported via parity path)
@@ -32,10 +35,7 @@ from multi_tracker.core.tracking.pose_features import (
     normalize_theta as _pf_normalize_theta,
 )
 from multi_tracker.core.tracking.pose_features import (
-    resolve_tracking_theta as _pf_resolve_tracking_theta,
-)
-from multi_tracker.core.tracking.pose_features import (
-    select_directed_heading as _pf_select_directed_heading,
+    resolve_detection_tracking_theta as _pf_resolve_detection_tracking_theta,
 )
 from multi_tracker.data.detection_cache import DetectionCache
 
@@ -684,42 +684,25 @@ class TrackingOptimizer(QThread):
                         return_headings=True,
                     )
                 )
+            detection_directed_heading, detection_directed_mask = (
+                _pf_build_direction_overrides(
+                    len(meas),
+                    _det_pose_headings,
+                    [heading is not None for heading in _det_pose_headings],
+                    _headtail_hints,
+                    _headtail_directed,
+                    pose_overrides_headtail=bool(
+                        params.get("POSE_OVERRIDES_HEADTAIL", True)
+                    ),
+                )
+            )
             _association_data: dict = {
+                "detection_pose_heading": detection_directed_heading,
                 "detection_pose_keypoints": _det_pose_kpts,
                 "detection_pose_visibility": _det_pose_vis,
                 "track_pose_prototypes": track_pose_prototypes,
                 "track_avg_step": track_avg_step.copy(),
             }
-            # Build per-detection directed mask, mirroring worker.py heading logic.
-            detection_directed_mask = np.zeros(len(meas), dtype=np.uint8)
-            if len(meas) > 0:
-                _pose_overrides_ht = bool(params.get("POSE_OVERRIDES_HEADTAIL", True))
-                for _di in range(len(meas)):
-                    _ph = (
-                        _det_pose_headings[_di]
-                        if _di < len(_det_pose_headings)
-                        else None
-                    )
-                    _pd = _ph is not None and math.isfinite(float(_ph))
-                    _hth = (
-                        float(_headtail_hints[_di])
-                        if _headtail_hints and _di < len(_headtail_hints)
-                        else math.nan
-                    )
-                    _htd = (
-                        bool(_headtail_directed[_di])
-                        if _headtail_directed and _di < len(_headtail_directed)
-                        else False
-                    )
-                    _, _is_dir = _pf_select_directed_heading(
-                        float(_ph) if _pd else math.nan,
-                        _pd,
-                        _hth,
-                        _htd,
-                        _pose_overrides_ht,
-                    )
-                    if _is_dir:
-                        detection_directed_mask[_di] = 1
 
             if meas:
                 # Advance KF only when detections exist — mirrors worker.py where
@@ -776,11 +759,14 @@ class TrackingOptimizer(QThread):
                         if c < len(detection_directed_mask)
                         else False
                     )
-                    # Match worker.py: pass KF-predicted theta as fallback for
-                    # OBB axis-flip disambiguation when orientation_last is None.
-                    theta_cor = _pf_resolve_tracking_theta(
+                    theta_cor = _pf_resolve_detection_tracking_theta(
                         r,
-                        m[2],
+                        float(m[2]),
+                        (
+                            detection_directed_heading[c]
+                            if c < len(detection_directed_heading)
+                            else math.nan
+                        ),
                         _pose_d,
                         orientation_last,
                         fallback_theta=(
@@ -878,9 +864,14 @@ class TrackingOptimizer(QThread):
                                 if d_idx < len(detection_directed_mask)
                                 else False
                             )
-                            theta_init = _pf_resolve_tracking_theta(
+                            theta_init = _pf_resolve_detection_tracking_theta(
                                 track_idx,
                                 float(meas[d_idx][2]),
+                                (
+                                    detection_directed_heading[d_idx]
+                                    if d_idx < len(detection_directed_heading)
+                                    else math.nan
+                                ),
                                 _pose_d_f,
                                 orientation_last,
                                 fallback_theta=(
@@ -1460,44 +1451,25 @@ class TrackingPreviewWorker(QThread):
                             return_headings=True,
                         )
                     )
+                detection_directed_heading, detection_directed_mask = (
+                    _pf_build_direction_overrides(
+                        len(meas),
+                        _det_pose_headings,
+                        [heading is not None for heading in _det_pose_headings],
+                        _headtail_hints,
+                        _headtail_directed,
+                        pose_overrides_headtail=bool(
+                            self.params.get("POSE_OVERRIDES_HEADTAIL", True)
+                        ),
+                    )
+                )
                 _association_data: dict = {
+                    "detection_pose_heading": detection_directed_heading,
                     "detection_pose_keypoints": _det_pose_kpts,
                     "detection_pose_visibility": _det_pose_vis,
                     "track_pose_prototypes": track_pose_prototypes,
                     "track_avg_step": np.zeros(N, dtype=np.float32),
                 }
-                # Build per-detection directed mask, mirroring worker.py.
-                detection_directed_mask = np.zeros(len(meas), dtype=np.uint8)
-                if len(meas) > 0:
-                    _pose_overrides_ht = bool(
-                        self.params.get("POSE_OVERRIDES_HEADTAIL", True)
-                    )
-                    for _di in range(len(meas)):
-                        _ph = (
-                            _det_pose_headings[_di]
-                            if _di < len(_det_pose_headings)
-                            else None
-                        )
-                        _pd = _ph is not None and math.isfinite(float(_ph))
-                        _hth = (
-                            float(_headtail_hints[_di])
-                            if _headtail_hints and _di < len(_headtail_hints)
-                            else math.nan
-                        )
-                        _htd = (
-                            bool(_headtail_directed[_di])
-                            if _headtail_directed and _di < len(_headtail_directed)
-                            else False
-                        )
-                        _, _is_dir = _pf_select_directed_heading(
-                            float(_ph) if _pd else math.nan,
-                            _pd,
-                            _hth,
-                            _htd,
-                            _pose_overrides_ht,
-                        )
-                        if _is_dir:
-                            detection_directed_mask[_di] = 1
 
                 if meas:
                     cost, _ = assigner.compute_cost_matrix(
@@ -1536,8 +1508,16 @@ class TrackingPreviewWorker(QThread):
                             if c < len(detection_directed_mask)
                             else False
                         )
-                        theta_cor = _pf_resolve_tracking_theta(
-                            r, m[2], _pose_d, orientation_last
+                        theta_cor = _pf_resolve_detection_tracking_theta(
+                            r,
+                            float(m[2]),
+                            (
+                                detection_directed_heading[c]
+                                if c < len(detection_directed_heading)
+                                else math.nan
+                            ),
+                            _pose_d,
+                            orientation_last,
                         )
                         m_cor = np.array([m[0], m[1], theta_cor], dtype=np.float32)
                         if track_states[r] == "lost":
@@ -1577,8 +1557,16 @@ class TrackingPreviewWorker(QThread):
                                     if d_idx < len(detection_directed_mask)
                                     else False
                                 )
-                                theta_cor = _pf_resolve_tracking_theta(
-                                    r, m[2], _pose_d, orientation_last
+                                theta_cor = _pf_resolve_detection_tracking_theta(
+                                    r,
+                                    float(m[2]),
+                                    (
+                                        detection_directed_heading[d_idx]
+                                        if d_idx < len(detection_directed_heading)
+                                        else math.nan
+                                    ),
+                                    _pose_d,
+                                    orientation_last,
                                 )
                                 kf_manager.initialize_filter(
                                     r,

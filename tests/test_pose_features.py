@@ -9,6 +9,7 @@ import pytest
 
 from multi_tracker.core.tracking.pose_features import (
     apply_foreign_obb_mask,
+    build_detection_direction_overrides,
     build_pose_detection_keypoint_map,
     compute_detection_pose_features,
     compute_pose_geometry_from_keypoints,
@@ -16,6 +17,7 @@ from multi_tracker.core.tracking.pose_features import (
     normalize_pose_keypoints,
     normalize_theta,
     parse_pose_group_tokens,
+    resolve_detection_tracking_theta,
     resolve_pose_group_indices,
 )
 
@@ -297,6 +299,51 @@ def test_compute_detection_pose_features_empty():
     out_kpts, out_vis = compute_detection_pose_features([], {}, [0], [1], [], 0.2)
     assert out_kpts == []
     assert len(out_vis) == 0
+
+
+# ---------------------------------------------------------------------------
+# Directed heading merge / tracking resolution
+# ---------------------------------------------------------------------------
+
+
+def test_build_detection_direction_overrides_prefers_pose_by_default():
+    headings, directed = build_detection_direction_overrides(
+        2,
+        pose_headings=[math.pi / 4, None],
+        pose_directed_mask=[1, 0],
+        headtail_headings=[math.pi, math.pi / 2],
+        headtail_directed_mask=[1, 1],
+    )
+
+    assert directed.tolist() == [1, 1]
+    assert headings[0] == pytest.approx(math.pi / 4, abs=1e-6)
+    assert headings[1] == pytest.approx(math.pi / 2, abs=1e-6)
+
+
+def test_build_detection_direction_overrides_can_prefer_headtail():
+    headings, directed = build_detection_direction_overrides(
+        1,
+        pose_headings=[math.pi / 4],
+        pose_directed_mask=[1],
+        headtail_headings=[math.pi],
+        headtail_directed_mask=[1],
+        pose_overrides_headtail=False,
+    )
+
+    assert directed.tolist() == [1]
+    assert headings[0] == pytest.approx(math.pi, abs=1e-6)
+
+
+def test_resolve_detection_tracking_theta_uses_directed_heading_override():
+    theta = resolve_detection_tracking_theta(
+        0,
+        measured_theta=0.0,
+        directed_heading=math.pi / 2,
+        pose_directed=True,
+        orientation_last=[None],
+    )
+
+    assert theta == pytest.approx(math.pi / 2, abs=1e-6)
 
 
 # ---------------------------------------------------------------------------

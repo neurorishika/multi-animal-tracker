@@ -561,6 +561,12 @@ class ExportWorker(QRunnable):
             self.signals.started.emit()
             self.signals.progress.emit(0, f"Exporting to {self.format}...")
 
+            if self.label_expansion and not self.canonicalize:
+                raise RuntimeError(
+                    "Label expansion requires canonical training space. "
+                    "Enable Canonical mode before using label expansion."
+                )
+
             # Ensure temp_dir exists when label expansion is requested
             if self.label_expansion and self.temp_dir is None:
                 import tempfile
@@ -636,6 +642,9 @@ class ExportWorker(QRunnable):
 
                 # Build reverse name→int map so we can look up the remapped int label.
                 name_to_int = {v: k for k, v in class_names.items()}
+                name_to_int_ci = {
+                    str(v).strip().lower(): k for k, v in class_names.items()
+                }
 
                 # CV2 flip codes: 0=vertical (flipud), 1=horizontal (fliplr)
                 flip_code = {"fliplr": 1, "flipud": 0}
@@ -647,6 +656,7 @@ class ExportWorker(QRunnable):
                 extra_labels: List[int] = []
                 extra_splits: List[str] = []
                 n_exp = 0
+                n_skipped_unknown_dst = 0
 
                 for axis, mapping in self.label_expansion.items():
                     if axis not in flip_code:
@@ -659,14 +669,24 @@ class ExportWorker(QRunnable):
                         src_name = class_names.get(label_int, "")
                         dst_name = mapping.get(src_name)
                         if dst_name is None:
+                            # Backward compatibility for legacy configs with case drift.
+                            src_name_ci = str(src_name).strip().lower()
+                            for key, value in mapping.items():
+                                if str(key).strip().lower() == src_name_ci:
+                                    dst_name = value
+                                    break
+                        if dst_name is None:
                             continue  # label not in this expansion rule
-                        dst_int = name_to_int.get(dst_name)
+
+                        dst_name_clean = str(dst_name).strip()
+                        dst_int = name_to_int.get(dst_name_clean)
                         if dst_int is None:
-                            # Destination class not yet in map — register it
-                            new_int = max(class_names.keys(), default=-1) + 1
-                            class_names[new_int] = dst_name
-                            name_to_int[dst_name] = new_int
-                            dst_int = new_int
+                            dst_int = name_to_int_ci.get(dst_name_clean.lower())
+                        if dst_int is None:
+                            # Unknown destinations usually come from stale free-text
+                            # mappings. Skip rather than inventing a synthetic class.
+                            n_skipped_unknown_dst += 1
+                            continue
 
                         img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
                         if img is None:
@@ -688,6 +708,11 @@ class ExportWorker(QRunnable):
                     labels = labels + extra_labels
                     splits = splits + extra_splits
                     self.copy_files = True  # expanded images live in temp_dir
+                if n_skipped_unknown_dst:
+                    self.signals.progress.emit(
+                        58,
+                        f"Skipped {n_skipped_unknown_dst} expansion rows with unknown destination class",
+                    )
 
             if self.format == "imagefolder":
                 from ..export.imagefolder import export_to_imagefolder
@@ -924,6 +949,54 @@ class LogitsUMAPWorker(QRunnable):
             self.signals.finished.emit()
 
 
+class LogitsPCAWorker(QRunnable):
+    """Compute a 2D PCA projection from a probability / logit matrix (N × C)."""
+
+    def __init__(self, probs):
+        super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
+        self.probs = probs
+        self.signals = TaskSignals()
+
+    @Slot()
+    def run(self):
+        try:
+            self.signals.started.emit()
+            import numpy as np
+
+            mat = np.asarray(self.probs, dtype=np.float64)
+            if mat.ndim != 2:
+                raise ValueError("Expected 2D probability/logit matrix for PCA")
+            n, c = mat.shape
+            self.signals.progress.emit(0, f"Input: {n:,} images × {c} classes")
+
+            if n < 2:
+                raise ValueError("Need at least 2 samples to compute PCA")
+
+            self.signals.progress.emit(20, "Centering logits/probabilities...")
+            centered = mat - mat.mean(axis=0, keepdims=True)
+
+            self.signals.progress.emit(50, "Running SVD for PCA projection...")
+            _u, _s, vt = np.linalg.svd(centered, full_matrices=False)
+
+            components = vt[:2].T if vt.shape[0] >= 2 else vt[:1].T
+            coords = centered @ components
+            if coords.shape[1] == 1:
+                coords = np.concatenate(
+                    [coords, np.zeros((coords.shape[0], 1), dtype=coords.dtype)],
+                    axis=1,
+                )
+
+            self.signals.progress.emit(100, "Model-space PCA complete!")
+            self.signals.success.emit({"coords": coords.astype(np.float32)})
+
+        except Exception as e:
+            traceback.print_exc()
+            self.signals.error.emit(str(e))
+        finally:
+            self.signals.finished.emit()
+
+
 class ALBatchWorker(QRunnable):
     """Select the next active learning labeling batch using acquisition strategies."""
 
@@ -1014,6 +1087,11 @@ class ALBatchWorker(QRunnable):
 class TinyCNNInferenceWorker(QRunnable):
     """Run tiny CNN classification inference on all project images.
 
+    Supports PyTorch (cpu/mps/cuda/rocm) and ONNX/TensorRT runtimes via the
+    canonical ``compute_runtime`` parameter (see ``core.runtime.compute_runtime``).
+    ONNX inference requires a ``<stem>.onnx`` sibling of the ``.pth`` model file,
+    which is auto-exported by ``runner.py`` after training.
+
     Returns the same ``{"probs": ndarray, "class_names": list}`` contract as
     ``YoloInferenceWorker`` so callers share a unified post-inference path.
     """
@@ -1023,19 +1101,38 @@ class TinyCNNInferenceWorker(QRunnable):
         model_path: Path,
         image_paths: List[Path],
         class_names: List[str],
-        device: str = "cpu",
+        compute_runtime: str = "cpu",
         batch_size: int = 64,
         canonicalize_mat: bool = False,
+        # Deprecated — use compute_runtime instead.
+        device: str = "",
     ):
         super().__init__()
         self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
         self.model_path = Path(model_path)
         self.image_paths = list(image_paths)
         self.class_names = list(class_names)
-        self.device = device
+        # Backward-compat: if caller only passed the old `device` kwarg, honour it.
+        if not compute_runtime or compute_runtime == "cpu":
+            if device and device not in ("", "cpu"):
+                compute_runtime = device
+        self.compute_runtime = str(compute_runtime or "cpu")
         self.batch_size = batch_size
         self.canonicalize_mat = bool(canonicalize_mat)
         self.signals = TaskSignals()
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _torch_device(rt: str) -> str:
+        """Map a canonical runtime string to a plain PyTorch device string."""
+        if rt in ("cuda", "onnx_cuda", "tensorrt"):
+            return "cuda"
+        if rt == "mps":
+            return "mps"
+        if rt in ("rocm", "onnx_rocm"):
+            return "cuda"  # PyTorch uses "cuda" for ROCm
+        return "cpu"
 
     @Slot()
     def run(self):
@@ -1043,36 +1140,27 @@ class TinyCNNInferenceWorker(QRunnable):
             self.signals.started.emit()
             import cv2
             import numpy as np
-            import torch
-            import torch.nn.functional as F
 
             from ...core.canonicalization import MatMetadataCanonicalizer
-            from ...training.tiny_model import load_tiny_classifier
+            from ...core.runtime.compute_runtime import _normalize_runtime
+
+            rt = _normalize_runtime(self.compute_runtime)
+            use_onnx = rt.startswith("onnx_") or rt == "tensorrt"
+            onnx_path = self.model_path.with_suffix(".onnx")
+            if use_onnx and not onnx_path.exists():
+                # ONNX file not available — fall back to PyTorch silently.
+                use_onnx = False
 
             self.signals.progress.emit(
-                0, f"Loading tiny CNN: {self.model_path.name}..."
+                0, f"Loading tiny CNN ({rt}): {self.model_path.name}..."
             )
-            model, ckpt = load_tiny_classifier(str(self.model_path), device=self.device)
-            input_w, input_h = ckpt.get("input_size", [128, 64])
-
-            # Prefer class names embedded in checkpoint over caller-supplied fallback
-            ckpt_names = ckpt.get("class_names")
-            resolved_names = list(ckpt_names) if ckpt_names else list(self.class_names)
 
             num_images = len(self.image_paths)
-            self.signals.progress.emit(
-                5, f"Tiny CNN inference on {num_images:,} images..."
-            )
-
             canonicalizer = MatMetadataCanonicalizer(enabled=self.canonicalize_mat)
-            all_probs: list = []
 
-            for batch_start in range(0, num_images, self.batch_size):
-                batch_paths = self.image_paths[
-                    batch_start : batch_start + self.batch_size
-                ]
-                batch_tensors = []
-
+            # ── Image-loading helper (shared between both inference paths) ────
+            def _load_batch_images(batch_paths, input_w, input_h):
+                tensors = []
                 for p in batch_paths:
                     try:
                         if self.canonicalize_mat:
@@ -1087,32 +1175,105 @@ class TinyCNNInferenceWorker(QRunnable):
                         else:
                             img = cv2.imread(str(p), cv2.IMREAD_COLOR)
                             if img is None:
-                                batch_tensors.append(torch.zeros(3, input_h, input_w))
+                                tensors.append(
+                                    np.zeros((3, input_h, input_w), dtype=np.float32)
+                                )
                                 continue
                             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         img = cv2.resize(
                             img, (input_w, input_h), interpolation=cv2.INTER_LINEAR
                         )
-                        t = (
-                            torch.from_numpy(img.copy()).permute(2, 0, 1).float()
-                            / 255.0
+                        tensors.append(
+                            img.transpose(2, 0, 1).astype(np.float32) / 255.0
                         )
-                        batch_tensors.append(t)
                     except Exception:
-                        batch_tensors.append(torch.zeros(3, input_h, input_w))
+                        tensors.append(
+                            np.zeros((3, input_h, input_w), dtype=np.float32)
+                        )
+                return (
+                    np.stack(tensors, axis=0)
+                    if tensors
+                    else np.zeros((0, 3, input_h, input_w), dtype=np.float32)
+                )
 
-                if not batch_tensors:
-                    continue
+            all_probs: list = []
+            resolved_names: list = list(self.class_names)
 
-                x = torch.stack(batch_tensors).to(self.device)
-                with torch.no_grad():
-                    logits = model(x)
-                    probs = F.softmax(logits, dim=1).cpu().numpy()
-                all_probs.append(probs)
+            # ── ONNX / TensorRT inference path ────────────────────────────────
+            if use_onnx:
+                import torch  # for reading ckpt metadata only
 
-                done = batch_start + len(batch_paths)
-                pct = min(95, 5 + int(90 * done / num_images))
-                self.signals.progress.emit(pct, f"Processed {done:,}/{num_images:,}")
+                from ...training.tiny_model import load_tiny_onnx, run_tiny_onnx
+
+                # Read input size from .pth checkpoint (no GPU needed)
+                try:
+                    _ckpt = torch.load(
+                        str(self.model_path), map_location="cpu", weights_only=False
+                    )
+                    input_w, input_h = _ckpt.get("input_size", [128, 64])
+                    ckpt_names = _ckpt.get("class_names")
+                    if ckpt_names:
+                        resolved_names = list(ckpt_names)
+                except Exception:
+                    input_w, input_h = 128, 64
+
+                session = load_tiny_onnx(str(onnx_path), compute_runtime=rt)
+                self.signals.progress.emit(
+                    5, f"Tiny CNN ONNX inference on {num_images:,} images..."
+                )
+
+                for batch_start in range(0, num_images, self.batch_size):
+                    batch_paths = self.image_paths[
+                        batch_start : batch_start + self.batch_size
+                    ]
+                    batch_np = _load_batch_images(batch_paths, input_w, input_h)
+                    if batch_np.shape[0] == 0:
+                        continue
+                    probs = run_tiny_onnx(session, batch_np)
+                    all_probs.append(probs)
+                    done = batch_start + len(batch_paths)
+                    pct = min(95, 5 + int(90 * done / num_images))
+                    self.signals.progress.emit(
+                        pct, f"Processed {done:,}/{num_images:,}"
+                    )
+
+            # ── PyTorch inference path ─────────────────────────────────────────
+            else:
+                import torch
+                import torch.nn.functional as F
+
+                from ...training.tiny_model import load_tiny_classifier
+
+                torch_device = self._torch_device(rt)
+                model, ckpt = load_tiny_classifier(
+                    str(self.model_path), device=torch_device
+                )
+                input_w, input_h = ckpt.get("input_size", [128, 64])
+                ckpt_names = ckpt.get("class_names")
+                if ckpt_names:
+                    resolved_names = list(ckpt_names)
+
+                self.signals.progress.emit(
+                    5, f"Tiny CNN inference on {num_images:,} images..."
+                )
+
+                for batch_start in range(0, num_images, self.batch_size):
+                    batch_paths = self.image_paths[
+                        batch_start : batch_start + self.batch_size
+                    ]
+                    batch_np = _load_batch_images(batch_paths, input_w, input_h)
+                    if batch_np.shape[0] == 0:
+                        continue
+                    x = torch.from_numpy(batch_np).to(torch_device)
+                    with torch.no_grad():
+                        logits = model(x)
+                        probs = F.softmax(logits, dim=1).cpu().numpy()
+                    all_probs.append(probs)
+                    done = batch_start + len(batch_paths)
+                    pct = min(95, 5 + int(90 * done / num_images))
+                    self.signals.progress.emit(
+                        pct, f"Processed {done:,}/{num_images:,}"
+                    )
 
             if all_probs:
                 result_probs = np.concatenate(all_probs, axis=0)
@@ -1129,5 +1290,6 @@ class TinyCNNInferenceWorker(QRunnable):
             traceback.print_exc()
             self.signals.error.emit(str(e))
         finally:
+            self.signals.finished.emit()
             self.signals.finished.emit()
             self.signals.finished.emit()

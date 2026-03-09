@@ -21,6 +21,9 @@ from multi_tracker.core.detectors.engine import create_detector
 from multi_tracker.core.filters.kalman import KalmanFilterManager
 from multi_tracker.core.identity.analysis import IndividualDatasetGenerator
 from multi_tracker.core.tracking.pose_features import (
+    build_detection_direction_overrides as _pf_build_direction_overrides,
+)
+from multi_tracker.core.tracking.pose_features import (
     build_pose_detection_keypoint_map as _pf_build_keypoint_map,
 )
 from multi_tracker.core.tracking.pose_features import (
@@ -28,6 +31,9 @@ from multi_tracker.core.tracking.pose_features import (
 )
 from multi_tracker.core.tracking.pose_features import (
     normalize_pose_keypoints as _pf_normalize_keypoints,
+)
+from multi_tracker.core.tracking.pose_features import (
+    resolve_detection_tracking_theta as _pf_resolve_detection_tracking_theta,
 )
 from multi_tracker.core.tracking.pose_features import (
     resolve_pose_group_indices as _pf_resolve_indices,
@@ -40,6 +46,7 @@ from multi_tracker.utils.image_processing import (
     apply_image_adjustments,
     stabilize_lighting,
 )
+from multi_tracker.utils.video_artifacts import build_individual_properties_cache_path
 
 logger = logging.getLogger(__name__)
 
@@ -189,16 +196,13 @@ class TrackingWorker(QThread):
         self, properties_id: str, start_frame: int, end_frame: int
     ) -> Path:
         """Build deterministic path for individual-properties cache artifact."""
-        if self.detection_cache_path:
-            base_dir = Path(self.detection_cache_path).parent
-        else:
-            base_dir = Path(self.video_path).parent
-        video_stem = Path(self.video_path).stem
-        fname = (
-            f"{video_stem}_individual_properties_{properties_id}_"
-            f"{int(start_frame)}_{int(end_frame)}.npz"
+        return build_individual_properties_cache_path(
+            self.video_path,
+            properties_id,
+            start_frame,
+            end_frame,
+            detection_cache_path=self.detection_cache_path,
         )
-        return base_dir / fname
 
     def _extract_expanded_obb_crop(
         self, frame: np.ndarray, corners: np.ndarray, padding_fraction: float
@@ -2025,35 +2029,16 @@ class TrackingWorker(QThread):
 
             pose_overrides_headtail = bool(params.get("POSE_OVERRIDES_HEADTAIL", True))
             if len(meas) > 0:
-                for det_idx in range(len(meas)):
-                    pose_heading = (
-                        float(detection_pose_heading[det_idx])
-                        if det_idx < len(detection_pose_heading)
-                        else float("nan")
-                    )
-                    pose_directed = bool(
-                        det_idx < len(pose_directed_mask)
-                        and pose_directed_mask[det_idx] == 1
-                    )
-                    headtail_heading = (
-                        float(detection_headtail_heading[det_idx])
-                        if det_idx < len(detection_headtail_heading)
-                        else float("nan")
-                    )
-                    headtail_directed = bool(
-                        det_idx < len(headtail_directed_mask)
-                        and headtail_directed_mask[det_idx] == 1
-                    )
-                    selected_heading, is_directed = self._select_directed_heading(
-                        pose_heading=pose_heading,
-                        pose_directed=pose_directed,
-                        headtail_heading=headtail_heading,
-                        headtail_directed=headtail_directed,
+                detection_directed_heading, detection_directed_mask = (
+                    _pf_build_direction_overrides(
+                        len(meas),
+                        detection_pose_heading,
+                        pose_directed_mask,
+                        detection_headtail_heading,
+                        headtail_directed_mask,
                         pose_overrides_headtail=pose_overrides_headtail,
                     )
-                    if is_directed:
-                        detection_directed_heading[det_idx] = selected_heading
-                        detection_directed_mask[det_idx] = 1
+                )
 
             if len(meas) >= params.get("MIN_DETECTIONS_TO_START", 1):
                 detection_counts += 1
@@ -2171,17 +2156,16 @@ class TrackingWorker(QThread):
                         c < len(detection_directed_mask)
                         and detection_directed_mask[c] == 1
                     )
-                    tracking_theta_measurement = measured_theta
-                    if directed_heading and c < len(detection_directed_heading):
-                        directed_theta = float(detection_directed_heading[c])
-                        if np.isfinite(directed_theta):
-                            tracking_theta_measurement = directed_theta
-
-                    theta_for_tracking = self._resolve_tracking_theta(
+                    theta_for_tracking = _pf_resolve_detection_tracking_theta(
                         r,
-                        tracking_theta_measurement,
-                        pose_directed=directed_heading,
-                        orientation_last=orientation_last,
+                        measured_theta,
+                        (
+                            detection_directed_heading[c]
+                            if c < len(detection_directed_heading)
+                            else float("nan")
+                        ),
+                        directed_heading,
+                        orientation_last,
                         fallback_theta=preds[r, 2] if r < len(preds) else None,
                     )
                     if directed_heading:
@@ -2510,6 +2494,46 @@ class TrackingWorker(QThread):
                 )
                 detection_ids_for_dataset = detection_ids if detection_ids else None
 
+                # Heading hints from head-tail model for directed canonicalization.
+                _ht_hints = (
+                    list(filtered_heading_hints)
+                    if (
+                        "filtered_heading_hints" in locals()
+                        and len(filtered_heading_hints) == len(meas)
+                    )
+                    else None
+                )
+                _ht_directed = (
+                    list(headtail_directed_mask)
+                    if (
+                        "headtail_directed_mask" in locals()
+                        and len(headtail_directed_mask) == len(meas)
+                    )
+                    else None
+                )
+
+                # Motion-based velocity fallback: derive (vx, vy) per detection from
+                # the two most-recent positions stored in each track's position_deque.
+                _velocities_for_dataset = None
+                if matched_track_ids and "position_deques" in locals():
+                    _vel_list = []
+                    for _tid in matched_track_ids:
+                        if (
+                            _tid >= 0
+                            and _tid < len(position_deques)
+                            and len(position_deques[_tid]) == 2
+                        ):
+                            (_x1, _y1, _f1), (_x2, _y2, _f2) = position_deques[_tid]
+                            _dt = _f2 - _f1
+                            if _dt != 0:
+                                _vel_list.append(((_x2 - _x1) / _dt, (_y2 - _y1) / _dt))
+                            else:
+                                _vel_list.append(None)
+                        else:
+                            _vel_list.append(None)
+                    if any(v is not None for v in _vel_list):
+                        _velocities_for_dataset = _vel_list
+
                 # Use original-frame coordinates for crop extraction.
                 coord_scale_factor = 1.0 / resize_f
 
@@ -2526,6 +2550,9 @@ class TrackingWorker(QThread):
                         trajectory_ids=traj_ids_for_dataset,
                         coord_scale_factor=coord_scale_factor,
                         detection_ids=detection_ids_for_dataset,
+                        heading_hints=_ht_hints,
+                        directed_mask=_ht_directed,
+                        velocities=_velocities_for_dataset,
                     )
                 elif shapes:
                     # Background subtraction - compute ellipse params from filtered shapes
@@ -2553,6 +2580,9 @@ class TrackingWorker(QThread):
                         trajectory_ids=traj_ids_for_dataset,
                         coord_scale_factor=coord_scale_factor,
                         detection_ids=detection_ids_for_dataset,
+                        heading_hints=_ht_hints,
+                        directed_mask=_ht_directed,
+                        velocities=_velocities_for_dataset,
                     )
 
             # --- Tracking State Updates ---

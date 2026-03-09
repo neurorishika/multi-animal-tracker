@@ -121,3 +121,13 @@ def test_detection_cache_rejects_legacy_versions(tmp_path: Path) -> None:
 
     with DetectionCache(cache_path, mode="r") as cache:
         assert not cache.is_compatible()
+
+
+def test_detection_cache_save_creates_parent_dirs(tmp_path: Path) -> None:
+    cache_path = tmp_path / "nested" / "clip_caches" / "detections.npz"
+
+    with DetectionCache(cache_path, mode="w", start_frame=0, end_frame=0) as cache:
+        cache.add_frame(0, [], [], [], [])
+        cache.save()
+
+    assert cache_path.exists()

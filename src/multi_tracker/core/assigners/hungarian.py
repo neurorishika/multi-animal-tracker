@@ -363,7 +363,13 @@ class TrackAssigner:
                     continue
 
                 orientation_cost = float(p["W_ORIENTATION"]) * self._orientation_diff(
-                    pred_theta, meas_ori[det_idx], False
+                    pred_theta,
+                    meas_ori[det_idx],
+                    (
+                        bool(meas_ori_directed[det_idx])
+                        if det_idx < len(meas_ori_directed)
+                        else False
+                    ),
                 )
 
                 area_cost = float(p["W_AREA"]) * abs(
@@ -441,6 +447,17 @@ class TrackAssigner:
                 meas_ori_directed_arr = np.zeros(M, dtype=np.uint8)
         pred_pos = predictions[:, :2]  # Predictions are already (N, 3)
         pred_ori = predictions[:, 2]
+
+        # Override meas_ori with the directed heading where pose/headtail detected direction.
+        # This ensures orientation cost in ALL paths (Numba, spatial, advanced) uses the
+        # correct directed angle rather than the 180°-ambiguous OBB axis angle.
+        if association_data is not None:
+            _dh = association_data.get("detection_pose_heading")
+            if _dh is not None:
+                _dh_arr = np.asarray(_dh, dtype=np.float32)
+                for _j in range(min(M, len(_dh_arr))):
+                    if meas_ori_directed_arr[_j] == 1 and np.isfinite(_dh_arr[_j]):
+                        meas_ori[_j] = _dh_arr[_j]
 
         shapes_area = np.array([s[0] for s in shapes], dtype=np.float32)
         shapes_asp = np.array([s[1] for s in shapes], dtype=np.float32)

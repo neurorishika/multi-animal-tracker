@@ -13,10 +13,6 @@ class TrainingRole(str, Enum):
     OBB_DIRECT = "obb_direct"
     SEQ_DETECT = "seq_detect"
     SEQ_CROP_OBB = "seq_crop_obb"
-    # Deprecated: classification training has moved to ClassKit (classkit-labeler).
-    # Kept here for registry backwards-compatibility only — not exposed in any dialog.
-    HEADTAIL_YOLO = "headtail_yolo"
-    HEADTAIL_TINY = "headtail_tiny"
 
     # ClassKit classification roles
     CLASSIFY_FLAT_YOLO = "classify_flat_yolo"
@@ -58,7 +54,7 @@ class TrainingHyperParams:
 
 @dataclass(slots=True)
 class TinyHeadTailParams:
-    """Tiny head-tail trainer hyperparameters."""
+    """Tiny classifier hyperparameters."""
 
     epochs: int = 50
     batch: int = 32
@@ -72,6 +68,12 @@ class TinyHeadTailParams:
     dropout: float = 0.2
     # Early stopping
     patience: int = 10
+    # Class-imbalance handling for tiny classifiers.
+    # Modes: "none", "weighted_loss", "weighted_sampler", "both".
+    class_rebalance_mode: str = "none"
+    class_rebalance_power: float = 1.0
+    # Label smoothing for CrossEntropyLoss in tiny multi-class training.
+    label_smoothing: float = 0.0
 
 
 @dataclass(slots=True)

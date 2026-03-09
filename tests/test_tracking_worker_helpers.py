@@ -8,6 +8,26 @@ from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
 
 def _load_worker_module():
+    multi_tracker_pkg = types.ModuleType("multi_tracker")
+    multi_tracker_pkg.__path__ = []
+    core_pkg = types.ModuleType("multi_tracker.core")
+    core_pkg.__path__ = []
+    core_tracking = types.ModuleType("multi_tracker.core.tracking")
+    core_tracking.__path__ = []
+    utils_pkg = types.ModuleType("multi_tracker.utils")
+    utils_pkg.__path__ = []
+    data_pkg = types.ModuleType("multi_tracker.data")
+    data_pkg.__path__ = []
+
+    video_artifacts = load_src_module(
+        "multi_tracker/utils/video_artifacts.py",
+        "video_artifacts_under_test",
+    )
+    pose_features = load_src_module(
+        "multi_tracker/core/tracking/pose_features.py",
+        "pose_features_under_test",
+    )
+
     # Minimal QtCore stub
     qtcore = types.ModuleType("PySide6.QtCore")
 
@@ -77,12 +97,17 @@ def _load_worker_module():
     frame_prefetcher.FramePrefetcher = FramePrefetcher
 
     # Stub core submodules imported by worker.
-    core_pkg = types.ModuleType("multi_tracker.core")
     core_filters = types.ModuleType("multi_tracker.core.filters")
     core_background = types.ModuleType("multi_tracker.core.background")
     core_detectors = types.ModuleType("multi_tracker.core.detectors")
     core_assigners = types.ModuleType("multi_tracker.core.assigners")
     core_identity = types.ModuleType("multi_tracker.core.identity")
+
+    core_filters.__path__ = []
+    core_background.__path__ = []
+    core_detectors.__path__ = []
+    core_assigners.__path__ = []
+    core_identity.__path__ = []
 
     kalman = types.ModuleType("multi_tracker.core.filters.kalman")
     kalman.KalmanFilterManager = object
@@ -103,17 +128,23 @@ def _load_worker_module():
         "cv2": make_cv2_stub(),
         "PySide6": pyside,
         "PySide6.QtCore": qtcore,
+        "multi_tracker": multi_tracker_pkg,
+        "multi_tracker.core": core_pkg,
+        "multi_tracker.core.tracking": core_tracking,
+        "multi_tracker.utils": utils_pkg,
+        "multi_tracker.data": data_pkg,
         "multi_tracker.utils.image_processing": image_processing,
         "multi_tracker.utils.geometry": geometry,
+        "multi_tracker.utils.video_artifacts": video_artifacts,
         "multi_tracker.data.detection_cache": detection_cache,
         "multi_tracker.utils.batch_optimizer": batch_optimizer,
         "multi_tracker.utils.frame_prefetcher": frame_prefetcher,
-        "multi_tracker.core": core_pkg,
         "multi_tracker.core.filters": core_filters,
         "multi_tracker.core.background": core_background,
         "multi_tracker.core.detectors": core_detectors,
         "multi_tracker.core.assigners": core_assigners,
         "multi_tracker.core.identity": core_identity,
+        "multi_tracker.core.tracking.pose_features": pose_features,
         "multi_tracker.core.filters.kalman": kalman,
         "multi_tracker.core.background.model": background_model,
         "multi_tracker.core.detectors.engine": detectors_engine,
@@ -256,6 +287,19 @@ def test_individual_data_precompute_gate_requires_pose_extractor() -> None:
         )
         is False
     )
+
+
+def test_individual_properties_cache_path_defaults_to_video_cache_dir(
+    tmp_path,
+) -> None:
+    mod = _load_worker_module()
+    video_path = tmp_path / "clip.mp4"
+    worker = mod.TrackingWorker(str(video_path))
+
+    cache_path = worker._build_individual_properties_cache_path("props", 4, 9)
+
+    assert cache_path.parent == tmp_path / "clip_caches"
+    assert cache_path.name == "clip_individual_properties_props_4_9.npz"
 
 
 def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:

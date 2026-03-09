@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -875,6 +876,7 @@ class ShortcutEditorDialog(QDialog):
     DEFAULT_SHORTCUTS = [
         ("Explore mode", "E"),
         ("Labeling mode", "L"),
+        ("Predictions mode", "P"),
         ("Sample next candidates", "Space"),
         ("Previous unlabeled", "Left"),
         ("Next unlabeled", "Right"),
@@ -1398,16 +1400,46 @@ class ClusterDialog(QDialog):
 class ClassKitTrainingDialog(QDialog):
     """Training dialog for ClassKit: flat or multi-head, tiny CNN or YOLO-classify."""
 
-    def __init__(self, scheme=None, n_labeled: int = 0, parent=None):
+    def __init__(
+        self,
+        scheme=None,
+        n_labeled: int = 0,
+        class_choices: Optional[List[str]] = None,
+        parent=None,
+    ):
         super().__init__(parent)
         self._scheme = scheme
         self._n_labeled = n_labeled
+        self._class_choices = self._resolve_class_choices(class_choices)
         self._train_results = None
         self._worker = None
         self.setWindowTitle("Train Classifier")
         self.setMinimumWidth(640)
         self.setMinimumHeight(560)
         self._build_ui()
+
+    def _resolve_class_choices(
+        self, class_choices: Optional[List[str]] = None
+    ) -> List[str]:
+        """Resolve a de-duplicated class list for mapping dropdowns."""
+        ordered: List[str] = []
+
+        def _add(value: object) -> None:
+            text = str(value).strip()
+            if text and text not in ordered:
+                ordered.append(text)
+
+        for value in class_choices or []:
+            _add(value)
+
+        # For single-factor schemes include declared labels even if not yet observed.
+        if self._scheme is not None:
+            factors = getattr(self._scheme, "factors", None) or []
+            if len(factors) == 1:
+                for label in getattr(factors[0], "labels", []) or []:
+                    _add(label)
+
+        return ordered
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -1437,20 +1469,30 @@ class ClassKitTrainingDialog(QDialog):
         self._populate_modes()
         form.addRow("<b>Training Mode:</b>", self.mode_combo)
 
-        # Device
-        self.device_combo = QComboBox()
-        self.device_combo.addItem("CPU", "cpu")
+        # Compute Runtime — canonical runtimes filtered to tiny_classify capabilities
+        self.device_combo = QComboBox()  # kept as attribute alias for backward compat
         try:
-            from ...utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
+            from ...core.runtime.compute_runtime import (
+                runtime_label,
+                supported_runtimes_for_pipeline,
+            )
 
-            if TORCH_CUDA_AVAILABLE:
-                self.device_combo.addItem("CUDA GPU", "cuda")
-            if MPS_AVAILABLE:
-                self.device_combo.addItem("Apple Silicon (MPS)", "mps")
-                self.device_combo.setCurrentIndex(self.device_combo.count() - 1)
+            _runtimes = supported_runtimes_for_pipeline("tiny_classify")
+            _default_idx = 0
+            for _i, _rt in enumerate(_runtimes):
+                self.device_combo.addItem(runtime_label(_rt), _rt)
+                if _rt in ("mps", "cuda") and _default_idx == 0:
+                    _default_idx = _i
+            if _default_idx > 0:
+                self.device_combo.setCurrentIndex(_default_idx)
         except Exception:
-            pass
-        form.addRow("<b>Device:</b>", self.device_combo)
+            self.device_combo.addItem("CPU", "cpu")
+        self.device_combo.setToolTip(
+            "Compute runtime for training AND inference.\n"
+            "ONNX / TensorRT runtimes require a sibling .onnx file\n"
+            "(auto-exported by the trainer alongside the .pth checkpoint)."
+        )
+        form.addRow("<b>Compute Runtime:</b>", self.device_combo)
 
         # Base model (YOLO only)
         self.base_model_combo = QComboBox()
@@ -1566,6 +1608,28 @@ class ClassKitTrainingDialog(QDialog):
         self.tiny_height_spin.setSingleStep(32)
         tiny_form.addRow("<b>Input Height:</b>", self.tiny_height_spin)
 
+        self.tiny_rebalance_combo = QComboBox()
+        self.tiny_rebalance_combo.addItem("None", "none")
+        self.tiny_rebalance_combo.addItem("Weighted Loss", "weighted_loss")
+        self.tiny_rebalance_combo.addItem("Weighted Sampler", "weighted_sampler")
+        self.tiny_rebalance_combo.addItem("Weighted Loss + Sampler", "both")
+        self.tiny_rebalance_combo.setCurrentIndex(1)
+        tiny_form.addRow("<b>Class Rebalancing:</b>", self.tiny_rebalance_combo)
+
+        self.tiny_rebalance_power_spin = QDoubleSpinBox()
+        self.tiny_rebalance_power_spin.setRange(0.0, 3.0)
+        self.tiny_rebalance_power_spin.setSingleStep(0.1)
+        self.tiny_rebalance_power_spin.setValue(1.0)
+        self.tiny_rebalance_power_spin.setDecimals(2)
+        tiny_form.addRow("<b>Rebalance Power:</b>", self.tiny_rebalance_power_spin)
+
+        self.tiny_label_smoothing_spin = QDoubleSpinBox()
+        self.tiny_label_smoothing_spin.setRange(0.0, 0.4)
+        self.tiny_label_smoothing_spin.setSingleStep(0.01)
+        self.tiny_label_smoothing_spin.setValue(0.0)
+        self.tiny_label_smoothing_spin.setDecimals(2)
+        tiny_form.addRow("<b>Label Smoothing:</b>", self.tiny_label_smoothing_spin)
+
         # Tooltips for Tiny Architecture fields
         self.tiny_layers_spin.setToolTip("Number of hidden layers in the MLP head.")
         self.tiny_dim_spin.setToolTip(
@@ -1580,6 +1644,17 @@ class ClassKitTrainingDialog(QDialog):
         self.tiny_height_spin.setToolTip(
             "Input image height (px). Match to your typical crop size."
         )
+        self.tiny_rebalance_combo.setToolTip(
+            "Class imbalance handling for Tiny CNN training.\n"
+            "Weighted Loss improves minority-class gradients.\n"
+            "Weighted Sampler oversamples minority classes per mini-batch."
+        )
+        self.tiny_rebalance_power_spin.setToolTip(
+            "Strength of rebalancing (0 disables effect, 1 = inverse-frequency baseline)."
+        )
+        self.tiny_label_smoothing_spin.setToolTip(
+            "Cross-entropy label smoothing for Tiny CNN training (0.0 = disabled)."
+        )
 
         tiny_layout.addLayout(tiny_form)
         tiny_layout.addStretch()
@@ -1587,13 +1662,19 @@ class ClassKitTrainingDialog(QDialog):
 
         # Tab 3: Space & Augmentations
         self.aug_tab = QWidget()
-        aug_layout = QVBoxLayout(self.aug_tab)
+        aug_tab_layout = QVBoxLayout(self.aug_tab)
+        aug_tab_layout.setContentsMargins(0, 0, 0, 0)
+        self._aug_scroll = QScrollArea()
+        self._aug_scroll.setWidgetResizable(True)
+        self._aug_scroll.setFrameShape(QFrame.NoFrame)
+        aug_scroll_content = QWidget()
+        aug_layout = QVBoxLayout(aug_scroll_content)
 
         space_group = QGroupBox("Training Space")
         space_layout = QHBoxLayout(space_group)
         self.space_combo = QComboBox()
-        self.space_combo.addItem("Original (raw frames)", "original")
         self.space_combo.addItem("Canonical (rotation corrected)", "canonical")
+        self.space_combo.addItem("Original (raw frames)", "original")
         space_layout.addWidget(QLabel("<b>Space:</b>"))
         space_layout.addWidget(self.space_combo)
         aug_layout.addWidget(space_group)
@@ -1631,11 +1712,18 @@ class ClassKitTrainingDialog(QDialog):
 
         exp_note = QLabel(
             "<i>Each row: source label → destination label when that flip is applied.<br>"
-            "Pairs are applied to train images only; evaluation data is never flipped.</i>"
+            "Pairs are applied to train images only; evaluation data is never flipped.<br>"
+            "Label expansion is available only in canonical space.<br>"
+            "When enabled, all stochastic augmentations (flip/rotate) are disabled.</i>"
         )
         exp_note.setWordWrap(True)
         exp_note.setStyleSheet("color:#aaa; font-size:11px;")
         exp_vbox.addWidget(exp_note)
+
+        self._exp_constraints_label = QLabel("")
+        self._exp_constraints_label.setWordWrap(True)
+        self._exp_constraints_label.setStyleSheet("color:#e0c070; font-size:11px;")
+        exp_vbox.addWidget(self._exp_constraints_label)
 
         # -- Horizontal flip (LR) mapping rows --
         lr_hdr_row = QHBoxLayout()
@@ -1646,40 +1734,82 @@ class ClassKitTrainingDialog(QDialog):
         lr_hdr_row.addStretch()
         exp_vbox.addLayout(lr_hdr_row)
 
-        self._lr_mapping_rows: List[Tuple[QLineEdit, QLineEdit]] = []
+        self._lr_mapping_rows: List[Tuple[QComboBox, QComboBox]] = []
         self._lr_rows_widget = QWidget()
         self._lr_rows_layout = QVBoxLayout(self._lr_rows_widget)
         self._lr_rows_layout.setContentsMargins(0, 0, 0, 0)
         self._lr_rows_layout.setSpacing(3)
         exp_vbox.addWidget(self._lr_rows_widget)
 
+        def _safe_class_text(value: object) -> str:
+            if value is None or isinstance(value, bool):
+                return ""
+            return str(value).strip()
+
+        def _build_class_combo(initial_text: object = "") -> QComboBox:
+            combo = QComboBox()
+            combo.setMinimumWidth(160)
+            combo.setSizeAdjustPolicy(QComboBox.AdjustToContentsOnFirstShow)
+
+            if self._class_choices:
+                for cls in self._class_choices:
+                    combo.addItem(cls, cls)
+            else:
+                combo.addItem("(no classes)", "")
+                combo.setEnabled(False)
+
+            initial = _safe_class_text(initial_text)
+            if initial:
+                idx = combo.findData(initial)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            return combo
+
         def _add_lr_row(src_text="", dst_text=""):
             row_w = QWidget()
             row_h = QHBoxLayout(row_w)
             row_h.setContentsMargins(0, 0, 0, 0)
-            src = QLineEdit(src_text)
-            src.setPlaceholderText("source class")
+            src = _build_class_combo(src_text)
             arr = QLabel("→")
-            dst = QLineEdit(dst_text)
-            dst.setPlaceholderText("destination class")
-            rm = QPushButton("✕")
-            rm.setFixedWidth(28)
-            rm.setStyleSheet("color:#c00;")
-            row_h.addWidget(src)
+            dst = _build_class_combo(dst_text)
+            add_rev = QPushButton("Reverse")
+            add_rev.setFixedWidth(72)
+            add_rev.setToolTip("Add the reverse mapping (destination → source)")
+            rm = QPushButton("Remove")
+            rm.setFixedWidth(72)
+            rm.setStyleSheet("color:#c66;")
+            row_h.addWidget(src, 1)
             row_h.addWidget(arr)
-            row_h.addWidget(dst)
+            row_h.addWidget(dst, 1)
+            row_h.addWidget(add_rev)
             row_h.addWidget(rm)
             self._lr_rows_layout.addWidget(row_w)
             pair = (src, dst)
             self._lr_mapping_rows.append(pair)
-            rm.clicked.connect(
-                lambda: (
-                    self._lr_mapping_rows.remove(pair),
-                    row_w.setParent(None),
-                )
-            )
 
-        lr_add_btn.clicked.connect(_add_lr_row)
+            def _remove_row() -> None:
+                if pair in self._lr_mapping_rows:
+                    self._lr_mapping_rows.remove(pair)
+                row_w.setParent(None)
+
+            rm.clicked.connect(_remove_row)
+
+            def _add_reverse_pair() -> None:
+                s = _safe_class_text(src.currentData() or src.currentText())
+                d = _safe_class_text(dst.currentData() or dst.currentText())
+                if not s or not d or s == d:
+                    return
+                for rs, rd in self._lr_mapping_rows:
+                    rs_name = _safe_class_text(rs.currentData() or rs.currentText())
+                    rd_name = _safe_class_text(rd.currentData() or rd.currentText())
+                    if rs_name == d and rd_name == s:
+                        return
+                _add_lr_row(d, s)
+
+            add_rev.clicked.connect(_add_reverse_pair)
+
+        # clicked(bool) provides a bool arg; ignore it to keep defaults intact.
+        lr_add_btn.clicked.connect(lambda _checked=False: _add_lr_row())
         self._add_lr_row = _add_lr_row  # expose for programmatic seeding
 
         # -- Vertical flip (UD) mapping rows --
@@ -1691,7 +1821,7 @@ class ClassKitTrainingDialog(QDialog):
         ud_hdr_row.addStretch()
         exp_vbox.addLayout(ud_hdr_row)
 
-        self._ud_mapping_rows: List[Tuple[QLineEdit, QLineEdit]] = []
+        self._ud_mapping_rows: List[Tuple[QComboBox, QComboBox]] = []
         self._ud_rows_widget = QWidget()
         self._ud_rows_layout = QVBoxLayout(self._ud_rows_widget)
         self._ud_rows_layout.setContentsMargins(0, 0, 0, 0)
@@ -1702,38 +1832,58 @@ class ClassKitTrainingDialog(QDialog):
             row_w = QWidget()
             row_h = QHBoxLayout(row_w)
             row_h.setContentsMargins(0, 0, 0, 0)
-            src = QLineEdit(src_text)
-            src.setPlaceholderText("source class")
+            src = _build_class_combo(src_text)
             arr = QLabel("→")
-            dst = QLineEdit(dst_text)
-            dst.setPlaceholderText("destination class")
-            rm = QPushButton("✕")
-            rm.setFixedWidth(28)
-            rm.setStyleSheet("color:#c00;")
-            row_h.addWidget(src)
+            dst = _build_class_combo(dst_text)
+            add_rev = QPushButton("Reverse")
+            add_rev.setFixedWidth(72)
+            add_rev.setToolTip("Add the reverse mapping (destination → source)")
+            rm = QPushButton("Remove")
+            rm.setFixedWidth(72)
+            rm.setStyleSheet("color:#c66;")
+            row_h.addWidget(src, 1)
             row_h.addWidget(arr)
-            row_h.addWidget(dst)
+            row_h.addWidget(dst, 1)
+            row_h.addWidget(add_rev)
             row_h.addWidget(rm)
             self._ud_rows_layout.addWidget(row_w)
             pair = (src, dst)
             self._ud_mapping_rows.append(pair)
-            rm.clicked.connect(
-                lambda: (
-                    self._ud_mapping_rows.remove(pair),
-                    row_w.setParent(None),
-                )
-            )
 
-        ud_add_btn.clicked.connect(_add_ud_row)
+            def _remove_row() -> None:
+                if pair in self._ud_mapping_rows:
+                    self._ud_mapping_rows.remove(pair)
+                row_w.setParent(None)
+
+            rm.clicked.connect(_remove_row)
+
+            def _add_reverse_pair() -> None:
+                s = _safe_class_text(src.currentData() or src.currentText())
+                d = _safe_class_text(dst.currentData() or dst.currentText())
+                if not s or not d or s == d:
+                    return
+                for rs, rd in self._ud_mapping_rows:
+                    rs_name = _safe_class_text(rs.currentData() or rs.currentText())
+                    rd_name = _safe_class_text(rd.currentData() or rd.currentText())
+                    if rs_name == d and rd_name == s:
+                        return
+                _add_ud_row(d, s)
+
+            add_rev.clicked.connect(_add_reverse_pair)
+
+        # clicked(bool) provides a bool arg; ignore it to keep defaults intact.
+        ud_add_btn.clicked.connect(lambda _checked=False: _add_ud_row())
         self._add_ud_row = _add_ud_row  # expose for programmatic seeding
 
         aug_layout.addWidget(exp_group)
         self._exp_group = exp_group  # so get_settings() can check isChecked()
 
         aug_layout.addStretch()
+        self._aug_scroll.setWidget(aug_scroll_content)
+        aug_tab_layout.addWidget(self._aug_scroll)
         self.tabs.addTab(self.aug_tab, "Space & Augmentations")
 
-        layout.addWidget(self.tabs)
+        layout.addWidget(self.tabs, 1)
 
         # Log panel
         self.log_view = QPlainTextEdit()
@@ -1768,7 +1918,20 @@ class ClassKitTrainingDialog(QDialog):
 
         self.cancel_btn.clicked.connect(self._on_cancel)
         self.mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        self.tiny_rebalance_combo.currentIndexChanged.connect(
+            self._on_rebalance_mode_changed
+        )
         self._on_mode_changed()
+        self._on_rebalance_mode_changed()
+
+        # Enforce canonical-only label expansion and explicit augmentation lockout.
+        self._exp_group.toggled.connect(
+            lambda _checked: self._sync_expansion_constraints()
+        )
+        self.space_combo.currentIndexChanged.connect(
+            lambda _idx: self._sync_expansion_constraints()
+        )
+        self._sync_expansion_constraints()
 
     def _populate_modes(self):
         self.mode_combo.clear()
@@ -1829,6 +1992,41 @@ class ClassKitTrainingDialog(QDialog):
         if self._worker is not None:
             self._worker.cancel()
 
+    def _on_rebalance_mode_changed(self):
+        mode = str(self.tiny_rebalance_combo.currentData() or "none")
+        enable_power = mode != "none"
+        self.tiny_rebalance_power_spin.setEnabled(enable_power)
+
+    def _sync_expansion_constraints(self) -> None:
+        """Keep label-expansion settings valid and explicit in the UI."""
+        expansion_enabled = bool(self._exp_group.isChecked())
+
+        if expansion_enabled and self.space_combo.currentData() != "canonical":
+            idx = self.space_combo.findData("canonical")
+            if idx >= 0:
+                self.space_combo.blockSignals(True)
+                self.space_combo.setCurrentIndex(idx)
+                self.space_combo.blockSignals(False)
+
+        # Expansion in this workflow is deterministic augmentation, so disable
+        # random flips/rotations to avoid conflicting semantics.
+        for widget in (self.flip_lr_spin, self.flip_ud_spin, self.rotate_spin):
+            widget.setEnabled(not expansion_enabled)
+
+        if expansion_enabled:
+            self.flip_lr_spin.setValue(0.0)
+            self.flip_ud_spin.setValue(0.0)
+            self.rotate_spin.setValue(0.0)
+            self.space_combo.setEnabled(False)
+            self._exp_constraints_label.setText(
+                "Label expansion ON: canonical space is locked and all random augmentations are disabled."
+            )
+        else:
+            self.space_combo.setEnabled(True)
+            self._exp_constraints_label.setText(
+                "Label expansion OFF: choose canonical/original space and augmentation probabilities freely."
+            )
+
     def append_log(self, msg: str):
         if msg:
             self.log_view.appendPlainText(msg)
@@ -1837,25 +2035,58 @@ class ClassKitTrainingDialog(QDialog):
     def get_settings(self) -> dict:
         # Build label_expansion dict from UI rows (only when group is checked)
         label_expansion: dict = {}
+
+        def _combo_text(cb: QComboBox) -> str:
+            return str(cb.currentData() or cb.currentText() or "").strip()
+
         if self._exp_group.isChecked():
             lr_map = {
-                s.text().strip(): d.text().strip()
+                _combo_text(s): _combo_text(d)
                 for s, d in self._lr_mapping_rows
-                if s.text().strip() and d.text().strip()
+                if _combo_text(s)
+                and _combo_text(d)
+                and _combo_text(s) != _combo_text(d)
             }
             if lr_map:
                 label_expansion["fliplr"] = lr_map
             ud_map = {
-                s.text().strip(): d.text().strip()
+                _combo_text(s): _combo_text(d)
                 for s, d in self._ud_mapping_rows
-                if s.text().strip() and d.text().strip()
+                if _combo_text(s)
+                and _combo_text(d)
+                and _combo_text(s) != _combo_text(d)
             }
             if ud_map:
                 label_expansion["flipud"] = ud_map
 
+        expansion_enabled = bool(self._exp_group.isChecked())
+        training_space = self.space_combo.currentData()
+        if expansion_enabled:
+            training_space = "canonical"
+
+        # Label expansion creates deterministic flipped copies with remapped
+        # labels, so stochastic augmentations are disabled while it is enabled.
+        flipud_value = 0.0 if expansion_enabled else self.flip_ud_spin.value()
+        fliplr_value = 0.0 if expansion_enabled else self.flip_lr_spin.value()
+        rotate_value = 0.0 if expansion_enabled else self.rotate_spin.value()
+
+        # Map canonical runtime → plain PyTorch device string for training.
+        _rt = str(self.device_combo.currentData() or "cpu")
+        _torch_dev_map = {
+            "cuda": "cuda",
+            "mps": "mps",
+            "rocm": "cuda",
+            "onnx_cpu": "cpu",
+            "onnx_cuda": "cuda",
+            "onnx_rocm": "cuda",
+            "tensorrt": "cuda",
+        }
+        _torch_device = _torch_dev_map.get(_rt, "cpu")
+
         return {
             "mode": self.mode_combo.currentData(),
-            "device": self.device_combo.currentData(),
+            "compute_runtime": _rt,
+            "device": _torch_device,
             "base_model": self.base_model_combo.currentData(),
             "epochs": self.epochs_spin.value(),
             "batch": self.batch_spin.value(),
@@ -1868,11 +2099,14 @@ class ClassKitTrainingDialog(QDialog):
             "tiny_dropout": self.tiny_dropout_spin.value(),
             "tiny_width": self.tiny_width_spin.value(),
             "tiny_height": self.tiny_height_spin.value(),
+            "tiny_rebalance_mode": self.tiny_rebalance_combo.currentData(),
+            "tiny_rebalance_power": self.tiny_rebalance_power_spin.value(),
+            "tiny_label_smoothing": self.tiny_label_smoothing_spin.value(),
             # Space & Augmentations
-            "training_space": self.space_combo.currentData(),
-            "flipud": self.flip_ud_spin.value(),
-            "fliplr": self.flip_lr_spin.value(),
-            "rotate": self.rotate_spin.value(),
+            "training_space": training_space,
+            "flipud": flipud_value,
+            "fliplr": fliplr_value,
+            "rotate": rotate_value,
             # Label-switching expansion
             "label_expansion": label_expansion,
         }
@@ -2020,44 +2254,57 @@ class ExportDialog(QDialog):
 
 
 class ModelHistoryDialog(QDialog):
-    """Browse and load past trained models registered in the project DB."""
+    """Browse, rename, delete, and load trained models from project history."""
 
-    def __init__(self, model_entries: list, project_path=None, parent=None):
+    def __init__(
+        self,
+        model_entries: list,
+        project_path=None,
+        db_path: Optional[Path] = None,
+        parent=None,
+    ):
         super().__init__(parent)
-        self.setWindowTitle("Model History")
-        self.setMinimumSize(860, 580)
+        self.setWindowTitle("Previously Trained Models")
+        self.setMinimumSize(940, 620)
         self.setStyleSheet("background-color: #1e1e1e; color: #cccccc;")
-        self._entries = model_entries
+        self._entries = list(model_entries)
         self._project_path = project_path
-        self._selected_entry = None
+        self._db_path = Path(db_path) if db_path else None
+        self._selected_entry_data = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
-        header = QLabel("Select a trained model to load for inference and analysis.")
+        header = QLabel(
+            "Select, rename, delete, or export trained checkpoints before loading one for inference."
+        )
         header.setStyleSheet("color: #aaaaaa; font-size: 12px;")
         layout.addWidget(header)
 
         from PySide6.QtCore import Qt as _Qt
         from PySide6.QtWidgets import QHeaderView, QTableWidget, QTableWidgetItem
 
-        self.table = QTableWidget(0, 5)
+        self._qt_align = _Qt.AlignVCenter | _Qt.AlignLeft
+        self._table_item_type = QTableWidgetItem
+
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ["Timestamp", "Mode", "Classes", "Val Acc", "Canonicalize"]
+            ["Name", "Timestamp", "Mode", "Classes", "Val Acc", "Canonicalize"]
         )
-        self.table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeToContents
-        )
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(
             1, QHeaderView.ResizeToContents
         )
-        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(
-            3, QHeaderView.ResizeToContents
+            2, QHeaderView.ResizeToContents
         )
+        self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(
             4, QHeaderView.ResizeToContents
+        )
+        self.table.horizontalHeader().setSectionResizeMode(
+            5, QHeaderView.ResizeToContents
         )
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
@@ -2069,21 +2316,6 @@ class ModelHistoryDialog(QDialog):
             "QHeaderView::section { background-color: #2d2d2d; color: #cccccc; "
             "padding: 4px; border: none; border-right: 1px solid #3a3a3a; }"
         )
-
-        for row, entry in enumerate(model_entries):
-            self.table.insertRow(row)
-            ts = str(entry.get("timestamp", ""))[:19]
-            mode = str(entry.get("mode", ""))
-            names = ", ".join(entry.get("class_names") or [])
-            acc = entry.get("best_val_acc")
-            acc_str = f"{acc:.3f}" if acc is not None else "—"
-            canon = "Yes" if entry.get("canonicalize_mat") else "No"
-
-            for col, text in enumerate([ts, mode, names, acc_str, canon]):
-                item = QTableWidgetItem(text)
-                item.setTextAlignment(_Qt.AlignVCenter | _Qt.AlignLeft)
-                self.table.setItem(row, col, item)
-
         self.table.doubleClicked.connect(self._on_double_click)
         self.table.itemSelectionChanged.connect(self._on_selection_changed)
         layout.addWidget(self.table, 1)
@@ -2091,7 +2323,7 @@ class ModelHistoryDialog(QDialog):
         # Detail panel
         self.detail_label = QLabel("")
         self.detail_label.setWordWrap(True)
-        self.detail_label.setFixedHeight(90)
+        self.detail_label.setFixedHeight(104)
         self.detail_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.detail_label.setStyleSheet(
             "background: #252526; color: #cccccc; font-size: 11px; "
@@ -2101,7 +2333,27 @@ class ModelHistoryDialog(QDialog):
 
         btn_row = QHBoxLayout()
 
-        self.export_btn = QPushButton("📤  Export to models/")
+        self.rename_btn = QPushButton("Rename")
+        self.rename_btn.setFixedHeight(36)
+        self.rename_btn.setStyleSheet(
+            "QPushButton { background-color: #3a3a3a; color: #cccccc; border-radius: 4px; "
+            "padding: 0 14px; }"
+            "QPushButton:hover { background-color: #4a4a4a; }"
+        )
+        self.rename_btn.clicked.connect(self._rename_selected)
+        btn_row.addWidget(self.rename_btn)
+
+        self.delete_btn = QPushButton("Delete")
+        self.delete_btn.setFixedHeight(36)
+        self.delete_btn.setStyleSheet(
+            "QPushButton { background-color: #553333; color: #ffcccc; border-radius: 4px; "
+            "padding: 0 14px; }"
+            "QPushButton:hover { background-color: #7a3f3f; color: white; }"
+        )
+        self.delete_btn.clicked.connect(self._delete_selected)
+        btn_row.addWidget(self.delete_btn)
+
+        self.export_btn = QPushButton("Export to models/")
         self.export_btn.setFixedHeight(36)
         self.export_btn.setStyleSheet(
             "QPushButton { background-color: #3a3a3a; color: #cccccc; border-radius: 4px; "
@@ -2112,11 +2364,11 @@ class ModelHistoryDialog(QDialog):
             "Copy this model's artifact files to a directory of your choice"
         )
         self.export_btn.clicked.connect(self._export_selected)
-
         btn_row.addWidget(self.export_btn)
+
         btn_row.addStretch(1)
 
-        self.load_btn = QPushButton("▶  Load & Run Inference")
+        self.load_btn = QPushButton("Load & Run Inference")
         self.load_btn.setFixedHeight(36)
         self.load_btn.setStyleSheet(
             "QPushButton { background-color: #0e639c; color: white; border-radius: 4px; "
@@ -2139,31 +2391,84 @@ class ModelHistoryDialog(QDialog):
         btn_row.addWidget(self.load_btn)
         layout.addLayout(btn_row)
 
-        if model_entries:
-            self.table.selectRow(0)
+        self._refresh_table(select_row=0)
+
+    def _display_name(self, entry: dict) -> str:
+        name = str(entry.get("display_name") or "").strip()
+        if name:
+            return name
+        return str(entry.get("mode") or "model")
+
+    def _refresh_table(self, select_row: int | None = None) -> None:
+        self.table.setRowCount(0)
+        for row, entry in enumerate(self._entries):
+            self.table.insertRow(row)
+            ts = str(entry.get("timestamp", ""))[:19]
+            mode = str(entry.get("mode", ""))
+            names = ", ".join(entry.get("class_names") or [])
+            acc = entry.get("best_val_acc")
+            acc_str = f"{acc:.3f}" if acc is not None else "—"
+            canon = "Yes" if entry.get("canonicalize_mat") else "No"
+            display_name = self._display_name(entry)
+
+            values = [display_name, ts, mode, names, acc_str, canon]
+            for col, text in enumerate(values):
+                item = self._table_item_type(text)
+                item.setTextAlignment(self._qt_align)
+                self.table.setItem(row, col, item)
+
+        if self._entries:
+            target = (
+                0
+                if select_row is None
+                else max(0, min(select_row, len(self._entries) - 1))
+            )
+            self.table.selectRow(target)
+        else:
+            self.detail_label.setText("No model history entries remain.")
+            self.rename_btn.setEnabled(False)
+            self.delete_btn.setEnabled(False)
+            self.export_btn.setEnabled(False)
+            self.load_btn.setEnabled(False)
+
+    def _selected_row(self) -> int:
+        return int(self.table.currentRow())
+
+    def _get_selected_entry(self) -> dict | None:
+        row = self._selected_row()
+        if 0 <= row < len(self._entries):
+            return self._entries[row]
+        return None
 
     def _on_double_click(self, index):
         self._accept_selection()
 
     def _accept_selection(self):
-        row = self.table.currentRow()
-        if 0 <= row < len(self._entries):
-            self._selected_entry = self._entries[row]
+        entry = self._get_selected_entry()
+        if entry is not None:
+            self._selected_entry_data = entry
             self.accept()
 
     def selected_entry(self):
         """Return the chosen model cache entry dict, or None if dialog was cancelled."""
-        return self._selected_entry
+        return self._selected_entry_data
 
     def _on_selection_changed(self):
-        """Update the detail panel when the table selection changes."""
-        row = self.table.currentRow()
-        if not (0 <= row < len(self._entries)):
+        """Update detail panel and button states on row changes."""
+        entry = self._get_selected_entry()
+        has_entry = entry is not None
+        self.rename_btn.setEnabled(has_entry)
+        self.delete_btn.setEnabled(has_entry)
+        self.export_btn.setEnabled(has_entry)
+        self.load_btn.setEnabled(has_entry)
+
+        if not has_entry:
             self.detail_label.setText("")
             return
-        entry = self._entries[row]
+
         ts = str(entry.get("timestamp", ""))
         mode = str(entry.get("mode", ""))
+        display_name = self._display_name(entry)
         names = entry.get("class_names") or []
         acc = entry.get("best_val_acc")
         acc_str = f"{acc:.4f}" if acc is not None else "—"
@@ -2177,21 +2482,139 @@ class ModelHistoryDialog(QDialog):
         )
         canon = "Yes" if entry.get("canonicalize_mat") else "No"
         self.detail_label.setText(
-            f"<b>{mode}</b> &nbsp;&bull;&nbsp; Val acc: <b>{acc_str}</b>"
+            f"<b>{display_name}</b> &nbsp;&bull;&nbsp; Mode: <b>{mode}</b>"
+            f" &nbsp;&bull;&nbsp; Val acc: <b>{acc_str}</b>"
             f" &nbsp;&bull;&nbsp; Canonicalize: <b>{canon}</b><br>"
             f"<span style='color:#888'>Classes:</span> {classes_html}<br>"
             f"<span style='color:#888'>Files:</span> {files_html}<br>"
             f"<span style='color:#555;font-size:10px'>{ts}</span>"
         )
 
+    def _rename_selected(self) -> None:
+        entry = self._get_selected_entry()
+        if entry is None:
+            return
+        if self._db_path is None:
+            QMessageBox.warning(
+                self, "Rename Failed", "No project database is available."
+            )
+            return
+
+        current_name = self._display_name(entry)
+        new_name, ok = QInputDialog.getText(
+            self,
+            "Rename Model Entry",
+            "Display name:",
+            text=current_name,
+        )
+        if not ok:
+            return
+
+        from ..store.db import ClassKitDB
+
+        updated = ClassKitDB(self._db_path).set_model_cache_display_name(
+            int(entry.get("id", -1)),
+            str(new_name).strip(),
+        )
+        if updated < 1:
+            QMessageBox.warning(
+                self,
+                "Rename Failed",
+                "Could not update this history entry in the database.",
+            )
+            return
+
+        entry["display_name"] = str(new_name).strip()
+        row = self._selected_row()
+        self._refresh_table(select_row=row)
+
+    def _delete_selected(self) -> None:
+        entry = self._get_selected_entry()
+        if entry is None:
+            return
+        if self._db_path is None:
+            QMessageBox.warning(
+                self, "Delete Failed", "No project database is available."
+            )
+            return
+
+        prompt = QMessageBox(self)
+        prompt.setIcon(QMessageBox.Warning)
+        prompt.setWindowTitle("Delete Model Entry")
+        prompt.setText("Delete this checkpoint entry from model history?")
+        prompt.setInformativeText(
+            "You can remove only the DB record, or delete both the record and artifact files."
+        )
+        remove_record_btn = prompt.addButton(
+            "Remove History Entry", QMessageBox.AcceptRole
+        )
+        delete_files_btn = prompt.addButton(
+            "Delete Entry + Files", QMessageBox.DestructiveRole
+        )
+        prompt.addButton(QMessageBox.Cancel)
+        prompt.setDefaultButton(remove_record_btn)
+        prompt.exec()
+
+        clicked = prompt.clickedButton()
+        if clicked not in {remove_record_btn, delete_files_btn}:
+            return
+
+        delete_files = clicked == delete_files_btn
+        deleted_files = 0
+        file_errors: list[str] = []
+
+        if delete_files:
+            for src in entry.get("artifact_paths") or []:
+                src_path = Path(src)
+                if not src_path.exists():
+                    continue
+                try:
+                    src_path.unlink()
+                    deleted_files += 1
+                except Exception as exc:
+                    file_errors.append(f"{src_path.name}: {exc}")
+
+        from ..store.db import ClassKitDB
+
+        deleted_rows = ClassKitDB(self._db_path).delete_model_cache_entry(
+            int(entry.get("id", -1))
+        )
+        if deleted_rows < 1:
+            QMessageBox.warning(
+                self,
+                "Delete Failed",
+                "Could not remove this history entry from the database.",
+            )
+            return
+
+        keep_id = int(entry.get("id", -1))
+        self._entries = [e for e in self._entries if int(e.get("id", -1)) != keep_id]
+        row = self._selected_row()
+        self._refresh_table(select_row=max(0, row - 1))
+
+        if file_errors:
+            QMessageBox.warning(
+                self,
+                "Entry Deleted With Warnings",
+                f"Removed history entry. Deleted files: {deleted_files}\n\n"
+                + "\n".join(file_errors),
+            )
+        elif delete_files:
+            self.detail_label.setText(
+                f"<span style='color:#4ec9b0'>Removed history entry and deleted {deleted_files} artifact file(s).</span>"
+            )
+        else:
+            self.detail_label.setText(
+                "<span style='color:#4ec9b0'>Removed history entry from the database.</span>"
+            )
+
     def _export_selected(self):
         """Copy the selected model's artifact files to a user-chosen directory."""
         import shutil
 
-        row = self.table.currentRow()
-        if not (0 <= row < len(self._entries)):
+        entry = self._get_selected_entry()
+        if entry is None:
             return
-        entry = self._entries[row]
         artifact_paths = entry.get("artifact_paths") or []
         if not artifact_paths:
             QMessageBox.warning(
@@ -2229,7 +2652,7 @@ class ModelHistoryDialog(QDialog):
 
         if copied:
             self.detail_label.setText(
-                f"<span style='color:#4ec9b0'>✓ Exported → {dest_dir}:</span> "
+                f"<span style='color:#4ec9b0'>Exported → {dest_dir}:</span> "
                 + "  ".join(f"<b>{f}</b>" for f in copied)
                 + (
                     f"<br><span style='color:#f88'>Skipped: {'; '.join(failed)}</span>"

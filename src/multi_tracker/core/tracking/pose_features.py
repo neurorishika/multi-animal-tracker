@@ -428,6 +428,71 @@ def select_directed_heading(
     return float("nan"), False
 
 
+def build_detection_direction_overrides(
+    n_detections: int,
+    pose_headings,
+    pose_directed_mask,
+    headtail_headings,
+    headtail_directed_mask,
+    pose_overrides_headtail: bool = True,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Build per-detection directed heading overrides and validity mask."""
+    try:
+        count = max(int(n_detections), 0)
+    except Exception:
+        count = 0
+
+    detection_directed_heading = np.full(count, np.nan, dtype=np.float32)
+    detection_directed_mask = np.zeros(count, dtype=np.uint8)
+
+    for det_idx in range(count):
+        try:
+            pose_heading = (
+                float(pose_headings[det_idx])
+                if pose_headings is not None and det_idx < len(pose_headings)
+                else math.nan
+            )
+        except Exception:
+            pose_heading = math.nan
+        try:
+            pose_directed = bool(
+                pose_directed_mask is not None
+                and det_idx < len(pose_directed_mask)
+                and pose_directed_mask[det_idx]
+            )
+        except Exception:
+            pose_directed = False
+        try:
+            headtail_heading = (
+                float(headtail_headings[det_idx])
+                if headtail_headings is not None and det_idx < len(headtail_headings)
+                else math.nan
+            )
+        except Exception:
+            headtail_heading = math.nan
+        try:
+            headtail_directed = bool(
+                headtail_directed_mask is not None
+                and det_idx < len(headtail_directed_mask)
+                and headtail_directed_mask[det_idx]
+            )
+        except Exception:
+            headtail_directed = False
+
+        selected_heading, is_directed = select_directed_heading(
+            pose_heading=pose_heading,
+            pose_directed=pose_directed,
+            headtail_heading=headtail_heading,
+            headtail_directed=headtail_directed,
+            pose_overrides_headtail=pose_overrides_headtail,
+        )
+        if is_directed:
+            detection_directed_heading[det_idx] = np.float32(selected_heading)
+            detection_directed_mask[det_idx] = 1
+
+    return detection_directed_heading, detection_directed_mask
+
+
 def resolve_tracking_theta(
     track_idx: int,
     measured_theta: float,
@@ -458,6 +523,32 @@ def resolve_tracking_theta(
         except Exception:
             pass
     return collapse_obb_axis_theta(measured_theta, reference_theta)
+
+
+def resolve_detection_tracking_theta(
+    track_idx: int,
+    measured_theta: float,
+    directed_heading,
+    pose_directed: bool,
+    orientation_last,
+    fallback_theta=None,
+) -> float:
+    """Resolve tracking theta, preferring selected directed headings when valid."""
+    tracking_theta = measured_theta
+    if pose_directed:
+        try:
+            candidate = float(directed_heading)
+            if math.isfinite(candidate):
+                tracking_theta = candidate
+        except Exception:
+            pass
+    return resolve_tracking_theta(
+        track_idx,
+        tracking_theta,
+        pose_directed,
+        orientation_last,
+        fallback_theta=fallback_theta,
+    )
 
 
 # ---------------------------------------------------------------------------

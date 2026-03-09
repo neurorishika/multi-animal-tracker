@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import csv
 import random
 import re
 import shutil
@@ -23,13 +23,64 @@ def _safe_log(cb: LogCallback | None, message: str) -> None:
         cb(str(message))
 
 
+def _looks_like_accuracy_column(name: str) -> bool:
+    low = str(name or "").strip().lower()
+    if not low:
+        return False
+    return ("acc" in low) or ("accuracy" in low)
+
+
+def _accuracy_column_priority(name: str) -> tuple[int, str]:
+    """Lower priority value means a better candidate for val/top-1 accuracy."""
+    low = str(name or "").strip().lower()
+    if not _looks_like_accuracy_column(low):
+        return (99, low)
+    if "top1" in low and "metrics" in low:
+        return (0, low)
+    if "top1" in low:
+        return (1, low)
+    if "val" in low:
+        return (2, low)
+    if "metrics" in low:
+        return (3, low)
+    return (4, low)
+
+
+def _extract_best_val_acc_from_results_csv(metrics_csv_path: Path) -> float | None:
+    """Extract best validation-like accuracy from Ultralytics results.csv."""
+    if not metrics_csv_path.exists():
+        return None
+    try:
+        with open(metrics_csv_path, encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            field_names = list(reader.fieldnames or [])
+            candidate_cols = [c for c in field_names if _looks_like_accuracy_column(c)]
+            if not candidate_cols:
+                return None
+            candidate_cols = sorted(candidate_cols, key=_accuracy_column_priority)
+            rows = list(reader)
+            for col in candidate_cols:
+                values: list[float] = []
+                for row in rows:
+                    raw = row.get(col)
+                    if raw is None or str(raw).strip() == "":
+                        continue
+                    try:
+                        values.append(float(raw))
+                    except Exception:
+                        continue
+                if values:
+                    return max(values)
+            return None
+    except Exception:
+        return None
+
+
 def _ultralytics_task_for_role(role: TrainingRole) -> str:
     if role in (TrainingRole.OBB_DIRECT, TrainingRole.SEQ_CROP_OBB):
         return "obb"
     if role == TrainingRole.SEQ_DETECT:
         return "detect"
-    if role == TrainingRole.HEADTAIL_YOLO:
-        return "classify"
     if role in (
         TrainingRole.CLASSIFY_FLAT_YOLO,
         TrainingRole.CLASSIFY_MULTIHEAD_YOLO,
@@ -96,214 +147,41 @@ def _pick_torch_device(requested: str) -> str:
     return "cpu"
 
 
-def _iter_classify_samples(dataset_dir: Path, split: str):
-    """Yield (image_path, class_index) for all images in a classify split.
+def _build_class_to_idx(dataset_dir: Path) -> dict[str, int]:
+    """Build a stable class-name→index mapping across all classify splits.
 
-    Class index is assigned by sorted alphabetical order of class folder names.
-    Works for any class structure, including composite label folders.
+    Using one shared mapping for train/val/test prevents label-index drift when a
+    split is missing one or more classes.
     """
+    names: set[str] = set()
+    for split in ("train", "val", "test"):
+        split_dir = dataset_dir / split
+        if not split_dir.exists():
+            continue
+        for cls_dir in split_dir.iterdir():
+            if cls_dir.is_dir():
+                names.add(cls_dir.name)
+    ordered = sorted(names)
+    return {name: idx for idx, name in enumerate(ordered)}
+
+
+def _iter_classify_samples(
+    dataset_dir: Path, split: str, class_to_idx: dict[str, int] | None = None
+):
+    """Yield ``(image_path, class_index)`` for all images in a classify split."""
     split_dir = dataset_dir / split
     if not split_dir.exists():
         return
+    if class_to_idx is None:
+        class_to_idx = _build_class_to_idx(dataset_dir)
     class_dirs = sorted(d for d in split_dir.iterdir() if d.is_dir())
-    for cls_idx, cls_dir in enumerate(class_dirs):
+    for cls_dir in class_dirs:
+        cls_idx = class_to_idx.get(cls_dir.name)
+        if cls_idx is None:
+            continue
         for img in sorted(cls_dir.rglob("*")):
             if img.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}:
                 yield img, cls_idx
-
-
-def _train_tiny_headtail(
-    spec: TrainingRunSpec,
-    run_dir: Path,
-    log_cb: LogCallback | None = None,
-    progress_cb: ProgressCallback | None = None,
-    should_cancel: CancelCheck | None = None,
-) -> dict:
-    try:
-        import cv2
-        import torch
-        import torch.nn as nn
-        from torch.utils.data import DataLoader, Dataset
-    except Exception as exc:  # pragma: no cover - optional dependency branch
-        raise RuntimeError(
-            f"Tiny head-tail training requires torch/cv2: {exc}"
-        ) from exc
-
-    dataset_dir = Path(spec.derived_dataset_dir).expanduser().resolve()
-    device = _pick_torch_device(spec.device)
-    _safe_log(log_cb, f"Tiny trainer device: {device}")
-
-    train_samples = list(_iter_classify_samples(dataset_dir, "train"))
-    val_samples = list(_iter_classify_samples(dataset_dir, "val"))
-    if len(train_samples) < 2 or len(val_samples) < 1:
-        raise RuntimeError(
-            "Head-tail tiny training requires non-empty train/val classify splits."
-        )
-
-    input_w = int(spec.tiny_params.input_width)
-    input_h = int(spec.tiny_params.input_height)
-
-    class TinyDataset(Dataset):
-        def __init__(self, items):
-            self.items = items
-
-        def __len__(self):
-            return len(self.items)
-
-        def __getitem__(self, idx):
-            path, label = self.items[idx]
-            img = cv2.imread(str(path), cv2.IMREAD_COLOR)
-            if img is None:
-                raise RuntimeError(f"Could not read image: {path}")
-            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            if img.shape[1] != input_w or img.shape[0] != input_h:
-                img = cv2.resize(
-                    img, (input_w, input_h), interpolation=cv2.INTER_LINEAR
-                )
-            x = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
-            y = torch.tensor(float(label), dtype=torch.float32)
-            return x, y
-
-    class TinyHeadClassifier(nn.Module):
-        def __init__(self, input_size=(128, 64)):
-            super().__init__()
-            self.input_size = tuple(input_size)
-            self.features = nn.Sequential(
-                nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
-                nn.BatchNorm2d(16),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-                nn.BatchNorm2d(32),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(inplace=True),
-                nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),
-                nn.BatchNorm2d(64),
-                nn.ReLU(inplace=True),
-                nn.AdaptiveAvgPool2d(1),
-            )
-            self.classifier = nn.Sequential(
-                nn.Flatten(),
-                nn.Dropout(0.2),
-                nn.Linear(64, 1),
-            )
-
-        def forward(self, x):
-            return self.classifier(self.features(x))
-
-    model = TinyHeadClassifier(input_size=(input_w, input_h)).to(device)
-    train_loader = DataLoader(
-        TinyDataset(train_samples),
-        batch_size=max(1, int(spec.tiny_params.batch)),
-        shuffle=True,
-        num_workers=0,
-    )
-    val_loader = DataLoader(
-        TinyDataset(val_samples),
-        batch_size=max(1, int(spec.tiny_params.batch)),
-        shuffle=False,
-        num_workers=0,
-    )
-
-    opt = torch.optim.AdamW(
-        model.parameters(),
-        lr=float(spec.tiny_params.lr),
-        weight_decay=float(spec.tiny_params.weight_decay),
-    )
-
-    best_val_acc = -1.0
-    best_state = None
-    epochs = max(1, int(spec.tiny_params.epochs))
-    patience = max(1, int(spec.tiny_params.patience))
-    patience_counter = 0
-    history = []
-
-    for epoch in range(epochs):
-        if should_cancel and should_cancel():
-            raise RuntimeError("Canceled")
-
-        model.train()
-        train_loss = 0.0
-        train_n = 0
-        for xs, ys in train_loader:
-            xs = xs.to(device)
-            ys = ys.to(device)
-            opt.zero_grad()
-            logits = model(xs).squeeze(1)
-            loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, ys)
-            loss.backward()
-            opt.step()
-            train_loss += float(loss.item()) * int(ys.shape[0])
-            train_n += int(ys.shape[0])
-
-        model.eval()
-        val_correct = 0
-        val_total = 0
-        with torch.inference_mode():
-            for xs, ys in val_loader:
-                xs = xs.to(device)
-                ys = ys.to(device)
-                logits = model(xs).squeeze(1)
-                preds = (torch.sigmoid(logits) >= 0.5).float()
-                val_correct += int((preds == ys).sum().item())
-                val_total += int(ys.shape[0])
-
-        mean_train_loss = train_loss / max(1, train_n)
-        val_acc = val_correct / max(1, val_total)
-        history.append(
-            {"epoch": epoch + 1, "train_loss": mean_train_loss, "val_acc": val_acc}
-        )
-
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            best_state = {
-                k: v.detach().cpu().clone() for k, v in model.state_dict().items()
-            }
-            patience_counter = 0
-        else:
-            patience_counter += 1
-
-        _safe_log(
-            log_cb,
-            f"tiny epoch {epoch + 1}/{epochs} train_loss={mean_train_loss:.4f} val_acc={val_acc:.4f}",
-        )
-        if progress_cb:
-            progress_cb(epoch + 1, epochs)
-
-        if patience_counter >= patience:
-            _safe_log(log_cb, f"Early stopping triggered at epoch {epoch + 1}")
-            break
-
-    if best_state is not None:
-        model.load_state_dict(best_state, strict=True)
-
-    weights_dir = run_dir / "weights"
-    weights_dir.mkdir(parents=True, exist_ok=True)
-    out_ckpt = weights_dir / "best.pth"
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "input_size": [input_w, input_h],
-            "best_val_acc": float(best_val_acc),
-            "history": history,
-        },
-        out_ckpt,
-    )
-
-    metrics_path = run_dir / "tiny_metrics.json"
-    metrics_path.write_text(
-        json.dumps({"best_val_acc": float(best_val_acc), "history": history}, indent=2),
-        encoding="utf-8",
-    )
-
-    return {
-        "success": True,
-        "artifact_path": str(out_ckpt),
-        "metrics_path": str(metrics_path),
-        "command": ["tiny_headtail_inprocess"],
-        "task": "tiny_headtail",
-    }
 
 
 def _train_tiny_classify(
@@ -318,7 +196,7 @@ def _train_tiny_classify(
         import cv2
         import torch
         import torch.nn as nn
-        from torch.utils.data import DataLoader, Dataset
+        from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
     except Exception as exc:
         raise RuntimeError(f"Tiny classify training requires torch/cv2: {exc}") from exc
 
@@ -326,18 +204,57 @@ def _train_tiny_classify(
     device = _pick_torch_device(spec.device)
     _safe_log(log_cb, f"Tiny classify device: {device}")
 
-    train_samples = list(_iter_classify_samples(dataset_dir, "train"))
-    val_samples = list(_iter_classify_samples(dataset_dir, "val"))
+    class_to_idx = _build_class_to_idx(dataset_dir)
+    train_samples = list(_iter_classify_samples(dataset_dir, "train", class_to_idx))
+    val_samples = list(_iter_classify_samples(dataset_dir, "val", class_to_idx))
     if len(train_samples) < 2:
         raise RuntimeError("Tiny classify training requires at least 2 train samples.")
 
-    train_dir = dataset_dir / "train"
-    num_classes = len(sorted(d for d in train_dir.iterdir() if d.is_dir()))
+    num_classes = len(class_to_idx)
     if num_classes < 2:
         raise RuntimeError("Need at least 2 classes in train split.")
+    train_label_set = {int(lbl) for _, lbl in train_samples}
+    if len(train_label_set) < 2:
+        raise RuntimeError(
+            "Need at least 2 classes represented in train split for tiny classify."
+        )
 
     input_w = int(spec.tiny_params.input_width)
     input_h = int(spec.tiny_params.input_height)
+    rebalance_mode = (
+        str(getattr(spec.tiny_params, "class_rebalance_mode", "none") or "none")
+        .strip()
+        .lower()
+    )
+    rebalance_power = float(
+        max(0.0, getattr(spec.tiny_params, "class_rebalance_power", 1.0))
+    )
+    label_smoothing = float(
+        min(0.4, max(0.0, getattr(spec.tiny_params, "label_smoothing", 0.0)))
+    )
+
+    class_counts = [0] * num_classes
+    for _p, lbl in train_samples:
+        if 0 <= int(lbl) < num_classes:
+            class_counts[int(lbl)] += 1
+
+    # Inverse-frequency reweighting; power controls strength.
+    class_weight_values = [1.0] * num_classes
+    if rebalance_mode in {"weighted_loss", "weighted_sampler", "both"}:
+        max_count = max(class_counts) if class_counts else 1
+        for idx in range(num_classes):
+            count = max(1, class_counts[idx])
+            class_weight_values[idx] = float(max_count / count) ** rebalance_power
+        mean_w = sum(class_weight_values) / max(1, len(class_weight_values))
+        if mean_w > 0:
+            class_weight_values = [w / mean_w for w in class_weight_values]
+
+    _safe_log(
+        log_cb,
+        "tiny classify options: "
+        f"rebalance={rebalance_mode}, power={rebalance_power:.2f}, "
+        f"label_smoothing={label_smoothing:.2f}",
+    )
 
     class TinyDataset(Dataset):
         def __init__(self, items, augment=False, profile=None):
@@ -394,10 +311,19 @@ def _train_tiny_classify(
             )
 
     model = _TinyClassifierCompat(num_classes, spec.tiny_params).to(device)
+    train_sampler = None
+    if rebalance_mode in {"weighted_sampler", "both"}:
+        sample_weights = [class_weight_values[int(lbl)] for _p, lbl in train_samples]
+        train_sampler = WeightedRandomSampler(
+            weights=torch.as_tensor(sample_weights, dtype=torch.double),
+            num_samples=len(sample_weights),
+            replacement=True,
+        )
     train_loader = DataLoader(
         TinyDataset(train_samples, augment=True, profile=spec.augmentation_profile),
         batch_size=max(1, int(spec.tiny_params.batch)),
-        shuffle=True,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
         num_workers=0,
     )
     val_loader = (
@@ -416,7 +342,15 @@ def _train_tiny_classify(
         lr=float(spec.tiny_params.lr),
         weight_decay=float(spec.tiny_params.weight_decay),
     )
-    criterion = nn.CrossEntropyLoss()
+    class_weight_tensor = None
+    if rebalance_mode in {"weighted_loss", "both"}:
+        class_weight_tensor = torch.as_tensor(
+            class_weight_values, dtype=torch.float32, device=device
+        )
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weight_tensor,
+        label_smoothing=label_smoothing,
+    )
 
     best_val_acc = -1.0
     best_state = None
@@ -482,23 +416,52 @@ def _train_tiny_classify(
 
     weights_dir = run_dir / "weights"
     weights_dir.mkdir(parents=True, exist_ok=True)
-    out_ckpt = weights_dir / "best.pth"
+
+    # Build a descriptive filename: classkit_{role}_{N}cls_{classes}_{rundir_stem}.pth
+    _role_slug = (
+        spec.role.value.replace("classify_", "")
+        .replace("_tiny", "_tiny")
+        .replace("_yolo", "_yolo")
+    )
+    _class_slug = "-".join(
+        name for name, _idx in sorted(class_to_idx.items(), key=lambda kv: int(kv[1]))
+    )
+    if len(_class_slug) > 48:
+        _class_slug = f"{num_classes}cls"
+    _run_stem = (
+        run_dir.parent.name
+    )  # e.g. flat_tiny_20260309_123456 / run → parent stem
+    _model_filename = f"classkit_{_role_slug}_{_class_slug}_{_run_stem}.pth"
+    out_ckpt = weights_dir / _model_filename
 
     import json as _json
 
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "input_size": [input_w, input_h],
-            "num_classes": num_classes,
-            "class_names": sorted(
-                d.name for d in (dataset_dir / "train").iterdir() if d.is_dir()
-            ),
-            "best_val_acc": float(best_val_acc),
-            "history": history,
-        },
-        out_ckpt,
-    )
+    _ckpt_dict = {
+        "model_state_dict": model.state_dict(),
+        "input_size": [input_w, input_h],
+        "num_classes": num_classes,
+        "class_names": [
+            name
+            for name, _idx in sorted(class_to_idx.items(), key=lambda kv: int(kv[1]))
+        ],
+        "best_val_acc": float(best_val_acc),
+        "history": history,
+    }
+    torch.save(_ckpt_dict, out_ckpt)
+
+    # Auto-export ONNX alongside .pth for runtime-flexible inference (ONNX/TensorRT).
+    _onnx_path: Path | None = None
+    try:
+        from multi_tracker.training.tiny_model import export_tiny_to_onnx
+
+        _onnx_candidate = out_ckpt.with_suffix(".onnx")
+        export_tiny_to_onnx(model, _ckpt_dict, _onnx_candidate)
+        _onnx_path = _onnx_candidate
+        _safe_log(log_cb, f"ONNX exported: {_onnx_candidate.name}")
+    except Exception as _onnx_exc:
+        _safe_log(
+            log_cb, f"ONNX export skipped ({type(_onnx_exc).__name__}: {_onnx_exc})"
+        )
 
     metrics_path = run_dir / "tiny_metrics.json"
     metrics_path.write_text(
@@ -511,7 +474,9 @@ def _train_tiny_classify(
     return {
         "success": True,
         "artifact_path": str(out_ckpt),
+        "onnx_path": str(_onnx_path) if _onnx_path is not None else "",
         "metrics_path": str(metrics_path),
+        "best_val_acc": float(best_val_acc),
         "command": ["tiny_classify_inprocess"],
         "task": "tiny_classify",
     }
@@ -529,15 +494,6 @@ def run_training(
 
     run_dir = Path(run_dir).expanduser().resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
-
-    if spec.role == TrainingRole.HEADTAIL_TINY:
-        return _train_tiny_headtail(
-            spec,
-            run_dir,
-            log_cb=log_cb,
-            progress_cb=progress_cb,
-            should_cancel=should_cancel,
-        )
 
     if spec.role in (
         TrainingRole.CLASSIFY_FLAT_TINY,
@@ -614,10 +570,12 @@ def run_training(
     artifact = best if best.exists() else last if last.exists() else None
 
     metrics_path = run_dir / "results.csv"
+    best_val_acc = _extract_best_val_acc_from_results_csv(metrics_path)
     return {
         "success": artifact is not None,
         "artifact_path": str(artifact) if artifact is not None else "",
         "metrics_path": str(metrics_path) if metrics_path.exists() else "",
+        "best_val_acc": best_val_acc,
         "command": command,
         "task": _ultralytics_task_for_role(spec.role),
     }

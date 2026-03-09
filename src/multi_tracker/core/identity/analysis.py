@@ -5,6 +5,7 @@ Extracts regions around detections for downstream processing.
 
 import json
 import logging
+import math
 import queue
 import threading
 from pathlib import Path
@@ -14,6 +15,51 @@ import cv2
 import numpy as np
 
 from multi_tracker.utils.image_processing import compute_median_color_from_frame
+
+
+def _resolve_directed_angle(
+    theta: float,
+    heading_hint: Optional[float] = None,
+    heading_directed: bool = False,
+    vx: Optional[float] = None,
+    vy: Optional[float] = None,
+) -> Tuple[float, bool, str]:
+    """Resolve the best directed orientation angle for a crop.
+
+    Priority:
+    1. Head-tail model heading (heading_directed=True and finite heading_hint).
+    2. Motion velocity (vx, vy non-negligible) — disambiguates theta ± π.
+    3. OBB axis angle (undirected, 180° ambiguity retained).
+
+    The returned angle points tail → head so that the affine-warp canonicalization
+    places the head on the right side (+x) of the canonical crop.
+
+    Returns:
+        (angle_rad, is_directed, source_str)
+    """
+    # Priority 1: head-tail model
+    if (
+        heading_directed
+        and heading_hint is not None
+        and math.isfinite(float(heading_hint))
+    ):
+        return float(heading_hint) % (2.0 * math.pi), True, "head_tail_model"
+
+    # Priority 2: motion velocity disambiguates OBB axis
+    if vx is not None and vy is not None:
+        fvx, fvy = float(vx), float(vy)
+        if math.isfinite(fvx) and math.isfinite(fvy) and (fvx * fvx + fvy * fvy) > 1e-6:
+            motion_angle = math.atan2(fvy, fvx) % (2.0 * math.pi)
+            theta0 = float(theta) % (2.0 * math.pi)
+            theta1 = (theta0 + math.pi) % (2.0 * math.pi)
+            diff0 = abs(((motion_angle - theta0 + math.pi) % (2.0 * math.pi)) - math.pi)
+            diff1 = abs(((motion_angle - theta1 + math.pi) % (2.0 * math.pi)) - math.pi)
+            resolved = theta0 if diff0 <= diff1 else theta1
+            return resolved, True, "motion_velocity"
+
+    # Priority 3: undirected OBB axis (180° ambiguous)
+    return float(theta) % (2.0 * math.pi), False, "tracking_theta"
+
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +291,9 @@ class IndividualDatasetGenerator:
         trajectory_ids: Optional[Sequence[int]] = None,
         coord_scale_factor: float = 1.0,
         detection_ids: Optional[Sequence[int]] = None,
+        heading_hints: Optional[Sequence[float]] = None,
+        directed_mask: Optional[Sequence[int]] = None,
+        velocities: Optional[Sequence[Optional[Tuple[float, float]]]] = None,
     ) -> int:
         """
         Process a frame and save masked crops for each detection.
@@ -268,6 +317,9 @@ class IndividualDatasetGenerator:
             trajectory_ids: Optional list of trajectory IDs for each detection
             coord_scale_factor: Scale factor to convert detection coords to original resolution (1/resize_factor)
             detection_ids: Optional list of unique Detection IDs for each detection
+            heading_hints: Optional directed heading angles (radians) per detection from head-tail model.
+            directed_mask: Optional boolean mask (0/1) per detection indicating whether heading_hints is valid.
+            velocities: Optional (vx, vy) tuples per detection for motion-based fallback orientation.
 
         Returns:
             num_saved: Number of crops saved from this frame
@@ -341,6 +393,28 @@ class IndividualDatasetGenerator:
                     else None
                 )
 
+                # Resolve directed orientation: head-tail model > motion > OBB axis.
+                _hint = (
+                    float(heading_hints[i])
+                    if heading_hints is not None and i < len(heading_hints)
+                    else None
+                )
+                _is_directed = (
+                    bool(directed_mask[i])
+                    if directed_mask is not None and i < len(directed_mask)
+                    else False
+                )
+                _vel = (
+                    velocities[i]
+                    if velocities is not None and i < len(velocities)
+                    else None
+                )
+                _vx = float(_vel[0]) if _vel is not None else None
+                _vy = float(_vel[1]) if _vel is not None else None
+                canon_angle, canon_directed, canon_source = _resolve_directed_angle(
+                    theta, _hint, _is_directed, _vx, _vy
+                )
+
                 crop_metadata = {
                     "frame_id": int(frame_id),
                     "detection_idx": i,
@@ -359,11 +433,11 @@ class IndividualDatasetGenerator:
                     "canonicalization": {
                         "center_px": crop_info["canonical_center_px"],
                         "size_px": crop_info["canonical_size_px"],
-                        "angle_rad": float(theta),
+                        "angle_rad": float(canon_angle),
                         "major_axis_theta_rad": float(theta),
                         "minor_axis_theta_rad": float(theta + (np.pi / 2.0)),
-                        "directed": False,
-                        "orientation_source": "tracking_theta",
+                        "directed": bool(canon_directed),
+                        "orientation_source": canon_source,
                     },
                     "source_type": source_type,
                 }
@@ -390,6 +464,8 @@ class IndividualDatasetGenerator:
         interp_from: Tuple[int, int],
         interp_index: int,
         interp_total: int,
+        heading_angle: Optional[float] = None,
+        heading_directed: bool = False,
     ) -> Optional[str]:
         """Save one interpolated crop for trajectory gap-filling supervision."""
         if not self.enabled or self.crops_dir is None:
@@ -409,6 +485,9 @@ class IndividualDatasetGenerator:
             f"of{int(interp_total):03d}.{self.output_format}"
         )
 
+        interp_canon_angle, interp_canon_directed, interp_canon_source = (
+            _resolve_directed_angle(theta, heading_angle, heading_directed)
+        )
         metadata = {
             "frame_id": int(frame_id),
             "detection_idx": -1,
@@ -425,11 +504,11 @@ class IndividualDatasetGenerator:
             "canonicalization": {
                 "center_px": crop_info["canonical_center_px"],
                 "size_px": crop_info["canonical_size_px"],
-                "angle_rad": float(theta),
+                "angle_rad": float(interp_canon_angle),
                 "major_axis_theta_rad": float(theta),
                 "minor_axis_theta_rad": float(theta + (np.pi / 2.0)),
-                "directed": False,
-                "orientation_source": "tracking_theta",
+                "directed": bool(interp_canon_directed),
+                "orientation_source": interp_canon_source,
             },
             "source_type": "interpolated",
             "interpolated": True,

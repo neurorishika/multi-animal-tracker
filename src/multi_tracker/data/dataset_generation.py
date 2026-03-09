@@ -275,7 +275,10 @@ def export_dataset(
 
     # Add timestamp to dataset name to avoid overwriting
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_name_with_timestamp = f"{dataset_name}_{timestamp}"
+    if dataset_name and str(dataset_name).strip():
+        dataset_name_with_timestamp = f"{dataset_name}_{timestamp}"
+    else:
+        dataset_name_with_timestamp = timestamp
 
     # Verify and resolve output directory
     output_path = Path(output_dir).resolve()

@@ -1,21 +1,25 @@
 {
-  "20260214-210051_26x_ant_train22.pt": {
+  "obb/20260214-210051_26x_ant_train22.pt": {
     "size": "26x",
     "species": "ant",
     "model_info": "train22",
     "added_at": "2026-02-14T21:00:51",
     "source_path": "/Users/neurorishika/Projects/MBL/Module 4/models/train22/best.pt",
-    "stored_filename": "20260214-210051_26x_ant_train22.pt"
+    "stored_filename": "20260214-210051_26x_ant_train22.pt",
+    "task_family": "obb",
+    "usage_role": "obb_direct"
   },
-  "20260217-080436_26x_ant_train22.pt": {
+  "obb/20260217-080436_26x_ant_train22.pt": {
     "size": "26x",
     "species": "ant",
     "model_info": "train22",
     "added_at": "2026-02-17T08:04:36",
     "source_path": "/home/rutalab/Downloads/obb.pt",
-    "stored_filename": "20260217-080436_26x_ant_train22.pt"
+    "stored_filename": "20260217-080436_26x_ant_train22.pt",
+    "task_family": "obb",
+    "usage_role": "obb_direct"
   },
-  "YOLO-classify/orientation/20260305-173944_26n_obiroi_head_v2.pth": {
+  "classification/orientation/YOLO/20260305-173944_26n_obiroi_head_v2.pth": {
     "size": "26n",
     "species": "obiroi",
     "model_info": "head_v2",
@@ -25,7 +29,7 @@
     "task_family": "classify",
     "usage_role": "headtail"
   },
-  "YOLO-detect/20260305-175022_26x_obiroi_v1.pt": {
+  "detection/20260305-175022_26x_obiroi_v1.pt": {
     "size": "26x",
     "species": "obiroi",
     "model_info": "v1",
@@ -35,7 +39,7 @@
     "task_family": "detect",
     "usage_role": "seq_detect"
   },
-  "cropped/20260305-175049_26s_obiroi_obbcrop.pt": {
+  "obb/cropped/20260305-175049_26s_obiroi_obbcrop.pt": {
     "size": "26s",
     "species": "obiroi",
     "model_info": "obbcrop",
@@ -45,45 +49,13 @@
     "task_family": "obb",
     "usage_role": "seq_crop_obb"
   },
-  "YOLO-classify/direction/20260306-201425_n_head_tail_flat_yolo.pt": {
-    "size": "n",
-    "species": "head_tail",
-    "model_info": "flat_yolo",
-    "added_at": "2026-03-06T20:14:25",
-    "source_path": "/Users/neurorishika/Projects/Rockefeller/RutaKronauer/MultiTrackerData/ant/training_data/head_tail/.classkit_runs/flat_yolo_20260306_194841/run/weights/best.pt",
-    "stored_filename": "20260306-201425_n_head_tail_flat_yolo.pt",
-    "task_family": "classify",
-    "usage_role": "classify_yolo",
-    "trained_from_run_id": "",
-    "dataset_fingerprint": "",
-    "base_model": "yolo26n-cls.pt",
-    "scheme_name": "direction",
-    "factor_index": null,
-    "factor_name": null
-  },
-  "tiny-classify/direction/20260307-094622_tiny_head_tail_flat_tiny.pth": {
-    "size": "tiny",
-    "species": "head_tail",
-    "model_info": "flat_tiny",
-    "added_at": "2026-03-07T09:46:22",
-    "source_path": "/Users/neurorishika/Projects/Rockefeller/RutaKronauer/MultiTrackerData/ant/training_data/head_tail/.classkit_runs/flat_tiny_20260307_094508/run/weights/best.pth",
-    "stored_filename": "20260307-094622_tiny_head_tail_flat_tiny.pth",
-    "task_family": "classify",
-    "usage_role": "classify_tiny",
-    "trained_from_run_id": "",
-    "dataset_fingerprint": "",
-    "base_model": "",
-    "scheme_name": "direction",
-    "factor_index": null,
-    "factor_name": null
-  },
-  "YOLO-classify/orientation/20260308-151413_26s_20260307_094622_tiny_head_tail_flat_tiny.pth": {
-    "size": "26s",
-    "species": "20260307",
-    "model_info": "094622_tiny_head_tail_flat_tiny",
-    "added_at": "2026-03-08T15:14:13",
-    "source_path": "/Users/neurorishika/Projects/MBL/Module 4/multi-animal-tracker/models/tiny-classify/direction/20260307-094622_tiny_head_tail_flat_tiny.pth",
-    "stored_filename": "20260308-151413_26s_20260307_094622_tiny_head_tail_flat_tiny.pth",
+  "classification/orientation/tiny/20260308-235248_custom_obiroi_tinymodel.pth": {
+    "size": "custom",
+    "species": "obiroi",
+    "model_info": "tinymodel",
+    "added_at": "2026-03-08T23:52:48",
+    "source_path": "/Users/neurorishika/Projects/Rockefeller/RutaKronauer/MultiTrackerData/ant/training_data/head_tail/models/best.pth",
+    "stored_filename": "20260308-235248_custom_obiroi_tinymodel.pth",
     "task_family": "classify",
     "usage_role": "headtail"
   }

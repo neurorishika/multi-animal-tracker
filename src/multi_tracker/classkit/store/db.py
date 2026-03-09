@@ -1,3 +1,4 @@
+import csv
 import json
 import sqlite3
 from pathlib import Path
@@ -827,7 +828,7 @@ class ClassKitDB:
         artifact_paths: List[str],
         class_names: List[str],
         canonicalize_mat: bool = False,
-        best_val_acc: float = 0.0,
+        best_val_acc: Optional[float] = None,
         num_classes: int = 0,
         meta: Optional[Dict[str, Any]] = None,
     ) -> int:
@@ -846,13 +847,139 @@ class ClassKitDB:
                     json.dumps([str(p) for p in artifact_paths]),
                     json.dumps(list(class_names)),
                     int(bool(canonicalize_mat)),
-                    float(best_val_acc),
+                    (float(best_val_acc) if best_val_acc is not None else None),
                     int(num_classes),
                     json.dumps(meta) if meta else None,
                 ),
             )
             conn.commit()
             return c.lastrowid
+
+    def set_model_cache_display_name(
+        self, model_cache_id: int, display_name: str
+    ) -> int:
+        """Set or clear a user-facing display name in model cache metadata."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute(
+                "SELECT meta_json FROM model_cache WHERE id = ?", (int(model_cache_id),)
+            )
+            row = c.fetchone()
+            if not row:
+                return 0
+
+            meta: Dict[str, Any] = {}
+            meta_json = row[0]
+            if meta_json:
+                try:
+                    meta = json.loads(meta_json)
+                except Exception:
+                    meta = {}
+
+            name_clean = str(display_name).strip()
+            if name_clean:
+                meta["display_name"] = name_clean
+            else:
+                meta.pop("display_name", None)
+
+            c.execute(
+                "UPDATE model_cache SET meta_json = ? WHERE id = ?",
+                (json.dumps(meta) if meta else None, int(model_cache_id)),
+            )
+            conn.commit()
+            return int(c.rowcount)
+
+    def delete_model_cache_entry(self, model_cache_id: int) -> int:
+        """Delete one model cache row by id and return affected row count."""
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM model_cache WHERE id = ?", (int(model_cache_id),))
+            conn.commit()
+            return int(c.rowcount)
+
+    @staticmethod
+    def _extract_best_acc_from_results_csv(path: Path) -> Optional[float]:
+        if not path.exists():
+            return None
+        try:
+            with open(path, encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                fields = list(reader.fieldnames or [])
+                cols = [
+                    c
+                    for c in fields
+                    if ("acc" in c.lower()) or ("accuracy" in c.lower())
+                ]
+                if not cols:
+                    return None
+                cols = sorted(
+                    cols,
+                    key=lambda c: (
+                        0 if ("top1" in c.lower() and "metrics" in c.lower()) else 1,
+                        c.lower(),
+                    ),
+                )
+                rows = list(reader)
+                for col in cols:
+                    values: List[float] = []
+                    for row in rows:
+                        raw = row.get(col)
+                        if raw is None or str(raw).strip() == "":
+                            continue
+                        try:
+                            values.append(float(raw))
+                        except Exception:
+                            continue
+                    if values:
+                        return max(values)
+                return None
+        except Exception:
+            return None
+
+    @classmethod
+    def _infer_best_val_acc_from_artifacts(
+        cls, artifact_paths: List[str]
+    ) -> Optional[float]:
+        inferred_values: List[float] = []
+        for src in artifact_paths or []:
+            artifact = Path(str(src))
+            if not artifact.exists():
+                continue
+
+            run_dir = (
+                artifact.parent.parent
+                if artifact.parent.name == "weights"
+                else artifact.parent
+            )
+            tiny_metrics = run_dir / "tiny_metrics.json"
+            if tiny_metrics.exists():
+                try:
+                    data = json.loads(tiny_metrics.read_text(encoding="utf-8"))
+                    if isinstance(data, dict):
+                        direct = data.get("best_val_acc")
+                        if direct is not None:
+                            inferred_values.append(float(direct))
+                            continue
+                        history = data.get("history")
+                        if isinstance(history, list):
+                            vals = [
+                                float(item.get("val_acc"))
+                                for item in history
+                                if isinstance(item, dict)
+                                and item.get("val_acc") is not None
+                            ]
+                            if vals:
+                                inferred_values.append(max(vals))
+                                continue
+                except Exception:
+                    pass
+
+            yolo_results = run_dir / "results.csv"
+            csv_val = cls._extract_best_acc_from_results_csv(yolo_results)
+            if csv_val is not None:
+                inferred_values.append(float(csv_val))
+
+        return max(inferred_values) if inferred_values else None
 
     def list_model_caches(self) -> List[Dict[str, Any]]:
         """Return all model cache entries ordered newest-first."""
@@ -877,19 +1004,31 @@ class ClassKitDB:
                 class_names = json.loads(names_json) if names_json else []
             except Exception:
                 class_names = []
+            best_val_acc = float(acc) if acc is not None else None
+            if (best_val_acc is None or best_val_acc <= 0.0) and artifact_paths:
+                inferred = self._infer_best_val_acc_from_artifacts(artifact_paths)
+                if inferred is not None:
+                    best_val_acc = float(inferred)
+
             entry: Dict[str, Any] = {
                 "id": id_,
                 "mode": mode,
                 "artifact_paths": artifact_paths,
                 "class_names": class_names,
                 "canonicalize_mat": bool(canon),
-                "best_val_acc": float(acc) if acc is not None else None,
+                "best_val_acc": best_val_acc,
                 "num_classes": int(n_cls) if n_cls else 0,
                 "timestamp": ts,
             }
             if meta_json:
                 try:
-                    entry["meta"] = json.loads(meta_json)
+                    meta = json.loads(meta_json)
+                    entry["meta"] = meta
+                    if (
+                        isinstance(meta, dict)
+                        and str(meta.get("display_name", "")).strip()
+                    ):
+                        entry["display_name"] = str(meta.get("display_name")).strip()
                 except Exception:
                     pass
             # Only include entries where at least the first artifact still exists

@@ -193,6 +193,8 @@ class DetectionCache:
             f"Saving detection cache to {self.cache_path} ({self._total_frames} frames)"
         )
 
+        self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+
         # Use compressed format for smaller file size
         np.savez_compressed(str(self.cache_path), **self._data)
 

@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
+from ..color_utils import build_category_color_map, color_for_value
+
 
 class ExplorerView(QGraphicsView):
     """
@@ -50,6 +52,7 @@ class ExplorerView(QGraphicsView):
         self._base_radii = []
         self._point_centers = []
         self._zoom_redraw_limit = 4000
+        self.uncertainty_outline_threshold = 0.6
 
         # Interaction state
         self._zoom_factor = 1.0
@@ -62,6 +65,22 @@ class ExplorerView(QGraphicsView):
             view_scale = 1.0
         zoom_gain = min(0.45, max(-0.35, (view_scale - 1.0) * 0.10))
         return 1.0 - zoom_gain
+
+    @staticmethod
+    def _labels_for_color_map(labels) -> list:
+        """Return a list suitable for color-map building without ndarray truth checks."""
+        if labels is None:
+            return []
+        return list(labels)
+
+    def set_uncertainty_outline_threshold(self, threshold: float) -> None:
+        """Configure the confidence threshold used for white uncertainty outlines."""
+        try:
+            value = float(threshold)
+        except Exception:
+            value = 0.6
+        # 0 disables uncertainty outlines.
+        self.uncertainty_outline_threshold = max(0.0, min(1.0, value))
 
     def _apply_item_style(
         self, idx: int, item: QGraphicsEllipseItem, radius_scale: float
@@ -122,10 +141,16 @@ class ExplorerView(QGraphicsView):
             # Highlight low confidence (uncertain) points
             confidence = (
                 self._confidences[idx]
-                if self._confidences and idx < len(self._confidences)
+                if self._confidences is not None and idx < len(self._confidences)
                 else None
             )
-            if not self.labeling_mode and confidence is not None and confidence < 0.6:
+            threshold = float(self.uncertainty_outline_threshold)
+            if (
+                not self.labeling_mode
+                and confidence is not None
+                and threshold > 0.0
+                and float(confidence) < threshold
+            ):
                 item.setPen(QPen(QColor(255, 255, 255), max(1.0, 1.5 * radius_scale)))
                 item.setZValue(4)
             else:
@@ -200,22 +225,12 @@ class ExplorerView(QGraphicsView):
         radius_scale = self._radius_scale()
         self._base_colors = []
         self._base_radii = []
+        category_colors = build_category_color_map(self._labels_for_color_map(labels))
 
         for i, item in enumerate(self.points):
             color = QColor(100, 100, 255)
-            if (
-                labels is not None
-                and len(labels) > i
-                and labels[i] is not None
-                and labels[i] != ""
-            ):
-                import hashlib
-
-                h = int(hashlib.md5(str(labels[i]).encode()).hexdigest(), 16)
-                r = (h & 0xFF0000) >> 16
-                g = (h & 0x00FF00) >> 8
-                b = h & 0x0000FF
-                color = QColor(r, g, b)
+            if labels is not None and len(labels) > i:
+                color = color_for_value(labels[i], category_colors, default=color)
 
             if (
                 self.labeling_mode
@@ -301,25 +316,13 @@ class ExplorerView(QGraphicsView):
         # Draw points
         default_radius = 3.0
         radius_scale = self._radius_scale()
+        category_colors = build_category_color_map(self._labels_for_color_map(labels))
 
         for i, (x, y) in enumerate(norm_coords):
             # Color logic
             color = QColor(100, 100, 255)  # Default blue
-            if (
-                labels is not None
-                and len(labels) > i
-                and labels[i] is not None
-                and labels[i] != ""
-            ):
-                # Distinct color for labeled (e.g. green)
-                # Simple hash for consistency color from label string
-                import hashlib
-
-                h = int(hashlib.md5(str(labels[i]).encode()).hexdigest(), 16)
-                r = (h & 0xFF0000) >> 16
-                g = (h & 0x00FF00) >> 8
-                b = h & 0x0000FF
-                color = QColor(r, g, b)
+            if labels is not None and len(labels) > i:
+                color = color_for_value(labels[i], category_colors, default=color)
 
             if (
                 self.labeling_mode

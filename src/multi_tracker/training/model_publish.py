@@ -21,14 +21,14 @@ def get_models_root() -> Path:
     return root
 
 
-def _repo_dir_for_role(role: TrainingRole, scheme_name: str = "orientation") -> Path:
+def _repo_dir_for_role(role: TrainingRole, scheme_name: str = "classkit") -> Path:
     root = get_models_root()
-    if role == TrainingRole.SEQ_DETECT:
+    if role == TrainingRole.OBB_DIRECT:
+        out = root / "YOLO-obb"
+    elif role == TrainingRole.SEQ_DETECT:
         out = root / "YOLO-detect"
     elif role == TrainingRole.SEQ_CROP_OBB:
         out = root / "YOLO-obb" / "cropped"
-    elif role in (TrainingRole.HEADTAIL_TINY, TrainingRole.HEADTAIL_YOLO):
-        out = root / "YOLO-classify" / "orientation"
     elif role == TrainingRole.CLASSIFY_FLAT_YOLO:
         out = root / "YOLO-classify" / scheme_name
     elif role == TrainingRole.CLASSIFY_FLAT_TINY:
@@ -38,7 +38,7 @@ def _repo_dir_for_role(role: TrainingRole, scheme_name: str = "orientation") -> 
     elif role == TrainingRole.CLASSIFY_MULTIHEAD_TINY:
         out = root / "tiny-classify" / "multihead" / scheme_name
     else:
-        out = root / "YOLO-obb"
+        raise RuntimeError(f"Unsupported publish role: {role.value}")
     out.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -54,7 +54,7 @@ def _task_usage_for_role(role: TrainingRole) -> tuple[str, str]:
         return "classify", "classify_yolo"
     if role in (TrainingRole.CLASSIFY_FLAT_TINY, TrainingRole.CLASSIFY_MULTIHEAD_TINY):
         return "classify", "classify_tiny"
-    return "classify", "headtail"
+    raise RuntimeError(f"Unsupported publish role: {role.value}")
 
 
 def _registry_path() -> Path:
@@ -120,7 +120,7 @@ def publish_trained_model(
     if not src.exists():
         raise RuntimeError(f"Trained artifact not found: {src}")
 
-    repo_dir = _repo_dir_for_role(role, scheme_name=scheme_name or "orientation")
+    repo_dir = _repo_dir_for_role(role, scheme_name=scheme_name or "classkit")
     task_family, usage_role = _task_usage_for_role(role)
 
     now = datetime.now()

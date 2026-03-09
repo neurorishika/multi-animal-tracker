@@ -15,7 +15,7 @@ from .contracts import (
     ValidationReport,
 )
 from .dataset_builders import merge_obb_sources, prepare_role_dataset
-from .dataset_inspector import inspect_classify_dataset, inspect_obb_or_detect_dataset
+from .dataset_inspector import inspect_obb_or_detect_dataset
 from .model_publish import publish_trained_model
 from .registry import (
     create_run_record,
@@ -24,7 +24,7 @@ from .registry import (
     new_run_id,
 )
 from .runner import run_training
-from .validation import validate_classify_dataset, validate_obb_dataset
+from .validation import validate_obb_dataset
 
 
 @dataclass(slots=True)
@@ -87,10 +87,6 @@ class TrainingOrchestrator:
         valid = not any(i.severity == "error" for i in all_issues)
         return ValidationReport(valid=valid, issues=all_issues, stats=stats)
 
-    def preflight_headtail_dataset(self, dataset_path: str) -> ValidationReport:
-        inspection = inspect_classify_dataset(dataset_path)
-        return validate_classify_dataset(inspection)
-
     def build_merged_obb_dataset(
         self,
         sources: list[SourceDataset],
@@ -118,7 +114,6 @@ class TrainingOrchestrator:
         merged_obb_dataset_dir: str,
         *,
         class_name: str,
-        headtail_dataset_override: str = "",
         crop_pad_ratio: float = 0.15,
         min_crop_size_px: int = 64,
         enforce_square: bool = True,
@@ -130,7 +125,6 @@ class TrainingOrchestrator:
             merged_obb_dataset_dir=merged_obb_dataset_dir,
             role_output_root=out_root,
             class_name=class_name,
-            headtail_dataset_override=headtail_dataset_override,
             crop_pad_ratio=crop_pad_ratio,
             min_crop_size_px=min_crop_size_px,
             enforce_square=enforce_square,

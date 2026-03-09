@@ -43,6 +43,7 @@ from multi_tracker.core.tracking.optimizer import (
     TrackingOptimizer,
     TrackingPreviewWorker,
 )
+from multi_tracker.utils.video_artifacts import build_autotune_state_path
 
 logger = logging.getLogger(__name__)
 
@@ -1239,7 +1240,7 @@ class ParameterHelperDialog(QDialog):
 
     def _state_path(self) -> Path:
         """Sidecar file next to the detection cache."""
-        return Path(self.detection_cache_path).with_suffix(".autotune_state.json")
+        return build_autotune_state_path(self.detection_cache_path)
 
     def _compute_state_key(self) -> str:
         """SHA-256 of base_params (tunable keys + domain constraints) + frame range.
@@ -1335,6 +1336,7 @@ class ParameterHelperDialog(QDialog):
                 "results": results_list,
             }
             path = self._state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(state, indent=2, default=str))
         except Exception:
             logger.exception("Failed to save autotune state")

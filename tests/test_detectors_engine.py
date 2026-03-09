@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
@@ -495,6 +496,95 @@ def test_headtail_hint_uses_batched_classify_call() -> None:
     assert calls["source_is_list"] is True
     assert directed_mask == [1, 1]
     assert np.allclose(heading_hints, [0.5, 0.5], rtol=1e-6, atol=1e-6)
+
+
+def test_validate_headtail_class_names_accepts_five_class_schema() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+
+    normalized = det._validate_headtail_class_names(
+        ["head_up", "head_down", "head_left", "head_right", "head_unknown"],
+        source="test model",
+    )
+
+    assert normalized == ["up", "down", "left", "right", "unknown"]
+
+
+def test_validate_headtail_class_names_rejects_partial_schema() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+
+    with pytest.raises(ValueError, match="Expected exactly"):
+        det._validate_headtail_class_names(
+            ["left", "right", "unknown"], source="test model"
+        )
+
+
+def test_load_headtail_yolo_model_requires_supported_schema() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.device = "cpu"
+    det._try_load_tiny_head_classifier = lambda _path: None
+    det._load_model_for_task = lambda _path, task: (
+        types.SimpleNamespace(
+            names={0: "up", 1: "down", 2: "left", 3: "right", 4: "unknown"}
+        ),
+        "cpu",
+    )
+
+    det._load_headtail_model("headtail.pt")
+
+    assert det.headtail_backend == "yolo"
+    assert det.headtail_class_names == ["up", "down", "left", "right", "unknown"]
+
+
+def test_load_headtail_model_rejects_invalid_named_schema() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.device = "cpu"
+    det._try_load_tiny_head_classifier = lambda _path: (
+        object(),
+        ["left", "right", "unknown"],
+        (128, 64),
+    )
+
+    with pytest.raises(ValueError, match="Expected exactly"):
+        det._load_headtail_model("bad_headtail.pth")
+
+
+def test_classkit_headtail_hints_abstain_on_up_down_unknown() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {"YOLO_HEADTAIL_CONF_THRESHOLD": 0.6}
+    det.headtail_backend = "classkit_tiny"
+    det.headtail_model = object()
+    det._canonicalize_obb_for_headtail = lambda _frame, _corners: (
+        np.zeros((12, 24, 3), dtype=np.uint8),
+        0.5,
+    )
+    det._predict_headtail_results = lambda _crops: [
+        ("up", 0.95),
+        ("unknown", 0.99),
+        ("left", 0.92),
+        ("right", 0.91),
+    ]
+
+    obb_corners = [
+        np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32),
+        np.array([[3, 3], [5, 3], [5, 4], [3, 4]], dtype=np.float32),
+        np.array([[6, 6], [8, 6], [8, 7], [6, 7]], dtype=np.float32),
+        np.array([[9, 9], [11, 9], [11, 10], [9, 10]], dtype=np.float32),
+    ]
+
+    heading_hints, directed_mask = det._compute_headtail_hints(
+        np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
+    )
+
+    assert np.isnan(heading_hints[0])
+    assert np.isnan(heading_hints[1])
+    assert directed_mask == [0, 0, 1, 1]
+    assert heading_hints[2] == pytest.approx((0.5 + np.pi) % (2 * np.pi), abs=1e-6)
+    assert heading_hints[3] == pytest.approx(0.5, abs=1e-6)
 
 
 def test_filter_overlapping_uses_precise_iou_for_all_overlaps() -> None:

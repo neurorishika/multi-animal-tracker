@@ -127,7 +127,6 @@ def test_inspector_txt_list_honors_custom_labels_root(tmp_path: Path):
 
 def test_merge_obb_sources_dedup_and_counts(tmp_path: Path):
     src1 = _make_unsplit_source(tmp_path, "src1", [50, 60])
-    # src2 includes one duplicate content (60) and one unique (200)
     src2 = _make_unsplit_source(tmp_path, "src2", [60, 200])
 
     res = merge_obb_sources(
@@ -231,7 +230,6 @@ def test_runner_fallback_uses_ultralytics_module(tmp_path: Path, monkeypatch):
 
 
 def test_registry_and_publish_lineage(tmp_path: Path, monkeypatch):
-    # Redirect training/runs and models roots into tmp.
     import multi_tracker.training.model_publish as pub
     import multi_tracker.training.registry as reg
 
