@@ -1364,9 +1364,16 @@ class YOLOOBBDetector:
             "YOLO_DETECT_TARGET_CLASSES", target_classes
         )
         try:
+            # YOLO_SEQ_DETECT_CONF_THRESHOLD lets users tune stage-1 sensitivity
+            # independently of the stage-2 OBB confidence threshold.
+            # Default falls back to raw_conf_floor (the global minimum floor).
+            seq_detect_conf = float(
+                self.params.get("YOLO_SEQ_DETECT_CONF_THRESHOLD", raw_conf_floor)
+            )
+            seq_detect_conf = max(1e-4, seq_detect_conf)
             detect_kwargs = dict(
                 source=frame,
-                conf=raw_conf_floor,
+                conf=seq_detect_conf,
                 iou=1.0,
                 classes=detect_target_classes,
                 max_det=max_det,

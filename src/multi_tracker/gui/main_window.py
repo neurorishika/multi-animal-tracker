@@ -1324,6 +1324,9 @@ def _run_preview_detection_job(
             "YOLO_SEQ_STAGE2_POW2_PAD": bool(
                 context.get("yolo_seq_stage2_pow2_pad", False)
             ),
+            "YOLO_SEQ_DETECT_CONF_THRESHOLD": float(
+                context.get("yolo_seq_detect_conf_threshold", 0.25)
+            ),
             "YOLO_HEADTAIL_CONF_THRESHOLD": float(
                 context.get("yolo_headtail_conf_threshold", 0.50)
             ),
@@ -3654,6 +3657,17 @@ class MainWindow(QMainWindow):
         self.chk_yolo_seq_square_crop = QCheckBox("Enforce square crop")
         self.chk_yolo_seq_square_crop.setChecked(True)
         f_seq_adv.addRow("", self.chk_yolo_seq_square_crop)
+        self.spin_yolo_seq_detect_conf = QDoubleSpinBox()
+        self.spin_yolo_seq_detect_conf.setRange(0.01, 1.0)
+        self.spin_yolo_seq_detect_conf.setSingleStep(0.01)
+        self.spin_yolo_seq_detect_conf.setValue(0.25)
+        self.spin_yolo_seq_detect_conf.setToolTip(
+            "Minimum confidence for the stage-1 detection model (sequential mode only).\n"
+            "Lower = more crops sent to stage-2 (higher recall, slower).\n"
+            "Higher = fewer crops (faster, may miss occluded animals).\n"
+            "Recommended: 0.1–0.3"
+        )
+        f_seq_adv.addRow("Stage-1 detect conf", self.spin_yolo_seq_detect_conf)
         self.spin_yolo_headtail_conf = QDoubleSpinBox()
         self.spin_yolo_headtail_conf.setRange(0.0, 1.0)
         self.spin_yolo_headtail_conf.setSingleStep(0.01)
@@ -8698,6 +8712,7 @@ class MainWindow(QMainWindow):
             "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
             "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
             "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+            "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
             "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
             "yolo_confidence": self.spin_yolo_confidence.value(),
             "yolo_iou": self.spin_yolo_iou.value(),
@@ -13221,6 +13236,7 @@ class MainWindow(QMainWindow):
             "YOLO_SEQ_ENFORCE_SQUARE_CROP": self.chk_yolo_seq_square_crop.isChecked(),
             "YOLO_SEQ_STAGE2_IMGSZ": self.spin_yolo_seq_stage2_imgsz.value(),
             "YOLO_SEQ_STAGE2_POW2_PAD": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+            "YOLO_SEQ_DETECT_CONF_THRESHOLD": self.spin_yolo_seq_detect_conf.value(),
             "YOLO_HEADTAIL_CONF_THRESHOLD": self.spin_yolo_headtail_conf.value(),
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
@@ -13703,6 +13719,9 @@ class MainWindow(QMainWindow):
             )
             self.chk_yolo_seq_stage2_pow2_pad.setChecked(
                 bool(get_cfg("yolo_seq_stage2_pow2_pad", default=False))
+            )
+            self.spin_yolo_seq_detect_conf.setValue(
+                float(get_cfg("yolo_seq_detect_conf_threshold", default=0.25))
             )
             self.spin_yolo_headtail_conf.setValue(
                 float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
@@ -14470,6 +14489,7 @@ class MainWindow(QMainWindow):
                 "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
                 "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
                 "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+                "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
                 "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
                 "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
                 "yolo_iou_threshold": self.spin_yolo_iou.value(),

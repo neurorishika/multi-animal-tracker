@@ -41,6 +41,7 @@
   "yolo_seq_enforce_square_crop": true,
   "yolo_seq_stage2_imgsz": 160,
   "yolo_seq_stage2_pow2_pad": false,
+  "yolo_seq_detect_conf_threshold": 0.25,
   "yolo_headtail_conf_threshold": 0.5,
   "yolo_confidence_threshold": 0.8,
   "yolo_iou_threshold": 0.7,
