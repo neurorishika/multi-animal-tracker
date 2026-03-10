@@ -51,6 +51,39 @@ from multi_tracker.utils.video_artifacts import build_individual_properties_cach
 logger = logging.getLogger(__name__)
 
 
+def get_assignment_params_for_region(
+    region_label: str,
+    base_max_distance: float,
+    conservative_factor: float = 0.5,
+) -> dict:
+    """Return assignment parameters adjusted for the detection region.
+
+    In flagged regions the max assignment distance is reduced by
+    ``(1 - conservative_factor)`` to prefer fragment spawning over
+    long-distance risky matches.
+
+    Parameters
+    ----------
+    region_label:
+        Region label returned by ``tag_detections``.  ``"open_field"``
+        means no high-density region was matched.
+    base_max_distance:
+        The standard ``MAX_DISTANCE_THRESHOLD`` from tracking params (pixels).
+    conservative_factor:
+        Fraction [0, 1] by which to scale down ``base_max_distance`` when a
+        flagged region is detected.  ``0.0`` disables the adjustment entirely.
+
+    Returns
+    -------
+    dict
+        Mapping with key ``"max_distance"`` set to the effective threshold.
+    """
+    if region_label == "open_field" or conservative_factor == 0.0:
+        return {"max_distance": base_max_distance}
+    reduced = base_max_distance * (1.0 - conservative_factor)
+    return {"max_distance": reduced}
+
+
 class TrackingWorker(QThread):
     """
     Core tracking engine. Orchestrates tracking components to be functionally
@@ -1479,6 +1512,38 @@ class TrackingWorker(QThread):
                 self.finished_signal.emit(False, [], [])
                 return
 
+            # Load density regions for backward pass from the sidecar JSON written
+            # by the forward pass (backward mode skips pre-detection, so regions are
+            # not computed here — they are loaded from disk instead).
+            if self.backward_mode and not self._density_regions:
+                try:
+                    from pathlib import Path as _Path
+
+                    from multi_tracker.afterhours.core.confidence_density import (
+                        load_regions as _load_regions,
+                    )
+
+                    _regions_path = _Path(self.detection_cache_path).with_name(
+                        _Path(self.detection_cache_path).stem
+                        + "_confidence_regions.json"
+                    )
+                    if _regions_path.exists():
+                        self._density_regions = _load_regions(_regions_path)
+                        logger.info(
+                            f"Backward pass: loaded {len(self._density_regions)} "
+                            f"density regions from {_regions_path}"
+                        )
+                    else:
+                        logger.info(
+                            "Backward pass: no density regions sidecar found "
+                            f"({_regions_path}); density-aware assignment disabled."
+                        )
+                except Exception:
+                    logger.exception(
+                        "Failed to load density regions for backward pass (non-fatal)"
+                    )
+                    self._density_regions = []
+
             # Create new cache for writing if needed
             if not use_cached_detections:
                 detection_cache = DetectionCache(
@@ -2180,6 +2245,49 @@ class TrackingWorker(QThread):
                     "track_avg_step": track_avg_step,
                 }
 
+                # --- Density-aware assignment distance ---
+                # If any detection in this frame falls within a high-density region,
+                # temporarily tighten MAX_DISTANCE_THRESHOLD for both compute_cost_matrix
+                # and assign_tracks to reduce risky long-range matches.
+                _orig_max_dist = assigner.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
+                if self._density_regions:
+                    try:
+                        from multi_tracker.afterhours.core.confidence_density import (
+                            tag_detections as _tag_dets,
+                        )
+
+                        _frame_dets = [
+                            {
+                                "frame": actual_frame_index,
+                                "cx": float(meas[_di][0]),
+                                "cy": float(meas[_di][1]),
+                            }
+                            for _di in range(len(meas))
+                        ]
+                        _tagged = _tag_dets(_frame_dets, self._density_regions)
+                        _flagged = [
+                            d["region_label"]
+                            for d in _tagged
+                            if d["region_label"] != "open_field"
+                        ]
+                        if _flagged:
+                            _conservative_factor = float(
+                                params.get("DENSITY_CONSERVATIVE_FACTOR", 0.5)
+                            )
+                            _adj = get_assignment_params_for_region(
+                                region_label=_flagged[0],
+                                base_max_distance=_orig_max_dist,
+                                conservative_factor=_conservative_factor,
+                            )
+                            assigner.params["MAX_DISTANCE_THRESHOLD"] = _adj[
+                                "max_distance"
+                            ]
+                    except Exception:
+                        logger.debug(
+                            "Density-aware assignment adjustment failed (non-fatal)",
+                            exc_info=True,
+                        )
+
                 cost, spatial_candidates = assigner.compute_cost_matrix(
                     N,
                     meas,
@@ -2210,6 +2318,9 @@ class TrackingWorker(QThread):
                         association_data=association_data,
                     )
                 )
+
+                # Restore original MAX_DISTANCE_THRESHOLD after density-adjusted frame
+                assigner.params["MAX_DISTANCE_THRESHOLD"] = _orig_max_dist
                 next_trajectory_id = next_id
                 respawned_matches = {r for r in rows if track_states[r] == "lost"}
 

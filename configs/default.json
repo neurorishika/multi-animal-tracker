@@ -134,5 +134,6 @@
   "pose_temporal_outlier_zscore": 3.0,
   "density_gaussian_sigma_scale": 1.0,
   "density_temporal_sigma": 2.0,
-  "density_binarize_threshold": 0.3
+  "density_binarize_threshold": 0.3,
+  "density_conservative_factor": 0.5
 }
