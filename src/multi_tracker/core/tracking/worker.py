@@ -2288,39 +2288,40 @@ class TrackingWorker(QThread):
                             exc_info=True,
                         )
 
-                cost, spatial_candidates = assigner.compute_cost_matrix(
-                    N,
-                    meas,
-                    preds,
-                    shapes,
-                    self.kf_manager,
-                    last_shape_info,
-                    meas_ori_directed=(
-                        detection_directed_mask
-                        if len(detection_directed_mask) == len(meas)
-                        else None
-                    ),
-                    association_data=association_data,
-                )
-
-                rows, cols, free_dets, next_id, high_cost_tracks = (
-                    assigner.assign_tracks(
-                        cost,
+                try:
+                    cost, spatial_candidates = assigner.compute_cost_matrix(
                         N,
-                        len(meas),
                         meas,
-                        track_states,
-                        tracking_continuity,
-                        self.kf_manager,  # <--- Pass the manager, not .filters
-                        trajectory_ids,
-                        next_trajectory_id,
-                        spatial_candidates,
+                        preds,
+                        shapes,
+                        self.kf_manager,
+                        last_shape_info,
+                        meas_ori_directed=(
+                            detection_directed_mask
+                            if len(detection_directed_mask) == len(meas)
+                            else None
+                        ),
                         association_data=association_data,
                     )
-                )
 
-                # Restore original MAX_DISTANCE_THRESHOLD after density-adjusted frame
-                assigner.params["MAX_DISTANCE_THRESHOLD"] = _orig_max_dist
+                    rows, cols, free_dets, next_id, high_cost_tracks = (
+                        assigner.assign_tracks(
+                            cost,
+                            N,
+                            len(meas),
+                            meas,
+                            track_states,
+                            tracking_continuity,
+                            self.kf_manager,  # <--- Pass the manager, not .filters
+                            trajectory_ids,
+                            next_trajectory_id,
+                            spatial_candidates,
+                            association_data=association_data,
+                        )
+                    )
+                finally:
+                    # Restore original MAX_DISTANCE_THRESHOLD after density-adjusted frame
+                    assigner.params["MAX_DISTANCE_THRESHOLD"] = _orig_max_dist
                 next_trajectory_id = next_id
                 respawned_matches = {r for r in rows if track_states[r] == "lost"}
 

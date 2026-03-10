@@ -13585,6 +13585,9 @@ class MainWindow(QMainWindow):
                 int(c) for c in self._background_color
             ],  # Ensure JSON serializable
             "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
+            "DENSITY_CONSERVATIVE_FACTOR": self.advanced_config.get(
+                "density_conservative_factor", 0.5
+            ),
         }
 
     def load_config(self: object) -> object:
