@@ -42,6 +42,8 @@ datasieve = "multi_tracker.tools.data_sieve.gui:main"
 sieve = "multi_tracker.tools.data_sieve.gui:main"
 classkit-labeler = "multi_tracker.classkit.app:main"
 classkit = "multi_tracker.classkit.app:main"
+mat-afterhours = "multi_tracker.afterhours.app:main"
+afterhours = "multi_tracker.afterhours.app:main"
 
 # ============================================================================
 # Black - Code formatter
