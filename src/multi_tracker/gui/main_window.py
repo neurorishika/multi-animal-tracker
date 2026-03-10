@@ -5190,6 +5190,25 @@ class MainWindow(QMainWindow):
         self.spin_video_pose_line_thickness.setVisible(False)
         self.lbl_video_pose_disabled_hint.setVisible(False)
 
+        # MAT-afterhours launch button
+        g_afterhours = QGroupBox("Interactive Proofreading")
+        vl_afterhours = QVBoxLayout(g_afterhours)
+        vl_afterhours.addWidget(
+            self._create_help_label(
+                "Open completed tracking results in MAT-afterhours for "
+                "interactive identity proofreading and swap correction."
+            )
+        )
+        self._btn_open_afterhours = QPushButton("Open in MAT-afterhours")
+        self._btn_open_afterhours.setToolTip(
+            "Open completed tracking results in MAT-afterhours for "
+            "interactive proofreading"
+        )
+        self._btn_open_afterhours.setEnabled(False)
+        self._btn_open_afterhours.clicked.connect(self._open_afterhours)
+        vl_afterhours.addWidget(self._btn_open_afterhours)
+        vbox.addWidget(g_afterhours)
+
         vbox.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -15319,6 +15338,37 @@ class MainWindow(QMainWindow):
         self._show_summary_on_dataset_done = False
 
         QMessageBox.information(self, "Tracking Complete", "\n".join(lines))
+
+        # Offer to open MAT-afterhours for interactive proofreading
+        self._btn_open_afterhours.setEnabled(bool(self.current_video_path))
+        if self.current_video_path:
+            reply = QMessageBox.question(
+                self,
+                "Open MAT-afterhours?",
+                "Tracking complete. Open in MAT-afterhours for "
+                "interactive identity proofreading?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self._open_afterhours()
+
+    def _open_afterhours(self):
+        """Launch MAT-afterhours as a subprocess pointing at the current video."""
+        import subprocess
+        import sys
+
+        video_path = self.current_video_path
+        if not video_path:
+            QMessageBox.warning(
+                self,
+                "No Video",
+                "No video is currently loaded. Please load a video first.",
+            )
+            return
+        cmd = [sys.executable, "-m", "multi_tracker.afterhours.app", str(video_path)]
+        logger.info("Launching MAT-afterhours: %s", " ".join(cmd))
+        subprocess.Popen(cmd)
 
     def _on_dataset_worker_thread_finished(self):
         """Release completed dataset worker safely."""
