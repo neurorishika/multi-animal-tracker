@@ -2735,6 +2735,25 @@ class MainWindow(QMainWindow):
         batch_btns.addWidget(self.btn_clear_batch)
         v_container.addLayout(batch_btns)
 
+        batch_io_btns = QHBoxLayout()
+        self.btn_export_batch = QPushButton("Export List...")
+        self.btn_export_batch.setToolTip(
+            "Save the current batch video list to a text file.\n"
+            "The first line will be the Keystone video path."
+        )
+        self.btn_export_batch.clicked.connect(self._export_batch_list)
+        batch_io_btns.addWidget(self.btn_export_batch)
+
+        self.btn_import_batch = QPushButton("Import List...")
+        self.btn_import_batch.setToolTip(
+            "Load a batch video list from a text file.\n"
+            "The first line must be the Keystone video.\n"
+            "Missing files will be reported before proceeding."
+        )
+        self.btn_import_batch.clicked.connect(self._import_batch_list)
+        batch_io_btns.addWidget(self.btn_import_batch)
+        v_container.addLayout(batch_io_btns)
+
         vl_batch.addWidget(self.container_batch)
         self.container_batch.setVisible(False)  # Default hidden
 
@@ -7949,6 +7968,124 @@ class MainWindow(QMainWindow):
         if len(self.batch_videos) > 1:
             self.batch_videos = [self.batch_videos[0]]
             self._sync_batch_list_ui()
+
+    def _export_batch_list(self):
+        """Save the current batch video list to a plain-text file (one path per line, keystone first)."""
+        if not self.batch_videos:
+            QMessageBox.information(
+                self,
+                "Nothing to Export",
+                "The batch list is empty. Add videos first.",
+            )
+            return
+
+        fp, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Batch Video List",
+            "",
+            "Batch List (*.txt);;All Files (*)",
+        )
+        if not fp:
+            return
+
+        try:
+            with open(fp, "w", encoding="utf-8") as fh:
+                for path in self.batch_videos:
+                    fh.write(path + "\n")
+            QMessageBox.information(
+                self,
+                "Exported",
+                f"Batch list saved to:\n{fp}\n\n"
+                f"{len(self.batch_videos)} video(s) listed (first = keystone).",
+            )
+        except OSError as exc:
+            QMessageBox.critical(self, "Export Failed", str(exc))
+
+    def _import_batch_list(self):
+        """Load a batch video list from a plain-text file and set up keystone + additional videos."""
+        fp, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Batch Video List",
+            "",
+            "Batch List (*.txt);;All Files (*)",
+        )
+        if not fp:
+            return
+
+        try:
+            with open(fp, "r", encoding="utf-8") as fh:
+                lines = [ln.rstrip("\n").strip() for ln in fh if ln.strip()]
+        except OSError as exc:
+            QMessageBox.critical(self, "Import Failed", str(exc))
+            return
+
+        if not lines:
+            QMessageBox.warning(
+                self, "Empty File", "The selected file contains no video paths."
+            )
+            return
+
+        missing = [p for p in lines if not os.path.isfile(p)]
+        valid = [p for p in lines if os.path.isfile(p)]
+
+        if missing:
+            missing_summary = "\n".join(f"  • {p}" for p in missing[:20])
+            if len(missing) > 20:
+                missing_summary += f"\n  … and {len(missing) - 20} more"
+
+            if not valid:
+                QMessageBox.critical(
+                    self,
+                    "Import Failed – All Paths Missing",
+                    f"None of the {len(missing)} path(s) in the file could be found:\n\n{missing_summary}",
+                )
+                return
+
+            if lines[0] not in valid:
+                QMessageBox.critical(
+                    self,
+                    "Import Failed – Keystone Missing",
+                    f"The keystone video (first line) does not exist:\n\n  {lines[0]}\n\n"
+                    "Cannot import without a valid keystone.",
+                )
+                return
+
+            reply = QMessageBox.question(
+                self,
+                "Missing Videos",
+                f"{len(missing)} path(s) could not be found and will be skipped:\n\n"
+                f"{missing_summary}\n\nProceed with {len(valid)} valid video(s)?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        if not valid:
+            QMessageBox.warning(
+                self, "Nothing Imported", "No valid video paths were found."
+            )
+            return
+
+        keystone = valid[0]
+
+        # Activate batch mode if not already on, then load the keystone
+        self.g_batch.setChecked(True)
+
+        # Replace the batch list with the imported paths (keystone first)
+        self.batch_videos = valid
+
+        # Trigger full keystone setup (loads config, autofills outputs, etc.)
+        self._setup_video_file(keystone)
+
+        # Sync the list widget now that keystone is loaded
+        self._sync_batch_list_ui()
+
+        QMessageBox.information(
+            self,
+            "Imported",
+            f"Loaded {len(valid)} video(s).\n\nKeystone: {keystone}",
+        )
 
     def _process_batch(self):
         """DEPRECATED: Now handled by the standard 'Start Full Tracking' logic when batch mode is on."""
