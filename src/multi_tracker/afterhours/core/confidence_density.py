@@ -544,35 +544,36 @@ def export_diagnostic_video(
     )
     global_max = float(all_vals.max()) if all_vals.max() > 0 else 1.0
 
-    for frame_idx in range(n_frames):
-        frame = frame_reader(frame_idx)
-        if frame is None:
-            frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
-        frame = frame.copy()
+    try:
+        for frame_idx in range(n_frames):
+            frame = frame_reader(frame_idx)
+            if frame is None:
+                frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+            frame = frame.copy()
 
-        if frame_idx < len(density_grids):
-            norm = (density_grids[frame_idx] / global_max).clip(0, 1)
-            red_mask = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
-            red_mask[:, :, 2] = (norm * 255).astype(np.uint8)
-            frame = cv2.addWeighted(
-                frame, 1 - heatmap_alpha, red_mask, heatmap_alpha, 0
-            )
-
-        for r in regions:
-            if r.frame_start <= frame_idx <= r.frame_end:
-                x1, y1, x2, y2 = r.pixel_bbox
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 200), 1)
-                label_text = f"{r.label} [{r.frame_start}-{r.frame_end}]"
-                cv2.putText(
-                    frame,
-                    label_text,
-                    (x1, max(y1 - 4, 12)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.4,
-                    (0, 0, 200),
-                    1,
+            if frame_idx < len(density_grids):
+                norm = (density_grids[frame_idx] / global_max).clip(0, 1)
+                red_mask = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+                red_mask[:, :, 2] = (norm * 255).astype(np.uint8)
+                frame = cv2.addWeighted(
+                    frame, 1 - heatmap_alpha, red_mask, heatmap_alpha, 0
                 )
 
-        writer.write(frame)
+            for r in regions:
+                if r.frame_start <= frame_idx <= r.frame_end:
+                    x1, y1, x2, y2 = r.pixel_bbox
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 200), 1)
+                    label_text = f"{r.label} [{r.frame_start}-{r.frame_end}]"
+                    cv2.putText(
+                        frame,
+                        label_text,
+                        (x1, max(y1 - 4, 12)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.4,
+                        (0, 0, 200),
+                        1,
+                    )
 
-    writer.release()
+            writer.write(frame)
+    finally:
+        writer.release()
