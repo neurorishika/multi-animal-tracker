@@ -1616,6 +1616,11 @@ class TrackingWorker(QThread):
                         _sizes_arr = np.array(_sizes_list, dtype=np.float32)
                         _cache_dict[_fidx] = (_meas_arr, _confs_arr, _sizes_arr)
 
+                    def _density_progress(pct, msg):
+                        self.progress_signal.emit(pct, msg)
+
+                    self.progress_signal.emit(0, "Computing confidence density map...")
+
                     _dm, _raw_grids = compute_density_map_from_cache(
                         detection_cache=_cache_dict,
                         frame_h=_frame_h,
@@ -1623,6 +1628,8 @@ class TrackingWorker(QThread):
                         sigma_scale=float(p.get("DENSITY_GAUSSIAN_SIGMA_SCALE", 1.0)),
                         temporal_sigma=float(p.get("DENSITY_TEMPORAL_SIGMA", 2.0)),
                         threshold=float(p.get("DENSITY_BINARIZE_THRESHOLD", 0.3)),
+                        downsample_factor=8,
+                        progress_callback=_density_progress,
                     )
                     self._density_regions = _dm.regions
 
@@ -1649,6 +1656,10 @@ class TrackingWorker(QThread):
                         _ok, _fr = _cap.read()
                         return _fr if _ok else None
 
+                    self.progress_signal.emit(
+                        50, "Exporting confidence density video..."
+                    )
+
                     export_diagnostic_video(
                         frame_reader=_diag_reader,
                         n_frames=_n_frames_total,
@@ -1658,7 +1669,9 @@ class TrackingWorker(QThread):
                         regions=self._density_regions,
                         output_path=_diag_path,
                         fps=_fps,
+                        progress_callback=_density_progress,
                     )
+                    self.progress_signal.emit(100, "Density map complete")
                     logger.info(f"Diagnostic video: {_diag_path}")
 
                 except Exception:

@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, label
@@ -177,29 +177,29 @@ def accumulate_frame(
 
     h, w = grid.shape
 
-    # Pre-compute coordinate grids once (y, x order for indexing).
+    # Extract positions and compute weights/sigmas for all detections at once
+    cx = meas[:, 0]  # (N,)
+    cy = meas[:, 1]  # (N,)
+    weights = np.maximum(1.0 - confidences, 0.0)  # (N,)
+    sigmas = sigma_scale * np.sqrt(np.maximum(sizes, 1e-6)) / 2.0  # (N,)
+
+    # Skip zero-weight detections
+    mask = weights > 0
+    if not mask.any():
+        return grid
+    cx, cy, weights, sigmas = cx[mask], cy[mask], weights[mask], sigmas[mask]
+
+    # Pre-compute coordinate vectors once.
     ys = np.arange(h, dtype=np.float32)
     xs = np.arange(w, dtype=np.float32)
-    xv, yv = np.meshgrid(xs, ys)  # shape (H, W) each
 
-    for i in range(meas.shape[0]):
-        cx = float(meas[i, 0])
-        cy = float(meas[i, 1])
-        conf = float(confidences[i])
-        size = float(sizes[i])
-
-        weight = 1.0 - conf
-        if weight <= 0.0:
-            continue
-
-        sigma = sigma_scale * np.sqrt(max(size, 1e-6)) / 2.0
-
-        # Gaussian evaluated analytically — avoids heavy scipy calls per det.
-        gauss = np.exp(-((xv - cx) ** 2 + (yv - cy) ** 2) / (2.0 * sigma**2)).astype(
-            np.float32
-        )
-
-        grid += weight * gauss
+    # Separable Gaussian: O(H+W) per detection instead of O(H*W).
+    for i in range(len(cx)):
+        dy = ys - cy[i]
+        dx = xs - cx[i]
+        gauss_y = np.exp(-(dy**2) / (2.0 * sigmas[i] ** 2))  # (H,)
+        gauss_x = np.exp(-(dx**2) / (2.0 * sigmas[i] ** 2))  # (W,)
+        grid += weights[i] * np.outer(gauss_y, gauss_x)  # (H, W)
 
     return grid
 
@@ -418,6 +418,8 @@ def compute_density_map_from_cache(
     sigma_scale: float,
     temporal_sigma: float,
     threshold: float,
+    downsample_factor: int = 8,
+    progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> Tuple[ConfidenceDensityMap, List[np.ndarray]]:
     """Run the full density-map pipeline from a detection cache.
 
@@ -440,43 +442,90 @@ def compute_density_map_from_cache(
         Passed through to :func:`smooth_and_binarize`.
     threshold:
         Passed through to :func:`smooth_and_binarize`.
+    downsample_factor:
+        Internal grids operate at ``(frame_h // factor, frame_w // factor)``
+        resolution.  Detection positions are scaled down before accumulation
+        and region bounding boxes are scaled back up on output.  Default 8.
+    progress_callback:
+        Optional callable ``(percent: int, message: str) -> None`` invoked
+        periodically to report progress.
 
     Returns
     -------
     (ConfidenceDensityMap, raw_grids)
         *raw_grids* is the list of per-frame float32 arrays before smoothing,
-        in frame-index order.
+        in frame-index order.  Grids are at the downsampled resolution.
     """
+    ds = max(1, int(downsample_factor))
+    grid_h = max(1, frame_h // ds)
+    grid_w = max(1, frame_w // ds)
+
     if not detection_cache:
-        frame_grids = np.zeros((0, frame_h, frame_w), dtype=np.float32)
+        frame_grids = np.zeros((0, grid_h, grid_w), dtype=np.float32)
         cdm = ConfidenceDensityMap(
             frame_grids=frame_grids,
             regions=[],
-            frame_h=frame_h,
-            frame_w=frame_w,
+            frame_h=grid_h,
+            frame_w=grid_w,
         )
         return cdm, []
 
     sorted_frames = sorted(detection_cache.keys())
+    n_total = len(sorted_frames)
     raw_grids: List[np.ndarray] = []
-    for frame_idx in sorted_frames:
+    for i, frame_idx in enumerate(sorted_frames):
         meas, confs, sizes = detection_cache[frame_idx]
-        grid = np.zeros((frame_h, frame_w), dtype=np.float32)
-        accumulate_frame(grid, meas, confs, sizes, sigma_scale=sigma_scale)
+        # Scale detection positions and sizes to the downsampled grid.
+        if meas.shape[0] > 0 and ds > 1:
+            meas_scaled = meas.copy()
+            meas_scaled[:, 0] /= ds
+            meas_scaled[:, 1] /= ds
+            sizes_scaled = sizes / (ds**2)
+        else:
+            meas_scaled = meas
+            sizes_scaled = sizes
+        grid = np.zeros((grid_h, grid_w), dtype=np.float32)
+        accumulate_frame(
+            grid, meas_scaled, confs, sizes_scaled, sigma_scale=sigma_scale
+        )
         raw_grids.append(grid)
+        if progress_callback is not None and (i % 50 == 0 or i == n_total - 1):
+            pct = int(40 * (i + 1) / n_total)  # 0–40% for accumulation
+            progress_callback(pct, f"Density map: accumulating frame {i + 1}/{n_total}")
 
-    frame_grids = np.stack(raw_grids, axis=0)  # (T, H, W)
+    frame_grids = np.stack(raw_grids, axis=0)  # (T, grid_h, grid_w)
+
+    if progress_callback is not None:
+        progress_callback(42, "Density map: temporal smoothing...")
 
     binary = smooth_and_binarize(
         frame_grids, temporal_sigma=temporal_sigma, threshold=threshold
     )
-    regions = find_regions(binary, frame_h=frame_h, frame_w=frame_w)
+
+    if progress_callback is not None:
+        progress_callback(45, "Density map: finding regions...")
+
+    regions = find_regions(binary, frame_h=grid_h, frame_w=grid_w)
+
+    # Scale bounding boxes back to original pixel coordinates.
+    if ds > 1:
+        for r in regions:
+            x1, y1, x2, y2 = r.pixel_bbox
+            r.pixel_bbox = (
+                x1 * ds,
+                y1 * ds,
+                x2 * ds,
+                y2 * ds,
+            )
+
+    if progress_callback is not None:
+        progress_callback(48, f"Density map complete: {len(regions)} regions found")
 
     cdm = ConfidenceDensityMap(
         frame_grids=frame_grids,
         regions=regions,
-        frame_h=frame_h,
-        frame_w=frame_w,
+        frame_h=grid_h,
+        frame_w=grid_w,
     )
     return cdm, raw_grids
 
@@ -491,11 +540,12 @@ def export_diagnostic_video(
     n_frames: int,
     frame_h: int,
     frame_w: int,
-    density_grids: list,  # list of (H, W) float32 raw grids, one per frame
+    density_grids: list,  # list of (grid_h, grid_w) float32 raw grids
     regions: list,  # list of DensityRegion
     output_path,  # Path
     fps: float = 25.0,
     heatmap_alpha: float = 0.35,
+    progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> None:
     """Write diagnostic video with red heatmap overlay on low-confidence zones.
 
@@ -530,6 +580,9 @@ def export_diagnostic_video(
         Output video frame rate.
     heatmap_alpha:
         Blend weight for the red heatmap layer (0 = invisible, 1 = opaque).
+    progress_callback:
+        Optional callable ``(percent: int, message: str) -> None`` invoked
+        periodically to report progress.
     """
     import cv2
 
@@ -553,6 +606,11 @@ def export_diagnostic_video(
 
             if frame_idx < len(density_grids):
                 norm = (density_grids[frame_idx] / global_max).clip(0, 1)
+                # Upscale density grid to video resolution if needed.
+                if norm.shape[0] != frame_h or norm.shape[1] != frame_w:
+                    norm = cv2.resize(
+                        norm, (frame_w, frame_h), interpolation=cv2.INTER_LINEAR
+                    )
                 red_mask = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
                 red_mask[:, :, 2] = (norm * 255).astype(np.uint8)
                 frame = cv2.addWeighted(
@@ -575,5 +633,13 @@ def export_diagnostic_video(
                     )
 
             writer.write(frame)
+            if progress_callback is not None and (
+                frame_idx % 50 == 0 or frame_idx == n_frames - 1
+            ):
+                pct = 50 + int(45 * (frame_idx + 1) / n_frames)  # 50–95%
+                progress_callback(
+                    pct,
+                    f"Diagnostic video: frame {frame_idx + 1}/{n_frames}",
+                )
     finally:
         writer.release()

@@ -4827,6 +4827,75 @@ class MainWindow(QMainWindow):
             self.spin_pose_temporal_outlier_zscore,
         )
 
+        # --- Confidence Density Map controls ---
+        self.spin_density_gaussian_sigma_scale = QDoubleSpinBox()
+        self.spin_density_gaussian_sigma_scale.setRange(0.1, 5.0)
+        self.spin_density_gaussian_sigma_scale.setSingleStep(0.1)
+        self.spin_density_gaussian_sigma_scale.setDecimals(1)
+        self.spin_density_gaussian_sigma_scale.setValue(1.0)
+        self.spin_density_gaussian_sigma_scale.setToolTip(
+            "Scale factor for the Gaussian sigma derived from detection size.\n"
+            "Controls the spatial spread of each detection's contribution\n"
+            "to the confidence density map. Larger values produce smoother maps.\n"
+            "Range: 0.1–5.0. Default: 1.0."
+        )
+        self.lbl_density_gaussian_sigma_scale = QLabel("Density Gaussian sigma scale")
+        f_pp.addRow(
+            self.lbl_density_gaussian_sigma_scale,
+            self.spin_density_gaussian_sigma_scale,
+        )
+
+        self.spin_density_temporal_sigma = QDoubleSpinBox()
+        self.spin_density_temporal_sigma.setRange(0.5, 10.0)
+        self.spin_density_temporal_sigma.setSingleStep(0.5)
+        self.spin_density_temporal_sigma.setDecimals(1)
+        self.spin_density_temporal_sigma.setValue(2.0)
+        self.spin_density_temporal_sigma.setToolTip(
+            "Standard deviation (in frames) for temporal Gaussian smoothing\n"
+            "of the confidence density volume. Higher values merge nearby\n"
+            "low-confidence events into broader temporal regions.\n"
+            "Range: 0.5–10.0. Default: 2.0."
+        )
+        self.lbl_density_temporal_sigma = QLabel("Density temporal sigma (frames)")
+        f_pp.addRow(
+            self.lbl_density_temporal_sigma,
+            self.spin_density_temporal_sigma,
+        )
+
+        self.spin_density_binarize_threshold = QDoubleSpinBox()
+        self.spin_density_binarize_threshold.setRange(0.05, 0.95)
+        self.spin_density_binarize_threshold.setSingleStep(0.05)
+        self.spin_density_binarize_threshold.setDecimals(2)
+        self.spin_density_binarize_threshold.setValue(0.3)
+        self.spin_density_binarize_threshold.setToolTip(
+            "Threshold for binarizing the normalised density volume.\n"
+            "Voxels above this value become foreground regions where\n"
+            "density-aware conservative tracking is applied.\n"
+            "Range: 0.05–0.95. Default: 0.3."
+        )
+        self.lbl_density_binarize_threshold = QLabel("Density binarize threshold")
+        f_pp.addRow(
+            self.lbl_density_binarize_threshold,
+            self.spin_density_binarize_threshold,
+        )
+
+        self.spin_density_conservative_factor = QDoubleSpinBox()
+        self.spin_density_conservative_factor.setRange(0.0, 1.0)
+        self.spin_density_conservative_factor.setSingleStep(0.1)
+        self.spin_density_conservative_factor.setDecimals(1)
+        self.spin_density_conservative_factor.setValue(0.5)
+        self.spin_density_conservative_factor.setToolTip(
+            "Factor by which the maximum assignment distance is reduced\n"
+            "inside flagged density regions. 0.0 = no reduction (disabled),\n"
+            "1.0 = maximum reduction (strictest).\n"
+            "Range: 0.0–1.0. Default: 0.5."
+        )
+        self.lbl_density_conservative_factor = QLabel("Density conservative factor")
+        f_pp.addRow(
+            self.lbl_density_conservative_factor,
+            self.spin_density_conservative_factor,
+        )
+
         # Z-score based velocity breaking
         self.spin_max_velocity_zscore = QDoubleSpinBox()
         self.spin_max_velocity_zscore.setRange(0.0, 10.0)
@@ -7764,6 +7833,12 @@ class MainWindow(QMainWindow):
         self.spin_merge_overlap_multiplier.setEnabled(enabled)
         self.spin_min_overlap_frames.setEnabled(enabled)
         self.chk_cleanup_temp_files.setEnabled(enabled)
+
+        # Density map widgets — always visible when post-processing is enabled
+        self.spin_density_gaussian_sigma_scale.setEnabled(enabled)
+        self.spin_density_temporal_sigma.setEnabled(enabled)
+        self.spin_density_binarize_threshold.setEnabled(enabled)
+        self.spin_density_conservative_factor.setEnabled(enabled)
 
         # Pose quality widgets — visible only when post-processing AND pose export are active
         pose_enabled = enabled and self._is_pose_export_enabled()
@@ -13604,9 +13679,10 @@ class MainWindow(QMainWindow):
                 int(c) for c in self._background_color
             ],  # Ensure JSON serializable
             "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
-            "DENSITY_CONSERVATIVE_FACTOR": self.advanced_config.get(
-                "density_conservative_factor", 0.5
-            ),
+            "DENSITY_GAUSSIAN_SIGMA_SCALE": self.spin_density_gaussian_sigma_scale.value(),
+            "DENSITY_TEMPORAL_SIGMA": self.spin_density_temporal_sigma.value(),
+            "DENSITY_BINARIZE_THRESHOLD": self.spin_density_binarize_threshold.value(),
+            "DENSITY_CONSERVATIVE_FACTOR": self.spin_density_conservative_factor.value(),
         }
 
     def load_config(self: object) -> object:
@@ -14136,6 +14212,18 @@ class MainWindow(QMainWindow):
             )
             self.spin_pose_temporal_outlier_zscore.setValue(
                 get_cfg("pose_temporal_outlier_zscore", default=3.0)
+            )
+            self.spin_density_gaussian_sigma_scale.setValue(
+                get_cfg("density_gaussian_sigma_scale", default=1.0)
+            )
+            self.spin_density_temporal_sigma.setValue(
+                get_cfg("density_temporal_sigma", default=2.0)
+            )
+            self.spin_density_binarize_threshold.setValue(
+                get_cfg("density_binarize_threshold", default=0.3)
+            )
+            self.spin_density_conservative_factor.setValue(
+                get_cfg("density_conservative_factor", default=0.5)
             )
             self.spin_max_velocity_zscore.setValue(
                 get_cfg("max_velocity_zscore", default=0.0)
@@ -14763,6 +14851,10 @@ class MainWindow(QMainWindow):
                 "relink_min_pose_quality": self.spin_relink_min_pose_quality.value(),
                 "pose_postproc_max_gap": self.spin_pose_postproc_max_gap.value(),
                 "pose_temporal_outlier_zscore": self.spin_pose_temporal_outlier_zscore.value(),
+                "density_gaussian_sigma_scale": self.spin_density_gaussian_sigma_scale.value(),
+                "density_temporal_sigma": self.spin_density_temporal_sigma.value(),
+                "density_binarize_threshold": self.spin_density_binarize_threshold.value(),
+                "density_conservative_factor": self.spin_density_conservative_factor.value(),
                 "max_velocity_zscore": self.spin_max_velocity_zscore.value(),
                 "velocity_zscore_window": self.spin_velocity_zscore_window.value(),
                 "velocity_zscore_min_velocity": self.spin_velocity_zscore_min_vel.value(),
