@@ -479,3 +479,100 @@ def compute_density_map_from_cache(
         frame_w=frame_w,
     )
     return cdm, raw_grids
+
+
+# ---------------------------------------------------------------------------
+# export_diagnostic_video
+# ---------------------------------------------------------------------------
+
+
+def export_diagnostic_video(
+    frame_reader,  # callable: frame_idx -> np.ndarray (H,W,3) uint8 or None
+    n_frames: int,
+    frame_h: int,
+    frame_w: int,
+    density_grids: list,  # list of (H, W) float32 raw grids, one per frame
+    regions: list,  # list of DensityRegion
+    output_path,  # Path
+    fps: float = 25.0,
+    heatmap_alpha: float = 0.35,
+) -> None:
+    """Write diagnostic video with red heatmap overlay on low-confidence zones.
+
+    Renders each video frame with a semi-transparent red heatmap overlay
+    proportional to the normalised confidence density, and annotates active
+    :class:`DensityRegion` bounding boxes with text labels.
+
+    Uses BGR colour order (OpenCV convention). Red = channel index 2 in BGR.
+
+    Parameters
+    ----------
+    frame_reader:
+        Callable ``frame_idx -> np.ndarray (H, W, 3) uint8`` or ``None`` if
+        the frame is unavailable.  A black frame is substituted when ``None``
+        is returned.
+    n_frames:
+        Total number of frames to render.
+    frame_h:
+        Frame height in pixels.
+    frame_w:
+        Frame width in pixels.
+    density_grids:
+        Per-frame raw float32 density grids, one array of shape ``(H, W)``
+        per frame.  May be shorter than *n_frames*; missing frames get no
+        overlay.
+    regions:
+        List of :class:`DensityRegion` whose bounding boxes are drawn while
+        they are temporally active.
+    output_path:
+        Destination ``.mp4`` file path.
+    fps:
+        Output video frame rate.
+    heatmap_alpha:
+        Blend weight for the red heatmap layer (0 = invisible, 1 = opaque).
+    """
+    import cv2
+
+    output_path = Path(output_path)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    writer = cv2.VideoWriter(str(output_path), fourcc, fps, (frame_w, frame_h))
+
+    all_vals = (
+        np.concatenate([g.ravel() for g in density_grids])
+        if density_grids
+        else np.array([0.0])
+    )
+    global_max = float(all_vals.max()) if all_vals.max() > 0 else 1.0
+
+    for frame_idx in range(n_frames):
+        frame = frame_reader(frame_idx)
+        if frame is None:
+            frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+        frame = frame.copy()
+
+        if frame_idx < len(density_grids):
+            norm = (density_grids[frame_idx] / global_max).clip(0, 1)
+            red_mask = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+            red_mask[:, :, 2] = (norm * 255).astype(np.uint8)
+            frame = cv2.addWeighted(
+                frame, 1 - heatmap_alpha, red_mask, heatmap_alpha, 0
+            )
+
+        for r in regions:
+            if r.frame_start <= frame_idx <= r.frame_end:
+                x1, y1, x2, y2 = r.pixel_bbox
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 200), 1)
+                label_text = f"{r.label} [{r.frame_start}-{r.frame_end}]"
+                cv2.putText(
+                    frame,
+                    label_text,
+                    (x1, max(y1 - 4, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4,
+                    (0, 0, 200),
+                    1,
+                )
+
+        writer.write(frame)
+
+    writer.release()
