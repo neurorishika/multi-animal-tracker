@@ -98,6 +98,9 @@ class TrackingWorker(QThread):
         self.frame_count = 0
         self.trajectories_full = []
 
+        # Confidence density regions (computed after pre-detection phase)
+        self._density_regions = []
+
         # Frame prefetcher for async I/O
         self.frame_prefetcher = None
         self.frame_prefetcher = None
@@ -1505,6 +1508,99 @@ class TrackingWorker(QThread):
             detection_cache = DetectionCache(self.detection_cache_path, mode="r")
             total_frames = frames_processed
             use_cached_detections = True  # Phase 2 uses cached detections
+
+            # === COMPUTE CONFIDENCE DENSITY MAP ===
+            # Build a dict adapter from DetectionCache so compute_density_map_from_cache
+            # can iterate over {frame_idx: (meas_array, confidences_array, sizes_array)}.
+            self._density_regions = []
+            if self.detection_cache_path:
+                try:
+                    from pathlib import Path as _Path
+
+                    import cv2 as _cv2
+
+                    from multi_tracker.afterhours.core.confidence_density import (
+                        compute_density_map_from_cache,
+                        export_diagnostic_video,
+                        save_regions,
+                    )
+
+                    _frame_h = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+                    _frame_w = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
+
+                    # Build a plain dict {frame_idx: (meas_arr, confs_arr, sizes_arr)}
+                    # from the detection cache already opened in read mode.
+                    _cache_frames = sorted(detection_cache._cached_frames or [])
+                    _cache_dict = {}
+                    for _fidx in _cache_frames:
+                        (
+                            _meas_list,
+                            _sizes_list,
+                            _shapes_list,
+                            _confs_list,
+                            _obb_corners,
+                            _det_ids,
+                            _heading_hints,
+                            _directed_mask,
+                        ) = detection_cache.get_frame(_fidx)
+                        if _meas_list:
+                            _meas_arr = np.array(_meas_list, dtype=np.float32)
+                        else:
+                            _meas_arr = np.zeros((0, 3), dtype=np.float32)
+                        _confs_arr = np.array(_confs_list, dtype=np.float32)
+                        _sizes_arr = np.array(_sizes_list, dtype=np.float32)
+                        _cache_dict[_fidx] = (_meas_arr, _confs_arr, _sizes_arr)
+
+                    _dm, _raw_grids = compute_density_map_from_cache(
+                        detection_cache=_cache_dict,
+                        frame_h=_frame_h,
+                        frame_w=_frame_w,
+                        sigma_scale=float(p.get("DENSITY_GAUSSIAN_SIGMA_SCALE", 1.0)),
+                        temporal_sigma=float(p.get("DENSITY_TEMPORAL_SIGMA", 2.0)),
+                        threshold=float(p.get("DENSITY_BINARIZE_THRESHOLD", 0.3)),
+                    )
+                    self._density_regions = _dm.regions
+
+                    # Save regions sidecar
+                    _regions_path = _Path(self.detection_cache_path).with_name(
+                        _Path(self.detection_cache_path).stem
+                        + "_confidence_regions.json"
+                    )
+                    save_regions(self._density_regions, _regions_path)
+                    logger.info(
+                        f"Density map: {len(self._density_regions)} regions, "
+                        f"saved to {_regions_path}"
+                    )
+
+                    # Export diagnostic video alongside cache
+                    _diag_path = _Path(self.detection_cache_path).with_name(
+                        _Path(self.detection_cache_path).stem + "_confidence_map.mp4"
+                    )
+                    _fps = cap.get(_cv2.CAP_PROP_FPS) or 25.0
+                    _n_frames_total = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+
+                    def _diag_reader(_fidx, _cap=cap):
+                        _cap.set(_cv2.CAP_PROP_POS_FRAMES, _fidx)
+                        _ok, _fr = _cap.read()
+                        return _fr if _ok else None
+
+                    export_diagnostic_video(
+                        frame_reader=_diag_reader,
+                        n_frames=_n_frames_total,
+                        frame_h=_frame_h,
+                        frame_w=_frame_w,
+                        density_grids=_raw_grids,
+                        regions=self._density_regions,
+                        output_path=_diag_path,
+                        fps=_fps,
+                    )
+                    logger.info(f"Diagnostic video: {_diag_path}")
+
+                except Exception:
+                    logger.exception(
+                        "Confidence density map generation failed (non-fatal)"
+                    )
+                    self._density_regions = []
 
             # Reset video capture to start frame for phase 2 (tracking + visualization)
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)

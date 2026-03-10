@@ -131,5 +131,8 @@
   "pose_export_min_valid_keypoints": 3,
   "relink_min_pose_quality": 0.4,
   "pose_postproc_max_gap": 5,
-  "pose_temporal_outlier_zscore": 3.0
+  "pose_temporal_outlier_zscore": 3.0,
+  "density_gaussian_sigma_scale": 1.0,
+  "density_temporal_sigma": 2.0,
+  "density_binarize_threshold": 0.3
 }
