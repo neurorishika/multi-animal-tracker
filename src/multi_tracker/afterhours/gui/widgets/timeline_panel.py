@@ -101,12 +101,15 @@ class _TimelineCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
+        # Dark-theme label column background
+        painter.fillRect(QRect(0, 0, _LABEL_WIDTH, self.height()), QColor(37, 37, 38))
+
         for row, tid in enumerate(self._track_order):
             y_top = row * _ROW_HEIGHT + _BAR_MARGIN
             bar_h = _ROW_HEIGHT - 2 * _BAR_MARGIN
 
             # Label
-            painter.setPen(QPen(Qt.GlobalColor.black))
+            painter.setPen(QPen(QColor(204, 204, 204)))
             label_rect = QRect(0, y_top, _LABEL_WIDTH - 4, bar_h)
             painter.drawText(
                 label_rect,

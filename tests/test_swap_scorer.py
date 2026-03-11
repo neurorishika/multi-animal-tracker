@@ -25,8 +25,8 @@ def _make_df(track_id, frames, xs, ys, thetas=None, pose_quality=None):
 def test_swap_suspicion_event_fields():
     """SwapSuspicionEvent has required fields and sensible defaults."""
     ev = SwapSuspicionEvent(
-        track_a=1,
-        track_b=2,
+        event_type="swap",
+        involved_tracks=[1, 2],
         frame_peak=100,
         frame_range=(90, 110),
         score=0.75,
@@ -36,6 +36,8 @@ def test_swap_suspicion_event_fields():
     )
     assert ev.score == pytest.approx(0.75)
     assert "Cr" in ev.signals
+    assert ev.track_a == 1
+    assert ev.track_b == 2
 
 
 def test_scorer_returns_list():
@@ -140,8 +142,8 @@ def test_scorer_heading_discontinuity():
     assert any("Hd" in e.signals for e in events)
 
 
-def test_scorer_no_events_for_distant_tracks():
-    """Tracks that are always far apart produce no events."""
+def test_scorer_no_swap_events_for_distant_tracks():
+    """Tracks that are always far apart produce no SWAP events."""
     df = pd.concat(
         [
             _make_df(1, list(range(10)), [0.0] * 10, [0.0] * 10),
@@ -150,4 +152,5 @@ def test_scorer_no_events_for_distant_tracks():
     )
     scorer = SwapScorer(regions=[], min_score=0.0, approach_distance=50.0)
     events = scorer.score(df)
-    assert len(events) == 0
+    swap_events = [e for e in events if e.event_type.value == "swap"]
+    assert len(swap_events) == 0

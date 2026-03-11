@@ -262,9 +262,11 @@ pre-commit-run:
 	@$(MAKE) format
 	@echo "🔎 Running pre-commit hooks (pass 1 — auto-fix)..."
 	pre-commit run --all-files || true
+	@echo "adding unstaged changes after auto-fix..."
+	git add -u
 	@echo "🔎 Running pre-commit hooks (pass 2 — verify all pass)..."
 	pre-commit run --all-files
-	@echo "✅ All pre-commit hooks passed. Stage any auto-fixed files with: git add -u"
+	@echo "✅ All pre-commit hooks passed. Ready to commit!"
 
 pre-commit-update:
 	pre-commit autoupdate

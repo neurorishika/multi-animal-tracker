@@ -1,6 +1,6 @@
 """Suspicion queue widget for MAT-afterhours.
 
-Displays a scrollable list of :class:`SwapSuspicionEvent` cards organised
+Displays a scrollable list of :class:`SuspicionEvent` cards organised
 by tiered score thresholds.  Each click on a card emits
 :pyqtSignal:`event_selected` so the main window can seek the video and
 offer a review dialog.
@@ -12,6 +12,7 @@ from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -21,7 +22,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.afterhours.core.swap_scorer import SwapSuspicionEvent
+from multi_tracker.afterhours.core.event_types import (
+    EVENT_TYPE_COLOR,
+    EVENT_TYPE_LABEL,
+    EventType,
+    SuspicionEvent,
+)
 
 # Tiered score thresholds — each "Show more" click reveals events down to the
 # next threshold.
@@ -34,11 +40,12 @@ _TIER_THRESHOLDS: List[float] = [0.6, 0.4, 0.25, 0.15, 0.0]
 
 
 class _EventCard(QFrame):
-    """Visual card representing a single :class:`SwapSuspicionEvent`."""
+    """Visual card representing a single :class:`SuspicionEvent`."""
 
     clicked = Signal(object)
+    reclassified = Signal(object, object)  # (event, new_EventType)
 
-    def __init__(self, event: SwapSuspicionEvent, parent: Optional[QWidget] = None):
+    def __init__(self, event: SuspicionEvent, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.swap_event = event
         self._resolved = False
@@ -51,35 +58,47 @@ class _EventCard(QFrame):
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(2)
 
-        # Top row: score badge + signal codes
+        # Top row: type badge + score + signal codes
         top = QHBoxLayout()
+
+        # Event type badge
+        color = EVENT_TYPE_COLOR.get(event.event_type, "#cccccc")
+        label_text = EVENT_TYPE_LABEL.get(event.event_type, "?")
+        self._badge = QLabel(label_text)
+        self._badge.setStyleSheet(
+            f"background-color: {color}; color: #1e1e1e; font-weight: bold; "
+            f"padding: 1px 6px; border-radius: 3px; font-size: 10px;"
+        )
+        top.addWidget(self._badge)
+
         score_label = QLabel(f"{event.score:.2f}")
-        score_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #d32f2f;")
+        score_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #f48771;")
         top.addWidget(score_label)
 
         signals_text = "+".join(event.signals) if event.signals else "—"
         signals_label = QLabel(signals_text)
-        signals_label.setStyleSheet("color: #555; font-size: 12px;")
+        signals_label.setStyleSheet("color: #9cdcfe; font-size: 12px;")
         top.addWidget(signals_label)
         top.addStretch()
         layout.addLayout(top)
 
         # Middle row: track IDs + frame range
-        track_text = f"Tracks {event.track_a}"
-        if event.track_b is not None:
-            track_text += f" & {event.track_b}"
+        track_text = "Tracks " + ", ".join(str(t) for t in event.involved_tracks)
         frame_text = f"  frames {event.frame_range[0]}–{event.frame_range[1]}"
         mid_label = QLabel(track_text + frame_text)
-        mid_label.setStyleSheet("font-size: 11px;")
+        mid_label.setStyleSheet("font-size: 11px; color: #cccccc;")
         layout.addWidget(mid_label)
 
-        # Bottom row: region label
-        region_text = event.region_label
-        if event.region_boundary:
-            region_text += " (boundary)"
-        region_label = QLabel(region_text)
-        region_label.setStyleSheet("font-size: 10px; color: #888;")
-        layout.addWidget(region_label)
+        # Bottom row: reclassify combo
+        reclass_row = QHBoxLayout()
+        reclass_row.addWidget(QLabel("Type:"))
+        self._reclass_combo = QComboBox()
+        for et in EventType:
+            self._reclass_combo.addItem(EVENT_TYPE_LABEL[et], et)
+        self._reclass_combo.setCurrentIndex(list(EventType).index(event.event_type))
+        self._reclass_combo.currentIndexChanged.connect(self._on_reclassify)
+        reclass_row.addWidget(self._reclass_combo, stretch=1)
+        layout.addLayout(reclass_row)
 
     # ------------------------------------------------------------------
 
@@ -88,15 +107,40 @@ class _EventCard(QFrame):
         self._resolved = True
         self._apply_style(resolved=True)
 
+    def _on_reclassify(self, index: int) -> None:
+        new_type = self._reclass_combo.itemData(index)
+        if new_type is None or new_type == self.swap_event.event_type:
+            return
+        old_event = self.swap_event
+        self.swap_event = SuspicionEvent(
+            event_type=new_type,
+            involved_tracks=old_event.involved_tracks,
+            frame_peak=old_event.frame_peak,
+            frame_range=old_event.frame_range,
+            score=old_event.score,
+            signals=old_event.signals,
+            region_label=old_event.region_label,
+            region_boundary=old_event.region_boundary,
+        )
+        # Update badge
+        color = EVENT_TYPE_COLOR.get(new_type, "#cccccc")
+        label_text = EVENT_TYPE_LABEL.get(new_type, "?")
+        self._badge.setText(label_text)
+        self._badge.setStyleSheet(
+            f"background-color: {color}; color: #1e1e1e; font-weight: bold; "
+            f"padding: 1px 6px; border-radius: 3px; font-size: 10px;"
+        )
+        self.reclassified.emit(old_event, new_type)
+
     def _apply_style(self, resolved: bool) -> None:
         if resolved:
             self.setStyleSheet(
-                "QFrame { background-color: #e8f5e9; border: 1px solid #a5d6a7; "
+                "QFrame { background-color: #1a2e1a; border: 1px solid #2a5a2a; "
                 "border-radius: 4px; }"
             )
         else:
             self.setStyleSheet(
-                "QFrame { background-color: #fff3e0; border: 1px solid #ffe0b2; "
+                "QFrame { background-color: #2d2410; border: 1px solid #6b4f0a; "
                 "border-radius: 4px; }"
             )
 
@@ -115,13 +159,13 @@ class _EventCard(QFrame):
 
 
 class SuspicionQueueWidget(QWidget):
-    """Scrollable, tiered list of swap suspicion event cards."""
+    """Scrollable, tiered list of suspicion event cards."""
 
     event_selected = Signal(object)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self._events: List[SwapSuspicionEvent] = []
+        self._events: List[SuspicionEvent] = []
         self._cards: List[_EventCard] = []
         self._current_tier: int = 0
 
@@ -129,7 +173,9 @@ class SuspicionQueueWidget(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
 
         header = QLabel("Suspicion Queue")
-        header.setStyleSheet("font-weight: bold; font-size: 13px; padding: 4px;")
+        header.setStyleSheet(
+            "font-weight: bold; font-size: 13px; padding: 4px; color: #9cdcfe;"
+        )
         outer.addWidget(header)
 
         # Scroll area
@@ -154,7 +200,7 @@ class SuspicionQueueWidget(QWidget):
     # Public API
     # ------------------------------------------------------------------
 
-    def populate(self, events: List[SwapSuspicionEvent]) -> None:
+    def populate(self, events: List[SuspicionEvent]) -> None:
         """Load events and render the first tier."""
         self.clear()
         self._events = list(events)
@@ -171,12 +217,11 @@ class SuspicionQueueWidget(QWidget):
         self._current_tier = 0
         self._show_more_btn.setVisible(False)
 
-    def mark_resolved(self, event: SwapSuspicionEvent) -> None:
+    def mark_resolved(self, event: SuspicionEvent) -> None:
         """Find the card matching *event* and mark it resolved."""
         for card in self._cards:
             if (
-                card.swap_event.track_a == event.track_a
-                and card.swap_event.track_b == event.track_b
+                card.swap_event.involved_tracks == event.involved_tracks
                 and card.swap_event.frame_peak == event.frame_peak
             ):
                 card.mark_resolved()
@@ -227,5 +272,5 @@ class SuspicionQueueWidget(QWidget):
         self._current_tier += 1
         self._render_tier()
 
-    def _on_card_clicked(self, event: SwapSuspicionEvent) -> None:
+    def _on_card_clicked(self, event: SuspicionEvent) -> None:
         self.event_selected.emit(event)

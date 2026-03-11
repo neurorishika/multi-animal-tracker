@@ -23,6 +23,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from multi_tracker.afterhours.gui.widgets.interactive_canvas import InteractiveCanvas
+from multi_tracker.afterhours.gui.widgets.video_player import draw_overlay
+
 _CROP_MARGIN = 80
 _OFFSET_FRAMES = 5
 
@@ -84,11 +87,9 @@ class IdentityAssignmentDialog(QDialog):
         # Before group
         before_group = QGroupBox("Before split")
         before_layout = QVBoxLayout(before_group)
-        self._before_label = QLabel()
-        self._before_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._before_label.setMinimumSize(250, 200)
-        self._before_label.setStyleSheet("background-color: #000;")
-        before_layout.addWidget(self._before_label)
+        self._before_canvas = InteractiveCanvas()
+        self._before_canvas.setMinimumSize(250, 200)
+        before_layout.addWidget(self._before_canvas)
         before_frame_label = QLabel(f"Frame {split_frame - _OFFSET_FRAMES}")
         before_frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         before_layout.addWidget(before_frame_label)
@@ -97,11 +98,9 @@ class IdentityAssignmentDialog(QDialog):
         # After group
         after_group = QGroupBox("After split")
         after_layout = QVBoxLayout(after_group)
-        self._after_label = QLabel()
-        self._after_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._after_label.setMinimumSize(250, 200)
-        self._after_label.setStyleSheet("background-color: #000;")
-        after_layout.addWidget(self._after_label)
+        self._after_canvas = InteractiveCanvas()
+        self._after_canvas.setMinimumSize(250, 200)
+        after_layout.addWidget(self._after_canvas)
         after_frame_label = QLabel(f"Frame {split_frame + _OFFSET_FRAMES}")
         after_frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         after_layout.addWidget(after_frame_label)
@@ -125,8 +124,8 @@ class IdentityAssignmentDialog(QDialog):
         layout.addWidget(btns)
 
         # Render thumbnails
-        self._render_thumbnail(split_frame - _OFFSET_FRAMES, self._before_label)
-        self._render_thumbnail(split_frame + _OFFSET_FRAMES, self._after_label)
+        self._render_thumbnail(split_frame - _OFFSET_FRAMES, self._before_canvas)
+        self._render_thumbnail(split_frame + _OFFSET_FRAMES, self._after_canvas)
 
     # ------------------------------------------------------------------
     # Public
@@ -163,7 +162,7 @@ class IdentityAssignmentDialog(QDialog):
         y2 = int(y_vals.max()) + _CROP_MARGIN
         return max(x1, 0), max(y1, 0), x2, y2
 
-    def _render_thumbnail(self, frame_idx: int, label: QLabel) -> None:
+    def _render_thumbnail(self, frame_idx: int, canvas: InteractiveCanvas) -> None:
         frame = self._read_frame(frame_idx)
         if frame is None:
             return
@@ -172,21 +171,26 @@ class IdentityAssignmentDialog(QDialog):
         h, w = frame.shape[:2]
         x2 = min(x2, w)
         y2 = min(y2, h)
-        crop = frame[y1:y2, x1:x2]
+        crop = frame[y1:y2, x1:x2].copy()
 
         if crop.size == 0:
             return
 
+        # Build a per-frame lookup offset by the crop origin so overlay
+        # coordinates line up with the cropped image.
+        rows = self._df[
+            (self._df["FrameID"] == frame_idx)
+            & (self._df["TrajectoryID"].isin([self._track_a, self._track_b]))
+        ].copy()
+        rows["X"] = rows["X"] - x1
+        rows["Y"] = rows["Y"] - y1
+        df_by_frame = {frame_idx: rows}
+        draw_overlay(crop, df_by_frame, frame_idx, set())
+
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         ch, cw = rgb.shape[:2]
         qimg = QImage(rgb.data, cw, ch, 3 * cw, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(qimg)
-        scaled = pixmap.scaled(
-            label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        label.setPixmap(scaled)
+        canvas.set_pixmap(QPixmap.fromImage(qimg))
 
     # ------------------------------------------------------------------
     # Cleanup

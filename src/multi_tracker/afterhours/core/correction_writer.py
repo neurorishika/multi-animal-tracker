@@ -1,7 +1,9 @@
 """
 Atomic correction writer for _proofread.csv.
 
-Applies split + identity swap corrections to the proofread copy.
+Applies identity corrections to the proofread copy.
+Supports: split+swap, merge fragments, delete track, erase flicker,
+reassign chain (N-way relabeling).
 Never touches the original CSV.
 """
 
@@ -11,12 +13,18 @@ import logging
 import os
 import shutil
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
 _NEW_ID_OFFSET = 100_000
+
+
+# ---------------------------------------------------------------------------
+# Atomic operations (pure functions on DataFrames)
+# ---------------------------------------------------------------------------
 
 
 def apply_split_and_swap(
@@ -28,14 +36,6 @@ def apply_split_and_swap(
 ) -> pd.DataFrame:
     """
     Split track_a and track_b at split_frame, optionally swapping post-split IDs.
-
-    New segment IDs:
-      track_a pre-split  -> track_a  (unchanged)
-      track_a post-split -> track_b + _NEW_ID_OFFSET  (if swapped)
-                            or track_a + _NEW_ID_OFFSET
-      track_b pre-split  -> track_b  (unchanged)
-      track_b post-split -> track_a + _NEW_ID_OFFSET  (if swapped)
-                            or track_b + _NEW_ID_OFFSET
     """
     df = df.copy()
     mask_a_post = (df["TrajectoryID"] == track_a) & (df["FrameID"] >= split_frame)
@@ -47,6 +47,92 @@ def apply_split_and_swap(
     else:
         df.loc[mask_a_post, "TrajectoryID"] = track_a + _NEW_ID_OFFSET
         df.loc[mask_b_post, "TrajectoryID"] = track_b + _NEW_ID_OFFSET
+
+    return df
+
+
+def merge_fragments(
+    df: pd.DataFrame,
+    track_ids: List[int],
+) -> pd.DataFrame:
+    """Merge multiple trajectory IDs into the lowest ID.
+
+    All rows whose TrajectoryID is in *track_ids* are relabeled to
+    ``min(track_ids)``.
+    """
+    if len(track_ids) < 2:
+        return df
+    df = df.copy()
+    target = min(track_ids)
+    for tid in track_ids:
+        if tid != target:
+            df.loc[df["TrajectoryID"] == tid, "TrajectoryID"] = target
+    return df
+
+
+def delete_track(
+    df: pd.DataFrame,
+    track_id: int,
+    frame_range: Optional[Tuple[int, int]] = None,
+) -> pd.DataFrame:
+    """Remove rows for *track_id*, optionally only within *frame_range*."""
+    df = df.copy()
+    mask = df["TrajectoryID"] == track_id
+    if frame_range is not None:
+        mask = (
+            mask & (df["FrameID"] >= frame_range[0]) & (df["FrameID"] <= frame_range[1])
+        )
+    return df[~mask].reset_index(drop=True)
+
+
+def erase_flicker(
+    df: pd.DataFrame,
+    track_a: int,
+    track_b: int,
+    frame_start: int,
+    frame_end: int,
+) -> pd.DataFrame:
+    """Undo a flicker by swapping IDs at *frame_start* and *frame_end*.
+
+    Within the flicker window ``[frame_start, frame_end]`` the IDs of
+    track_a and track_b are exchanged, effectively reversing two rapid
+    swaps.
+    """
+    df = df.copy()
+    window = (df["FrameID"] >= frame_start) & (df["FrameID"] <= frame_end)
+    mask_a = (df["TrajectoryID"] == track_a) & window
+    mask_b = (df["TrajectoryID"] == track_b) & window
+
+    # Use temp offset to avoid collision
+    df.loc[mask_a, "TrajectoryID"] = track_b + _NEW_ID_OFFSET
+    df.loc[mask_b, "TrajectoryID"] = track_a
+    df.loc[df["TrajectoryID"] == track_b + _NEW_ID_OFFSET, "TrajectoryID"] = track_b
+
+    return df
+
+
+def reassign_chain(
+    df: pd.DataFrame,
+    assignments: Dict[int, int],
+    split_frame: int,
+) -> pd.DataFrame:
+    """N-way relabeling: remap track IDs from *split_frame* onward.
+
+    *assignments* maps ``{old_id: new_id}``.  A temporary offset is used
+    to prevent collision during the relabeling.
+    """
+    df = df.copy()
+    post = df["FrameID"] >= split_frame
+
+    # First pass: shift to temp IDs to avoid overwriting
+    for old_id in assignments:
+        mask = (df["TrajectoryID"] == old_id) & post
+        df.loc[mask, "TrajectoryID"] = old_id + _NEW_ID_OFFSET
+
+    # Second pass: assign final IDs
+    for old_id, new_id in assignments.items():
+        mask = (df["TrajectoryID"] == old_id + _NEW_ID_OFFSET) & post
+        df.loc[mask, "TrajectoryID"] = new_id
 
     return df
 
@@ -89,6 +175,48 @@ class CorrectionWriter:
             split_frame,
             swap_post,
         )
+        self._write_atomic()
+
+    def apply_merge(self, track_ids: List[int]) -> None:
+        """Merge fragment track IDs into one and persist."""
+        if self._df is None:
+            raise RuntimeError("Call open() before apply_merge()")
+        self._df = merge_fragments(self._df, track_ids)
+        self._write_atomic()
+
+    def apply_delete(
+        self,
+        track_id: int,
+        frame_range: Optional[Tuple[int, int]] = None,
+    ) -> None:
+        """Delete a track (or part of it) and persist."""
+        if self._df is None:
+            raise RuntimeError("Call open() before apply_delete()")
+        self._df = delete_track(self._df, track_id, frame_range)
+        self._write_atomic()
+
+    def apply_erase_flicker(
+        self,
+        track_a: int,
+        track_b: int,
+        frame_start: int,
+        frame_end: int,
+    ) -> None:
+        """Erase a flicker (swap IDs within window) and persist."""
+        if self._df is None:
+            raise RuntimeError("Call open() before apply_erase_flicker()")
+        self._df = erase_flicker(self._df, track_a, track_b, frame_start, frame_end)
+        self._write_atomic()
+
+    def apply_reassign_chain(
+        self,
+        assignments: Dict[int, int],
+        split_frame: int,
+    ) -> None:
+        """N-way relabeling from *split_frame* onward and persist."""
+        if self._df is None:
+            raise RuntimeError("Call open() before apply_reassign_chain()")
+        self._df = reassign_chain(self._df, assignments, split_frame)
         self._write_atomic()
 
     def _write_atomic(self) -> None:
