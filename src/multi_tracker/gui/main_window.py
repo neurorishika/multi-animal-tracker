@@ -4650,6 +4650,123 @@ class MainWindow(QMainWindow):
         g_stab.setContentLayout(vl_stab)
         vbox.addWidget(g_stab)
 
+        # Confidence Density Map
+        g_density = CollapsibleGroupBox(
+            "How should low-confidence density regions be detected?"
+        )
+        self.tracking_accordion.addCollapsible(g_density)
+        vl_density = QVBoxLayout()
+        vl_density.addWidget(
+            self._create_help_label(
+                "Builds a 3-D (x, y, time) confidence density map from the detection cache. "
+                "Spatial regions where detections are persistently uncertain are flagged so the "
+                "tracker can apply a tighter distance gate there, reducing identity swaps. "
+                "Small or short-lived blobs (single-animal artefacts) are suppressed by the "
+                "duration and area filters."
+            )
+        )
+        f_density = QFormLayout(None)
+        f_density.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.spin_density_gaussian_sigma_scale = QDoubleSpinBox()
+        self.spin_density_gaussian_sigma_scale.setRange(0.1, 5.0)
+        self.spin_density_gaussian_sigma_scale.setSingleStep(0.1)
+        self.spin_density_gaussian_sigma_scale.setDecimals(1)
+        self.spin_density_gaussian_sigma_scale.setValue(1.0)
+        self.spin_density_gaussian_sigma_scale.setToolTip(
+            "Scale factor for the Gaussian sigma derived from detection size.\n"
+            "Controls the spatial spread of each detection's contribution\n"
+            "to the confidence density map. Larger values produce smoother maps.\n"
+            "Range: 0.1–5.0. Default: 1.0."
+        )
+        f_density.addRow("Gaussian sigma scale", self.spin_density_gaussian_sigma_scale)
+
+        self.spin_density_temporal_sigma = QDoubleSpinBox()
+        self.spin_density_temporal_sigma.setRange(0.5, 10.0)
+        self.spin_density_temporal_sigma.setSingleStep(0.5)
+        self.spin_density_temporal_sigma.setDecimals(1)
+        self.spin_density_temporal_sigma.setValue(2.0)
+        self.spin_density_temporal_sigma.setToolTip(
+            "Standard deviation (in frames) for temporal Gaussian smoothing\n"
+            "of the confidence density volume. Higher values merge nearby\n"
+            "low-confidence events into broader temporal regions.\n"
+            "Range: 0.5–10.0. Default: 2.0."
+        )
+        f_density.addRow(
+            "Temporal smoothing sigma (frames)", self.spin_density_temporal_sigma
+        )
+
+        self.spin_density_binarize_threshold = QDoubleSpinBox()
+        self.spin_density_binarize_threshold.setRange(0.05, 0.95)
+        self.spin_density_binarize_threshold.setSingleStep(0.05)
+        self.spin_density_binarize_threshold.setDecimals(2)
+        self.spin_density_binarize_threshold.setValue(0.3)
+        self.spin_density_binarize_threshold.setToolTip(
+            "Threshold for binarizing the normalised density volume.\n"
+            "Voxels above this value become foreground regions where\n"
+            "density-aware conservative tracking is applied.\n"
+            "Range: 0.05–0.95. Default: 0.3."
+        )
+        f_density.addRow("Binarize threshold", self.spin_density_binarize_threshold)
+
+        self.spin_density_conservative_factor = QDoubleSpinBox()
+        self.spin_density_conservative_factor.setRange(0.3, 1.0)
+        self.spin_density_conservative_factor.setSingleStep(0.05)
+        self.spin_density_conservative_factor.setDecimals(2)
+        self.spin_density_conservative_factor.setValue(0.70)
+        self.spin_density_conservative_factor.setToolTip(
+            "Distance gate fraction for detections in flagged density regions.\n"
+            "Reduces the maximum assignment distance for in-region detections\n"
+            "to prevent long-range jumps into crowded zones.\n"
+            "1.0 = disabled, 0.7 = 70% of normal distance.\n"
+            "Range: 0.3–1.0. Default: 0.70."
+        )
+        f_density.addRow(
+            "Conservative distance gate", self.spin_density_conservative_factor
+        )
+
+        self.spin_density_min_duration = QSpinBox()
+        self.spin_density_min_duration.setRange(1, 50)
+        self.spin_density_min_duration.setValue(3)
+        self.spin_density_min_duration.setToolTip(
+            "Minimum temporal duration (frames) for a density region to be kept.\n"
+            "Regions shorter than this are discarded — they usually represent a\n"
+            "single isolated animal rather than a genuine crowding event.\n"
+            "Range: 1–50. Default: 3."
+        )
+        f_density.addRow("Min region duration (frames)", self.spin_density_min_duration)
+
+        self.spin_density_min_area_bodies = QDoubleSpinBox()
+        self.spin_density_min_area_bodies.setRange(0.0, 10.0)
+        self.spin_density_min_area_bodies.setSingleStep(0.05)
+        self.spin_density_min_area_bodies.setDecimals(2)
+        self.spin_density_min_area_bodies.setValue(0.25)
+        self.spin_density_min_area_bodies.setToolTip(
+            "Minimum spatial area of a density region expressed as multiples of\n"
+            "the reference body area (body_size²). Regions smaller than this in\n"
+            "the density grid are discarded as single-animal artefacts.\n"
+            "E.g. 0.25 requires the region to cover at least ¼ of one body area.\n"
+            "Range: 0.0–10.0. Default: 0.25."
+        )
+        f_density.addRow(
+            "Min region area (body areas)", self.spin_density_min_area_bodies
+        )
+
+        self.spin_density_downsample_factor = QSpinBox()
+        self.spin_density_downsample_factor.setRange(1, 32)
+        self.spin_density_downsample_factor.setValue(8)
+        self.spin_density_downsample_factor.setToolTip(
+            "Spatial downsampling factor applied to the density grid.\n"
+            "Higher values make computation faster but reduce spatial precision.\n"
+            "The grid will be (frame_h / factor) × (frame_w / factor).\n"
+            "Range: 1–32. Default: 8."
+        )
+        f_density.addRow("Grid downsample factor", self.spin_density_downsample_factor)
+
+        vl_density.addLayout(f_density)
+        g_density.setContentLayout(vl_density)
+        vbox.addWidget(g_density)
+
         vbox.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -4728,10 +4845,17 @@ class MainWindow(QMainWindow):
         self.chk_enable_tracklet_relinking = QCheckBox(
             "Relink fragments after pose interpolation"
         )
-        self.chk_enable_tracklet_relinking.setChecked(True)
+        self.chk_enable_tracklet_relinking.setChecked(False)
         self.chk_enable_tracklet_relinking.setToolTip(
+            "⚠ USE WITH CAUTION — disabled by default.\n"
+            "\n"
             "Reconnect short trajectory fragments after pose/interpolation completes.\n"
-            "Uses existing motion and gap thresholds plus a pose continuity check."
+            "In dense multi-animal scenes this can cause identity swaps by incorrectly\n"
+            "merging fragments from different animals into one trajectory.\n"
+            "\n"
+            "Bidirectional tracking (forward + backward pass) already handles most\n"
+            "occlusion recovery. Enable relinking only if you see fragmented trajectories\n"
+            "that bidirectional tracking could not repair, and verify results carefully."
         )
         self.lbl_enable_tracklet_relinking = QLabel("Enable relinking")
         f_pp.addRow(
@@ -4786,11 +4910,13 @@ class MainWindow(QMainWindow):
         self.spin_relink_min_pose_quality.setRange(0.0, 1.0)
         self.spin_relink_min_pose_quality.setSingleStep(0.05)
         self.spin_relink_min_pose_quality.setDecimals(2)
-        self.spin_relink_min_pose_quality.setValue(0.4)
+        self.spin_relink_min_pose_quality.setValue(0.6)
         self.spin_relink_min_pose_quality.setToolTip(
             "Minimum pose quality score required at both endpoints of a candidate\n"
             "fragment pair before pose distance contributes to relinking score.\n"
-            "Below this threshold, relinking uses motion-only scoring."
+            "Below this threshold, relinking uses motion-only scoring.\n"
+            "Higher values (0.6+) are strongly recommended — motion-only relinking\n"
+            "in dense scenes is likely to merge fragments from different animals."
         )
         self.lbl_relink_min_pose_quality = QLabel("Min pose quality for relinking")
         f_pp.addRow(
@@ -4825,75 +4951,6 @@ class MainWindow(QMainWindow):
         f_pp.addRow(
             self.lbl_pose_temporal_outlier_zscore,
             self.spin_pose_temporal_outlier_zscore,
-        )
-
-        # --- Confidence Density Map controls ---
-        self.spin_density_gaussian_sigma_scale = QDoubleSpinBox()
-        self.spin_density_gaussian_sigma_scale.setRange(0.1, 5.0)
-        self.spin_density_gaussian_sigma_scale.setSingleStep(0.1)
-        self.spin_density_gaussian_sigma_scale.setDecimals(1)
-        self.spin_density_gaussian_sigma_scale.setValue(1.0)
-        self.spin_density_gaussian_sigma_scale.setToolTip(
-            "Scale factor for the Gaussian sigma derived from detection size.\n"
-            "Controls the spatial spread of each detection's contribution\n"
-            "to the confidence density map. Larger values produce smoother maps.\n"
-            "Range: 0.1–5.0. Default: 1.0."
-        )
-        self.lbl_density_gaussian_sigma_scale = QLabel("Density Gaussian sigma scale")
-        f_pp.addRow(
-            self.lbl_density_gaussian_sigma_scale,
-            self.spin_density_gaussian_sigma_scale,
-        )
-
-        self.spin_density_temporal_sigma = QDoubleSpinBox()
-        self.spin_density_temporal_sigma.setRange(0.5, 10.0)
-        self.spin_density_temporal_sigma.setSingleStep(0.5)
-        self.spin_density_temporal_sigma.setDecimals(1)
-        self.spin_density_temporal_sigma.setValue(2.0)
-        self.spin_density_temporal_sigma.setToolTip(
-            "Standard deviation (in frames) for temporal Gaussian smoothing\n"
-            "of the confidence density volume. Higher values merge nearby\n"
-            "low-confidence events into broader temporal regions.\n"
-            "Range: 0.5–10.0. Default: 2.0."
-        )
-        self.lbl_density_temporal_sigma = QLabel("Density temporal sigma (frames)")
-        f_pp.addRow(
-            self.lbl_density_temporal_sigma,
-            self.spin_density_temporal_sigma,
-        )
-
-        self.spin_density_binarize_threshold = QDoubleSpinBox()
-        self.spin_density_binarize_threshold.setRange(0.05, 0.95)
-        self.spin_density_binarize_threshold.setSingleStep(0.05)
-        self.spin_density_binarize_threshold.setDecimals(2)
-        self.spin_density_binarize_threshold.setValue(0.3)
-        self.spin_density_binarize_threshold.setToolTip(
-            "Threshold for binarizing the normalised density volume.\n"
-            "Voxels above this value become foreground regions where\n"
-            "density-aware conservative tracking is applied.\n"
-            "Range: 0.05–0.95. Default: 0.3."
-        )
-        self.lbl_density_binarize_threshold = QLabel("Density binarize threshold")
-        f_pp.addRow(
-            self.lbl_density_binarize_threshold,
-            self.spin_density_binarize_threshold,
-        )
-
-        self.spin_density_conservative_factor = QDoubleSpinBox()
-        self.spin_density_conservative_factor.setRange(0.0, 1.0)
-        self.spin_density_conservative_factor.setSingleStep(0.1)
-        self.spin_density_conservative_factor.setDecimals(1)
-        self.spin_density_conservative_factor.setValue(0.5)
-        self.spin_density_conservative_factor.setToolTip(
-            "Factor by which the maximum assignment distance is reduced\n"
-            "inside flagged density regions. 0.0 = no reduction (disabled),\n"
-            "1.0 = maximum reduction (strictest).\n"
-            "Range: 0.0–1.0. Default: 0.5."
-        )
-        self.lbl_density_conservative_factor = QLabel("Density conservative factor")
-        f_pp.addRow(
-            self.lbl_density_conservative_factor,
-            self.spin_density_conservative_factor,
         )
 
         # Z-score based velocity breaking
@@ -5591,6 +5648,20 @@ class MainWindow(QMainWindow):
 
         vl_ind_dataset.addWidget(self.ind_output_group)
 
+        self.chk_suppress_foreign_obb_dataset = QCheckBox(
+            "Suppress foreign animal regions in saved crops"
+        )
+        self.chk_suppress_foreign_obb_dataset.setChecked(False)
+        self.chk_suppress_foreign_obb_dataset.setToolTip(
+            "Fill overlapping animals' OBB areas with the background color before\n"
+            "saving each individual crop image.\n"
+            "\n"
+            "Prevents other animals from appearing in a detection's crop, which\n"
+            "can confuse downstream labeling or training.\n"
+            "Only applies to YOLO OBB detections (no effect in background-subtraction mode)."
+        )
+        vl_ind_dataset.addWidget(self.chk_suppress_foreign_obb_dataset)
+
         # Info label about filtering
         self.lbl_individual_info = self._create_help_label(
             "Note: Crops use detections already filtered by ROI and size settings.\n"
@@ -5871,6 +5942,20 @@ class MainWindow(QMainWindow):
         bg_color_layout.addWidget(self.lbl_background_color)
         self._update_background_color_button()
         fl_common.addRow("Crop background color", bg_color_layout)
+
+        self.chk_suppress_foreign_obb = QCheckBox("Suppress foreign animal regions")
+        self.chk_suppress_foreign_obb.setChecked(True)
+        self.chk_suppress_foreign_obb.setToolTip(
+            "Fill overlapping animals' OBB areas with the background color before\n"
+            "pose inference, and zero out any keypoints that fall inside another\n"
+            "animal's bounding box after inference.\n"
+            "\n"
+            "Prevents pose contamination when animals are close or overlapping.\n"
+            "Disable only if you observe incorrect masking of valid keypoints."
+        )
+        fl_common.addRow(
+            "Pose contamination suppression", self.chk_suppress_foreign_obb
+        )
 
         form.addWidget(self.g_individual_pipeline_common)
 
@@ -7833,12 +7918,6 @@ class MainWindow(QMainWindow):
         self.spin_merge_overlap_multiplier.setEnabled(enabled)
         self.spin_min_overlap_frames.setEnabled(enabled)
         self.chk_cleanup_temp_files.setEnabled(enabled)
-
-        # Density map widgets — always visible when post-processing is enabled
-        self.spin_density_gaussian_sigma_scale.setEnabled(enabled)
-        self.spin_density_temporal_sigma.setEnabled(enabled)
-        self.spin_density_binarize_threshold.setEnabled(enabled)
-        self.spin_density_conservative_factor.setEnabled(enabled)
 
         # Pose quality widgets — visible only when post-processing AND pose export are active
         pose_enabled = enabled and self._is_pose_export_enabled()
@@ -13678,11 +13757,16 @@ class MainWindow(QMainWindow):
             "INDIVIDUAL_BACKGROUND_COLOR": [
                 int(c) for c in self._background_color
             ],  # Ensure JSON serializable
+            "SUPPRESS_FOREIGN_OBB_REGIONS": self.chk_suppress_foreign_obb.isChecked(),
+            "SUPPRESS_FOREIGN_OBB_DATASET": self.chk_suppress_foreign_obb_dataset.isChecked(),
             "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
             "DENSITY_GAUSSIAN_SIGMA_SCALE": self.spin_density_gaussian_sigma_scale.value(),
             "DENSITY_TEMPORAL_SIGMA": self.spin_density_temporal_sigma.value(),
             "DENSITY_BINARIZE_THRESHOLD": self.spin_density_binarize_threshold.value(),
             "DENSITY_CONSERVATIVE_FACTOR": self.spin_density_conservative_factor.value(),
+            "DENSITY_MIN_FRAME_DURATION": self.spin_density_min_duration.value(),
+            "DENSITY_MIN_AREA_BODIES": self.spin_density_min_area_bodies.value(),
+            "DENSITY_DOWNSAMPLE_FACTOR": self.spin_density_downsample_factor.value(),
         }
 
     def load_config(self: object) -> object:
@@ -14193,7 +14277,7 @@ class MainWindow(QMainWindow):
                 get_cfg("max_occlusion_gap", default=30)
             )
             self.chk_enable_tracklet_relinking.setChecked(
-                get_cfg("enable_tracklet_relinking", default=True)
+                get_cfg("enable_tracklet_relinking", default=False)
             )
             self.spin_relink_pose_max_distance.setValue(
                 get_cfg("relink_pose_max_distance", default=0.45)
@@ -14205,7 +14289,7 @@ class MainWindow(QMainWindow):
                 get_cfg("pose_export_min_valid_keypoints", default=3)
             )
             self.spin_relink_min_pose_quality.setValue(
-                get_cfg("relink_min_pose_quality", default=0.4)
+                get_cfg("relink_min_pose_quality", default=0.6)
             )
             self.spin_pose_postproc_max_gap.setValue(
                 get_cfg("pose_postproc_max_gap", default=5)
@@ -14223,7 +14307,16 @@ class MainWindow(QMainWindow):
                 get_cfg("density_binarize_threshold", default=0.3)
             )
             self.spin_density_conservative_factor.setValue(
-                get_cfg("density_conservative_factor", default=0.5)
+                get_cfg("density_conservative_factor", default=0.7)
+            )
+            self.spin_density_min_duration.setValue(
+                int(get_cfg("density_min_frame_duration", default=3))
+            )
+            self.spin_density_min_area_bodies.setValue(
+                float(get_cfg("density_min_area_bodies", default=0.25))
+            )
+            self.spin_density_downsample_factor.setValue(
+                int(get_cfg("density_downsample_factor", default=8))
             )
             self.spin_max_velocity_zscore.setValue(
                 get_cfg("max_velocity_zscore", default=0.0)
@@ -14537,6 +14630,9 @@ class MainWindow(QMainWindow):
             self.spin_pose_batch.setValue(shared_pose_batch)
 
             # === REAL-TIME INDIVIDUAL DATASET ===
+            self.chk_suppress_foreign_obb_dataset.setChecked(
+                get_cfg("suppress_foreign_obb_dataset", default=False)
+            )
             self.chk_enable_individual_dataset.setChecked(
                 get_cfg(
                     "enable_individual_image_save",
@@ -14562,6 +14658,9 @@ class MainWindow(QMainWindow):
             if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
                 self._background_color = tuple(bg_color)
             self._update_background_color_button()
+            self.chk_suppress_foreign_obb.setChecked(
+                get_cfg("suppress_foreign_obb_regions", default=True)
+            )
             self._sync_individual_analysis_mode_ui()
 
             # === ROI ===
@@ -14855,6 +14954,9 @@ class MainWindow(QMainWindow):
                 "density_temporal_sigma": self.spin_density_temporal_sigma.value(),
                 "density_binarize_threshold": self.spin_density_binarize_threshold.value(),
                 "density_conservative_factor": self.spin_density_conservative_factor.value(),
+                "density_min_frame_duration": self.spin_density_min_duration.value(),
+                "density_min_area_bodies": self.spin_density_min_area_bodies.value(),
+                "density_downsample_factor": self.spin_density_downsample_factor.value(),
                 "max_velocity_zscore": self.spin_max_velocity_zscore.value(),
                 "velocity_zscore_window": self.spin_velocity_zscore_window.value(),
                 "velocity_zscore_min_velocity": self.spin_velocity_zscore_min_vel.value(),
@@ -15005,6 +15107,8 @@ class MainWindow(QMainWindow):
                 "individual_background_color": [
                     int(c) for c in self._background_color
                 ],  # Ensure JSON serializable
+                "suppress_foreign_obb_regions": self.chk_suppress_foreign_obb.isChecked(),
+                "suppress_foreign_obb_dataset": self.chk_suppress_foreign_obb_dataset.isChecked(),
             }
         )
 

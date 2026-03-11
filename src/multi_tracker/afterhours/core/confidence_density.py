@@ -125,12 +125,17 @@ class ConfidenceDensityMap:
         Height of each grid in pixels.
     frame_w:
         Width of each grid in pixels.
+    binary_volume:
+        Optional uint8 binarised volume, shape ``(T, H, W)``, aligned with
+        *frame_grids*.  Populated by :func:`compute_density_map_from_cache` and
+        used by :func:`export_diagnostic_video` to draw region contours.
     """
 
     frame_grids: np.ndarray
     regions: List[DensityRegion]
     frame_h: int
     frame_w: int
+    binary_volume: Optional[np.ndarray] = None
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +258,8 @@ def find_regions(
     binary: np.ndarray,
     frame_h: int,
     frame_w: int,
+    min_frame_duration: int = 3,
+    min_area_px: int = 100,
 ) -> List[DensityRegion]:
     """Find 3-D connected components in a binary (T, H, W) volume.
 
@@ -267,6 +274,12 @@ def find_regions(
         Frame height in pixels (informational; used for future normalisation).
     frame_w:
         Frame width in pixels (informational).
+    min_frame_duration:
+        Regions spanning fewer frames than this are discarded.  Eliminates
+        transient single-animal noise.  Default 3.
+    min_area_px:
+        Regions whose spatial bounding-box area (width × height, in grid
+        pixels) is smaller than this are discarded.  Default 100.
 
     Returns
     -------
@@ -296,6 +309,12 @@ def find_regions(
         x2 = int(x_coords.max())
         y1 = int(y_coords.min())
         y2 = int(y_coords.max())
+
+        # Apply minimum size / duration filters.
+        duration = frame_end - frame_start + 1
+        area = (x2 - x1 + 1) * (y2 - y1 + 1)
+        if duration < min_frame_duration or area < min_area_px:
+            continue
 
         region_label = f"region-{component_id}"
         regions.append(
@@ -419,6 +438,8 @@ def compute_density_map_from_cache(
     temporal_sigma: float,
     threshold: float,
     downsample_factor: int = 8,
+    min_frame_duration: int = 3,
+    min_area_px: int = 100,
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> Tuple[ConfidenceDensityMap, List[np.ndarray]]:
     """Run the full density-map pipeline from a detection cache.
@@ -455,6 +476,10 @@ def compute_density_map_from_cache(
     (ConfidenceDensityMap, raw_grids)
         *raw_grids* is the list of per-frame float32 arrays before smoothing,
         in frame-index order.  Grids are at the downsampled resolution.
+
+    The :attr:`ConfidenceDensityMap.binary_volume` field on the returned CDM
+    holds the binarised volume (at downsampled resolution) so it can be passed
+    directly to :func:`export_diagnostic_video` for contour rendering.
     """
     ds = max(1, int(downsample_factor))
     grid_h = max(1, frame_h // ds)
@@ -505,7 +530,13 @@ def compute_density_map_from_cache(
     if progress_callback is not None:
         progress_callback(45, "Density map: finding regions...")
 
-    regions = find_regions(binary, frame_h=grid_h, frame_w=grid_w)
+    regions = find_regions(
+        binary,
+        frame_h=grid_h,
+        frame_w=grid_w,
+        min_frame_duration=min_frame_duration,
+        min_area_px=min_area_px,
+    )
 
     # Scale bounding boxes back to original pixel coordinates.
     if ds > 1:
@@ -526,6 +557,7 @@ def compute_density_map_from_cache(
         regions=regions,
         frame_h=grid_h,
         frame_w=grid_w,
+        binary_volume=binary,
     )
     return cdm, raw_grids
 
@@ -545,13 +577,16 @@ def export_diagnostic_video(
     output_path,  # Path
     fps: float = 25.0,
     heatmap_alpha: float = 0.35,
+    output_scale: float = 1.0,
+    binary_volume: Optional[np.ndarray] = None,
     progress_callback: Optional[Callable[[int, str], None]] = None,
 ) -> None:
     """Write diagnostic video with red heatmap overlay on low-confidence zones.
 
     Renders each video frame with a semi-transparent red heatmap overlay
-    proportional to the normalised confidence density, and annotates active
-    :class:`DensityRegion` bounding boxes with text labels.
+    proportional to the normalised confidence density.  When *binary_volume*
+    is provided the actual contour border of each region is drawn instead of
+    a bounding box, which eliminates the visual artefact of nested rectangles.
 
     Uses BGR colour order (OpenCV convention). Red = channel index 2 in BGR.
 
@@ -560,26 +595,37 @@ def export_diagnostic_video(
     frame_reader:
         Callable ``frame_idx -> np.ndarray (H, W, 3) uint8`` or ``None`` if
         the frame is unavailable.  A black frame is substituted when ``None``
-        is returned.
+        is returned.  The returned frame may be at any resolution — it will
+        be resized to the output dimensions.
     n_frames:
         Total number of frames to render.
     frame_h:
-        Frame height in pixels.
+        Output frame height in pixels.
     frame_w:
-        Frame width in pixels.
+        Output frame width in pixels.
     density_grids:
         Per-frame raw float32 density grids, one array of shape ``(H, W)``
         per frame.  May be shorter than *n_frames*; missing frames get no
         overlay.
     regions:
-        List of :class:`DensityRegion` whose bounding boxes are drawn while
-        they are temporally active.
+        List of :class:`DensityRegion` whose outlines are drawn while they
+        are temporally active.
     output_path:
         Destination ``.mp4`` file path.
     fps:
         Output video frame rate.
     heatmap_alpha:
         Blend weight for the red heatmap layer (0 = invisible, 1 = opaque).
+    output_scale:
+        Scale factor applied to region bounding-box / label coordinates so
+        they match the output resolution.  E.g. if regions are in
+        full-resolution pixel coords and the output is 4× downsampled, pass
+        ``0.25``.
+    binary_volume:
+        Optional uint8 array of shape ``(T, H, W)`` — the binarised density
+        volume at the downsampled grid resolution.  When supplied, per-frame
+        slices are scaled to ``(frame_h, frame_w)`` and contours are drawn
+        instead of bounding boxes.  Defaults to ``None`` (fall back to bbox).
     progress_callback:
         Optional callable ``(percent: int, message: str) -> None`` invoked
         periodically to report progress.
@@ -602,11 +648,18 @@ def export_diagnostic_video(
             frame = frame_reader(frame_idx)
             if frame is None:
                 frame = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
-            frame = frame.copy()
+
+            # Resize frame to output dimensions if needed.
+            if frame.shape[0] != frame_h or frame.shape[1] != frame_w:
+                frame = cv2.resize(
+                    frame, (frame_w, frame_h), interpolation=cv2.INTER_AREA
+                )
+            else:
+                frame = frame.copy()
 
             if frame_idx < len(density_grids):
                 norm = (density_grids[frame_idx] / global_max).clip(0, 1)
-                # Upscale density grid to video resolution if needed.
+                # Resize density grid to output resolution if needed.
                 if norm.shape[0] != frame_h or norm.shape[1] != frame_w:
                     norm = cv2.resize(
                         norm, (frame_w, frame_h), interpolation=cv2.INTER_LINEAR
@@ -617,20 +670,62 @@ def export_diagnostic_video(
                     frame, 1 - heatmap_alpha, red_mask, heatmap_alpha, 0
                 )
 
-            for r in regions:
-                if r.frame_start <= frame_idx <= r.frame_end:
-                    x1, y1, x2, y2 = r.pixel_bbox
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 200), 1)
-                    label_text = f"{r.label} [{r.frame_start}-{r.frame_end}]"
-                    cv2.putText(
-                        frame,
-                        label_text,
-                        (x1, max(y1 - 4, 12)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.4,
-                        (0, 0, 200),
-                        1,
+            # --- Draw region outlines and labels ---
+            if binary_volume is not None and frame_idx < len(binary_volume):
+                # Draw actual connected-component contours from the binary
+                # volume slice, then place labels at each region's centroid.
+                bin_slice = binary_volume[frame_idx]  # (grid_h, grid_w) uint8
+                if bin_slice.max() > 0:
+                    bin_out = cv2.resize(
+                        bin_slice,
+                        (frame_w, frame_h),
+                        interpolation=cv2.INTER_NEAREST,
                     )
+                    contours, _ = cv2.findContours(
+                        bin_out, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                    )
+                    cv2.drawContours(frame, contours, -1, (0, 0, 200), 1)
+                for r in regions:
+                    if r.frame_start <= frame_idx <= r.frame_end:
+                        x1, y1, x2, y2 = r.pixel_bbox
+                        if output_scale != 1.0:
+                            x1 = int(x1 * output_scale)
+                            y1 = int(y1 * output_scale)
+                            x2 = int(x2 * output_scale)
+                            y2 = int(y2 * output_scale)
+                        cx = (x1 + x2) // 2
+                        cy = (y1 + y2) // 2
+                        label_text = f"{r.label} [{r.frame_start}-{r.frame_end}]"
+                        cv2.putText(
+                            frame,
+                            label_text,
+                            (cx, max(cy - 4, 12)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.4,
+                            (0, 0, 200),
+                            1,
+                        )
+            else:
+                # Fallback: draw bounding rectangles when no binary volume.
+                for r in regions:
+                    if r.frame_start <= frame_idx <= r.frame_end:
+                        x1, y1, x2, y2 = r.pixel_bbox
+                        if output_scale != 1.0:
+                            x1 = int(x1 * output_scale)
+                            y1 = int(y1 * output_scale)
+                            x2 = int(x2 * output_scale)
+                            y2 = int(y2 * output_scale)
+                        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 200), 1)
+                        label_text = f"{r.label} [{r.frame_start}-{r.frame_end}]"
+                        cv2.putText(
+                            frame,
+                            label_text,
+                            (x1, max(y1 - 4, 12)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.4,
+                            (0, 0, 200),
+                            1,
+                        )
 
             writer.write(frame)
             if progress_callback is not None and (

@@ -232,6 +232,8 @@ class SwapScorer:
             # Determine frame range around the peak.
             close_mask = distances < self.approach_distance
             close_frames = common[close_mask]
+            if len(close_frames) == 0:
+                close_frames = common
             frame_range = (int(close_frames.min()), int(close_frames.max()))
 
             events.append(

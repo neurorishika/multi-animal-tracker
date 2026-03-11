@@ -2368,12 +2368,23 @@ def relink_trajectories_with_pose(
                 continue
 
             delta_frames = gap + 1
+
+            # Sanity check: raw spatial jump must be physically plausible.
+            # max_vel_break * delta_frames is the maximum distance an animal
+            # could travel in that many frames at the velocity-break threshold.
+            raw_jump = float(np.linalg.norm(dst["start_pos"] - src["end_pos"]))
+            if raw_jump > max_vel_break * float(delta_frames):
+                continue
+
+            # Prediction check: the distance is the error between where we
+            # predict src to be (using its end velocity) and where dst actually
+            # starts.  Gate this on agreement_distance only — using
+            # max_vel_break here made the gate far too permissive (e.g. gap=5
+            # frames at 100 px/frame → 500 px allowed, connecting different
+            # animals).
             predicted_pos = src["end_pos"] + src["end_velocity"] * float(delta_frames)
             distance = float(np.linalg.norm(predicted_pos - dst["start_pos"]))
-            allowed_distance = max(
-                agreement_distance, max_vel_break * float(delta_frames)
-            )
-            if distance > allowed_distance:
+            if distance > agreement_distance:
                 continue
 
             heading_norm = 0.0
@@ -2407,7 +2418,7 @@ def relink_trajectories_with_pose(
                     pose_norm = float(pose_dist / pose_max_distance)
 
             score = (
-                float(distance / allowed_distance)
+                float(distance / agreement_distance)
                 + 0.25 * (float(gap) / float(max_gap if max_gap > 0 else 1))
                 + 0.35 * heading_norm
                 + 0.75 * pose_norm

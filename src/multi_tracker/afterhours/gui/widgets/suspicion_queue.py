@@ -40,7 +40,7 @@ class _EventCard(QFrame):
 
     def __init__(self, event: SwapSuspicionEvent, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.event = event
+        self.swap_event = event
         self._resolved = False
 
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -105,7 +105,7 @@ class _EventCard(QFrame):
     # ------------------------------------------------------------------
 
     def mousePressEvent(self, event):  # noqa: N802
-        self.clicked.emit(self.event)
+        self.clicked.emit(self.swap_event)
         super().mousePressEvent(event)
 
 
@@ -175,9 +175,9 @@ class SuspicionQueueWidget(QWidget):
         """Find the card matching *event* and mark it resolved."""
         for card in self._cards:
             if (
-                card.event.track_a == event.track_a
-                and card.event.track_b == event.track_b
-                and card.event.frame_peak == event.frame_peak
+                card.swap_event.track_a == event.track_a
+                and card.swap_event.track_b == event.track_b
+                and card.swap_event.frame_peak == event.frame_peak
             ):
                 card.mark_resolved()
                 break

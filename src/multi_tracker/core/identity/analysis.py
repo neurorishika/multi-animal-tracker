@@ -114,6 +114,11 @@ class IndividualDatasetGenerator:
         else:
             self.background_color = (0, 0, 0)
 
+        # Fill other animals' OBB regions with background color before saving crops
+        self.suppress_foreign_obb = bool(
+            params.get("SUPPRESS_FOREIGN_OBB_DATASET", False)
+        )
+
         # Save interval (use detections as-is, just control frequency)
         self.save_every_n_frames = params.get("INDIVIDUAL_SAVE_INTERVAL", 1)
 
@@ -376,8 +381,20 @@ class IndividualDatasetGenerator:
             # Get confidence
             conf = confidences[i] if confidences and i < len(confidences) else 1.0
 
+            # Build foreign OBB list for contamination suppression (YOLO OBB only).
+            other_corners = None
+            if self.suppress_foreign_obb and use_obb and obb_corners is not None:
+                scaled_all = [
+                    np.asarray(obb_corners[j], dtype=np.float32) * coord_scale_factor
+                    for j in range(len(obb_corners))
+                    if j != i
+                ]
+                other_corners = scaled_all if scaled_all else None
+
             # Extract and save masked crop
-            crop, crop_info = self._extract_obb_masked_crop(frame, corners, h, w)
+            crop, crop_info = self._extract_obb_masked_crop(
+                frame, corners, h, w, other_corners_list=other_corners
+            )
 
             if crop is not None:
                 # Build metadata for this crop

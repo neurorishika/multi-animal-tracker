@@ -12,7 +12,7 @@ from typing import List, Optional, Set
 import cv2
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QSlider, QVBoxLayout, QWidget
 
@@ -47,8 +47,16 @@ class VideoPlayerWidget(QWidget):
         self._total_frames: int = 0
         self._current_frame: int = 0
         self._df: Optional[pd.DataFrame] = None
+        self._df_by_frame: dict = {}
         self._highlight_ids: Set[int] = set()
         self._cache: OrderedDict[int, np.ndarray] = OrderedDict()
+
+        # Debounce timer: only seek after the slider stops moving for 80 ms.
+        self._seek_timer = QTimer(self)
+        self._seek_timer.setSingleShot(True)
+        self._seek_timer.setInterval(80)
+        self._seek_timer.timeout.connect(self._do_seek)
+        self._pending_frame: int = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -96,6 +104,10 @@ class VideoPlayerWidget(QWidget):
     def load_trajectories(self, df: pd.DataFrame) -> None:
         """Store trajectory DataFrame for overlay rendering."""
         self._df = df
+        # Pre-group by frame for O(1) overlay lookups.
+        self._df_by_frame = (
+            {fid: grp for fid, grp in df.groupby("FrameID")} if df is not None else {}
+        )
 
     def seek_to(self, frame: int) -> None:
         """Seek to a specific frame and refresh display."""
@@ -116,9 +128,13 @@ class VideoPlayerWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _on_slider(self, value: int) -> None:
-        self._current_frame = value
+        self._pending_frame = value
+        self._seek_timer.start()  # restarts the timer on each move
+
+    def _do_seek(self) -> None:
+        self._current_frame = self._pending_frame
         self._refresh()
-        self.frame_changed.emit(value)
+        self.frame_changed.emit(self._current_frame)
 
     def _read_frame(self, idx: int) -> Optional[np.ndarray]:
         """Read frame from cache or video capture."""
@@ -154,11 +170,15 @@ class VideoPlayerWidget(QWidget):
 
     def _draw_overlay(self, img: np.ndarray, frame_idx: int) -> None:
         """Draw trajectory circles and ID labels on *img* (BGR)."""
-        if self._df is None:
+        if not self._df_by_frame:
             return
 
-        rows = self._df[self._df["FrameID"] == frame_idx]
+        rows = self._df_by_frame.get(frame_idx)
+        if rows is None:
+            return
         for _, row in rows.iterrows():
+            if pd.isna(row["X"]) or pd.isna(row["Y"]):
+                continue
             tid = int(row["TrajectoryID"])
             cx = int(round(row["X"]))
             cy = int(round(row["Y"]))

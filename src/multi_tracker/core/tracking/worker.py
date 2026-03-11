@@ -51,37 +51,41 @@ from multi_tracker.utils.video_artifacts import build_individual_properties_cach
 logger = logging.getLogger(__name__)
 
 
-def get_assignment_params_for_region(
-    region_label: str,
-    base_max_distance: float,
-    conservative_factor: float = 0.5,
-) -> dict:
-    """Return assignment parameters adjusted for the detection region.
-
-    In flagged regions the max assignment distance is reduced by
-    ``(1 - conservative_factor)`` to prefer fragment spawning over
-    long-distance risky matches.
+def get_density_region_flags(
+    meas,
+    regions,
+    frame_idx: int,
+) -> np.ndarray:
+    """Return a boolean mask indicating which detections fall inside a density region.
 
     Parameters
     ----------
-    region_label:
-        Region label returned by ``tag_detections``.  ``"open_field"``
-        means no high-density region was matched.
-    base_max_distance:
-        The standard ``MAX_DISTANCE_THRESHOLD`` from tracking params (pixels).
-    conservative_factor:
-        Fraction [0, 1] by which to scale down ``base_max_distance`` when a
-        flagged region is detected.  ``0.0`` disables the adjustment entirely.
+    meas:
+        List/array of detection measurements.  Each element must be indexable
+        with ``[0]`` (x) and ``[1]`` (y).
+    regions:
+        List of :class:`DensityRegion` to test against.
+    frame_idx:
+        Current frame index.
 
     Returns
     -------
-    dict
-        Mapping with key ``"max_distance"`` set to the effective threshold.
+    np.ndarray
+        Shape ``(M,)`` bool array — ``True`` for detections inside a flagged
+        region.
     """
-    if region_label == "open_field" or conservative_factor == 0.0:
-        return {"max_distance": base_max_distance}
-    reduced = base_max_distance * (1.0 - conservative_factor)
-    return {"max_distance": reduced}
+    M = len(meas)
+    flags = np.zeros(M, dtype=bool)
+    if not regions:
+        return flags
+
+    for j in range(M):
+        cx, cy = float(meas[j][0]), float(meas[j][1])
+        for region in regions:
+            if region.contains(frame_idx, cx, cy):
+                flags[j] = True
+                break
+    return flags
 
 
 class TrackingWorker(QThread):
@@ -799,6 +803,7 @@ class TrackingWorker(QThread):
             if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
             else (0, 0, 0)
         )
+        _suppress_foreign_obb = bool(params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True))
 
         total_frames = max(1, end_frame - start_frame + 1)
         precompute_start_ts = time.time()
@@ -839,7 +844,7 @@ class TrackingWorker(QThread):
                         gkpts[:, 0] += float(x0)
                         gkpts[:, 1] += float(y0)
                         all_obbs = pf.get("all_obb_corners", [])
-                        if len(all_obbs) > 1:
+                        if _suppress_foreign_obb and len(all_obbs) > 1:
                             from multi_tracker.core.tracking.pose_features import (
                                 filter_keypoints_by_foreign_obbs,
                             )
@@ -935,7 +940,7 @@ class TrackingWorker(QThread):
                             frame, corners_arr, padding_fraction
                         )
                         if crop is not None and crop.size > 0:
-                            if len(_all_obb_corners) > 1:
+                            if _suppress_foreign_obb and len(_all_obb_corners) > 1:
                                 other_corners = [
                                     _all_obb_corners[j]
                                     for j in range(len(_all_obb_corners))
@@ -1419,6 +1424,27 @@ class TrackingWorker(QThread):
         detection_initialized, tracking_stabilized = False, False
         detection_counts, tracking_counts = 0, 0
 
+        # Diagnostic: log gate parameters for debugging jumps
+        _diag_body = float(
+            p.get("REFERENCE_BODY_SIZE", 20.0) * p.get("RESIZE_FACTOR", 1.0)
+        )
+        _diag_max_dist = float(p.get("MAX_DISTANCE_THRESHOLD", 1000.0))
+        _diag_vel_gate = (
+            float(p.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0)) * _diag_body
+        )
+        _diag_young_mult = float(p.get("KALMAN_YOUNG_GATE_MULTIPLIER", 1.0))
+        _diag_maturity = int(p.get("KALMAN_MATURITY_AGE", 10))
+        _diag_lost_thresh = int(p.get("LOST_THRESHOLD_FRAMES", 5))
+        logger.info(
+            f"Assignment gates: body={_diag_body:.1f}px "
+            f"MAX_DIST={_diag_max_dist:.1f}px "
+            f"VEL_GATE={_diag_vel_gate:.1f}px "
+            f"young_mult={_diag_young_mult:.1f} "
+            f"maturity={_diag_maturity} "
+            f"lost_thresh={_diag_lost_thresh} "
+            f"density_regions={len(self._density_regions)}"
+        )
+
         start_time, self.frame_count, fps_list = time.time(), 0, []
         local_counts, intensity_history, lighting_state = [0] * N, deque(maxlen=50), {}
         roi_fill_color = None  # Average color outside ROI for visualization overlay
@@ -1574,14 +1600,48 @@ class TrackingWorker(QThread):
             total_frames = frames_processed
             use_cached_detections = True  # Phase 2 uses cached detections
 
-            # === COMPUTE CONFIDENCE DENSITY MAP ===
-            # Build a dict adapter from DetectionCache so compute_density_map_from_cache
-            # can iterate over {frame_idx: (meas_array, confidences_array, sizes_array)}.
-            self._density_regions = []
-            if self.detection_cache_path:
-                try:
-                    from pathlib import Path as _Path
+            # Reset video capture to start frame for phase 2 (tracking + visualization)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            logger.info(f"Reset video to start frame {start_frame} for phase 2")
 
+            logger.info("=" * 80)
+            logger.info("PHASE 2: Tracking and Visualization")
+            logger.info("=" * 80)
+
+        # === COMPUTE CONFIDENCE DENSITY MAP ===
+        # Runs for BOTH fresh and cached detections (forward pass only).
+        # Backward pass loads regions from the sidecar JSON instead.
+        if (
+            not self.backward_mode
+            and self.detection_cache_path
+            and detection_cache is not None
+            and use_cached_detections
+        ):
+            from pathlib import Path as _Path
+
+            _regions_path = _Path(self.detection_cache_path).with_name(
+                _Path(self.detection_cache_path).stem + "_confidence_regions.json"
+            )
+            if _regions_path.exists():
+                # Regions already computed — just load them.
+                try:
+                    from multi_tracker.afterhours.core.confidence_density import (
+                        load_regions as _load_regions,
+                    )
+
+                    self._density_regions = _load_regions(_regions_path)
+                    logger.info(
+                        f"Loaded {len(self._density_regions)} existing density "
+                        f"regions from {_regions_path}"
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to load existing density regions (non-fatal)"
+                    )
+                    self._density_regions = []
+            else:
+                # Compute density map from detection cache.
+                try:
                     import cv2 as _cv2
 
                     from multi_tracker.afterhours.core.confidence_density import (
@@ -1594,7 +1654,6 @@ class TrackingWorker(QThread):
                     _frame_w = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
 
                     # Build a plain dict {frame_idx: (meas_arr, confs_arr, sizes_arr)}
-                    # from the detection cache already opened in read mode.
                     _cache_frames = sorted(detection_cache._cached_frames or [])
                     _cache_dict = {}
                     for _fidx in _cache_frames:
@@ -1617,9 +1676,22 @@ class TrackingWorker(QThread):
                         _cache_dict[_fidx] = (_meas_arr, _confs_arr, _sizes_arr)
 
                     def _density_progress(pct, msg):
+                        logger.info(msg)
                         self.progress_signal.emit(pct, msg)
 
+                    logger.info("Computing confidence density map...")
                     self.progress_signal.emit(0, "Computing confidence density map...")
+
+                    # Compute min_area_px in grid-pixel units from body-size fraction.
+                    _density_ds = int(p.get("DENSITY_DOWNSAMPLE_FACTOR", 8))
+                    _body_size_px = float(p.get("REFERENCE_BODY_SIZE", 20.0)) * float(
+                        p.get("RESIZE_FACTOR", 1.0)
+                    )
+                    _body_size_grid = _body_size_px / max(1, _density_ds)
+                    _density_min_area_px = int(
+                        float(p.get("DENSITY_MIN_AREA_BODIES", 0.25))
+                        * _body_size_grid**2
+                    )
 
                     _dm, _raw_grids = compute_density_map_from_cache(
                         detection_cache=_cache_dict,
@@ -1628,65 +1700,75 @@ class TrackingWorker(QThread):
                         sigma_scale=float(p.get("DENSITY_GAUSSIAN_SIGMA_SCALE", 1.0)),
                         temporal_sigma=float(p.get("DENSITY_TEMPORAL_SIGMA", 2.0)),
                         threshold=float(p.get("DENSITY_BINARIZE_THRESHOLD", 0.3)),
-                        downsample_factor=8,
+                        downsample_factor=int(p.get("DENSITY_DOWNSAMPLE_FACTOR", 8)),
+                        min_frame_duration=int(p.get("DENSITY_MIN_FRAME_DURATION", 3)),
+                        min_area_px=_density_min_area_px,
                         progress_callback=_density_progress,
                     )
                     self._density_regions = _dm.regions
 
-                    # Save regions sidecar
-                    _regions_path = _Path(self.detection_cache_path).with_name(
-                        _Path(self.detection_cache_path).stem
-                        + "_confidence_regions.json"
-                    )
                     save_regions(self._density_regions, _regions_path)
                     logger.info(
                         f"Density map: {len(self._density_regions)} regions, "
                         f"saved to {_regions_path}"
                     )
 
-                    # Export diagnostic video alongside cache
-                    _diag_path = _Path(self.detection_cache_path).with_name(
-                        _Path(self.detection_cache_path).stem + "_confidence_map.mp4"
+                    # Export diagnostic video at reduced resolution with
+                    # sequential frame reading (avoids expensive random seeks
+                    # on large videos).  Saved next to the source video so it
+                    # is easy to find regardless of where the cache lives.
+                    _diag_path = _Path(self.video_path).parent / (
+                        _Path(self.video_path).stem + "_confidence_map.mp4"
                     )
                     _fps = cap.get(_cv2.CAP_PROP_FPS) or 25.0
                     _n_frames_total = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
 
+                    # Use a sequential reader: reset to frame 0 and call
+                    # cap.read() in order — much faster than random seeks.
+                    cap.set(_cv2.CAP_PROP_POS_FRAMES, 0)
+
                     def _diag_reader(_fidx, _cap=cap):
-                        _cap.set(_cv2.CAP_PROP_POS_FRAMES, _fidx)
+                        # Sequential read — _fidx is expected to increase
+                        # monotonically.  Just grab the next frame.
                         _ok, _fr = _cap.read()
                         return _fr if _ok else None
 
+                    logger.info("Exporting confidence density diagnostic video...")
                     self.progress_signal.emit(
                         50, "Exporting confidence density video..."
                     )
 
+                    # Output at reduced resolution for speed.
+                    _diag_ds = 4  # 4× downsample for diagnostic video (independent of density grid ds)
+                    _out_w = max(1, _frame_w // _diag_ds)
+                    _out_h = max(1, _frame_h // _diag_ds)
+
                     export_diagnostic_video(
                         frame_reader=_diag_reader,
                         n_frames=_n_frames_total,
-                        frame_h=_frame_h,
-                        frame_w=_frame_w,
+                        frame_h=_out_h,
+                        frame_w=_out_w,
                         density_grids=_raw_grids,
                         regions=self._density_regions,
                         output_path=_diag_path,
                         fps=_fps,
+                        output_scale=1.0 / _diag_ds,
+                        binary_volume=_dm.binary_volume,
                         progress_callback=_density_progress,
                     )
                     self.progress_signal.emit(100, "Density map complete")
-                    logger.info(f"Diagnostic video: {_diag_path}")
+                    logger.info(f"Diagnostic video exported: {_diag_path}")
+
+                    # Reset video capture for subsequent phases.
+                    cap.set(_cv2.CAP_PROP_POS_FRAMES, start_frame)
 
                 except Exception:
                     logger.exception(
                         "Confidence density map generation failed (non-fatal)"
                     )
                     self._density_regions = []
-
-            # Reset video capture to start frame for phase 2 (tracking + visualization)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-            logger.info(f"Reset video to start frame {start_frame} for phase 2")
-
-            logger.info("=" * 80)
-            logger.info("PHASE 2: Tracking and Visualization")
-            logger.info("=" * 80)
+                    # Ensure video is reset even on failure.
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
         if individual_data_precompute_enabled:
             if detection_cache is None or not use_cached_detections:
@@ -2258,85 +2340,126 @@ class TrackingWorker(QThread):
                     "track_avg_step": track_avg_step,
                 }
 
-                # --- Density-aware assignment distance ---
-                # If any detection in this frame falls within a high-density region,
-                # temporarily tighten MAX_DISTANCE_THRESHOLD for both compute_cost_matrix
-                # and assign_tracks to reduce risky long-range matches.
-                _orig_max_dist = assigner.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
-                if self._density_regions:
+                # --- Density-aware pre-gate ---
+                # For detections inside a high-density region, apply a tighter
+                # distance threshold in the cost matrix.  This blocks long-range
+                # matches into crowded zones (the track goes occluded instead)
+                # while leaving short-range matches intact.
+                _density_flags = None
+                if self._density_regions and len(meas) > 0:
                     try:
-                        from multi_tracker.afterhours.core.confidence_density import (
-                            tag_detections as _tag_dets,
+                        _density_flags = get_density_region_flags(
+                            meas,
+                            self._density_regions,
+                            frame_idx=actual_frame_index,
                         )
-
-                        _frame_dets = [
-                            {
-                                "frame": actual_frame_index,
-                                "cx": float(meas[_di][0]),
-                                "cy": float(meas[_di][1]),
-                            }
-                            for _di in range(len(meas))
-                        ]
-                        _tagged = _tag_dets(_frame_dets, self._density_regions)
-                        _flagged = [
-                            d["region_label"]
-                            for d in _tagged
-                            if d["region_label"] != "open_field"
-                        ]
-                        if _flagged:
-                            _conservative_factor = float(
-                                params.get("DENSITY_CONSERVATIVE_FACTOR", 0.5)
-                            )
-                            _adj = get_assignment_params_for_region(
-                                region_label=_flagged[0],
-                                base_max_distance=_orig_max_dist,
-                                conservative_factor=_conservative_factor,
-                            )
-                            assigner.params["MAX_DISTANCE_THRESHOLD"] = _adj[
-                                "max_distance"
-                            ]
                     except Exception:
                         logger.debug(
-                            "Density-aware assignment adjustment failed (non-fatal)",
+                            "Density region flag computation failed (non-fatal)",
                             exc_info=True,
                         )
 
-                try:
-                    cost, spatial_candidates = assigner.compute_cost_matrix(
+                cost, spatial_candidates = assigner.compute_cost_matrix(
+                    N,
+                    meas,
+                    preds,
+                    shapes,
+                    self.kf_manager,
+                    last_shape_info,
+                    meas_ori_directed=(
+                        detection_directed_mask
+                        if len(detection_directed_mask) == len(meas)
+                        else None
+                    ),
+                    association_data=association_data,
+                )
+
+                # Tighter distance gate for density-region detections.
+                # Block (track, detection) pairs where the detection is in a
+                # density region AND the raw Euclidean distance from the track's
+                # predicted position exceeds the tighter threshold.  This
+                # prevents long-range jumps into crowded zones without
+                # distorting the cost matrix (which can push assignments to
+                # wrong detections farther away).
+                if _density_flags is not None and np.any(_density_flags):
+                    _density_factor = float(
+                        params.get("DENSITY_CONSERVATIVE_FACTOR", 0.7)
+                    )
+                    if _density_factor < 1.0:
+                        _base_max_dist = float(
+                            assigner.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
+                        )
+                        _density_max_dist = _base_max_dist * _density_factor
+                        _pred_xy = np.asarray(
+                            self.kf_manager.X[:N, :2], dtype=np.float32
+                        )
+                        _meas_xy = np.array(
+                            [meas[j][:2] for j in range(len(meas))],
+                            dtype=np.float32,
+                        )
+                        _raw_dist = np.linalg.norm(
+                            _pred_xy[:, None, :] - _meas_xy[None, :, :], axis=2
+                        )
+                        # Block long-range matches to density-region detections.
+                        _flagged_cols = np.where(_density_flags)[0]
+                        for _c in _flagged_cols:
+                            cost[_raw_dist[:, _c] >= _density_max_dist, _c] = 1e9
+
+                rows, cols, free_dets, next_id, high_cost_tracks = (
+                    assigner.assign_tracks(
+                        cost,
                         N,
+                        len(meas),
                         meas,
-                        preds,
-                        shapes,
-                        self.kf_manager,
-                        last_shape_info,
-                        meas_ori_directed=(
-                            detection_directed_mask
-                            if len(detection_directed_mask) == len(meas)
-                            else None
-                        ),
+                        track_states,
+                        tracking_continuity,
+                        self.kf_manager,  # <--- Pass the manager, not .filters
+                        trajectory_ids,
+                        next_trajectory_id,
+                        spatial_candidates,
                         association_data=association_data,
                     )
-
-                    rows, cols, free_dets, next_id, high_cost_tracks = (
-                        assigner.assign_tracks(
-                            cost,
-                            N,
-                            len(meas),
-                            meas,
-                            track_states,
-                            tracking_continuity,
-                            self.kf_manager,  # <--- Pass the manager, not .filters
-                            trajectory_ids,
-                            next_trajectory_id,
-                            spatial_candidates,
-                            association_data=association_data,
-                        )
-                    )
-                finally:
-                    # Restore original MAX_DISTANCE_THRESHOLD after density-adjusted frame
-                    assigner.params["MAX_DISTANCE_THRESHOLD"] = _orig_max_dist
+                )
                 next_trajectory_id = next_id
                 respawned_matches = {r for r in rows if track_states[r] == "lost"}
+
+                # --- Diagnostic: log large-distance assignments ---
+                if rows and self.frame_count % 10 == 0:
+                    _body = float(
+                        params.get("REFERENCE_BODY_SIZE", 20.0)
+                        * params.get("RESIZE_FACTOR", 1.0)
+                    )
+                    _max_d = float(
+                        assigner.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
+                    )
+                    _vel_gate = (
+                        float(params.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0)) * _body
+                    )
+                    for _r, _c in zip(rows, cols):
+                        _det_xy = np.array(meas[_c][:2], dtype=np.float32)
+                        _pred_xy_diag = self.kf_manager.X[_r, :2].copy()
+                        _raw_d = float(np.linalg.norm(_det_xy - _pred_xy_diag))
+                        _last_d = float("nan")
+                        if self.trajectories_full[_r]:
+                            _lp = self.trajectories_full[_r][-1]
+                            _last_d = float(
+                                np.linalg.norm(
+                                    _det_xy
+                                    - np.array([_lp[0], _lp[1]], dtype=np.float32)
+                                )
+                            )
+                        _state = track_states[_r]
+                        _cont = tracking_continuity[_r]
+                        _is_respawn = _r in respawned_matches
+                        if _raw_d > _body * 1.5 or _last_d > _body * 2.0:
+                            logger.warning(
+                                f"JUMP? frame={actual_frame_index} slot={_r} "
+                                f"traj={trajectory_ids[_r]} state={_state} "
+                                f"cont={_cont} respawn={_is_respawn} "
+                                f"raw_dist={_raw_d:.1f} last_dist={_last_d:.1f} "
+                                f"body={_body:.1f} MAX_DIST={_max_d:.1f} "
+                                f"VEL_GATE={_vel_gate:.1f}"
+                            )
 
                 # Conditionally compute confidence metrics (for performance)
                 save_confidence = params.get("SAVE_CONFIDENCE_METRICS", True)
@@ -2585,6 +2708,31 @@ class TrackingWorker(QThread):
                 for d_idx in free_dets:
                     for track_idx in range(N):
                         if track_states[track_idx] == "lost":
+                            # Diagnostic: log slot reuse distance
+                            if self.trajectories_full[track_idx]:
+                                _old = self.trajectories_full[track_idx][-1]
+                                _new_xy = meas[d_idx][:2]
+                                _reuse_d = float(
+                                    np.linalg.norm(
+                                        np.array([_old[0], _old[1]])
+                                        - np.array(_new_xy[:2])
+                                    )
+                                )
+                                _body_d = float(
+                                    params.get("REFERENCE_BODY_SIZE", 20.0)
+                                    * params.get("RESIZE_FACTOR", 1.0)
+                                )
+                                if _reuse_d > _body_d * 3.0:
+                                    logger.warning(
+                                        f"SLOT_REUSE frame={actual_frame_index} "
+                                        f"slot={track_idx} old_traj="
+                                        f"{trajectory_ids[track_idx]} "
+                                        f"new_traj={next_trajectory_id} "
+                                        f"reuse_dist={_reuse_d:.1f} "
+                                        f"old=({_old[0]:.0f},{_old[1]:.0f}) "
+                                        f"new=({_new_xy[0]:.0f},"
+                                        f"{_new_xy[1]:.0f})"
+                                    )
                             directed_heading = bool(
                                 d_idx < len(detection_directed_mask)
                                 and detection_directed_mask[d_idx] == 1
