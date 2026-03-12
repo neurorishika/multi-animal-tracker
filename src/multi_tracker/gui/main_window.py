@@ -62,6 +62,10 @@ from PySide6.QtWidgets import (
 from multi_tracker.core.tracking.optimizer import DetectionCacheBuilderWorker
 
 from ..core.identity.analysis import IndividualDatasetGenerator
+from ..core.identity.oriented_video import (
+    OrientedTrackVideoExporter,
+    resolve_individual_dataset_dir,
+)
 from ..core.identity.pose_quality import (
     apply_quality_to_dataframe,
     apply_temporal_pose_postprocessing,
@@ -392,8 +396,12 @@ class InterpolatedCropsWorker(QThread):
             save_interpolated_outputs = bool(
                 self.params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
             )
+            cache_interpolated_artifacts = bool(
+                save_interpolated_outputs
+                or self.params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
+            )
             gen_params = dict(self.params or {})
-            gen_params["ENABLE_INDIVIDUAL_DATASET"] = save_interpolated_outputs
+            gen_params["ENABLE_INDIVIDUAL_DATASET"] = cache_interpolated_artifacts
             gen_params["ENABLE_INDIVIDUAL_IMAGE_SAVE"] = save_interpolated_outputs
 
             gen = IndividualDatasetGenerator(
@@ -402,7 +410,7 @@ class InterpolatedCropsWorker(QThread):
                 Path(self.video_path).stem,
                 self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
             )
-            gen.enabled = save_interpolated_outputs
+            gen.enabled = cache_interpolated_artifacts
 
             pose_enabled = bool(self.params.get("ENABLE_POSE_EXTRACTOR", False))
             pose_kpt_source_names = []
@@ -800,7 +808,7 @@ class InterpolatedCropsWorker(QThread):
                         writer.writerows(interp_rows)
                 except Exception:
                     pass
-            if save_interpolated_outputs and roi_rows and gen.crops_dir is not None:
+            if cache_interpolated_artifacts and roi_rows and gen.crops_dir is not None:
                 roi_csv_path = gen.crops_dir.parent / "interpolated_rois.csv"
                 try:
                     with open(roi_csv_path, "w", newline="") as f:
@@ -888,7 +896,7 @@ class InterpolatedCropsWorker(QThread):
                         writer.writerows(interp_pose_rows)
                 except Exception:
                     pose_csv_path = None
-            if save_interpolated_outputs:
+            if cache_interpolated_artifacts:
                 gen.finalize()
             if not self._should_stop():
                 self.finished_signal.emit(
@@ -924,6 +932,69 @@ class InterpolatedCropsWorker(QThread):
                     pose_backend.close()
                 except Exception:
                     pass
+
+
+class OrientedTrackVideoWorker(QThread):
+    """Worker thread for exporting orientation-fixed per-track videos."""
+
+    progress_signal = Signal(int, str)
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(
+        self,
+        final_csv_path,
+        dataset_dir,
+        video_path,
+        detection_cache_path,
+        interpolated_roi_npz_path,
+        fps,
+        padding_fraction,
+        background_color,
+        suppress_foreign_obb,
+    ):
+        super().__init__()
+        self.final_csv_path = final_csv_path
+        self.dataset_dir = dataset_dir
+        self.video_path = video_path
+        self.detection_cache_path = detection_cache_path
+        self.interpolated_roi_npz_path = interpolated_roi_npz_path
+        self.fps = fps
+        self.padding_fraction = padding_fraction
+        self.background_color = background_color
+        self.suppress_foreign_obb = suppress_foreign_obb
+        self._stop_requested = False
+
+    def stop(self):
+        """Request cooperative cancellation."""
+        self._stop_requested = True
+
+    def _should_stop(self) -> bool:
+        return bool(self._stop_requested or self.isInterruptionRequested())
+
+    def run(self: object) -> object:
+        """run method documentation."""
+        try:
+            exporter = OrientedTrackVideoExporter(
+                self.dataset_dir,
+                self.final_csv_path,
+                video_path=self.video_path,
+                detection_cache_path=self.detection_cache_path,
+                interpolated_roi_npz_path=self.interpolated_roi_npz_path,
+                fps=self.fps,
+                padding_fraction=self.padding_fraction,
+                background_color=self.background_color,
+                suppress_foreign_obb=self.suppress_foreign_obb,
+            )
+            result = exporter.export(
+                progress_callback=self.progress_signal.emit,
+                should_stop=self._should_stop,
+            )
+            if not self._should_stop():
+                self.finished_signal.emit(result.to_dict())
+        except Exception as exc:
+            if not self._should_stop():
+                self.error_signal.emit(str(exc))
 
 
 class DatasetGenerationWorker(QThread):
@@ -2141,19 +2212,23 @@ class MainWindow(QMainWindow):
         self.csv_writer_thread = None
         self.dataset_worker = None
         self.interp_worker = None
+        self.oriented_video_worker = None
         self.preview_detection_worker = None
         self.reversal_worker = None
         self.final_full_trajs = []
         self.temporary_files = []  # Track temporary files for cleanup
         self.session_log_handler = None  # Track current session log file handler
         self._individual_dataset_run_id = None
+        self.current_individual_dataset_path = None
         self.current_detection_cache_path = None
         self.current_individual_properties_cache_path = None
+        self.current_interpolated_roi_npz_path = None
         self.current_interpolated_pose_csv_path = None
         self.current_interpolated_pose_df = None
         self._pending_pose_export_csv_path = None
         self._pending_video_csv_path = None
         self._pending_video_generation = False
+        self._pending_finish_after_track_videos = False
 
         # Preview frame for live image adjustments
         self.preview_frame_original = None  # Original frame without adjustments
@@ -5739,6 +5814,17 @@ class MainWindow(QMainWindow):
         )
         vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
 
+        self.chk_generate_individual_track_videos = QCheckBox(
+            "Generate orientation-fixed videos for final tracks after cleanup"
+        )
+        self.chk_generate_individual_track_videos.setChecked(False)
+        self.chk_generate_individual_track_videos.setToolTip(
+            "After final cleaning completes, export one orientation-fixed video per\n"
+            "final TrajectoryID by streaming the source video and using the detection\n"
+            "cache plus interpolated ROI cache. Independent from saved crop files."
+        )
+        vl_ind_dataset.addWidget(self.chk_generate_individual_track_videos)
+
         # Output Configuration
         self.ind_output_group = QGroupBox(
             "Where should individual-analysis outputs go?"
@@ -5831,6 +5917,7 @@ class MainWindow(QMainWindow):
         # Initially hide individual dataset widgets (checkbox starts unchecked)
         self.ind_output_group.setVisible(False)
         self.lbl_individual_info.setVisible(False)
+        self.chk_generate_individual_track_videos.setVisible(False)
 
         form.addStretch()
         scroll.setWidget(content)
@@ -7782,13 +7869,23 @@ class MainWindow(QMainWindow):
             and self._is_individual_pipeline_enabled()
         )
 
+    def _should_generate_oriented_track_videos(self) -> bool:
+        """Return True when final per-track oriented videos should be exported."""
+        if not hasattr(self, "chk_generate_individual_track_videos"):
+            return False
+        return bool(
+            self.chk_generate_individual_track_videos.isChecked()
+            and self._is_individual_pipeline_enabled()
+        )
+
     def _should_run_interpolated_postpass(self) -> bool:
         """
         Return True when interpolated post-pass should run.
 
         We run this pass when interpolation is enabled and either:
         - individual crop saving is enabled, or
-        - pose export is enabled (to fill occluded-frame pose rows in final CSV).
+        - pose export is enabled (to fill occluded-frame pose rows in final CSV), or
+        - oriented track video export is enabled (to cache interpolated ROI geometry).
         """
         if not hasattr(self, "chk_individual_interpolate"):
             return False
@@ -7797,7 +7894,9 @@ class MainWindow(QMainWindow):
         if not self._is_individual_pipeline_enabled():
             return False
         return bool(
-            self._is_individual_image_save_enabled() or self._is_pose_export_enabled()
+            self._is_individual_image_save_enabled()
+            or self._is_pose_export_enabled()
+            or self._should_generate_oriented_track_videos()
         )
 
     def _sync_individual_analysis_mode_ui(self):
@@ -7838,6 +7937,9 @@ class MainWindow(QMainWindow):
             self.ind_output_group.setEnabled(save_enabled)
         if hasattr(self, "lbl_individual_info"):
             self.lbl_individual_info.setVisible(save_enabled)
+        if hasattr(self, "chk_generate_individual_track_videos"):
+            self.chk_generate_individual_track_videos.setVisible(pipeline_enabled)
+            self.chk_generate_individual_track_videos.setEnabled(pipeline_enabled)
         self._sync_video_pose_overlay_controls()
         self._on_runtime_context_changed()
 
@@ -10683,13 +10785,16 @@ class MainWindow(QMainWindow):
             from datetime import datetime
 
             self._individual_dataset_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.current_individual_dataset_path = None
             self.current_detection_cache_path = None
             self.current_individual_properties_cache_path = None
+            self.current_interpolated_roi_npz_path = None
             self.current_interpolated_pose_csv_path = None
             self.current_interpolated_pose_df = None
             self._pending_pose_export_csv_path = None
             self._pending_video_csv_path = None
             self._pending_video_generation = False
+            self._pending_finish_after_track_videos = False
 
         self.start_tracking(preview_mode=False)
 
@@ -10790,6 +10895,7 @@ class MainWindow(QMainWindow):
         """stop_tracking method documentation."""
         self._stop_all_requested = True
         self._pending_finish_after_interp = False
+        self._pending_finish_after_track_videos = False
         self._pending_pose_export_csv_path = None
         self._pending_video_csv_path = None
         self._pending_video_generation = False
@@ -10803,6 +10909,9 @@ class MainWindow(QMainWindow):
         )
         self._request_qthread_stop(self.dataset_worker, "DatasetGenerationWorker")
         self._request_qthread_stop(self.interp_worker, "InterpolatedCropsWorker")
+        self._request_qthread_stop(
+            self.oriented_video_worker, "OrientedTrackVideoWorker"
+        )
         self._request_qthread_stop(self.tracking_worker, "TrackingWorker")
         self._stop_csv_writer()
 
@@ -10810,6 +10919,7 @@ class MainWindow(QMainWindow):
         self._cleanup_thread_reference("merge_worker")
         self._cleanup_thread_reference("dataset_worker")
         self._cleanup_thread_reference("interp_worker")
+        self._cleanup_thread_reference("oriented_video_worker")
 
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -10830,8 +10940,10 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_preview.setEnabled(True)
         self._individual_dataset_run_id = None
+        self.current_individual_dataset_path = None
         self.current_detection_cache_path = None
         self.current_individual_properties_cache_path = None
+        self.current_interpolated_roi_npz_path = None
         self.current_interpolated_pose_csv_path = None
         self.current_interpolated_pose_df = None
 
@@ -11585,6 +11697,7 @@ class MainWindow(QMainWindow):
         if roi_csv_path:
             logger.info(f"Interpolated ROIs CSV saved: {roi_csv_path}")
         if roi_npz_path:
+            self.current_interpolated_roi_npz_path = roi_npz_path
             logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
         if pose_csv_path:
             self.current_interpolated_pose_csv_path = pose_csv_path
@@ -11609,6 +11722,213 @@ class MainWindow(QMainWindow):
 
         if self._pending_finish_after_interp:
             self._pending_finish_after_interp = False
+            if self._start_pending_oriented_track_video_export(
+                self._session_final_csv_path
+            ):
+                return
+            self._run_pending_video_generation_or_finalize()
+
+    def _resolve_source_video_fps(self) -> float:
+        """Return the source video FPS, falling back to the UI value."""
+        fps = 0.0
+        video_path = self.file_line.text().strip() if hasattr(self, "file_line") else ""
+        if video_path and os.path.exists(video_path):
+            cap = cv2.VideoCapture(video_path)
+            try:
+                if cap.isOpened():
+                    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            finally:
+                cap.release()
+        if fps <= 0.0 and hasattr(self, "spin_fps"):
+            fps = float(self.spin_fps.value() or 0.0)
+        return max(1.0, fps or 1.0)
+
+    def _resolve_current_individual_dataset_dir(self):
+        """Resolve the active per-session individual dataset directory."""
+        params = self.get_parameters_dict()
+        dataset_dir = resolve_individual_dataset_dir(
+            params.get("INDIVIDUAL_DATASET_OUTPUT_DIR"),
+            params.get("INDIVIDUAL_DATASET_NAME"),
+            self._individual_dataset_run_id,
+        )
+        if dataset_dir is None:
+            return None
+        return Path(dataset_dir).expanduser()
+
+    def _generate_oriented_track_videos(self, final_csv_path):
+        """Export orientation-fixed videos for final trajectories."""
+        try:
+            if self._stop_all_requested:
+                return False
+            if not self._should_generate_oriented_track_videos():
+                return False
+            if not final_csv_path or not os.path.exists(final_csv_path):
+                return False
+
+            dataset_dir = self._resolve_current_individual_dataset_dir()
+            if dataset_dir is None:
+                logger.warning(
+                    "Skipping oriented track video export: no individual dataset directory found."
+                )
+                return False
+            if not self.current_detection_cache_path or not os.path.exists(
+                self.current_detection_cache_path
+            ):
+                logger.warning(
+                    "Skipping oriented track video export: no compatible detection cache is available."
+                )
+                return False
+
+            self.current_individual_dataset_path = str(dataset_dir)
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.progress_label.setText("Generating oriented track videos...")
+
+            if (
+                self.oriented_video_worker is not None
+                and self.oriented_video_worker.isRunning()
+            ):
+                logger.warning(
+                    "Oriented track video export already running; skipping duplicate request."
+                )
+                return True
+            if (
+                self.oriented_video_worker is not None
+                and not self.oriented_video_worker.isRunning()
+            ):
+                self.oriented_video_worker.deleteLater()
+                self.oriented_video_worker = None
+
+            padding_fraction = (
+                float(self.spin_individual_padding.value())
+                if hasattr(self, "spin_individual_padding")
+                else 0.1
+            )
+            self.oriented_video_worker = OrientedTrackVideoWorker(
+                final_csv_path,
+                str(dataset_dir),
+                self.file_line.text().strip(),
+                self.current_detection_cache_path,
+                self.current_interpolated_roi_npz_path,
+                self._resolve_source_video_fps(),
+                max(0.0, padding_fraction),
+                tuple(int(c) for c in self._background_color),
+                bool(self.chk_suppress_foreign_obb_dataset.isChecked()),
+            )
+            self.oriented_video_worker.progress_signal.connect(self.on_progress_update)
+            self.oriented_video_worker.finished_signal.connect(
+                self._on_oriented_track_videos_finished
+            )
+            self.oriented_video_worker.error_signal.connect(
+                self._on_oriented_track_videos_error
+            )
+            self.oriented_video_worker.finished.connect(
+                self._on_oriented_track_video_worker_thread_finished
+            )
+            self.oriented_video_worker.start()
+            return True
+        except Exception as e:
+            logger.warning(f"Oriented track video export failed to start: {e}")
+            return False
+
+    def _start_pending_oriented_track_video_export(self, final_csv_path) -> bool:
+        """Start optional oriented track video export and hold the finish pipeline."""
+        started = self._generate_oriented_track_videos(final_csv_path)
+        if started:
+            self._pending_finish_after_track_videos = True
+        return started
+
+    def _on_oriented_track_video_worker_thread_finished(self):
+        """Release completed oriented track video worker safely."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.oriented_video_worker is not None
+            and sender is not self.oriented_video_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("oriented_video_worker")
+        self._refresh_progress_visibility()
+
+    def _on_oriented_track_videos_finished(self, result):
+        """Handle completion of oriented track video export."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.oriented_video_worker is not None
+            and sender is not self.oriented_video_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            self._cleanup_thread_reference("oriented_video_worker")
+            self._refresh_progress_visibility()
+            return
+
+        try:
+            exported_videos = int(result.get("exported_videos", 0))
+            exported_frames = int(result.get("exported_frames", 0))
+            exported_tracks = int(result.get("exported_tracks", 0))
+            missing_rows = int(result.get("missing_rows", 0))
+            output_dir = str(result.get("output_dir", "")).strip()
+        except Exception:
+            exported_videos = 0
+            exported_frames = 0
+            exported_tracks = 0
+            missing_rows = 0
+            output_dir = ""
+
+        if output_dir:
+            logger.info(
+                "Oriented track videos exported to %s (%d/%d tracks, %d frames, missing rows=%d)",
+                output_dir,
+                exported_videos,
+                exported_tracks,
+                exported_frames,
+                missing_rows,
+            )
+        else:
+            logger.info(
+                "Oriented track video export complete (%d/%d tracks, %d frames, missing rows=%d)",
+                exported_videos,
+                exported_tracks,
+                exported_frames,
+                missing_rows,
+            )
+
+        self._cleanup_thread_reference("oriented_video_worker")
+        self._refresh_progress_visibility()
+
+        if self._pending_finish_after_track_videos:
+            self._pending_finish_after_track_videos = False
+            self._run_pending_video_generation_or_finalize()
+
+    def _on_oriented_track_videos_error(self, error_message):
+        """Handle oriented track video export errors without aborting the session."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.oriented_video_worker is not None
+            and sender is not self.oriented_video_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        logger.warning("Oriented track video export failed: %s", error_message)
+        self._cleanup_thread_reference("oriented_video_worker")
+        self._refresh_progress_visibility()
+        if self._pending_finish_after_track_videos:
+            self._pending_finish_after_track_videos = False
             self._run_pending_video_generation_or_finalize()
 
     def on_merge_error(self: object, error_message: object) -> object:
@@ -12860,6 +13180,9 @@ class MainWindow(QMainWindow):
         if final_csv_path:
             self._relink_final_pose_augmented_csv(final_csv_path)
 
+        if self._start_pending_oriented_track_video_export(final_csv_path):
+            return
+
         self._run_pending_video_generation_or_finalize()
 
     def _finalize_tracking_session_ui(self):
@@ -12867,7 +13190,9 @@ class MainWindow(QMainWindow):
         self._pending_pose_export_csv_path = None
         self._pending_video_csv_path = None
         self._pending_video_generation = False
+        self._pending_finish_after_track_videos = False
         self.current_interpolated_pose_df = None
+        self.current_interpolated_roi_npz_path = None
         # Force-clear progress UI at terminal session state.
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
@@ -12993,6 +13318,7 @@ class MainWindow(QMainWindow):
                 self.interp_worker.deleteLater()
                 self.interp_worker = None
 
+            self.current_interpolated_roi_npz_path = None
             self.current_interpolated_pose_csv_path = None
             self.current_interpolated_pose_df = None
             self.interp_worker = InterpolatedCropsWorker(
@@ -13900,6 +14226,7 @@ class MainWindow(QMainWindow):
             # Real-time Individual Dataset Generation parameters
             "ENABLE_INDIVIDUAL_DATASET": individual_image_save_enabled,
             "ENABLE_INDIVIDUAL_IMAGE_SAVE": individual_image_save_enabled,
+            "GENERATE_ORIENTED_TRACK_VIDEOS": self._should_generate_oriented_track_videos(),
             "INDIVIDUAL_DATASET_NAME": "",
             "INDIVIDUAL_DATASET_OUTPUT_DIR": (
                 os.path.join(
@@ -14801,6 +15128,9 @@ class MainWindow(QMainWindow):
                     default=False,
                 )
             )
+            self.chk_generate_individual_track_videos.setChecked(
+                get_cfg("generate_oriented_track_videos", default=False)
+            )
             format_text = get_cfg("individual_output_format", default="png").upper()
             format_idx = self.combo_individual_format.findText(format_text)
             if format_idx >= 0:
@@ -15256,6 +15586,9 @@ class MainWindow(QMainWindow):
                 # === REAL-TIME INDIVIDUAL DATASET ===
                 "enable_individual_dataset": self._is_individual_image_save_enabled(),
                 "enable_individual_image_save": self._is_individual_image_save_enabled(),
+                "generate_oriented_track_videos": bool(
+                    self.chk_generate_individual_track_videos.isChecked()
+                ),
                 "individual_output_format": self.combo_individual_format.currentText().lower(),
             }
         )
@@ -15760,6 +16093,7 @@ class MainWindow(QMainWindow):
                 self._is_worker_running(getattr(self, "merge_worker", None)),
                 self._is_worker_running(self.dataset_worker),
                 self._is_worker_running(self.interp_worker),
+                self._is_worker_running(self.oriented_video_worker),
             ]
         )
 
