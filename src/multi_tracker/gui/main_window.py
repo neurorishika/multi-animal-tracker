@@ -2188,6 +2188,7 @@ class MainWindow(QMainWindow):
         # UI interaction state
         self._video_interactions_enabled = True
         self._ui_state = "idle"
+        self._splash_buttons = []
         self._saved_widget_enabled_states = {}
         self._pending_finish_after_interp = False
         self._stop_all_requested = False
@@ -2236,8 +2237,21 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        self.main_stack = QStackedWidget()
+        root_layout.addWidget(self.main_stack)
+
+        self._welcome_page_index = self.main_stack.addWidget(self._make_welcome_page())
+
+        workspace_page = QWidget()
+        self._workspace_page_index = self.main_stack.addWidget(workspace_page)
+        self.main_stack.setCurrentIndex(self._welcome_page_index)
+
         # Main Layout is a horizontal splitter (Video Left | Controls Right)
-        main_layout = QHBoxLayout(central_widget)
+        main_layout = QHBoxLayout(workspace_page)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
@@ -2554,6 +2568,122 @@ class MainWindow(QMainWindow):
 
         # Load default preset (custom if available, otherwise default.json)
         self._load_default_preset_on_startup()
+
+    def _make_welcome_page(self):
+        """Create startup splash page with primary MAT session actions."""
+        page = QWidget()
+        page.setStyleSheet("background-color: #121212;")
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(0)
+        layout.addStretch(1)
+
+        logo_label = QLabel()
+        logo_label.setAlignment(Qt.AlignCenter)
+
+        try:
+            project_root = Path(__file__).resolve().parents[2]
+            logo_path = project_root / "brand" / "multianimaltracker.svg"
+            renderer = QSvgRenderer(str(logo_path))
+            if renderer.isValid():
+                view_box = renderer.viewBoxF()
+                if view_box.isEmpty():
+                    default_size = renderer.defaultSize()
+                    view_box = QRectF(
+                        0,
+                        0,
+                        max(1, default_size.width()),
+                        max(1, default_size.height()),
+                    )
+
+                max_w, max_h = 560, 300
+                scale = min(
+                    max_w / max(view_box.width(), 1),
+                    max_h / max(view_box.height(), 1),
+                )
+                logo_w = max(1, int(view_box.width() * scale))
+                logo_h = max(1, int(view_box.height() * scale))
+                canvas = QPixmap(logo_w, logo_h)
+                canvas.fill(QColor(0, 0, 0, 0))
+
+                painter = QPainter(canvas)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                renderer.render(painter, QRectF(0, 0, logo_w, logo_h))
+                painter.end()
+                logo_label.setPixmap(canvas)
+            else:
+                logo_label.setText("Multi-Animal-Tracker")
+                logo_label.setStyleSheet(
+                    "color: #ffffff; font-size: 28px; font-weight: bold;"
+                )
+        except Exception:
+            logo_label.setText("Multi-Animal-Tracker")
+            logo_label.setStyleSheet(
+                "color: #ffffff; font-size: 28px; font-weight: bold;"
+            )
+
+        subtitle = QLabel("Track  |  Analyze  |  Refine")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet(
+            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        )
+
+        layout.addWidget(logo_label, alignment=Qt.AlignHCenter)
+        layout.addWidget(subtitle, alignment=Qt.AlignHCenter)
+        layout.addSpacing(40)
+
+        row_one = QHBoxLayout()
+        row_one.setAlignment(Qt.AlignCenter)
+        row_one.setSpacing(16)
+
+        btn_load_video = QPushButton("Load Video...")
+        btn_load_video.setFixedWidth(190)
+        btn_load_video.clicked.connect(self.select_file)
+        row_one.addWidget(btn_load_video)
+
+        btn_load_list = QPushButton("Load Video List...")
+        btn_load_list.setFixedWidth(190)
+        btn_load_list.clicked.connect(self._import_batch_list)
+        row_one.addWidget(btn_load_list)
+
+        row_two = QHBoxLayout()
+        row_two.setAlignment(Qt.AlignCenter)
+        row_two.setSpacing(16)
+
+        btn_load_config = QPushButton("Load Config...")
+        btn_load_config.setFixedWidth(190)
+        btn_load_config.clicked.connect(self.load_config)
+        row_two.addWidget(btn_load_config)
+
+        btn_quit = QPushButton("Quit")
+        btn_quit.setFixedWidth(190)
+        btn_quit.clicked.connect(self.close)
+        row_two.addWidget(btn_quit)
+
+        self._splash_buttons = [
+            btn_load_video,
+            btn_load_list,
+            btn_load_config,
+            btn_quit,
+        ]
+
+        button_container = QWidget()
+        button_layout = QVBoxLayout(button_container)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(10)
+        button_layout.addLayout(row_one)
+        button_layout.addLayout(row_two)
+
+        layout.addWidget(button_container, alignment=Qt.AlignHCenter)
+        layout.addStretch(1)
+
+        return page
+
+    def _show_workspace(self):
+        """Switch to the main MAT workspace view."""
+        if hasattr(self, "main_stack") and hasattr(self, "_workspace_page_index"):
+            self.main_stack.setCurrentIndex(self._workspace_page_index)
 
     # =========================================================================
     # TAB UI BUILDERS
@@ -8037,6 +8167,7 @@ class MainWindow(QMainWindow):
 
         # Enable controls
         self._apply_ui_state("idle")
+        self._show_workspace()
 
     def _on_batch_mode_toggled(self, checked):
         """Handle showing/hiding batch controls and syncing keystone video."""
@@ -10892,9 +11023,12 @@ class MainWindow(QMainWindow):
                 self.btn_open_training_dialog,
                 self.btn_open_pose_label,
             ]
+            splash_allowed = list(getattr(self, "_splash_buttons", []))
             self._set_interactive_widgets_enabled(
                 False,
-                allowlist=[self.btn_file, self.btn_load_config] + extra_allowed,
+                allowlist=[self.btn_file, self.btn_load_config]
+                + extra_allowed
+                + splash_allowed,
                 remember_state=False,
             )
             self.btn_start.setEnabled(False)
@@ -13776,6 +13910,7 @@ class MainWindow(QMainWindow):
         )
         if config_path:
             self._load_config_from_file(config_path)
+            self._show_workspace()
             self.config_status_label.setText(
                 f"✓ Loaded: {os.path.basename(config_path)}"
             )

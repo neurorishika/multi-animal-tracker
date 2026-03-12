@@ -86,6 +86,41 @@ class EventScorer:
         self.approach_distance = approach_distance
         self.crossing_window = crossing_window
         self.heading_reversal_rad = np.deg2rad(heading_reversal_deg)
+        # Reviewed regions: list of (frame_start, frame_end, set_of_track_ids)
+        # Events that fall entirely within a reviewed region are penalised.
+        self._reviewed_regions: List[Tuple[int, int, set]] = []
+
+    # ------------------------------------------------------------------
+    # Reviewed-region management
+    # ------------------------------------------------------------------
+
+    def add_reviewed_region(
+        self,
+        frame_start: int,
+        frame_end: int,
+        track_ids: List[int],
+    ) -> None:
+        """Register a region the user has already proofread."""
+        self._reviewed_regions.append((frame_start, frame_end, set(track_ids)))
+
+    def _apply_review_discount(
+        self, events: List[SuspicionEvent]
+    ) -> List[SuspicionEvent]:
+        """Penalise events whose range falls inside a reviewed region."""
+        if not self._reviewed_regions:
+            return events
+        _DISCOUNT = 0.6
+        for ev in events:
+            for rstart, rend, rtracks in self._reviewed_regions:
+                # Event is inside the reviewed window AND involves only reviewed tracks
+                if (
+                    ev.frame_range[0] >= rstart
+                    and ev.frame_range[1] <= rend
+                    and set(ev.involved_tracks) <= rtracks
+                ):
+                    ev.score = max(ev.score * (1.0 - _DISCOUNT), 0.0)
+                    break
+        return events
 
     # ==================================================================
     # Public API
@@ -110,6 +145,9 @@ class EventScorer:
         # Post-process: promote swap-pairs to flicker, detect multi-shuffle
         events = self._promote_flickers(events)
         events = self._detect_multi_shuffle(events)
+
+        # Penalise events in regions the user has already proofread
+        events = self._apply_review_discount(events)
 
         events.sort(key=lambda e: e.score, reverse=True)
         return events

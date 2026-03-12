@@ -1,6 +1,6 @@
 """Main window for MAT-afterhours.
 
-Provides a tabbed interface for reviewing and correcting identity swaps
+Provides the review interface for correcting identity issues
 detected in multi-animal tracking trajectories.
 """
 
@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRectF, Qt, QThread, Signal
+from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -20,7 +22,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
-    QTabWidget,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -36,6 +38,31 @@ from multi_tracker.afterhours.gui.widgets.video_player import VideoPlayerWidget
 logger = logging.getLogger(__name__)
 
 _VIDEO_FILTER = "Video files (*.mp4 *.avi *.mov *.mkv *.wmv);;All files (*)"
+_MAX_MANUAL_REGION = 300  # max frames for a user-selected manual review region
+
+
+# ---------------------------------------------------------------------------
+# Background scorer worker
+# ---------------------------------------------------------------------------
+
+
+class _ScorerWorker(QThread):
+    """Run :meth:`EventScorer.score_all` off the GUI thread."""
+
+    events_ready = Signal(list)
+
+    def __init__(self, scorer, df, parent=None):
+        super().__init__(parent)
+        self._scorer = scorer
+        self._df = df
+
+    def run(self) -> None:
+        try:
+            events = self._scorer.score_all(self._df)
+        except Exception:
+            logger.exception("Scorer worker failed")
+            events = []
+        self.events_ready.emit(events)
 
 
 class MainWindow(QMainWindow):
@@ -51,6 +78,10 @@ class MainWindow(QMainWindow):
         self._csv_path: Optional[Path] = None
         self._writer: Optional[CorrectionWriter] = None
         self._df: Optional[pd.DataFrame] = None
+        self._scorer: Optional[EventScorer] = None
+        self._scorer_worker: Optional[_ScorerWorker] = None
+        # (frame_start, frame_end, track_ids) tuples for deprioritisation
+        self._reviewed_regions: List[tuple] = []
 
         self._build_ui()
         self.apply_stylesheet()
@@ -323,8 +354,9 @@ class MainWindow(QMainWindow):
         # --- Top bar: session navigator ---
         nav_bar = QHBoxLayout()
 
-        self._btn_prev = QPushButton("<")
+        self._btn_prev = QPushButton("\u25c0")
         self._btn_prev.setFixedWidth(30)
+        self._btn_prev.setToolTip("Previous session")
         self._btn_prev.clicked.connect(self._prev_session)
         nav_bar.addWidget(self._btn_prev)
 
@@ -332,25 +364,29 @@ class MainWindow(QMainWindow):
         self._session_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         nav_bar.addWidget(self._session_label, stretch=1)
 
-        self._btn_next = QPushButton(">")
+        self._btn_next = QPushButton("\u25b6")
         self._btn_next.setFixedWidth(30)
+        self._btn_next.setToolTip("Next session")
         self._btn_next.clicked.connect(self._next_session)
         nav_bar.addWidget(self._btn_next)
 
-        self._btn_load = QPushButton("Load...")
-        self._btn_load.clicked.connect(self._load_session)
-        nav_bar.addWidget(self._btn_load)
+        nav_bar.addSpacing(8)
+
+        self._btn_load_video = QPushButton("Load Video\u2026")
+        self._btn_load_video.setToolTip(
+            "Open a single video file for review (*.mp4, *.avi \u2026)"
+        )
+        self._btn_load_video.clicked.connect(self._load_single_video)
+        nav_bar.addWidget(self._btn_load_video)
+
+        self._btn_load_list = QPushButton("Load Video List\u2026")
+        self._btn_load_list.setToolTip("Open a .txt file with one video path per line")
+        self._btn_load_list.clicked.connect(self._load_video_list)
+        nav_bar.addWidget(self._btn_load_list)
 
         root.addLayout(nav_bar)
 
-        # --- Tab bar ---
-        self._tabs = QTabWidget()
-
-        # Swap Review tab
-        swap_tab = QWidget()
-        swap_layout = QHBoxLayout(swap_tab)
-        swap_layout.setContentsMargins(0, 0, 0, 0)
-
+        # --- Main layout: suspicion queue | video + timeline ---
         hsplitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Left: suspicion queue
@@ -367,6 +403,7 @@ class MainWindow(QMainWindow):
 
         self._timeline = TimelinePanelWidget()
         self._timeline.split_requested.connect(self._on_manual_split)
+        self._timeline.region_edit_requested.connect(self._on_manual_region_edit)
         self._timeline.setMaximumHeight(200)
         vsplitter.addWidget(self._timeline)
 
@@ -376,36 +413,88 @@ class MainWindow(QMainWindow):
 
         hsplitter.setStretchFactor(0, 0)
         hsplitter.setStretchFactor(1, 1)
-        swap_layout.addWidget(hsplitter)
 
-        self._tabs.addTab(swap_tab, "Swap Review")
-
-        # Placeholder tabs
-        self._tabs.addTab(QLabel("Merge review — coming soon"), "Merge Review")
-        self._tabs.addTab(QLabel("Manual edit — coming soon"), "Manual Edit")
-
-        root.addWidget(self._tabs)
+        # Stacked widget: page 0 = welcome splash, page 1 = main working view
+        self._content_stack = QStackedWidget()
+        self._content_stack.addWidget(self._make_welcome_page())  # index 0
+        self._content_stack.addWidget(hsplitter)  # index 1
+        root.addWidget(self._content_stack, stretch=1)
         self._update_nav_state()
+
+    def _make_welcome_page(self) -> QWidget:
+        """Logo/welcome screen shown before any session is loaded."""
+        page = QWidget()
+        page.setStyleSheet("background-color: #121212;")
+        v = QVBoxLayout(page)
+        v.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.setSpacing(0)
+        v.addStretch(1)
+
+        logo_lbl = QLabel()
+        logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_path = (
+            Path(__file__).resolve().parents[3]
+            / "brand"
+            / "multianimaltrackerafterhours.svg"
+        )
+        if logo_path.exists():
+            renderer = QSvgRenderer(str(logo_path))
+            if renderer.isValid():
+                vb = renderer.viewBoxF()
+                if vb.isEmpty():
+                    ds = renderer.defaultSize()
+                    vb = QRectF(0, 0, max(1, ds.width()), max(1, ds.height()))
+                max_w, max_h = 560, 300
+                scale = min(max_w / max(vb.width(), 1), max_h / max(vb.height(), 1))
+                lw = max(1, int(vb.width() * scale))
+                lh = max(1, int(vb.height() * scale))
+                canvas = QPixmap(lw, lh)
+                canvas.fill(QColor(0, 0, 0, 0))
+                painter = QPainter(canvas)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                renderer.render(painter, QRectF(0, 0, lw, lh))
+                painter.end()
+                logo_lbl.setPixmap(canvas)
+        v.addWidget(logo_lbl)
+
+        sub = QLabel("Review  \u00b7  Correct  \u00b7  Verify")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setStyleSheet(
+            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        )
+        v.addWidget(sub)
+        v.addSpacing(40)
+
+        btn_row = QHBoxLayout()
+        btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        btn_row.setSpacing(16)
+
+        btn_v = QPushButton("Load Video\u2026")
+        btn_v.setFixedWidth(180)
+        btn_v.setToolTip("Open a single video file for review")
+        btn_v.clicked.connect(self._load_single_video)
+        btn_row.addWidget(btn_v)
+
+        btn_l = QPushButton("Load Video List\u2026")
+        btn_l.setFixedWidth(180)
+        btn_l.setToolTip("Open a .txt file listing one video path per line")
+        btn_l.clicked.connect(self._load_video_list)
+        btn_row.addWidget(btn_l)
+
+        btn_q = QPushButton("Quit")
+        btn_q.setFixedWidth(140)
+        btn_q.clicked.connect(self.close)
+        btn_row.addWidget(btn_q)
+
+        ctr = QWidget()
+        ctr.setLayout(btn_row)
+        v.addWidget(ctr)
+        v.addStretch(1)
+        return page
 
     # ------------------------------------------------------------------
     # Session management
     # ------------------------------------------------------------------
-
-    def _load_session(self) -> None:
-        """Ask user to load a single video or a text list of videos."""
-        choice = QMessageBox.question(
-            self,
-            "Load session",
-            "Load a single video file?\n\n"
-            'Click "Yes" for a single video, "No" for a .txt list of videos.',
-            QMessageBox.StandardButton.Yes
-            | QMessageBox.StandardButton.No
-            | QMessageBox.StandardButton.Cancel,
-        )
-        if choice == QMessageBox.StandardButton.Yes:
-            self._load_single_video()
-        elif choice == QMessageBox.StandardButton.No:
-            self._load_video_list()
 
     def _load_single_video(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Select video", "", _VIDEO_FILTER)
@@ -446,6 +535,10 @@ class MainWindow(QMainWindow):
         has = len(self._sessions) > 0
         self._btn_prev.setEnabled(has and self._session_idx > 0)
         self._btn_next.setEnabled(has and self._session_idx < len(self._sessions) - 1)
+        # Avoid duplicated load controls: splash handles initial loading.
+        show_inline_load = has and self._content_stack.currentIndex() == 1
+        self._btn_load_video.setVisible(show_inline_load)
+        self._btn_load_list.setVisible(show_inline_load)
         if has:
             name = Path(self._sessions[self._session_idx]).stem
             self._session_label.setText(
@@ -459,6 +552,9 @@ class MainWindow(QMainWindow):
         if self._writer is not None:
             self._writer.close()
             self._writer = None
+
+        self._reviewed_regions.clear()
+        self._scorer = None
 
         video_path = self._sessions[self._session_idx]
         self._video_path = video_path
@@ -483,6 +579,7 @@ class MainWindow(QMainWindow):
         self._timeline.load_trajectories(self._df)
 
         self._run_scorer()
+        self._content_stack.setCurrentIndex(1)  # reveal main view
         self._update_nav_state()
         logger.info(
             "Opened session %d: %s  CSV=%s",
@@ -509,7 +606,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _run_scorer(self) -> None:
-        """Load regions (if available) and run the swap scorer."""
+        """Load regions (if available) and run the swap scorer in the background."""
         if self._df is None or self._video_path is None:
             return
 
@@ -522,110 +619,168 @@ class MainWindow(QMainWindow):
             except Exception:
                 logger.warning("Failed to load density regions from %s", regions_path)
 
-        scorer = EventScorer(regions=regions)
-        events = scorer.score_all(self._df)
+        self._scorer = EventScorer(regions=regions)
+        # Re-register previously reviewed regions so they stay deprioritised
+        for rr in self._reviewed_regions:
+            self._scorer.add_reviewed_region(*rr)
 
+        # Disconnect any stale worker so its result is silently discarded
+        if self._scorer_worker is not None and self._scorer_worker.isRunning():
+            try:
+                self._scorer_worker.events_ready.disconnect()
+            except RuntimeError:
+                pass
+
+        self._queue.show_scoring_progress()
+        self._scorer_worker = _ScorerWorker(self._scorer, self._df, self)
+        self._scorer_worker.events_ready.connect(self._on_scorer_finished)
+        self._scorer_worker.start()
+
+    def _on_scorer_finished(self, events: list) -> None:
+        """Slot called from the scorer worker thread when scoring is done."""
+        self._queue.hide_scoring_progress()
         self._queue.populate(events)
+        cnt = len(events)
+        self.statusBar().showMessage(
+            f"Scoring complete — {cnt} suspicious event{'s' if cnt != 1 else ''} found",
+            5000,
+        )
 
     # ------------------------------------------------------------------
     # Event handling
     # ------------------------------------------------------------------
 
     def _on_event_selected(self, event: SuspicionEvent) -> None:
-        """Seek video, highlight tracks, show resolution dialog."""
+        """Seek video, highlight tracks, open the track editor."""
         self._player.seek_to(event.frame_peak)
         self._player.highlight_tracks(event.involved_tracks)
         self._timeline.highlight_event(event)
 
-        self._show_resolution_dialog(event)
+        self._show_track_editor(event)
 
-    def _show_resolution_dialog(self, event: SuspicionEvent) -> None:
-        """Open the unified ResolutionDialog and apply the chosen correction."""
+    def _show_track_editor(self, event: SuspicionEvent) -> None:
+        """Open the timeline-based TrackEditorDialog.
+
+        On Apply: execute edit ops, refresh trajectories, re-score with
+        the reviewed region deprioritised.
+        """
         if self._video_path is None or self._df is None:
             return
 
-        from multi_tracker.afterhours.gui.dialogs.resolution_dialog import (
-            ResolutionDialog,
+        from multi_tracker.afterhours.gui.dialogs.track_editor_dialog import (
+            TrackEditorDialog,
         )
 
-        dlg = ResolutionDialog(
+        dlg = TrackEditorDialog(
             video_path=self._video_path,
             df=self._df,
             event=event,
             parent=self,
         )
-        if dlg.exec() != ResolutionDialog.DialogCode.Accepted:
-            return
+        dlg.exec()
 
-        action = dlg.selected_action()
-        etype = dlg.effective_event_type()
-        split_frame = dlg.selected_frame()
-        resolved_event = dlg.event
+        # Always record the reviewed region for deprioritisation
+        rr = (dlg.reviewed_range[0], dlg.reviewed_range[1], dlg.reviewed_tracks)
+        self._reviewed_regions.append(rr)
+        if self._scorer is not None:
+            self._scorer.add_reviewed_region(*rr)
 
-        if action == "Skip (no correction)":
-            return
+        if dlg.applied and dlg.edit_ops and self._writer is not None:
+            self._writer.apply_edit_ops(dlg.edit_ops)
 
-        if self._writer is None:
-            return
+            # Refresh state
+            self._df = self._writer.df
+            self._player.load_trajectories(self._df)
+            self._timeline.load_trajectories(self._df)
 
-        if etype == EventType.SWAP:
-            swap_post = action == "Swap IDs at split frame"
-            if event.track_b is not None:
-                self._writer.apply_correction(
-                    track_a=event.track_a,
-                    track_b=event.track_b,
-                    split_frame=split_frame,
-                    swap_post=swap_post,
-                )
-        elif etype == EventType.FLICKER:
-            if event.track_b is not None:
-                self._writer.apply_erase_flicker(
-                    track_a=event.track_a,
-                    track_b=event.track_b,
-                    frame_start=event.frame_range[0],
-                    frame_end=event.frame_range[1],
-                )
-        elif etype == EventType.FRAGMENTATION:
-            self._writer.apply_merge(event.involved_tracks)
-        elif etype == EventType.ABSORPTION:
-            swap_post = action == "Split + swap at re-appearance"
-            if event.track_b is not None:
-                self._writer.apply_correction(
-                    track_a=event.track_a,
-                    track_b=event.track_b,
-                    split_frame=split_frame,
-                    swap_post=swap_post,
-                )
-        elif etype == EventType.PHANTOM:
-            frame_range = event.frame_range if "range only" in action else None
-            self._writer.apply_delete(event.track_a, frame_range=frame_range)
-        elif etype == EventType.MULTI_SHUFFLE:
-            # For now treat as pairwise swap on first two tracks
-            if event.track_b is not None:
-                swap_post = "Swap" in action
-                self._writer.apply_correction(
-                    track_a=event.track_a,
-                    track_b=event.track_b,
-                    split_frame=split_frame,
-                    swap_post=swap_post,
-                )
+            # Re-score with updated df + reviewed regions
+            self._run_scorer()
+            self.statusBar().showMessage(
+                f"Applied {len(dlg.edit_ops)} edit(s)",
+                4000,
+            )
+        else:
+            # Even if user didn't apply, re-score to incorporate the review
+            # discount for this region.
+            self._run_scorer()
 
-        # Refresh state
-        self._df = self._writer.df
-        self._player.load_trajectories(self._df)
-        self._timeline.load_trajectories(self._df)
-        self._queue.mark_resolved(resolved_event)
+        self._queue.mark_resolved(event)
 
     def _on_manual_split(self, track_id: int, frame: int) -> None:
         """Handle a manual split request from the timeline."""
         logger.info("Manual split requested: track %d at frame %d", track_id, frame)
+
+    def _on_manual_region_edit(self, frame_start: int, frame_end: int) -> None:
+        """Open the track editor for a user-selected frame range.
+
+        Shows the BboxSelectorDialog on the midpoint frame so the user can
+        optionally draw a region of interest.  Creates a synthetic
+        SuspicionEvent of type MANUAL and delegates to _show_track_editor.
+        """
+        if self._video_path is None or self._df is None:
+            return
+
+        # Cap the duration
+        if frame_end - frame_start > _MAX_MANUAL_REGION:
+            frame_end = frame_start + _MAX_MANUAL_REGION
+            self.statusBar().showMessage(
+                f"Region capped to {_MAX_MANUAL_REGION} frames", 3000
+            )
+
+        from PySide6.QtWidgets import QDialog as _QDialog
+
+        from multi_tracker.afterhours.gui.dialogs.bbox_selector import (
+            BboxSelectorDialog,
+        )
+
+        mid_frame = (frame_start + frame_end) // 2
+        bbox_dlg = BboxSelectorDialog(self._video_path, mid_frame, parent=self)
+        if bbox_dlg.exec() != _QDialog.DialogCode.Accepted:
+            return
+
+        bbox = bbox_dlg.bbox
+        region_df = self._df[self._df["FrameID"].between(frame_start, frame_end)]
+
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            in_region = region_df[
+                region_df["X"].between(x1, x2) & region_df["Y"].between(y1, y2)
+            ]
+        else:
+            in_region = region_df
+
+        involved = sorted(int(t) for t in in_region["TrajectoryID"].dropna().unique())
+        if not involved:
+            QMessageBox.information(
+                self,
+                "No tracks",
+                "No tracks found in the selected region.\n"
+                "Try a larger area or a wider frame range.",
+            )
+            return
+
+        event = SuspicionEvent(
+            event_type=EventType.MANUAL,
+            involved_tracks=involved,
+            frame_peak=mid_frame,
+            frame_range=(frame_start, frame_end),
+            score=1.0,
+        )
+        self._show_track_editor(event)
 
     # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
 
     def closeEvent(self, event):  # noqa: N802
+        # Let any running scorer finish silently rather than blocking shutdown
+        if self._scorer_worker is not None and self._scorer_worker.isRunning():
+            try:
+                self._scorer_worker.events_ready.disconnect()
+            except RuntimeError:
+                pass
         if self._writer is not None:
             self._writer.close()
             self._writer = None
+        super().closeEvent(event)
         super().closeEvent(event)

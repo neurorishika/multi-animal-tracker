@@ -3,7 +3,8 @@ Atomic correction writer for _proofread.csv.
 
 Applies identity corrections to the proofread copy.
 Supports: split+swap, merge fragments, delete track, erase flicker,
-reassign chain (N-way relabeling).
+reassign chain (N-way relabeling), and fragment-level edit ops from the
+track editor.
 Never touches the original CSV.
 """
 
@@ -16,6 +17,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+
+from multi_tracker.afterhours.core.track_editor_model import EditOp, OpKind
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +227,47 @@ class CorrectionWriter:
         tmp = self.proofread_path.with_suffix(".tmp")
         self._df.to_csv(tmp, index=False)
         os.replace(tmp, self.proofread_path)
+
+    def apply_edit_ops(self, ops: List[EditOp]) -> None:
+        """Apply a batch of fragment-level edit operations and persist.
+
+        Operations are applied in order: DELETEs first, then REASSIGNs.
+        """
+        if self._df is None:
+            raise RuntimeError("Call open() before apply_edit_ops()")
+        df = self._df.copy()
+
+        # Deletes first (so reassign doesn't move rows we want to remove)
+        for op in ops:
+            if op.kind == OpKind.DELETE:
+                mask = (
+                    (df["TrajectoryID"] == op.track_id)
+                    & (df["FrameID"] >= op.frame_start)
+                    & (df["FrameID"] <= op.frame_end)
+                )
+                df = df[~mask]
+
+        # Reassigns — use temp offset to avoid collision
+        offset = _NEW_ID_OFFSET
+        for op in ops:
+            if op.kind == OpKind.REASSIGN and op.new_track_id is not None:
+                mask = (
+                    (df["TrajectoryID"] == op.track_id)
+                    & (df["FrameID"] >= op.frame_start)
+                    & (df["FrameID"] <= op.frame_end)
+                )
+                df.loc[mask, "TrajectoryID"] = op.new_track_id + offset
+
+        # Resolve temp IDs
+        df.loc[
+            df["TrajectoryID"] >= offset,
+            "TrajectoryID",
+        ] = (
+            df.loc[df["TrajectoryID"] >= offset, "TrajectoryID"] - offset
+        )
+
+        self._df = df.reset_index(drop=True)
+        self._write_atomic()
 
     def close(self) -> None:
         """Release the in-memory DataFrame."""

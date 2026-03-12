@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -676,8 +677,12 @@ class DataSieveWindow(QMainWindow):
             pass
 
     def init_ui(self):
+        self._content_stack = QStackedWidget()
+        self.setCentralWidget(self._content_stack)
+        self._content_stack.addWidget(self._make_welcome_page())  # index 0
+
         central = QWidget()
-        self.setCentralWidget(central)
+        self._content_stack.addWidget(central)  # index 1
         main_layout = QHBoxLayout(central)
 
         left_content = QWidget()
@@ -704,6 +709,82 @@ class DataSieveWindow(QMainWindow):
 
         main_layout.addWidget(left_scroll)
         main_layout.addWidget(right)
+
+        # Startup mode begins on splash until a valid dataset is loaded.
+        self._content_stack.setCurrentIndex(0)
+
+    def _make_welcome_page(self):
+        """Logo/welcome screen shown before a dataset is loaded."""
+        page = QWidget()
+        page.setStyleSheet("background-color: #121212;")
+        v = QVBoxLayout(page)
+        v.setAlignment(Qt.AlignCenter)
+        v.setSpacing(0)
+        v.addStretch(1)
+
+        logo_lbl = QLabel()
+        logo_lbl.setAlignment(Qt.AlignCenter)
+        try:
+            project_root = Path(__file__).resolve().parents[3]
+            logo_path = project_root / "brand" / "datasieve.svg"
+            renderer = QSvgRenderer(str(logo_path))
+            if renderer.isValid():
+                view_box = renderer.viewBoxF()
+                if view_box.isEmpty():
+                    default_size = renderer.defaultSize()
+                    view_box = QRectF(
+                        0,
+                        0,
+                        max(1, default_size.width()),
+                        max(1, default_size.height()),
+                    )
+
+                max_w, max_h = 560, 300
+                scale = min(
+                    max_w / max(view_box.width(), 1),
+                    max_h / max(view_box.height(), 1),
+                )
+                draw_w = max(1, int(view_box.width() * scale))
+                draw_h = max(1, int(view_box.height() * scale))
+                canvas = QPixmap(draw_w, draw_h)
+                canvas.fill(QColor(0, 0, 0, 0))
+                painter = QPainter(canvas)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                renderer.render(painter, QRectF(0, 0, draw_w, draw_h))
+                painter.end()
+                logo_lbl.setPixmap(canvas)
+        except Exception:
+            pass
+        v.addWidget(logo_lbl)
+
+        sub = QLabel("Dataset Subsampling Workspace")
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setStyleSheet(
+            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        )
+        v.addWidget(sub)
+        v.addSpacing(40)
+
+        btn_row = QHBoxLayout()
+        btn_row.setAlignment(Qt.AlignCenter)
+        btn_row.setSpacing(16)
+
+        btn_load = QPushButton("Load Dataset Folder…")
+        btn_load.setFixedWidth(220)
+        btn_load.clicked.connect(self.load_dataset_dialog)
+        btn_row.addWidget(btn_load)
+
+        btn_quit = QPushButton("Quit")
+        btn_quit.setFixedWidth(120)
+        btn_quit.clicked.connect(self.close)
+        btn_row.addWidget(btn_quit)
+
+        ctr = QWidget()
+        ctr.setLayout(btn_row)
+        v.addWidget(ctr)
+        v.addStretch(1)
+        return page
 
     def _build_load_group(self, parent_layout):
         group = QGroupBox("1) Load Dataset")
@@ -1146,6 +1227,8 @@ class DataSieveWindow(QMainWindow):
         self.lbl_progress_details.setText("Waiting to start...")
         self.update_live_estimate()
         self._update_rollback_availability()
+        if hasattr(self, "_content_stack"):
+            self._content_stack.setCurrentIndex(1)
         return True
 
     def apply_preset(self, name):

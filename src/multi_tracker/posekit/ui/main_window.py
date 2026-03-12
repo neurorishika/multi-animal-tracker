@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QToolBar,
     QVBoxLayout,
@@ -168,8 +169,11 @@ class MainWindow(QMainWindow):
         self.autosave_delay_ms = DEFAULT_AUTOSAVE_DELAY_MS
         self._rebuild_path_index()
 
-        splitter = QSplitter(Qt.Horizontal, self)
-        self.setCentralWidget(splitter)
+        splitter = QSplitter(Qt.Horizontal)
+        self._content_stack = QStackedWidget(self)
+        self.setCentralWidget(self._content_stack)
+        self._content_stack.addWidget(self._make_welcome_page())  # index 0
+        self._content_stack.addWidget(splitter)  # index 1
 
         # Frames lists - dual list with drag-drop
         left = QWidget()
@@ -762,6 +766,81 @@ class MainWindow(QMainWindow):
         self.labeling_list.setCurrentRow(-1)
         self.lbl_info.setText("Select a frame to display.")
         self._show_canvas_logo_placeholder()
+        self._content_stack.setCurrentIndex(1 if self.image_paths else 0)
+
+    def _make_welcome_page(self) -> QWidget:
+        """Logo/welcome screen shown when PoseKit starts without a loaded project."""
+        page = QWidget()
+        page.setStyleSheet("background-color: #121212;")
+        v = QVBoxLayout(page)
+        v.setAlignment(Qt.AlignCenter)
+        v.setSpacing(0)
+        v.addStretch(1)
+
+        logo_lbl = QLabel()
+        logo_lbl.setAlignment(Qt.AlignCenter)
+        logo_path = Path(__file__).resolve().parents[3] / "brand" / "posekit.svg"
+        if logo_path.exists():
+            renderer = QSvgRenderer(str(logo_path))
+            if renderer.isValid():
+                view_box = renderer.viewBoxF()
+                if view_box.isEmpty():
+                    default_size = renderer.defaultSize()
+                    view_box = QRectF(
+                        0,
+                        0,
+                        max(1, default_size.width()),
+                        max(1, default_size.height()),
+                    )
+                max_w, max_h = 560, 300
+                scale = min(
+                    max_w / max(view_box.width(), 1),
+                    max_h / max(view_box.height(), 1),
+                )
+                draw_w = max(1, int(view_box.width() * scale))
+                draw_h = max(1, int(view_box.height() * scale))
+                canvas = QPixmap(draw_w, draw_h)
+                canvas.fill(QColor(0, 0, 0, 0))
+                painter = QPainter(canvas)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                renderer.render(painter, QRectF(0, 0, draw_w, draw_h))
+                painter.end()
+                logo_lbl.setPixmap(canvas)
+        v.addWidget(logo_lbl)
+
+        sub = QLabel("Pose Labeling Workspace")
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setStyleSheet(
+            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        )
+        v.addWidget(sub)
+        v.addSpacing(40)
+
+        btn_row = QHBoxLayout()
+        btn_row.setAlignment(Qt.AlignCenter)
+        btn_row.setSpacing(16)
+
+        btn_new = QPushButton("New Project…")
+        btn_new.setFixedWidth(180)
+        btn_new.clicked.connect(self.new_project_wizard)
+        btn_row.addWidget(btn_new)
+
+        btn_open = QPushButton("Open Existing Project…")
+        btn_open.setFixedWidth(220)
+        btn_open.clicked.connect(self.open_project)
+        btn_row.addWidget(btn_open)
+
+        btn_quit = QPushButton("Quit")
+        btn_quit.setFixedWidth(140)
+        btn_quit.clicked.connect(self.close)
+        btn_row.addWidget(btn_quit)
+
+        ctr = QWidget()
+        ctr.setLayout(btn_row)
+        v.addWidget(ctr)
+        v.addStretch(1)
+        return page
 
     def apply_stylesheet(self):
         """Apply the PoseKit dark theme to the entire window."""
@@ -1173,72 +1252,13 @@ class MainWindow(QMainWindow):
             pass
 
     def show_startup_open_overlay(self: object) -> object:
-        """Non-dismissible welcome screen shown when PoseKit launches without a project."""
+        """Legacy compatibility hook.
 
-        class _StartupDialog(QDialog):
-            def keyPressEvent(self, event):  # noqa: N802
-                if event.key() == Qt.Key_Escape:
-                    return  # Esc is blocked — must use the buttons
-                super().keyPressEvent(event)
-
-        dlg = _StartupDialog(self)
-        dlg.setWindowTitle("PoseKit Labeler")
-        dlg.setModal(True)
-        dlg.setMinimumWidth(500)
-        dlg.setWindowFlags(
-            (dlg.windowFlags() | Qt.Dialog)
-            & ~Qt.WindowCloseButtonHint
-            & ~Qt.WindowContextHelpButtonHint
-        )
-
-        layout = QVBoxLayout(dlg)
-        layout.setSpacing(14)
-        layout.setContentsMargins(40, 36, 40, 32)
-
-        from PySide6.QtGui import QFont
-
-        title_lbl = QLabel("PoseKit Labeler")
-        title_font = QFont()
-        title_font.setPointSize(22)
-        title_font.setBold(True)
-        title_lbl.setFont(title_font)
-        title_lbl.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_lbl)
-        layout.addSpacing(4)
-
-        sub_lbl = QLabel("Create a new project or open an existing one to get started.")
-        sub_lbl.setWordWrap(True)
-        sub_lbl.setAlignment(Qt.AlignCenter)
-        layout.addWidget(sub_lbl)
-        layout.addSpacing(10)
-
-        btn_new = QPushButton("➕  New Project…")
-        btn_new.setMinimumHeight(44)
-        btn_open = QPushButton("📂  Open Existing Project…")
-        btn_open.setMinimumHeight(44)
-        btn_quit = QPushButton("Quit")
-
-        layout.addWidget(btn_new)
-        layout.addWidget(btn_open)
-        layout.addSpacing(6)
-        layout.addWidget(btn_quit)
-
-        def _new():
-            dlg.accept()
-            self.new_project_wizard()
-            if self.isVisible() and not self.image_paths:
-                QTimer.singleShot(0, self.show_startup_open_overlay)
-
-        def _open():
-            dlg.accept()
-            self.open_project()
-            if self.isVisible() and not self.image_paths:
-                QTimer.singleShot(0, self.show_startup_open_overlay)
-
-        btn_new.clicked.connect(_new)
-        btn_open.clicked.connect(_open)
-        btn_quit.clicked.connect(lambda: (dlg.reject(), self.close()))
-        dlg.exec()
+        PoseKit now uses an in-window splash page rather than a modal startup
+        chooser dialog.
+        """
+        if hasattr(self, "_content_stack"):
+            self._content_stack.setCurrentIndex(1 if self.image_paths else 0)
 
     def new_project_wizard(self) -> None:
         """Run the New Project wizard and switch to the created project."""

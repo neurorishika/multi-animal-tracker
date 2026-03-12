@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
-from scipy.ndimage import gaussian_filter, label
+from scipy.ndimage import find_objects, gaussian_filter, label
 
 # ---------------------------------------------------------------------------
 # DensityRegion
@@ -295,20 +295,23 @@ def find_regions(
     structure = np.ones((3, 3, 3), dtype=np.int32)
     labeled, num_features = label(binary, structure=structure)
 
+    # find_objects returns bounding slices per component in O(N) — much
+    # faster than per-component np.nonzero which allocates a full (T,H,W)
+    # boolean mask each time.
+    slices = find_objects(labeled)
+
     regions: List[DensityRegion] = []
-    for component_id in range(1, num_features + 1):
-        mask = labeled == component_id  # (T, H, W) bool
+    for component_id, obj_slices in enumerate(slices, start=1):
+        if obj_slices is None:
+            continue
 
-        # Time extent.
-        t_coords, y_coords, x_coords = np.nonzero(mask)
-        frame_start = int(t_coords.min())
-        frame_end = int(t_coords.max())
-
-        # Spatial bounding box in pixel coords (x1, y1, x2, y2).
-        x1 = int(x_coords.min())
-        x2 = int(x_coords.max())
-        y1 = int(y_coords.min())
-        y2 = int(y_coords.max())
+        t_slice, y_slice, x_slice = obj_slices
+        frame_start = t_slice.start
+        frame_end = t_slice.stop - 1
+        x1 = x_slice.start
+        x2 = x_slice.stop - 1
+        y1 = y_slice.start
+        y2 = y_slice.stop - 1
 
         # Apply minimum size / duration filters.
         duration = frame_end - frame_start + 1

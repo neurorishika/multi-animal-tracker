@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
@@ -72,7 +71,6 @@ def main() -> None:
             pass
         win.resize(1500, 860)
         win.showMaximized()
-        QTimer.singleShot(0, win.show_startup_open_overlay)
         sys.exit(app.exec())
 
     dataset_dir: Optional[Path] = None

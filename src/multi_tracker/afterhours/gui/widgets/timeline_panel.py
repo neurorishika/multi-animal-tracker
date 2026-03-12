@@ -9,9 +9,9 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-from PySide6.QtCore import QRect, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
-from PySide6.QtWidgets import QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QMouseEvent, QPainter, QPen, QWheelEvent
+from PySide6.QtWidgets import QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 
 # Colour palette (RGB) — same order as video player but in RGB for Qt.
 _PALETTE_RGB = [
@@ -30,8 +30,9 @@ _PALETTE_RGB = [
 ]
 
 _LABEL_WIDTH = 60
-_ROW_HEIGHT = 22
+_DEFAULT_ROW_HEIGHT = 22
 _BAR_MARGIN = 2
+_MAX_MANUAL_REGION = 300  # max frames selectable for manual review
 
 
 # ---------------------------------------------------------------------------
@@ -43,15 +44,22 @@ class _TimelineCanvas(QWidget):
     """Custom-painted widget showing one horizontal bar per track."""
 
     split_at = Signal(int, int)  # (track_id, frame)
+    region_edit_requested = Signal(int, int)  # (frame_start, frame_end)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        # track_id -> (min_frame, max_frame)
         self._tracks: Dict[int, Tuple[int, int]] = {}
         self._track_order: List[int] = []
         self._total_frames: int = 1
         self._highlight_range: Optional[Tuple[int, int]] = None
+        self._row_height: int = _DEFAULT_ROW_HEIGHT
 
+        # Right-click drag selection state
+        self._sel_start_x: Optional[int] = None
+        self._sel_end_x: Optional[int] = None
+        self._is_right_dragging: bool = False
+
+        self.setMouseTracking(True)
         self.setMinimumHeight(50)
 
     # ------------------------------------------------------------------
@@ -63,15 +71,16 @@ class _TimelineCanvas(QWidget):
         tracks: Dict[int, Tuple[int, int]],
         total_frames: int,
     ) -> None:
-        """Set per-track frame ranges and total frame count."""
         self._tracks = dict(tracks)
         self._track_order = sorted(tracks.keys())
         self._total_frames = max(total_frames, 1)
-        self.setMinimumHeight(max(len(self._track_order) * _ROW_HEIGHT + 4, 50))
+        self._update_size()
         self.update()
 
+    def _update_size(self) -> None:
+        self.setMinimumHeight(max(len(self._track_order) * self._row_height + 4, 50))
+
     def set_highlight_range(self, frame_range: Optional[Tuple[int, int]]) -> None:
-        """Store a highlight range for rendering (future enhancement)."""
         self._highlight_range = frame_range
         self.update()
 
@@ -91,24 +100,22 @@ class _TimelineCanvas(QWidget):
         return int(frac * self._total_frames)
 
     def _y_to_row(self, y: int) -> int:
-        return y // _ROW_HEIGHT
+        return y // self._row_height
 
     # ------------------------------------------------------------------
     # Painting
     # ------------------------------------------------------------------
 
-    def paintEvent(self, event):  # noqa: N802
+    def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
-        # Dark-theme label column background
         painter.fillRect(QRect(0, 0, _LABEL_WIDTH, self.height()), QColor(37, 37, 38))
 
         for row, tid in enumerate(self._track_order):
-            y_top = row * _ROW_HEIGHT + _BAR_MARGIN
-            bar_h = _ROW_HEIGHT - 2 * _BAR_MARGIN
+            y_top = row * self._row_height + _BAR_MARGIN
+            bar_h = self._row_height - 2 * _BAR_MARGIN
 
-            # Label
             painter.setPen(QPen(QColor(204, 204, 204)))
             label_rect = QRect(0, y_top, _LABEL_WIDTH - 4, bar_h)
             painter.drawText(
@@ -117,7 +124,6 @@ class _TimelineCanvas(QWidget):
                 str(tid),
             )
 
-            # Bar
             fmin, fmax = self._tracks[tid]
             x1 = self._frame_to_x(fmin)
             x2 = self._frame_to_x(fmax)
@@ -127,44 +133,101 @@ class _TimelineCanvas(QWidget):
                 QColor(r, g, b, 180),
             )
 
-        # Draw highlight range if set
+        total_bar_h = max(len(self._track_order) * self._row_height, self.height())
+
+        # Event highlight range (orange)
         if self._highlight_range is not None:
             hl_x1 = self._frame_to_x(self._highlight_range[0])
             hl_x2 = self._frame_to_x(self._highlight_range[1])
             painter.setPen(QPen(QColor(255, 165, 0, 200), 2))
-            painter.drawRect(
-                QRect(
-                    hl_x1,
-                    0,
-                    max(hl_x2 - hl_x1, 2),
-                    len(self._track_order) * _ROW_HEIGHT,
-                )
+            painter.drawRect(QRect(hl_x1, 0, max(hl_x2 - hl_x1, 2), total_bar_h))
+
+        # Right-click drag selection (cyan tint)
+        if self._sel_start_x is not None and self._sel_end_x is not None:
+            sx1 = min(self._sel_start_x, self._sel_end_x)
+            sx2 = max(self._sel_start_x, self._sel_end_x)
+            painter.fillRect(
+                QRect(sx1, 0, max(sx2 - sx1, 1), total_bar_h),
+                QColor(100, 200, 255, 50),
             )
+            painter.setPen(QPen(QColor(100, 200, 255, 200), 1, Qt.PenStyle.DashLine))
+            painter.drawRect(QRect(sx1, 0, max(sx2 - sx1, 1), total_bar_h))
 
         painter.end()
 
     # ------------------------------------------------------------------
-    # Mouse
+    # Mouse events
     # ------------------------------------------------------------------
 
-    def mousePressEvent(self, event: QMouseEvent):  # noqa: N802
-        if event.button() != Qt.MouseButton.LeftButton:
-            return super().mousePressEvent(event)
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        pos = event.position().toPoint()
 
-        pos = event.position()
-        x = int(pos.x())
-        y = int(pos.y())
+        if event.button() == Qt.MouseButton.LeftButton:
+            if pos.x() < _LABEL_WIDTH:
+                return super().mousePressEvent(event)
+            row = self._y_to_row(pos.y())
+            if 0 <= row < len(self._track_order):
+                tid = self._track_order[row]
+                frame = self._x_to_frame(pos.x())
+                self.split_at.emit(tid, frame)
 
-        if x < _LABEL_WIDTH:
-            return super().mousePressEvent(event)
-
-        row = self._y_to_row(y)
-        if 0 <= row < len(self._track_order):
-            tid = self._track_order[row]
-            frame = self._x_to_frame(x)
-            self.split_at.emit(tid, frame)
+        elif event.button() == Qt.MouseButton.RightButton:
+            if pos.x() >= _LABEL_WIDTH:
+                self._sel_start_x = pos.x()
+                self._sel_end_x = pos.x()
+                self._is_right_dragging = True
+                self.update()
 
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._is_right_dragging:
+            x = max(_LABEL_WIDTH, event.position().toPoint().x())
+            self._sel_end_x = x
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.RightButton and self._is_right_dragging:
+            self._is_right_dragging = False
+            sx1 = min(self._sel_start_x or 0, self._sel_end_x or 0)
+            sx2 = max(self._sel_start_x or 0, self._sel_end_x or 0)
+            f1 = self._x_to_frame(sx1)
+            f2 = self._x_to_frame(sx2)
+            self._sel_start_x = None
+            self._sel_end_x = None
+            self.update()
+            if f2 - f1 >= 2:
+                self._show_region_menu(event.position().toPoint(), f1, f2)
+        super().mouseReleaseEvent(event)
+
+    def _show_region_menu(self, pos: QPoint, f1: int, f2: int) -> None:
+        span = f2 - f1
+        label = f"Review region  [{f1}\u2013{f2}]  ({span} frames)"
+        if span > _MAX_MANUAL_REGION:
+            label += f"  \u26a0 will be capped to {_MAX_MANUAL_REGION}"
+        menu = QMenu(self)
+        act = QAction(label, self)
+        act.triggered.connect(lambda: self.region_edit_requested.emit(f1, f2))
+        menu.addAction(act)
+        menu.exec(self.mapToGlobal(pos))
+
+    # ------------------------------------------------------------------
+    # Wheel — Ctrl+scroll scales row height
+    # ------------------------------------------------------------------
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            step = 2 if delta > 0 else -2
+            new_h = max(12, min(80, self._row_height + step))
+            if new_h != self._row_height:
+                self._row_height = new_h
+                self._update_size()
+                self.update()
+            event.accept()
+        else:
+            super().wheelEvent(event)
 
 
 # ---------------------------------------------------------------------------
@@ -176,19 +239,29 @@ class TimelinePanelWidget(QWidget):
     """Per-animal timeline bars in a scrollable container."""
 
     split_requested = Signal(int, int)  # (track_id, frame)
+    region_edit_requested = Signal(int, int)  # (frame_start, frame_end)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._canvas = _TimelineCanvas()
         self._canvas.split_at.connect(self.split_requested)
+        self._canvas.region_edit_requested.connect(self.region_edit_requested)
         self._scroll.setWidget(self._canvas)
         layout.addWidget(self._scroll)
+
+        hint = QLabel(
+            "Right-click drag to select a region for manual review  \u00b7"
+            "  Ctrl+scroll to resize rows"
+        )
+        hint.setStyleSheet("color: #555555; font-size: 10px; padding: 1px 4px;")
+        layout.addWidget(hint)
 
     # ------------------------------------------------------------------
     # Public API

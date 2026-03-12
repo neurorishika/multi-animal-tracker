@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QSplitter,
+    QStackedWidget,
     QStatusBar,
     QTextEdit,
     QToolBar,
@@ -456,10 +457,83 @@ class MainWindow(QMainWindow):
         export_btn.triggered.connect(self.export_dataset)
         toolbar.addAction(export_btn)
 
+    def _make_welcome_page(self) -> QWidget:
+        """Logo/welcome screen shown before any project is opened."""
+        from PySide6.QtCore import QRectF
+        from PySide6.QtGui import QColor, QPainter
+        from PySide6.QtSvg import QSvgRenderer
+
+        page = QWidget()
+        page.setStyleSheet("background-color: #121212;")
+        v = QVBoxLayout(page)
+        v.setAlignment(Qt.AlignCenter)
+        v.setSpacing(0)
+        v.addStretch(1)
+
+        logo_lbl = QLabel()
+        logo_lbl.setAlignment(Qt.AlignCenter)
+        logo_path = Path(__file__).resolve().parents[3] / "brand" / "classkit.svg"
+        if logo_path.exists():
+            renderer = QSvgRenderer(str(logo_path))
+            if renderer.isValid():
+                vb = renderer.viewBoxF()
+                if vb.isEmpty():
+                    ds = renderer.defaultSize()
+                    vb = QRectF(0, 0, max(1, ds.width()), max(1, ds.height()))
+                max_w, max_h = 560, 300
+                scale = min(max_w / max(vb.width(), 1), max_h / max(vb.height(), 1))
+                lw = max(1, int(vb.width() * scale))
+                lh = max(1, int(vb.height() * scale))
+                canvas = QPixmap(lw, lh)
+                canvas.fill(QColor(0, 0, 0, 0))
+                painter = QPainter(canvas)
+                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                renderer.render(painter, QRectF(0, 0, lw, lh))
+                painter.end()
+                logo_lbl.setPixmap(canvas)
+        v.addWidget(logo_lbl)
+
+        sub = QLabel("Active Learning Dataset Builder")
+        sub.setAlignment(Qt.AlignCenter)
+        sub.setStyleSheet(
+            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        )
+        v.addWidget(sub)
+        v.addSpacing(40)
+
+        btn_row = QHBoxLayout()
+        btn_row.setAlignment(Qt.AlignCenter)
+        btn_row.setSpacing(16)
+
+        btn_n = QPushButton("New Project\u2026")
+        btn_n.setFixedWidth(180)
+        btn_n.clicked.connect(self.new_project)
+        btn_row.addWidget(btn_n)
+
+        btn_o = QPushButton("Open Project\u2026")
+        btn_o.setFixedWidth(180)
+        btn_o.clicked.connect(self.open_project)
+        btn_row.addWidget(btn_o)
+
+        btn_q = QPushButton("Quit")
+        btn_q.setFixedWidth(140)
+        btn_q.clicked.connect(self.close)
+        btn_row.addWidget(btn_q)
+
+        ctr = QWidget()
+        ctr.setLayout(btn_row)
+        v.addWidget(ctr)
+        v.addStretch(1)
+        return page
+
     def setup_central_widget(self):
         """Setup main UI layout for UMAP exploration and fast labeling."""
         self.splitter = QSplitter(Qt.Horizontal)
-        self.setCentralWidget(self.splitter)
+        # Stacked widget: page 0 = welcome logo, page 1 = working UI
+        self._stacked = QStackedWidget()
+        self._stacked.addWidget(self._make_welcome_page())  # index 0
+        self._stacked.addWidget(self.splitter)  # index 1
+        self.setCentralWidget(self._stacked)
 
         from .widgets.explorer import ExplorerView
         from .widgets.image_viewer import ImageCanvas
@@ -1032,6 +1106,8 @@ class MainWindow(QMainWindow):
 
                 # Always prompt to add sources after a brand new project
                 QTimer.singleShot(100, self._prompt_adjust_sources_if_empty)
+                if hasattr(self, "_stacked"):
+                    self._stacked.setCurrentIndex(1)  # reveal working UI
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to create project:\\n{e}")
 
@@ -1135,6 +1211,8 @@ class MainWindow(QMainWindow):
             self.status.showMessage(
                 f"Loaded {len(self.image_paths):,} images from database"
             )
+            if hasattr(self, "_stacked"):
+                self._stacked.setCurrentIndex(1)  # reveal working UI
         except Exception as e:
             QMessageBox.warning(
                 self, "Load Error", f"Failed to load project data:\\n{e}"
@@ -3124,34 +3202,14 @@ class MainWindow(QMainWindow):
     # ── startup overlay ──────────────────────────────────────────────────
 
     def show_startup_overlay(self):
-        """Show the startup chooser dialog.  Called by app.py via QTimer.
+        """Legacy compatibility hook.
 
-        Loops until the user either loads a project or explicitly clicks Quit.
-        The dialog cannot be dismissed with Escape or the window close button.
+        ClassKit now starts on the central splash page, so no modal startup
+        chooser is shown anymore. If a project is already loaded, ensure the
+        working layout is visible.
         """
-        from .dialogs import StartupDialog
-
-        while True:
-            project_before = self.project_path
-            dlg = StartupDialog(parent=self)
-            dlg.exec()
-
-            if dlg.choice == "quit":
-                self.close()
-                return
-
-            if dlg.choice == "new":
-                self.new_project()
-            elif dlg.choice == "open":
-                self.open_project()
-            else:
-                # Dialog was closed without a valid choice — keep looping
-                continue
-
-            # If a project was successfully loaded/created, stop the loop
-            if self.project_path is not None and self.project_path != project_before:
-                return
-            # Otherwise the sub-dialog was cancelled — show the chooser again
+        if hasattr(self, "_stacked"):
+            self._stacked.setCurrentIndex(1 if self.project_path else 0)
 
     def compute_embeddings(self):
         """Compute embeddings for all images."""

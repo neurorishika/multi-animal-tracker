@@ -38,6 +38,9 @@ class EventType(enum.Enum):
     MULTI_SHUFFLE = "multi_shuffle"
     """3+ way identity shuffle in a crowded interaction."""
 
+    MANUAL = "manual"
+    """User-initiated manual region review (not auto-detected)."""
+
 
 # ---------------------------------------------------------------------------
 # Display helpers
@@ -51,6 +54,7 @@ EVENT_TYPE_LABEL: Dict[EventType, str] = {
     EventType.ABSORPTION: "Absorption",
     EventType.PHANTOM: "Phantom",
     EventType.MULTI_SHUFFLE: "Multi-Shuffle",
+    EventType.MANUAL: "Manual",
 }
 
 #: Badge colour for each type (dark-theme-safe hex).
@@ -61,6 +65,7 @@ EVENT_TYPE_COLOR: Dict[EventType, str] = {
     EventType.ABSORPTION: "#c586c0",  # purple
     EventType.PHANTOM: "#6a9955",  # dim green
     EventType.MULTI_SHUFFLE: "#ce9178",  # peach
+    EventType.MANUAL: "#808080",  # grey
 }
 
 #: Default suggested human-readable action for each type.
@@ -71,6 +76,7 @@ EVENT_TYPE_SUGGESTED_ACTION: Dict[EventType, str] = {
     EventType.ABSORPTION: "Split + reassign at separation",
     EventType.PHANTOM: "Delete phantom track",
     EventType.MULTI_SHUFFLE: "Reassign ID chain",
+    EventType.MANUAL: "Review and correct manually",
 }
 
 
