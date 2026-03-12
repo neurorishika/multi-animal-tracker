@@ -647,7 +647,6 @@ class TrackingWorker(QThread):
         Returns:
             (pose_cache_path, pose_cache_hit)
         """
-        import time
 
         pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
@@ -793,9 +792,7 @@ class TrackingWorker(QThread):
                 str(pose_cache_path), mode="w"
             )
 
-        # Cross-frame batch size: accumulate this many crops across frames before
-        # calling pose_backend.predict_batch.  Larger values → better GPU utilisation
-        # at the cost of slightly delayed writes.  64 is a good default.
+        # Pipeline configuration
         _POSE_CROSS_FRAME_BATCH = int(params.get("POSE_PRECOMPUTE_BATCH_SIZE", 64))
         _bg_raw = params.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
         _pose_bg_color = (
@@ -804,193 +801,59 @@ class TrackingWorker(QThread):
             else (0, 0, 0)
         )
         _suppress_foreign_obb = bool(params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True))
+        _crop_workers = int(params.get("POSE_PIPELINE_CROP_WORKERS", 4))
+
+        # Pre-resize: auto-detect from backend or explicit config
+        _pre_resize = int(params.get("POSE_PIPELINE_PRE_RESIZE", 0))
+        if _pre_resize <= 0 and pose_backend is not None:
+            _pre_resize = int(getattr(pose_backend, "preferred_input_size", 0) or 0)
 
         total_frames = max(1, end_frame - start_frame + 1)
-        precompute_start_ts = time.time()
-        cancelled = False
 
         self.progress_signal.emit(
             1,
             f"Pose precompute: processing {total_frames} frame(s)...",
         )
 
-        # Accumulators for cross-frame batching
-        _pending: list = []  # list of per-frame dicts
-        _flat_crops: list = []  # every pending crop in arrival order
+        from multi_tracker.core.tracking.pose_pipeline import PosePipeline
 
-        def _flush_pose_batch():
-            """Run inference on all accumulated crops and write results to cache."""
-            if not _pending:
-                return
-            if _flat_crops and pose_backend:
-                all_pred = pose_backend.predict_batch(_flat_crops)
-            else:
-                all_pred = []
-            out_offset = 0
-            for pf in _pending:
-                n_crops = len(pf["crops"])
-                batch_slice = all_pred[out_offset : out_offset + n_crops]
-                out_offset += n_crops
-                pose_outputs: list = [{} for _ in range(pf["n_dets"])]
-                for ci, det_idx in enumerate(pf["crop_to_det"]):
-                    if ci >= len(batch_slice):
-                        break
-                    out = batch_slice[ci]
-                    kpts = out.keypoints
-                    crop_offset = pf["crop_offsets"].get(det_idx)
-                    if kpts is not None and crop_offset is not None and len(kpts) > 0:
-                        x0, y0 = crop_offset
-                        gkpts = np.asarray(kpts, dtype=np.float32).copy()
-                        gkpts[:, 0] += float(x0)
-                        gkpts[:, 1] += float(y0)
-                        all_obbs = pf.get("all_obb_corners", [])
-                        if _suppress_foreign_obb and len(all_obbs) > 1:
-                            from multi_tracker.core.tracking.pose_features import (
-                                filter_keypoints_by_foreign_obbs,
-                            )
-
-                            gkpts = filter_keypoints_by_foreign_obbs(
-                                gkpts, all_obbs, target_idx=det_idx
-                            )
-                    else:
-                        gkpts = kpts
-                    pose_outputs[det_idx] = {"keypoints": gkpts}
-                kp_list = [
-                    pose_outputs[d].get("keypoints", None) for d in range(pf["n_dets"])
-                ]
-                if pose_cache_writer:
-                    pose_cache_writer.add_frame(
-                        pf["frame_idx"], pf["det_ids"], pose_keypoints=kp_list
-                    )
-            _pending.clear()
-            _flat_crops.clear()
+        pipeline = PosePipeline(
+            pose_backend,
+            pose_cache_writer,
+            cross_frame_batch=_POSE_CROSS_FRAME_BATCH,
+            crop_workers=_crop_workers,
+            pre_resize_target=_pre_resize,
+            bg_color=_pose_bg_color,
+            suppress_foreign_obb=_suppress_foreign_obb,
+            padding_fraction=padding_fraction,
+        )
 
         try:
-            for rel_idx, frame_idx in enumerate(range(start_frame, end_frame + 1)):
-                if self._stop_requested:
-                    cancelled = True
-                    break
 
-                # Get filtered detections from cache
-                (
-                    raw_meas,
-                    raw_sizes,
-                    raw_shapes,
-                    raw_confidences,
-                    raw_obb_corners,
-                    raw_detection_ids,
-                    raw_heading_hints,
-                    raw_directed_mask,
-                ) = detection_cache.get_frame(frame_idx)
+            def _progress_cb(pct, msg):
+                self.progress_signal.emit(pct, msg)
 
-                (
-                    meas,
-                    _sizes,
-                    _shapes,
-                    _confs,
-                    filtered_obb_corners,
-                    detection_ids,
-                    _heading_hints,
-                    _directed_mask,
-                ) = detector.filter_raw_detections(
-                    raw_meas,
-                    raw_sizes,
-                    raw_shapes,
-                    raw_confidences,
-                    raw_obb_corners,
-                    roi_mask=roi_mask,
-                    detection_ids=raw_detection_ids,
-                    heading_hints=raw_heading_hints,
-                    directed_mask=raw_directed_mask,
-                )
+            def _stats_cb(stats):
+                self.stats_signal.emit(stats)
 
-                # Read frame
-                ret, frame = video_cap.read()
-                if ret and resize_f < 1.0:
-                    frame = cv2.resize(
-                        frame,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
+            completed = pipeline.run(
+                video_cap,
+                detection_cache,
+                detector,
+                start_frame,
+                end_frame,
+                resize_f,
+                roi_mask,
+                progress_cb=_progress_cb,
+                stats_cb=_stats_cb,
+                stop_check=lambda: self._stop_requested,
+            )
+            pipeline.close()
 
-                # Build per-frame record (crop extraction only — no inference yet)
-                _all_obb_corners = [
-                    np.asarray(c, dtype=np.float32)
-                    for c in (filtered_obb_corners or [])
-                ]
-                pf: dict = {
-                    "frame_idx": frame_idx,
-                    "det_ids": detection_ids,
-                    "n_dets": len(meas),
-                    "crops": [],
-                    "crop_to_det": [],
-                    "crop_offsets": {},
-                    "all_obb_corners": _all_obb_corners,
-                }
-                if ret and meas and filtered_obb_corners:
-                    from multi_tracker.core.tracking.pose_features import (
-                        apply_foreign_obb_mask,
-                    )
-
-                    for det_idx, corners in enumerate(filtered_obb_corners):
-                        corners_arr = np.asarray(corners, dtype=np.float32)
-                        crop, crop_offset = self._extract_expanded_obb_crop(
-                            frame, corners_arr, padding_fraction
-                        )
-                        if crop is not None and crop.size > 0:
-                            if _suppress_foreign_obb and len(_all_obb_corners) > 1:
-                                other_corners = [
-                                    _all_obb_corners[j]
-                                    for j in range(len(_all_obb_corners))
-                                    if j != det_idx
-                                ]
-                                crop = apply_foreign_obb_mask(
-                                    crop,
-                                    crop_offset[0],
-                                    crop_offset[1],
-                                    other_corners,
-                                    background_color=_pose_bg_color,
-                                )
-                            pf["crops"].append(crop)
-                            pf["crop_to_det"].append(det_idx)
-                            pf["crop_offsets"][det_idx] = crop_offset
-
-                _pending.append(pf)
-                _flat_crops.extend(pf["crops"])
-
-                is_last = rel_idx == total_frames - 1
-                if len(_flat_crops) >= _POSE_CROSS_FRAME_BATCH or is_last:
-                    if self._stop_requested:
-                        cancelled = True
-                        break
-                    _flush_pose_batch()
-
-                processed_count = rel_idx + 1
-                if rel_idx % 10 == 0 or is_last:
-                    elapsed = max(1e-6, time.time() - precompute_start_ts)
-                    rate_fps = processed_count / elapsed
-                    remaining = max(0, total_frames - processed_count)
-                    eta = (remaining / rate_fps) if rate_fps > 1e-9 else 0.0
-                    pct = int((processed_count * 100) / total_frames)
-                    self.progress_signal.emit(
-                        pct,
-                        f"Pose precompute: {processed_count}/{total_frames}",
-                    )
-                    self.stats_signal.emit(
-                        {
-                            "phase": "pose_precompute",
-                            "fps": rate_fps,
-                            "elapsed": elapsed,
-                            "eta": eta,
-                        }
-                    )
-
-            if cancelled or self._stop_requested:
+            if not completed or self._stop_requested:
                 logger.info("Unified precompute cancelled.")
                 self.progress_signal.emit(0, "Precompute cancelled.")
-                return None, False  # was incorrectly returning 4 values before
+                return None, False
 
             # Save caches
             if pose_cache_writer:

@@ -392,6 +392,7 @@ class MainWindow(QMainWindow):
         # Left: suspicion queue
         self._queue = SuspicionQueueWidget()
         self._queue.event_selected.connect(self._on_event_selected)
+        self._queue.rescore_all_requested.connect(self._on_rescore_all)
         self._queue.setMinimumWidth(260)
         self._queue.setMaximumWidth(400)
         hsplitter.addWidget(self._queue)
@@ -640,11 +641,18 @@ class MainWindow(QMainWindow):
         """Slot called from the scorer worker thread when scoring is done."""
         self._queue.hide_scoring_progress()
         self._queue.populate(events)
+        self._queue.show_rescore_button(False)
         cnt = len(events)
         self.statusBar().showMessage(
             f"Scoring complete — {cnt} suspicious event{'s' if cnt != 1 else ''} found",
             5000,
         )
+
+    def _on_rescore_all(self) -> None:
+        """Full rescore triggered by the user via the Rescore All button."""
+        self._queue.show_rescore_button(False)
+        self._run_scorer()
+        self.statusBar().showMessage("Running full rescore\u2026", 3000)
 
     # ------------------------------------------------------------------
     # Event handling
@@ -661,8 +669,12 @@ class MainWindow(QMainWindow):
     def _show_track_editor(self, event: SuspicionEvent) -> None:
         """Open the timeline-based TrackEditorDialog.
 
-        On Apply: execute edit ops, refresh trajectories, re-score with
-        the reviewed region deprioritised.
+        - **Close / Cancel**: no changes, no rescoring.
+        - **Apply**: execute edit ops, refresh trajectories, run a fast
+          localized rescore around the affected tracks and frame range.
+
+        A full rescore can be triggered at any time via the *Rescore All*
+        button in the suspicion queue.
         """
         if self._video_path is None or self._df is None:
             return
@@ -679,32 +691,49 @@ class MainWindow(QMainWindow):
         )
         dlg.exec()
 
-        # Always record the reviewed region for deprioritisation
+        if not dlg.applied or not dlg.edit_ops or self._writer is None:
+            # User closed without applying — do nothing.
+            return
+
+        # --- Apply ---
+        self._writer.apply_edit_ops(dlg.edit_ops)
+        self._df = self._writer.df
+        self._player.load_trajectories(self._df)
+        self._timeline.load_trajectories(self._df)
+
+        # Record reviewed region for deprioritisation
         rr = (dlg.reviewed_range[0], dlg.reviewed_range[1], dlg.reviewed_tracks)
         self._reviewed_regions.append(rr)
         if self._scorer is not None:
             self._scorer.add_reviewed_region(*rr)
 
-        if dlg.applied and dlg.edit_ops and self._writer is not None:
-            self._writer.apply_edit_ops(dlg.edit_ops)
+        # Localized rescore: remove stale events, add fresh ones
+        affected_tracks = list(event.involved_tracks)
+        context = 50
+        rescore_range = (
+            max(0, event.frame_range[0] - context),
+            event.frame_range[1] + context,
+        )
+        self._queue.remove_events_for_tracks(affected_tracks, rescore_range)
 
-            # Refresh state
-            self._df = self._writer.df
-            self._player.load_trajectories(self._df)
-            self._timeline.load_trajectories(self._df)
-
-            # Re-score with updated df + reviewed regions
-            self._run_scorer()
-            self.statusBar().showMessage(
-                f"Applied {len(dlg.edit_ops)} edit(s)",
-                4000,
+        if self._scorer is not None and self._df is not None:
+            new_events = self._scorer.score_local(
+                self._df,
+                affected_tracks,
+                event.frame_range,
+                context_frames=context,
             )
-        else:
-            # Even if user didn't apply, re-score to incorporate the review
-            # discount for this region.
-            self._run_scorer()
+            if new_events:
+                self._queue.add_events(new_events)
 
+        # Show the Rescore All button so the user can do a full pass later
+        self._queue.show_rescore_button(True)
         self._queue.mark_resolved(event)
+
+        self.statusBar().showMessage(
+            f"Applied {len(dlg.edit_ops)} edit(s) — local rescore done",
+            4000,
+        )
 
     def _on_manual_split(self, track_id: int, frame: int) -> None:
         """Handle a manual split request from the timeline."""
@@ -782,5 +811,4 @@ class MainWindow(QMainWindow):
         if self._writer is not None:
             self._writer.close()
             self._writer = None
-        super().closeEvent(event)
         super().closeEvent(event)

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QProgressBar,
+    QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -103,6 +104,7 @@ class SuspicionQueueWidget(QWidget):
     """Scrollable flat list of suspicion event cards, sorted by score."""
 
     event_selected = Signal(object)
+    rescore_all_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -133,6 +135,17 @@ class SuspicionQueueWidget(QWidget):
         )
         self._count_lbl.setVisible(False)
         outer.addWidget(self._count_lbl)
+
+        # Rescore All button — visible after edits so the user can trigger
+        # a full rescore when they are ready.
+        self._rescore_btn = QPushButton("Rescore All")
+        self._rescore_btn.setToolTip(
+            "Run a full rescore of the entire video.\n"
+            "Use this after finishing a batch of edits."
+        )
+        self._rescore_btn.setVisible(False)
+        self._rescore_btn.clicked.connect(self.rescore_all_requested.emit)
+        outer.addWidget(self._rescore_btn)
 
         # Scroll area holding the cards.
         self._scroll = QScrollArea()
@@ -195,9 +208,74 @@ class SuspicionQueueWidget(QWidget):
                 card.mark_resolved()
                 break
 
+    def remove_events_for_tracks(
+        self,
+        tracks: List[int],
+        frame_range: Optional[tuple] = None,
+    ) -> None:
+        """Remove cards whose involved tracks overlap *tracks*.
+
+        If *frame_range* ``(start, end)`` is given, only events whose peak
+        falls within that window are removed.
+        """
+        track_set = set(tracks)
+        to_remove: List[_EventCard] = []
+        for card in self._cards:
+            ev = card.swap_event
+            if not (set(ev.involved_tracks) & track_set):
+                continue
+            if frame_range is not None:
+                f_start, f_end = frame_range
+                if not (f_start <= ev.frame_peak <= f_end):
+                    continue
+            to_remove.append(card)
+
+        for card in to_remove:
+            self._cards.remove(card)
+            self._events.remove(card.swap_event)
+            card.setParent(None)
+            card.deleteLater()
+
+        self._update_count_label()
+
+    def add_events(self, events: List[SuspicionEvent]) -> None:
+        """Insert new events into the queue, maintaining descending score order."""
+        for ev in events:
+            self._events.append(ev)
+
+        # Re-sort all events by score descending
+        self._events.sort(key=lambda e: e.score, reverse=True)
+
+        # Rebuild the card layout in sorted order
+        for card in self._cards:
+            self._card_layout.removeWidget(card)
+            card.setParent(None)
+            card.deleteLater()
+        self._cards.clear()
+
+        for ev in self._events:
+            card = _EventCard(ev)
+            card.clicked.connect(self._on_card_clicked)
+            self._card_layout.addWidget(card)
+            self._cards.append(card)
+
+        self._update_count_label()
+
+    def show_rescore_button(self, visible: bool = True) -> None:
+        """Show or hide the 'Rescore All' button."""
+        self._rescore_btn.setVisible(visible)
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _update_count_label(self) -> None:
+        n = len(self._events)
+        if n:
+            self._count_lbl.setText(f"{n} event{'s' if n != 1 else ''} found")
+        else:
+            self._count_lbl.setText("No suspicious events found \u2714")
+        self._count_lbl.setVisible(True)
 
     def _on_card_clicked(self, event: SuspicionEvent) -> None:
         self.event_selected.emit(event)

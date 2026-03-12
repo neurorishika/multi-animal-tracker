@@ -50,6 +50,11 @@ class PoseInferenceBackend(Protocol):
 
     output_keypoint_names: List[str]
 
+    @property
+    def preferred_input_size(self) -> int:
+        """Preferred max input dimension for pre-resize (0 = no preference)."""
+        ...
+
     def warmup(self) -> None:
         """Warm runtime (optional no-op for unsupported backends)."""
 

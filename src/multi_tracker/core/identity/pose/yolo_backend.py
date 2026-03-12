@@ -173,6 +173,11 @@ class YoloNativeBackend:
         except Exception:
             pass
 
+    @property
+    def preferred_input_size(self) -> int:
+        """YOLO models use 640x640 input by default."""
+        return 640
+
     def warmup(self) -> None:
         try:
             dummy = np.zeros((32, 32, 3), dtype=np.uint8)

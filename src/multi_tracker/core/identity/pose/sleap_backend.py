@@ -338,6 +338,11 @@ class SleapServiceBackend:
         )
         self._tmp_root.mkdir(parents=True, exist_ok=True)
 
+    @property
+    def preferred_input_size(self) -> int:
+        """SLEAP models have no fixed input size; return 0 (no preference)."""
+        return 0
+
     def warmup(self) -> None:
         # All SLEAP runtime flavors now execute through the persistent service.
         try:
@@ -355,14 +360,21 @@ class SleapServiceBackend:
         if not crops:
             return []
 
-        paths: List[Path] = []
-        for i, crop in enumerate(crops):
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _write_crop(args):
+            i, crop = args
             p = self._tmp_root / f"crop_{i:06d}.png"
             ok = cv2.imwrite(str(p), crop)
-            if not ok:
-                paths.append(Path("__invalid__"))
-            else:
-                paths.append(p)
+            return p if ok else Path("__invalid__")
+
+        # Parallelise cv2.imwrite calls — the GIL is released during the C
+        # encode+write so real concurrency is achieved across cores.
+        with ThreadPoolExecutor(
+            max_workers=min(4, len(crops)),
+            thread_name_prefix="sleap-crop-write",
+        ) as pool:
+            paths: List[Path] = list(pool.map(_write_crop, enumerate(crops)))
 
         valid_paths = [p for p in paths if p.exists()]
         preds: Dict[str, List[Any]] = {}

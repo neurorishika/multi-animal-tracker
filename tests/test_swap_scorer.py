@@ -154,3 +154,88 @@ def test_scorer_no_swap_events_for_distant_tracks():
     events = scorer.score(df)
     swap_events = [e for e in events if e.event_type.value == "swap"]
     assert len(swap_events) == 0
+
+
+# ---------------------------------------------------------------------------
+# score_local tests
+# ---------------------------------------------------------------------------
+
+
+def test_score_local_detects_crossing_for_affected_track():
+    """score_local finds a crossing when the affected track is involved."""
+    frames = list(range(40))
+    xs_a = [float(i) for i in range(40)]
+    xs_b = [float(39 - i) for i in range(40)]
+    df = pd.concat(
+        [
+            _make_df(1, frames, xs_a, [50.0] * 40),
+            _make_df(2, frames, xs_b, [50.0] * 40),
+        ]
+    )
+    scorer = SwapScorer(regions=[], min_score=0.0, approach_distance=60.0)
+    events = scorer.score_local(df, affected_tracks=[1], frame_range=(15, 25))
+    assert len(events) >= 1
+    assert "Cr" in events[0].signals
+
+
+def test_score_local_skips_unaffected_pairs():
+    """score_local should not score pairs that don't involve affected tracks."""
+    frames = list(range(40))
+    xs_a = [float(i) for i in range(40)]
+    xs_b = [float(39 - i) for i in range(40)]
+    df = pd.concat(
+        [
+            _make_df(1, frames, xs_a, [50.0] * 40),
+            _make_df(2, frames, xs_b, [50.0] * 40),
+            _make_df(3, frames, [500.0] * 40, [500.0] * 40),
+        ]
+    )
+    scorer = SwapScorer(regions=[], min_score=0.0, approach_distance=60.0)
+    # Only track 3 is affected — track 1 and 2 cross but neither is affected
+    events = scorer.score_local(df, affected_tracks=[3], frame_range=(0, 39))
+    swap_events = [e for e in events if e.event_type.value == "swap"]
+    assert len(swap_events) == 0
+
+
+def test_score_local_consistent_with_score_all():
+    """score_local with all tracks affected should find the same swap events as score_all."""
+    frames = list(range(40))
+    xs_a = [float(i) for i in range(40)]
+    xs_b = [float(39 - i) for i in range(40)]
+    df = pd.concat(
+        [
+            _make_df(1, frames, xs_a, [50.0] * 40),
+            _make_df(2, frames, xs_b, [50.0] * 40),
+        ]
+    )
+    scorer = SwapScorer(regions=[], min_score=0.0, approach_distance=60.0)
+    full = scorer.score_all(df)
+    local = scorer.score_local(df, affected_tracks=[1, 2], frame_range=(0, 39))
+    # Should find the same swap events (may differ in structural detectors
+    # due to frame windowing, so only compare swap/flicker)
+    full_swaps = [e for e in full if e.event_type.value in ("swap", "flicker")]
+    local_swaps = [e for e in local if e.event_type.value in ("swap", "flicker")]
+    assert len(local_swaps) == len(full_swaps)
+
+
+def test_score_local_reviewed_discount():
+    """score_local still applies the reviewed-region discount."""
+    frames = list(range(40))
+    xs_a = [float(i) for i in range(40)]
+    xs_b = [float(39 - i) for i in range(40)]
+    df = pd.concat(
+        [
+            _make_df(1, frames, xs_a, [50.0] * 40),
+            _make_df(2, frames, xs_b, [50.0] * 40),
+        ]
+    )
+    scorer = SwapScorer(regions=[], min_score=0.0, approach_distance=60.0)
+    before = scorer.score_local(df, affected_tracks=[1], frame_range=(15, 25))
+    assert len(before) >= 1
+    orig_score = before[0].score
+
+    # Mark the region as reviewed
+    scorer.add_reviewed_region(0, 39, [1, 2])
+    after = scorer.score_local(df, affected_tracks=[1], frame_range=(15, 25))
+    if after:
+        assert after[0].score < orig_score

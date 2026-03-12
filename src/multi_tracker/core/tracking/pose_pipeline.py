@@ -1,0 +1,550 @@
+"""Pipelined pose inference orchestrator.
+
+Optimizations over the baseline sequential loop in TrackingWorker:
+
+1. **Parallel crop extraction** — ``ThreadPoolExecutor`` fans out per-detection
+   crop slicing and foreign-OBB masking across CPU cores.
+2. **Pre-resize / letterbox** — crops are optionally down-scaled to a uniform
+   target size, reducing memory pressure in the accumulator and data volume
+   transferred to the backend.
+3. **Double-buffered inference** — while the GPU processes batch *N*, the main
+   thread reads frames and extracts crops for batch *N+1*.
+4. **Async cache writes** — a background thread serialises pose results to the
+   properties cache, decoupling disk I/O from the inference hot-path.
+"""
+
+from __future__ import annotations
+
+import logging
+import threading
+import time
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, field
+from queue import Queue
+from typing import Callable, Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Data structures
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CropTransform:
+    """Letterbox transform applied to one crop (for inverse coordinate mapping)."""
+
+    scale: float = 1.0
+    pad_x: int = 0
+    pad_y: int = 0
+
+
+@dataclass
+class FrameCropResult:
+    """Aggregated crop-extraction output for a single video frame."""
+
+    frame_idx: int
+    det_ids: List[float]
+    n_dets: int
+    crops: List[np.ndarray]
+    crop_to_det: List[int]
+    crop_offsets: Dict[int, Tuple[int, int]]
+    all_obb_corners: List[np.ndarray]
+    crop_transforms: Dict[int, CropTransform] = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Crop extraction helpers  (thread-safe — read-only on *frame*)
+# ---------------------------------------------------------------------------
+
+
+def _expand_obb_to_aabb(
+    corners: np.ndarray,
+    padding_fraction: float,
+    frame_h: int,
+    frame_w: int,
+) -> Tuple[int, int, int, int]:
+    """Expand OBB corners and return axis-aligned bounding box ``(x0, y0, x1, y1)``."""
+    centroid = corners.mean(axis=0)
+    expanded = corners.copy()
+    for i in range(4):
+        direction = corners[i] - centroid
+        expanded[i] = centroid + direction * (1.0 + padding_fraction)
+    expanded[:, 0] = np.clip(expanded[:, 0], 0, frame_w - 1)
+    expanded[:, 1] = np.clip(expanded[:, 1], 0, frame_h - 1)
+    x0 = max(0, int(np.floor(expanded[:, 0].min())))
+    x1 = min(frame_w, int(np.ceil(expanded[:, 0].max())) + 1)
+    y0 = max(0, int(np.floor(expanded[:, 1].min())))
+    y1 = min(frame_h, int(np.ceil(expanded[:, 1].max())) + 1)
+    return x0, y0, x1, y1
+
+
+def extract_one_crop(
+    frame: np.ndarray,
+    corners: np.ndarray,
+    det_idx: int,
+    padding_fraction: float,
+    all_obb_corners: List[np.ndarray],
+    suppress_foreign: bool,
+    bg_color: Tuple[int, int, int],
+) -> Optional[Tuple[np.ndarray, Tuple[int, int], int]]:
+    """Extract a single crop from *frame*.
+
+    Returns ``(crop, (x0, y0), det_idx)`` on success, or ``None`` when the
+    detection cannot produce a valid crop.
+
+    This function only *reads* from *frame* so it is safe to call from
+    multiple threads concurrently.
+    """
+    if frame is None or corners is None or corners.shape[0] < 4:
+        return None
+
+    frame_h, frame_w = frame.shape[:2]
+    x0, y0, x1, y1 = _expand_obb_to_aabb(corners, padding_fraction, frame_h, frame_w)
+    if x1 <= x0 or y1 <= y0:
+        return None
+
+    crop = frame[y0:y1, x0:x1].copy()
+    if crop.size == 0:
+        return None
+
+    if suppress_foreign and len(all_obb_corners) > 1:
+        from multi_tracker.core.tracking.pose_features import apply_foreign_obb_mask
+
+        other = [
+            all_obb_corners[j] for j in range(len(all_obb_corners)) if j != det_idx
+        ]
+        crop = apply_foreign_obb_mask(crop, x0, y0, other, background_color=bg_color)
+
+    return crop, (x0, y0), det_idx
+
+
+# ---------------------------------------------------------------------------
+# Letterbox helpers
+# ---------------------------------------------------------------------------
+
+
+def letterbox_crop(
+    crop: np.ndarray,
+    target_size: int,
+    bg_color: Tuple[int, int, int] = (0, 0, 0),
+) -> Tuple[np.ndarray, CropTransform]:
+    """Resize *crop* so its longest edge fits *target_size*, pad to square.
+
+    Only down-scales; crops that already fit are padded without up-scaling.
+
+    Returns ``(letterboxed_image, CropTransform)``.
+    """
+    h, w = crop.shape[:2]
+    scale = min(target_size / max(h, w), 1.0)
+    if scale < 1.0:
+        new_w = max(1, int(w * scale))
+        new_h = max(1, int(h * scale))
+        crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    else:
+        new_w, new_h = w, h
+
+    pad_x = (target_size - new_w) // 2
+    pad_y = (target_size - new_h) // 2
+
+    if new_w == target_size and new_h == target_size:
+        return crop, CropTransform(scale=scale, pad_x=0, pad_y=0)
+
+    n_channels = crop.shape[2] if crop.ndim == 3 else 1
+    if crop.ndim == 3:
+        canvas = np.full(
+            (target_size, target_size, n_channels),
+            bg_color[:n_channels],
+            dtype=np.uint8,
+        )
+    else:
+        canvas = np.full((target_size, target_size), bg_color[0], dtype=np.uint8)
+    canvas[pad_y : pad_y + new_h, pad_x : pad_x + new_w] = crop
+    return canvas, CropTransform(scale=scale, pad_x=pad_x, pad_y=pad_y)
+
+
+def invert_letterbox_keypoints(
+    kpts: np.ndarray, transform: CropTransform
+) -> np.ndarray:
+    """Map keypoints from letterboxed space back to original crop space."""
+    out = kpts.copy()
+    out[:, 0] = (out[:, 0] - transform.pad_x) / max(transform.scale, 1e-9)
+    out[:, 1] = (out[:, 1] - transform.pad_y) / max(transform.scale, 1e-9)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Async cache writer
+# ---------------------------------------------------------------------------
+
+_SENTINEL = object()
+
+
+class AsyncCacheWriter:
+    """Drains pose results to an ``IndividualPropertiesCache`` on a daemon thread."""
+
+    def __init__(self, cache_writer):
+        self._writer = cache_writer
+        self._queue: Queue = Queue()
+        self._error: Optional[Exception] = None
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="pose-cache-writer"
+        )
+        self._thread.start()
+
+    # -- public --
+
+    def submit(
+        self,
+        frame_idx: int,
+        det_ids: List[float],
+        kp_list: List[Optional[np.ndarray]],
+    ) -> None:
+        """Enqueue a frame of pose results for background writing."""
+        self._queue.put((frame_idx, det_ids, kp_list))
+
+    def flush_and_close(self) -> None:
+        """Block until all pending writes are done, then stop the thread."""
+        self._queue.put(_SENTINEL)
+        self._thread.join()
+        if self._error is not None:
+            raise self._error
+
+    # -- internal --
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is _SENTINEL:
+                break
+            try:
+                frame_idx, det_ids, kp_list = item
+                self._writer.add_frame(frame_idx, det_ids, pose_keypoints=kp_list)
+            except Exception as exc:
+                logger.error("AsyncCacheWriter error on frame %s: %s", frame_idx, exc)
+                self._error = exc
+
+
+# ---------------------------------------------------------------------------
+# Pipeline orchestrator
+# ---------------------------------------------------------------------------
+
+
+class PosePipeline:
+    """Double-buffered pose inference with parallel extraction and async writes.
+
+    Usage::
+
+        pipeline = PosePipeline(backend, cache_writer, ...)
+        completed = pipeline.run(video_cap, det_cache, detector, ...)
+        pipeline.close()
+    """
+
+    def __init__(
+        self,
+        pose_backend,
+        cache_writer,
+        *,
+        cross_frame_batch: int = 64,
+        crop_workers: int = 4,
+        pre_resize_target: int = 0,
+        bg_color: Tuple[int, int, int] = (0, 0, 0),
+        suppress_foreign_obb: bool = True,
+        padding_fraction: float = 0.1,
+    ):
+        self._backend = pose_backend
+        self._batch_size = max(1, cross_frame_batch)
+        self._pre_resize = max(0, pre_resize_target)
+        self._bg_color = bg_color
+        self._suppress_foreign = suppress_foreign_obb
+        self._padding = padding_fraction
+
+        self._crop_pool = ThreadPoolExecutor(
+            max_workers=max(1, crop_workers),
+            thread_name_prefix="pose-crop",
+        )
+        self._infer_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="pose-infer"
+        )
+        self._async_cache = AsyncCacheWriter(cache_writer) if cache_writer else None
+
+        # Batch accumulators
+        self._pending: List[FrameCropResult] = []
+        self._flat_crops: List[np.ndarray] = []
+        self._inflight: Optional[Future] = None
+
+    # ------------------------------------------------------------------ #
+    # Public API                                                          #
+    # ------------------------------------------------------------------ #
+
+    def run(
+        self,
+        video_cap,
+        detection_cache,
+        detector,
+        start_frame: int,
+        end_frame: int,
+        resize_factor: float,
+        roi_mask,
+        progress_cb: Optional[Callable] = None,
+        stats_cb: Optional[Callable] = None,
+        stop_check: Optional[Callable] = None,
+    ) -> bool:
+        """Execute the pipeline over ``[start_frame, end_frame]``.
+
+        Returns ``True`` if the run completed, ``False`` if cancelled.
+        """
+        total = max(1, end_frame - start_frame + 1)
+        t0 = time.time()
+
+        for rel_idx, frame_idx in enumerate(range(start_frame, end_frame + 1)):
+            if stop_check and stop_check():
+                self._drain()
+                return False
+
+            # --- read frame (must be sequential) ---
+            ret, frame = video_cap.read()
+            if ret and resize_factor < 1.0:
+                frame = cv2.resize(
+                    frame,
+                    (0, 0),
+                    fx=resize_factor,
+                    fy=resize_factor,
+                    interpolation=cv2.INTER_AREA,
+                )
+
+            # --- get filtered detections ---
+            (
+                raw_meas,
+                raw_sizes,
+                raw_shapes,
+                raw_confs,
+                raw_obb,
+                raw_ids,
+                raw_headings,
+                raw_directed,
+            ) = detection_cache.get_frame(frame_idx)
+            (
+                meas,
+                _sizes,
+                _shapes,
+                _confs,
+                filt_obb,
+                det_ids,
+                _headings,
+                _directed,
+            ) = detector.filter_raw_detections(
+                raw_meas,
+                raw_sizes,
+                raw_shapes,
+                raw_confs,
+                raw_obb,
+                roi_mask=roi_mask,
+                detection_ids=raw_ids,
+                heading_hints=raw_headings,
+                directed_mask=raw_directed,
+            )
+
+            all_obb = [np.asarray(c, dtype=np.float32) for c in (filt_obb or [])]
+
+            # --- extract crops (parallel across detections) ---
+            fcr = self._extract_frame_crops(
+                frame if ret else None, meas, det_ids, filt_obb, all_obb, frame_idx
+            )
+            self._pending.append(fcr)
+            self._flat_crops.extend(fcr.crops)
+
+            # --- flush when batch full or last frame ---
+            is_last = rel_idx == total - 1
+            if len(self._flat_crops) >= self._batch_size or is_last:
+                if stop_check and stop_check():
+                    self._drain()
+                    return False
+                self._flush()
+
+            # --- progress reporting ---
+            done = rel_idx + 1
+            if rel_idx % 10 == 0 or is_last:
+                elapsed = max(1e-6, time.time() - t0)
+                fps = done / elapsed
+                remaining = max(0, total - done)
+                eta = remaining / fps if fps > 1e-9 else 0.0
+                pct = int(done * 100 / total)
+                if progress_cb:
+                    progress_cb(pct, f"Pose precompute: {done}/{total}")
+                if stats_cb:
+                    stats_cb(
+                        {
+                            "phase": "pose_precompute",
+                            "fps": fps,
+                            "elapsed": elapsed,
+                            "eta": eta,
+                        }
+                    )
+
+        # wait for last in-flight inference
+        self._wait_inflight()
+        return True
+
+    def close(self) -> None:
+        """Shut down thread pools and flush the async cache writer."""
+        self._wait_inflight()
+        if self._async_cache:
+            self._async_cache.flush_and_close()
+        self._crop_pool.shutdown(wait=False)
+        self._infer_pool.shutdown(wait=False)
+
+    # ------------------------------------------------------------------ #
+    # Crop extraction                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _extract_frame_crops(
+        self,
+        frame: Optional[np.ndarray],
+        meas,
+        det_ids,
+        filt_obb,
+        all_obb: List[np.ndarray],
+        frame_idx: int,
+    ) -> FrameCropResult:
+        """Extract crops for every detection in one frame using the thread pool."""
+        fcr = FrameCropResult(
+            frame_idx=frame_idx,
+            det_ids=det_ids,
+            n_dets=len(meas),
+            crops=[],
+            crop_to_det=[],
+            crop_offsets={},
+            all_obb_corners=all_obb,
+            crop_transforms={},
+        )
+        if frame is None or not meas or not filt_obb:
+            return fcr
+
+        # Fan out crop extraction across the thread pool
+        futures = []
+        for det_idx, corners in enumerate(filt_obb):
+            corners_arr = np.asarray(corners, dtype=np.float32)
+            fut = self._crop_pool.submit(
+                extract_one_crop,
+                frame,
+                corners_arr,
+                det_idx,
+                self._padding,
+                all_obb,
+                self._suppress_foreign,
+                self._bg_color,
+            )
+            futures.append(fut)
+
+        # Gather results (preserves deterministic det_idx ordering)
+        for fut in futures:
+            result = fut.result()
+            if result is None:
+                continue
+            crop, offset, det_idx = result
+
+            if self._pre_resize > 0:
+                crop, transform = letterbox_crop(crop, self._pre_resize, self._bg_color)
+                fcr.crop_transforms[det_idx] = transform
+
+            fcr.crops.append(crop)
+            fcr.crop_to_det.append(det_idx)
+            fcr.crop_offsets[det_idx] = offset
+
+        return fcr
+
+    # ------------------------------------------------------------------ #
+    # Inference + cache (runs on the inference thread)                     #
+    # ------------------------------------------------------------------ #
+
+    def _flush(self) -> None:
+        """Submit the accumulated batch for inference (double-buffered)."""
+        # Block until the *previous* batch finishes
+        self._wait_inflight()
+
+        pending = list(self._pending)
+        flat = list(self._flat_crops)
+        self._pending.clear()
+        self._flat_crops.clear()
+
+        if not flat:
+            # No crops, but still write empty frames so the cache is complete
+            for pf in pending:
+                if self._async_cache:
+                    self._async_cache.submit(
+                        pf.frame_idx, pf.det_ids, [None] * pf.n_dets
+                    )
+            return
+
+        self._inflight = self._infer_pool.submit(self._infer_and_cache, pending, flat)
+
+    def _infer_and_cache(
+        self,
+        pending: List[FrameCropResult],
+        flat_crops: List[np.ndarray],
+    ) -> None:
+        """Run backend inference and enqueue results for cache writing.
+
+        Executed on the single-worker inference thread so GPU work does not
+        block the main thread's frame reading and crop extraction.
+        """
+        all_pred = self._backend.predict_batch(flat_crops)
+
+        offset = 0
+        for pf in pending:
+            n_crops = len(pf.crops)
+            batch_slice = all_pred[offset : offset + n_crops]
+            offset += n_crops
+
+            pose_outputs: List[Optional[np.ndarray]] = [None] * pf.n_dets
+            for ci, det_idx in enumerate(pf.crop_to_det):
+                if ci >= len(batch_slice):
+                    break
+                out = batch_slice[ci]
+                kpts = out.keypoints
+                crop_offset = pf.crop_offsets.get(det_idx)
+                if kpts is not None and crop_offset is not None and len(kpts) > 0:
+                    gkpts = np.asarray(kpts, dtype=np.float32).copy()
+                    # Undo letterbox if pre-resized
+                    transform = pf.crop_transforms.get(det_idx)
+                    if transform is not None:
+                        gkpts = invert_letterbox_keypoints(gkpts, transform)
+                    # Map crop-local → frame-global coordinates
+                    x0, y0 = crop_offset
+                    gkpts[:, 0] += float(x0)
+                    gkpts[:, 1] += float(y0)
+                    # Suppress keypoints landing inside other animals' OBBs
+                    if self._suppress_foreign and len(pf.all_obb_corners) > 1:
+                        from multi_tracker.core.tracking.pose_features import (
+                            filter_keypoints_by_foreign_obbs,
+                        )
+
+                        gkpts = filter_keypoints_by_foreign_obbs(
+                            gkpts, pf.all_obb_corners, target_idx=det_idx
+                        )
+                    pose_outputs[det_idx] = gkpts
+                elif kpts is not None:
+                    pose_outputs[det_idx] = kpts
+
+            if self._async_cache:
+                self._async_cache.submit(pf.frame_idx, pf.det_ids, pose_outputs)
+
+    # ------------------------------------------------------------------ #
+    # Helpers                                                              #
+    # ------------------------------------------------------------------ #
+
+    def _wait_inflight(self) -> None:
+        """Block until the in-flight inference future completes."""
+        if self._inflight is not None:
+            self._inflight.result()
+            self._inflight = None
+
+    def _drain(self) -> None:
+        """Clean up accumulators on cancellation."""
+        self._wait_inflight()
+        self._pending.clear()
+        self._flat_crops.clear()

@@ -152,6 +152,56 @@ class EventScorer:
         events.sort(key=lambda e: e.score, reverse=True)
         return events
 
+    def score_local(
+        self,
+        df: pd.DataFrame,
+        affected_tracks: List[int],
+        frame_range: Tuple[int, int],
+        context_frames: int = 50,
+        min_score: Optional[float] = None,
+    ) -> List[SuspicionEvent]:
+        """Score only events involving *affected_tracks* near *frame_range*.
+
+        Much faster than :meth:`score_all` for incremental updates after an
+        edit — only pairs that include at least one affected track are
+        evaluated, and only frames within ``[frame_range[0] - context_frames,
+        frame_range[1] + context_frames]`` are considered for the
+        fragmentation, phantom, and absorption detectors.
+
+        Returns events sorted by score descending.
+        """
+        threshold = min_score if min_score is not None else self.min_score
+        affected_set = {int(t) for t in affected_tracks}
+
+        # Restrict dataframe to the temporal neighbourhood for non-pairwise
+        # detectors (pairwise still uses the full df for accurate distances).
+        f_start = frame_range[0] - context_frames
+        f_end = frame_range[1] + context_frames
+
+        track_data = self._index_tracks(df)
+
+        events: List[SuspicionEvent] = []
+
+        # Pairwise: only pairs that include at least one affected track
+        events.extend(
+            self._detect_pairwise_local(df, track_data, affected_set, threshold)
+        )
+
+        # Structural detectors: only for affected tracks, limited frame window
+        local_df = df[df["FrameID"].between(f_start, f_end)]
+        local_track_data = {
+            tid: tdf for tid, tdf in track_data.items() if tid in affected_set
+        }
+        events.extend(self._detect_fragmentation(local_df, local_track_data, threshold))
+        events.extend(self._detect_phantoms(local_df, local_track_data, threshold))
+        events.extend(self._detect_absorption(local_df, local_track_data, threshold))
+
+        events = self._promote_flickers(events)
+        events = self._detect_multi_shuffle(events)
+        events = self._apply_review_discount(events)
+        events.sort(key=lambda e: e.score, reverse=True)
+        return events
+
     # Backward compat alias
     def score(
         self,
@@ -186,95 +236,135 @@ class EventScorer:
         events: List[SuspicionEvent] = []
 
         for id_a, id_b in itertools.combinations(track_data, 2):
-            df_a = track_data[id_a]
-            df_b = track_data[id_b]
-
-            common = np.intersect1d(df_a["FrameID"].values, df_b["FrameID"].values)
-            if len(common) < 3:
-                continue
-
-            a_idx = df_a.set_index("FrameID").loc[common]
-            b_idx = df_b.set_index("FrameID").loc[common]
-
-            dx = a_idx["X"].values - b_idx["X"].values
-            dy = a_idx["Y"].values - b_idx["Y"].values
-            distances = np.sqrt(dx**2 + dy**2)
-
-            min_dist = float(distances.min())
-            if min_dist >= self.approach_distance:
-                continue
-
-            peak_i = int(np.argmin(distances))
-            peak_frame = int(common[peak_i])
-
-            signals: List[str] = []
-
-            cr = self._crossing_signal(a_idx, b_idx, common, distances)
-            if cr > 0:
-                signals.append("Cr")
-
-            pr = self._proximity_signal(distances)
-            if pr > 0 and cr == 0:
-                signals.append("Pr")
-            elif cr > 0:
-                pr = 0.0
-
-            hd = self._heading_signal(df_a, df_b, common)
-            if hd > 0:
-                signals.append("Hd")
-
-            pq = self._pose_quality_signal(df_a, df_b, peak_frame)
-            pq_term = 0.0
-            if pq > 0 and (cr > 0 or pr > 0):
-                signals.append("Pq")
-                pq_term = W_POSE_DROP * pq
-
-            if not signals:
-                continue
-
-            cx = float((a_idx["X"].values[peak_i] + b_idx["X"].values[peak_i]) / 2)
-            cy = float((a_idx["Y"].values[peak_i] + b_idx["Y"].values[peak_i]) / 2)
-            region_label, is_boundary = self._get_region_context(cx, cy, peak_frame)
-
-            region_discount = (
-                W_REGION_DISCOUNT
-                if region_label != "open_field" and not is_boundary
-                else 0.0
-            )
-            boundary_bonus = W_BOUNDARY_BONUS if is_boundary else 0.0
-
-            raw = (
-                W_CROSSING * cr
-                + W_PROXIMITY * pr
-                + W_HEADING * hd
-                + pq_term
-                - region_discount
-                + boundary_bonus
-            )
-            score_val = float(np.clip(raw, 0.0, 1.0))
-            if score_val < threshold:
-                continue
-
-            close_mask = distances < self.approach_distance
-            close_frames = common[close_mask]
-            if len(close_frames) == 0:
-                close_frames = common
-            frame_range = (int(close_frames.min()), int(close_frames.max()))
-
-            events.append(
-                SuspicionEvent(
-                    event_type=EventType.SWAP,
-                    involved_tracks=[int(id_a), int(id_b)],
-                    frame_peak=peak_frame,
-                    frame_range=frame_range,
-                    score=score_val,
-                    signals=signals,
-                    region_label=region_label,
-                    region_boundary=is_boundary,
-                )
-            )
+            ev = self._score_pair(df, track_data, id_a, id_b, threshold)
+            if ev is not None:
+                events.append(ev)
 
         return events
+
+    # ==================================================================
+    # Pairwise swap detector — local variant (affected tracks only)
+    # ==================================================================
+
+    def _detect_pairwise_local(
+        self,
+        df: pd.DataFrame,
+        track_data: Dict[int, pd.DataFrame],
+        affected: set,
+        threshold: float,
+    ) -> List[SuspicionEvent]:
+        """Like ``_detect_pairwise`` but only evaluates pairs where at least
+        one track is in *affected*.  Drastically reduces the combinatorial
+        cost for incremental updates.
+        """
+        events: List[SuspicionEvent] = []
+        all_ids = sorted(track_data.keys())
+
+        for i, id_a in enumerate(all_ids):
+            for id_b in all_ids[i + 1 :]:
+                if id_a not in affected and id_b not in affected:
+                    continue
+                # Delegate to the shared pairwise logic (same as _detect_pairwise body)
+                ev = self._score_pair(df, track_data, id_a, id_b, threshold)
+                if ev is not None:
+                    events.append(ev)
+
+        return events
+
+    def _score_pair(
+        self,
+        df: pd.DataFrame,
+        track_data: Dict[int, pd.DataFrame],
+        id_a: int,
+        id_b: int,
+        threshold: float,
+    ) -> Optional[SuspicionEvent]:
+        """Score a single pair and return a SuspicionEvent or None."""
+        df_a = track_data[id_a]
+        df_b = track_data[id_b]
+
+        common = np.intersect1d(df_a["FrameID"].values, df_b["FrameID"].values)
+        if len(common) < 3:
+            return None
+
+        a_idx = df_a.set_index("FrameID").loc[common]
+        b_idx = df_b.set_index("FrameID").loc[common]
+
+        dx = a_idx["X"].values - b_idx["X"].values
+        dy = a_idx["Y"].values - b_idx["Y"].values
+        distances = np.sqrt(dx**2 + dy**2)
+
+        min_dist = float(distances.min())
+        if min_dist >= self.approach_distance:
+            return None
+
+        peak_i = int(np.argmin(distances))
+        peak_frame = int(common[peak_i])
+
+        signals: List[str] = []
+
+        cr = self._crossing_signal(a_idx, b_idx, common, distances)
+        if cr > 0:
+            signals.append("Cr")
+
+        pr = self._proximity_signal(distances)
+        if pr > 0 and cr == 0:
+            signals.append("Pr")
+        elif cr > 0:
+            pr = 0.0
+
+        hd = self._heading_signal(df_a, df_b, common)
+        if hd > 0:
+            signals.append("Hd")
+
+        pq = self._pose_quality_signal(df_a, df_b, peak_frame)
+        pq_term = 0.0
+        if pq > 0 and (cr > 0 or pr > 0):
+            signals.append("Pq")
+            pq_term = W_POSE_DROP * pq
+
+        if not signals:
+            return None
+
+        cx = float((a_idx["X"].values[peak_i] + b_idx["X"].values[peak_i]) / 2)
+        cy = float((a_idx["Y"].values[peak_i] + b_idx["Y"].values[peak_i]) / 2)
+        region_label, is_boundary = self._get_region_context(cx, cy, peak_frame)
+
+        region_discount = (
+            W_REGION_DISCOUNT
+            if region_label != "open_field" and not is_boundary
+            else 0.0
+        )
+        boundary_bonus = W_BOUNDARY_BONUS if is_boundary else 0.0
+
+        raw = (
+            W_CROSSING * cr
+            + W_PROXIMITY * pr
+            + W_HEADING * hd
+            + pq_term
+            - region_discount
+            + boundary_bonus
+        )
+        score_val = float(np.clip(raw, 0.0, 1.0))
+        if score_val < threshold:
+            return None
+
+        close_mask = distances < self.approach_distance
+        close_frames = common[close_mask]
+        if len(close_frames) == 0:
+            close_frames = common
+        frame_range = (int(close_frames.min()), int(close_frames.max()))
+
+        return SuspicionEvent(
+            event_type=EventType.SWAP,
+            involved_tracks=[int(id_a), int(id_b)],
+            frame_peak=peak_frame,
+            frame_range=frame_range,
+            score=score_val,
+            signals=signals,
+            region_label=region_label,
+            region_boundary=is_boundary,
+        )
 
     # ==================================================================
     # Flicker promotion  (pair of swaps on same pair within short window)
