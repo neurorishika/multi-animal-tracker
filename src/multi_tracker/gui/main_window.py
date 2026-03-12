@@ -11882,20 +11882,110 @@ class MainWindow(QMainWindow):
             if not pose_column_triplets:
                 show_pose = False
 
-        # Build lookup for trajectories by frame and track
-        traj_by_frame = {}
-        traj_by_track = {}  # For trails
-        for _, row in trajectories_df.iterrows():
-            frame_num = int(row["FrameID"])
-            track_id = int(row["TrajectoryID"])
+        # ── Pre-extract trajectory arrays for O(1)/O(log N) lookups ─────────────
+        _frame_ids = trajectories_df["FrameID"].to_numpy(dtype=np.int32)
+        _track_ids = trajectories_df["TrajectoryID"].to_numpy(dtype=np.int32)
+        _xs = trajectories_df["X"].to_numpy(dtype=np.float64)
+        _ys = trajectories_df["Y"].to_numpy(dtype=np.float64)
+        _thetas = (
+            trajectories_df["Theta"].to_numpy(dtype=np.float64)
+            if "Theta" in trajectories_df.columns
+            else np.full(len(trajectories_df), np.nan)
+        )
 
-            if frame_num not in traj_by_frame:
-                traj_by_frame[frame_num] = []
-            traj_by_frame[frame_num].append(row)
+        # Pose arrays: shape (K, N, 3) extracted once to avoid per-row pandas overhead
+        _pose_kpts = None
+        if show_pose and pose_column_triplets:
+            _K = len(pose_column_triplets)
+            _N = len(trajectories_df)
+            _pose_kpts = np.full((_K, _N, 3), np.nan, dtype=np.float32)
+            for _k, (_x_col, _y_col, _c_col) in enumerate(pose_column_triplets):
+                if _x_col in trajectories_df.columns:
+                    _pose_kpts[_k, :, 0] = trajectories_df[_x_col].to_numpy(
+                        dtype=np.float32
+                    )
+                if _y_col in trajectories_df.columns:
+                    _pose_kpts[_k, :, 1] = trajectories_df[_y_col].to_numpy(
+                        dtype=np.float32
+                    )
+                if _c_col in trajectories_df.columns:
+                    _pose_kpts[_k, :, 2] = trajectories_df[_c_col].to_numpy(
+                        dtype=np.float32
+                    )
 
-            if track_id not in traj_by_track:
-                traj_by_track[track_id] = []
-            traj_by_track[track_id].append(row)
+        # Frame → row-index list (replaces slow iterrows + pandas Series access)
+        traj_indices_by_frame: dict = {}
+        for _i in range(len(_frame_ids)):
+            _fid = int(_frame_ids[_i])
+            if _fid not in traj_indices_by_frame:
+                traj_indices_by_frame[_fid] = []
+            traj_indices_by_frame[_fid].append(_i)
+
+        # Per-track sorted arrays for O(log N) trail window lookup via binary search
+        _track_sorted_row_indices: dict = {}
+        _track_sorted_frame_vals: dict = {}
+        if show_trails:
+            _tmp_track: dict = {}
+            for _i in range(len(_track_ids)):
+                _tid = int(_track_ids[_i])
+                if _tid not in _tmp_track:
+                    _tmp_track[_tid] = []
+                _tmp_track[_tid].append(_i)
+            for _tid, _idxs in _tmp_track.items():
+                _idx_arr = np.asarray(_idxs, dtype=np.int32)
+                _order = np.argsort(_frame_ids[_idx_arr])
+                _track_sorted_row_indices[_tid] = _idx_arr[_order]
+                _track_sorted_frame_vals[_tid] = _frame_ids[_idx_arr[_order]]
+
+        # Pre-compute palette and one color per track ID (avoid rebuilding every frame)
+        _category20_colors = [
+            (127, 127, 31),
+            (188, 189, 34),
+            (140, 86, 75),
+            (255, 127, 14),
+            (214, 39, 40),
+            (255, 152, 150),
+            (197, 176, 213),
+            (148, 103, 189),
+            (196, 156, 148),
+            (227, 119, 194),
+            (199, 199, 199),
+            (140, 140, 140),
+            (23, 190, 207),
+            (158, 218, 229),
+            (57, 59, 121),
+            (82, 84, 163),
+            (107, 110, 207),
+            (156, 158, 222),
+            (99, 121, 57),
+            (140, 162, 82),
+        ]
+        _n_cat = len(_category20_colors)
+        _max_track = int(_track_ids.max()) if len(_track_ids) > 0 else 0
+        _precomputed_colors = [
+            (
+                colors[_tid]
+                if colors and _tid < len(colors)
+                else _category20_colors[_tid % _n_cat]
+            )
+            for _tid in range(_max_track + 1)
+        ]
+
+        # Threaded writer: overlaps disk I/O with CPU rendering
+        import queue as _queue
+        import threading as _threading
+
+        _write_q: _queue.Queue = _queue.Queue()
+
+        def _writer_thread():
+            while True:
+                _item = _write_q.get()
+                if _item is None:
+                    break
+                out.write(_item)
+
+        _writer = _threading.Thread(target=_writer_thread, daemon=True)
+        _writer.start()
 
         # Process only the tracked frame range.
         for rel_idx in range(total_frames):
@@ -11904,129 +11994,82 @@ class MainWindow(QMainWindow):
             if not ret:
                 break
 
-            # Get trajectories for this frame
-            frame_trajs = traj_by_frame.get(frame_idx, [])
+            # Get row indices for this frame
+            frame_row_indices = traj_indices_by_frame.get(frame_idx, [])
 
             # Draw trails first (underneath current positions)
             if show_trails:
-                for traj in frame_trajs:
-                    track_id = int(traj["TrajectoryID"])
-
-                    # Get color for this track
-                    if colors and track_id < len(colors):
-                        color = colors[track_id]
-                    else:
-                        # Use matplotlib's category20 colormap (BGR format for OpenCV)
-                        category20_colors = [
-                            (127, 127, 31),
-                            (188, 189, 34),
-                            (140, 86, 75),
-                            (255, 127, 14),
-                            (214, 39, 40),
-                            (255, 152, 150),
-                            (197, 176, 213),
-                            (148, 103, 189),
-                            (196, 156, 148),
-                            (227, 119, 194),
-                            (199, 199, 199),
-                            (140, 140, 140),
-                            (23, 190, 207),
-                            (158, 218, 229),
-                            (57, 59, 121),
-                            (82, 84, 163),
-                            (107, 110, 207),
-                            (156, 158, 222),
-                            (99, 121, 57),
-                            (140, 162, 82),
-                        ]
-                        color = category20_colors[track_id % len(category20_colors)]
-
-                    # Get trail points (past N frames based on duration in seconds)
-                    trail_points = []
-                    if track_id in traj_by_track:
-                        for past_row in traj_by_track[track_id]:
-                            past_frame = int(past_row["FrameID"])
-                            if (
-                                frame_idx - trail_duration_frames
-                                <= past_frame
-                                < frame_idx
-                            ):
-                                px, py = past_row["X"], past_row["Y"]
-                                if not pd.isna(px) and not pd.isna(py):
-                                    # Coordinates already in original space from merged CSV
-                                    trail_points.append((int(px), int(py), past_frame))
-
-                    # Draw trail as fading line segments
-                    if len(trail_points) > 1:
-                        trail_points.sort(key=lambda p: p[2])  # Sort by frame
-                        for i in range(len(trail_points) - 1):
-                            pt1 = (trail_points[i][0], trail_points[i][1])
-                            pt2 = (trail_points[i + 1][0], trail_points[i + 1][1])
-
-                            # Calculate opacity based on age
-                            age = frame_idx - trail_points[i][2]
-                            alpha = 1.0 - (age / trail_duration_frames)
-                            faded_color = tuple(int(c * alpha) for c in color)
-
-                            cv2.line(
-                                frame,
-                                pt1,
-                                pt2,
-                                faded_color,
-                                max(1, marker_thickness // 2),
+                for row_i in frame_row_indices:
+                    track_id = int(_track_ids[row_i])
+                    color = (
+                        _precomputed_colors[track_id]
+                        if track_id < len(_precomputed_colors)
+                        else _category20_colors[track_id % _n_cat]
+                    )
+                    # Binary-search trail window: O(log N) instead of O(N) per frame
+                    if track_id in _track_sorted_frame_vals:
+                        _sfv = _track_sorted_frame_vals[track_id]
+                        _sri = _track_sorted_row_indices[track_id]
+                        _lo = int(
+                            np.searchsorted(
+                                _sfv, frame_idx - trail_duration_frames, side="left"
                             )
+                        )
+                        _hi = int(np.searchsorted(_sfv, frame_idx, side="left"))
+                        if _hi - _lo >= 2:
+                            _trail_xs = _xs[_sri[_lo:_hi]]
+                            _trail_ys = _ys[_sri[_lo:_hi]]
+                            _trail_fs = _sfv[_lo:_hi]
+                            _trail_lw = max(1, marker_thickness // 2)
+                            for _seg in range(_hi - _lo - 1):
+                                _px1, _py1 = _trail_xs[_seg], _trail_ys[_seg]
+                                _px2, _py2 = _trail_xs[_seg + 1], _trail_ys[_seg + 1]
+                                if (
+                                    np.isnan(_px1)
+                                    or np.isnan(_py1)
+                                    or np.isnan(_px2)
+                                    or np.isnan(_py2)
+                                ):
+                                    continue
+                                _age = frame_idx - int(_trail_fs[_seg])
+                                _alpha = 1.0 - (_age / trail_duration_frames)
+                                cv2.line(
+                                    frame,
+                                    (int(_px1), int(_py1)),
+                                    (int(_px2), int(_py2)),
+                                    (
+                                        int(color[0] * _alpha),
+                                        int(color[1] * _alpha),
+                                        int(color[2] * _alpha),
+                                    ),
+                                    _trail_lw,
+                                )
 
             # Draw current positions
-            for traj in frame_trajs:
-                track_id = int(traj["TrajectoryID"])
-                cx, cy = traj["X"], traj["Y"]
+            for row_i in frame_row_indices:
+                track_id = int(_track_ids[row_i])
+                cx_f, cy_f = _xs[row_i], _ys[row_i]
 
                 # Skip if NaN
-                if pd.isna(cx) or pd.isna(cy):
+                if np.isnan(cx_f) or np.isnan(cy_f):
                     continue
 
-                # Coordinates already in original space from merged CSV
-                cx, cy = int(cx), int(cy)
-
-                # Get color for this track
-                if colors and track_id < len(colors):
-                    color = colors[track_id]
-                else:
-                    # Use matplotlib's category20 colormap (BGR format for OpenCV)
-                    category20_colors = [
-                        (127, 127, 31),
-                        (188, 189, 34),
-                        (140, 86, 75),
-                        (255, 127, 14),
-                        (214, 39, 40),
-                        (255, 152, 150),
-                        (197, 176, 213),
-                        (148, 103, 189),
-                        (196, 156, 148),
-                        (227, 119, 194),
-                        (199, 199, 199),
-                        (140, 140, 140),
-                        (23, 190, 207),
-                        (158, 218, 229),
-                        (57, 59, 121),
-                        (82, 84, 163),
-                        (107, 110, 207),
-                        (156, 158, 222),
-                        (99, 121, 57),
-                        (140, 162, 82),
-                    ]
-                    color = category20_colors[track_id % len(category20_colors)]
+                cx, cy = int(cx_f), int(cy_f)
+                color = (
+                    _precomputed_colors[track_id]
+                    if track_id < len(_precomputed_colors)
+                    else _category20_colors[track_id % _n_cat]
+                )
 
                 # Draw circle at position
                 cv2.circle(frame, (cx, cy), marker_radius, color, marker_thickness)
 
                 # Draw label
                 if show_labels:
-                    label = f"ID{track_id}"
                     label_offset = int(marker_radius + 5)
                     cv2.putText(
                         frame,
-                        label,
+                        f"ID{track_id}",
                         (cx + label_offset, cy - label_offset),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         text_size,
@@ -12035,52 +12078,36 @@ class MainWindow(QMainWindow):
                     )
 
                 # Draw orientation if available
-                if show_orientation and "Theta" in traj and not pd.isna(traj["Theta"]):
-                    heading = traj["Theta"]
-                    end_x = int(cx + arrow_len * np.cos(heading))
-                    end_y = int(cy + arrow_len * np.sin(heading))
-                    cv2.arrowedLine(
-                        frame,
-                        (cx, cy),
-                        (end_x, end_y),
-                        color,
-                        marker_thickness,
-                        tipLength=0.3,
-                    )
+                if show_orientation:
+                    _theta = _thetas[row_i]
+                    if not np.isnan(_theta):
+                        cv2.arrowedLine(
+                            frame,
+                            (cx, cy),
+                            (
+                                int(cx + arrow_len * np.cos(_theta)),
+                                int(cy + arrow_len * np.sin(_theta)),
+                            ),
+                            color,
+                            marker_thickness,
+                            tipLength=0.3,
+                        )
 
-                # Draw pose keypoints/skeleton from pose-augmented CSV (global coords).
-                if show_pose and pose_column_triplets:
-                    kpts_arr = np.full(
-                        (len(pose_column_triplets), 3), np.nan, dtype=np.float32
-                    )
-                    for k_idx, (x_col, y_col, c_col) in enumerate(pose_column_triplets):
-                        try:
-                            x_kp = float(traj.get(x_col))
-                            y_kp = float(traj.get(y_col))
-                            c_kp = float(traj.get(c_col))
-                        except Exception:
-                            continue
-                        if not is_renderable_pose_keypoint(
-                            x_kp,
-                            y_kp,
-                            c_kp,
-                            pose_min_conf,
-                        ):
-                            continue
-                        kpts_arr[k_idx, 0] = x_kp
-                        kpts_arr[k_idx, 1] = y_kp
-                        kpts_arr[k_idx, 2] = c_kp
-
-                    valid_mask = np.isfinite(kpts_arr[:, 2])
-                    if np.any(valid_mask):
+                # Draw pose keypoints/skeleton (uses pre-extracted numpy slice)
+                if show_pose and _pose_kpts is not None:
+                    kpts_arr = _pose_kpts[:, row_i, :]  # shape (K, 3) — zero-copy view
+                    if np.any(np.isfinite(kpts_arr[:, 2])):
                         pose_color = (
                             color if pose_color_mode == "track" else pose_fixed_color
                         )
                         if pose_edges:
                             for e0, e1 in pose_edges:
-                                if e0 < 0 or e1 < 0:
-                                    continue
-                                if e0 >= len(kpts_arr) or e1 >= len(kpts_arr):
+                                if (
+                                    e0 < 0
+                                    or e1 < 0
+                                    or e0 >= len(kpts_arr)
+                                    or e1 >= len(kpts_arr)
+                                ):
                                     continue
                                 if not is_renderable_pose_keypoint(
                                     kpts_arr[e0, 0],
@@ -12094,45 +12121,44 @@ class MainWindow(QMainWindow):
                                     pose_min_conf,
                                 ):
                                     continue
-                                p0 = (
-                                    int(round(float(kpts_arr[e0, 0]))),
-                                    int(round(float(kpts_arr[e0, 1]))),
-                                )
-                                p1 = (
-                                    int(round(float(kpts_arr[e1, 0]))),
-                                    int(round(float(kpts_arr[e1, 1]))),
-                                )
                                 cv2.line(
                                     frame,
-                                    p0,
-                                    p1,
+                                    (
+                                        int(round(float(kpts_arr[e0, 0]))),
+                                        int(round(float(kpts_arr[e0, 1]))),
+                                    ),
+                                    (
+                                        int(round(float(kpts_arr[e1, 0]))),
+                                        int(round(float(kpts_arr[e1, 1]))),
+                                    ),
                                     pose_color,
                                     pose_line_thickness,
                                 )
-                        for x_kp, y_kp, c_kp in kpts_arr:
+                        for kpt in kpts_arr:
                             if not is_renderable_pose_keypoint(
-                                x_kp,
-                                y_kp,
-                                c_kp,
-                                pose_min_conf,
+                                kpt[0], kpt[1], kpt[2], pose_min_conf
                             ):
                                 continue
                             cv2.circle(
                                 frame,
-                                (int(round(float(x_kp))), int(round(float(y_kp)))),
+                                (int(round(float(kpt[0]))), int(round(float(kpt[1])))),
                                 pose_point_radius,
                                 pose_color,
                                 pose_point_thickness,
                             )
 
-            # Write frame
-            out.write(frame)
+            # Enqueue frame for background write (overlaps disk I/O with CPU rendering)
+            _write_q.put(frame)
 
             # Update progress every 30 frames
             if rel_idx % 30 == 0:
                 progress = int(((rel_idx + 1) / total_frames) * 100)
                 self.progress_bar.setValue(progress)
                 QApplication.processEvents()
+
+        # Signal writer thread to finish and wait for all frames to be flushed
+        _write_q.put(None)
+        _writer.join()
 
         # Cleanup
         cap.release()
