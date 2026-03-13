@@ -2414,6 +2414,23 @@ class TrackingWorker(QThread):
                         speed = math.hypot(px2 - px1, py2 - py1) / max(1, pf2 - pf1)
                     else:
                         speed = 0
+                    # Confidence for the directed-heading flip gate:
+                    # pose-directed → pose visibility; head-tail-directed →
+                    # detector confidence; undirected → not used (1.0).
+                    orient_confidence = 1.0
+                    if directed_heading:
+                        if c < len(pose_directed_mask) and pose_directed_mask[c]:
+                            orient_confidence = (
+                                float(detection_pose_visibility[c])
+                                if c < len(detection_pose_visibility)
+                                else 1.0
+                            )
+                        else:
+                            orient_confidence = (
+                                float(detection_confidences[c])
+                                if c < len(detection_confidences)
+                                else 1.0
+                            )
                     orientation_last[r] = self._smooth_orientation(
                         r,
                         theta_for_tracking,
@@ -2421,6 +2438,8 @@ class TrackingWorker(QThread):
                         params,
                         orientation_last,
                         position_deques,
+                        directed_heading=directed_heading,
+                        orient_confidence=orient_confidence,
                     )
                     last_shape_info[r] = shapes[c]
                     feature_alpha = float(
@@ -3027,9 +3046,54 @@ class TrackingWorker(QThread):
         )
 
     def _smooth_orientation(
-        self, r, theta, speed, p, orientation_last, position_deques
+        self,
+        r,
+        theta,
+        speed,
+        p,
+        orientation_last,
+        position_deques,
+        directed_heading=False,
+        orient_confidence=1.0,
     ):
         final_theta, old = theta, orientation_last[r]
+
+        if directed_heading and p.get("DIRECTED_ORIENT_SMOOTHING", True):
+            # Directed headings (pose/head-tail) are noisy estimates: trust the
+            # axis but gate 180-degree flips via temporal continuity and
+            # per-detection confidence.  Small changes (<=90°) are accepted
+            # as-is — unlike undirected OBB headings, there is no axis jitter
+            # to rate-limit when stopped.
+            if old is None:
+                return theta
+            flip_conf_thresh = float(p.get("DIRECTED_ORIENT_FLIP_CONFIDENCE", 0.7))
+            old_deg = math.degrees(old)
+            new_deg = math.degrees(theta)
+            delta = wrap_angle_degs(new_deg - old_deg)
+            if abs(delta) > 90:
+                # Likely head-tail swap: check motion evidence + confidence.
+                accept_flip = False
+                if speed >= p["VELOCITY_THRESHOLD"] and len(position_deques[r]) == 2:
+                    (x1, y1, _), (x2, y2, _) = position_deques[r]
+                    ang_deg = math.degrees(math.atan2(y2 - y1, x2 - x1))
+                    motion_favors_new = abs(wrap_angle_degs(new_deg - ang_deg)) < abs(
+                        wrap_angle_degs(old_deg - ang_deg)
+                    )
+                    # Accept only when motion corroborates the flip AND
+                    # confidence is adequate.  When motion contradicts (animal
+                    # still going the same way), never accept regardless of
+                    # confidence — the flip is almost certainly spurious.
+                    accept_flip = (
+                        motion_favors_new and orient_confidence >= flip_conf_thresh
+                    )
+                else:
+                    # Stopped or no motion history: confidence alone decides.
+                    accept_flip = orient_confidence >= flip_conf_thresh
+                if not accept_flip:
+                    new_deg = (new_deg + 180.0) % 360.0
+            return math.radians(new_deg % 360.0)
+
+        # --- Original undirected smoothing (axis-only, no direction signal) ---
         if speed < p["VELOCITY_THRESHOLD"] and old is not None:
             old_deg, new_deg = math.degrees(old), math.degrees(theta)
             delta = wrap_angle_degs(new_deg - old_deg)

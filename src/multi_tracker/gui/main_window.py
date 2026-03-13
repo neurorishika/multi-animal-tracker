@@ -4757,6 +4757,34 @@ class MainWindow(QMainWindow):
         f_misc.addRow(
             "Max direction change while stopped (degrees)", self.spin_max_orient
         )
+
+        self.chk_directed_orient_smoothing = QCheckBox(
+            "Apply consistency check to pose/head-tail orientation flips"
+        )
+        self.chk_directed_orient_smoothing.setChecked(True)
+        self.chk_directed_orient_smoothing.setToolTip(
+            "When enabled, 180° flips from directed models (pose / head-tail)\n"
+            "are only accepted when motion corroborates the new direction\n"
+            "and the detection confidence meets the threshold below.\n"
+            "Small changes (≤90°) are always accepted unchanged."
+        )
+        f_misc.addRow(self.chk_directed_orient_smoothing)
+
+        self.spin_directed_orient_flip_conf = QDoubleSpinBox()
+        self.spin_directed_orient_flip_conf.setRange(0.0, 1.0)
+        self.spin_directed_orient_flip_conf.setSingleStep(0.05)
+        self.spin_directed_orient_flip_conf.setDecimals(2)
+        self.spin_directed_orient_flip_conf.setValue(0.7)
+        self.spin_directed_orient_flip_conf.setToolTip(
+            "Minimum confidence to accept a >90° pose/head-tail orientation flip (0–1).\n"
+            "For pose-directed headings, this is the pose visibility score.\n"
+            "For head-tail-directed headings, this is the classifier confidence.\n"
+            "Higher = fewer spurious flips; lower = more responsive."
+        )
+        f_misc.addRow(
+            "Directed-flip confidence threshold", self.spin_directed_orient_flip_conf
+        )
+
         vl_misc.addLayout(f_misc)
         g_misc.setContentLayout(vl_misc)
         vbox.addWidget(g_misc)
@@ -14112,6 +14140,8 @@ class MainWindow(QMainWindow):
             "VELOCITY_THRESHOLD": velocity_threshold_pixels_per_frame,
             "INSTANT_FLIP_ORIENTATION": self.chk_instant_flip.isChecked(),
             "MAX_ORIENT_DELTA_STOPPED": self.spin_max_orient.value(),
+            "DIRECTED_ORIENT_SMOOTHING": self.chk_directed_orient_smoothing.isChecked(),
+            "DIRECTED_ORIENT_FLIP_CONFIDENCE": self.spin_directed_orient_flip_conf.value(),
             "LOST_THRESHOLD_FRAMES": self.spin_lost_thresh.value(),
             "W_POSITION": self.spin_Wp.value(),
             "W_ORIENTATION": self.spin_Wo.value(),
@@ -14732,6 +14762,12 @@ class MainWindow(QMainWindow):
                     "max_orient_delta_stopped",
                     default=30.0,
                 )
+            )
+            self.chk_directed_orient_smoothing.setChecked(
+                bool(get_cfg("directed_orient_smoothing", default=True))
+            )
+            self.spin_directed_orient_flip_conf.setValue(
+                float(get_cfg("directed_orient_flip_confidence", default=0.7))
             )
 
             # === TRACK LIFECYCLE ===
@@ -15423,6 +15459,8 @@ class MainWindow(QMainWindow):
                 "velocity_threshold": self.spin_velocity.value(),
                 "enable_instant_flip": self.chk_instant_flip.isChecked(),
                 "max_orientation_delta_stopped": self.spin_max_orient.value(),
+                "directed_orient_smoothing": self.chk_directed_orient_smoothing.isChecked(),
+                "directed_orient_flip_confidence": self.spin_directed_orient_flip_conf.value(),
                 # === TRACK LIFECYCLE ===
                 "lost_frames_threshold": self.spin_lost_thresh.value(),
                 "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
