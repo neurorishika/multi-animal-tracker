@@ -1367,10 +1367,10 @@ class TrackingPreviewWorker(QThread):
             # Trail history: deque of (x, y) per track slot (slot index, not ID)
             # FPS is stored as "FPS" by get_parameters_dict; "VIDEO_FPS" is the
             # legacy preview-only key — check both so old param dicts still work.
-            _fps = self.params.get("FPS") or self.params.get("VIDEO_FPS", 25)
-            _TRAIL_LEN = int(
-                self.params.get("TRAJECTORY_HISTORY_SECONDS", 5) * max(_fps, 1)
-            )
+            # Match the main-window live-preview trail length: the worker
+            # effectively keeps TRAJECTORY_HISTORY_SECONDS *frames* (not seconds)
+            # due to a frame-count vs. seconds comparison, so replicate that here.
+            _TRAIL_LEN = int(self.params.get("TRAJECTORY_HISTORY_SECONDS", 5))
             trail: list[deque] = [deque(maxlen=max(_TRAIL_LEN, 10)) for _ in range(N)]
 
             show_circles = self.params.get("SHOW_CIRCLES", True)
@@ -1629,15 +1629,11 @@ class TrackingPreviewWorker(QThread):
                 for r in range(N):
                     if track_states[r] == "lost":
                         continue
-                    # Color is keyed by trajectory_id, not slot index, so the same
-                    # animal keeps its color even if it moves to a different slot.
-                    col = traj_colors[trajectory_ids[r] % len(traj_colors)]
-                    # Dim occluded tracks
-                    draw_col = (
-                        tuple(int(c * 0.5) for c in col)
-                        if track_states[r] == "occluded"
-                        else col
-                    )
+                    # Color is keyed by slot index, matching the main-window
+                    # live-preview so a slot keeps a stable color even after
+                    # a track-loss / re-initialization cycle.  No occluded
+                    # dimming — the worker never dims, so neither do we.
+                    col = traj_colors[r % len(traj_colors)]
 
                     x, y = float(kf_manager.X[r, 0]), float(kf_manager.X[r, 1])
                     theta = float(kf_manager.X[r, 2])
@@ -1650,20 +1646,18 @@ class TrackingPreviewWorker(QThread):
                     if show_trails and len(trail[r]) > 1:
                         pts = np.array(list(trail[r]), dtype=np.int32).reshape(-1, 1, 2)
                         cv2.polylines(
-                            display, [pts], isClosed=False, color=draw_col, thickness=2
+                            display, [pts], isClosed=False, color=col, thickness=2
                         )
 
                     # Circle
                     if show_circles:
-                        cv2.circle(display, pt, 7, draw_col, -1)
+                        cv2.circle(display, pt, 7, col, -1)
 
                     # Orientation arrow
                     if show_orientation:
                         ex = int(x + 18 * math.cos(theta))
                         ey = int(y + 18 * math.sin(theta))
-                        cv2.arrowedLine(
-                            display, pt, (ex, ey), draw_col, 2, tipLength=0.4
-                        )
+                        cv2.arrowedLine(display, pt, (ex, ey), col, 2, tipLength=0.4)
 
                     # Label: track ID + state
                     if show_labels:
@@ -1678,7 +1672,7 @@ class TrackingPreviewWorker(QThread):
                             (pt[0] + 10, pt[1] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.45,
-                            draw_col,
+                            col,
                             1,
                             cv2.LINE_AA,
                         )

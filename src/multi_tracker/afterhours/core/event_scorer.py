@@ -36,6 +36,7 @@ W_BOUNDARY_BONUS = 0.25
 _FLICKER_MAX_GAP = 40  # max frames between two crossings to call flicker
 _FRAG_MAX_GAP = 20  # max frame gap between consecutive fragments
 _FRAG_MAX_DIST = 80.0  # max pixel distance at fragment boundary
+_FRAG_MAX_OVERLAP = 10  # max negative-gap (overlap) frames allowed
 _PHANTOM_MAX_ACTIVE = 15  # max active frames for a phantom
 _PHANTOM_MAX_SPAN = 50  # max total frame span for a phantom
 _ABSORB_VANISH_FRAMES = 5  # min consecutive NaN frames to treat as vanished
@@ -219,7 +220,9 @@ class EventScorer:
     def _index_tracks(df: pd.DataFrame) -> Dict[int, pd.DataFrame]:
         track_ids = sorted(df["TrajectoryID"].unique())
         return {
-            int(tid): df[df["TrajectoryID"] == tid].sort_values("FrameID")
+            int(tid): df[df["TrajectoryID"] == tid]
+            .sort_values("FrameID")
+            .drop_duplicates(subset="FrameID", keep="last")
             for tid in track_ids
         }
 
@@ -556,14 +559,19 @@ class EventScorer:
                 b_start, b_end, _, _, b_first_x, b_first_y = spans[tid_b]
 
                 # Check if b starts shortly after a ends (a → b fragment)
+                # Allow small overlaps (negative gap) for double-detection
                 gap = b_start - a_end
-                if 0 < gap <= _FRAG_MAX_GAP:
+                if -_FRAG_MAX_OVERLAP <= gap <= _FRAG_MAX_GAP:
                     dist = np.sqrt(
                         (a_last_x - b_first_x) ** 2 + (a_last_y - b_first_y) ** 2
                     )
                     if dist < _FRAG_MAX_DIST:
-                        raw_score = 0.7 * (1.0 - dist / _FRAG_MAX_DIST) + 0.2 * (
-                            1.0 - gap / _FRAG_MAX_GAP
+                        overlap = max(0, -gap)
+                        effective_gap = abs(gap)
+                        raw_score = (
+                            0.7 * (1.0 - dist / _FRAG_MAX_DIST)
+                            + 0.2 * (1.0 - effective_gap / _FRAG_MAX_GAP)
+                            - 0.1 * (overlap / max(_FRAG_MAX_OVERLAP, 1))
                         )
                         score_val = float(np.clip(raw_score, 0.0, 1.0))
                         if score_val >= threshold:
@@ -585,7 +593,7 @@ class EventScorer:
 
                 # Also check the reverse direction (b → a)
                 gap_rev = a_start - b_end
-                if 0 < gap_rev <= _FRAG_MAX_GAP:
+                if -_FRAG_MAX_OVERLAP <= gap_rev <= _FRAG_MAX_GAP:
                     dist_rev = np.sqrt(
                         (b_first_x - a_last_x) ** 2 + (b_first_y - a_last_y) ** 2
                     )
@@ -596,8 +604,12 @@ class EventScorer:
                         (b_last_x - a_first_x) ** 2 + (b_last_y - a_first_y) ** 2
                     )
                     if dist_rev < _FRAG_MAX_DIST:
-                        raw_score = 0.7 * (1.0 - dist_rev / _FRAG_MAX_DIST) + 0.2 * (
-                            1.0 - gap_rev / _FRAG_MAX_GAP
+                        overlap_rev = max(0, -gap_rev)
+                        effective_gap_rev = abs(gap_rev)
+                        raw_score = (
+                            0.7 * (1.0 - dist_rev / _FRAG_MAX_DIST)
+                            + 0.2 * (1.0 - effective_gap_rev / _FRAG_MAX_GAP)
+                            - 0.1 * (overlap_rev / max(_FRAG_MAX_OVERLAP, 1))
                         )
                         score_val = float(np.clip(raw_score, 0.0, 1.0))
                         if score_val >= threshold:

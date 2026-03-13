@@ -58,5 +58,15 @@
     "stored_filename": "20260308-235248_custom_obiroi_tinymodel.pth",
     "task_family": "classify",
     "usage_role": "headtail"
+  },
+  "classification/orientation/YOLO/20260313-121651_custom_obiroi_flat_tiny_down_left_right_unknown_up.pth": {
+    "size": "custom",
+    "species": "obiroi",
+    "model_info": "flat_tiny_down_left_right_unknown_up",
+    "added_at": "2026-03-13T12:16:51",
+    "source_path": "/Users/neurorishika/Projects/Rockefeller/RutaKronauer/MultiTrackerData/ant/training_data/head_tail/models/classkit_flat_tiny_down-left-right-unknown-up_20260309022443.pth",
+    "stored_filename": "20260313-121651_custom_obiroi_flat_tiny_down_left_right_unknown_up.pth",
+    "task_family": "classify",
+    "usage_role": "headtail"
   }
 }

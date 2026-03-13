@@ -236,6 +236,12 @@ class BboxSelectorDialog(QDialog):
         self._bbox = None
         self.accept()
 
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._on_ok()
+            return
+        super().keyPressEvent(event)
+
     @property
     def bbox(self) -> Optional[Tuple[int, int, int, int]]:
         """Selected region as ``(x1, y1, x2, y2)`` in original frame pixels.

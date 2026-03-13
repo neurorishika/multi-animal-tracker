@@ -22,7 +22,32 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.afterhours.core.event_types import SuspicionEvent
+from multi_tracker.afterhours.core.event_types import EventType, SuspicionEvent
+
+# ---------------------------------------------------------------------------
+# Event-type display helpers
+# ---------------------------------------------------------------------------
+
+# Short label shown inline on every card
+_EVENT_ABBREV = {
+    EventType.SWAP: ("SWAP", "#4fc3f7"),  # cyan
+    EventType.FLICKER: ("FLKR", "#f48fb1"),  # pink
+    EventType.FRAGMENTATION: ("FRAG", "#ffb74d"),  # orange
+    EventType.ABSORPTION: ("ABS", "#fff176"),  # yellow
+    EventType.PHANTOM: ("PHNT", "#ce93d8"),  # purple
+    EventType.MULTI_SHUFFLE: ("SHUF", "#80cbc4"),  # teal
+    EventType.MANUAL: ("EDIT", "#9e9e9e"),  # grey
+}
+
+
+def _score_tier(score: float) -> str:
+    """Return a CSS border-left color string for a given score."""
+    if score >= 0.70:
+        return "#e05000"  # high urgency — orange-red
+    if score >= 0.40:
+        return "#c8a000"  # medium urgency — amber
+    return "#4a6a9a"  # low urgency — steel blue
+
 
 # ---------------------------------------------------------------------------
 # _EventCard
@@ -47,16 +72,28 @@ class _EventCard(QFrame):
         layout.setContentsMargins(8, 6, 8, 6)
         layout.setSpacing(2)
 
-        # Single row: flag · score · tracks · frames
+        # Determine score tier colour and event abbreviation
+        abbrev, type_color = _EVENT_ABBREV.get(
+            event.event_type, (event.event_type.value.upper()[:4], "#9e9e9e")
+        )
+        tier_color = _score_tier(event.score)
+
+        # Single row: type badge · score · tracks · frames
         row = QHBoxLayout()
 
-        flag = QLabel("\u26a0")
-        flag.setStyleSheet("font-size: 12px; color: #f48771;")
-        flag.setToolTip(event.event_type.value)
-        row.addWidget(flag)
+        type_badge = QLabel(abbrev)
+        type_badge.setStyleSheet(
+            f"font-size: 10px; font-weight: bold; color: {type_color}; "
+            f"border: 1px solid {type_color}; border-radius: 3px; "
+            f"padding: 1px 4px;"
+        )
+        type_badge.setToolTip(event.event_type.value)
+        row.addWidget(type_badge)
 
         score_label = QLabel(f"{event.score:.2f}")
-        score_label.setStyleSheet("font-weight: bold; font-size: 14px; color: #f48771;")
+        score_label.setStyleSheet(
+            f"font-weight: bold; font-size: 14px; color: {tier_color};"
+        )
         row.addWidget(score_label)
 
         track_text = ", ".join(f"T{t}" for t in event.involved_tracks)
@@ -66,6 +103,8 @@ class _EventCard(QFrame):
         row.addWidget(info_label)
         row.addStretch()
         layout.addLayout(row)
+
+        self._tier_color = tier_color
 
     # ------------------------------------------------------------------
 
@@ -78,12 +117,15 @@ class _EventCard(QFrame):
         if resolved:
             self.setStyleSheet(
                 "QFrame { background-color: #1a2e1a; border: 1px solid #2a5a2a; "
-                "border-radius: 4px; }"
+                "border-left: 3px solid #2a5a2a; border-radius: 4px; }"
             )
         else:
+            tier = getattr(self, "_tier_color", "#6b4f0a")
             self.setStyleSheet(
-                "QFrame { background-color: #2d2410; border: 1px solid #6b4f0a; "
-                "border-radius: 4px; }"
+                f"QFrame {{ background-color: #1e1e1e; "
+                f"border: 1px solid #3e3e42; "
+                f"border-left: 3px solid {tier}; "
+                f"border-radius: 4px; }}"
             )
 
     # ------------------------------------------------------------------
@@ -105,6 +147,7 @@ class SuspicionQueueWidget(QWidget):
 
     event_selected = Signal(object)
     rescore_all_requested = Signal()
+    merge_wizard_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -146,6 +189,15 @@ class SuspicionQueueWidget(QWidget):
         self._rescore_btn.setVisible(False)
         self._rescore_btn.clicked.connect(self.rescore_all_requested.emit)
         outer.addWidget(self._rescore_btn)
+
+        # Merge Wizard button — lets user re-run the fragment merge wizard.
+        self._merge_wizard_btn = QPushButton("Merge Wizard")
+        self._merge_wizard_btn.setToolTip(
+            "Open the fragment merge wizard to stitch broken tracks."
+        )
+        self._merge_wizard_btn.setVisible(False)
+        self._merge_wizard_btn.clicked.connect(self.merge_wizard_requested.emit)
+        outer.addWidget(self._merge_wizard_btn)
 
         # Scroll area holding the cards.
         self._scroll = QScrollArea()
@@ -197,6 +249,7 @@ class SuspicionQueueWidget(QWidget):
             card.deleteLater()
         self._cards.clear()
         self._events.clear()
+        self._count_lbl.setVisible(False)
 
     def mark_resolved(self, event: SuspicionEvent) -> None:
         """Find the card matching *event* and mark it resolved."""
@@ -264,6 +317,10 @@ class SuspicionQueueWidget(QWidget):
     def show_rescore_button(self, visible: bool = True) -> None:
         """Show or hide the 'Rescore All' button."""
         self._rescore_btn.setVisible(visible)
+
+    def show_merge_wizard_button(self, visible: bool = True) -> None:
+        """Show or hide the 'Merge Wizard' button."""
+        self._merge_wizard_btn.setVisible(visible)
 
     # ------------------------------------------------------------------
     # Internal

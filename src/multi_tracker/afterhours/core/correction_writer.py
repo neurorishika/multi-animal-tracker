@@ -187,6 +187,37 @@ class CorrectionWriter:
         self._df = merge_fragments(self._df, track_ids)
         self._write_atomic()
 
+    def apply_swap_merge(
+        self,
+        source_id: int,
+        target_id: int,
+        swap_frame: int,
+    ) -> None:
+        """Fix an identity swap by relabeling *target*'s post-swap rows.
+
+        After this operation:
+
+        * *source_id* has a continuous trajectory (original pre-swap data
+          plus *target*'s post-swap data).
+        * *target_id* ends at ``swap_frame - 1`` (becomes a dead fragment).
+        * Any (wrong) detections attributed to *source* at or after
+          *swap_frame* are removed.
+        """
+        if self._df is None:
+            raise RuntimeError("Call open() before apply_swap_merge()")
+        df = self._df.copy()
+
+        # Remove source's rows at/after swap_frame (they were wrong)
+        mask_remove = (df["TrajectoryID"] == source_id) & (df["FrameID"] >= swap_frame)
+        df = df[~mask_remove]
+
+        # Relabel target's post-swap rows to source_id
+        mask_relabel = (df["TrajectoryID"] == target_id) & (df["FrameID"] >= swap_frame)
+        df.loc[mask_relabel, "TrajectoryID"] = source_id
+
+        self._df = df
+        self._write_atomic()
+
     def apply_delete(
         self,
         track_id: int,

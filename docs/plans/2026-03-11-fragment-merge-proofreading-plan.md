@@ -324,14 +324,15 @@ def update_after_merge(
 
 ---
 
-### Task 2: Kalman extrapolation utility — with sidecar upgrade path
+### Task 2: Kalman extrapolation utility
 
 **Files:**
 - Modify: `src/multi_tracker/afterhours/core/merge_candidates.py`
+- Modify: `src/multi_tracker/core/tracking/worker.py` (add terminal state saving)
 
 The merge scorer needs to extrapolate "where would the dying track be N frames later?"
 
-**Tier 1 — plain CV fallback** (always available, no sidecar):
+**Tier 1 — plain CV fallback** (always available, zero additional overhead):
 
 ```python
 def predict_position(
@@ -351,11 +352,11 @@ def predict_position(
 
 **Tier 2 — proper Kalman extrapolation** (when terminal-state sidecar exists):
 
-The tracking worker (see Phase 8 in the EM/IMM plan,
-`docs/plans/2026-03-11-em-imm-motion-model-plan.md`) saves a
-`{stem}_kalman_terminal_states.npz` sidecar alongside the output CSV. This
-contains `X` (5D state) and `P` (5×5 covariance) for every dying track,
-keyed by `TrajectoryID`.
+Add ~10 lines to `TrackingWorker` to save the last Kalman state (`x`, `P`)
+for every track that dies mid-video as a lightweight sidecar
+`{stem}_kalman_terminal_states.npz` alongside the output CSV. This contains
+`X` (5D state) and `P` (5×5 covariance) for every dying track, keyed by
+`TrajectoryID`. This is a standalone addition — no EM or IMM required.
 
 When the sidecar is available:
 ```python
@@ -376,10 +377,8 @@ d_maha = sqrt(Δp^T @ P_pred_2x2^{-1} @ Δp)  <  3.0  (3-sigma gate)
 ```
 
 This automatically accounts for: track speed (high vx/vy → wide forward
-   uncertainty), track age (high P → more tolerance), and anisotropy from
-   the Kalman noise model (longitudinal vs lateral). When EM/IMM improves
-   the filter parameters, the cached states improve automatically — no
-   changes needed in the merge scorer.
+uncertainty), track age (high P → more tolerance), and anisotropy from
+the Kalman noise model (longitudinal vs lateral).
 
 ---
 

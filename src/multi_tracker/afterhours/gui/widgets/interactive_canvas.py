@@ -79,6 +79,7 @@ class InteractiveCanvas(QWidget):
         self._scroll_h0: int = 0
         self._scroll_v0: int = 0
 
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -132,11 +133,11 @@ class InteractiveCanvas(QWidget):
 
         self._fit_btn = QPushButton("Fit")
         self._fit_btn.setFixedWidth(38)
-        self._fit_btn.setToolTip("Fit to viewport  (double-click canvas)")
+        self._fit_btn.setToolTip("Fit to viewport  (F · double-click canvas)")
         self._fit_btn.clicked.connect(self.fit)
         ctrl.addWidget(self._fit_btn)
 
-        hint = QLabel("Ctrl+⇕ zoom  •  drag pan  •  dbl-click fit")
+        hint = QLabel("Ctrl+⇕ zoom  •  drag pan  •  dbl-click/F fit")
         hint.setStyleSheet("color:#6a6a6a; font-size:10px; font-style:italic;")
         ctrl.addWidget(hint)
 
@@ -299,3 +300,9 @@ class InteractiveCanvas(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._apply_zoom()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() == Qt.Key.Key_F:
+            self.fit()
+            return
+        super().keyPressEvent(event)

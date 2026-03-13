@@ -1025,14 +1025,20 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
     # State: "merged" = building single merged segment
     #        "split" = building two parallel segments (after disagreement)
     result_segments_rows = []
+    # Short segments (<min_length) are kept separately so they can be stitched
+    # later rather than being silently discarded.  Without this, detections
+    # that fall into brief agree/split transitions vanish from the output.
+    short_segments_rows = []
     state = "merged"
     current_segment = []
     split_t1_segment = []
     split_t2_segment = []
 
-    def _append_if_long(segment_rows):
+    def _append_segment(segment_rows):
         if len(segment_rows) >= min_length:
             result_segments_rows.append(segment_rows)
+        elif segment_rows:
+            short_segments_rows.append(segment_rows)
 
     for frame in all_frames:
         in_t1 = frame in t1_by_frame
@@ -1080,7 +1086,7 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
                 current_segment.append(data)
             elif classification == "disagree":
                 # End current merged segment and start split
-                _append_if_long(current_segment)
+                _append_segment(current_segment)
                 current_segment = []
 
                 # Start split segments
@@ -1092,8 +1098,8 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
         elif state == "split":
             if classification == "agree":
                 # End split, save segments, start new merged segment
-                _append_if_long(split_t1_segment)
-                _append_if_long(split_t2_segment)
+                _append_segment(split_t1_segment)
+                _append_segment(split_t2_segment)
                 split_t1_segment = []
                 split_t2_segment = []
 
@@ -1115,10 +1121,10 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
 
     # Finalize remaining segments
     if state == "merged":
-        _append_if_long(current_segment)
+        _append_segment(current_segment)
     elif state == "split":
-        _append_if_long(split_t1_segment)
-        _append_if_long(split_t2_segment)
+        _append_segment(split_t1_segment)
+        _append_segment(split_t2_segment)
 
     # Further split any segments with large gaps OR spatial jumps
     max_spatial_jump = agreement_distance * 5  # ~50px for 9.62 agreement_distance
@@ -1130,6 +1136,21 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
             seg_rows, max_gap=5, max_spatial_jump=max_spatial_jump
         )
         final_segments.extend(pd.DataFrame(seg) for seg in sub_segments_rows if seg)
+
+    # Also include short segments — they carry real detections that should
+    # not be silently discarded.  Downstream stitching may reconnect them;
+    # if not, the final MIN_LENGTH filter in resolve_trajectories will
+    # remove them cleanly (with the benefit of having been available for
+    # stitching attempts).
+    if short_segments_rows:
+        n_short = sum(len(s) for s in short_segments_rows)
+        logger.debug(
+            f"Conservative merge: preserving {len(short_segments_rows)} short "
+            f"segment(s) ({n_short} total frames) for downstream stitching"
+        )
+        for seg_rows in short_segments_rows:
+            if seg_rows:
+                final_segments.append(pd.DataFrame(seg_rows))
 
     return final_segments
 
@@ -1228,6 +1249,11 @@ def _remove_spatially_redundant_trajectories(
         }
         traj_arrays.append((idx, frame_to_pos, np.sum(valid_mask)))
 
+    # Instead of outright removing "redundant" trajectories, we trim them to
+    # only their unique frames (not covered by a longer agreeing trajectory).
+    # This prevents losing detections that exist only in the shorter trajectory.
+    trimmed_replacements = {}  # idx -> trimmed DataFrame (or None to remove)
+
     for i, (idx_a, a_by_frame, _) in enumerate(traj_arrays):
         if idx_a in redundant_indices:
             continue
@@ -1242,29 +1268,58 @@ def _remove_spatially_redundant_trajectories(
 
             # Count overlapping frames where positions agree
             agreeing_frames = 0
+            agreeing_frame_set = set()
             for frame, (bx, by) in b_by_frame.items():
                 if frame in a_by_frame:
                     ax, ay = a_by_frame[frame]
                     dist = np.sqrt((bx - ax) ** 2 + (by - ay) ** 2)
                     if dist <= agreement_distance:
                         agreeing_frames += 1
+                        agreeing_frame_set.add(frame)
 
-            # If most of B's frames agree with A, B is redundant
-            # We use a high threshold (70%) to be conservative
+            # If most of B's frames agree with A, B is (mostly) redundant
             if agreeing_frames >= min(min_overlap, total_b_frames):
                 agreement_ratio = agreeing_frames / total_b_frames
                 if agreement_ratio >= 0.7:
-                    redundant_indices.add(idx_b)
-                    logger.debug(
-                        f"Marking trajectory as redundant: {agreeing_frames}/{total_b_frames} "
-                        f"({agreement_ratio:.1%}) frames agree"
-                    )
+                    if agreement_ratio >= 0.95:
+                        # Nearly fully covered — safe to remove entirely
+                        redundant_indices.add(idx_b)
+                        logger.debug(
+                            f"Removing fully redundant trajectory: "
+                            f"{agreeing_frames}/{total_b_frames} "
+                            f"({agreement_ratio:.1%}) frames agree"
+                        )
+                    else:
+                        # Partially redundant — trim to unique frames only
+                        traj_b = trajectories[idx_b]
+                        unique_mask = ~traj_b["FrameID"].isin(agreeing_frame_set)
+                        trimmed = traj_b.loc[unique_mask].copy()
+                        if not trimmed.empty:
+                            trimmed_replacements[idx_b] = trimmed
+                            logger.debug(
+                                f"Trimming partially redundant trajectory: "
+                                f"{agreeing_frames}/{total_b_frames} "
+                                f"({agreement_ratio:.1%}) redundant, "
+                                f"preserving {len(trimmed)} unique frames"
+                            )
+                        else:
+                            redundant_indices.add(idx_b)
 
-    # Return non-redundant trajectories
-    result = [t for i, t in enumerate(trajectories) if i not in redundant_indices]
-    if redundant_indices:
+    # Build result: replace trimmed, skip removed
+    result = []
+    for i, t in enumerate(trajectories):
+        if i in redundant_indices:
+            continue
+        if i in trimmed_replacements:
+            result.append(trimmed_replacements[i])
+        else:
+            result.append(t)
+
+    n_removed = len(redundant_indices)
+    n_trimmed = len(trimmed_replacements)
+    if n_removed or n_trimmed:
         logger.info(
-            f"Removed {len(redundant_indices)} spatially redundant trajectories"
+            f"Redundancy pass: removed {n_removed}, trimmed {n_trimmed} trajectories"
         )
 
     return result
@@ -1750,10 +1805,12 @@ def _merge_overlapping_agreeing_trajectories(
                     )
                     break
 
-            # If trajectory i wasn't merged with anything, keep it
+            # If trajectory i wasn't merged with anything, keep it.
+            # Do NOT filter by min_length here — short fragments must survive
+            # so that downstream stitching can reconnect them.  The final
+            # min_length filter in resolve_trajectories handles cleanup.
             if i not in used:
-                if len(traj_a) >= min_length:
-                    new_trajectories.append(traj_a)
+                new_trajectories.append(traj_a)
                 used.add(i)
 
         trajectories = new_trajectories

@@ -12,7 +12,7 @@ from typing import List, Optional
 
 import pandas as pd
 from PySide6.QtCore import QRectF, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -393,6 +393,7 @@ class MainWindow(QMainWindow):
         self._queue = SuspicionQueueWidget()
         self._queue.event_selected.connect(self._on_event_selected)
         self._queue.rescore_all_requested.connect(self._on_rescore_all)
+        self._queue.merge_wizard_requested.connect(lambda: self._run_merge_wizard())
         self._queue.setMinimumWidth(260)
         self._queue.setMaximumWidth(400)
         hsplitter.addWidget(self._queue)
@@ -579,6 +580,9 @@ class MainWindow(QMainWindow):
         self._player.load_trajectories(self._df)
         self._timeline.load_trajectories(self._df)
 
+        # --- Merge wizard: offer automatic fragment stitching ---
+        self._maybe_run_merge_wizard()
+
         self._run_scorer()
         self._content_stack.setCurrentIndex(1)  # reveal main view
         self._update_nav_state()
@@ -601,6 +605,122 @@ class MainWindow(QMainWindow):
                 return candidate
 
         return None
+
+    # ------------------------------------------------------------------
+    # Merge wizard
+    # ------------------------------------------------------------------
+
+    def _maybe_run_merge_wizard(self) -> None:
+        """Check for merge candidates and offer the wizard if any exist."""
+        if self._df is None or self._video_path is None:
+            return
+
+        from multi_tracker.afterhours.core.merge_candidates import (
+            build_candidates,
+            build_swap_candidates,
+            extract_segments,
+        )
+
+        last_frame = int(self._df["FrameID"].max())
+        segments = extract_segments(self._df, last_frame)
+        candidates = build_candidates(segments)
+        swap_candidates = build_swap_candidates(self._df, segments)
+
+        total = sum(len(v) for v in candidates.values()) + sum(
+            len(v) for v in swap_candidates.values()
+        )
+        if total == 0:
+            return
+
+        n_merge = sum(len(v) for v in candidates.values())
+        n_swap = sum(len(v) for v in swap_candidates.values())
+        n_sources = len(set(candidates.keys()) | set(swap_candidates.keys()))
+        answer = QMessageBox.question(
+            self,
+            "Fragment Merge Wizard",
+            f"Found {n_merge} merge + {n_swap} swap candidate(s) across "
+            f"{n_sources} fragmented track(s).\n\n"
+            f"Run the merge wizard now?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self._run_merge_wizard(segments, candidates, swap_candidates)
+
+    def _run_merge_wizard(
+        self,
+        segments=None,
+        candidates=None,
+        swap_candidates=None,
+    ) -> None:
+        """Open the MergeWizardDialog.
+
+        If *segments* / *candidates* are ``None`` they are recomputed from
+        the current DataFrame.
+        """
+        if self._df is None or self._video_path is None or self._writer is None:
+            return
+
+        from multi_tracker.afterhours.core.merge_candidates import (
+            build_candidates,
+            build_swap_candidates,
+            extract_segments,
+        )
+        from multi_tracker.afterhours.gui.dialogs.merge_wizard import MergeWizardDialog
+
+        if segments is None or candidates is None:
+            last_frame = int(self._df["FrameID"].max())
+            segments = extract_segments(self._df, last_frame)
+            candidates = build_candidates(segments)
+        if swap_candidates is None:
+            swap_candidates = build_swap_candidates(self._df, segments)
+
+        total = sum(len(v) for v in candidates.values()) + sum(
+            len(v) for v in swap_candidates.values()
+        )
+        if total == 0:
+            self.statusBar().showMessage("No merge/swap candidates found", 3000)
+            return
+
+        dlg = MergeWizardDialog(
+            video_path=self._video_path,
+            df=self._df,
+            segments=segments,
+            candidates=candidates,
+            writer=self._writer,
+            parent=self,
+            swap_candidates=swap_candidates,
+        )
+        dlg.exec()
+
+        n = dlg.merges_applied
+        flagged = dlg._model.flagged_events
+
+        if n > 0:
+            # Refresh everything from the writer's updated DataFrame
+            self._df = self._writer.df
+            self._player.load_trajectories(self._df)
+            self._timeline.load_trajectories(self._df)
+            # Store flagged events so they survive the upcoming rescore
+            self._pending_flagged = flagged
+            # Re-run scorer since track structure changed
+            self._run_scorer()
+            self.statusBar().showMessage(
+                f"Merge wizard: {n} merge{'s' if n != 1 else ''} applied — rescoring\u2026",
+                5000,
+            )
+        else:
+            self.statusBar().showMessage("Merge wizard: no merges applied", 3000)
+            # No scorer run — inject flagged events directly
+            if flagged:
+                self._queue.add_events(flagged)
+                self._queue.show_rescore_button(True)
+                self.statusBar().showMessage(
+                    f"Merge wizard: {len(flagged)} pair(s) flagged for detailed editing",
+                    4000,
+                )
 
     # ------------------------------------------------------------------
     # Scoring
@@ -642,7 +762,16 @@ class MainWindow(QMainWindow):
         self._queue.hide_scoring_progress()
         self._queue.populate(events)
         self._queue.show_rescore_button(False)
-        cnt = len(events)
+        self._queue.show_merge_wizard_button(True)
+
+        # Re-inject flagged events from the merge wizard (they survived
+        # the async scorer because we deferred adding them).
+        pending = getattr(self, "_pending_flagged", [])
+        if pending:
+            self._queue.add_events(pending)
+            self._pending_flagged = []
+
+        cnt = len(events) + len(pending)
         self.statusBar().showMessage(
             f"Scoring complete — {cnt} suspicious event{'s' if cnt != 1 else ''} found",
             5000,
@@ -738,6 +867,11 @@ class MainWindow(QMainWindow):
     def _on_manual_split(self, track_id: int, frame: int) -> None:
         """Handle a manual split request from the timeline."""
         logger.info("Manual split requested: track %d at frame %d", track_id, frame)
+        self.statusBar().showMessage(
+            f"Click ‘Review region’ on the timeline (right-drag) "
+            f"to edit T{track_id} around frame {frame}",
+            4000,
+        )
 
     def _on_manual_region_edit(self, frame_start: int, frame_end: int) -> None:
         """Open the track editor for a user-selected frame range.
@@ -800,6 +934,18 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Cleanup
     # ------------------------------------------------------------------
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        key = event.key()
+        mod = event.modifiers()
+        ctrl = Qt.KeyboardModifier.ControlModifier
+        if key == Qt.Key.Key_O and mod & ctrl:
+            self._load_single_video()
+            return
+        if key in (Qt.Key.Key_Q, Qt.Key.Key_W) and mod & ctrl:
+            self.close()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event):  # noqa: N802
         # Let any running scorer finish silently rather than blocking shutdown

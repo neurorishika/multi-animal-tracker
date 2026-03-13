@@ -325,3 +325,232 @@ def test_same_animal_not_double_represented_after_merge() -> None:
         f"Expected 1 trajectory (one animal, two consistent passes), got {n_traj}. "
         "The same animal should not appear as multiple trajectories after merging."
     )
+
+
+# ---------------------------------------------------------------------------
+# Forward-backward merge audit: segment preservation tests
+# ---------------------------------------------------------------------------
+
+
+def test_short_disagreement_does_not_lose_frames() -> None:
+    """
+    A brief 3-frame disagreement between forward and backward should NOT cause
+    those frames to vanish from output.  The old code silently dropped segments
+    shorter than MIN_TRAJECTORY_LENGTH at every state-machine transition in
+    _conservative_merge, meaning detections in short agree/disagree bursts
+    were permanently lost.
+    """
+    n = 50
+    # Forward: animal A moving right, constant
+    xs_fwd = [float(f) for f in range(1, n + 1)]
+    fwd = pd.DataFrame(
+        {
+            "TrajectoryID": 0,
+            "FrameID": list(range(1, n + 1)),
+            "X": xs_fwd,
+            "Y": [0.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+
+    # Backward: same animal, but at frames 24-26 there's a brief tracking glitch
+    # (backward jumps to a different position for 3 frames)
+    xs_bwd = list(xs_fwd)
+    for f in [23, 24, 25]:  # 0-indexed → frames 24, 25, 26
+        xs_bwd[f] = xs_fwd[f] + 100.0  # large offset → disagree
+    bwd = pd.DataFrame(
+        {
+            "TrajectoryID": 0,
+            "FrameID": list(range(1, n + 1)),
+            "X": xs_bwd,
+            "Y": [0.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+
+    params = {
+        "AGREEMENT_DISTANCE": 5.0,
+        "MIN_OVERLAP_FRAMES": 5,
+        "MIN_TRAJECTORY_LENGTH": 5,
+    }
+    actual = run_resolve_trajectories({"forward": fwd, "backward": bwd}, params)
+
+    assert not actual.empty
+    all_output_frames = set(actual["FrameID"].unique())
+    all_input_frames = set(range(1, n + 1))
+
+    # The disagreement frames (24-26) must still appear in the output
+    # from at least one source (forward or backward).
+    missing = all_input_frames - all_output_frames
+    assert not missing, (
+        f"Frames {sorted(missing)} were tracked by both passes but vanished "
+        f"from the merged output.  Short segments must be preserved."
+    )
+
+
+def test_unique_frames_preserved_when_partially_redundant() -> None:
+    """
+    If trajectory B is 70-94% covered by trajectory A, B's unique frames
+    (those NOT in A) must survive in the output.  The old code removed B
+    entirely, losing those unique detections.
+    """
+    # A: frames 20-100 (81 frames)
+    a_frames = list(range(20, 101))
+    a = pd.DataFrame(
+        {
+            "TrajectoryID": 0,
+            "FrameID": a_frames,
+            "X": [float(f) for f in a_frames],
+            "Y": [0.0] * len(a_frames),
+            "Theta": [0.0] * len(a_frames),
+            "State": ["active"] * len(a_frames),
+        }
+    )
+
+    # B: frames 1-100 (100 frames) — overlaps A on 81 frames (81%)
+    # B's frames 1-19 are unique
+    b_frames = list(range(1, 101))
+    b = pd.DataFrame(
+        {
+            "TrajectoryID": 1,
+            "FrameID": b_frames,
+            "X": [float(f) for f in b_frames],
+            "Y": [0.0] * len(b_frames),
+            "Theta": [0.0] * len(b_frames),
+            "State": ["active"] * len(b_frames),
+        }
+    )
+
+    # Forward = A only; Backward = B only.  A is unused forward, B is unused backward.
+    # Both go into the pipeline where redundancy removal processes them.
+    params = {
+        "AGREEMENT_DISTANCE": 5.0,
+        "MIN_OVERLAP_FRAMES": 5,
+        "MIN_TRAJECTORY_LENGTH": 5,
+    }
+    actual = run_resolve_trajectories({"forward": a, "backward": b}, params)
+
+    assert not actual.empty
+    output_frames = set(actual["FrameID"].unique())
+
+    # B's unique frames 1-19 must still appear in the output
+    unique_b_frames = set(range(1, 20))
+    missing_unique = unique_b_frames - output_frames
+    assert not missing_unique, (
+        f"Unique frames {sorted(missing_unique)} from the partially-redundant "
+        f"trajectory were lost.  Trimming should preserve non-overlapping frames."
+    )
+
+
+def test_no_detection_double_assigned_after_merge() -> None:
+    """
+    Core safety invariant: after forward-backward merging, no single
+    (FrameID, X, Y) detection should appear in two different trajectories.
+    """
+    n = 80
+    rng = np.random.default_rng(99)
+
+    # Two animals moving in parallel
+    fwd_a = pd.DataFrame(
+        {
+            "TrajectoryID": 0,
+            "FrameID": list(range(1, n + 1)),
+            "X": [float(f) for f in range(1, n + 1)],
+            "Y": [10.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+    fwd_b = pd.DataFrame(
+        {
+            "TrajectoryID": 1,
+            "FrameID": list(range(1, n + 1)),
+            "X": [float(f) for f in range(1, n + 1)],
+            "Y": [50.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+    # Backward with slight noise
+    bwd_a = fwd_a.copy()
+    bwd_a["X"] = bwd_a["X"] + rng.uniform(-1, 1, n)
+    bwd_b = fwd_b.copy()
+    bwd_b["X"] = bwd_b["X"] + rng.uniform(-1, 1, n)
+
+    forward = pd.concat([fwd_a, fwd_b], ignore_index=True)
+    backward = pd.concat([bwd_a, bwd_b], ignore_index=True)
+
+    params = {
+        "AGREEMENT_DISTANCE": 5.0,
+        "MIN_OVERLAP_FRAMES": 5,
+        "MIN_TRAJECTORY_LENGTH": 5,
+    }
+    actual = run_resolve_trajectories(
+        {"forward": forward, "backward": backward}, params
+    )
+
+    assert not actual.empty
+
+    # Check: no frame should appear in more than one trajectory with the same position
+    for frame_id, group in actual.groupby("FrameID"):
+        if len(group) <= 1:
+            continue
+        # Multiple trajectories at same frame — positions must differ
+        positions = group[["X", "Y"]].dropna().values
+        for i in range(len(positions)):
+            for j in range(i + 1, len(positions)):
+                dist = np.sqrt(
+                    (positions[i][0] - positions[j][0]) ** 2
+                    + (positions[i][1] - positions[j][1]) ** 2
+                )
+                assert dist > 2.0, (
+                    f"Frame {frame_id}: two trajectories share nearly identical "
+                    f"position ({positions[i]} vs {positions[j]}, dist={dist:.2f}). "
+                    f"A detection appears to be double-assigned."
+                )
+
+
+def test_full_coverage_after_merge_simple() -> None:
+    """
+    For a simple case where both forward and backward perfectly track the same
+    animal, every input frame must appear in the output.
+    """
+    n = 60
+    fwd = pd.DataFrame(
+        {
+            "TrajectoryID": 0,
+            "FrameID": list(range(1, n + 1)),
+            "X": [float(f) for f in range(1, n + 1)],
+            "Y": [0.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+    bwd = pd.DataFrame(
+        {
+            "TrajectoryID": 0,
+            "FrameID": list(range(1, n + 1)),
+            "X": [float(f) + 0.5 for f in range(1, n + 1)],
+            "Y": [0.0] * n,
+            "Theta": [0.0] * n,
+            "State": ["active"] * n,
+        }
+    )
+
+    params = {
+        "AGREEMENT_DISTANCE": 5.0,
+        "MIN_OVERLAP_FRAMES": 5,
+        "MIN_TRAJECTORY_LENGTH": 5,
+    }
+    actual = run_resolve_trajectories({"forward": fwd, "backward": bwd}, params)
+
+    assert not actual.empty
+    output_frames = set(actual["FrameID"].unique())
+    expected_frames = set(range(1, n + 1))
+    missing = expected_frames - output_frames
+    assert not missing, (
+        f"Frames {sorted(missing)} were tracked by both passes but are "
+        f"missing from the merged output."
+    )

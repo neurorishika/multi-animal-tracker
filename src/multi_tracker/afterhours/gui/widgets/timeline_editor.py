@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
+from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QKeyEvent, QMouseEvent, QPainter, QPen
-from PySide6.QtWidgets import QMenu, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QLabel, QMenu, QScrollArea, QToolTip, QVBoxLayout, QWidget
 
 from multi_tracker.afterhours.core.track_editor_model import (
     TrackEditorModel,
@@ -64,6 +64,7 @@ class _TimelineEditorCanvas(QWidget):
     model_changed = Signal()  # fragment set was mutated
     frame_cursor_changed = Signal(int)  # user moved the cursor
     fragment_selected = Signal(object)  # TrackFragment or None
+    reassign_failed = Signal()  # drag-to-reassign was rejected (overlap)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -269,6 +270,8 @@ class _TimelineEditorCanvas(QWidget):
             if target is not None:
                 if self._model.reassign(self._drag_frag_id, target):
                     self.model_changed.emit()
+                else:
+                    self.reassign_failed.emit()
         self._dragging = False
         self._drag_frag_id = None
         self._drag_target_track = None
@@ -354,6 +357,29 @@ class _TimelineEditorCanvas(QWidget):
         self._cursor_frame = frame
         self.update()
 
+    # ------------------------------------------------------------------
+    # Tooltip
+    # ------------------------------------------------------------------
+
+    def event(self, ev) -> bool:  # noqa: N802
+        from PySide6.QtCore import QEvent  # noqa: PLC0415
+
+        if ev.type() == QEvent.Type.ToolTip:
+            frag = self._hit_fragment(ev.pos())
+            if frag is not None:
+                length = frag.frame_end - frag.frame_start + 1
+                QToolTip.showText(
+                    ev.globalPos(),
+                    f"T{frag.track_id}  \u2022  frames {frag.frame_start}\u2013{frag.frame_end}"
+                    f"  ({length} frame{'s' if length != 1 else ''})",
+                    self,
+                )
+            else:
+                QToolTip.hideText()
+            ev.accept()
+            return True
+        return super().event(ev)
+
 
 # ---------------------------------------------------------------------------
 # TimelineEditorWidget  (scrollable wrapper)
@@ -382,6 +408,7 @@ class TimelineEditorWidget(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
@@ -389,8 +416,25 @@ class TimelineEditorWidget(QWidget):
         self._canvas.model_changed.connect(self.model_changed)
         self._canvas.frame_cursor_changed.connect(self.frame_cursor_changed)
         self._canvas.fragment_selected.connect(self.fragment_selected)
+        self._canvas.reassign_failed.connect(self._on_reassign_failed)
         self._scroll.setWidget(self._canvas)
         layout.addWidget(self._scroll)
+
+        # Transient error message shown when a drag-reassign is rejected
+        self._msg_label = QLabel()
+        self._msg_label.setStyleSheet(
+            "color: #ff6b6b; font-size: 11px; padding: 2px 6px;"
+        )
+        self._msg_label.setVisible(False)
+        layout.addWidget(self._msg_label)
+        self._msg_timer = QTimer(self)
+        self._msg_timer.setSingleShot(True)
+        self._msg_timer.timeout.connect(lambda: self._msg_label.setVisible(False))
+
+    def _on_reassign_failed(self) -> None:
+        self._msg_label.setText("⚠  Cannot reassign: fragments overlap")
+        self._msg_label.setVisible(True)
+        self._msg_timer.start(2000)
 
     def set_model(self, model: TrackEditorModel) -> None:
         self._canvas.set_model(model)

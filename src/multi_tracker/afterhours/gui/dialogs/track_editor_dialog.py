@@ -23,7 +23,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtGui import QImage, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -36,7 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.afterhours.core.event_types import SuspicionEvent
+from multi_tracker.afterhours.core.event_types import EventType, SuspicionEvent
 from multi_tracker.afterhours.core.track_editor_model import EditOp, TrackEditorModel
 from multi_tracker.afterhours.gui.widgets.interactive_canvas import InteractiveCanvas
 from multi_tracker.afterhours.gui.widgets.timeline_editor import (
@@ -276,7 +276,8 @@ class TrackEditorDialog(QDialog):
             "<b>Right-click</b> a bar to split · "
             "<b>Drag</b> a bar to move it to another lane · "
             "<b>Delete</b> key to remove · "
-            "<b>Ctrl-Z</b> to undo"
+            "<b>Ctrl-Z</b> to undo · "
+            "<b>Enter</b> to apply"
         )
         instr.setTextFormat(Qt.TextFormat.RichText)
         instr.setWordWrap(True)
@@ -348,14 +349,30 @@ class TrackEditorDialog(QDialog):
 
     @staticmethod
     def _build_header(event: SuspicionEvent) -> QWidget:
+        _EVENT_ABBREV = {
+            EventType.SWAP: ("SWAP", "#4fc3f7"),
+            EventType.FLICKER: ("FLKR", "#f48fb1"),
+            EventType.FRAGMENTATION: ("FRAG", "#ffb74d"),
+            EventType.ABSORPTION: ("ABS", "#fff176"),
+            EventType.PHANTOM: ("PHNT", "#ce93d8"),
+            EventType.MULTI_SHUFFLE: ("SHUF", "#80cbc4"),
+            EventType.MANUAL: ("EDIT", "#9e9e9e"),
+        }
+        abbrev, type_color = _EVENT_ABBREV.get(
+            event.event_type, (event.event_type.value.upper()[:4], "#f48771")
+        )
         w = QWidget()
         lay = QHBoxLayout(w)
         lay.setContentsMargins(4, 4, 4, 4)
 
-        flag = QLabel("\u26a0")
-        flag.setStyleSheet("font-size: 13px; color: #f48771;")
-        flag.setToolTip(event.event_type.value)
-        lay.addWidget(flag)
+        type_badge = QLabel(abbrev)
+        type_badge.setStyleSheet(
+            f"font-size: 10px; font-weight: bold; color: {type_color}; "
+            f"border: 1px solid {type_color}; border-radius: 3px; "
+            f"padding: 1px 4px;"
+        )
+        type_badge.setToolTip(event.event_type.value)
+        lay.addWidget(type_badge)
 
         score_lbl = QLabel(f"Score: {event.score:.2f}")
         score_lbl.setStyleSheet("font-weight: bold; color: #f48771; font-size: 12px;")
@@ -414,6 +431,27 @@ class TrackEditorDialog(QDialog):
         self._edit_ops = self._model.compute_ops()
         self._applied = True
         self.accept()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        key = event.key()
+        mod = event.modifiers()
+        ctrl_or_meta = (
+            Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier
+        )
+        # Enter / Return → Apply (only when Apply is enabled)
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._apply_btn.isEnabled():
+                self._on_apply()
+            return
+        # Ctrl-Z / Cmd-Z → Undo
+        if key == Qt.Key.Key_Z and mod & ctrl_or_meta:
+            self._on_undo()
+            return
+        # F → fit canvas
+        if key == Qt.Key.Key_F:
+            self._canvas.fit()
+            return
+        super().keyPressEvent(event)
 
     # ------------------------------------------------------------------
     # Preview rendering
