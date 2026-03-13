@@ -148,6 +148,7 @@ class MergeWorker(QThread):
         resize_factor,
         interp_method,
         max_gap,
+        tag_cache_path=None,
     ):
         super().__init__()
         self.forward_trajs = forward_trajs
@@ -157,6 +158,7 @@ class MergeWorker(QThread):
         self.resize_factor = resize_factor
         self.interp_method = interp_method
         self.max_gap = max_gap
+        self.tag_cache_path = tag_cache_path
         self._stop_requested = False
 
     def stop(self):
@@ -243,6 +245,37 @@ class MergeWorker(QThread):
             if self._should_stop():
                 return
             self.progress_signal.emit(90, "Scaling to original space...")
+
+            # --- AprilTag identity resolution (before coordinate rescaling) ---
+            if (
+                isinstance(resolved_trajectories, pd.DataFrame)
+                and self.tag_cache_path is not None
+            ):
+                try:
+                    from ..core.post.tag_identity import (
+                        detect_tag_swaps,
+                        resolve_tag_identities,
+                    )
+                    from ..data.tag_observation_cache import TagObservationCache
+
+                    self.progress_signal.emit(92, "Resolving tag identities...")
+                    tag_cache = TagObservationCache(str(self.tag_cache_path), mode="r")
+                    resolved_trajectories = resolve_tag_identities(
+                        resolved_trajectories, tag_cache, self.params
+                    )
+                    swaps = detect_tag_swaps(
+                        resolved_trajectories, tag_cache, self.params
+                    )
+                    if swaps:
+                        logger.warning(
+                            "Detected %d potential tag-swap events", len(swaps)
+                        )
+                    tag_cache.close()
+                except Exception:
+                    logger.warning(
+                        "Tag identity resolution failed (non-fatal)",
+                        exc_info=True,
+                    )
 
             # Scale coordinates back to original video space
             if isinstance(resolved_trajectories, pd.DataFrame):
@@ -6063,10 +6096,13 @@ class MainWindow(QMainWindow):
         apriltag_widget = QWidget()
         apriltag_layout = QFormLayout(apriltag_widget)
         self.combo_apriltag_family = QComboBox()
+        self.combo_apriltag_family.setEditable(True)
         self.combo_apriltag_family.addItems(
             ["tag36h11", "tag25h9", "tag16h5", "tagCircle21h7", "tagStandard41h12"]
         )
-        self.combo_apriltag_family.setToolTip("AprilTag family to detect")
+        self.combo_apriltag_family.setToolTip(
+            "AprilTag family to detect (select or type a custom family name)"
+        )
         apriltag_layout.addRow(
             "Which AprilTag family should be used?", self.combo_apriltag_family
         )
@@ -6080,6 +6116,26 @@ class MainWindow(QMainWindow):
         apriltag_layout.addRow(
             "How much AprilTag downsampling should be used?",
             self.spin_apriltag_decimate,
+        )
+        self.spin_tag_match_bonus = QDoubleSpinBox()
+        self.spin_tag_match_bonus.setRange(0.0, 200.0)
+        self.spin_tag_match_bonus.setValue(20.0)
+        self.spin_tag_match_bonus.setSingleStep(5.0)
+        self.spin_tag_match_bonus.setToolTip(
+            "Cost bonus (subtracted) when a detection's tag matches the track's tag"
+        )
+        apriltag_layout.addRow(
+            "Tag match bonus (lower cost)?", self.spin_tag_match_bonus
+        )
+        self.spin_tag_mismatch_penalty = QDoubleSpinBox()
+        self.spin_tag_mismatch_penalty.setRange(0.0, 500.0)
+        self.spin_tag_mismatch_penalty.setValue(50.0)
+        self.spin_tag_mismatch_penalty.setSingleStep(10.0)
+        self.spin_tag_mismatch_penalty.setToolTip(
+            "Cost penalty (added) when a detection's tag differs from the track's tag"
+        )
+        apriltag_layout.addRow(
+            "Tag mismatch penalty (higher cost)?", self.spin_tag_mismatch_penalty
         )
         self.identity_config_stack.addWidget(apriltag_widget)
 
@@ -11653,6 +11709,18 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("Merging trajectories...")
 
         # Create and start merge worker thread
+        # Discover tag observation cache for AprilTag identity resolution
+        _tag_cache_path = None
+        if current_params.get("IDENTITY_METHOD") == "AprilTags":
+            _det_cache = getattr(self, "current_detection_cache_path", None)
+            if _det_cache and os.path.exists(str(_det_cache)):
+                import glob as _glob
+
+                _pattern = str(_det_cache).replace(".npz", "") + "_tags_*.npz"
+                _candidates = sorted(_glob.glob(_pattern))
+                if _candidates:
+                    _tag_cache_path = _candidates[-1]
+
         self.merge_worker = MergeWorker(
             forward_trajs,
             backward_trajs,
@@ -11661,6 +11729,7 @@ class MainWindow(QMainWindow):
             resize_factor,
             interp_method,
             max_gap,
+            tag_cache_path=_tag_cache_path,
         )
         self.merge_worker.progress_signal.connect(self.on_merge_progress)
         self.merge_worker.finished_signal.connect(self.on_merge_finished)
@@ -13639,6 +13708,9 @@ class MainWindow(QMainWindow):
                     "State",
                     "DetectionID",
                 ]
+            # Append TagID column when AprilTag identity is active
+            if self.combo_identity_method.currentText() == "AprilTags":
+                hdr.append("TagID")
             csv_path = self.csv_line.text()
             base, ext = os.path.splitext(csv_path)
             if backward_mode:
@@ -14228,6 +14300,8 @@ class MainWindow(QMainWindow):
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
+            "TAG_MATCH_BONUS": self.spin_tag_match_bonus.value(),
+            "TAG_MISMATCH_PENALTY": self.spin_tag_mismatch_penalty.value(),
             "ENABLE_POSE_EXTRACTOR": self.chk_enable_pose_extractor.isChecked(),
             "POSE_MODEL_TYPE": self.combo_pose_model_type.currentText().strip().lower(),
             "POSE_MODEL_DIR": resolve_pose_model_path(
@@ -15084,8 +15158,15 @@ class MainWindow(QMainWindow):
                 self.combo_apriltag_family.setCurrentIndex(
                     families.index(apriltag_family)
                 )
+            else:
+                # Custom family string — set as editable text
+                self.combo_apriltag_family.setEditText(str(apriltag_family))
             self.spin_apriltag_decimate.setValue(
                 get_cfg("apriltag_decimate", default=1.0)
+            )
+            self.spin_tag_match_bonus.setValue(get_cfg("tag_match_bonus", default=20.0))
+            self.spin_tag_mismatch_penalty.setValue(
+                get_cfg("tag_mismatch_penalty", default=50.0)
             )
 
             self.chk_enable_pose_extractor.setChecked(
@@ -15592,6 +15673,8 @@ class MainWindow(QMainWindow):
             {
                 "apriltag_family": self.combo_apriltag_family.currentText(),
                 "apriltag_decimate": self.spin_apriltag_decimate.value(),
+                "tag_match_bonus": self.spin_tag_match_bonus.value(),
+                "tag_mismatch_penalty": self.spin_tag_mismatch_penalty.value(),
                 "enable_pose_extractor": self.chk_enable_pose_extractor.isChecked(),
                 "pose_model_type": self.combo_pose_model_type.currentText()
                 .strip()
