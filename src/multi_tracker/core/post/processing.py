@@ -9,6 +9,7 @@ Optimizations:
 """
 
 import logging
+import re
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,8 @@ except Exception:
 
 
 logger = logging.getLogger(__name__)
+
+_POSE_KPT_COL_RE = re.compile(r"^PoseKpt_(.+)_(X|Y|Conf)$")
 
 # Create jit decorator based on availability
 if NUMBA_AVAILABLE:
@@ -841,9 +844,8 @@ def resolve_trajectories(
     for i, traj in enumerate(backward_trajs):
         df = _convert_trajectory_to_dataframe(traj, f"backward_{i}")
         if len(df) >= MIN_LENGTH:
-            # No frame adjustment needed - tracking worker now saves actual frame indices
-            # Rotate theta by 180 degrees for backward trajectories
-            df["Theta"] = (df["Theta"] + np.pi) % (2 * np.pi)
+            # No frame adjustment or extra theta flipping needed.
+            # Backward fallback correction is now applied at tracking write-time.
             df["_source"] = "backward"
             backward_dfs.append(df)
 
@@ -977,6 +979,15 @@ def resolve_trajectories(
         max_gap=3,
     )
 
+    # FINAL DEDUPLICATION: Run a second redundancy pass after all merging and stitching.
+    # _merge_overlapping_agreeing_trajectories can produce new disagree-source fragments
+    # that partially overlap with the main merged trajectories.  Stitching can also
+    # lengthen trajectories, making some surviving fragments newly redundant (>70%).
+    # This pass catches any duplicates that slipped through the first pass.
+    result_trajectories = _remove_spatially_redundant_trajectories(
+        result_trajectories, AGREEMENT_DISTANCE, MIN_OVERLAP_FRAMES
+    )
+
     # FINAL CLEANING: Now that stitching is done, remove trajectories that are still too short
     result_trajectories = [t for t in result_trajectories if len(t) >= MIN_LENGTH]
     result_trajectories = _clean_trajectories(result_trajectories, MIN_LENGTH)
@@ -1014,14 +1025,20 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
     # State: "merged" = building single merged segment
     #        "split" = building two parallel segments (after disagreement)
     result_segments_rows = []
+    # Short segments (<min_length) are kept separately so they can be stitched
+    # later rather than being silently discarded.  Without this, detections
+    # that fall into brief agree/split transitions vanish from the output.
+    short_segments_rows = []
     state = "merged"
     current_segment = []
     split_t1_segment = []
     split_t2_segment = []
 
-    def _append_if_long(segment_rows):
+    def _append_segment(segment_rows):
         if len(segment_rows) >= min_length:
             result_segments_rows.append(segment_rows)
+        elif segment_rows:
+            short_segments_rows.append(segment_rows)
 
     for frame in all_frames:
         in_t1 = frame in t1_by_frame
@@ -1069,7 +1086,7 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
                 current_segment.append(data)
             elif classification == "disagree":
                 # End current merged segment and start split
-                _append_if_long(current_segment)
+                _append_segment(current_segment)
                 current_segment = []
 
                 # Start split segments
@@ -1081,8 +1098,8 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
         elif state == "split":
             if classification == "agree":
                 # End split, save segments, start new merged segment
-                _append_if_long(split_t1_segment)
-                _append_if_long(split_t2_segment)
+                _append_segment(split_t1_segment)
+                _append_segment(split_t2_segment)
                 split_t1_segment = []
                 split_t2_segment = []
 
@@ -1104,10 +1121,10 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
 
     # Finalize remaining segments
     if state == "merged":
-        _append_if_long(current_segment)
+        _append_segment(current_segment)
     elif state == "split":
-        _append_if_long(split_t1_segment)
-        _append_if_long(split_t2_segment)
+        _append_segment(split_t1_segment)
+        _append_segment(split_t2_segment)
 
     # Further split any segments with large gaps OR spatial jumps
     max_spatial_jump = agreement_distance * 5  # ~50px for 9.62 agreement_distance
@@ -1119,6 +1136,21 @@ def _conservative_merge(traj1, traj2, agreement_distance, min_length):
             seg_rows, max_gap=5, max_spatial_jump=max_spatial_jump
         )
         final_segments.extend(pd.DataFrame(seg) for seg in sub_segments_rows if seg)
+
+    # Also include short segments — they carry real detections that should
+    # not be silently discarded.  Downstream stitching may reconnect them;
+    # if not, the final MIN_LENGTH filter in resolve_trajectories will
+    # remove them cleanly (with the benefit of having been available for
+    # stitching attempts).
+    if short_segments_rows:
+        n_short = sum(len(s) for s in short_segments_rows)
+        logger.debug(
+            f"Conservative merge: preserving {len(short_segments_rows)} short "
+            f"segment(s) ({n_short} total frames) for downstream stitching"
+        )
+        for seg_rows in short_segments_rows:
+            if seg_rows:
+                final_segments.append(pd.DataFrame(seg_rows))
 
     return final_segments
 
@@ -1144,7 +1176,7 @@ def _average_trajectory_rows(r1, r2):
     if "Theta" in r1 and "Theta" in r2:
         t1, t2 = r1.get("Theta"), r2.get("Theta")
         if not pd.isna(t1) and not pd.isna(t2):
-            result["Theta"] = _circular_mean([t1, t2])
+            result["Theta"] = _merge_angle_mean(float(t1), float(t2))
         elif pd.isna(t1):
             result["Theta"] = t2
 
@@ -1217,6 +1249,11 @@ def _remove_spatially_redundant_trajectories(
         }
         traj_arrays.append((idx, frame_to_pos, np.sum(valid_mask)))
 
+    # Instead of outright removing "redundant" trajectories, we trim them to
+    # only their unique frames (not covered by a longer agreeing trajectory).
+    # This prevents losing detections that exist only in the shorter trajectory.
+    trimmed_replacements = {}  # idx -> trimmed DataFrame (or None to remove)
+
     for i, (idx_a, a_by_frame, _) in enumerate(traj_arrays):
         if idx_a in redundant_indices:
             continue
@@ -1231,255 +1268,61 @@ def _remove_spatially_redundant_trajectories(
 
             # Count overlapping frames where positions agree
             agreeing_frames = 0
+            agreeing_frame_set = set()
             for frame, (bx, by) in b_by_frame.items():
                 if frame in a_by_frame:
                     ax, ay = a_by_frame[frame]
                     dist = np.sqrt((bx - ax) ** 2 + (by - ay) ** 2)
                     if dist <= agreement_distance:
                         agreeing_frames += 1
+                        agreeing_frame_set.add(frame)
 
-            # If most of B's frames agree with A, B is redundant
-            # We use a high threshold (70%) to be conservative
+            # If most of B's frames agree with A, B is (mostly) redundant
             if agreeing_frames >= min(min_overlap, total_b_frames):
                 agreement_ratio = agreeing_frames / total_b_frames
                 if agreement_ratio >= 0.7:
-                    redundant_indices.add(idx_b)
-                    logger.debug(
-                        f"Marking trajectory as redundant: {agreeing_frames}/{total_b_frames} "
-                        f"({agreement_ratio:.1%}) frames agree"
-                    )
+                    if agreement_ratio >= 0.95:
+                        # Nearly fully covered — safe to remove entirely
+                        redundant_indices.add(idx_b)
+                        logger.debug(
+                            f"Removing fully redundant trajectory: "
+                            f"{agreeing_frames}/{total_b_frames} "
+                            f"({agreement_ratio:.1%}) frames agree"
+                        )
+                    else:
+                        # Partially redundant — trim to unique frames only
+                        traj_b = trajectories[idx_b]
+                        unique_mask = ~traj_b["FrameID"].isin(agreeing_frame_set)
+                        trimmed = traj_b.loc[unique_mask].copy()
+                        if not trimmed.empty:
+                            trimmed_replacements[idx_b] = trimmed
+                            logger.debug(
+                                f"Trimming partially redundant trajectory: "
+                                f"{agreeing_frames}/{total_b_frames} "
+                                f"({agreement_ratio:.1%}) redundant, "
+                                f"preserving {len(trimmed)} unique frames"
+                            )
+                        else:
+                            redundant_indices.add(idx_b)
 
-    # Return non-redundant trajectories
-    result = [t for i, t in enumerate(trajectories) if i not in redundant_indices]
-    if redundant_indices:
+    # Build result: replace trimmed, skip removed
+    result = []
+    for i, t in enumerate(trajectories):
+        if i in redundant_indices:
+            continue
+        if i in trimmed_replacements:
+            result.append(trimmed_replacements[i])
+        else:
+            result.append(t)
+
+    n_removed = len(redundant_indices)
+    n_trimmed = len(trimmed_replacements)
+    if n_removed or n_trimmed:
         logger.info(
-            f"Removed {len(redundant_indices)} spatially redundant trajectories"
+            f"Redundancy pass: removed {n_removed}, trimmed {n_trimmed} trajectories"
         )
 
     return result
-
-
-def _merge_overlapping_agreeing_trajectories_old(
-    trajectories, agreement_distance, min_overlap, min_length
-):
-    """
-    Merge trajectories that overlap in time and agree spatially.
-
-    CONSERVATIVE approach: Only merge the frames that actually agree.
-    Non-overlapping parts that are spatially distant become separate trajectories.
-
-    For two overlapping trajectories:
-    - Frames where BOTH agree (within distance threshold): Merge into averaged position
-    - Frames where only ONE exists: Keep, but split if there's a spatial discontinuity
-    - Frames where BOTH exist but DISAGREE: Each becomes its own trajectory segment
-
-    CRITICAL: Also checks spatial continuity when adding single-source frames.
-    If an a_only or b_only frame is too far from the current segment, start a new segment.
-
-    Uses iterative processing until no more merges are possible.
-    """
-    if not trajectories:
-        return trajectories
-
-    # Spatial jump threshold - if a frame is this far from previous, break the segment
-    max_spatial_jump = agreement_distance * 5  # ~50px for 9.62 agreement_distance
-
-    def get_last_position(segment: object) -> object:
-        """Get the (X, Y) of the last frame in a segment."""
-        if not segment:
-            return None, None
-        last = segment[-1]
-        return last.get("X"), last.get("Y")
-
-    def is_spatially_continuous(
-        segment: object, new_row: object, threshold: object
-    ) -> object:
-        """Check if new_row is spatially close to the end of segment."""
-        if not segment:
-            return True
-        last_x, last_y = get_last_position(segment)
-        if last_x is None or pd.isna(last_x):
-            return True
-        new_x, new_y = new_row.get("X"), new_row.get("Y")
-        if new_x is None or pd.isna(new_x):
-            return True
-        dist = np.sqrt((new_x - last_x) ** 2 + (new_y - last_y) ** 2)
-        return dist <= threshold
-
-    max_iterations = 50
-    iteration = 0
-
-    while iteration < max_iterations:
-        iteration += 1
-        merged_any = False
-        used = set()
-        new_trajectories = []
-
-        # Build lookups and frame bounds once per iteration for faster pair pruning.
-        traj_lookups = []
-        traj_frame_sets = []
-        traj_bounds = []
-        for traj in trajectories:
-            lookup = _build_frame_lookup(traj, require_valid_x=True)
-            frame_set = set(lookup.keys())
-            traj_lookups.append(lookup)
-            traj_frame_sets.append(frame_set)
-            if frame_set:
-                traj_bounds.append((min(frame_set), max(frame_set)))
-            else:
-                traj_bounds.append((np.inf, -np.inf))
-
-        for i in range(len(trajectories)):
-            if i in used:
-                continue
-
-            traj_a = trajectories[i]
-            lookup_a = traj_lookups[i]
-            frames_a = traj_frame_sets[i]
-            start_a, end_a = traj_bounds[i]
-
-            for j in range(i + 1, len(trajectories)):
-                if j in used:
-                    continue
-
-                lookup_b = traj_lookups[j]
-                frames_b = traj_frame_sets[j]
-                start_b, end_b = traj_bounds[j]
-
-                # Fast temporal pruning before set intersection.
-                if end_a < start_b or end_b < start_a:
-                    continue
-
-                # Find overlapping frames
-                common_frames = frames_a.intersection(frames_b)
-                if len(common_frames) < min_overlap:
-                    continue
-
-                # Count agreeing frames in the overlap
-                agreeing = 0
-                for frame in common_frames:
-                    ra, rb = lookup_a[frame], lookup_b[frame]
-                    dist = np.sqrt((ra["X"] - rb["X"]) ** 2 + (ra["Y"] - rb["Y"]) ** 2)
-                    if dist <= agreement_distance:
-                        agreeing += 1
-
-                # Only process if there's significant agreement
-                if agreeing < min_overlap:
-                    continue
-
-                # CONSERVATIVE MERGE with spatial continuity checks
-                all_frames_set = frames_a.union(frames_b)
-                all_frames = sorted(all_frames_set)
-
-                # Classify frames
-                frame_classifications = {}
-                for frame in all_frames:
-                    in_a = frame in lookup_a
-                    in_b = frame in lookup_b
-
-                    if in_a and in_b:
-                        ra, rb = lookup_a[frame], lookup_b[frame]
-                        dist = np.sqrt(
-                            (ra["X"] - rb["X"]) ** 2 + (ra["Y"] - rb["Y"]) ** 2
-                        )
-                        if dist <= agreement_distance:
-                            merged = _average_trajectory_rows(ra, rb)
-                            frame_classifications[frame] = ("agree", merged)
-                        else:
-                            frame_classifications[frame] = ("disagree", (ra, rb))
-                    elif in_a:
-                        frame_classifications[frame] = ("a_only", lookup_a[frame])
-                    else:
-                        frame_classifications[frame] = ("b_only", lookup_b[frame])
-
-                # Build segments using state machine WITH spatial continuity checks
-                result_segments = []
-                current_segment = []
-
-                for frame in all_frames:
-                    classification, data = frame_classifications[frame]
-
-                    if classification == "agree":
-                        # Check spatial continuity
-                        if is_spatially_continuous(
-                            current_segment, data, max_spatial_jump
-                        ):
-                            current_segment.append(data)
-                        else:
-                            # Spatial discontinuity - save current and start new
-                            if len(current_segment) >= min_length:
-                                result_segments.append(pd.DataFrame(current_segment))
-                            current_segment = [data]
-
-                    elif classification in ("a_only", "b_only"):
-                        # Single-source frame: only add if spatially continuous
-                        if is_spatially_continuous(
-                            current_segment, data, max_spatial_jump
-                        ):
-                            current_segment.append(data)
-                        else:
-                            # Spatially discontinuous - save current, start new
-                            if len(current_segment) >= min_length:
-                                result_segments.append(pd.DataFrame(current_segment))
-                            current_segment = [data]
-
-                    elif classification == "disagree":
-                        # Both exist but disagree - split into separate trajectories
-                        ra, rb = data
-
-                        # Check which (if any) is continuous with current segment
-                        a_continuous = is_spatially_continuous(
-                            current_segment, ra, max_spatial_jump
-                        )
-                        b_continuous = is_spatially_continuous(
-                            current_segment, rb, max_spatial_jump
-                        )
-
-                        if a_continuous and not b_continuous:
-                            # Keep a in current segment, start new for b if long enough later
-                            current_segment.append(ra.copy())
-                        elif b_continuous and not a_continuous:
-                            # Keep b in current segment
-                            current_segment.append(rb.copy())
-                        elif a_continuous and b_continuous:
-                            # Both continuous - this shouldn't happen if they disagree
-                            # but if it does, just save current and start fresh
-                            if len(current_segment) >= min_length:
-                                result_segments.append(pd.DataFrame(current_segment))
-                            current_segment = []
-                        else:
-                            # Neither continuous - save current, drop both as noise
-                            if len(current_segment) >= min_length:
-                                result_segments.append(pd.DataFrame(current_segment))
-                            current_segment = []
-
-                # Finalize remaining segment
-                if len(current_segment) >= min_length:
-                    result_segments.append(pd.DataFrame(current_segment))
-
-                # If we produced any segments, mark both as used
-                if result_segments:
-                    used.add(i)
-                    used.add(j)
-                    new_trajectories.extend(result_segments)
-                    merged_any = True
-                    break
-
-            # If trajectory i wasn't merged with anything, keep it
-            if i not in used:
-                if len(traj_a) >= min_length:
-                    new_trajectories.append(traj_a)
-                used.add(i)
-
-        trajectories = new_trajectories
-
-        if not merged_any:
-            break
-
-    if iteration > 1:
-        logger.info(f"Processed overlapping trajectories in {iteration} iterations")
-
-    return trajectories
 
 
 def _merge_overlapping_agreeing_trajectories(
@@ -1652,6 +1495,17 @@ def _merge_overlapping_agreeing_trajectories(
                 )
                 if agreeing < required_matches:
                     continue
+
+                # Require that a majority of the overlapping frames actually agree.
+                # Without this ratio check, two different animals that briefly pass
+                # near each other (e.g. at a crossing) accumulate enough agreeing
+                # frames to satisfy the count threshold, causing their trajectories
+                # to be incorrectly merged and producing visible position jumps.
+                # DetectionID evidence is strong enough to waive this ratio check.
+                if detection_id_matches < 2:
+                    agreement_ratio = agreeing / len(common_frames)
+                    if agreement_ratio < 0.5:
+                        continue
 
                 # Log if we found DetectionID matches
                 if detection_id_matches > 0:
@@ -1874,7 +1728,7 @@ def _merge_overlapping_agreeing_trajectories(
 
                 # Convert disagree observations to separate trajectories
                 # Process each source separately to avoid FrameID duplicates
-                def build_disagree_trajectory(obs_list, source_name):
+                def build_disagree_trajectory(obs_list, _source_name):
                     """Build trajectory segments from a list of disagree observations."""
                     if not obs_list:
                         return []
@@ -1951,10 +1805,12 @@ def _merge_overlapping_agreeing_trajectories(
                     )
                     break
 
-            # If trajectory i wasn't merged with anything, keep it
+            # If trajectory i wasn't merged with anything, keep it.
+            # Do NOT filter by min_length here — short fragments must survive
+            # so that downstream stitching can reconnect them.  The final
+            # min_length filter in resolve_trajectories handles cleanup.
             if i not in used:
-                if len(traj_a) >= min_length:
-                    new_trajectories.append(traj_a)
+                new_trajectories.append(traj_a)
                 used.add(i)
 
         trajectories = new_trajectories
@@ -2112,99 +1968,30 @@ def _convert_trajectory_to_dataframe(traj, traj_id):
         return pd.DataFrame(data)
 
 
-def _calculate_trajectory_distance_matrix(
-    traj_list_1,
-    traj_list_2,
-    frame_id_col="FrameID",
-    x_col="X",
-    y_col="Y",
-    summary_func=np.mean,
-):
+def _angle_diff_rad(theta_a: float, theta_b: float) -> float:
+    """Shortest signed angular difference (theta_a - theta_b), in [-pi, pi]."""
+    return float(np.arctan2(np.sin(theta_a - theta_b), np.cos(theta_a - theta_b)))
+
+
+def _merge_angle_mean(theta_a: float, theta_b: float) -> float:
     """
-    Calculate distance matrix between two lists of trajectory DataFrames.
+    Average two angles for trajectory merge while handling 180-degree OBB ambiguity.
 
-    Parameters:
-    -----------
-    traj_list_1, traj_list_2 : list of pandas.DataFrame
-        Lists containing individual trajectory DataFrames
-    frame_id_col : str
-        Column name for frame IDs
-    x_col, y_col : str
-        Column names for X and Y positions
-    summary_func : callable
-        Function to summarize distances (e.g., np.mean, np.median, lambda x: np.percentile(x, 75))
-
-    Returns:
-    --------
-    dist_matrix : numpy.ndarray
-        Distance matrix where dist_matrix[i,j] is the distance between trajectory i from list 1 and trajectory j from list 2
+    During forward/backward merge, one branch can report theta and the other theta+pi
+    for the same body axis. Plain circular mean of such pairs yields orthogonal
+    artifacts (~+/-90 deg). We collapse this ambiguity before averaging.
     """
-    # Initialize distance matrix
-    dist_matrix = np.full((len(traj_list_1), len(traj_list_2)), np.inf)
+    two_pi = 2.0 * np.pi
+    a = float(theta_a) % two_pi
+    b = float(theta_b) % two_pi
 
-    # Calculate distances efficiently
-    for i, traj_1 in enumerate(traj_list_1):
-        # Filter out rows with NaN in X or Y positions
-        traj_1_valid = traj_1.dropna(subset=[x_col, y_col])
-        frameids_1 = set(traj_1_valid[frame_id_col])
+    direct_delta = abs(_angle_diff_rad(b, a))
+    flipped_b = (b + np.pi) % two_pi
+    flipped_delta = abs(_angle_diff_rad(flipped_b, a))
+    if flipped_delta + 1e-12 < direct_delta:
+        b = flipped_b
 
-        # Pre-compute trajectory 1 positions indexed by FrameID
-        pos_dict_1 = dict(
-            zip(
-                traj_1_valid[frame_id_col],
-                zip(traj_1_valid[x_col], traj_1_valid[y_col]),
-            )
-        )
-
-        for j, traj_2 in enumerate(traj_list_2):
-            # Filter out rows with NaN in X or Y positions
-            traj_2_valid = traj_2.dropna(subset=[x_col, y_col])
-            frameids_2 = set(traj_2_valid[frame_id_col])
-
-            # Check temporal overlap
-            common_frameids = frameids_1.intersection(frameids_2)
-
-            if not common_frameids:
-                continue  # Keep as inf (no overlap)
-
-            # Vectorized distance calculation for overlapping frames
-            positions_1 = []
-            positions_2 = []
-
-            # Pre-compute trajectory 2 positions for common frames
-            traj_2_common = traj_2_valid[
-                traj_2_valid[frame_id_col].isin(common_frameids)
-            ]
-            pos_dict_2 = dict(
-                zip(
-                    traj_2_common[frame_id_col],
-                    zip(traj_2_common[x_col], traj_2_common[y_col]),
-                )
-            )
-
-            # Collect positions for common frames
-            for frameid in common_frameids:
-                if frameid in pos_dict_1 and frameid in pos_dict_2:
-                    positions_1.append(pos_dict_1[frameid])
-                    positions_2.append(pos_dict_2[frameid])
-
-            if positions_1:
-                # Convert to numpy arrays and calculate distances vectorized
-                pos_array_1 = np.array(positions_1)
-                pos_array_2 = np.array(positions_2)
-
-                # Calculate Euclidean distances for all frame pairs at once
-                distances = np.linalg.norm(pos_array_1 - pos_array_2, axis=1)
-                dist_matrix[i, j] = summary_func(distances)
-
-    return dist_matrix
-
-
-def _circular_mean(values):
-    """Calculate the circular mean of a list of angles in radians."""
-    sin_sum = np.sum(np.sin(values))
-    cos_sum = np.sum(np.cos(values))
-    return np.arctan2(sin_sum, cos_sum) % (2 * np.pi)
+    return (a + 0.5 * _angle_diff_rad(b, a)) % two_pi
 
 
 def _clean_trajectory(traj_df):
@@ -2267,239 +2054,6 @@ def _clean_trajectories(traj_list, min_length=5):
     return cleaned
 
 
-def _merge_trajectories(traj1, traj2, distance_threshold=None):
-    """
-    Combine two trajectories into one, with improved handling of ID swaps.
-    Returns list of DataFrames instead of dictionaries.
-    Preserves all columns including confidence metrics.
-    """
-    # Identify confidence columns
-    confidence_cols = [
-        col
-        for col in traj1.columns
-        if col.lower().endswith("confidence") or col == "PositionUncertainty"
-    ]
-
-    # Create row dictionaries indexed by FrameID for full data access
-    traj1_rows = {row["FrameID"]: row for _, row in traj1.iterrows()}
-    traj2_rows = {row["FrameID"]: row for _, row in traj2.iterrows()}
-
-    # Find frame relationships
-    frames1 = set(traj1["FrameID"])
-    frames2 = set(traj2["FrameID"])
-    common_frames = frames1.intersection(frames2)
-
-    if not common_frames:
-        # No overlap - return both trajectories as separate segments
-        return [traj1.copy(), traj2.copy()]
-
-    unique_1 = frames1.difference(common_frames)
-    unique_2 = frames2.difference(common_frames)
-
-    # Classify common frames by distance threshold
-    good_frames = set()
-    bad_frames = set()
-
-    if distance_threshold is not None:
-        for frame in common_frames:
-            row1 = traj1_rows[frame]
-            row2 = traj2_rows[frame]
-            distance = np.linalg.norm([row1["X"] - row2["X"], row1["Y"] - row2["Y"]])
-
-            if distance <= distance_threshold:
-                good_frames.add(frame)
-            else:
-                bad_frames.add(frame)
-    else:
-        good_frames = common_frames.copy()
-
-    # Process mergeable frames (good frames + unique frames)
-    mergeable_frames = good_frames.union(unique_1).union(unique_2)
-
-    # Create merged trajectory from mergeable frames, preserving all columns
-    merged_rows = []
-
-    for frame in sorted(mergeable_frames):
-        if frame in good_frames:
-            # Both trajectories have this frame and distance is acceptable
-            row1 = traj1_rows[frame]
-            row2 = traj2_rows[frame]
-            state1 = row1.get("State", "occluded")  # Default to occluded if missing
-            state2 = row2.get("State", "occluded")
-
-            # Merge based on states
-            merged_row = {"FrameID": frame}
-
-            # If either trajectory is active, the merged state is active
-            if state1 == "active" or state2 == "active":
-                # Use the active detection, or average if both active
-                if state1 == "active" and state2 == "active":
-                    merged_row["X"] = (row1["X"] + row2["X"]) / 2
-                    merged_row["Y"] = (row1["Y"] + row2["Y"]) / 2
-                    merged_row["Theta"] = _circular_mean([row1["Theta"], row2["Theta"]])
-                    merged_row["State"] = "active"
-                    # Average confidence metrics
-                    for col in confidence_cols:
-                        if col in row1 and col in row2:
-                            val1, val2 = row1[col], row2[col]
-                            if pd.notna(val1) and pd.notna(val2):
-                                merged_row[col] = (val1 + val2) / 2
-                            elif pd.notna(val1):
-                                merged_row[col] = val1
-                            elif pd.notna(val2):
-                                merged_row[col] = val2
-                            else:
-                                merged_row[col] = np.nan
-                elif state1 == "active":
-                    merged_row.update(row1.to_dict())
-                else:  # state2 == "active"
-                    merged_row.update(row2.to_dict())
-            else:
-                # Both occluded/lost - merged state is occluded, positions set to NaN
-                merged_row["X"] = np.nan
-                merged_row["Y"] = np.nan
-                merged_row["Theta"] = np.nan
-                merged_row["State"] = "occluded"
-                # Average confidence metrics if available
-                for col in confidence_cols:
-                    if col in row1 and col in row2:
-                        val1, val2 = row1[col], row2[col]
-                        if pd.notna(val1) and pd.notna(val2):
-                            merged_row[col] = (val1 + val2) / 2
-                        elif pd.notna(val1):
-                            merged_row[col] = val1
-                        elif pd.notna(val2):
-                            merged_row[col] = val2
-                        else:
-                            merged_row[col] = np.nan
-
-        elif frame in unique_1:
-            merged_row = traj1_rows[frame].to_dict()
-            # Set positions to NaN if occluded/lost
-            if merged_row.get("State", "occluded") in ["occluded", "lost"]:
-                merged_row["X"] = np.nan
-                merged_row["Y"] = np.nan
-                merged_row["Theta"] = np.nan
-        else:  # frame in unique_2
-            merged_row = traj2_rows[frame].to_dict()
-            # Set positions to NaN if occluded/lost
-            if merged_row.get("State", "occluded") in ["occluded", "lost"]:
-                merged_row["X"] = np.nan
-                merged_row["Y"] = np.nan
-                merged_row["Theta"] = np.nan
-
-        # Ensure confidence columns are present (State should already be set above)
-        for col in confidence_cols:
-            if col not in merged_row:
-                merged_row[col] = np.nan
-
-        merged_rows.append(merged_row)
-
-    # Create main merged trajectory as DataFrame
-    all_trajectories = []
-
-    if merged_rows:
-        # Convert to DataFrame
-        merged_df = (
-            pd.DataFrame(merged_rows).sort_values("FrameID").reset_index(drop=True)
-        )
-
-        # Split into continuous segments
-        segments = _split_dataframe_into_segments(merged_df, max_gap=5)
-        all_trajectories.extend(segments)
-
-    # Handle bad frames (create separate trajectories for each animal)
-    if bad_frames:
-        logger.debug(
-            f"Merge created {len(bad_frames)} bad frames - creating separate trajectory segments"
-        )
-        # Get rows from traj1 for bad frames
-        bad_rows_1 = [
-            traj1_rows[f].to_dict() for f in sorted(bad_frames) if f in traj1_rows
-        ]
-        if bad_rows_1:
-            bad_df_1 = (
-                pd.DataFrame(bad_rows_1).sort_values("FrameID").reset_index(drop=True)
-            )
-            segments_1 = _split_dataframe_into_segments(bad_df_1, max_gap=5)
-            all_trajectories.extend(segments_1)
-
-        # Get rows from traj2 for bad frames
-        bad_rows_2 = [
-            traj2_rows[f].to_dict() for f in sorted(bad_frames) if f in traj2_rows
-        ]
-        if bad_rows_2:
-            bad_df_2 = (
-                pd.DataFrame(bad_rows_2).sort_values("FrameID").reset_index(drop=True)
-            )
-            segments_2 = _split_dataframe_into_segments(bad_df_2, max_gap=5)
-            all_trajectories.extend(segments_2)
-
-    return all_trajectories
-
-
-def _split_dataframe_into_segments(df, max_gap=5, max_spatial_jump=50.0):
-    """
-    Split a DataFrame into continuous segments based on FrameID gaps AND spatial jumps.
-    Preserves all columns.
-
-    Args:
-        df: DataFrame with FrameID, X, Y columns
-        max_gap: Maximum allowed frame gap before splitting
-        max_spatial_jump: Maximum allowed distance between consecutive frames before splitting
-    """
-    if df.empty:
-        return []
-
-    segments = []
-    current_segment = []
-    columns = list(df.columns)
-    col_arrays = [df[col].to_numpy(copy=False) for col in columns]
-    n_rows = len(df)
-
-    for idx in range(n_rows):
-        row = {col: arr[idx] for col, arr in zip(columns, col_arrays)}
-        should_split = False
-
-        if current_segment:
-            prev_row = current_segment[-1]
-            frame_gap = row["FrameID"] - prev_row["FrameID"]
-
-            # Check temporal gap
-            if frame_gap > max_gap:
-                should_split = True
-
-            # Check spatial jump (only for consecutive or near-consecutive frames)
-            if not should_split and frame_gap <= max_gap:
-                prev_x, prev_y = prev_row.get("X"), prev_row.get("Y")
-                curr_x, curr_y = row.get("X"), row.get("Y")
-
-                # Only check if both positions are valid
-                if (
-                    not pd.isna(prev_x)
-                    and not pd.isna(curr_x)
-                    and not pd.isna(prev_y)
-                    and not pd.isna(curr_y)
-                ):
-                    dist = np.sqrt((curr_x - prev_x) ** 2 + (curr_y - prev_y) ** 2)
-                    if dist > max_spatial_jump:
-                        should_split = True
-
-        if not current_segment or not should_split:
-            current_segment.append(row)
-        else:
-            # Save current segment and start new one
-            if current_segment:
-                segments.append(pd.DataFrame(current_segment))
-            current_segment = [row]
-
-    # Add the last segment
-    if current_segment:
-        segments.append(pd.DataFrame(current_segment))
-
-    return segments
-
-
 def _split_rows_into_segments(rows, max_gap=5, max_spatial_jump=50.0):
     """
     Split list-of-dict rows into continuous segments based on FrameID gaps/spatial jumps.
@@ -2548,84 +2102,6 @@ def _split_rows_into_segments(rows, max_gap=5, max_spatial_jump=50.0):
     return segments
 
 
-def _split_into_continuous_segments(frame_list, x_list, y_list, theta_list, max_gap=5):
-    """Split frame sequence into continuous segments."""
-    if not frame_list:
-        return []
-
-    segments = []
-    sorted_indices = np.argsort(frame_list)
-
-    current_segment = {"FrameID": [], "X": [], "Y": [], "Theta": []}
-
-    for i, idx in enumerate(sorted_indices):
-        frame = frame_list[idx]
-
-        # Check if this frame continues the current segment
-        if (
-            not current_segment["FrameID"]
-            or frame <= current_segment["FrameID"][-1] + max_gap
-        ):
-            current_segment["FrameID"].append(frame)
-            current_segment["X"].append(x_list[idx])
-            current_segment["Y"].append(y_list[idx])
-            current_segment["Theta"].append(theta_list[idx])
-        else:
-            # Save current segment and start new one
-            if current_segment["FrameID"]:
-                segments.append(current_segment.copy())
-
-            current_segment = {
-                "FrameID": [frame],
-                "X": [x_list[idx]],
-                "Y": [y_list[idx]],
-                "Theta": [theta_list[idx]],
-            }
-
-    # Add the last segment
-    if current_segment["FrameID"]:
-        segments.append(current_segment)
-
-    return segments
-
-
-def _create_segments_from_frames(frame_list, traj_dict, max_gap=5):
-    """Create trajectory segments from a list of frames."""
-    if not frame_list:
-        return []
-
-    segments = []
-    current_segment = {"FrameID": [], "X": [], "Y": [], "Theta": []}
-
-    for frame in frame_list:
-        if frame not in traj_dict:
-            continue
-
-        x, y, theta, _ = traj_dict[frame]
-
-        # Check if this frame continues the current segment
-        if (
-            not current_segment["FrameID"]
-            or frame <= current_segment["FrameID"][-1] + max_gap
-        ):
-            current_segment["FrameID"].append(frame)
-            current_segment["X"].append(x)
-            current_segment["Y"].append(y)
-            current_segment["Theta"].append(theta)
-        else:
-            # Save current segment and start new one
-            if current_segment["FrameID"]:
-                segments.append(current_segment.copy())
-
-            current_segment = {"FrameID": [frame], "X": [x], "Y": [y], "Theta": [theta]}
-
-    # Add the last segment
-    if current_segment["FrameID"]:
-        segments.append(current_segment)
-
-    return segments
-
-
 def interpolate_trajectories(
     trajectories_df: object, method: object = "linear", max_gap: object = 10
 ) -> object:
@@ -2648,55 +2124,53 @@ def interpolate_trajectories(
 
     logger.info(f"Interpolating trajectories using {method} method (max_gap={max_gap})")
 
-    result_df = trajectories_df.copy()
+    # Pre-compute confidence columns once from the input DataFrame instead of
+    # recomputing (and mutating) the growing result_df on every iteration.
+    confidence_cols = [
+        col
+        for col in trajectories_df.columns
+        if col.lower().endswith("confidence") or col == "PositionUncertainty"
+    ]
 
-    # Process each trajectory separately
-    for traj_id in result_df["TrajectoryID"].unique():
-        mask = result_df["TrajectoryID"] == traj_id
-        traj_data = result_df[mask].copy()
+    # Accumulate per-trajectory results in a list and concat once at the end.
+    # The old pattern (filter + concat inside the loop) is O(T × n); this is O(n).
+    interpolated_parts: list = []
 
-        # Sort by FrameID and remove duplicates (keep first occurrence)
+    for traj_id, traj_data in trajectories_df.groupby("TrajectoryID", sort=False):
         traj_data = traj_data.sort_values("FrameID").reset_index(drop=True)
 
-        # Check for and remove duplicate FrameIDs
+        # Remove duplicate FrameIDs (keep first occurrence)
         if traj_data["FrameID"].duplicated().any():
             n_duplicates = traj_data["FrameID"].duplicated().sum()
             logger.warning(
                 f"Trajectory {traj_id} has {n_duplicates} duplicate FrameID(s). "
                 f"Keeping first occurrence of each frame."
             )
-            traj_data = traj_data.drop_duplicates(subset="FrameID", keep="first")
-            traj_data = traj_data.reset_index(drop=True)
+            traj_data = traj_data.drop_duplicates(
+                subset="FrameID", keep="first"
+            ).reset_index(drop=True)
 
-        # Get frame range
         min_frame = traj_data["FrameID"].min()
         max_frame = traj_data["FrameID"].max()
 
-        # Create complete frame range
-        all_frames = np.arange(min_frame, max_frame + 1)
+        # Fast-path: no gaps possible — skip reindex and interpolation entirely.
+        if len(traj_data) >= max_frame - min_frame + 1:
+            interpolated_parts.append(traj_data)
+            continue
 
-        # Reindex to include all frames
+        all_frames = np.arange(min_frame, max_frame + 1)
         traj_data = traj_data.set_index("FrameID").reindex(all_frames).reset_index()
         traj_data["TrajectoryID"] = traj_id
 
-        # Fill State column for interpolated frames
-        # Frames added by reindex will have NaN for State - set them to "occluded"
         if "State" in traj_data.columns:
             traj_data["State"] = traj_data["State"].fillna("occluded")
         else:
             traj_data["State"] = "occluded"
 
-        # Ensure confidence columns exist (will be NaN for interpolated frames)
-        confidence_cols = [
-            col
-            for col in result_df.columns
-            if col.lower().endswith("confidence") or col == "PositionUncertainty"
-        ]
         for col in confidence_cols:
             if col not in traj_data.columns:
                 traj_data[col] = np.nan
 
-        # Interpolate X and Y positions
         for col in ["X", "Y"]:
             traj_data[col] = _interpolate_column(
                 traj_data["FrameID"].values,
@@ -2705,7 +2179,6 @@ def interpolate_trajectories(
                 max_gap=max_gap,
             )
 
-        # Interpolate Theta using circular interpolation
         traj_data["Theta"] = _interpolate_angle(
             traj_data["FrameID"].values,
             traj_data["Theta"].values,
@@ -2713,18 +2186,361 @@ def interpolate_trajectories(
             max_gap=max_gap,
         )
 
-        # Remove old rows for this trajectory
-        result_df = result_df[result_df["TrajectoryID"] != traj_id]
+        interpolated_parts.append(traj_data)
 
-        # Append the interpolated data
-        result_df = pd.concat([result_df, traj_data], ignore_index=True)
-
-    # Sort the final result by TrajectoryID and FrameID
+    result_df = pd.concat(interpolated_parts, ignore_index=True)
     result_df = result_df.sort_values(["TrajectoryID", "FrameID"]).reset_index(
         drop=True
     )
 
     logger.info("Interpolation complete")
+    return result_df
+
+
+def _link_orientation_diff(theta_a, theta_b):
+    diff = abs(float(theta_a) - float(theta_b))
+    if diff > np.pi:
+        diff = 2 * np.pi - diff
+    return float(max(0.0, diff))
+
+
+def _relink_pose_labels(df: pd.DataFrame) -> list[str]:
+    labels = []
+    for col in df.columns:
+        match = _POSE_KPT_COL_RE.match(str(col))
+        if match and match.group(2) == "X":
+            labels.append(match.group(1))
+    return labels
+
+
+def _normalize_pose_keypoints_window(
+    window_df: pd.DataFrame, pose_labels: list[str], min_valid_conf: float
+):
+    from multi_tracker.core.identity.pose_quality import (
+        normalize_pose_keypoints_for_relink,
+    )
+
+    return normalize_pose_keypoints_for_relink(window_df, pose_labels, min_valid_conf)
+
+
+def _pose_paired_distance_relink(det_pose, track_pose, min_shared: int = 3):
+    if det_pose is None or track_pose is None:
+        return None
+    det_arr = np.asarray(det_pose, dtype=np.float32)
+    track_arr = np.asarray(track_pose, dtype=np.float32)
+    if det_arr.shape != track_arr.shape or det_arr.ndim != 2 or det_arr.shape[1] < 2:
+        return None
+
+    dists = []
+    for kp_idx in range(len(det_arr)):
+        det_valid = np.isfinite(det_arr[kp_idx, 0]) and np.isfinite(det_arr[kp_idx, 1])
+        track_valid = np.isfinite(track_arr[kp_idx, 0]) and np.isfinite(
+            track_arr[kp_idx, 1]
+        )
+        if not (det_valid and track_valid):
+            continue
+        dist = float(np.linalg.norm(det_arr[kp_idx, :2] - track_arr[kp_idx, :2]))
+        if np.isfinite(dist):
+            dists.append(dist)
+
+    if len(dists) < min_shared:
+        return None
+
+    dists_arr = np.asarray(dists, dtype=np.float32)
+    med = float(np.median(dists_arr))
+    abs_dev = np.abs(dists_arr - med)
+    mad = float(np.median(abs_dev))
+    if mad > 1e-6:
+        keep = abs_dev <= (2.5 * mad)
+        filtered = dists_arr[keep]
+        if len(filtered) >= min_shared:
+            dists_arr = filtered
+    if len(dists_arr) >= 5:
+        cutoff = max(1, int(np.floor(len(dists_arr) * 0.2)))
+        dists_arr = (
+            np.sort(dists_arr)[:-cutoff] if cutoff < len(dists_arr) else dists_arr
+        )
+    return float(np.mean(dists_arr))
+
+
+def _get_window_quality(window_df: pd.DataFrame, fallback_visibility: float) -> float:
+    """Extract mean PoseQualityScore from a window df, falling back to visibility."""
+    if (
+        window_df is not None
+        and not window_df.empty
+        and "PoseQualityScore" in window_df.columns
+    ):
+        scores = window_df["PoseQualityScore"].dropna()
+        if not scores.empty:
+            return float(scores.mean())
+    return float(fallback_visibility)
+
+
+def _build_relink_fragment_summaries(
+    trajectories_df: pd.DataFrame, params: dict
+) -> tuple[list[dict], dict[int, pd.DataFrame]]:
+    pose_labels = _relink_pose_labels(trajectories_df)
+    min_pose_conf = float(params.get("POSE_MIN_KPT_CONF_VALID", 0.2))
+    fragments = []
+    fragment_frames = {}
+
+    for traj_id in sorted(trajectories_df["TrajectoryID"].dropna().unique()):
+        frag_df = (
+            trajectories_df[trajectories_df["TrajectoryID"] == traj_id]
+            .copy()
+            .sort_values("FrameID", kind="stable")
+            .reset_index(drop=True)
+        )
+        if frag_df.empty:
+            continue
+        valid_pos = frag_df["X"].notna() & frag_df["Y"].notna()
+        valid_df = frag_df.loc[valid_pos].copy()
+        if valid_df.empty:
+            continue
+
+        start_row = valid_df.iloc[0]
+        end_row = valid_df.iloc[-1]
+        start_frame = int(start_row["FrameID"])
+        end_frame = int(end_row["FrameID"])
+
+        start_window = valid_df.head(3)
+        end_window = valid_df.tail(3)
+
+        start_velocity = np.zeros(2, dtype=np.float32)
+        end_velocity = np.zeros(2, dtype=np.float32)
+        start_speed = 0.0
+        end_speed = 0.0
+
+        if len(start_window) >= 2:
+            r0 = start_window.iloc[0]
+            r1 = start_window.iloc[1]
+            dt = max(1.0, float(r1["FrameID"]) - float(r0["FrameID"]))
+            start_velocity = np.asarray(
+                [
+                    (float(r1["X"]) - float(r0["X"])) / dt,
+                    (float(r1["Y"]) - float(r0["Y"])) / dt,
+                ],
+                dtype=np.float32,
+            )
+            start_speed = float(np.linalg.norm(start_velocity))
+
+        if len(end_window) >= 2:
+            r0 = end_window.iloc[-2]
+            r1 = end_window.iloc[-1]
+            dt = max(1.0, float(r1["FrameID"]) - float(r0["FrameID"]))
+            end_velocity = np.asarray(
+                [
+                    (float(r1["X"]) - float(r0["X"])) / dt,
+                    (float(r1["Y"]) - float(r0["Y"])) / dt,
+                ],
+                dtype=np.float32,
+            )
+            end_speed = float(np.linalg.norm(end_velocity))
+
+        start_pose, start_vis = _normalize_pose_keypoints_window(
+            start_window, pose_labels, min_pose_conf
+        )
+        end_pose, end_vis = _normalize_pose_keypoints_window(
+            end_window, pose_labels, min_pose_conf
+        )
+
+        start_quality = _get_window_quality(start_window, start_vis)
+        end_quality = _get_window_quality(end_window, end_vis)
+
+        traj_id_int = int(traj_id)
+        fragments.append(
+            {
+                "traj_id": traj_id_int,
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+                "start_pos": np.asarray(
+                    [float(start_row["X"]), float(start_row["Y"])], dtype=np.float32
+                ),
+                "end_pos": np.asarray(
+                    [float(end_row["X"]), float(end_row["Y"])], dtype=np.float32
+                ),
+                "start_theta": (
+                    float(start_row["Theta"])
+                    if np.isfinite(start_row["Theta"])
+                    else 0.0
+                ),
+                "end_theta": (
+                    float(end_row["Theta"]) if np.isfinite(end_row["Theta"]) else 0.0
+                ),
+                "start_velocity": start_velocity,
+                "end_velocity": end_velocity,
+                "start_speed": start_speed,
+                "end_speed": end_speed,
+                "start_pose": start_pose,
+                "end_pose": end_pose,
+                "start_pose_visibility": start_vis,
+                "end_pose_visibility": end_vis,
+                "start_quality": start_quality,
+                "end_quality": end_quality,
+            }
+        )
+        fragment_frames[traj_id_int] = frag_df
+
+    return fragments, fragment_frames
+
+
+def relink_trajectories_with_pose(
+    trajectories_df: pd.DataFrame, params: dict
+) -> pd.DataFrame:
+    """Greedily relink short trajectory fragments using motion and optional pose continuity."""
+    if trajectories_df is None or trajectories_df.empty:
+        return trajectories_df
+    if (
+        "TrajectoryID" not in trajectories_df.columns
+        or "FrameID" not in trajectories_df.columns
+    ):
+        return trajectories_df
+    if not bool(params.get("ENABLE_TRACKLET_RELINKING", True)):
+        return trajectories_df.copy()
+
+    fragments, fragment_frames = _build_relink_fragment_summaries(
+        trajectories_df, params
+    )
+    if len(fragments) < 2:
+        return trajectories_df.copy()
+
+    max_gap = int(max(0, params.get("MAX_OCCLUSION_GAP", 30)))
+    max_vel_break = float(max(1e-6, params.get("MAX_VELOCITY_BREAK", 100.0)))
+    agreement_distance = float(max(1e-6, params.get("AGREEMENT_DISTANCE", 15.0)))
+    pose_max_distance = float(max(1e-6, params.get("RELINK_POSE_MAX_DISTANCE", 0.45)))
+    min_pose_quality = float(max(0.0, params.get("RELINK_MIN_POSE_QUALITY", 0.4)))
+    heading_gate = float(np.pi / 3.0)
+    min_motion_speed = 1e-3
+
+    candidates = []
+    for src in fragments:
+        for dst in fragments:
+            if src["traj_id"] == dst["traj_id"]:
+                continue
+            if dst["start_frame"] <= src["end_frame"]:
+                continue
+
+            gap = int(dst["start_frame"] - src["end_frame"] - 1)
+            if gap < 1 or gap > max_gap:
+                continue
+
+            delta_frames = gap + 1
+
+            # Sanity check: raw spatial jump must be physically plausible.
+            # max_vel_break * delta_frames is the maximum distance an animal
+            # could travel in that many frames at the velocity-break threshold.
+            raw_jump = float(np.linalg.norm(dst["start_pos"] - src["end_pos"]))
+            if raw_jump > max_vel_break * float(delta_frames):
+                continue
+
+            # Prediction check: the distance is the error between where we
+            # predict src to be (using its end velocity) and where dst actually
+            # starts.  Gate this on agreement_distance only — using
+            # max_vel_break here made the gate far too permissive (e.g. gap=5
+            # frames at 100 px/frame → 500 px allowed, connecting different
+            # animals).
+            predicted_pos = src["end_pos"] + src["end_velocity"] * float(delta_frames)
+            distance = float(np.linalg.norm(predicted_pos - dst["start_pos"]))
+            if distance > agreement_distance:
+                continue
+
+            heading_norm = 0.0
+            if (
+                src["end_speed"] > min_motion_speed
+                and dst["start_speed"] > min_motion_speed
+            ):
+                heading_diff = _link_orientation_diff(
+                    src["end_theta"], dst["start_theta"]
+                )
+                if heading_diff > heading_gate:
+                    continue
+                heading_norm = float(heading_diff / np.pi)
+
+            pose_norm = 0.0
+            src_end_pose = (
+                src["end_pose"]
+                if src.get("end_quality", 1.0) >= min_pose_quality
+                else None
+            )
+            dst_start_pose = (
+                dst["start_pose"]
+                if dst.get("start_quality", 1.0) >= min_pose_quality
+                else None
+            )
+            if src_end_pose is not None and dst_start_pose is not None:
+                pose_dist = _pose_paired_distance_relink(src_end_pose, dst_start_pose)
+                if pose_dist is not None:
+                    if pose_dist > pose_max_distance:
+                        continue
+                    pose_norm = float(pose_dist / pose_max_distance)
+
+            score = (
+                float(distance / agreement_distance)
+                + 0.25 * (float(gap) / float(max_gap if max_gap > 0 else 1))
+                + 0.35 * heading_norm
+                + 0.75 * pose_norm
+            )
+            candidates.append((score, int(src["traj_id"]), int(dst["traj_id"])))
+
+    if not candidates:
+        return trajectories_df.copy()
+
+    candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+    outgoing = {}
+    incoming = {}
+    for _, src_id, dst_id in candidates:
+        if src_id in outgoing or dst_id in incoming:
+            continue
+        outgoing[src_id] = dst_id
+        incoming[dst_id] = src_id
+
+    if not outgoing:
+        return trajectories_df.copy()
+
+    ordered_ids = sorted(fragment_frames)
+    visited = set()
+    chains = []
+    for traj_id in ordered_ids:
+        if traj_id in incoming or traj_id in visited:
+            continue
+        chain = [traj_id]
+        visited.add(traj_id)
+        while chain[-1] in outgoing:
+            nxt = outgoing[chain[-1]]
+            if nxt in visited:
+                break
+            chain.append(nxt)
+            visited.add(nxt)
+        chains.append(chain)
+    for traj_id in ordered_ids:
+        if traj_id not in visited:
+            chains.append([traj_id])
+            visited.add(traj_id)
+
+    relinked_parts = []
+    for new_id, chain in enumerate(chains):
+        part = pd.concat(
+            [fragment_frames[traj_id].copy() for traj_id in chain], ignore_index=True
+        )
+        part = part.sort_values("FrameID", kind="stable")
+        if part["FrameID"].duplicated().any():
+            logger.warning(
+                "Relinking chain %s produced duplicate FrameID rows; keeping first occurrence.",
+                chain,
+            )
+            part = part.drop_duplicates(subset="FrameID", keep="first")
+        part = part.reset_index(drop=True)
+        part["TrajectoryID"] = new_id
+        relinked_parts.append(part)
+
+    result_df = pd.concat(relinked_parts, ignore_index=True)
+    result_df = result_df.sort_values(["TrajectoryID", "FrameID"], kind="stable")
+    result_df = result_df.reset_index(drop=True)
+    logger.info(
+        "Tracklet relinking collapsed %d fragments into %d trajectories.",
+        len(fragments),
+        result_df["TrajectoryID"].nunique(),
+    )
     return result_df
 
 
@@ -2783,22 +2599,23 @@ def _interpolate_column(frames, values, method="linear", max_gap=10):
         logger.warning(f"Interpolation failed: {e}, keeping original values")
         return values
 
-    # Interpolate all frames
     result = values.copy()
 
-    # Only interpolate within gaps smaller than max_gap
+    # Build a single boolean mask covering every position that falls inside a
+    # within-limit gap, then call interp_func once with all those positions.
+    # This replaces N_gap individual calls with one vectorised call, which is
+    # substantially faster for scipy interp1d / CubicSpline.
+    fill_mask = np.zeros(len(frames), dtype=bool)
     for i in range(len(valid_indices) - 1):
-        start_idx = valid_indices[i]
-        end_idx = valid_indices[i + 1]
-        gap_size = end_idx - start_idx - 1
+        gap_size = valid_indices[i + 1] - valid_indices[i] - 1
+        if 0 < gap_size <= max_gap:
+            fill_mask[valid_indices[i] + 1 : valid_indices[i + 1]] = True
 
-        if gap_size > 0 and gap_size <= max_gap:
-            # Interpolate this gap
-            gap_frames = frames[start_idx + 1 : end_idx]
-            try:
-                result[start_idx + 1 : end_idx] = interp_func(gap_frames)
-            except Exception:
-                pass  # Keep NaN if interpolation fails
+    if fill_mask.any():
+        try:
+            result[fill_mask] = interp_func(frames[fill_mask])
+        except Exception:
+            pass  # Keep NaN if interpolation fails
 
     return result
 

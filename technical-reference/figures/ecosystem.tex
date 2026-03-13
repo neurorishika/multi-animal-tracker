@@ -1,0 +1,38 @@
+\begin{tikzpicture}[
+  node distance=13mm and 16mm,
+  core/.style={
+    rounded corners=3mm,
+    draw=#1!85!black,
+    very thick,
+    fill=#1!10,
+    text width=4.0cm,
+    minimum height=1.55cm,
+    align=left,
+    inner sep=8pt,
+    font=\small
+  },
+  arrow/.style={-{Latex[length=3mm,width=2mm]}, very thick, draw=Slate},
+  note/.style={
+    rounded corners=2mm,
+    draw=Rule,
+    fill=white,
+    inner sep=6pt,
+    text width=8.9cm,
+    align=left,
+    font=\scriptsize,
+    text=Slate
+  }
+]
+  \node[core=MATBlue] (mat) at (0,0) {\textbf{Multi-Animal-Tracker}\\Tracking GUI, runtime orchestration, replay, post-processing, and export.};
+  \node[core=PoseGreen, right=of mat] (pose) {\textbf{PoseKit}\\Pose annotation, prediction, smart frame selection, evaluation, and training support.};
+  \node[core=ClassRed, below=of pose] (class) {\textbf{ClassKit}\\Embedding-driven classification curation, clustering, and active learning.};
+  \node[core=SieveBlue, below=of mat] (sieve) {\textbf{DataSieve}\\Deduplication, temporal thinning, and diversity-aware dataset reduction.};
+  \node[note, below=16mm of sieve, anchor=west] (legend) at ([xshift=-0.1cm]sieve.south west) {\textbf{Workflow summary.} MAT exports crops and trajectory-derived datasets to PoseKit and ClassKit. PoseKit returns pose geometry and skeleton definitions used during tracking. DataSieve filters large image corpora before annotation, classification, or replay-oriented review.};
+
+  \draw[arrow] (mat.east) -- (pose.west);
+  \draw[arrow] (pose.west) to[bend left=22] (mat.east);
+  \draw[arrow] (mat.south east) -- (class.north west);
+  \draw[arrow] (sieve.north) -- (mat.south);
+  \draw[arrow] (sieve.east) -- (class.west);
+  \draw[arrow] (sieve.north east) -- (pose.south west);
+\end{tikzpicture}

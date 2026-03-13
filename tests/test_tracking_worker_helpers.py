@@ -2,10 +2,32 @@ from __future__ import annotations
 
 import types
 
+import numpy as np
+
 from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
 
 def _load_worker_module():
+    multi_tracker_pkg = types.ModuleType("multi_tracker")
+    multi_tracker_pkg.__path__ = []
+    core_pkg = types.ModuleType("multi_tracker.core")
+    core_pkg.__path__ = []
+    core_tracking = types.ModuleType("multi_tracker.core.tracking")
+    core_tracking.__path__ = []
+    utils_pkg = types.ModuleType("multi_tracker.utils")
+    utils_pkg.__path__ = []
+    data_pkg = types.ModuleType("multi_tracker.data")
+    data_pkg.__path__ = []
+
+    video_artifacts = load_src_module(
+        "multi_tracker/utils/video_artifacts.py",
+        "video_artifacts_under_test",
+    )
+    pose_features = load_src_module(
+        "multi_tracker/core/tracking/pose_features.py",
+        "pose_features_under_test",
+    )
+
     # Minimal QtCore stub
     qtcore = types.ModuleType("PySide6.QtCore")
 
@@ -75,12 +97,17 @@ def _load_worker_module():
     frame_prefetcher.FramePrefetcher = FramePrefetcher
 
     # Stub core submodules imported by worker.
-    core_pkg = types.ModuleType("multi_tracker.core")
     core_filters = types.ModuleType("multi_tracker.core.filters")
     core_background = types.ModuleType("multi_tracker.core.background")
     core_detectors = types.ModuleType("multi_tracker.core.detectors")
     core_assigners = types.ModuleType("multi_tracker.core.assigners")
     core_identity = types.ModuleType("multi_tracker.core.identity")
+
+    core_filters.__path__ = []
+    core_background.__path__ = []
+    core_detectors.__path__ = []
+    core_assigners.__path__ = []
+    core_identity.__path__ = []
 
     kalman = types.ModuleType("multi_tracker.core.filters.kalman")
     kalman.KalmanFilterManager = object
@@ -101,17 +128,23 @@ def _load_worker_module():
         "cv2": make_cv2_stub(),
         "PySide6": pyside,
         "PySide6.QtCore": qtcore,
+        "multi_tracker": multi_tracker_pkg,
+        "multi_tracker.core": core_pkg,
+        "multi_tracker.core.tracking": core_tracking,
+        "multi_tracker.utils": utils_pkg,
+        "multi_tracker.data": data_pkg,
         "multi_tracker.utils.image_processing": image_processing,
         "multi_tracker.utils.geometry": geometry,
+        "multi_tracker.utils.video_artifacts": video_artifacts,
         "multi_tracker.data.detection_cache": detection_cache,
         "multi_tracker.utils.batch_optimizer": batch_optimizer,
         "multi_tracker.utils.frame_prefetcher": frame_prefetcher,
-        "multi_tracker.core": core_pkg,
         "multi_tracker.core.filters": core_filters,
         "multi_tracker.core.background": core_background,
         "multi_tracker.core.detectors": core_detectors,
         "multi_tracker.core.assigners": core_assigners,
         "multi_tracker.core.identity": core_identity,
+        "multi_tracker.core.tracking.pose_features": pose_features,
         "multi_tracker.core.filters.kalman": kalman,
         "multi_tracker.core.background.model": background_model,
         "multi_tracker.core.detectors.engine": detectors_engine,
@@ -175,3 +208,149 @@ def test_forward_frame_iterator_sync_and_prefetch_paths() -> None:
     )
     assert prefetch_rows == [("a", 1), ("b", 2)]
     assert worker.frame_prefetcher is None
+
+
+def test_collapse_obb_axis_theta_chooses_nearest_branch() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    theta_axis = np.deg2rad(12.0)
+    reference = np.deg2rad(205.0)
+    collapsed = worker._collapse_obb_axis_theta(theta_axis, reference)
+    expected = (theta_axis + np.pi) % (2 * np.pi)
+    diff = ((collapsed - expected + np.pi) % (2 * np.pi)) - np.pi
+    assert abs(float(diff)) < 1e-6
+
+
+def test_pose_heading_from_keypoints_uses_weighted_centroids() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    keypoints = np.array(
+        [
+            [9.0, 0.0, 0.9],  # anterior
+            [11.0, 0.0, 0.8],  # anterior
+            [0.0, 0.0, 0.7],  # posterior
+            [0.0, 1.0, 0.1],  # posterior but below threshold
+        ],
+        dtype=np.float32,
+    )
+    theta = worker._compute_pose_heading_from_keypoints(
+        keypoints=keypoints,
+        anterior_indices=[0, 1],
+        posterior_indices=[2, 3],
+        min_valid_conf=0.2,
+    )
+    assert theta is not None
+    assert abs(float(theta)) < 1e-6
+
+    theta_none = worker._compute_pose_heading_from_keypoints(
+        keypoints=keypoints,
+        anterior_indices=[3],  # low confidence only
+        posterior_indices=[2],
+        min_valid_conf=0.2,
+    )
+    assert theta_none is None
+
+
+def test_resolve_pose_group_indices_accepts_names_and_indices() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    names = ["head", "thorax", "abdomen"]
+    idxs = worker._resolve_pose_group_indices(["head", 2, "HEAD", "missing"], names)
+    assert idxs == [0, 2]
+
+
+def test_individual_data_precompute_gate_requires_pose_extractor() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    assert (
+        worker._should_precompute_individual_data(
+            {"ENABLE_POSE_EXTRACTOR": True},
+            "yolo_obb",
+        )
+        is True
+    )
+    assert (
+        worker._should_precompute_individual_data(
+            {"ENABLE_POSE_EXTRACTOR": False},
+            "yolo_obb",
+        )
+        is False
+    )
+    assert (
+        worker._should_precompute_individual_data(
+            {"ENABLE_POSE_EXTRACTOR": True},
+            "background_subtraction",
+        )
+        is False
+    )
+
+
+def test_individual_properties_cache_path_defaults_to_video_cache_dir(
+    tmp_path,
+) -> None:
+    mod = _load_worker_module()
+    video_path = tmp_path / "clip.mp4"
+    worker = mod.TrackingWorker(str(video_path))
+
+    cache_path = worker._build_individual_properties_cache_path("props", 4, 9)
+
+    assert cache_path.parent == tmp_path / "clip_caches"
+    assert cache_path.name == "clip_individual_properties_props_4_9.npz"
+
+
+def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    worker.backward_mode = True
+    base_theta = worker._normalize_theta(np.deg2rad(35.0))
+
+    motion_theta_out = (base_theta + np.pi) % (2 * np.pi)
+    pose_theta_out = base_theta
+
+    expected_motion = worker._normalize_theta(np.deg2rad(215.0))
+    diff_motion = (
+        (float(motion_theta_out) - float(expected_motion) + np.pi) % (2 * np.pi)
+    ) - np.pi
+    assert abs(float(diff_motion)) < 1e-6
+
+    diff_pose = (
+        (float(pose_theta_out) - float(base_theta) + np.pi) % (2 * np.pi)
+    ) - np.pi
+    assert abs(float(diff_pose)) < 1e-6
+
+
+def test_select_directed_heading_prefers_pose_by_default() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    selected, directed = worker._select_directed_heading(
+        pose_heading=np.deg2rad(30.0),
+        pose_directed=True,
+        headtail_heading=np.deg2rad(210.0),
+        headtail_directed=True,
+        pose_overrides_headtail=True,
+    )
+    assert directed is True
+    diff = ((float(selected) - float(np.deg2rad(30.0)) + np.pi) % (2 * np.pi)) - np.pi
+    assert abs(float(diff)) < 1e-6
+
+
+def test_select_directed_heading_can_prefer_headtail() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    selected, directed = worker._select_directed_heading(
+        pose_heading=np.deg2rad(30.0),
+        pose_directed=True,
+        headtail_heading=np.deg2rad(210.0),
+        headtail_directed=True,
+        pose_overrides_headtail=False,
+    )
+    assert directed is True
+    diff = ((float(selected) - float(np.deg2rad(210.0)) + np.pi) % (2 * np.pi)) - np.pi
+    assert abs(float(diff)) < 1e-6

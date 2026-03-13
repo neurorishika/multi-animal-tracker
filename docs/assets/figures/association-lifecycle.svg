@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-labelledby="title desc">
+  <title id="title">Association and lifecycle diagram</title>
+  <desc id="desc">State and decision diagram showing prediction, gating, assignment phases, and lifecycle transitions between active, occluded, lost, and respawned tracks.</desc>
+  <defs>
+    <style>
+      .title { font: 700 34px 'Avenir Next', 'Segoe UI', sans-serif; fill: #102a43; }
+      .subtitle { font: 500 17px 'Avenir Next', 'Segoe UI', sans-serif; fill: #486581; }
+      .label { font: 700 18px 'Avenir Next', 'Segoe UI', sans-serif; fill: #102a43; }
+      .body { font: 500 15px 'Avenir Next', 'Segoe UI', sans-serif; fill: #243b53; }
+      .small { font: 500 13px 'Avenir Next', 'Segoe UI', sans-serif; fill: #52606d; }
+      .core { fill: #ffffff; stroke: #0f766e; stroke-width: 2; rx: 20; ry: 20; }
+      .state { stroke-width: 2.5; rx: 18; ry: 18; }
+      .active { fill: #ecfdf5; stroke: #10b981; }
+      .occluded { fill: #fffbeb; stroke: #f59e0b; }
+      .lost { fill: #fff1f2; stroke: #e11d48; }
+      .respawn { fill: #eff6ff; stroke: #2563eb; }
+      .arrow { fill: none; stroke: #334e68; stroke-width: 3.5; marker-end: url(#arrowHead); }
+    </style>
+    <marker id="arrowHead" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334e68"/>
+    </marker>
+  </defs>
+
+  <rect width="1200" height="760" fill="#f8fafc"/>
+  <text x="74" y="78" class="title">Association and Track Lifecycle</text>
+  <text x="74" y="108" class="subtitle">How a detection becomes a stable track, how uncertainty is handled, and when a slot is retired or reused</text>
+
+  <rect x="80" y="170" width="300" height="114" class="core"/>
+  <text x="104" y="206" class="label">Prediction Inputs</text>
+  <text x="104" y="234" class="body">Predicted position and heading, covariance, last known area</text>
+  <text x="104" y="256" class="body">and aspect, running motion estimate, and pose prototype.</text>
+
+  <rect x="450" y="170" width="300" height="114" class="core"/>
+  <text x="474" y="206" class="label">Stage-1 Gating</text>
+  <text x="474" y="234" class="body">Reject candidates that violate distance, uncertainty, size,</text>
+  <text x="474" y="256" class="body">or aspect-ratio consistency constraints before full scoring.</text>
+
+  <rect x="820" y="170" width="300" height="114" class="core"/>
+  <text x="844" y="206" class="label">Stage-2 Costing</text>
+  <text x="844" y="234" class="body">Compute weighted cost from position, orientation, area,</text>
+  <text x="844" y="256" class="body">aspect, and optional pose-shape compatibility.</text>
+
+  <path d="M380 227 L450 227" class="arrow"/>
+  <path d="M750 227 L820 227" class="arrow"/>
+
+  <rect x="80" y="338" width="300" height="124" class="core"/>
+  <text x="104" y="374" class="label">Assignment Phases</text>
+  <text x="104" y="402" class="body">1. Established tracks: Hungarian or greedy global assignment</text>
+  <text x="104" y="424" class="body">2. Unstable tracks: greedy fill on remaining detections</text>
+  <text x="104" y="446" class="body">3. Lost tracks: guarded respawn if far from active tracks</text>
+
+  <rect x="450" y="338" width="220" height="124" class="state active"/>
+  <text x="474" y="374" class="label">Active</text>
+  <text x="474" y="402" class="body">Matched this frame.</text>
+  <text x="474" y="424" class="body">Correct state and reset</text>
+  <text x="474" y="446" class="body">miss counter.</text>
+
+  <rect x="740" y="338" width="220" height="124" class="state occluded"/>
+  <text x="764" y="374" class="label">Occluded</text>
+  <text x="764" y="402" class="body">Not matched, but still</text>
+  <text x="764" y="424" class="body">within loss tolerance.</text>
+  <text x="764" y="446" class="body">Prediction only.</text>
+
+  <rect x="980" y="338" width="140" height="124" class="state lost"/>
+  <text x="1008" y="374" class="label">Lost</text>
+  <text x="1008" y="402" class="body">Aged out after</text>
+  <text x="1008" y="424" class="body">too many misses.</text>
+
+  <rect x="450" y="548" width="220" height="112" class="state respawn"/>
+  <text x="474" y="584" class="label">Respawned Slot</text>
+  <text x="474" y="612" class="body">Lost slot is reused only if a free detection</text>
+  <text x="474" y="634" class="body">appears far enough from non-lost tracks.</text>
+
+  <rect x="740" y="548" width="380" height="112" class="core"/>
+  <text x="764" y="584" class="label">Orientation Handling</text>
+  <text x="764" y="612" class="body">Pose-derived headings are treated as directed. OBB headings are axis-aligned</text>
+  <text x="764" y="634" class="body">and collapsed to the version closest to the prior track orientation.</text>
+
+  <path d="M600 284 L600 338" class="arrow"/>
+  <path d="M670 400 L740 400" class="arrow"/>
+  <path d="M960 400 L980 400" class="arrow"/>
+  <path d="M1050 462 C1050 520, 700 500, 670 548" class="arrow"/>
+  <path d="M560 462 L560 548" class="arrow"/>
+  <path d="M670 604 L740 604" class="arrow"/>
+
+  <text x="430" y="504" class="small">matched detection</text>
+  <text x="786" y="502" class="small">missed too long</text>
+  <text x="894" y="534" class="small">guarded reuse</text>
+</svg>

@@ -395,3 +395,6 @@ training/YOLO-obb/training_runs/combined_dataset*
 
 # ruff cache
 .ruff_cache
+
+# ignore anything but directory structures in the models directory
+models/*/*

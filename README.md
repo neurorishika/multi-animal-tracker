@@ -45,12 +45,17 @@ pose
 make docs-install
 make docs-serve
 make docs-build
+make techref-build
 
 # Lint / format
 make lint-autofix
 make lint-moderate
 make lint-strict
 ```
+
+## Publication-Style Reference
+
+The repository also includes a standalone LaTeX technical reference for the current tracking algorithm in `technical-reference/`.
 
 ## Project Links
 

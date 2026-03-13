@@ -10,7 +10,7 @@ from .assigners.hungarian import TrackAssigner
 from .background.model import BackgroundModel
 from .detectors.engine import ObjectDetector
 from .filters.kalman import KalmanFilterManager
-from .identity.analysis import IdentityProcessor, IndividualDatasetGenerator
+from .identity.analysis import IndividualDatasetGenerator
 from .post.processing import (
     interpolate_trajectories,
     process_trajectories,
@@ -29,6 +29,5 @@ __all__ = [
     "process_trajectories_from_csv",
     "resolve_trajectories",
     "interpolate_trajectories",
-    "IdentityProcessor",
     "IndividualDatasetGenerator",
 ]

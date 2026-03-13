@@ -37,3 +37,7 @@ The main window opens maximized and exposes the tabbed workflow.
 - Optional forward/backward/intermediate outputs
 - Optional rendered output video
 - Optional detection cache (`.npz`) when caching is enabled
+
+## Need to Correct Missed Detections?
+
+For frame-by-frame correction and adding missed animals with `X-AnyLabeling` (`SAM2`, `SAM3`, manual segmentation, or OBB), see [Integrations](integrations.md#x-anylabeling-integration).

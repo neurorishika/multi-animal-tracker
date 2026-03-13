@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+import importlib
+
+
+def _load_mod():
+    return importlib.import_module("multi_tracker.core.runtime.compute_runtime")
+
+
+def test_allowed_runtimes_intersection_includes_explicit_onnx_variants(monkeypatch):
+    mod = _load_mod()
+    monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
+    monkeypatch.setattr(mod, "TENSORRT_AVAILABLE", True)
+    monkeypatch.setattr(mod, "CUDA_AVAILABLE", True)
+    monkeypatch.setattr(mod, "TORCH_CUDA_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ROCM_AVAILABLE", False)
+
+    allowed = mod.allowed_runtimes_for_pipelines(["yolo_obb_detection", "yolo_pose"])
+    assert "onnx_cpu" in allowed
+    assert "onnx_cuda" in allowed
+    assert "onnx_rocm" not in allowed
+    assert "cpu" in allowed
+    assert "cuda" in allowed
+    assert "tensorrt" in allowed
+
+
+def test_allowed_runtimes_for_sleap_pose_tracks_conda_availability(monkeypatch):
+    mod = _load_mod()
+    monkeypatch.setattr(mod, "MPS_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ROCM_AVAILABLE", False)
+    monkeypatch.setattr(mod, "CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "TORCH_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: None)
+
+    allowed = mod.allowed_runtimes_for_pipelines(["sleap_pose"])
+    assert allowed == ["cpu", "mps"]
+
+
+def test_allowed_runtimes_for_sleap_pose_exposes_onnx_cpu_with_conda(monkeypatch):
+    mod = _load_mod()
+    monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
+    monkeypatch.setattr(mod, "MPS_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ROCM_AVAILABLE", False)
+    monkeypatch.setattr(mod, "CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "TORCH_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod.shutil, "which", lambda _name: "/usr/bin/conda")
+
+    allowed = mod.allowed_runtimes_for_pipelines(["sleap_pose"])
+    assert "onnx_cpu" in allowed
+    assert "onnx_cuda" not in allowed
+
+
+def test_derive_detection_runtime_settings_tensorrt():
+    mod = _load_mod()
+    out = mod.derive_detection_runtime_settings("tensorrt")
+    assert out["yolo_device"] == "cuda:0"
+    assert out["enable_tensorrt"] is True
+    assert out["enable_onnx_runtime"] is False
+
+
+def test_derive_detection_runtime_settings_onnx_cpu():
+    mod = _load_mod()
+    out = mod.derive_detection_runtime_settings("onnx_cpu")
+    assert out["yolo_device"] == "cpu"
+    assert out["enable_tensorrt"] is False
+    assert out["enable_onnx_runtime"] is True
+
+
+def test_derive_detection_runtime_settings_onnx_cuda():
+    mod = _load_mod()
+    out = mod.derive_detection_runtime_settings("onnx_cuda")
+    assert out["yolo_device"] == "cuda:0"
+    assert out["enable_tensorrt"] is False
+    assert out["enable_onnx_runtime"] is True
+
+
+def test_derive_pose_runtime_settings_onnx_cuda():
+    mod = _load_mod()
+    out = mod.derive_pose_runtime_settings("onnx_cuda", backend_family="yolo")
+    assert out["pose_runtime_flavor"] == "onnx_cuda"
+    assert out["pose_sleap_device"] == "cuda:0"
+
+
+def test_derive_pose_runtime_settings_legacy_onnx_alias(monkeypatch):
+    mod = _load_mod()
+    monkeypatch.setattr(mod, "ONNXRUNTIME_ROCM_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_CPU_AVAILABLE", True)
+    monkeypatch.setattr(mod, "ONNXRUNTIME_AVAILABLE", True)
+    monkeypatch.setattr(mod, "CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "TORCH_CUDA_AVAILABLE", False)
+    monkeypatch.setattr(mod, "ROCM_AVAILABLE", False)
+
+    out = mod.derive_pose_runtime_settings("onnx", backend_family="sleap")
+    assert out["pose_runtime_flavor"] == "onnx_cpu"
+
+
+def test_infer_compute_runtime_from_legacy_prefers_pose_runtime_hint():
+    mod = _load_mod()
+    rt = mod.infer_compute_runtime_from_legacy(
+        yolo_device="auto",
+        enable_tensorrt=False,
+        pose_runtime_flavor="onnx_cpu",
+    )
+    assert rt == "onnx_cpu"

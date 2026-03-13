@@ -20,6 +20,24 @@ from multi_tracker.core.background.model import BackgroundModel
 from multi_tracker.core.detectors.engine import create_detector
 from multi_tracker.core.filters.kalman import KalmanFilterManager
 from multi_tracker.core.identity.analysis import IndividualDatasetGenerator
+from multi_tracker.core.tracking.pose_features import (
+    build_detection_direction_overrides as _pf_build_direction_overrides,
+)
+from multi_tracker.core.tracking.pose_features import (
+    build_pose_detection_keypoint_map as _pf_build_keypoint_map,
+)
+from multi_tracker.core.tracking.pose_features import (
+    compute_pose_geometry_from_keypoints as _pf_compute_geometry,
+)
+from multi_tracker.core.tracking.pose_features import (
+    normalize_pose_keypoints as _pf_normalize_keypoints,
+)
+from multi_tracker.core.tracking.pose_features import (
+    resolve_detection_tracking_theta as _pf_resolve_detection_tracking_theta,
+)
+from multi_tracker.core.tracking.pose_features import (
+    resolve_pose_group_indices as _pf_resolve_indices,
+)
 from multi_tracker.data.detection_cache import DetectionCache
 from multi_tracker.utils.batch_optimizer import BatchOptimizer
 from multi_tracker.utils.frame_prefetcher import FramePrefetcher
@@ -28,8 +46,46 @@ from multi_tracker.utils.image_processing import (
     apply_image_adjustments,
     stabilize_lighting,
 )
+from multi_tracker.utils.video_artifacts import build_individual_properties_cache_path
 
 logger = logging.getLogger(__name__)
+
+
+def get_density_region_flags(
+    meas,
+    regions,
+    frame_idx: int,
+) -> np.ndarray:
+    """Return a boolean mask indicating which detections fall inside a density region.
+
+    Parameters
+    ----------
+    meas:
+        List/array of detection measurements.  Each element must be indexable
+        with ``[0]`` (x) and ``[1]`` (y).
+    regions:
+        List of :class:`DensityRegion` to test against.
+    frame_idx:
+        Current frame index.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(M,)`` bool array — ``True`` for detections inside a flagged
+        region.
+    """
+    M = len(meas)
+    flags = np.zeros(M, dtype=bool)
+    if not regions:
+        return flags
+
+    for j in range(M):
+        cx, cy = float(meas[j][0]), float(meas[j][1])
+        for region in regions:
+            if region.contains(frame_idx, cx, cy):
+                flags[j] = True
+                break
+    return flags
 
 
 class TrackingWorker(QThread):
@@ -41,9 +97,9 @@ class TrackingWorker(QThread):
     frame_signal = Signal(np.ndarray)
     finished_signal = Signal(bool, list, list)
     progress_signal = Signal(int, str)
-    histogram_data_signal = Signal(dict)
     stats_signal = Signal(dict)  # Real-time FPS/ETA stats
     warning_signal = Signal(str, str)  # (title, message) for UI warnings
+    pose_exported_model_resolved_signal = Signal(str)
 
     def __init__(
         self,
@@ -67,6 +123,8 @@ class TrackingWorker(QThread):
         self.video_writer = None
         self.params_mutex = QMutex()
         self.parameters = {}
+        self.individual_properties_cache_path = None
+        self.individual_properties_id = ""
 
         # Stats tracking for FPS/ETA
         self.start_time = None
@@ -76,6 +134,9 @@ class TrackingWorker(QThread):
         # Internal state variables that helper methods depend on
         self.frame_count = 0
         self.trajectories_full = []
+
+        # Confidence density regions (computed after pre-detection phase)
+        self._density_regions = []
 
         # Frame prefetcher for async I/O
         self.frame_prefetcher = None
@@ -171,6 +232,666 @@ class TrackingWorker(QThread):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         self.frame_signal.emit(rgb)
 
+    def _build_individual_properties_cache_path(
+        self, properties_id: str, start_frame: int, end_frame: int
+    ) -> Path:
+        """Build deterministic path for individual-properties cache artifact."""
+        return build_individual_properties_cache_path(
+            self.video_path,
+            properties_id,
+            start_frame,
+            end_frame,
+            detection_cache_path=self.detection_cache_path,
+        )
+
+    def _extract_expanded_obb_crop(
+        self, frame: np.ndarray, corners: np.ndarray, padding_fraction: float
+    ):
+        """Extract axis-aligned crop around expanded OBB polygon.
+
+        Returns:
+            tuple[np.ndarray | None, tuple[int, int] | None]:
+                (crop, (x_min, y_min)) where offsets map crop-local -> frame-global.
+        """
+        if frame is None or corners is None:
+            return None, None
+        if corners.shape[0] < 4:
+            return None, None
+
+        frame_h, frame_w = frame.shape[:2]
+        centroid = corners.mean(axis=0)
+        expanded = corners.copy()
+        for i in range(4):
+            direction = corners[i] - centroid
+            expanded[i] = centroid + direction * (1.0 + padding_fraction)
+
+        expanded[:, 0] = np.clip(expanded[:, 0], 0, frame_w - 1)
+        expanded[:, 1] = np.clip(expanded[:, 1], 0, frame_h - 1)
+
+        x_min = max(0, int(np.floor(expanded[:, 0].min())))
+        x_max = min(frame_w, int(np.ceil(expanded[:, 0].max())) + 1)
+        y_min = max(0, int(np.floor(expanded[:, 1].min())))
+        y_max = min(frame_h, int(np.ceil(expanded[:, 1].max())) + 1)
+        if x_max <= x_min or y_max <= y_min:
+            return None, None
+
+        return frame[y_min:y_max, x_min:x_max].copy(), (x_min, y_min)
+
+    @staticmethod
+    def _normalize_theta(theta):
+        """Normalize radians to [0, 2*pi)."""
+        try:
+            value = float(theta)
+        except Exception:
+            value = 0.0
+        return value % (2 * math.pi)
+
+    @staticmethod
+    def _circular_abs_diff_rad(theta_a, theta_b):
+        """Return absolute circular difference in radians in [0, pi]."""
+        a = float(theta_a)
+        b = float(theta_b)
+        d = (a - b + math.pi) % (2 * math.pi) - math.pi
+        return abs(d)
+
+    def _collapse_obb_axis_theta(self, theta_axis, reference_theta):
+        """
+        Resolve 180-degree OBB ambiguity by picking theta or theta+pi nearest reference.
+        """
+        theta0 = self._normalize_theta(theta_axis)
+        theta1 = self._normalize_theta(theta0 + math.pi)
+        if reference_theta is None:
+            return theta0
+        try:
+            ref = float(reference_theta)
+            if not np.isfinite(ref):
+                return theta0
+            ref = self._normalize_theta(ref)
+        except Exception:
+            return theta0
+        d0 = self._circular_abs_diff_rad(theta0, ref)
+        d1 = self._circular_abs_diff_rad(theta1, ref)
+        return theta0 if d0 <= d1 else theta1
+
+    @staticmethod
+    def _parse_pose_group_tokens(raw_spec):
+        """Parse keypoint group spec from list/tuple/string into tokens."""
+        if raw_spec is None:
+            return []
+        if isinstance(raw_spec, str):
+            raw_tokens = raw_spec.split(",")
+        elif isinstance(raw_spec, (list, tuple)):
+            raw_tokens = list(raw_spec)
+        else:
+            raw_tokens = [raw_spec]
+
+        tokens = []
+        for token in raw_tokens:
+            t = str(token).strip()
+            if not t:
+                continue
+            try:
+                tokens.append(int(t))
+            except Exception:
+                tokens.append(t)
+        return tokens
+
+    def _resolve_pose_group_indices(self, raw_spec, keypoint_names):
+        """Resolve keypoint group names/indices to deduplicated index list."""
+        names = [str(v) for v in (keypoint_names or [])]
+        tokens = self._parse_pose_group_tokens(raw_spec)
+        if not tokens:
+            return []
+
+        lower_map = {name.lower(): idx for idx, name in enumerate(names)}
+        indices = []
+        seen = set()
+        for tok in tokens:
+            idx = None
+            if isinstance(tok, int):
+                if 0 <= tok < len(names):
+                    idx = int(tok)
+            else:
+                idx = lower_map.get(str(tok).strip().lower(), None)
+            if idx is None or idx in seen:
+                continue
+            seen.add(idx)
+            indices.append(idx)
+        return indices
+
+    def _compute_pose_heading_from_keypoints(
+        self,
+        keypoints,
+        anterior_indices,
+        posterior_indices,
+        min_valid_conf,
+    ):
+        """
+        Estimate directed heading (posterior -> anterior) from pose keypoints.
+
+        Returns None if either group has no valid keypoints above min_valid_conf.
+        """
+        if keypoints is None:
+            return None
+        arr = np.asarray(keypoints, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+            return None
+
+        def weighted_centroid(indices):
+            pts = []
+            weights = []
+            for idx in indices:
+                if idx < 0 or idx >= len(arr):
+                    continue
+                x, y, conf = arr[idx]
+                if (
+                    not np.isfinite(x)
+                    or not np.isfinite(y)
+                    or not np.isfinite(conf)
+                    or float(conf) < float(min_valid_conf)
+                ):
+                    continue
+                pts.append((float(x), float(y)))
+                weights.append(max(1e-6, float(conf)))
+            if not pts:
+                return None
+            pts_arr = np.asarray(pts, dtype=np.float64)
+            w_arr = np.asarray(weights, dtype=np.float64)
+            cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+            cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+            return cx, cy
+
+        ant = weighted_centroid(anterior_indices)
+        post = weighted_centroid(posterior_indices)
+        if ant is None or post is None:
+            return None
+
+        dx = ant[0] - post[0]
+        dy = ant[1] - post[1]
+        if not np.isfinite(dx) or not np.isfinite(dy):
+            return None
+        return self._normalize_theta(math.atan2(dy, dx))
+
+    def _build_pose_detection_keypoint_map(self, pose_props_cache, frame_idx):
+        """Build detection_id -> pose_keypoints map for one frame from cache."""
+        if pose_props_cache is None:
+            return {}
+        try:
+            frame = pose_props_cache.get_frame(int(frame_idx))
+        except Exception:
+            return {}
+        ids = frame.get("detection_ids", [])
+        keypoints = frame.get("pose_keypoints", [])
+        n = min(len(ids), len(keypoints))
+        out = {}
+        for i in range(n):
+            try:
+                det_id = int(ids[i])
+            except Exception:
+                continue
+            out[det_id] = keypoints[i]
+        return out
+
+    def _compute_pose_geometry_from_keypoints(
+        self,
+        keypoints,
+        anterior_indices,
+        posterior_indices,
+        min_valid_conf,
+        ignore_indices=None,
+    ):
+        """Extract heading, body length, and visibility from pose keypoints."""
+        if keypoints is None:
+            return None
+        arr = np.asarray(keypoints, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+            return None
+
+        ignore_set = {int(idx) for idx in (ignore_indices or [])}
+
+        def weighted_centroid(indices):
+            pts = []
+            weights = []
+            for idx in indices:
+                if idx in ignore_set or idx < 0 or idx >= len(arr):
+                    continue
+                x, y, conf = arr[idx]
+                if (
+                    not np.isfinite(x)
+                    or not np.isfinite(y)
+                    or not np.isfinite(conf)
+                    or float(conf) < float(min_valid_conf)
+                ):
+                    continue
+                pts.append((float(x), float(y)))
+                weights.append(max(1e-6, float(conf)))
+            if not pts:
+                return None
+            pts_arr = np.asarray(pts, dtype=np.float64)
+            w_arr = np.asarray(weights, dtype=np.float64)
+            cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+            cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+            return cx, cy
+
+        valid_total = 0
+        visible_total = 0
+        for idx in range(len(arr)):
+            if idx in ignore_set:
+                continue
+            valid_total += 1
+            conf = arr[idx, 2]
+            if np.isfinite(conf) and float(conf) >= float(min_valid_conf):
+                visible_total += 1
+        visibility = (
+            float(visible_total) / float(valid_total) if valid_total > 0 else 0.0
+        )
+
+        ant = weighted_centroid(anterior_indices)
+        post = weighted_centroid(posterior_indices)
+        if ant is None or post is None:
+            return {
+                "heading": None,
+                "body_length": None,
+                "visibility": float(np.clip(visibility, 0.0, 1.0)),
+            }
+
+        dx = ant[0] - post[0]
+        dy = ant[1] - post[1]
+        if not np.isfinite(dx) or not np.isfinite(dy):
+            heading = None
+            body_length = None
+        else:
+            heading = self._normalize_theta(math.atan2(dy, dx))
+            body_length = float(math.hypot(dx, dy))
+
+        return {
+            "heading": heading,
+            "body_length": body_length,
+            "visibility": float(np.clip(visibility, 0.0, 1.0)),
+        }
+
+    def _normalize_pose_keypoints(self, keypoints, min_valid_conf, ignore_indices=None):
+        """Center and scale pose keypoints for same-keypoint shape comparison."""
+        if keypoints is None:
+            return None
+        arr = np.asarray(keypoints, dtype=np.float32)
+        if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+            return None
+
+        ignore_set = {int(idx) for idx in (ignore_indices or [])}
+        valid = np.zeros(len(arr), dtype=bool)
+        valid_points = []
+        valid_weights = []
+        for idx in range(len(arr)):
+            if idx in ignore_set:
+                continue
+            x, y, conf = arr[idx]
+            if (
+                np.isfinite(x)
+                and np.isfinite(y)
+                and np.isfinite(conf)
+                and float(conf) >= float(min_valid_conf)
+            ):
+                valid[idx] = True
+                valid_points.append((float(x), float(y)))
+                valid_weights.append(max(1e-6, float(conf)))
+
+        if not valid_points:
+            return None
+
+        pts_arr = np.asarray(valid_points, dtype=np.float64)
+        w_arr = np.asarray(valid_weights, dtype=np.float64)
+        cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+        cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+        centered = pts_arr - np.array([[cx, cy]], dtype=np.float64)
+        radii = np.sqrt(np.sum(centered**2, axis=1))
+        scale = float(np.median(radii[radii > 1e-6])) if np.any(radii > 1e-6) else 1.0
+        scale = max(scale, 1.0)
+
+        out = np.full((len(arr), 3), np.nan, dtype=np.float32)
+        out[:, 2] = 0.0
+        valid_indices = np.where(valid)[0]
+        for src_idx, kp_idx in enumerate(valid_indices):
+            out[kp_idx, 0] = np.float32(centered[src_idx, 0] / scale)
+            out[kp_idx, 1] = np.float32(centered[src_idx, 1] / scale)
+            out[kp_idx, 2] = np.float32(arr[kp_idx, 2])
+        return out
+
+    @staticmethod
+    def _estimate_detection_crop_quality(shape, reference_body_size):
+        """Estimate crop quality from detection geometry."""
+        try:
+            area = float(shape[0])
+            aspect = float(shape[1])
+        except Exception:
+            return 0.0
+        if not np.isfinite(area) or area <= 0:
+            return 0.0
+        aspect = max(1e-3, float(abs(aspect)))
+        minor = math.sqrt(max(1e-6, (4.0 * area) / (math.pi * max(aspect, 1e-3))))
+        ref = max(1.0, float(reference_body_size) * 0.75)
+        return float(np.clip(minor / ref, 0.0, 1.0))
+
+    def _should_precompute_individual_data(self, params, detection_method):
+        """Run pose precompute when the pose extractor is enabled."""
+        pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
+        return bool(
+            not self.backward_mode
+            and not self.preview_mode
+            and detection_method == "yolo_obb"
+            and pose_enabled
+        )
+
+    def _resolve_tracking_theta(
+        self,
+        track_idx,
+        measured_theta,
+        pose_directed,
+        orientation_last,
+        fallback_theta=None,
+    ):
+        """Resolve directed vs axis-aligned orientation consistently for one track."""
+        if pose_directed:
+            return self._normalize_theta(measured_theta)
+
+        reference_theta = None
+        if orientation_last is not None and 0 <= int(track_idx) < len(orientation_last):
+            reference_theta = orientation_last[int(track_idx)]
+
+        if reference_theta is None and fallback_theta is not None:
+            try:
+                candidate = float(fallback_theta)
+            except Exception:
+                candidate = None
+            if candidate is not None and np.isfinite(candidate):
+                reference_theta = candidate
+
+        return self._collapse_obb_axis_theta(measured_theta, reference_theta)
+
+    @staticmethod
+    def _select_directed_heading(
+        pose_heading,
+        pose_directed,
+        headtail_heading,
+        headtail_directed,
+        pose_overrides_headtail=True,
+    ):
+        """Choose directed heading source (pose/head-tail) according to precedence."""
+        pose_valid = bool(pose_directed) and np.isfinite(float(pose_heading))
+        headtail_valid = bool(headtail_directed) and np.isfinite(
+            float(headtail_heading)
+        )
+        if pose_overrides_headtail:
+            if pose_valid:
+                return float(pose_heading), True
+            if headtail_valid:
+                return float(headtail_heading), True
+            return float("nan"), False
+        if headtail_valid:
+            return float(headtail_heading), True
+        if pose_valid:
+            return float(pose_heading), True
+        return float("nan"), False
+
+    def _precompute_pose_data(
+        self,
+        detector,
+        params,
+        detection_cache,
+        start_frame,
+        end_frame,
+    ):
+        """
+        Precompute pose keypoints in a single video pass.
+
+        Returns:
+            (pose_cache_path, pose_cache_hit)
+        """
+
+        pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
+        detection_method = params.get("DETECTION_METHOD", "background_subtraction")
+
+        if detection_method != "yolo_obb":
+            if pose_enabled:
+                logger.warning("Pose precompute requires YOLO OBB detection mode.")
+            return None, True
+
+        if not pose_enabled:
+            return None, True
+
+        pose_cache_path = None
+        pose_cache_hit = True
+        pose_backend = None
+        pose_cache_writer = None
+        properties_id = None
+        detection_hash = None
+        filter_hash = None
+        extractor_hash = None
+
+        if pose_enabled:
+            from multi_tracker.core.identity.properties_cache import (
+                IndividualPropertiesCache,
+                compute_detection_hash,
+                compute_extractor_hash,
+                compute_filter_settings_hash,
+                compute_individual_properties_id,
+            )
+            from multi_tracker.core.identity.runtime_api import (
+                create_pose_backend_from_config,
+            )
+
+            detection_hash = compute_detection_hash(
+                params.get("INFERENCE_MODEL_ID", ""),
+                self.video_path,
+                start_frame,
+                end_frame,
+                detection_cache_version="2.0",
+            )
+            filter_hash = compute_filter_settings_hash(params)
+            extractor_hash = compute_extractor_hash(params)
+            properties_id = compute_individual_properties_id(
+                detection_hash, filter_hash, extractor_hash
+            )
+            pose_cache_path = self._build_individual_properties_cache_path(
+                properties_id, start_frame, end_frame
+            )
+            self.individual_properties_id = str(properties_id)
+            self.individual_properties_cache_path = str(pose_cache_path)
+            params["INDIVIDUAL_PROPERTIES_ID"] = properties_id
+            params["INDIVIDUAL_PROPERTIES_CACHE_PATH"] = str(pose_cache_path)
+
+            # Check for existing pose cache
+            if pose_cache_path.exists():
+                existing = IndividualPropertiesCache(str(pose_cache_path), mode="r")
+                try:
+                    if existing.is_compatible():
+                        logger.info(
+                            "Pose properties cache hit: %s", str(pose_cache_path)
+                        )
+                    else:
+                        pose_cache_hit = False
+                finally:
+                    existing.close()
+            else:
+                pose_cache_hit = False
+
+        if pose_cache_hit:
+            self.progress_signal.emit(
+                100,
+                "Precompute: using existing pose cache.",
+            )
+            return str(pose_cache_path) if pose_cache_path else None, True
+
+        logger.info("=" * 80)
+        logger.info("POSE PRECOMPUTE: single video pass")
+        logger.info("=" * 80)
+
+        if pose_enabled and not pose_cache_hit:
+            logger.info("Initializing pose backend...")
+            self.progress_signal.emit(0, "Precompute: loading pose backend...")
+            from multi_tracker.core.identity.runtime_api import (
+                build_runtime_config,
+                create_pose_backend_from_config,
+            )
+
+            pose_out_root = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
+            if not pose_out_root:
+                pose_out_root = str(pose_cache_path.parent) if pose_cache_path else "."
+
+            pose_config = build_runtime_config(params, out_root=pose_out_root)
+            pose_backend = create_pose_backend_from_config(pose_config)
+            pose_backend.warmup()
+            logger.info("Pose backend ready.")
+
+            # Store resolved artifact path if applicable
+            runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "")).lower()
+            if runtime_flavor.startswith("onnx") or runtime_flavor.startswith(
+                "tensorrt"
+            ):
+                try:
+                    resolved_artifact = str(
+                        getattr(pose_backend, "exported_model_path", "")
+                        or getattr(pose_backend, "model_path", "")
+                    ).strip()
+                except Exception:
+                    resolved_artifact = ""
+                if resolved_artifact:
+                    params["POSE_EXPORTED_MODEL_PATH"] = resolved_artifact
+                    self.pose_exported_model_resolved_signal.emit(resolved_artifact)
+
+        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
+        padding_fraction = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+
+        roi_mask = params.get("ROI_MASK", None)
+        if roi_mask is not None:
+            dims_cap = cv2.VideoCapture(self.video_path)
+            base_h = int(dims_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            base_w = int(dims_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            dims_cap.release()
+            target_w = max(1, int(base_w * resize_f))
+            target_h = max(1, int(base_h * resize_f))
+            if roi_mask.shape[1] != target_w or roi_mask.shape[0] != target_h:
+                roi_mask = cv2.resize(roi_mask, (target_w, target_h), cv2.INTER_NEAREST)
+
+        # Open video once
+        video_cap = cv2.VideoCapture(self.video_path)
+        if not video_cap.isOpened():
+            raise RuntimeError(
+                f"Failed to open video for unified precompute: {self.video_path}"
+            )
+        if start_frame > 0:
+            video_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        # Open cache writers
+        if pose_enabled and not pose_cache_hit:
+            from multi_tracker.core.identity.properties_cache import (
+                IndividualPropertiesCache,
+            )
+
+            pose_cache_writer = IndividualPropertiesCache(
+                str(pose_cache_path), mode="w"
+            )
+
+        # Pipeline configuration
+        _POSE_CROSS_FRAME_BATCH = int(params.get("POSE_PRECOMPUTE_BATCH_SIZE", 64))
+        _bg_raw = params.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
+        _pose_bg_color = (
+            tuple(int(c) for c in _bg_raw)
+            if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
+            else (0, 0, 0)
+        )
+        _suppress_foreign_obb = bool(params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True))
+        _crop_workers = int(params.get("POSE_PIPELINE_CROP_WORKERS", 4))
+
+        # Pre-resize: auto-detect from backend or explicit config
+        _pre_resize = int(params.get("POSE_PIPELINE_PRE_RESIZE", 0))
+        if _pre_resize <= 0 and pose_backend is not None:
+            _pre_resize = int(getattr(pose_backend, "preferred_input_size", 0) or 0)
+
+        total_frames = max(1, end_frame - start_frame + 1)
+
+        self.progress_signal.emit(
+            1,
+            f"Pose precompute: processing {total_frames} frame(s)...",
+        )
+
+        from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+
+        pipeline = PosePipeline(
+            pose_backend,
+            pose_cache_writer,
+            cross_frame_batch=_POSE_CROSS_FRAME_BATCH,
+            crop_workers=_crop_workers,
+            pre_resize_target=_pre_resize,
+            bg_color=_pose_bg_color,
+            suppress_foreign_obb=_suppress_foreign_obb,
+            padding_fraction=padding_fraction,
+        )
+
+        try:
+
+            def _progress_cb(pct, msg):
+                self.progress_signal.emit(pct, msg)
+
+            def _stats_cb(stats):
+                self.stats_signal.emit(stats)
+
+            completed = pipeline.run(
+                video_cap,
+                detection_cache,
+                detector,
+                start_frame,
+                end_frame,
+                resize_f,
+                roi_mask,
+                progress_cb=_progress_cb,
+                stats_cb=_stats_cb,
+                stop_check=lambda: self._stop_requested,
+            )
+            pipeline.close()
+
+            if not completed or self._stop_requested:
+                logger.info("Unified precompute cancelled.")
+                self.progress_signal.emit(0, "Precompute cancelled.")
+                return None, False
+
+            # Save caches
+            if pose_cache_writer:
+                pose_cache_writer.save(
+                    metadata={
+                        "individual_properties_id": properties_id,
+                        "detection_hash": detection_hash,
+                        "filter_settings_hash": filter_hash,
+                        "extractor_hash": extractor_hash,
+                        "pose_keypoint_names": list(
+                            getattr(pose_backend, "output_keypoint_names", []) or []
+                        ),
+                        "start_frame": int(start_frame),
+                        "end_frame": int(end_frame),
+                        "video_path": str(Path(self.video_path).expanduser().resolve()),
+                    }
+                )
+                logger.info("Pose properties cache saved: %s", str(pose_cache_path))
+
+            self.progress_signal.emit(
+                100,
+                "Pose precompute complete: pose cache saved.",
+            )
+
+        finally:
+            if pose_cache_writer:
+                pose_cache_writer.close()
+            video_cap.release()
+            if pose_backend:
+                try:
+                    pose_backend.close()
+                except Exception:
+                    pass
+
+        return (
+            str(pose_cache_path) if pose_cache_path else None
+        ), not pose_enabled or pose_cache_hit
+
     def _run_batched_detection_phase(
         self, cap, detection_cache, detector, params, start_frame, end_frame
     ):
@@ -251,6 +972,8 @@ class TrackingWorker(QThread):
             batch_start_idx = frame_idx
 
             for _ in range(batch_size):
+                if self._stop_requested:
+                    break
                 ret, frame = cap.read()
                 if not ret:
                     break
@@ -276,6 +999,9 @@ class TrackingWorker(QThread):
             if not batch_frames:
                 break  # No more frames
 
+            if self._stop_requested:
+                break
+
             # Run batched detection
             batch_count += 1
             logger.info(
@@ -283,8 +1009,35 @@ class TrackingWorker(QThread):
             )
 
             # Progress callback for within-batch updates
-            def progress_cb(current, total, msg):
-                pass  # Could add finer-grained progress here if needed
+            def progress_cb(
+                current,
+                total,
+                msg,
+                _batch_start=batch_start_idx,
+                _batch_num=batch_count,
+                _total_batches=total_batches,
+            ):
+                if self._stop_requested:
+                    return
+                if total <= 0:
+                    return
+                # Keep UI responsive without flooding signals.
+                if current != total and current % 10 != 0:
+                    return
+                batch_fraction = float(current) / float(total)
+                overall_processed = _batch_start + current
+                overall_pct = (
+                    int((overall_processed * 100) / total_frames)
+                    if total_frames > 0
+                    else 0
+                )
+                self.progress_signal.emit(
+                    overall_pct,
+                    "Detecting objects: "
+                    f"batch {_batch_num}/{_total_batches}, "
+                    f"within-batch {int(batch_fraction * 100)}% "
+                    f"({current}/{total})",
+                )
 
             batch_results = detector.detect_objects_batched(
                 batch_frames,
@@ -300,6 +1053,8 @@ class TrackingWorker(QThread):
                 raw_shapes,
                 raw_confidences,
                 raw_obb_corners,
+                raw_heading_hints,
+                raw_directed_mask,
             ) in enumerate(batch_results):
                 relative_idx = batch_start_idx + local_idx
                 actual_frame_idx = (
@@ -317,6 +1072,8 @@ class TrackingWorker(QThread):
                     raw_confidences,
                     raw_obb_corners,
                     detection_ids,
+                    raw_heading_hints,
+                    raw_directed_mask,
                 )
 
             # Track batch timing
@@ -409,13 +1166,9 @@ class TrackingWorker(QThread):
                 out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
             )
 
-        # Initialize detector using factory function
-        # Disable TensorRT in preview mode - TensorRT uses fixed batch sizes
-        # which is wasteful for single-frame processing
-        if self.preview_mode and p.get("ENABLE_TENSORRT", False):
-            logger.debug("TensorRT disabled for preview mode (single-frame processing)")
-            p = p.copy()
-            p["ENABLE_TENSORRT"] = False
+        # Initialize detector using factory function.
+        # Preview mode remains compatible with fixed-batch runtimes by using
+        # single-frame padding in the detector path.
         detector = create_detector(p)
 
         # Determine if we should use batched detection
@@ -449,10 +1202,52 @@ class TrackingWorker(QThread):
             cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             logger.info(f"Seeking to start frame {start_frame}")
 
-        # Initialize individual dataset generator (supports both YOLO OBB and BG subtraction)
+        individual_pipeline_enabled = bool(
+            p.get(
+                "ENABLE_INDIVIDUAL_PIPELINE", p.get("ENABLE_IDENTITY_ANALYSIS", False)
+            )
+        )
+        individual_image_save_enabled = bool(
+            p.get(
+                "ENABLE_INDIVIDUAL_IMAGE_SAVE",
+                p.get("ENABLE_INDIVIDUAL_DATASET", False),
+            )
+        )
+
+        # Individual analysis is YOLO-only in this phase. Keep tracking behavior
+        # unchanged for background subtraction and skip analysis outputs there.
+        if individual_pipeline_enabled and detection_method != "yolo_obb":
+            msg = (
+                "Individual analysis requires YOLO OBB mode. "
+                "Background subtraction mode runs tracking without individual-analysis outputs."
+            )
+            logger.info(msg)
+            self.warning_signal.emit("Individual Analysis Disabled", msg)
+            individual_pipeline_enabled = False
+            individual_image_save_enabled = False
+
+        individual_data_precompute_enabled = self._should_precompute_individual_data(
+            p, detection_method
+        )
+        if individual_data_precompute_enabled and not self.detection_cache_path:
+            logger.error(
+                "Individual precompute requires detection caching, but no detection cache path is configured."
+            )
+            cap.release()
+            self.finished_signal.emit(False, [], [])
+            return
+
+        # Individual precompute needs full raw detections before tracking starts.
+        # Force two-phase detection in YOLO mode so precompute can run on cached detections.
+        if individual_data_precompute_enabled and not use_batched_detection:
+            use_batched_detection = True
+            logger.info("Enabling batched YOLO prepass for pose precompute.")
+
+        # Initialize individual dataset generator for image persistence only.
         individual_generator = None
         if (
-            p.get("ENABLE_INDIVIDUAL_DATASET", False)
+            individual_pipeline_enabled
+            and individual_image_save_enabled
             and not self.backward_mode  # Only generate dataset in forward pass
             and not self.preview_mode  # Never generate in preview
         ):
@@ -471,16 +1266,47 @@ class TrackingWorker(QThread):
         assigner = TrackAssigner(p, worker=self)
 
         N = p["MAX_TARGETS"]
-        track_states, missed_frames = ["active"] * N, [0] * N
+        # Start all tracks as "lost" so the free_dets loop bootstraps each slot
+        # from the first frame's real detections via initialize_filter.  Starting
+        # as "active" with a zero-initialised KF state causes every track to sit
+        # at (0, 0) = top-left corner for LOST_THRESHOLD_FRAMES frames before it
+        # can be properly placed — producing a warm-up gap that the optimizer and
+        # TrackingPreviewWorker do not have, and causing parameter divergence.
+        track_states, missed_frames = ["lost"] * N, [0] * N
         self.trajectories_full = [[] for _ in range(N)]
         trajectories_pruned = [[] for _ in range(N)]
-        position_deques = [deque(maxlen=2) for _ in range(N)]
+        position_deques = [
+            deque(maxlen=2) for _ in range(N)
+        ]  # entries: (x, y, frame_count)
         orientation_last, last_shape_info = [None] * N, [None] * N
+        track_pose_prototypes = [None] * N
+        track_avg_step = [0.0] * N
         tracking_continuity = [0] * N
         trajectory_ids, next_trajectory_id = list(range(N)), N
 
         detection_initialized, tracking_stabilized = False, False
         detection_counts, tracking_counts = 0, 0
+
+        # Diagnostic: log gate parameters for debugging jumps
+        _diag_body = float(
+            p.get("REFERENCE_BODY_SIZE", 20.0) * p.get("RESIZE_FACTOR", 1.0)
+        )
+        _diag_max_dist = float(p.get("MAX_DISTANCE_THRESHOLD", 1000.0))
+        _diag_vel_gate = (
+            float(p.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0)) * _diag_body
+        )
+        _diag_young_mult = float(p.get("KALMAN_YOUNG_GATE_MULTIPLIER", 1.0))
+        _diag_maturity = int(p.get("KALMAN_MATURITY_AGE", 10))
+        _diag_lost_thresh = int(p.get("LOST_THRESHOLD_FRAMES", 5))
+        logger.info(
+            f"Assignment gates: body={_diag_body:.1f}px "
+            f"MAX_DIST={_diag_max_dist:.1f}px "
+            f"VEL_GATE={_diag_vel_gate:.1f}px "
+            f"young_mult={_diag_young_mult:.1f} "
+            f"maturity={_diag_maturity} "
+            f"lost_thresh={_diag_lost_thresh} "
+            f"density_regions={len(self._density_regions)}"
+        )
 
         start_time, self.frame_count, fps_list = time.time(), 0, []
         local_counts, intensity_history, lighting_state = [0] * N, deque(maxlen=50), {}
@@ -508,7 +1334,8 @@ class TrackingWorker(QThread):
             # Check if we should load existing cache
             cache_exists = os.path.exists(self.detection_cache_path)
             should_load_cache = self.backward_mode or (
-                self.use_cached_detections and cache_exists
+                (self.use_cached_detections or individual_data_precompute_enabled)
+                and cache_exists
             )
 
             if should_load_cache and cache_exists:
@@ -574,6 +1401,38 @@ class TrackingWorker(QThread):
                 self.finished_signal.emit(False, [], [])
                 return
 
+            # Load density regions for backward pass from the sidecar JSON written
+            # by the forward pass (backward mode skips pre-detection, so regions are
+            # not computed here — they are loaded from disk instead).
+            if self.backward_mode and not self._density_regions:
+                try:
+                    from pathlib import Path as _Path
+
+                    from multi_tracker.afterhours.core.confidence_density import (
+                        load_regions as _load_regions,
+                    )
+
+                    _regions_path = _Path(self.detection_cache_path).with_name(
+                        _Path(self.detection_cache_path).stem
+                        + "_confidence_regions.json"
+                    )
+                    if _regions_path.exists():
+                        self._density_regions = _load_regions(_regions_path)
+                        logger.info(
+                            f"Backward pass: loaded {len(self._density_regions)} "
+                            f"density regions from {_regions_path}"
+                        )
+                    else:
+                        logger.info(
+                            "Backward pass: no density regions sidecar found "
+                            f"({_regions_path}); density-aware assignment disabled."
+                        )
+                except Exception:
+                    logger.exception(
+                        "Failed to load density regions for backward pass (non-fatal)"
+                    )
+                    self._density_regions = []
+
             # Create new cache for writing if needed
             if not use_cached_detections:
                 detection_cache = DetectionCache(
@@ -611,6 +1470,269 @@ class TrackingWorker(QThread):
             logger.info("=" * 80)
             logger.info("PHASE 2: Tracking and Visualization")
             logger.info("=" * 80)
+
+        # === COMPUTE CONFIDENCE DENSITY MAP ===
+        # Runs for BOTH fresh and cached detections (forward pass only).
+        # Backward pass loads regions from the sidecar JSON instead.
+        if (
+            not self.backward_mode
+            and self.detection_cache_path
+            and detection_cache is not None
+            and use_cached_detections
+        ):
+            from pathlib import Path as _Path
+
+            _regions_path = _Path(self.detection_cache_path).with_name(
+                _Path(self.detection_cache_path).stem + "_confidence_regions.json"
+            )
+            if _regions_path.exists():
+                # Regions already computed — just load them.
+                try:
+                    from multi_tracker.afterhours.core.confidence_density import (
+                        load_regions as _load_regions,
+                    )
+
+                    self._density_regions = _load_regions(_regions_path)
+                    logger.info(
+                        f"Loaded {len(self._density_regions)} existing density "
+                        f"regions from {_regions_path}"
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to load existing density regions (non-fatal)"
+                    )
+                    self._density_regions = []
+            else:
+                # Compute density map from detection cache.
+                try:
+                    import cv2 as _cv2
+
+                    from multi_tracker.afterhours.core.confidence_density import (
+                        compute_density_map_from_cache,
+                        export_diagnostic_video,
+                        save_regions,
+                    )
+
+                    _frame_h = int(cap.get(_cv2.CAP_PROP_FRAME_HEIGHT))
+                    _frame_w = int(cap.get(_cv2.CAP_PROP_FRAME_WIDTH))
+
+                    # Build a plain dict {frame_idx: (meas_arr, confs_arr, sizes_arr)}
+                    _cache_frames = sorted(detection_cache._cached_frames or [])
+                    _cache_dict = {}
+                    for _fidx in _cache_frames:
+                        (
+                            _meas_list,
+                            _sizes_list,
+                            _shapes_list,
+                            _confs_list,
+                            _obb_corners,
+                            _det_ids,
+                            _heading_hints,
+                            _directed_mask,
+                        ) = detection_cache.get_frame(_fidx)
+                        if _meas_list:
+                            _meas_arr = np.array(_meas_list, dtype=np.float32)
+                        else:
+                            _meas_arr = np.zeros((0, 3), dtype=np.float32)
+                        _confs_arr = np.array(_confs_list, dtype=np.float32)
+                        _sizes_arr = np.array(_sizes_list, dtype=np.float32)
+                        _cache_dict[_fidx] = (_meas_arr, _confs_arr, _sizes_arr)
+
+                    def _density_progress(pct, msg):
+                        logger.info(msg)
+                        self.progress_signal.emit(pct, msg)
+
+                    logger.info("Computing confidence density map...")
+                    self.progress_signal.emit(0, "Computing confidence density map...")
+
+                    # Compute min_area_px in grid-pixel units from body-size fraction.
+                    _density_ds = int(p.get("DENSITY_DOWNSAMPLE_FACTOR", 8))
+                    _body_size_px = float(p.get("REFERENCE_BODY_SIZE", 20.0)) * float(
+                        p.get("RESIZE_FACTOR", 1.0)
+                    )
+                    _body_size_grid = _body_size_px / max(1, _density_ds)
+                    _density_min_area_px = int(
+                        float(p.get("DENSITY_MIN_AREA_BODIES", 0.25))
+                        * _body_size_grid**2
+                    )
+
+                    _dm, _raw_grids = compute_density_map_from_cache(
+                        detection_cache=_cache_dict,
+                        frame_h=_frame_h,
+                        frame_w=_frame_w,
+                        sigma_scale=float(p.get("DENSITY_GAUSSIAN_SIGMA_SCALE", 1.0)),
+                        temporal_sigma=float(p.get("DENSITY_TEMPORAL_SIGMA", 2.0)),
+                        threshold=float(p.get("DENSITY_BINARIZE_THRESHOLD", 0.3)),
+                        downsample_factor=int(p.get("DENSITY_DOWNSAMPLE_FACTOR", 8)),
+                        min_frame_duration=int(p.get("DENSITY_MIN_FRAME_DURATION", 3)),
+                        min_area_px=_density_min_area_px,
+                        progress_callback=_density_progress,
+                    )
+                    self._density_regions = _dm.regions
+
+                    save_regions(self._density_regions, _regions_path)
+                    logger.info(
+                        f"Density map: {len(self._density_regions)} regions, "
+                        f"saved to {_regions_path}"
+                    )
+
+                    # Export diagnostic video at reduced resolution with
+                    # sequential frame reading (avoids expensive random seeks
+                    # on large videos).  Saved next to the source video so it
+                    # is easy to find regardless of where the cache lives.
+                    _diag_path = _Path(self.video_path).parent / (
+                        _Path(self.video_path).stem + "_confidence_map.mp4"
+                    )
+                    _fps = cap.get(_cv2.CAP_PROP_FPS) or 25.0
+                    _n_frames_total = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
+
+                    # Use a sequential reader: reset to frame 0 and call
+                    # cap.read() in order — much faster than random seeks.
+                    cap.set(_cv2.CAP_PROP_POS_FRAMES, 0)
+
+                    def _diag_reader(_fidx, _cap=cap):
+                        # Sequential read — _fidx is expected to increase
+                        # monotonically.  Just grab the next frame.
+                        _ok, _fr = _cap.read()
+                        return _fr if _ok else None
+
+                    logger.info("Exporting confidence density diagnostic video...")
+                    self.progress_signal.emit(
+                        50, "Exporting confidence density video..."
+                    )
+
+                    # Output at reduced resolution for speed.
+                    _diag_ds = 4  # 4× downsample for diagnostic video (independent of density grid ds)
+                    _out_w = max(1, _frame_w // _diag_ds)
+                    _out_h = max(1, _frame_h // _diag_ds)
+
+                    export_diagnostic_video(
+                        frame_reader=_diag_reader,
+                        n_frames=_n_frames_total,
+                        frame_h=_out_h,
+                        frame_w=_out_w,
+                        density_grids=_raw_grids,
+                        regions=self._density_regions,
+                        output_path=_diag_path,
+                        fps=_fps,
+                        output_scale=1.0 / _diag_ds,
+                        binary_volume=_dm.binary_volume,
+                        progress_callback=_density_progress,
+                    )
+                    self.progress_signal.emit(100, "Density map complete")
+                    logger.info(f"Diagnostic video exported: {_diag_path}")
+
+                    # Reset video capture for subsequent phases.
+                    cap.set(_cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+                except Exception:
+                    logger.exception(
+                        "Confidence density map generation failed (non-fatal)"
+                    )
+                    self._density_regions = []
+                    # Ensure video is reset even on failure.
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        if individual_data_precompute_enabled:
+            if detection_cache is None or not use_cached_detections:
+                logger.error(
+                    "Individual properties precompute requires cached raw detections."
+                )
+                if detection_cache:
+                    detection_cache.close()
+                cap.release()
+                if self.video_writer:
+                    self.video_writer.release()
+                self.finished_signal.emit(False, [], [])
+                return
+
+            try:
+                props_path, props_cache_hit = self._precompute_pose_data(
+                    detector, p, detection_cache, start_frame, end_frame
+                )
+
+                if props_path:
+                    state = "hit" if props_cache_hit else "miss"
+                    logger.info("Individual properties cache %s: %s", state, props_path)
+
+            except Exception as exc:
+                logger.exception("Individual data precompute failed.")
+                self.warning_signal.emit(
+                    "Individual Precompute Failed",
+                    f"Aborting tracking run because individual precompute failed:\n{exc}",
+                )
+                if detection_cache:
+                    detection_cache.close()
+                cap.release()
+                if self.video_writer:
+                    self.video_writer.release()
+                self.finished_signal.emit(False, [], [])
+                return
+
+        # Optional pose-properties reader for directional orientation override.
+        pose_props_cache = None
+        pose_direction_enabled = False
+        pose_direction_applied_count = 0
+        pose_direction_fallback_count = 0
+        pose_direction_anterior_indices = []
+        pose_direction_posterior_indices = []
+        pose_ignore_indices = []
+        pose_keypoint_names = []
+        pose_min_valid_conf = float(p.get("POSE_MIN_KPT_CONF_VALID", 0.2))
+        pose_frame_keypoints_map = {}
+        pose_frame_keypoints_map_frame = None
+
+        pose_cache_candidate = str(
+            self.individual_properties_cache_path
+            or p.get("INDIVIDUAL_PROPERTIES_CACHE_PATH", "")
+            or ""
+        ).strip()
+        pose_extractor_enabled = bool(p.get("ENABLE_POSE_EXTRACTOR", False))
+        if (
+            pose_extractor_enabled
+            and detection_method == "yolo_obb"
+            and pose_cache_candidate
+            and os.path.exists(pose_cache_candidate)
+        ):
+            from multi_tracker.core.identity.properties_cache import (
+                IndividualPropertiesCache,
+            )
+
+            pose_props_cache = IndividualPropertiesCache(pose_cache_candidate, mode="r")
+            if not pose_props_cache.is_compatible():
+                logger.warning(
+                    "Pose direction override disabled: incompatible properties cache: %s",
+                    pose_cache_candidate,
+                )
+                pose_props_cache.close()
+                pose_props_cache = None
+            else:
+                names = pose_props_cache.metadata.get("pose_keypoint_names", [])
+                if isinstance(names, (list, tuple)):
+                    pose_keypoint_names = [str(v) for v in names]
+                pose_ignore_indices = _pf_resolve_indices(
+                    p.get("POSE_IGNORE_KEYPOINTS", []), pose_keypoint_names
+                )
+                pose_direction_anterior_indices = _pf_resolve_indices(
+                    p.get("POSE_DIRECTION_ANTERIOR_KEYPOINTS", []), pose_keypoint_names
+                )
+                pose_direction_posterior_indices = _pf_resolve_indices(
+                    p.get("POSE_DIRECTION_POSTERIOR_KEYPOINTS", []), pose_keypoint_names
+                )
+                if (
+                    len(pose_direction_anterior_indices) > 0
+                    and len(pose_direction_posterior_indices) > 0
+                ):
+                    pose_direction_enabled = True
+                    logger.info(
+                        "Pose direction override enabled: anterior=%s, posterior=%s",
+                        pose_direction_anterior_indices,
+                        pose_direction_posterior_indices,
+                    )
+                else:
+                    logger.info(
+                        "Pose direction override disabled: define both anterior/posterior keypoint groups."
+                    )
 
         # === 2. FRAME PROCESSING LOOP ===
         # Determine whether to use frame prefetcher
@@ -765,6 +1887,9 @@ class TrackingWorker(QThread):
             raw_detection_ids = []
             filtered_obb_corners = []
             detection_confidences = []
+            pose_directed_mask = np.zeros(0, dtype=np.uint8)
+            detection_headtail_heading = np.full(0, np.nan, dtype=np.float32)
+            headtail_directed_mask = np.zeros(0, dtype=np.uint8)
             raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = (
                 [],
                 [],
@@ -772,6 +1897,8 @@ class TrackingWorker(QThread):
                 [],
                 [],
             )
+            raw_heading_hints = []
+            raw_directed_mask = []
             yolo_results = None
             fg_mask = None
             bg_u8 = None
@@ -787,6 +1914,8 @@ class TrackingWorker(QThread):
                     raw_confidences,
                     raw_obb_corners,
                     raw_detection_ids,
+                    raw_heading_hints,
+                    raw_directed_mask,
                 ) = detection_cache.get_frame(actual_frame_index)
 
                 if detection_method == "yolo_obb":
@@ -797,6 +1926,8 @@ class TrackingWorker(QThread):
                         detection_confidences,
                         filtered_obb_corners,
                         detection_ids,
+                        filtered_heading_hints,
+                        filtered_directed_mask,
                     ) = detector.filter_raw_detections(
                         raw_meas,
                         raw_sizes,
@@ -805,6 +1936,14 @@ class TrackingWorker(QThread):
                         raw_obb_corners,
                         roi_mask=ROI_mask_current,
                         detection_ids=raw_detection_ids,
+                        heading_hints=raw_heading_hints,
+                        directed_mask=raw_directed_mask,
+                    )
+                    detection_headtail_heading = np.asarray(
+                        filtered_heading_hints, dtype=np.float32
+                    )
+                    headtail_directed_mask = np.asarray(
+                        filtered_directed_mask, dtype=np.uint8
                     )
                 else:
                     meas = raw_meas
@@ -870,6 +2009,8 @@ class TrackingWorker(QThread):
                 raw_confidences = detection_confidences
                 raw_obb_corners = filtered_obb_corners
                 raw_detection_ids = detection_ids
+                raw_heading_hints = []
+                raw_directed_mask = []
 
             elif (
                 detection_method == "yolo_obb" and frame is not None
@@ -885,6 +2026,8 @@ class TrackingWorker(QThread):
                     yolo_results,
                     raw_confidences,
                     raw_obb_corners,
+                    raw_heading_hints,
+                    raw_directed_mask,
                 ) = detector.detect_objects(
                     yolo_frame,
                     self.frame_count,
@@ -901,6 +2044,8 @@ class TrackingWorker(QThread):
                     detection_confidences,
                     filtered_obb_corners,
                     detection_ids,
+                    filtered_heading_hints,
+                    filtered_directed_mask,
                 ) = detector.filter_raw_detections(
                     raw_meas,
                     raw_sizes,
@@ -909,6 +2054,14 @@ class TrackingWorker(QThread):
                     raw_obb_corners,
                     roi_mask=ROI_mask_current,
                     detection_ids=raw_detection_ids,
+                    heading_hints=raw_heading_hints,
+                    directed_mask=raw_directed_mask,
+                )
+                detection_headtail_heading = np.asarray(
+                    filtered_heading_hints, dtype=np.float32
+                )
+                headtail_directed_mask = np.asarray(
+                    filtered_directed_mask, dtype=np.uint8
                 )
                 if yolo_results is not None:
                     yolo_results._filtered_obb_corners = filtered_obb_corners
@@ -932,10 +2085,79 @@ class TrackingWorker(QThread):
                     raw_confidences,
                     raw_obb_corners if raw_obb_corners else None,
                     raw_detection_ids,
+                    raw_heading_hints,
+                    raw_directed_mask,
                 )
                 cached_frame_indices.add(actual_frame_index)
 
             profile_times["detection"] += time.time() - detect_start
+
+            detection_crop_quality = np.zeros(len(meas), dtype=np.float32)
+            detection_pose_heading = np.full(len(meas), np.nan, dtype=np.float32)
+            detection_pose_keypoints = [None] * len(meas)
+            detection_pose_visibility = np.zeros(len(meas), dtype=np.float32)
+            detection_directed_heading = np.full(len(meas), np.nan, dtype=np.float32)
+            detection_directed_mask = np.zeros(len(meas), dtype=np.uint8)
+
+            if meas and shapes:
+                reference_body_size = float(params.get("REFERENCE_BODY_SIZE", 20.0))
+                for det_idx in range(min(len(meas), len(shapes))):
+                    detection_crop_quality[det_idx] = (
+                        self._estimate_detection_crop_quality(
+                            shapes[det_idx], reference_body_size
+                        )
+                    )
+
+            # Optional pose-based geometry features and direction override.
+            if pose_direction_enabled and meas and detection_ids:
+                if pose_frame_keypoints_map_frame != actual_frame_index:
+                    pose_frame_keypoints_map = _pf_build_keypoint_map(
+                        pose_props_cache, actual_frame_index
+                    )
+                    pose_frame_keypoints_map_frame = actual_frame_index
+
+                pose_directed_mask = np.zeros(len(meas), dtype=np.uint8)
+                n_det = min(len(meas), len(detection_ids))
+                for det_idx in range(n_det):
+                    try:
+                        det_id = int(detection_ids[det_idx])
+                    except Exception:
+                        continue
+                    keypoints = pose_frame_keypoints_map.get(det_id)
+                    pose_features = _pf_compute_geometry(
+                        keypoints,
+                        pose_direction_anterior_indices,
+                        pose_direction_posterior_indices,
+                        pose_min_valid_conf,
+                        ignore_indices=pose_ignore_indices,
+                    )
+                    if pose_features is None:
+                        continue
+                    visibility = float(pose_features.get("visibility", 0.0) or 0.0)
+                    detection_pose_visibility[det_idx] = visibility
+                    detection_pose_keypoints[det_idx] = _pf_normalize_keypoints(
+                        keypoints,
+                        pose_min_valid_conf,
+                        ignore_indices=pose_ignore_indices,
+                    )
+                    pose_theta = pose_features.get("heading")
+                    if pose_theta is None:
+                        continue
+                    detection_pose_heading[det_idx] = np.float32(pose_theta)
+                    pose_directed_mask[det_idx] = 1
+
+            pose_overrides_headtail = bool(params.get("POSE_OVERRIDES_HEADTAIL", True))
+            if len(meas) > 0:
+                detection_directed_heading, detection_directed_mask = (
+                    _pf_build_direction_overrides(
+                        len(meas),
+                        detection_pose_heading,
+                        pose_directed_mask,
+                        detection_headtail_heading,
+                        headtail_directed_mask,
+                        pose_overrides_headtail=pose_overrides_headtail,
+                    )
+                )
 
             if len(meas) >= params.get("MIN_DETECTIONS_TO_START", 1):
                 detection_counts += 1
@@ -965,20 +2187,86 @@ class TrackingWorker(QThread):
             else:
                 overlay = None
 
-            hist_velocities = []
-            hist_sizes = []
-            hist_orientations = []
-            hist_costs = []
-
             if detection_initialized and meas:
                 # --- Assignment ---
                 assign_start = time.time()
                 preds = self.kf_manager.get_predictions()
 
                 # The Assigner now takes the kf_manager directly to access X and S_inv
+                association_data = {
+                    "detection_confidences": detection_confidences,
+                    "detection_crop_quality": detection_crop_quality,
+                    "detection_pose_heading": detection_directed_heading,
+                    "detection_pose_keypoints": detection_pose_keypoints,
+                    "detection_pose_visibility": detection_pose_visibility,
+                    "track_pose_prototypes": track_pose_prototypes,
+                    "track_avg_step": track_avg_step,
+                }
+
+                # --- Density-aware pre-gate ---
+                # For detections inside a high-density region, apply a tighter
+                # distance threshold in the cost matrix.  This blocks long-range
+                # matches into crowded zones (the track goes occluded instead)
+                # while leaving short-range matches intact.
+                _density_flags = None
+                if self._density_regions and len(meas) > 0:
+                    try:
+                        _density_flags = get_density_region_flags(
+                            meas,
+                            self._density_regions,
+                            frame_idx=actual_frame_index,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Density region flag computation failed (non-fatal)",
+                            exc_info=True,
+                        )
+
                 cost, spatial_candidates = assigner.compute_cost_matrix(
-                    N, meas, preds, shapes, self.kf_manager, last_shape_info
+                    N,
+                    meas,
+                    preds,
+                    shapes,
+                    self.kf_manager,
+                    last_shape_info,
+                    meas_ori_directed=(
+                        detection_directed_mask
+                        if len(detection_directed_mask) == len(meas)
+                        else None
+                    ),
+                    association_data=association_data,
                 )
+
+                # Tighter distance gate for density-region detections.
+                # Block (track, detection) pairs where the detection is in a
+                # density region AND the raw Euclidean distance from the track's
+                # predicted position exceeds the tighter threshold.  This
+                # prevents long-range jumps into crowded zones without
+                # distorting the cost matrix (which can push assignments to
+                # wrong detections farther away).
+                if _density_flags is not None and np.any(_density_flags):
+                    _density_factor = float(
+                        params.get("DENSITY_CONSERVATIVE_FACTOR", 0.7)
+                    )
+                    if _density_factor < 1.0:
+                        _base_max_dist = float(
+                            assigner.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
+                        )
+                        _density_max_dist = _base_max_dist * _density_factor
+                        _pred_xy = np.asarray(
+                            self.kf_manager.X[:N, :2], dtype=np.float32
+                        )
+                        _meas_xy = np.array(
+                            [meas[j][:2] for j in range(len(meas))],
+                            dtype=np.float32,
+                        )
+                        _raw_dist = np.linalg.norm(
+                            _pred_xy[:, None, :] - _meas_xy[None, :, :], axis=2
+                        )
+                        # Block long-range matches to density-region detections.
+                        _flagged_cols = np.where(_density_flags)[0]
+                        for _c in _flagged_cols:
+                            cost[_raw_dist[:, _c] >= _density_max_dist, _c] = 1e9
 
                 rows, cols, free_dets, next_id, high_cost_tracks = (
                     assigner.assign_tracks(
@@ -992,9 +2280,49 @@ class TrackingWorker(QThread):
                         trajectory_ids,
                         next_trajectory_id,
                         spatial_candidates,
+                        association_data=association_data,
                     )
                 )
                 next_trajectory_id = next_id
+                respawned_matches = {r for r in rows if track_states[r] == "lost"}
+
+                # --- Diagnostic: log large-distance assignments ---
+                if rows and self.frame_count % 10 == 0:
+                    _body = float(
+                        params.get("REFERENCE_BODY_SIZE", 20.0)
+                        * params.get("RESIZE_FACTOR", 1.0)
+                    )
+                    _max_d = float(
+                        assigner.params.get("MAX_DISTANCE_THRESHOLD", 1000.0)
+                    )
+                    _vel_gate = (
+                        float(params.get("KALMAN_MAX_VELOCITY_MULTIPLIER", 2.0)) * _body
+                    )
+                    for _r, _c in zip(rows, cols):
+                        _det_xy = np.array(meas[_c][:2], dtype=np.float32)
+                        _pred_xy_diag = self.kf_manager.X[_r, :2].copy()
+                        _raw_d = float(np.linalg.norm(_det_xy - _pred_xy_diag))
+                        _last_d = float("nan")
+                        if self.trajectories_full[_r]:
+                            _lp = self.trajectories_full[_r][-1]
+                            _last_d = float(
+                                np.linalg.norm(
+                                    _det_xy
+                                    - np.array([_lp[0], _lp[1]], dtype=np.float32)
+                                )
+                            )
+                        _state = track_states[_r]
+                        _cont = tracking_continuity[_r]
+                        _is_respawn = _r in respawned_matches
+                        if _raw_d > _body * 1.5 or _last_d > _body * 2.0:
+                            logger.warning(
+                                f"JUMP? frame={actual_frame_index} slot={_r} "
+                                f"traj={trajectory_ids[_r]} state={_state} "
+                                f"cont={_cont} respawn={_is_respawn} "
+                                f"raw_dist={_raw_d:.1f} last_dist={_last_d:.1f} "
+                                f"body={_body:.1f} MAX_DIST={_max_d:.1f} "
+                                f"VEL_GATE={_vel_gate:.1f}"
+                            )
 
                 # Conditionally compute confidence metrics (for performance)
                 save_confidence = params.get("SAVE_CONFIDENCE_METRICS", True)
@@ -1026,29 +2354,160 @@ class TrackingWorker(QThread):
                         track_states[r] = "occluded"
 
                 # --- KF Update & State Update ---
-                avg_cost = 0.0
+                total_cost = 0.0
                 for r, c in zip(rows, cols):
-                    # Vectorized manager handles the reshaping and indexing internally
-                    self.kf_manager.correct(r, meas[c])
-
-                    x, y, theta = meas[c]
-                    tracking_continuity[r] += 1
-                    position_deques[r].append((x, y))
-                    speed = (
-                        math.hypot(
-                            position_deques[r][1][0] - position_deques[r][0][0],
-                            position_deques[r][1][1] - position_deques[r][0][1],
-                        )
-                        if len(position_deques[r]) == 2
-                        else 0
+                    meas_x = float(meas[c][0])
+                    meas_y = float(meas[c][1])
+                    measured_theta = float(meas[c][2])
+                    directed_heading = bool(
+                        c < len(detection_directed_mask)
+                        and detection_directed_mask[c] == 1
                     )
+                    theta_for_tracking = _pf_resolve_detection_tracking_theta(
+                        r,
+                        measured_theta,
+                        (
+                            detection_directed_heading[c]
+                            if c < len(detection_directed_heading)
+                            else float("nan")
+                        ),
+                        directed_heading,
+                        orientation_last,
+                        fallback_theta=preds[r, 2] if r < len(preds) else None,
+                    )
+                    if directed_heading:
+                        pose_direction_applied_count += 1
+                    else:
+                        pose_direction_fallback_count += 1
+
+                    if r in respawned_matches:
+                        # Hard KF reset: Phase 3 assigns a new trajectory ID so
+                        # the KF must also start clean — mirrors the free_dets loop.
+                        self.trajectories_full[r].clear()
+                        trajectories_pruned[r].clear()
+                        position_deques[r].clear()
+                        track_avg_step[r] = 0.0
+                        local_counts[r] = 0
+                        orientation_last[r] = theta_for_tracking
+                        track_pose_prototypes[r] = None
+                        self.kf_manager.initialize_filter(
+                            r,
+                            np.array(
+                                [meas_x, meas_y, theta_for_tracking, 0.0, 0.0],
+                                dtype=np.float32,
+                            ),
+                        )
+
+                    corrected_meas = np.asarray(
+                        [meas_x, meas_y, theta_for_tracking], dtype=np.float32
+                    )
+                    self.kf_manager.correct(r, corrected_meas)
+                    track_x = float(self.kf_manager.X[r, 0])
+                    track_y = float(self.kf_manager.X[r, 1])
+                    if not (np.isfinite(track_x) and np.isfinite(track_y)):
+                        track_x, track_y = meas_x, meas_y
+
+                    tracking_continuity[r] += 1
+                    position_deques[r].append((track_x, track_y, self.frame_count))
+                    if len(position_deques[r]) == 2:
+                        (px1, py1, pf1), (px2, py2, pf2) = position_deques[r]
+                        speed = math.hypot(px2 - px1, py2 - py1) / max(1, pf2 - pf1)
+                    else:
+                        speed = 0
+                    # Confidence for the directed-heading flip gate:
+                    # pose-directed → pose visibility; head-tail-directed →
+                    # detector confidence; undirected → not used (1.0).
+                    orient_confidence = 1.0
+                    if directed_heading:
+                        if c < len(pose_directed_mask) and pose_directed_mask[c]:
+                            orient_confidence = (
+                                float(detection_pose_visibility[c])
+                                if c < len(detection_pose_visibility)
+                                else 1.0
+                            )
+                        else:
+                            orient_confidence = (
+                                float(detection_confidences[c])
+                                if c < len(detection_confidences)
+                                else 1.0
+                            )
                     orientation_last[r] = self._smooth_orientation(
-                        r, theta, speed, params, orientation_last, position_deques
+                        r,
+                        theta_for_tracking,
+                        speed,
+                        params,
+                        orientation_last,
+                        position_deques,
+                        directed_heading=directed_heading,
+                        orient_confidence=orient_confidence,
                     )
                     last_shape_info[r] = shapes[c]
+                    feature_alpha = float(
+                        np.clip(params.get("TRACK_FEATURE_EMA_ALPHA", 0.85), 0.0, 0.999)
+                    )
+                    high_conf_thresh = float(
+                        np.clip(
+                            params.get("ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD", 0.7),
+                            0.0,
+                            1.0,
+                        )
+                    )
+                    det_conf_for_track = (
+                        float(detection_confidences[c])
+                        if c < len(detection_confidences)
+                        else 0.0
+                    )
+                    if det_conf_for_track >= high_conf_thresh:
+                        prev_avg = float(track_avg_step[r])
+                        track_avg_step[r] = (
+                            feature_alpha * prev_avg + (1.0 - feature_alpha) * speed
+                        )
+
+                    det_pose_proto = (
+                        detection_pose_keypoints[c]
+                        if c < len(detection_pose_keypoints)
+                        else None
+                    )
+                    if det_pose_proto is not None:
+                        det_pose_proto = np.asarray(det_pose_proto, dtype=np.float32)
+                        prev_pose_proto = track_pose_prototypes[r]
+                        if prev_pose_proto is None or np.shape(
+                            prev_pose_proto
+                        ) != np.shape(det_pose_proto):
+                            track_pose_prototypes[r] = det_pose_proto.copy()
+                        else:
+                            prev_pose_proto = np.asarray(
+                                prev_pose_proto, dtype=np.float32
+                            )
+                            updated = prev_pose_proto.copy()
+                            for kp_idx in range(len(det_pose_proto)):
+                                det_valid = np.isfinite(
+                                    det_pose_proto[kp_idx, 0]
+                                ) and np.isfinite(det_pose_proto[kp_idx, 1])
+                                prev_valid = np.isfinite(
+                                    updated[kp_idx, 0]
+                                ) and np.isfinite(updated[kp_idx, 1])
+                                if det_valid and prev_valid:
+                                    updated[kp_idx, :2] = (
+                                        feature_alpha * updated[kp_idx, :2]
+                                        + (1.0 - feature_alpha)
+                                        * det_pose_proto[kp_idx, :2]
+                                    )
+                                    updated[kp_idx, 2] = max(
+                                        float(updated[kp_idx, 2]),
+                                        float(det_pose_proto[kp_idx, 2]),
+                                    )
+                                elif det_valid:
+                                    updated[kp_idx] = det_pose_proto[kp_idx]
+                            track_pose_prototypes[r] = updated
+
+                    theta_out = orientation_last[r]
+                    # Backward fallback orientation historically needs a 180-degree correction.
+                    if self.backward_mode and not directed_heading:
+                        theta_out = (theta_out + np.pi) % (2 * np.pi)
 
                     # Update trajectory with actual frame index
-                    pt = (int(x), int(y), orientation_last[r], actual_frame_index)
+                    pt = (int(track_x), int(track_y), theta_out, actual_frame_index)
                     self.trajectories_full[r].append(pt)
                     trajectories_pruned[r].append(pt)
 
@@ -1089,13 +2548,7 @@ class TrackingWorker(QThread):
                         self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1
                     current_cost = cost[r, c]
-                    avg_cost += current_cost / N
-
-                    # Populate histogram lists (this part is correct)
-                    hist_velocities.append(speed)
-                    hist_sizes.append(sizes[c])
-                    hist_orientations.append(orientation_last[r])
-                    hist_costs.append(current_cost)
+                    total_cost += current_cost
 
                 # --- CSV for Unmatched & Final Respawn (Identical to Original) ---
                 if self.csv_writer_thread:
@@ -1137,13 +2590,62 @@ class TrackingWorker(QThread):
                 for d_idx in free_dets:
                     for track_idx in range(N):
                         if track_states[track_idx] == "lost":
+                            # Diagnostic: log slot reuse distance
+                            if self.trajectories_full[track_idx]:
+                                _old = self.trajectories_full[track_idx][-1]
+                                _new_xy = meas[d_idx][:2]
+                                _reuse_d = float(
+                                    np.linalg.norm(
+                                        np.array([_old[0], _old[1]])
+                                        - np.array(_new_xy[:2])
+                                    )
+                                )
+                                _body_d = float(
+                                    params.get("REFERENCE_BODY_SIZE", 20.0)
+                                    * params.get("RESIZE_FACTOR", 1.0)
+                                )
+                                if _reuse_d > _body_d * 3.0:
+                                    logger.warning(
+                                        f"SLOT_REUSE frame={actual_frame_index} "
+                                        f"slot={track_idx} old_traj="
+                                        f"{trajectory_ids[track_idx]} "
+                                        f"new_traj={next_trajectory_id} "
+                                        f"reuse_dist={_reuse_d:.1f} "
+                                        f"old=({_old[0]:.0f},{_old[1]:.0f}) "
+                                        f"new=({_new_xy[0]:.0f},"
+                                        f"{_new_xy[1]:.0f})"
+                                    )
+                            directed_heading = bool(
+                                d_idx < len(detection_directed_mask)
+                                and detection_directed_mask[d_idx] == 1
+                            )
+                            theta_measurement = float(meas[d_idx][2])
+                            if directed_heading and d_idx < len(
+                                detection_directed_heading
+                            ):
+                                directed_theta = float(
+                                    detection_directed_heading[d_idx]
+                                )
+                                if np.isfinite(directed_theta):
+                                    theta_measurement = directed_theta
+                            theta_init = self._resolve_tracking_theta(
+                                track_idx,
+                                theta_measurement,
+                                pose_directed=directed_heading,
+                                orientation_last=orientation_last,
+                                fallback_theta=(
+                                    self.kf_manager.X[track_idx, 2]
+                                    if track_idx < len(self.kf_manager.X)
+                                    else None
+                                ),
+                            )
                             self.kf_manager.initialize_filter(
                                 track_idx,
                                 np.array(
                                     [
                                         meas[d_idx][0],
                                         meas[d_idx][1],
-                                        meas[d_idx][2],
+                                        theta_init,
                                         0,
                                         0,
                                     ],
@@ -1155,10 +2657,37 @@ class TrackingWorker(QThread):
                                 missed_frames[track_idx],
                                 tracking_continuity[track_idx],
                             ) = ("active", 0, 0)
+                            self.trajectories_full[track_idx].clear()
+                            trajectories_pruned[track_idx].clear()
                             trajectory_ids[track_idx] = next_trajectory_id
+                            orientation_last[track_idx] = theta_init
+                            last_shape_info[track_idx] = (
+                                shapes[d_idx] if d_idx < len(shapes) else None
+                            )
+                            track_pose_prototypes[track_idx] = (
+                                np.asarray(
+                                    detection_pose_keypoints[d_idx], dtype=np.float32
+                                ).copy()
+                                if (
+                                    d_idx < len(detection_pose_keypoints)
+                                    and detection_pose_keypoints[d_idx] is not None
+                                )
+                                else None
+                            )
+                            track_avg_step[track_idx] = 0.0
+                            position_deques[track_idx].clear()
+                            position_deques[track_idx].append(
+                                (
+                                    float(meas[d_idx][0]),
+                                    float(meas[d_idx][1]),
+                                    self.frame_count,
+                                )
+                            )
+                            local_counts[track_idx] = 0
                             next_trajectory_id += 1
                             break
 
+                avg_cost = total_cost / len(rows) if rows else float("inf")
                 if avg_cost < params["MAX_DISTANCE_THRESHOLD"]:
                     tracking_counts += 1
                 else:
@@ -1184,8 +2713,8 @@ class TrackingWorker(QThread):
                 if (
                     detection_initialized
                     and meas
-                    and "cols" in dir()
-                    and "rows" in dir()
+                    and "cols" in locals()
+                    and "rows" in locals()
                 ):
                     # Create mapping from detection index to track info
                     det_to_track = {}
@@ -1216,6 +2745,46 @@ class TrackingWorker(QThread):
                 )
                 detection_ids_for_dataset = detection_ids if detection_ids else None
 
+                # Heading hints from head-tail model for directed canonicalization.
+                _ht_hints = (
+                    list(filtered_heading_hints)
+                    if (
+                        "filtered_heading_hints" in locals()
+                        and len(filtered_heading_hints) == len(meas)
+                    )
+                    else None
+                )
+                _ht_directed = (
+                    list(headtail_directed_mask)
+                    if (
+                        "headtail_directed_mask" in locals()
+                        and len(headtail_directed_mask) == len(meas)
+                    )
+                    else None
+                )
+
+                # Motion-based velocity fallback: derive (vx, vy) per detection from
+                # the two most-recent positions stored in each track's position_deque.
+                _velocities_for_dataset = None
+                if matched_track_ids and "position_deques" in locals():
+                    _vel_list = []
+                    for _tid in matched_track_ids:
+                        if (
+                            _tid >= 0
+                            and _tid < len(position_deques)
+                            and len(position_deques[_tid]) == 2
+                        ):
+                            (_x1, _y1, _f1), (_x2, _y2, _f2) = position_deques[_tid]
+                            _dt = _f2 - _f1
+                            if _dt != 0:
+                                _vel_list.append(((_x2 - _x1) / _dt, (_y2 - _y1) / _dt))
+                            else:
+                                _vel_list.append(None)
+                        else:
+                            _vel_list.append(None)
+                    if any(v is not None for v in _vel_list):
+                        _velocities_for_dataset = _vel_list
+
                 # Use original-frame coordinates for crop extraction.
                 coord_scale_factor = 1.0 / resize_f
 
@@ -1232,6 +2801,9 @@ class TrackingWorker(QThread):
                         trajectory_ids=traj_ids_for_dataset,
                         coord_scale_factor=coord_scale_factor,
                         detection_ids=detection_ids_for_dataset,
+                        heading_hints=_ht_hints,
+                        directed_mask=_ht_directed,
+                        velocities=_velocities_for_dataset,
                     )
                 elif shapes:
                     # Background subtraction - compute ellipse params from filtered shapes
@@ -1259,22 +2831,15 @@ class TrackingWorker(QThread):
                         trajectory_ids=traj_ids_for_dataset,
                         coord_scale_factor=coord_scale_factor,
                         detection_ids=detection_ids_for_dataset,
+                        heading_hints=_ht_hints,
+                        directed_mask=_ht_directed,
+                        velocities=_velocities_for_dataset,
                     )
 
             # --- Tracking State Updates ---
             track_start = time.time()
             # (All the tracking state updates happen here - already in code)
             profile_times["tracking_update"] += time.time() - track_start
-
-            # Only emit histogram data if the feature is enabled in the GUI
-            if params.get("ENABLE_HISTOGRAMS", False):
-                histogram_payload = {
-                    "velocities": hist_velocities,
-                    "sizes": hist_sizes,
-                    "orientations": hist_orientations,
-                    "assignment_costs": hist_costs,
-                }
-                self.histogram_data_signal.emit(histogram_payload)
 
             # Emit progress signal periodically to avoid overwhelming the GUI thread
             # We also check that total_frames is valid
@@ -1431,6 +2996,8 @@ class TrackingWorker(QThread):
                         [],
                         None,
                         [],
+                        [],
+                        [],
                     )
 
         # === 3. CLEANUP (Identical to Original) ===
@@ -1443,6 +3010,11 @@ class TrackingWorker(QThread):
         if self.video_writer:
             self.video_writer.release()
 
+        if pose_props_cache is not None:
+            try:
+                pose_props_cache.close()
+            except Exception:
+                pass
         # Save or close detection cache
         if detection_cache:
             if not self.backward_mode and not use_cached_detections:
@@ -1460,6 +3032,13 @@ class TrackingWorker(QThread):
             if dataset_path:
                 logger.info(f"Individual dataset saved to: {dataset_path}")
 
+        if pose_direction_applied_count > 0 or pose_direction_fallback_count > 0:
+            logger.info(
+                "Directed heading summary: applied=%d, fallback=%d",
+                int(pose_direction_applied_count),
+                int(pose_direction_fallback_count),
+            )
+
         logger.info("Tracking worker finished. Emitting raw trajectory data.")
 
         self.finished_signal.emit(
@@ -1467,9 +3046,54 @@ class TrackingWorker(QThread):
         )
 
     def _smooth_orientation(
-        self, r, theta, speed, p, orientation_last, position_deques
+        self,
+        r,
+        theta,
+        speed,
+        p,
+        orientation_last,
+        position_deques,
+        directed_heading=False,
+        orient_confidence=1.0,
     ):
         final_theta, old = theta, orientation_last[r]
+
+        if directed_heading and p.get("DIRECTED_ORIENT_SMOOTHING", True):
+            # Directed headings (pose/head-tail) are noisy estimates: trust the
+            # axis but gate 180-degree flips via temporal continuity and
+            # per-detection confidence.  Small changes (<=90°) are accepted
+            # as-is — unlike undirected OBB headings, there is no axis jitter
+            # to rate-limit when stopped.
+            if old is None:
+                return theta
+            flip_conf_thresh = float(p.get("DIRECTED_ORIENT_FLIP_CONFIDENCE", 0.7))
+            old_deg = math.degrees(old)
+            new_deg = math.degrees(theta)
+            delta = wrap_angle_degs(new_deg - old_deg)
+            if abs(delta) > 90:
+                # Likely head-tail swap: check motion evidence + confidence.
+                accept_flip = False
+                if speed >= p["VELOCITY_THRESHOLD"] and len(position_deques[r]) == 2:
+                    (x1, y1, _), (x2, y2, _) = position_deques[r]
+                    ang_deg = math.degrees(math.atan2(y2 - y1, x2 - x1))
+                    motion_favors_new = abs(wrap_angle_degs(new_deg - ang_deg)) < abs(
+                        wrap_angle_degs(old_deg - ang_deg)
+                    )
+                    # Accept only when motion corroborates the flip AND
+                    # confidence is adequate.  When motion contradicts (animal
+                    # still going the same way), never accept regardless of
+                    # confidence — the flip is almost certainly spurious.
+                    accept_flip = (
+                        motion_favors_new and orient_confidence >= flip_conf_thresh
+                    )
+                else:
+                    # Stopped or no motion history: confidence alone decides.
+                    accept_flip = orient_confidence >= flip_conf_thresh
+                if not accept_flip:
+                    new_deg = (new_deg + 180.0) % 360.0
+            return math.radians(new_deg % 360.0)
+
+        # --- Original undirected smoothing (axis-only, no direction signal) ---
         if speed < p["VELOCITY_THRESHOLD"] and old is not None:
             old_deg, new_deg = math.degrees(old), math.degrees(theta)
             delta = wrap_angle_degs(new_deg - old_deg)
@@ -1479,7 +3103,7 @@ class TrackingWorker(QThread):
                 new_deg = old_deg + math.copysign(p["MAX_ORIENT_DELTA_STOPPED"], delta)
             final_theta = math.radians(new_deg)
         elif speed >= p["VELOCITY_THRESHOLD"] and p["INSTANT_FLIP_ORIENTATION"]:
-            (x1, y1), (x2, y2) = position_deques[r]
+            (x1, y1, _), (x2, y2, _) = position_deques[r]
             ang = math.atan2(y2 - y1, x2 - x1)
             diff = (ang - theta + math.pi) % (2 * math.pi) - math.pi
             if abs(diff) > math.pi / 2:

@@ -13,6 +13,10 @@ torchaudio
 
 # Computer vision & deep learning
 timm
+hnswlib
+usearch
+annoy
+
 pupil-apriltags
 ultralytics
 

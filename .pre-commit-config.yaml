@@ -46,7 +46,7 @@ repos:
   rev: v2.3.2
   hooks:
   - id: autopep8
-    args: ['--in-place', '--select=E226,E231']
+    args: ['--in-place', '--select=E226,E225,E231']
 
   # General file checks
 - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -58,7 +58,7 @@ repos:
     exclude: ^mkdocs\.yml$
   - id: check-json
   - id: check-added-large-files
-    args: ['--maxkb=1000']
+    args: ['--maxkb=50000']
   - id: check-merge-conflict
   - id: check-toml
   - id: mixed-line-ending

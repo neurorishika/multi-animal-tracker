@@ -53,6 +53,9 @@ cupy-rocm-6-0
 
 # Computer vision & deep learning
 timm
+hnswlib
+usearch
+annoy
 pupil-apriltags
 ultralytics
 

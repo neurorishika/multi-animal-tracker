@@ -19,7 +19,7 @@ os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 # Set up logging
 def setup_logging(
     log_level: object = logging.INFO,
-    enable_file_logging: object = False,
+    _enable_file_logging: object = False,
     log_dir: object = None,
 ) -> object:
     """Set up logging configuration for the multi-tracker application.
@@ -127,7 +127,7 @@ def main() -> object:
     log_level = getattr(logging, args.log_level.upper())
     setup_logging(
         log_level=log_level,
-        enable_file_logging=not args.no_file_log,
+        _enable_file_logging=not args.no_file_log,
         log_dir=args.log_dir,
     )
 
@@ -167,7 +167,7 @@ def main() -> object:
         try:
             from PySide6.QtGui import QIcon
 
-            project_root = Path(__file__).resolve().parents[3]
+            project_root = Path(__file__).resolve().parents[2]
             brand_icon = project_root / "brand" / "multianimaltracker.svg"
             fallback_icon = (
                 Path(__file__).resolve().parent.parent / "resources" / "icon.png"

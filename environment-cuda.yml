@@ -28,7 +28,25 @@ dependencies:
 - opencv
 - scikit-image
 - pillow
-- shapely
+
+ # Hyperparameter optimization
+- optuna
+- optunahub
+- cmaes
+
+  # Efficiency - CPU and GPU
+- numba
+
+  # ONNX Runtime GPU compatibility on CUDA 13 systems
+  # ORT GPU wheels currently require CUDA 12 user-space libs at runtime
+  # (e.g., libcublasLt.so.12, libcudart.so.12, libcufft.so.11, libcudnn.so.9).
+  # These can coexist with system-level CUDA 13 and driver installs.
+- cuda-version=12.*
+- cuda-cudart=12.*
+- cuda-nvrtc=12.*
+- libcublas=12.*
+- libcufft=11.*
+- libcudnn=9.*
 
   # Efficiency - CPU and GPU
 - numba
@@ -42,15 +60,11 @@ dependencies:
 - pip
 - setuptools
 - wheel
-- pytest
-- pytest-cov
-- black
-- flake8
-- isort
-- pre-commit
 
+  # Dev tools are managed separately; after activating this env run:
+  #   make install-dev
   # Install GPU-accelerated packages via pip
   # Step 1: mamba/conda installs core packages + uv
-  # Step 2: uv installs GPU packages from requirements-gpu.txt (much faster)
+  # Step 2: uv installs GPU packages from requirements-cuda12/13.txt (much faster)
 - pip:
   - uv    # Fast package installer for step 2

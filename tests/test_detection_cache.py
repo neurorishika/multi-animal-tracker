@@ -25,6 +25,8 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
             confidences=[0.95],
             obb_corners=[np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=np.float32)],
             detection_ids=[100001],
+            heading_hints=[0.1],
+            directed_mask=[1],
         )
         cache.add_frame(
             11,
@@ -55,21 +57,43 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
         assert cache.covers_frame_range(10, 12)
         assert cache.get_missing_frames(10, 12) == []
 
-        meas, sizes, shapes, confidences, obb, det_ids = cache.get_frame(10)
+        (
+            meas,
+            sizes,
+            shapes,
+            confidences,
+            obb,
+            det_ids,
+            heading_hints,
+            directed_mask,
+        ) = cache.get_frame(10)
         assert len(meas) == 1 and meas[0].shape == (3,)
         assert sizes == [12.0]
         assert shapes == [(10.0, 1.2)]
         assert confidences == [0.949999988079071] or confidences == [0.95]
         assert len(obb) == 1
         assert det_ids == [100001.0]
+        assert np.allclose(heading_hints, [0.1], rtol=1e-6, atol=1e-6)
+        assert directed_mask == [1]
 
-        meas, sizes, shapes, confidences, obb, det_ids = cache.get_frame(11)
+        (
+            meas,
+            sizes,
+            shapes,
+            confidences,
+            obb,
+            det_ids,
+            heading_hints,
+            directed_mask,
+        ) = cache.get_frame(11)
         assert meas == []
         assert sizes == []
         assert shapes == []
         assert confidences == []
         assert obb == []
         assert det_ids == []
+        assert heading_hints == []
+        assert directed_mask == []
 
 
 def test_detection_cache_missing_frame_reporting(tmp_path: Path) -> None:
@@ -97,3 +121,13 @@ def test_detection_cache_rejects_legacy_versions(tmp_path: Path) -> None:
 
     with DetectionCache(cache_path, mode="r") as cache:
         assert not cache.is_compatible()
+
+
+def test_detection_cache_save_creates_parent_dirs(tmp_path: Path) -> None:
+    cache_path = tmp_path / "nested" / "clip_caches" / "detections.npz"
+
+    with DetectionCache(cache_path, mode="w", start_frame=0, end_frame=0) as cache:
+        cache.add_frame(0, [], [], [], [])
+        cache.save()
+
+    assert cache_path.exists()

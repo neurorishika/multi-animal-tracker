@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
@@ -80,7 +81,7 @@ def test_create_detector_defaults_to_background_subtraction() -> None:
     assert isinstance(detector, mod.ObjectDetector)
 
 
-def test_tensorrt_engine_path_follows_inference_model_id(
+def test_tensorrt_engine_path_is_model_adjacent_and_stable_across_ids(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -124,7 +125,6 @@ def test_tensorrt_engine_path_follows_inference_model_id(
         det.device = "cuda:0"
         det.use_tensorrt = False
         det.tensorrt_model_path = None
-        det._shapely_warning_shown = False
         det._try_load_tensorrt_model(str(model_path))
         assert det.use_tensorrt
         assert det.tensorrt_model_path is not None
@@ -134,10 +134,116 @@ def test_tensorrt_engine_path_follows_inference_model_id(
     path_b_id1 = build_engine_path(model_b, "id-A")
     path_a_id2 = build_engine_path(model_a, "id-B")
 
-    # TensorRT cache key is intentionally aligned to inference identity.
-    # If INFERENCE_MODEL_ID is unchanged, engine path should be unchanged.
-    assert path_a_id1 == path_b_id1
-    assert path_a_id1 != path_a_id2
+    # TensorRT artifacts are co-located with source model paths.
+    # Different model locations should map to different engine paths.
+    assert path_a_id1 != path_b_id1
+    # Same model location should keep the same engine path even if inference id changes.
+    assert path_a_id1 == path_a_id2
+
+
+def test_tensorrt_engine_path_is_batch_specific(tmp_path: Path, monkeypatch) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            out = export_root / f"{uuid.uuid4().hex}.engine"
+            out.write_bytes(b"fake-engine")
+            return str(out)
+
+    fake_ultra = types.SimpleNamespace(YOLO=FakeYOLO)
+    monkeypatch.setitem(sys.modules, "ultralytics", fake_ultra)
+
+    model_path = tmp_path / "best.pt"
+    model_path.write_bytes(b"model")
+
+    def build_engine_path(batch_size: int):
+        det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+        det.params = {
+            "TENSORRT_MAX_BATCH_SIZE": int(batch_size),
+            "INFERENCE_MODEL_ID": "id-A",
+        }
+        det.device = "cuda:0"
+        det.use_tensorrt = False
+        det.tensorrt_model_path = None
+        det.tensorrt_batch_size = 1
+        det._try_load_tensorrt_model(str(model_path))
+        assert det.use_tensorrt
+        assert det.tensorrt_model_path is not None
+        return det.tensorrt_model_path, int(det.tensorrt_batch_size)
+
+    path_b8, b8 = build_engine_path(8)
+    path_b4, b4 = build_engine_path(4)
+    assert path_b8 != path_b4
+    assert path_b8.endswith("_b8.engine")
+    assert path_b4.endswith("_b4.engine")
+    assert b8 == 8
+    assert b4 == 4
+
+
+def test_onnx_artifact_path_is_batch_specific_and_model_adjacent(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    mod = _load_engine_module()
+
+    export_root = tmp_path / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+
+    class FakeYOLO:
+        def __init__(self, path, task=None):
+            self.path = path
+            self.task = task
+            self.overrides = {}
+            self.model = types.SimpleNamespace(args={})
+
+        def to(self, _device):
+            return self
+
+        def export(self, **_kwargs):
+            out = export_root / f"{uuid.uuid4().hex}.onnx"
+            out.write_bytes(b"fake-onnx")
+            return str(out)
+
+    fake_ultra = types.SimpleNamespace(YOLO=FakeYOLO)
+    monkeypatch.setitem(sys.modules, "ultralytics", fake_ultra)
+
+    model_path = tmp_path / "best.pt"
+    model_path.write_bytes(b"model")
+
+    def build_onnx_path(batch_size: int):
+        det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+        det.params = {
+            "TENSORRT_MAX_BATCH_SIZE": int(batch_size),
+            "INFERENCE_MODEL_ID": "id-A",
+        }
+        det.device = "cpu"
+        det.use_onnx = False
+        det.onnx_model_path = None
+        det.onnx_imgsz = None
+        det.onnx_batch_size = 1
+        det._try_load_onnx_model(str(model_path))
+        assert det.use_onnx
+        assert det.onnx_model_path is not None
+        return det.onnx_model_path, int(det.onnx_batch_size)
+
+    path_b8, b8 = build_onnx_path(8)
+    path_b4, b4 = build_onnx_path(4)
+
+    assert path_b8 != path_b4
+    assert path_b8.endswith("_b8.onnx")
+    assert path_b4.endswith("_b4.onnx")
+    assert b8 == 8
+    assert b4 == 4
 
 
 def test_yolo_raw_detection_cap_is_two_x_max_targets() -> None:
@@ -145,6 +251,27 @@ def test_yolo_raw_detection_cap_is_two_x_max_targets() -> None:
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
     det.params = {"MAX_TARGETS": 6}
     assert det._raw_detection_cap() == 12
+
+
+def test_resolve_onnx_imgsz_prefers_model_metadata(tmp_path: Path, monkeypatch) -> None:
+    mod = _load_engine_module()
+
+    class FakeYOLO:
+        def __init__(self, _path, task=None):
+            self.task = task
+            self.overrides = {"imgsz": 1504}
+            self.model = types.SimpleNamespace(args={"imgsz": 1504})
+
+    monkeypatch.setitem(
+        sys.modules, "ultralytics", types.SimpleNamespace(YOLO=FakeYOLO)
+    )
+    model_path = tmp_path / "best.pt"
+    model_path.write_bytes(b"x")
+
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {}
+    imgsz = det._resolve_onnx_imgsz(model_path=model_path)
+    assert imgsz == 1504
 
 
 def test_filter_raw_detections_applies_conf_size_and_target_limit() -> None:
@@ -158,7 +285,6 @@ def test_filter_raw_detections_applies_conf_size_and_target_limit() -> None:
         "MIN_OBJECT_SIZE": 40.0,
         "MAX_OBJECT_SIZE": 200.0,
     }
-    det._shapely_warning_shown = False
 
     meas = [
         np.array([10.0, 10.0, 0.0], dtype=np.float32),
@@ -197,7 +323,6 @@ def test_filter_raw_detections_applies_roi_mask() -> None:
         "MAX_TARGETS": 4,
         "ENABLE_SIZE_FILTERING": False,
     }
-    det._shapely_warning_shown = False
 
     roi = np.zeros((20, 20), dtype=np.uint8)
     roi[:, :10] = 255
@@ -222,3 +347,330 @@ def test_filter_raw_detections_applies_roi_mask() -> None:
     assert out_sizes == [50.0]
     assert np.allclose(out_conf, [0.6], rtol=1e-6, atol=1e-6)
     assert out_ids == [1.0]
+
+
+def test_filter_raw_detections_filters_heading_hints_consistently() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {
+        "YOLO_CONFIDENCE_THRESHOLD": 0.5,
+        "YOLO_IOU_THRESHOLD": 0.7,
+        "MAX_TARGETS": 4,
+        "ENABLE_SIZE_FILTERING": False,
+    }
+
+    meas = [
+        np.array([5.0, 10.0, 0.0], dtype=np.float32),
+        np.array([15.0, 10.0, 0.0], dtype=np.float32),
+    ]
+    sizes = [50.0, 60.0]
+    shapes = [(50.0, 1.0), (60.0, 1.0)]
+    confidences = [0.6, 0.4]  # second one filtered by confidence
+    obb = [
+        np.array([[4, 9], [6, 9], [6, 11], [4, 11]], dtype=np.float32),
+        np.array([[14, 9], [16, 9], [16, 11], [14, 11]], dtype=np.float32),
+    ]
+    ids = [1.0, 2.0]
+    heading_hints = [0.25, 1.25]
+    directed_mask = [1, 0]
+
+    out = det.filter_raw_detections(
+        meas,
+        sizes,
+        shapes,
+        confidences,
+        obb,
+        roi_mask=None,
+        detection_ids=ids,
+        heading_hints=heading_hints,
+        directed_mask=directed_mask,
+    )
+    _, out_sizes, _, out_conf, _, out_ids, out_heading, out_directed = out
+    assert out_sizes == [50.0]
+    assert np.allclose(out_conf, [0.6], rtol=1e-6, atol=1e-6)
+    assert out_ids == [1.0]
+    assert np.allclose(out_heading, [0.25], rtol=1e-6, atol=1e-6)
+    assert out_directed == [1]
+
+
+def test_sequential_stage2_obb_runs_in_batched_crop_call() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {}
+    det.device = "cpu"
+
+    class _ArrayWrap:
+        def __init__(self, arr):
+            self._arr = np.asarray(arr, dtype=np.float32)
+
+        def cpu(self):
+            return self
+
+        def numpy(self):
+            return self._arr
+
+    class _Boxes:
+        def __init__(self):
+            self.xyxy = _ArrayWrap([[10, 20, 40, 60], [60, 70, 90, 100]])
+            self.conf = _ArrayWrap([0.5, 0.9])
+
+        def __len__(self):
+            return 2
+
+    boxes = _Boxes()
+    det.detect_model = types.SimpleNamespace(
+        predict=lambda **_kwargs: [types.SimpleNamespace(boxes=boxes)]
+    )
+    det._build_sequential_crop = lambda _frame, _bbox: (
+        np.zeros((8, 8, 3), dtype=np.uint8),
+        (1.0, 2.0),
+    )
+
+    calls = {"count": 0, "source_len": 0}
+
+    def _fake_predict(source, target_classes, raw_conf_floor, max_det):
+        calls["count"] += 1
+        calls["source_len"] = len(source) if isinstance(source, list) else -1
+        return [
+            types.SimpleNamespace(obb=f"obb_{i}") for i in range(calls["source_len"])
+        ]
+
+    def _fake_extract(_obb):
+        meas = [np.array([5.0, 6.0, 0.1], dtype=np.float32)]
+        sizes = [20.0]
+        shapes = [(10.0, 1.0)]
+        conf = [0.9]
+        corners = [np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32)]
+        return meas, sizes, shapes, conf, corners
+
+    det._predict_obb_results = _fake_predict
+    det._extract_raw_detections = _fake_extract
+
+    out = det._run_sequential_raw_detection(
+        np.zeros((128, 128, 3), dtype=np.uint8),
+        target_classes=None,
+        raw_conf_floor=0.01,
+        max_det=4,
+    )
+    raw_meas, _, _, _, _, _ = out
+
+    assert calls["count"] == 1
+    assert calls["source_len"] == 2
+    assert len(raw_meas) == 2
+
+
+def test_headtail_hint_uses_batched_classify_call() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {"YOLO_HEADTAIL_CONF_THRESHOLD": 0.6}
+    det.device = "cpu"
+    det._canonicalize_obb_for_headtail = lambda _frame, _corners: (
+        np.zeros((12, 24, 3), dtype=np.uint8),
+        0.5,
+    )
+
+    calls = {"count": 0, "source_is_list": False}
+
+    def _predict(*, source, conf, device, verbose):
+        calls["count"] += 1
+        calls["source_is_list"] = isinstance(source, list)
+        return [
+            types.SimpleNamespace(
+                probs=types.SimpleNamespace(top1=0, top1conf=0.95),
+                names={0: "right"},
+            )
+            for _ in source
+        ]
+
+    det.headtail_model = types.SimpleNamespace(predict=_predict)
+
+    obb_corners = [
+        np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32),
+        np.array([[3, 3], [5, 3], [5, 4], [3, 4]], dtype=np.float32),
+    ]
+    heading_hints, directed_mask = det._compute_headtail_hints(
+        np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
+    )
+
+    assert calls["count"] == 1
+    assert calls["source_is_list"] is True
+    assert directed_mask == [1, 1]
+    assert np.allclose(heading_hints, [0.5, 0.5], rtol=1e-6, atol=1e-6)
+
+
+def test_validate_headtail_class_names_accepts_five_class_schema() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+
+    normalized = det._validate_headtail_class_names(
+        ["head_up", "head_down", "head_left", "head_right", "head_unknown"],
+        source="test model",
+    )
+
+    assert normalized == ["up", "down", "left", "right", "unknown"]
+
+
+def test_validate_headtail_class_names_rejects_partial_schema() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+
+    with pytest.raises(ValueError, match="Expected exactly"):
+        det._validate_headtail_class_names(
+            ["left", "right", "unknown"], source="test model"
+        )
+
+
+def test_load_headtail_yolo_model_requires_supported_schema() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.device = "cpu"
+    det._try_load_tiny_head_classifier = lambda _path: None
+    det._load_model_for_task = lambda _path, task: (
+        types.SimpleNamespace(
+            names={0: "up", 1: "down", 2: "left", 3: "right", 4: "unknown"}
+        ),
+        "cpu",
+    )
+
+    det._load_headtail_model("headtail.pt")
+
+    assert det.headtail_backend == "yolo"
+    assert det.headtail_class_names == ["up", "down", "left", "right", "unknown"]
+
+
+def test_load_headtail_model_rejects_invalid_named_schema() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.device = "cpu"
+    det._try_load_tiny_head_classifier = lambda _path: (
+        object(),
+        ["left", "right", "unknown"],
+        (128, 64),
+    )
+
+    with pytest.raises(ValueError, match="Expected exactly"):
+        det._load_headtail_model("bad_headtail.pth")
+
+
+def test_classkit_headtail_hints_abstain_on_up_down_unknown() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {"YOLO_HEADTAIL_CONF_THRESHOLD": 0.6}
+    det.headtail_backend = "classkit_tiny"
+    det.headtail_model = object()
+    det._canonicalize_obb_for_headtail = lambda _frame, _corners: (
+        np.zeros((12, 24, 3), dtype=np.uint8),
+        0.5,
+    )
+    det._predict_headtail_results = lambda _crops: [
+        ("up", 0.95),
+        ("unknown", 0.99),
+        ("left", 0.92),
+        ("right", 0.91),
+    ]
+
+    obb_corners = [
+        np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32),
+        np.array([[3, 3], [5, 3], [5, 4], [3, 4]], dtype=np.float32),
+        np.array([[6, 6], [8, 6], [8, 7], [6, 7]], dtype=np.float32),
+        np.array([[9, 9], [11, 9], [11, 10], [9, 10]], dtype=np.float32),
+    ]
+
+    heading_hints, directed_mask = det._compute_headtail_hints(
+        np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
+    )
+
+    assert np.isnan(heading_hints[0])
+    assert np.isnan(heading_hints[1])
+    assert directed_mask == [0, 0, 1, 1]
+    assert heading_hints[2] == pytest.approx((0.5 + np.pi) % (2 * np.pi), abs=1e-6)
+    assert heading_hints[3] == pytest.approx(0.5, abs=1e-6)
+
+
+def test_filter_overlapping_uses_precise_iou_for_all_overlaps() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+
+    calls = {"indices": []}
+
+    def _fake_precise(_corners1, _corners_list, indices):
+        calls["indices"].append(list(indices))
+        # Suppress only the first overlapping candidate.
+        vals = [0.9 if idx == 1 else 0.2 for idx in indices]
+        return np.asarray(vals, dtype=np.float32)
+
+    det._compute_obb_iou_batch = _fake_precise
+
+    meas = [
+        np.array([10.0, 10.0, 0.0], dtype=np.float32),
+        np.array([11.0, 10.0, 0.0], dtype=np.float32),
+        np.array([9.0, 10.0, 0.0], dtype=np.float32),
+    ]
+    sizes = [100.0, 90.0, 80.0]
+    shapes = [(100.0, 1.0), (90.0, 1.0), (80.0, 1.0)]
+    confidences = [0.95, 0.9, 0.85]
+    corners = [
+        np.array([[8, 8], [12, 8], [12, 12], [8, 12]], dtype=np.float32),
+        np.array([[9, 8], [13, 8], [13, 12], [9, 12]], dtype=np.float32),
+        np.array([[7, 8], [11, 8], [11, 12], [7, 12]], dtype=np.float32),
+    ]
+
+    out = det._filter_overlapping_detections(
+        meas,
+        sizes,
+        shapes,
+        confidences,
+        corners,
+        iou_threshold=0.5,
+    )
+    out_meas, out_sizes, _, _, _ = out
+
+    assert calls["indices"] and calls["indices"][0] == [1, 2]
+    assert len(out_meas) == 2
+    assert out_sizes == [100.0, 80.0]
+
+
+def test_loads_notebook_tiny_headtail_state_dict(tmp_path: Path) -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {}
+    det.device = "cpu"
+
+    # Build and save a notebook-style raw state_dict checkpoint.
+    tiny = det._build_tiny_head_classifier(input_size=(128, 64))
+    ckpt_path = tmp_path / "tiny_headtail.pth"
+    import torch
+
+    torch.save(tiny.state_dict(), ckpt_path)
+
+    det._load_headtail_model(str(ckpt_path))
+
+    assert det.headtail_backend == "tiny"
+    assert det.headtail_model is not None
+    assert det.headtail_predict_device is None
+
+
+def test_tiny_headtail_inference_converts_bgr_to_rgb() -> None:
+    mod = _load_engine_module()
+    det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
+    det.params = {}
+    det.device = "cpu"
+    det.headtail_backend = "tiny"
+
+    import torch.nn as nn
+
+    class _Probe(nn.Module):
+        # Logit uses channel0 - channel2. If RGB conversion is correct, BGR-red
+        # input becomes RGB-red and yields a strongly positive logit.
+        def forward(self, x):
+            v = x[:, 0, 0, 0] - x[:, 2, 0, 0]
+            return v.unsqueeze(1) * 10.0
+
+    det.headtail_model = _Probe().eval()
+    det.headtail_predict_device = None
+
+    bgr_red = np.array([[[0, 0, 255]]], dtype=np.uint8)
+    probs = det._predict_headtail_results([bgr_red])
+
+    assert len(probs) == 1
+    assert float(probs[0]) > 0.9

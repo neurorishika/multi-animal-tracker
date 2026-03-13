@@ -18,7 +18,7 @@ assigner_mod = load_src_module(
 )
 
 
-def _compute_cost_matrix_sota_py(
+def _compute_cost_matrix_numba_py(
     N,
     M,
     meas_pos,
@@ -36,6 +36,7 @@ def _compute_cost_matrix_sota_py(
     Wa,
     Wasp,
     cull_threshold,
+    meas_ori_directed,
 ):
     cost = np.zeros((N, M), dtype=np.float32)
     for i in range(N):
@@ -52,13 +53,15 @@ def _compute_cost_matrix_sota_py(
             odiff = abs(pred_ori[i] - meas_ori[j])
             if odiff > np.pi:
                 odiff = 2 * np.pi - odiff
+            if meas_ori_directed[j] == 0:
+                odiff = min(odiff, np.pi - odiff)
             area_diff = abs(shapes_area[j] - prev_areas[i])
             asp_diff = abs(shapes_asp[j] - prev_asps[i])
             cost[i, j] = Wp * pos_dist + Wo * odiff + Wa * area_diff + Wasp * asp_diff
     return cost
 
 
-assigner_mod._compute_cost_matrix_sota = _compute_cost_matrix_sota_py
+assigner_mod._compute_cost_matrix_numba = _compute_cost_matrix_numba_py
 
 KalmanFilterManager = kalman_mod.KalmanFilterManager
 TrackAssigner = assigner_mod.TrackAssigner

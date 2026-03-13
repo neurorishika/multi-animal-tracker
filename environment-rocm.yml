@@ -27,7 +27,12 @@ dependencies:
 - opencv
 - scikit-image
 - pillow
-- shapely
+
+ # Hyperparameter optimization
+- optuna
+- optunahub
+- cmaes
+
 
   # Efficiency - CPU and GPU (ROCm)
 - numba
@@ -41,13 +46,9 @@ dependencies:
 - pip
 - setuptools
 - wheel
-- pytest
-- pytest-cov
-- black
-- flake8
-- isort
-- pre-commit
 
+  # Dev tools are managed separately; after activating this env run:
+  #   make install-dev
   # Install AMD ROCm-accelerated packages via pip
   # Step 1: mamba/conda installs core packages + uv
   # Step 2: uv installs ROCm packages from requirements-rocm.txt (much faster)

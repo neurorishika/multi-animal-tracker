@@ -5,6 +5,11 @@ repo_url: https://github.com/neurorishika/multi-animal-tracker
 repo_name: neurorishika/multi-animal-tracker
 edit_uri: edit/main/docs/
 strict: true
+
+extra:
+  version:
+    provider: mike
+    default: latest
 exclude_docs: |
   archive/**
 hooks:
@@ -84,6 +89,8 @@ nav:
 - Home: index.md
 - Getting Started:
   - Installation: getting-started/installation.md
+  - Environments and Makefile: getting-started/environments.md
+  - Integrations: getting-started/integrations.md
   - Quickstart (MAT): getting-started/quickstart-mat.md
   - Quickstart (PoseKit): getting-started/quickstart-posekit.md
   - Platform Notes: getting-started/platforms.md
@@ -94,6 +101,7 @@ nav:
   - Tracking and Merging: user-guide/tracking-and-merging.md
   - Post-processing: user-guide/post-processing.md
   - Configuration Reference: user-guide/configuration-reference.md
+  - Compute Runtimes: user-guide/compute-runtimes.md
   - Outputs and CSV Schema: user-guide/outputs-and-csv-schema.md
   - Dataset Generation: user-guide/dataset-generation.md
   - Individual Analysis: user-guide/individual-analysis.md
@@ -103,11 +111,15 @@ nav:
   - Architecture: developer-guide/architecture.md
   - Module Map: developer-guide/module-map.md
   - Data Flow: developer-guide/data-flow.md
+  - Tracking Algorithm Deep Dive: developer-guide/tracking-algorithm-deep-dive.md
   - GPU Backends: developer-guide/gpu-backends.md
+  - Runtime Integration: developer-guide/runtime-integration.md
+  - CUDA Dependency Updates: developer-guide/dependency-cuda-updates.md
   - Performance Tuning: developer-guide/performance-tuning.md
   - Confidence Metrics: developer-guide/confidence-metrics.md
   - Extending Detection: developer-guide/extending-detection.md
   - Extending Identity: developer-guide/extending-identity.md
+  - Code Health & Auditing: developer-guide/code-health.md
   - Contributing: developer-guide/contributing.md
 - Reference:
   - API Index: reference/api-index.md
@@ -120,5 +132,6 @@ nav:
   - API (PoseKit): reference/api-posekit.md
   - API (Utils): reference/api-utils.md
   - CLI Reference: reference/cli-reference.md
+  - Technical Reference (LaTeX): reference/technical-reference.md
   - Changelog: reference/changelog.md
   - FAQ: reference/faq.md

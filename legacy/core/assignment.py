@@ -422,7 +422,6 @@ class TrackAssigner:
         # Recovery search distance for lost track backward matching
         RECOVERY_SEARCH_DISTANCE = p.get("CONTINUITY_THRESHOLD", 10)
         MAX_DIST = p["MAX_DISTANCE_THRESHOLD"]
-        ENABLE_GREEDY = p.get("ENABLE_GREEDY_ASSIGNMENT", True)
         USE_GREEDY = p.get("ENABLE_GREEDY_ASSIGNMENT", False)
 
         # Classify tracks: established (stable) vs unstable (new/recovering)

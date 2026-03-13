@@ -1,17 +1,13 @@
-"""
-Tests for FrameQualityScorer class (dataset generation).
+"""Tests for dataset generation and active-learning export metadata."""
 
-Tests cover:
-- Frame quality scoring based on various metrics
-- Low confidence detection
-- Detection count mismatch
-- High assignment costs
-- Metric enabling/disabling
-"""
+import json
+from pathlib import Path
 
+import cv2
 import numpy as np
+import pandas as pd
 
-from multi_tracker.data.dataset_generation import FrameQualityScorer
+from multi_tracker.data.dataset_generation import FrameQualityScorer, export_dataset
 
 
 class TestFrameQualityScorer:
@@ -260,118 +256,169 @@ class TestFrameQualityScorer:
         # Should be 0 since all metrics are disabled
         assert score == 0.0
 
-    def test_score_frame_zero_count(self):
-        """Test scoring when no objects detected."""
-        params = {
-            "MAX_TARGETS": 4,
-            "DATASET_CONF_THRESHOLD": 0.5,
-            "METRIC_COUNT_MISMATCH": True,
-        }
 
-        scorer = FrameQualityScorer(params)
+def test_export_dataset_writes_active_learning_metadata(tmp_path: Path):
+    video_path = tmp_path / "video.mp4"
+    csv_path = tmp_path / "tracks.csv"
+    out_root = tmp_path / "out"
 
-        detection_data = {
-            "confidences": [],
-            "count": 0,
-        }
+    writer = cv2.VideoWriter(
+        str(video_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        5.0,
+        (64, 48),
+    )
+    assert writer.isOpened()
+    frame = np.full((48, 64, 3), 127, dtype=np.uint8)
+    writer.write(frame)
+    writer.release()
 
-        score = scorer.score_frame(frame_id=0, detection_data=detection_data)
+    pd.DataFrame(
+        [
+            {
+                "FrameID": 0,
+                "X": 32.0,
+                "Y": 24.0,
+                "Theta": 0.5,
+                "TrackID": 7,
+                "State": "tracked",
+            }
+        ]
+    ).to_csv(csv_path, index=False)
 
-        # Zero detections should be highly problematic
-        assert score > 0.2
+    dataset_dir = export_dataset(
+        video_path=video_path,
+        csv_path=csv_path,
+        frame_ids=[0],
+        output_dir=out_root,
+        dataset_name="al_test",
+        class_name="ant",
+        params={
+            "DETECTION_METHOD": "background_subtraction",
+            "REFERENCE_BODY_SIZE": 10.0,
+        },
+        include_context=False,
+    )
 
-    def test_score_normalization(self):
-        """Test that scores are in reasonable range."""
-        params = {
-            "MAX_TARGETS": 4,
-            "DATASET_CONF_THRESHOLD": 0.7,
-            "METRIC_LOW_CONFIDENCE": True,
-            "METRIC_COUNT_MISMATCH": True,
-            "METRIC_HIGH_ASSIGNMENT_COST": True,
-        }
+    metadata_path = Path(dataset_dir) / "metadata.json"
+    raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert int(raw["schema_version"]) == 1
+    ann = raw["frames"][0]["annotations"][0]
+    assert ann["track_id"] == 7
+    assert ann["dimension_source"] == "reference_size"
+    assert "canonicalization_support" not in raw
+    assert "canonicalization" not in ann
+    assert "obb_corners_px" not in ann
 
-        scorer = FrameQualityScorer(params)
 
-        # Worst case scenario
-        detection_data = {
-            "confidences": [0.1, 0.2],
-            "count": 2,
-        }
+def test_score_frame_zero_count():
+    """Test scoring when no objects detected."""
+    params = {
+        "MAX_TARGETS": 4,
+        "DATASET_CONF_THRESHOLD": 0.5,
+        "METRIC_COUNT_MISMATCH": True,
+    }
 
-        tracking_data = {
-            "assignment_costs": [100, 120],
-        }
+    scorer = FrameQualityScorer(params)
 
-        score = scorer.score_frame(
-            frame_id=0, detection_data=detection_data, tracking_data=tracking_data
-        )
+    detection_data = {
+        "confidences": [],
+        "count": 0,
+    }
 
-        # Score should be finite and positive
-        assert 0 <= score <= 5  # Allow some headroom for compounded scores
+    score = scorer.score_frame(frame_id=0, detection_data=detection_data)
 
-    def test_multiple_frames_independent(self):
-        """Test that scoring multiple frames maintains independence."""
-        params = {
-            "MAX_TARGETS": 4,
-            "DATASET_CONF_THRESHOLD": 0.5,
-            "METRIC_LOW_CONFIDENCE": True,
-        }
+    # Zero detections should be highly problematic
+    assert score > 0.2
 
-        scorer = FrameQualityScorer(params)
 
-        # Score frame 0
-        score1 = scorer.score_frame(
-            frame_id=0, detection_data={"confidences": [0.3, 0.4, 0.5, 0.6], "count": 4}
-        )
+def test_score_normalization():
+    """Test that scores are in reasonable range."""
+    params = {
+        "MAX_TARGETS": 4,
+        "DATASET_CONF_THRESHOLD": 0.7,
+        "METRIC_LOW_CONFIDENCE": True,
+        "METRIC_COUNT_MISMATCH": True,
+        "METRIC_HIGH_ASSIGNMENT_COST": True,
+    }
 
-        # Score frame 1 with different data
-        score2 = scorer.score_frame(
-            frame_id=1,
-            detection_data={"confidences": [0.9, 0.8, 0.85, 0.87], "count": 4},
-        )
+    scorer = FrameQualityScorer(params)
 
-        # Different inputs should produce different scores
-        assert score1 != score2
-        assert score1 > score2  # Frame 0 has lower confidence
+    detection_data = {
+        "confidences": [0.1, 0.2],
+        "count": 2,
+    }
+    tracking_data = {
+        "assignment_costs": [100, 120],
+    }
 
-    def test_empty_confidences_list(self):
-        """Test handling of empty confidence list."""
-        params = {
-            "MAX_TARGETS": 4,
-            "DATASET_CONF_THRESHOLD": 0.5,
-            "METRIC_LOW_CONFIDENCE": True,
-        }
+    score = scorer.score_frame(
+        frame_id=0, detection_data=detection_data, tracking_data=tracking_data
+    )
 
-        scorer = FrameQualityScorer(params)
+    # Score should be finite and positive
+    assert 0 <= score <= 5  # Allow some headroom for compounded scores
 
-        detection_data = {
-            "confidences": [],
-            "count": 0,
-        }
 
-        score = scorer.score_frame(frame_id=0, detection_data=detection_data)
+def test_multiple_frames_independent():
+    """Test that scoring multiple frames maintains independence."""
+    params = {
+        "MAX_TARGETS": 4,
+        "DATASET_CONF_THRESHOLD": 0.5,
+        "METRIC_LOW_CONFIDENCE": True,
+    }
 
-        # Should handle gracefully
-        assert isinstance(score, (int, float))
+    scorer = FrameQualityScorer(params)
 
-    def test_low_confidence_uses_frame_average_not_minimum(self):
-        """Low-confidence score should use average confidence across detections."""
-        params = {
-            "MAX_TARGETS": 4,
-            "DATASET_CONF_THRESHOLD": 0.5,
-            "METRIC_LOW_CONFIDENCE": True,
-            "METRIC_COUNT_MISMATCH": False,
-        }
+    score1 = scorer.score_frame(
+        frame_id=0,
+        detection_data={"confidences": [0.3, 0.4, 0.5, 0.6], "count": 4},
+    )
+    score2 = scorer.score_frame(
+        frame_id=1,
+        detection_data={"confidences": [0.9, 0.8, 0.85, 0.87], "count": 4},
+    )
 
-        scorer = FrameQualityScorer(params)
+    assert score1 != score2
+    assert score1 > score2
 
-        # One low outlier but high frame-average confidence.
-        detection_data = {
-            "confidences": [0.1, 0.9, 0.9, 0.9],
-            "count": 4,
-        }
 
-        score = scorer.score_frame(frame_id=0, detection_data=detection_data)
+def test_empty_confidences_list():
+    """Test handling of empty confidence list."""
+    params = {
+        "MAX_TARGETS": 4,
+        "DATASET_CONF_THRESHOLD": 0.5,
+        "METRIC_LOW_CONFIDENCE": True,
+    }
 
-        # Average is 0.7 (>0.5), so low-confidence metric should not trigger.
-        assert score == 0.0
+    scorer = FrameQualityScorer(params)
+
+    detection_data = {
+        "confidences": [],
+        "count": 0,
+    }
+
+    score = scorer.score_frame(frame_id=0, detection_data=detection_data)
+
+    assert isinstance(score, (int, float))
+
+
+def test_low_confidence_uses_frame_average_not_minimum():
+    """Low-confidence score should use average confidence across detections."""
+    params = {
+        "MAX_TARGETS": 4,
+        "DATASET_CONF_THRESHOLD": 0.5,
+        "METRIC_LOW_CONFIDENCE": True,
+        "METRIC_COUNT_MISMATCH": False,
+    }
+
+    scorer = FrameQualityScorer(params)
+
+    detection_data = {
+        "confidences": [0.1, 0.9, 0.9, 0.9],
+        "count": 4,
+    }
+
+    score = scorer.score_frame(frame_id=0, detection_data=detection_data)
+
+    assert score == 0.0

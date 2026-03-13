@@ -1,0 +1,50 @@
+\begin{tikzpicture}[
+  node distance=9mm and 12mm,
+  state/.style={
+    rounded corners=3mm,
+    very thick,
+    minimum width=3.4cm,
+    minimum height=1.2cm,
+    align=center,
+    font=\small
+  },
+  note/.style={
+    rounded corners=3mm,
+    thick,
+    draw=Slate!65,
+    fill=Cloud,
+    text width=3.25cm,
+    align=left,
+    inner sep=6pt,
+    font=\small
+  },
+  arrow/.style={-{Latex[length=3mm,width=2mm]}, very thick, draw=Slate},
+  flowlabel/.style={fill=white, inner sep=1.2pt, font=\scriptsize, text=Slate}
+]
+  \node[note] (established) at (0,2.45) {\textbf{Established-track phase}\\High-continuity tracks are solved first by the global assignment pass.};
+  \node[note] (unstable) at (5.0,2.45) {\textbf{Unstable-track phase}\\Residual non-lost tracks consume only the leftover detections.};
+  \node[note, text width=3.45cm] (guard) at (8.9,-1.45) {\textbf{Respawn guard}\\Reuse is allowed only when a free detection stays away from all live predictions.};
+
+  \node[state, draw=MATGreen!80!black, fill=MATGreen!13] (active) at (0,0) {\textbf{Active}\\matched this frame};
+  \node[state, draw=ClassGold!85!black, fill=ClassGold!15] (occ) at (5.0,0) {\textbf{Occluded}\\prediction only};
+  \node[state, draw=ClassRed!85!black, fill=ClassRed!12] (lost) at (5.0,-3.1) {\textbf{Lost}\\aged past threshold};
+  \node[state, draw=MATBlue!85!black, fill=MATBlue!12] (respawn) at (0,-3.1) {\textbf{Respawned slot}\\new trajectory id};
+
+  \node[note, text width=3.8cm] (ori) at (0,-5.4) {\textbf{Orientation logic}\\Pose can set heading; otherwise the OBB axis stays near the last reliable orientation.};
+
+  \draw[arrow] (established.south) -- (active.north);
+  \draw[arrow] (unstable.south) -- (occ.north);
+  \draw[arrow] (active.east) -- (occ.west);
+  \draw[arrow] (occ.south) -- (lost.north);
+  \draw[arrow] (lost.west) -- (respawn.east);
+  \draw[arrow] (respawn.north) -- (active.south);
+  \draw[arrow] (occ.north west) to[out=150,in=30] (active.north east);
+  \draw[arrow] (guard.west) -- (lost.east);
+  \draw[arrow] (ori.north) -- (respawn.south);
+
+  \node[flowlabel] at (2.5,0.45) {missed};
+  \node[flowlabel] at (5.7,-1.55) {timeout};
+  \node[flowlabel] at (2.5,-2.65) {reuse};
+  \node[flowlabel] at (-0.8,-1.55) {reset};
+  \node[flowlabel] at (2.5,1.15) {reacquire};
+\end{tikzpicture}

@@ -1,13 +1,40 @@
 from __future__ import annotations
 
+import types
+
 import numpy as np
 
 from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
+
+def _make_gpu_utils_stub() -> types.ModuleType:
+    def _njit(*args, **kwargs):
+        if args and callable(args[0]) and len(args) == 1 and not kwargs:
+            return args[0]
+
+        def _decorator(func):
+            return func
+
+        return _decorator
+
+    multi_tracker_pkg = types.ModuleType("multi_tracker")
+    multi_tracker_pkg.__path__ = []
+    utils_pkg = types.ModuleType("multi_tracker.utils")
+    utils_pkg.__path__ = []
+    gpu_utils_mod = types.ModuleType("multi_tracker.utils.gpu_utils")
+    gpu_utils_mod.NUMBA_AVAILABLE = False
+    gpu_utils_mod.njit = _njit
+    return {
+        "multi_tracker": multi_tracker_pkg,
+        "multi_tracker.utils": utils_pkg,
+        "multi_tracker.utils.gpu_utils": gpu_utils_mod,
+    }
+
+
 kalman_mod = load_src_module(
     "multi_tracker/core/filters/kalman.py",
     "kalman_under_test",
-    stubs={"cv2": make_cv2_stub()},
+    stubs={"cv2": make_cv2_stub(), **_make_gpu_utils_stub()},
 )
 kalman_mod.NUMBA_AVAILABLE = False
 KalmanFilterManager = kalman_mod.KalmanFilterManager
@@ -55,3 +82,14 @@ def test_kalman_theta_wrap_and_mahal_shapes() -> None:
     uncertainties = kf.get_position_uncertainties()
     assert len(uncertainties) == 1
     assert uncertainties[0] > 0
+
+
+def test_kalman_correct_caps_position_jump_to_max_velocity() -> None:
+    kf = KalmanFilterManager(num_targets=1, params=_params())
+    kf.initialize_filter(0, np.array([0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32))
+
+    pred = kf.predict()[0, :2].copy()
+    kf.correct(0, np.array([200.0, 0.0, 0.0], dtype=np.float32))
+
+    jump = float(np.linalg.norm(kf.X[0, :2] - pred))
+    assert jump <= kf.max_velocity + 1e-5

@@ -3,24 +3,33 @@ name: Docs (GitHub Pages)
 on:
   push:
     branches:
-    - main
+    - "**"
   workflow_dispatch:
+    inputs:
+      deploy_as:
+        description: "Version label to deploy (latest or nightly)"
+        required: false
+        default: "nightly"
 
+# mike pushes directly to the gh-pages branch, so contents: write is required.
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
+# Use per-ref concurrency so main and nightly deployments don't block each other,
+# but rapid successive pushes to the same branch cancel the older run.
 concurrency:
-  group: pages
-  cancel-in-progress: false
+  group: pages-${{ github.ref_name }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  deploy-docs:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout
       uses: actions/checkout@v4
+      with:
+          # mike needs the full history to manage the gh-pages branch
+        fetch-depth: 0
 
     - name: Setup Python
       uses: actions/setup-python@v5
@@ -32,21 +41,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements-docs.txt
 
-    - name: Build docs
-      run: mkdocs build --strict
+    - name: Configure Git identity for mike
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
 
-    - name: Upload Pages artifact
-      uses: actions/upload-pages-artifact@v3
-      with:
-        path: site
+    - name: Deploy stable docs (main branch → "latest")
+      if: github.ref_name == 'main'
+      run: |
+        mike deploy --push --update-aliases latest "Latest"
+        mike set-default --push latest
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-    - name: Deploy to GitHub Pages
-      id: deployment
-      uses: actions/deploy-pages@v4
+    - name: Deploy nightly docs (non-main branch → "nightly")
+      if: github.ref_name != 'main'
+      run: |
+        # Override strict mode: mike passes args to mkdocs build internally,
+        # but we can supply a non-strict mkdocs config via an override file.
+        sed 's/^strict: true/strict: false/' mkdocs.yml > mkdocs-nightly.yml
+        mike deploy --push --config-file mkdocs-nightly.yml nightly "Nightly"
+        rm -f mkdocs-nightly.yml
+        # If no default version has been set yet (e.g. main has never been deployed),
+        # point the root URL at nightly so the site isn't a 404.
+        mike list 2>/dev/null | grep -q '\[default\]' || mike set-default --push nightly

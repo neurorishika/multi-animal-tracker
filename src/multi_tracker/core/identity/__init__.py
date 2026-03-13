@@ -1,5 +1,7 @@
 """Identity and individual-level analysis."""
 
-from .analysis import IdentityProcessor, IndividualDatasetGenerator
+from .analysis import IndividualDatasetGenerator
 
-__all__ = ["IdentityProcessor", "IndividualDatasetGenerator"]
+__all__ = [
+    "IndividualDatasetGenerator",
+]

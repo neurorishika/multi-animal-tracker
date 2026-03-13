@@ -246,7 +246,7 @@ def export_dataset(
     class_name: object,
     params: object,
     include_context: object = True,
-    yolo_results_dict: object = None,
+    _yolo_results_dict: object = None,
 ) -> object:
     """
     Export selected frames and annotations as a training dataset.
@@ -275,7 +275,10 @@ def export_dataset(
 
     # Add timestamp to dataset name to avoid overwriting
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dataset_name_with_timestamp = f"{dataset_name}_{timestamp}"
+    if dataset_name and str(dataset_name).strip():
+        dataset_name_with_timestamp = f"{dataset_name}_{timestamp}"
+    else:
+        dataset_name_with_timestamp = timestamp
 
     # Verify and resolve output directory
     output_path = Path(output_dir).resolve()
@@ -334,6 +337,7 @@ def export_dataset(
     # Export frames and create annotations
     exported_count = 0
     metadata = {
+        "schema_version": 1,
         "dataset_name": dataset_name,
         "source_video": str(video_path),
         "source_csv": str(csv_path),
@@ -607,6 +611,7 @@ def export_dataset(
 
                     # Try to find matching YOLO detection for this tracked object
                     w, h = None, None
+                    dimension_source = "reference_size"
                     if yolo_detections:
                         # Find closest YOLO detection to this tracked position
                         # (both are now in original frame space)
@@ -627,6 +632,7 @@ def export_dataset(
                             w, h, _ = (
                                 matched_detection  # Use YOLO dimensions, keep tracked theta
                             )
+                            dimension_source = "yolo_match"
                             logger.debug(
                                 f"Frame {frame_id}: Matched tracking to YOLO detection (dist={min_dist:.1f})"
                             )
@@ -691,6 +697,7 @@ def export_dataset(
                             "x": float(cx),  # Now in original frame space
                             "y": float(cy),  # Now in original frame space
                             "theta": float(theta),
+                            "dimension_source": dimension_source,
                             "state": detection.get("State", "unknown"),
                         }
                     )

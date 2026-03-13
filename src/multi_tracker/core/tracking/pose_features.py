@@ -1,0 +1,667 @@
+"""
+Shared pure-function module for pose keypoint feature extraction.
+
+All functions here are stateless (no Qt, no threads, no side effects) and
+can be imported by both TrackingWorker and TrackingOptimizer.
+"""
+
+import logging
+import math
+import os
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+def normalize_theta(theta: float) -> float:
+    """Normalize radians to [0, 2*pi)."""
+    try:
+        value = float(theta)
+    except Exception:
+        value = 0.0
+    return value % (2 * math.pi)
+
+
+def parse_pose_group_tokens(raw_spec) -> List:
+    """Parse keypoint group spec from list/tuple/string into tokens.
+
+    Returns a list of tokens that are either int (index) or str (name).
+    """
+    if raw_spec is None:
+        return []
+    if isinstance(raw_spec, str):
+        raw_tokens = raw_spec.split(",")
+    elif isinstance(raw_spec, (list, tuple)):
+        raw_tokens = list(raw_spec)
+    else:
+        raw_tokens = [raw_spec]
+
+    tokens = []
+    for token in raw_tokens:
+        t = str(token).strip()
+        if not t:
+            continue
+        try:
+            tokens.append(int(t))
+        except Exception:
+            tokens.append(t)
+    return tokens
+
+
+def resolve_pose_group_indices(raw_spec, keypoint_names: List[str]) -> List[int]:
+    """Resolve keypoint group names/indices to a deduplicated index list.
+
+    Tokens may be integer indices or string names (case-insensitive match).
+    Indices outside the valid range or unknown names are silently skipped.
+    """
+    names = [str(v) for v in (keypoint_names or [])]
+    tokens = parse_pose_group_tokens(raw_spec)
+    if not tokens:
+        return []
+
+    lower_map = {name.lower(): idx for idx, name in enumerate(names)}
+    indices = []
+    seen = set()
+    for tok in tokens:
+        idx = None
+        if isinstance(tok, int):
+            if 0 <= tok < len(names):
+                idx = int(tok)
+        else:
+            idx = lower_map.get(str(tok).strip().lower(), None)
+        if idx is None or idx in seen:
+            continue
+        seen.add(idx)
+        indices.append(idx)
+    return indices
+
+
+def build_pose_detection_keypoint_map(
+    pose_props_cache, frame_idx: int
+) -> Dict[int, Any]:
+    """Return {detection_id: keypoints_array} for one frame from cache.
+
+    Returns an empty dict if the cache is None or the frame is not found.
+    """
+    if pose_props_cache is None:
+        return {}
+    try:
+        frame = pose_props_cache.get_frame(int(frame_idx))
+    except Exception:
+        return {}
+    ids = frame.get("detection_ids", [])
+    keypoints = frame.get("pose_keypoints", [])
+    n = min(len(ids), len(keypoints))
+    out = {}
+    for i in range(n):
+        try:
+            det_id = int(ids[i])
+        except Exception:
+            continue
+        out[det_id] = keypoints[i]
+    return out
+
+
+def compute_pose_geometry_from_keypoints(
+    keypoints,
+    anterior_indices,
+    posterior_indices,
+    min_valid_conf,
+    ignore_indices=None,
+) -> Optional[Dict[str, Any]]:
+    """Extract heading, body length, and visibility from pose keypoints.
+
+    Returns a dict with keys ``"heading"`` (float or None), ``"body_length"``
+    (float or None), and ``"visibility"`` (float in [0, 1]), or None if the
+    input keypoints array is invalid.
+    """
+    if keypoints is None:
+        return None
+    arr = np.asarray(keypoints, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+        return None
+
+    ignore_set = {int(idx) for idx in (ignore_indices or [])}
+
+    def weighted_centroid(indices):
+        pts = []
+        weights = []
+        for idx in indices:
+            if idx in ignore_set or idx < 0 or idx >= len(arr):
+                continue
+            x, y, conf = arr[idx]
+            if (
+                not np.isfinite(x)
+                or not np.isfinite(y)
+                or not np.isfinite(conf)
+                or float(conf) < float(min_valid_conf)
+            ):
+                continue
+            pts.append((float(x), float(y)))
+            weights.append(max(1e-6, float(conf)))
+        if not pts:
+            return None
+        pts_arr = np.asarray(pts, dtype=np.float64)
+        w_arr = np.asarray(weights, dtype=np.float64)
+        cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+        cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+        return cx, cy
+
+    valid_total = 0
+    visible_total = 0
+    for idx in range(len(arr)):
+        if idx in ignore_set:
+            continue
+        valid_total += 1
+        conf = arr[idx, 2]
+        if np.isfinite(conf) and float(conf) >= float(min_valid_conf):
+            visible_total += 1
+    visibility = float(visible_total) / float(valid_total) if valid_total > 0 else 0.0
+
+    ant = weighted_centroid(anterior_indices)
+    post = weighted_centroid(posterior_indices)
+    if ant is None or post is None:
+        return {
+            "heading": None,
+            "body_length": None,
+            "visibility": float(np.clip(visibility, 0.0, 1.0)),
+        }
+
+    dx = ant[0] - post[0]
+    dy = ant[1] - post[1]
+    if not np.isfinite(dx) or not np.isfinite(dy):
+        heading = None
+        body_length = None
+    else:
+        heading = normalize_theta(math.atan2(dy, dx))
+        body_length = float(math.hypot(dx, dy))
+
+    return {
+        "heading": heading,
+        "body_length": body_length,
+        "visibility": float(np.clip(visibility, 0.0, 1.0)),
+    }
+
+
+def normalize_pose_keypoints(
+    keypoints, min_valid_conf: float, ignore_indices=None
+) -> Optional[np.ndarray]:
+    """Center and scale pose keypoints for shape comparison.
+
+    Returns an (N, 3) float32 array with nan-filled invalid entries, or None
+    if there are no valid keypoints above *min_valid_conf*.
+    """
+    if keypoints is None:
+        return None
+    arr = np.asarray(keypoints, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+        return None
+
+    ignore_set = {int(idx) for idx in (ignore_indices or [])}
+    valid = np.zeros(len(arr), dtype=bool)
+    valid_points = []
+    valid_weights = []
+    for idx in range(len(arr)):
+        if idx in ignore_set:
+            continue
+        x, y, conf = arr[idx]
+        if (
+            np.isfinite(x)
+            and np.isfinite(y)
+            and np.isfinite(conf)
+            and float(conf) >= float(min_valid_conf)
+        ):
+            valid[idx] = True
+            valid_points.append((float(x), float(y)))
+            valid_weights.append(max(1e-6, float(conf)))
+
+    if not valid_points:
+        return None
+
+    pts_arr = np.asarray(valid_points, dtype=np.float64)
+    w_arr = np.asarray(valid_weights, dtype=np.float64)
+    cx = float(np.average(pts_arr[:, 0], weights=w_arr))
+    cy = float(np.average(pts_arr[:, 1], weights=w_arr))
+    centered = pts_arr - np.array([[cx, cy]], dtype=np.float64)
+    radii = np.sqrt(np.sum(centered**2, axis=1))
+    scale = float(np.median(radii[radii > 1e-6])) if np.any(radii > 1e-6) else 1.0
+    scale = max(scale, 1.0)
+
+    out = np.full((len(arr), 3), np.nan, dtype=np.float32)
+    out[:, 2] = 0.0
+    valid_indices = np.where(valid)[0]
+    for src_idx, kp_idx in enumerate(valid_indices):
+        out[kp_idx, 0] = np.float32(centered[src_idx, 0] / scale)
+        out[kp_idx, 1] = np.float32(centered[src_idx, 1] / scale)
+        out[kp_idx, 2] = np.float32(arr[kp_idx, 2])
+    return out
+
+
+def load_pose_context_from_params(
+    params: Dict[str, Any],
+) -> Tuple[Any, List[int], List[int], List[int], bool]:
+    """Open the pose properties cache and resolve keypoint group indices.
+
+    Returns a 5-tuple:
+        (pose_props_cache | None,
+         anterior_indices,
+         posterior_indices,
+         ignore_indices,
+         pose_direction_enabled)
+
+    ``pose_direction_enabled`` is True only when both anterior and posterior
+    index lists are non-empty.
+    """
+    pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
+    cache_path = str(params.get("INDIVIDUAL_PROPERTIES_CACHE_PATH", "") or "").strip()
+    if not pose_enabled or not cache_path or not os.path.exists(cache_path):
+        return None, [], [], [], False
+
+    from multi_tracker.core.identity.properties_cache import IndividualPropertiesCache
+
+    pose_props_cache = IndividualPropertiesCache(cache_path, mode="r")
+    if not pose_props_cache.is_compatible():
+        logger.warning(
+            "Pose cache incompatible, pose direction disabled: %s", cache_path
+        )
+        pose_props_cache.close()
+        return None, [], [], [], False
+
+    names_raw = pose_props_cache.metadata.get("pose_keypoint_names", [])
+    keypoint_names = (
+        [str(v) for v in names_raw] if isinstance(names_raw, (list, tuple)) else []
+    )
+
+    ignore_indices = resolve_pose_group_indices(
+        params.get("POSE_IGNORE_KEYPOINTS", []), keypoint_names
+    )
+    anterior_indices = resolve_pose_group_indices(
+        params.get("POSE_DIRECTION_ANTERIOR_KEYPOINTS", []), keypoint_names
+    )
+    posterior_indices = resolve_pose_group_indices(
+        params.get("POSE_DIRECTION_POSTERIOR_KEYPOINTS", []), keypoint_names
+    )
+
+    pose_direction_enabled = bool(anterior_indices and posterior_indices)
+    if not pose_direction_enabled:
+        logger.info(
+            "Pose direction disabled: define both anterior/posterior keypoint groups."
+        )
+    return (
+        pose_props_cache,
+        anterior_indices,
+        posterior_indices,
+        ignore_indices,
+        pose_direction_enabled,
+    )
+
+
+def compute_detection_pose_features(
+    detection_ids,
+    pose_keypoint_map,
+    anterior_indices,
+    posterior_indices,
+    ignore_indices,
+    min_valid_conf,
+    return_headings: bool = False,
+) -> tuple:
+    """Compute normalized pose keypoints and visibility for each detection.
+
+    For each detection ID, look up pose keypoints in *pose_keypoint_map* and
+    compute a normalized keypoint array plus a visibility score.
+
+    Args:
+        return_headings: when True, return a 3-tuple with an extra
+            ``list[float | None]`` of per-detection pose headings.
+
+    Returns (return_headings=False):
+        detection_pose_keypoints : list[ndarray | None], length == len(detection_ids)
+        detection_pose_visibility : float32 ndarray, length == len(detection_ids)
+
+    Returns (return_headings=True):
+        detection_pose_keypoints, detection_pose_visibility,
+        detection_pose_headings : list[float | None]
+    """
+    n = len(detection_ids)
+    detection_pose_keypoints = [None] * n
+    detection_pose_visibility = np.zeros(n, dtype=np.float32)
+    detection_pose_headings: List[Optional[float]] = [None] * n
+
+    for det_idx in range(n):
+        try:
+            det_id = int(detection_ids[det_idx])
+        except Exception:
+            continue
+        keypoints = pose_keypoint_map.get(det_id)
+        features = compute_pose_geometry_from_keypoints(
+            keypoints,
+            anterior_indices,
+            posterior_indices,
+            min_valid_conf,
+            ignore_indices,
+        )
+        if features is None:
+            continue
+        detection_pose_visibility[det_idx] = float(
+            features.get("visibility", 0.0) or 0.0
+        )
+        detection_pose_keypoints[det_idx] = normalize_pose_keypoints(
+            keypoints, min_valid_conf, ignore_indices=ignore_indices
+        )
+        detection_pose_headings[det_idx] = features.get("heading")
+    if return_headings:
+        return (
+            detection_pose_keypoints,
+            detection_pose_visibility,
+            detection_pose_headings,
+        )
+    return detection_pose_keypoints, detection_pose_visibility
+
+
+# ---------------------------------------------------------------------------
+# Theta-disambiguation helpers (pure functions mirroring TrackingWorker methods)
+# ---------------------------------------------------------------------------
+
+
+def circular_abs_diff_rad(a: float, b: float) -> float:
+    """Absolute circular difference between two angles in radians."""
+    d = (float(a) - float(b) + math.pi) % (2 * math.pi) - math.pi
+    return abs(d)
+
+
+def collapse_obb_axis_theta(theta_axis: float, reference_theta) -> float:
+    """Resolve 180-degree OBB axis ambiguity.
+
+    Picks *theta_axis* or *theta_axis + pi* — whichever is angularly closer to
+    *reference_theta*.  Returns ``normalize_theta(theta_axis)`` when
+    *reference_theta* is None or non-finite.
+    """
+    theta0 = normalize_theta(theta_axis)
+    theta1 = normalize_theta(theta0 + math.pi)
+    if reference_theta is None:
+        return theta0
+    try:
+        ref = float(reference_theta)
+        if not math.isfinite(ref):
+            return theta0
+        ref = normalize_theta(ref)
+    except Exception:
+        return theta0
+    d0 = circular_abs_diff_rad(theta0, ref)
+    d1 = circular_abs_diff_rad(theta1, ref)
+    return theta0 if d0 <= d1 else theta1
+
+
+def select_directed_heading(
+    pose_heading,
+    pose_directed: bool,
+    headtail_heading,
+    headtail_directed: bool,
+    pose_overrides_headtail: bool = True,
+) -> Tuple[float, bool]:
+    """Choose directed heading source (pose / head-tail) by precedence.
+
+    Returns ``(heading_radians, is_directed)``.
+    """
+    try:
+        pose_valid = bool(pose_directed) and math.isfinite(float(pose_heading))
+    except Exception:
+        pose_valid = False
+    try:
+        headtail_valid = bool(headtail_directed) and math.isfinite(
+            float(headtail_heading)
+        )
+    except Exception:
+        headtail_valid = False
+    if pose_overrides_headtail:
+        if pose_valid:
+            return float(pose_heading), True
+        if headtail_valid:
+            return float(headtail_heading), True
+        return float("nan"), False
+    if headtail_valid:
+        return float(headtail_heading), True
+    if pose_valid:
+        return float(pose_heading), True
+    return float("nan"), False
+
+
+def build_detection_direction_overrides(
+    n_detections: int,
+    pose_headings,
+    pose_directed_mask,
+    headtail_headings,
+    headtail_directed_mask,
+    pose_overrides_headtail: bool = True,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Build per-detection directed heading overrides and validity mask."""
+    try:
+        count = max(int(n_detections), 0)
+    except Exception:
+        count = 0
+
+    detection_directed_heading = np.full(count, np.nan, dtype=np.float32)
+    detection_directed_mask = np.zeros(count, dtype=np.uint8)
+
+    for det_idx in range(count):
+        try:
+            pose_heading = (
+                float(pose_headings[det_idx])
+                if pose_headings is not None and det_idx < len(pose_headings)
+                else math.nan
+            )
+        except Exception:
+            pose_heading = math.nan
+        try:
+            pose_directed = bool(
+                pose_directed_mask is not None
+                and det_idx < len(pose_directed_mask)
+                and pose_directed_mask[det_idx]
+            )
+        except Exception:
+            pose_directed = False
+        try:
+            headtail_heading = (
+                float(headtail_headings[det_idx])
+                if headtail_headings is not None and det_idx < len(headtail_headings)
+                else math.nan
+            )
+        except Exception:
+            headtail_heading = math.nan
+        try:
+            headtail_directed = bool(
+                headtail_directed_mask is not None
+                and det_idx < len(headtail_directed_mask)
+                and headtail_directed_mask[det_idx]
+            )
+        except Exception:
+            headtail_directed = False
+
+        selected_heading, is_directed = select_directed_heading(
+            pose_heading=pose_heading,
+            pose_directed=pose_directed,
+            headtail_heading=headtail_heading,
+            headtail_directed=headtail_directed,
+            pose_overrides_headtail=pose_overrides_headtail,
+        )
+        if is_directed:
+            detection_directed_heading[det_idx] = np.float32(selected_heading)
+            detection_directed_mask[det_idx] = 1
+
+    return detection_directed_heading, detection_directed_mask
+
+
+def resolve_tracking_theta(
+    track_idx: int,
+    measured_theta: float,
+    pose_directed: bool,
+    orientation_last,
+    fallback_theta=None,
+) -> float:
+    """Resolve directed vs axis-aligned orientation for one track.
+
+    Mirrors ``TrackingWorker._resolve_tracking_theta`` as a pure function.
+    *orientation_last* is a list indexed by track index whose entries are
+    the last committed theta (float) or None.
+    """
+    if pose_directed:
+        return normalize_theta(measured_theta)
+    reference_theta = None
+    if orientation_last is not None:
+        try:
+            if 0 <= int(track_idx) < len(orientation_last):
+                reference_theta = orientation_last[int(track_idx)]
+        except Exception:
+            pass
+    if reference_theta is None and fallback_theta is not None:
+        try:
+            candidate = float(fallback_theta)
+            if math.isfinite(candidate):
+                reference_theta = candidate
+        except Exception:
+            pass
+    return collapse_obb_axis_theta(measured_theta, reference_theta)
+
+
+def resolve_detection_tracking_theta(
+    track_idx: int,
+    measured_theta: float,
+    directed_heading,
+    pose_directed: bool,
+    orientation_last,
+    fallback_theta=None,
+) -> float:
+    """Resolve tracking theta, preferring selected directed headings when valid."""
+    tracking_theta = measured_theta
+    if pose_directed:
+        try:
+            candidate = float(directed_heading)
+            if math.isfinite(candidate):
+                tracking_theta = candidate
+        except Exception:
+            pass
+    return resolve_tracking_theta(
+        track_idx,
+        tracking_theta,
+        pose_directed,
+        orientation_last,
+        fallback_theta=fallback_theta,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Multi-animal crop contamination utilities
+# ---------------------------------------------------------------------------
+
+
+def apply_foreign_obb_mask(
+    crop: np.ndarray,
+    x_offset: int,
+    y_offset: int,
+    other_corners_list,
+    background_color=128,
+) -> np.ndarray:
+    """Fill pixels in *crop* that belong to other animals' OBB regions.
+
+    Shifts each foreign OBB from frame coordinates into crop-local coordinates
+    and fills the polygon with *background_color* using ``cv2.fillPoly``.
+
+    Args:
+        crop: BGR (or grayscale) image crop extracted from the full frame.
+        x_offset: Horizontal offset of the crop's top-left corner in frame coords.
+        y_offset: Vertical offset of the crop's top-left corner in frame coords.
+        other_corners_list: Sequence of (4, 2) float32 arrays of OBB corners in
+            *frame* coordinates for every other detected animal.
+        background_color: Fill value — either a scalar (0–255) applied to all
+            channels, or a (B, G, R) tuple for colour crops.
+
+    Returns:
+        Modified copy of *crop* with foreign-animal regions filled.
+    """
+    if crop is None or not other_corners_list:
+        return crop
+
+    import cv2 as _cv2
+
+    out = crop.copy()
+    crop_h, crop_w = out.shape[:2]
+
+    # Resolve fill colour — accept scalar int or (B, G, R) tuple
+    if isinstance(background_color, (list, tuple)) and len(background_color) == 3:
+        bgr = tuple(int(np.clip(c, 0, 255)) for c in background_color)
+        fill_color = bgr if out.ndim == 3 else int(bgr[0])
+    else:
+        fill = int(np.clip(background_color, 0, 255))
+        fill_color = (fill, fill, fill) if out.ndim == 3 else fill
+
+    for corners in other_corners_list:
+        try:
+            arr = np.asarray(corners, dtype=np.float32)
+            if arr.shape != (4, 2):
+                continue
+            local = arr.copy()
+            local[:, 0] -= float(x_offset)
+            local[:, 1] -= float(y_offset)
+            local[:, 0] = np.clip(local[:, 0], 0, crop_w - 1)
+            local[:, 1] = np.clip(local[:, 1], 0, crop_h - 1)
+            poly = local.astype(np.int32)
+            _cv2.fillPoly(out, [poly], fill_color)
+        except Exception:
+            continue
+
+    return out
+
+
+def filter_keypoints_by_foreign_obbs(
+    keypoints,
+    all_corners_list,
+    target_idx: int,
+) -> np.ndarray:
+    """Zero confidence of keypoints that fall inside another animal's OBB.
+
+    Operates on *global frame coordinates* (after crop back-projection).
+
+    Args:
+        keypoints: [K, 3] float32 array of (x, y, conf) in frame coordinates.
+        all_corners_list: List of (4, 2) float32 OBB corner arrays for every
+            detection in the frame (including the target).
+        target_idx: Index into *all_corners_list* identifying the current
+            animal — its own OBB is skipped.
+
+    Returns:
+        Modified copy of *keypoints* with contaminated entries having conf=0.
+        X/Y coordinates are preserved.
+    """
+    if keypoints is None:
+        return keypoints
+
+    import cv2 as _cv2
+
+    arr = np.asarray(keypoints, dtype=np.float32).copy()
+    if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
+        return arr
+    if not all_corners_list:
+        return arr
+
+    for j, corners in enumerate(all_corners_list):
+        if j == target_idx:
+            continue
+        try:
+            poly = np.asarray(corners, dtype=np.float32)
+            if poly.shape != (4, 2):
+                continue
+            for k in range(len(arr)):
+                if arr[k, 2] <= 0.0:
+                    continue
+                x, y = float(arr[k, 0]), float(arr[k, 1])
+                if not (math.isfinite(x) and math.isfinite(y)):
+                    continue
+                dist = _cv2.pointPolygonTest(poly, (x, y), measureDist=False)
+                if dist >= 0.0:
+                    arr[k, 2] = 0.0
+        except Exception:
+            continue
+
+    return arr

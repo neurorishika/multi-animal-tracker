@@ -1,10 +1,11 @@
 """Pose labeling subpackage."""
 
-try:
-    from .pose_label import main
-except (
-    Exception
-):  # pragma: no cover - enables metadata/doc tooling without full runtime deps
-    main = None
+
+def main(*args, **kwargs):
+    """Lazy entry point for the PoseKit labeler UI."""
+    from .ui.main import main as _main  # deferred to avoid polluting sys.modules
+
+    return _main(*args, **kwargs)
+
 
 __all__ = ["main"]

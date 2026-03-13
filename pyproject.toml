@@ -36,8 +36,14 @@ Issues = "https://github.com/neurorishika/multi-animal-tracker/issues"
 [project.scripts]
 multi-animal-tracker = "multi_tracker.app.launcher:main"
 mat = "multi_tracker.app.launcher:main"
-posekit-labeler = "multi_tracker.posekit.pose_label:main"
-pose = "multi_tracker.posekit.pose_label:main"
+posekit-labeler = "multi_tracker.posekit.ui.main:main"
+posekit = "multi_tracker.posekit.ui.main:main"
+datasieve = "multi_tracker.tools.data_sieve.gui:main"
+sieve = "multi_tracker.tools.data_sieve.gui:main"
+classkit-labeler = "multi_tracker.classkit.app:main"
+classkit = "multi_tracker.classkit.app:main"
+mat-afterhours = "multi_tracker.afterhours.app:main"
+afterhours = "multi_tracker.afterhours.app:main"
 
 # ============================================================================
 # Black - Code formatter
@@ -90,6 +96,7 @@ addopts = [
     "-v",
     "--strict-markers",
     "--strict-config",
+    "-p", "no:napari",
     "-m", "not benchmark",
     "--tb=short",
 ]

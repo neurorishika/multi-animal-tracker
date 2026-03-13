@@ -12,8 +12,9 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
-import tempfile
+import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -56,19 +59,74 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from multi_tracker.core.tracking.optimizer import DetectionCacheBuilderWorker
+
 from ..core.identity.analysis import IndividualDatasetGenerator
+from ..core.identity.oriented_video import (
+    OrientedTrackVideoExporter,
+    resolve_individual_dataset_dir,
+)
+from ..core.identity.pose_quality import (
+    apply_quality_to_dataframe,
+    apply_temporal_pose_postprocessing,
+    calibrate_body_length_prior,
+    calibrate_edge_length_priors,
+)
+from ..core.identity.properties_export import (
+    POSE_SUMMARY_COLUMNS,
+    augment_trajectories_with_pose_cache,
+    build_pose_keypoint_labels,
+    flatten_pose_keypoints_row,
+    merge_interpolated_pose_df,
+    pose_wide_columns_for_labels,
+)
 from ..core.post.processing import (
     interpolate_trajectories,
     process_trajectories,
+    relink_trajectories_with_pose,
     resolve_trajectories,
+)
+from ..core.runtime.compute_runtime import (
+    CANONICAL_RUNTIMES,
+    allowed_runtimes_for_pipelines,
+    derive_detection_runtime_settings,
+    derive_pose_runtime_settings,
+    infer_compute_runtime_from_legacy,
+    runtime_label,
 )
 from ..core.tracking.worker import TrackingWorker
 from ..data.csv_writer import CSVWriterThread
 from ..data.detection_cache import DetectionCache
 from ..utils.geometry import fit_circle_to_points, wrap_angle_degs
-from ..utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
+from ..utils.gpu_utils import (
+    MPS_AVAILABLE,
+    ROCM_AVAILABLE,
+    TENSORRT_AVAILABLE,
+    TORCH_CUDA_AVAILABLE,
+)
+from ..utils.pose_visualization import (
+    is_renderable_pose_keypoint,
+    normalize_pose_render_min_conf,
+)
+from ..utils.video_artifacts import (
+    build_detection_cache_path,
+    build_optimizer_detection_cache_path,
+    build_tracking_session_log_path,
+    candidate_artifact_base_dirs,
+    choose_writable_artifact_base_dir,
+    find_existing_detection_cache_path,
+    iter_detection_cache_candidates,
+)
+from .dialogs.parameter_helper import ParameterHelperDialog
 from .dialogs.train_yolo_dialog import TrainYoloDialog
-from .widgets.histograms import HistogramPanel
+
+try:
+    from ..posekit.ui.dialogs.utils import get_available_devices
+except ImportError:
+
+    def get_available_devices():
+        return ["auto", "cpu", "cuda", "mps"]
+
 
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
@@ -99,10 +157,21 @@ class MergeWorker(QThread):
         self.resize_factor = resize_factor
         self.interp_method = interp_method
         self.max_gap = max_gap
+        self._stop_requested = False
+
+    def stop(self):
+        """Request cooperative cancellation."""
+        self._stop_requested = True
+
+    def _should_stop(self) -> bool:
+        return bool(self._stop_requested or self.isInterruptionRequested())
 
     def run(self: object) -> object:
         """run method documentation."""
+        # pose_backend = None
         try:
+            if self._should_stop():
+                return
             self.progress_signal.emit(10, "Preparing trajectories...")
 
             # Convert DataFrames to list of DataFrames (one per trajectory)
@@ -115,6 +184,8 @@ class MergeWorker(QThread):
             forward_prepared = prepare_trajs_for_merge(self.forward_trajs)
             backward_prepared = prepare_trajs_for_merge(self.backward_trajs)
 
+            if self._should_stop():
+                return
             self.progress_signal.emit(30, "Resolving trajectory conflicts...")
 
             resolved_trajectories = resolve_trajectories(
@@ -123,6 +194,8 @@ class MergeWorker(QThread):
                 params=self.params,
             )
 
+            if self._should_stop():
+                return
             self.progress_signal.emit(60, "Converting to DataFrame...")
 
             # Convert resolved trajectories to DataFrame
@@ -167,6 +240,8 @@ class MergeWorker(QThread):
                         max_gap=self.max_gap,
                     )
 
+            if self._should_stop():
+                return
             self.progress_signal.emit(90, "Scaling to original space...")
 
             # Scale coordinates back to original video space
@@ -193,8 +268,9 @@ class MergeWorker(QThread):
                     f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
                 )
 
-            self.progress_signal.emit(100, "Merge complete!")
-            self.finished_signal.emit(resolved_trajectories)
+            if not self._should_stop():
+                self.progress_signal.emit(100, "Merge complete!")
+                self.finished_signal.emit(resolved_trajectories)
 
         except Exception as e:
             logger.exception("Error during trajectory merging")
@@ -213,6 +289,14 @@ class InterpolatedCropsWorker(QThread):
         self.video_path = video_path
         self.detection_cache_path = detection_cache_path
         self.params = params
+        self._stop_requested = False
+
+    def stop(self):
+        """Request cooperative cancellation."""
+        self._stop_requested = True
+
+    def _should_stop(self) -> bool:
+        return bool(self._stop_requested or self.isInterruptionRequested())
 
     @staticmethod
     def _interp_angle(theta_start, theta_end, t):
@@ -231,7 +315,7 @@ class InterpolatedCropsWorker(QThread):
         if detection_cache is None or detection_id is None or pd.isna(detection_id):
             return None, None
         try:
-            _, _, shapes, _, obb_corners, detection_ids = detection_cache.get_frame(
+            _, _, shapes, _, obb_corners, detection_ids, *_ = detection_cache.get_frame(
                 int(frame_id)
             )
         except Exception:
@@ -269,7 +353,12 @@ class InterpolatedCropsWorker(QThread):
 
     def run(self: object) -> object:
         """run method documentation."""
+        pose_backend = None
+        detection_cache = None
+        cap = None
         try:
+            if self._should_stop():
+                return
             if not self.csv_path or not os.path.exists(self.csv_path):
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
                 return
@@ -299,22 +388,60 @@ class InterpolatedCropsWorker(QThread):
             position_scale = 1.0
             size_scale = 1.0 / resize_factor if resize_factor else 1.0
 
-            detection_cache = None
             if self.detection_cache_path and os.path.exists(self.detection_cache_path):
                 detection_cache = DetectionCache(self.detection_cache_path, mode="r")
 
+            # Respect runtime save toggle: if disabled, run interpolation/pose without writing
+            # interpolated crops or related metadata artifacts to disk.
+            save_interpolated_outputs = bool(
+                self.params.get("ENABLE_INDIVIDUAL_IMAGE_SAVE", False)
+            )
+            cache_interpolated_artifacts = bool(
+                save_interpolated_outputs
+                or self.params.get("GENERATE_ORIENTED_TRACK_VIDEOS", False)
+            )
+            gen_params = dict(self.params or {})
+            gen_params["ENABLE_INDIVIDUAL_DATASET"] = cache_interpolated_artifacts
+            gen_params["ENABLE_INDIVIDUAL_IMAGE_SAVE"] = save_interpolated_outputs
+
             gen = IndividualDatasetGenerator(
-                self.params,
+                gen_params,
                 output_dir,
                 Path(self.video_path).stem,
                 self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
             )
-            gen.enabled = True
+            gen.enabled = cache_interpolated_artifacts
+
+            pose_enabled = bool(self.params.get("ENABLE_POSE_EXTRACTOR", False))
+            pose_kpt_source_names = []
+            pose_kpt_labels = []
+            if pose_enabled:
+                from ..core.identity.runtime_api import (
+                    build_runtime_config,
+                    create_pose_backend_from_config,
+                )
+
+                try:
+                    pose_config = build_runtime_config(
+                        self.params, out_root=str(Path(output_dir).expanduser())
+                    )
+                    pose_backend = create_pose_backend_from_config(pose_config)
+                    pose_backend.warmup()
+                    pose_kpt_source_names = list(
+                        getattr(pose_backend, "output_keypoint_names", []) or []
+                    )
+                    pose_kpt_labels = build_pose_keypoint_labels(
+                        pose_kpt_source_names, len(pose_kpt_source_names)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Interpolated pose analysis disabled (backend init failed): %s",
+                        exc,
+                    )
+                    pose_backend = None
 
             cap = cv2.VideoCapture(self.video_path)
             if not cap.isOpened():
-                if detection_cache:
-                    detection_cache.close()
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
                 return
 
@@ -338,6 +465,7 @@ class InterpolatedCropsWorker(QThread):
             occluded_rows = 0
             interp_runs = 0
             interp_rows = []
+            interp_pose_rows = []
             roi_rows = []
             roi_corners = []
             frame_tasks = defaultdict(list)
@@ -347,6 +475,8 @@ class InterpolatedCropsWorker(QThread):
                 return
 
             for traj_id, group in df.groupby("TrajectoryID"):
+                if self._should_stop():
+                    return
                 group = group.sort_values("FrameID").reset_index(drop=True)
                 states = group["State"].astype(str).str.strip().str.lower()
                 # Treat any value containing 'occluded' as occluded
@@ -358,6 +488,8 @@ class InterpolatedCropsWorker(QThread):
                 last_valid_idx = None
                 i = 0
                 while i < len(group):
+                    if self._should_stop():
+                        return
                     if states[i] != "occluded":
                         if not pd.isna(group.at[i, "X"]) and not pd.isna(
                             group.at[i, "Y"]
@@ -419,6 +551,8 @@ class InterpolatedCropsWorker(QThread):
                         h1 = h1 or ref_size * 0.8
 
                     for k in range(i, j):
+                        if self._should_stop():
+                            return
                         row = group.iloc[k]
                         f = int(row["FrameID"])
                         t = (f - f0) / (f1 - f0)
@@ -465,36 +599,50 @@ class InterpolatedCropsWorker(QThread):
                 needed_frames = sorted(frame_tasks.keys())
                 total_frames = len(needed_frames)
                 current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
+                # Accumulate pose crops across multiple frames before running
+                # inference.  One large batch call is far faster than one
+                # predict_batch call per frame (GPU utilisation is the bottleneck).
+                _pose_batch_size = int(
+                    self.params.get("INTERP_POSE_INFERENCE_BATCH_SIZE", 64)
+                )
+                _pending_crops: list = []
+                _pending_entries: list = []
                 for idx, f in enumerate(needed_frames, start=1):
+                    if self._should_stop():
+                        return
                     if f != current_pos:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, f)
                     ret, frame = cap.read()
                     current_pos = f + 1
                     if not ret or frame is None:
                         continue
-                    for task in frame_tasks[f]:
-                        filename = gen.save_interpolated_crop(
-                            frame=frame,
-                            frame_id=task["frame_id"],
-                            cx=task["cx"],
-                            cy=task["cy"],
-                            w=task["w"],
-                            h=task["h"],
-                            theta=task["theta"],
-                            traj_id=task["traj_id"],
-                            interp_from=task["interp_from"],
-                            interp_index=task["interp_index"],
-                            interp_total=task["interp_total"],
+                    # Pre-compute all OBB corners for this frame so that
+                    # foreign-OBB masking can exclude overlapping animals.
+                    _frame_all_corners = [
+                        gen.ellipse_to_obb_corners(
+                            t["cx"], t["cy"], t["w"], t["h"], t["theta"]
                         )
-                        if filename:
-                            interp_saved += 1
-                            corners = gen.ellipse_to_obb_corners(
-                                task["cx"],
-                                task["cy"],
-                                task["w"],
-                                task["h"],
-                                task["theta"],
+                        for t in frame_tasks[f]
+                    ]
+                    for task_idx, task in enumerate(frame_tasks[f]):
+                        filename = ""
+                        corners = _frame_all_corners[task_idx]
+                        if save_interpolated_outputs:
+                            filename = gen.save_interpolated_crop(
+                                frame=frame,
+                                frame_id=task["frame_id"],
+                                cx=task["cx"],
+                                cy=task["cy"],
+                                w=task["w"],
+                                h=task["h"],
+                                theta=task["theta"],
+                                traj_id=task["traj_id"],
+                                interp_from=task["interp_from"],
+                                interp_index=task["interp_index"],
+                                interp_total=task["interp_total"],
                             )
+                        if save_interpolated_outputs and filename:
+                            interp_saved += 1
                             interp_rows.append(
                                 {
                                     "frame_id": int(task["frame_id"]),
@@ -523,6 +671,110 @@ class InterpolatedCropsWorker(QThread):
                                 }
                             )
                             roi_corners.append(corners)
+                        if pose_backend is not None:
+                            pose_crop = None
+                            pose_crop_info = None
+                            try:
+                                _other_corners = [
+                                    c
+                                    for ci, c in enumerate(_frame_all_corners)
+                                    if ci != task_idx
+                                ]
+                                pose_crop, pose_crop_info = (
+                                    gen._extract_obb_masked_crop(
+                                        frame,
+                                        corners,
+                                        frame.shape[0],
+                                        frame.shape[1],
+                                        other_corners_list=(
+                                            _other_corners if _other_corners else None
+                                        ),
+                                    )
+                                )
+                            except Exception:
+                                pose_crop = None
+                                pose_crop_info = None
+                            if pose_crop is not None and pose_crop.size > 0:
+                                _pending_crops.append(pose_crop)
+                                _pending_entries.append(
+                                    {
+                                        "task": task,
+                                        "filename": filename,
+                                        "crop_info": pose_crop_info,
+                                    }
+                                )
+
+                    # Flush the pose batch when it reaches the target size or on the
+                    # last frame so we never carry unprocessed crops past finalization.
+                    _flush_batch = (
+                        pose_backend is not None
+                        and _pending_crops
+                        and (
+                            len(_pending_crops) >= _pose_batch_size
+                            or idx == total_frames
+                        )
+                    )
+                    if _flush_batch:
+                        if self._should_stop():
+                            return
+                        pose_results = pose_backend.predict_batch(_pending_crops)
+                        for pidx, entry in enumerate(_pending_entries):
+                            pose_out = (
+                                pose_results[pidx] if pidx < len(pose_results) else None
+                            )
+                            pose_mean_conf = 0.0
+                            pose_valid_fraction = 0.0
+                            pose_num_valid = 0
+                            pose_num_keypoints = 0
+                            pose_wide = {}
+                            if pose_out is not None:
+                                pose_mean_conf = float(
+                                    getattr(pose_out, "mean_conf", 0.0)
+                                )
+                                pose_valid_fraction = float(
+                                    getattr(pose_out, "valid_fraction", 0.0)
+                                )
+                                pose_num_valid = int(getattr(pose_out, "num_valid", 0))
+                                pose_num_keypoints = int(
+                                    getattr(pose_out, "num_keypoints", 0)
+                                )
+                                keypoints = getattr(pose_out, "keypoints", None)
+                                crop_info = entry.get("crop_info") or {}
+                                crop_bbox = crop_info.get("crop_bbox")
+                                if (
+                                    keypoints is not None
+                                    and crop_bbox is not None
+                                    and len(crop_bbox) >= 2
+                                    and len(keypoints) > 0
+                                ):
+                                    x0 = float(crop_bbox[0])
+                                    y0 = float(crop_bbox[1])
+                                    gkpts = np.asarray(
+                                        keypoints, dtype=np.float32
+                                    ).copy()
+                                    gkpts[:, 0] += x0
+                                    gkpts[:, 1] += y0
+                                    if len(gkpts) > len(pose_kpt_labels):
+                                        pose_kpt_labels = build_pose_keypoint_labels(
+                                            pose_kpt_source_names, len(gkpts)
+                                        )
+                                    pose_wide = flatten_pose_keypoints_row(
+                                        gkpts, pose_kpt_labels
+                                    )
+
+                            pose_row = {
+                                "frame_id": int(entry["task"]["frame_id"]),
+                                "trajectory_id": int(entry["task"]["traj_id"]),
+                                "filename": entry["filename"],
+                                "PoseMeanConf": pose_mean_conf,
+                                "PoseValidFraction": pose_valid_fraction,
+                                "PoseNumValid": pose_num_valid,
+                                "PoseNumKeypoints": pose_num_keypoints,
+                            }
+                            pose_row.update(pose_wide)
+                            interp_pose_rows.append(pose_row)
+                        _pending_crops.clear()
+                        _pending_entries.clear()
 
                     if idx % 25 == 0 or idx == total_frames:
                         progress = int((idx / total_frames) * 100)
@@ -531,15 +783,12 @@ class InterpolatedCropsWorker(QThread):
                             f"Interpolating occlusions... {idx}/{total_frames}",
                         )
                         del frame
-                        gc.collect()
 
-            cap.release()
-            if detection_cache:
-                detection_cache.close()
             mapping_path = None
             roi_csv_path = None
             roi_npz_path = None
-            if interp_rows and gen.crops_dir is not None:
+            pose_csv_path = None
+            if save_interpolated_outputs and interp_rows and gen.crops_dir is not None:
                 mapping_path = gen.crops_dir.parent / "interpolated_mapping.csv"
                 try:
                     with open(mapping_path, "w", newline="") as f:
@@ -559,7 +808,7 @@ class InterpolatedCropsWorker(QThread):
                         writer.writerows(interp_rows)
                 except Exception:
                     pass
-            if roi_rows and gen.crops_dir is not None:
+            if cache_interpolated_artifacts and roi_rows and gen.crops_dir is not None:
                 roi_csv_path = gen.crops_dir.parent / "interpolated_rois.csv"
                 try:
                     with open(roi_csv_path, "w", newline="") as f:
@@ -624,18 +873,128 @@ class InterpolatedCropsWorker(QThread):
                     )
                 except Exception:
                     pass
-            gen.finalize()
-            self.finished_signal.emit(
-                {
-                    "saved": interp_saved,
-                    "gaps": interp_gaps,
-                    "mapping_path": str(mapping_path) if mapping_path else None,
-                    "roi_csv_path": str(roi_csv_path) if roi_csv_path else None,
-                    "roi_npz_path": str(roi_npz_path) if roi_npz_path else None,
-                }
-            )
+            if (
+                save_interpolated_outputs
+                and interp_pose_rows
+                and gen.crops_dir is not None
+            ):
+                pose_csv_path = gen.crops_dir.parent / "interpolated_pose.csv"
+                try:
+                    pose_fieldnames = [
+                        "frame_id",
+                        "trajectory_id",
+                        "filename",
+                        *POSE_SUMMARY_COLUMNS,
+                        *pose_wide_columns_for_labels(pose_kpt_labels),
+                    ]
+                    with open(pose_csv_path, "w", newline="") as f:
+                        writer = csv.DictWriter(
+                            f,
+                            fieldnames=pose_fieldnames,
+                        )
+                        writer.writeheader()
+                        writer.writerows(interp_pose_rows)
+                except Exception:
+                    pose_csv_path = None
+            if cache_interpolated_artifacts:
+                gen.finalize()
+            if not self._should_stop():
+                self.finished_signal.emit(
+                    {
+                        "saved": interp_saved,
+                        "gaps": interp_gaps,
+                        "mapping_path": str(mapping_path) if mapping_path else None,
+                        "roi_csv_path": str(roi_csv_path) if roi_csv_path else None,
+                        "roi_npz_path": str(roi_npz_path) if roi_npz_path else None,
+                        "pose_csv_path": str(pose_csv_path) if pose_csv_path else None,
+                        "pose_rows": (
+                            interp_pose_rows
+                            if (interp_pose_rows and not save_interpolated_outputs)
+                            else None
+                        ),
+                    }
+                )
         except Exception:
             self.finished_signal.emit({"saved": 0, "gaps": 0})
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+            if detection_cache is not None:
+                try:
+                    detection_cache.close()
+                except Exception:
+                    pass
+            if pose_backend is not None:
+                try:
+                    pose_backend.close()
+                except Exception:
+                    pass
+
+
+class OrientedTrackVideoWorker(QThread):
+    """Worker thread for exporting orientation-fixed per-track videos."""
+
+    progress_signal = Signal(int, str)
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(
+        self,
+        final_csv_path,
+        dataset_dir,
+        video_path,
+        detection_cache_path,
+        interpolated_roi_npz_path,
+        fps,
+        padding_fraction,
+        background_color,
+        suppress_foreign_obb,
+    ):
+        super().__init__()
+        self.final_csv_path = final_csv_path
+        self.dataset_dir = dataset_dir
+        self.video_path = video_path
+        self.detection_cache_path = detection_cache_path
+        self.interpolated_roi_npz_path = interpolated_roi_npz_path
+        self.fps = fps
+        self.padding_fraction = padding_fraction
+        self.background_color = background_color
+        self.suppress_foreign_obb = suppress_foreign_obb
+        self._stop_requested = False
+
+    def stop(self):
+        """Request cooperative cancellation."""
+        self._stop_requested = True
+
+    def _should_stop(self) -> bool:
+        return bool(self._stop_requested or self.isInterruptionRequested())
+
+    def run(self: object) -> object:
+        """run method documentation."""
+        try:
+            exporter = OrientedTrackVideoExporter(
+                self.dataset_dir,
+                self.final_csv_path,
+                video_path=self.video_path,
+                detection_cache_path=self.detection_cache_path,
+                interpolated_roi_npz_path=self.interpolated_roi_npz_path,
+                fps=self.fps,
+                padding_fraction=self.padding_fraction,
+                background_color=self.background_color,
+                suppress_foreign_obb=self.suppress_foreign_obb,
+            )
+            result = exporter.export(
+                progress_callback=self.progress_signal.emit,
+                should_stop=self._should_stop,
+            )
+            if not self._should_stop():
+                self.finished_signal.emit(result.to_dict())
+        except Exception as exc:
+            if not self._should_stop():
+                self.error_signal.emit(str(exc))
 
 
 class DatasetGenerationWorker(QThread):
@@ -671,12 +1030,23 @@ class DatasetGenerationWorker(QThread):
         self.diversity_window = diversity_window
         self.include_context = include_context
         self.probabilistic = probabilistic
+        self._stop_requested = False
+
+    def stop(self):
+        """Request cooperative cancellation."""
+        self._stop_requested = True
+
+    def _should_stop(self) -> bool:
+        return bool(self._stop_requested or self.isInterruptionRequested())
 
     def run(self: object) -> object:
         """run method documentation."""
+        detection_cache = None
         try:
             from ..data.dataset_generation import FrameQualityScorer, export_dataset
 
+            if self._should_stop():
+                return
             self.progress_signal.emit(5, "Initializing dataset generation...")
 
             # Load tracking CSV to compute quality scores
@@ -686,7 +1056,6 @@ class DatasetGenerationWorker(QThread):
             # Initialize quality scorer
             self.progress_signal.emit(15, "Initializing quality scorer...")
             scorer = FrameQualityScorer(self.params)
-            detection_cache = None
             if self.detection_cache_path and os.path.exists(self.detection_cache_path):
                 try:
                     detection_cache = DetectionCache(
@@ -704,6 +1073,8 @@ class DatasetGenerationWorker(QThread):
             total_unique = len(unique_frames)
 
             for idx, frame_id in enumerate(unique_frames):
+                if self._should_stop():
+                    return
                 if idx % 100 == 0:  # Update progress every 100 frames
                     progress = 20 + int((idx / total_unique) * 30)
                     self.progress_signal.emit(
@@ -714,7 +1085,7 @@ class DatasetGenerationWorker(QThread):
                 raw_confidences = []
                 if detection_cache is not None:
                     try:
-                        _, _, _, raw_confidences, _, _ = detection_cache.get_frame(
+                        _, _, _, raw_confidences, _, _, *_ = detection_cache.get_frame(
                             int(frame_id)
                         )
                     except Exception:
@@ -746,9 +1117,8 @@ class DatasetGenerationWorker(QThread):
 
                 scorer.score_frame(frame_id, detection_data, tracking_data)
 
-            if detection_cache is not None:
-                detection_cache.close()
-
+            if self._should_stop():
+                return
             # Select worst frames with diversity
             self.progress_signal.emit(50, "Selecting challenging frames...")
             selected_frames = scorer.get_worst_frames(
@@ -761,6 +1131,8 @@ class DatasetGenerationWorker(QThread):
 
             # Export dataset
             self.progress_signal.emit(60, f"Exporting {len(selected_frames)} frames...")
+            if self._should_stop():
+                return
             dataset_dir = export_dataset(
                 video_path=self.video_path,
                 csv_path=self.csv_path,
@@ -772,12 +1144,435 @@ class DatasetGenerationWorker(QThread):
                 include_context=self.include_context,
             )
 
-            self.progress_signal.emit(100, "Dataset generation complete!")
-            self.finished_signal.emit(dataset_dir, len(selected_frames))
+            if not self._should_stop():
+                self.progress_signal.emit(100, "Dataset generation complete!")
+                self.finished_signal.emit(dataset_dir, len(selected_frames))
 
         except Exception as e:
             logger.exception("Error during dataset generation")
             self.error_signal.emit(str(e))
+        finally:
+            if detection_cache is not None:
+                try:
+                    detection_cache.close()
+                except Exception:
+                    pass
+
+
+class PreviewDetectionWorker(QThread):
+    """Worker thread for non-blocking preview detection."""
+
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, preview_frame_rgb, context, use_size_filtering):
+        super().__init__()
+        self.preview_frame_rgb = preview_frame_rgb
+        self.context = context
+        self.use_size_filtering = bool(use_size_filtering)
+
+    def run(self):
+        try:
+            result = _run_preview_detection_job(
+                self.preview_frame_rgb,
+                self.context,
+                self.use_size_filtering,
+            )
+            self.finished_signal.emit(result)
+        except Exception as exc:
+            import traceback
+
+            self.error_signal.emit(f"{exc}\n{traceback.format_exc()}")
+
+
+def _run_preview_detection_job(
+    frame_rgb, context: dict, use_size_filtering: bool
+) -> dict:
+    """Run preview detection using a frozen parameter snapshot."""
+    from ..core.background.model import BackgroundModel
+    from ..core.detectors.engine import YOLOOBBDetector
+    from ..utils.image_processing import apply_image_adjustments
+
+    frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
+    detection_method = int(context.get("detection_method", 0))
+    is_background_subtraction = detection_method == 0
+    resize_f = float(context.get("resize_factor", 1.0))
+
+    test_frame = frame_bgr.copy()
+    detected_dimensions = []
+
+    if is_background_subtraction:
+        logger.info("Building background model for test detection...")
+        cap = cv2.VideoCapture(str(context.get("video_path", "")))
+        if not cap.isOpened():
+            raise RuntimeError("Cannot open video for background priming")
+
+        try:
+            bg_params = {
+                "BACKGROUND_PRIME_FRAMES": int(context.get("bg_prime_frames", 30)),
+                "BRIGHTNESS": int(context.get("brightness", 0)),
+                "CONTRAST": float(context.get("contrast", 1.0)),
+                "GAMMA": float(context.get("gamma", 1.0)),
+                "ROI_MASK": context.get("roi_mask"),
+                "RESIZE_FACTOR": resize_f,
+                "DARK_ON_LIGHT_BACKGROUND": bool(context.get("dark_on_light", False)),
+                "THRESHOLD_VALUE": int(context.get("threshold_value", 20)),
+                "MORPH_KERNEL_SIZE": int(context.get("morph_kernel_size", 3)),
+                "ENABLE_ADDITIONAL_DILATION": bool(
+                    context.get("enable_additional_dilation", False)
+                ),
+                "DILATION_KERNEL_SIZE": int(context.get("dilation_kernel_size", 3)),
+                "DILATION_ITERATIONS": int(context.get("dilation_iterations", 1)),
+            }
+
+            bg_model = BackgroundModel(bg_params)
+            bg_model.prime_background(cap)
+
+            if bg_model.lightest_background is None:
+                raise RuntimeError("Failed to build background model")
+
+            frame_to_process = frame_bgr.copy()
+            if resize_f < 1.0:
+                frame_to_process = cv2.resize(
+                    frame_to_process,
+                    (0, 0),
+                    fx=resize_f,
+                    fy=resize_f,
+                    interpolation=cv2.INTER_AREA,
+                )
+                test_frame = cv2.resize(
+                    test_frame,
+                    (0, 0),
+                    fx=resize_f,
+                    fy=resize_f,
+                    interpolation=cv2.INTER_AREA,
+                )
+
+            gray = cv2.cvtColor(frame_to_process, cv2.COLOR_BGR2GRAY)
+            gray = apply_image_adjustments(
+                gray,
+                bg_params["BRIGHTNESS"],
+                bg_params["CONTRAST"],
+                bg_params["GAMMA"],
+                use_gpu=False,
+            )
+
+            roi_for_test = bg_params["ROI_MASK"]
+            if roi_for_test is not None:
+                if resize_f < 1.0:
+                    roi_for_test = cv2.resize(
+                        roi_for_test,
+                        (gray.shape[1], gray.shape[0]),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                gray = cv2.bitwise_and(gray, gray, mask=roi_for_test)
+
+            bg_u8 = bg_model.lightest_background.astype(np.uint8)
+            fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
+            cnts, _ = cv2.findContours(
+                fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            )
+
+            min_contour = float(context.get("min_contour", 50.0))
+            detections = []
+            reference_body_size = float(context.get("reference_body_size", 50.0))
+            reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+            scaled_body_area = reference_body_area * (resize_f**2)
+
+            if use_size_filtering:
+                min_size_multiplier = float(context.get("min_object_size", 0.0))
+                max_size_multiplier = float(context.get("max_object_size", 999.0))
+                min_size_px2 = min_size_multiplier * scaled_body_area
+                max_size_px2 = max_size_multiplier * scaled_body_area
+            else:
+                min_size_px2 = 0.0
+                max_size_px2 = float("inf")
+
+            for c in cnts:
+                area = cv2.contourArea(c)
+                if area < min_contour or len(c) < 5:
+                    continue
+                if use_size_filtering and not (min_size_px2 <= area <= max_size_px2):
+                    continue
+                (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
+                detections.append(((cx, cy), (ax1, ax2), ang, area))
+                major_axis = max(ax1, ax2)
+                minor_axis = min(ax1, ax2)
+                detected_dimensions.append((major_axis, minor_axis))
+                cv2.ellipse(
+                    test_frame,
+                    ((int(cx), int(cy)), (int(ax1), int(ax2)), ang),
+                    (0, 255, 0),
+                    2,
+                )
+                cv2.circle(test_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
+
+            small_fg = cv2.resize(fg_mask, (0, 0), fx=0.3, fy=0.3)
+            test_frame[0 : small_fg.shape[0], 0 : small_fg.shape[1]] = cv2.cvtColor(
+                small_fg, cv2.COLOR_GRAY2BGR
+            )
+
+            small_bg = cv2.resize(bg_u8, (0, 0), fx=0.3, fy=0.3)
+            bg_bgr = cv2.cvtColor(small_bg, cv2.COLOR_GRAY2BGR)
+            test_frame[0 : bg_bgr.shape[0], -bg_bgr.shape[1] :] = bg_bgr
+
+            cv2.putText(
+                test_frame,
+                f"Detections: {len(detections)} (BG from {bg_params['BACKGROUND_PRIME_FRAMES']} frames)",
+                (10, test_frame.shape[0] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),
+                2,
+            )
+        finally:
+            cap.release()
+    else:
+        frame_to_process = frame_bgr.copy()
+        if resize_f < 1.0:
+            frame_to_process = cv2.resize(
+                frame_to_process,
+                (0, 0),
+                fx=resize_f,
+                fy=resize_f,
+                interpolation=cv2.INTER_AREA,
+            )
+            test_frame = cv2.resize(
+                test_frame,
+                (0, 0),
+                fx=resize_f,
+                fy=resize_f,
+                interpolation=cv2.INTER_AREA,
+            )
+
+        reference_body_size = float(context.get("reference_body_size", 50.0))
+        reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+        scaled_body_area = reference_body_area * (resize_f**2)
+
+        if use_size_filtering:
+            min_size_px2 = int(
+                float(context.get("min_object_size", 0.0)) * scaled_body_area
+            )
+            max_size_px2 = int(
+                float(context.get("max_object_size", 999.0)) * scaled_body_area
+            )
+        else:
+            min_size_px2 = 0
+            max_size_px2 = float("inf")
+
+        yolo_params = {
+            "YOLO_MODEL_PATH": resolve_model_path(context.get("yolo_model_path", "")),
+            "YOLO_OBB_MODE": str(context.get("yolo_obb_mode", "direct"))
+            .strip()
+            .lower(),
+            "YOLO_OBB_DIRECT_MODEL_PATH": resolve_model_path(
+                context.get(
+                    "yolo_obb_direct_model_path", context.get("yolo_model_path", "")
+                )
+            ),
+            "YOLO_DETECT_MODEL_PATH": resolve_model_path(
+                context.get("yolo_detect_model_path", "")
+            ),
+            "YOLO_CROP_OBB_MODEL_PATH": resolve_model_path(
+                context.get("yolo_crop_obb_model_path", "")
+            ),
+            "YOLO_HEADTAIL_MODEL_PATH": resolve_model_path(
+                context.get("yolo_headtail_model_path", "")
+            ),
+            "POSE_OVERRIDES_HEADTAIL": bool(
+                context.get("pose_overrides_headtail", True)
+            ),
+            "YOLO_SEQ_CROP_PAD_RATIO": float(
+                context.get("yolo_seq_crop_pad_ratio", 0.15)
+            ),
+            "YOLO_SEQ_MIN_CROP_SIZE_PX": int(
+                context.get("yolo_seq_min_crop_size_px", 64)
+            ),
+            "YOLO_SEQ_ENFORCE_SQUARE_CROP": bool(
+                context.get("yolo_seq_enforce_square_crop", True)
+            ),
+            "YOLO_SEQ_STAGE2_IMGSZ": int(context.get("yolo_seq_stage2_imgsz", 160)),
+            "YOLO_SEQ_STAGE2_POW2_PAD": bool(
+                context.get("yolo_seq_stage2_pow2_pad", False)
+            ),
+            "YOLO_SEQ_DETECT_CONF_THRESHOLD": float(
+                context.get("yolo_seq_detect_conf_threshold", 0.25)
+            ),
+            "YOLO_HEADTAIL_CONF_THRESHOLD": float(
+                context.get("yolo_headtail_conf_threshold", 0.50)
+            ),
+            "YOLO_CONFIDENCE_THRESHOLD": float(context.get("yolo_confidence", 0.5)),
+            "YOLO_IOU_THRESHOLD": float(context.get("yolo_iou", 0.45)),
+            "USE_CUSTOM_OBB_IOU_FILTERING": True,
+            "YOLO_TARGET_CLASSES": context.get("yolo_target_classes"),
+            "YOLO_DEVICE": context.get("yolo_device"),
+            "ENABLE_GPU_BACKGROUND": bool(context.get("enable_gpu_background", False)),
+            "ENABLE_TENSORRT": bool(context.get("enable_tensorrt", False)),
+            "ENABLE_ONNX_RUNTIME": bool(context.get("enable_onnx_runtime", False)),
+            "TENSORRT_MAX_BATCH_SIZE": int(context.get("tensorrt_max_batch_size", 1)),
+            "MAX_TARGETS": int(context.get("max_targets", 1)),
+            "MAX_CONTOUR_MULTIPLIER": float(context.get("max_contour_multiplier", 3.0)),
+            "ENABLE_SIZE_FILTERING": bool(use_size_filtering),
+            "MIN_OBJECT_SIZE": min_size_px2,
+            "MAX_OBJECT_SIZE": max_size_px2,
+        }
+
+        roi_for_yolo = context.get("roi_mask")
+        if roi_for_yolo is not None and resize_f < 1.0:
+            roi_for_yolo = cv2.resize(
+                roi_for_yolo,
+                (frame_to_process.shape[1], frame_to_process.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+        logger.info(
+            f"Running YOLO detection (conf={yolo_params['YOLO_CONFIDENCE_THRESHOLD']:.2f}, "
+            f"iou={yolo_params['YOLO_IOU_THRESHOLD']:.2f})"
+        )
+        detector = YOLOOBBDetector(yolo_params)
+        (
+            raw_meas,
+            raw_sizes,
+            raw_shapes,
+            _yolo_results,
+            raw_confidences,
+            raw_obb_corners,
+            raw_heading_hints,
+            raw_directed_mask,
+        ) = detector.detect_objects(frame_to_process, 0, return_raw=True)
+        (
+            meas,
+            _sizes,
+            _shapes,
+            detection_confidences,
+            filtered_obb_corners,
+            _,
+            filtered_heading_hints,
+            filtered_directed_mask,
+        ) = detector.filter_raw_detections(
+            raw_meas,
+            raw_sizes,
+            raw_shapes,
+            raw_confidences,
+            raw_obb_corners,
+            roi_mask=roi_for_yolo,
+            detection_ids=None,
+            heading_hints=raw_heading_hints,
+            directed_mask=raw_directed_mask,
+        )
+
+        yolo_mode = str(yolo_params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+        if yolo_mode == "sequential" and _yolo_results is not None:
+            # Visualize stage-1 full-frame detect boxes in sequential mode.
+            boxes = getattr(_yolo_results, "boxes", None)
+            if boxes is not None and len(boxes) > 0:
+                try:
+                    det_xyxy = np.ascontiguousarray(
+                        boxes.xyxy.cpu().numpy(), dtype=np.float32
+                    )
+                    det_conf = np.ascontiguousarray(
+                        boxes.conf.cpu().numpy(), dtype=np.float32
+                    )
+                except Exception:
+                    det_xyxy = np.empty((0, 4), dtype=np.float32)
+                    det_conf = np.empty((0,), dtype=np.float32)
+                for di in range(len(det_xyxy)):
+                    x1, y1, x2, y2 = [int(v) for v in det_xyxy[di]]
+                    cv2.rectangle(test_frame, (x1, y1), (x2, y2), (255, 200, 0), 1)
+                    if di < len(det_conf):
+                        cv2.putText(
+                            test_frame,
+                            f"D {float(det_conf[di]):.2f}",
+                            (x1, max(12, y1 - 4)),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.4,
+                            (255, 200, 0),
+                            1,
+                        )
+                # In sequential mode, stage-2 OBB can occasionally yield zero
+                # usable detections in preview. Fall back to stage-1 detect box
+                # dimensions so body-size auto-set remains functional.
+                if len(filtered_obb_corners) == 0 and len(det_xyxy) > 0:
+                    for di in range(len(det_xyxy)):
+                        x1f, y1f, x2f, y2f = [float(v) for v in det_xyxy[di]]
+                        w_box = max(1.0, x2f - x1f)
+                        h_box = max(1.0, y2f - y1f)
+                        major_axis = max(w_box, h_box)
+                        minor_axis = min(w_box, h_box)
+                        detected_dimensions.append((major_axis, minor_axis))
+
+        for i, corners in enumerate(filtered_obb_corners):
+            corners = np.asarray(corners, dtype=np.float32)
+            major_axis = float(np.linalg.norm(corners[1] - corners[0]))
+            minor_axis = float(np.linalg.norm(corners[2] - corners[1]))
+            if major_axis < minor_axis:
+                major_axis, minor_axis = minor_axis, major_axis
+            detected_dimensions.append((major_axis, minor_axis))
+
+            corners_int = corners.astype(np.int32)
+            cv2.polylines(
+                test_frame,
+                [corners_int],
+                isClosed=True,
+                color=(0, 255, 255),
+                thickness=2,
+            )
+
+            conf = (
+                detection_confidences[i]
+                if i < len(detection_confidences)
+                else float("nan")
+            )
+            if not np.isnan(conf):
+                cx = int(corners[:, 0].mean())
+                cy = int(corners[:, 1].mean())
+                cv2.putText(
+                    test_frame,
+                    f"{conf:.2f}",
+                    (cx - 15, cy - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 255),
+                    2,
+                )
+
+        for det_idx, m in enumerate(meas):
+            cx, cy, angle_rad = m
+            cv2.circle(test_frame, (int(cx), int(cy)), 5, (0, 255, 0), -1)
+            theta = float(angle_rad)
+            if 0 <= det_idx < len(filtered_heading_hints):
+                if (
+                    det_idx < len(filtered_directed_mask)
+                    and int(filtered_directed_mask[det_idx]) == 1
+                    and np.isfinite(float(filtered_heading_hints[det_idx]))
+                ):
+                    theta = float(filtered_heading_hints[det_idx])
+            ex = int(cx + 30 * math.cos(theta))
+            ey = int(cy + 30 * math.sin(theta))
+            cv2.arrowedLine(
+                test_frame,
+                (int(cx), int(cy)),
+                (ex, ey),
+                (0, 255, 0),
+                2,
+                tipLength=0.3,
+            )
+
+        cv2.putText(
+            test_frame,
+            f"Detections: {len(meas)} (IOU={yolo_params['YOLO_IOU_THRESHOLD']:.2f})",
+            (10, test_frame.shape[0] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+        )
+
+    return {
+        "test_frame_rgb": cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB),
+        "resize_factor": resize_f,
+        "detected_dimensions": detected_dimensions,
+    }
 
 
 def get_video_config_path(video_path: object) -> object:
@@ -791,23 +1586,111 @@ def get_video_config_path(video_path: object) -> object:
 
 def get_models_directory() -> object:
     """
-    Get the path to the local models directory.
+    Get the path to the default YOLO OBB model repository.
 
-    Returns the models/YOLO-obb directory for OBB detection models.
+    Returns models/obb (direct OBB models).
     Creates the directory if it doesn't exist.
     """
-    # Get project root directory (multi-animal-tracker/)
-    # __file__ is: .../multi-animal-tracker/src/multi_tracker/gui/main_window.py
-    # Need to go up 4 levels: gui -> multi_tracker -> src -> multi-animal-tracker
+    return get_yolo_model_repository_directory(
+        task_family="obb", usage_role="obb_direct"
+    )
+
+
+def get_models_root_directory() -> object:
+    """Return project-local models/ root and create it when missing."""
     project_root = os.path.dirname(
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
-    models_dir = os.path.join(project_root, "models", "YOLO-obb")
+    models_root = os.path.join(project_root, "models")
+    os.makedirs(models_root, exist_ok=True)
+    return models_root
 
-    # Create directory if it doesn't exist
-    os.makedirs(models_dir, exist_ok=True)
 
-    return models_dir
+def get_yolo_model_repository_directory(
+    task_family: str | None = None, usage_role: str | None = None
+) -> object:
+    """Return repository directory for a YOLO model role."""
+    tf = str(task_family or "").strip().lower()
+    ur = str(usage_role or "").strip().lower()
+    models_root = get_models_root_directory()
+
+    if ur == "seq_detect" or tf == "detect":
+        repo_dir = os.path.join(models_root, "detection")
+    elif ur == "seq_crop_obb":
+        repo_dir = os.path.join(models_root, "obb", "cropped")
+    elif ur == "headtail":
+        # Parent dir; YOLO/ and tiny/ subdirs are resolved at import time.
+        repo_dir = os.path.join(models_root, "classification", "orientation")
+    elif ur == "colortag" or (tf == "classify" and ur not in ("headtail",)):
+        # Parent dir; YOLO/ and tiny/ subdirs are resolved at import time.
+        repo_dir = os.path.join(models_root, "classification", "colortag")
+    else:
+        repo_dir = os.path.join(models_root, "obb")
+
+    os.makedirs(repo_dir, exist_ok=True)
+    return repo_dir
+
+
+def get_pose_models_directory(backend: str | None = None) -> object:
+    """
+    Get the local pose-model repository directory.
+
+    Layout:
+      models/pose/YOLO/
+      models/pose/SLEAP/
+      models/pose/ViTPose/
+    """
+    models_root = get_models_root_directory()
+    pose_root = os.path.join(models_root, "pose")
+    os.makedirs(pose_root, exist_ok=True)
+    if not backend:
+        return pose_root
+    key = str(backend or "").strip().lower()
+    if key == "sleap":
+        backend_dirname = "SLEAP"
+    elif key == "vitpose":
+        backend_dirname = "ViTPose"
+    else:
+        backend_dirname = "YOLO"
+    backend_dir = os.path.join(pose_root, backend_dirname)
+    os.makedirs(backend_dir, exist_ok=True)
+    return backend_dir
+
+
+def resolve_pose_model_path(model_path: object, backend: str | None = None) -> object:
+    """Resolve a pose model path (relative or absolute) to an absolute path when possible."""
+    if not model_path:
+        return model_path
+
+    path_str = str(model_path).strip()
+    if os.path.isabs(path_str) and os.path.exists(path_str):
+        return path_str
+
+    models_root = get_models_root_directory()
+    candidates = [os.path.join(models_root, path_str)]
+    if backend:
+        candidates.append(os.path.join(get_pose_models_directory(backend), path_str))
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    if os.path.exists(path_str):
+        return os.path.abspath(path_str)
+    return path_str
+
+
+def make_pose_model_path_relative(model_path: object) -> object:
+    """Convert absolute pose-model paths under models/ into relative paths."""
+    if not model_path or not os.path.isabs(str(model_path)):
+        return model_path
+    models_root = get_models_root_directory()
+    try:
+        rel_path = os.path.relpath(str(model_path), models_root)
+        if not rel_path.startswith(".."):
+            return rel_path
+    except (ValueError, TypeError):
+        pass
+    return model_path
 
 
 def resolve_model_path(model_path: object) -> object:
@@ -826,20 +1709,20 @@ def resolve_model_path(model_path: object) -> object:
     if not model_path:
         return model_path
 
+    path_str = str(model_path).strip()
+
     # If already absolute and exists, return it
-    if os.path.isabs(model_path) and os.path.exists(model_path):
-        return model_path
+    if os.path.isabs(path_str) and os.path.exists(path_str):
+        return path_str
 
-    # Try to resolve relative to models directory
-    models_dir = get_models_directory()
-    resolved_path = os.path.join(models_dir, model_path)
-
-    if os.path.exists(resolved_path):
-        return resolved_path
+    models_root = get_models_root_directory()
+    candidate = os.path.join(models_root, path_str)
+    if os.path.exists(candidate):
+        return candidate
 
     # If relative path doesn't exist in models dir, try as-is
-    if os.path.exists(model_path):
-        return os.path.abspath(model_path)
+    if os.path.exists(path_str):
+        return os.path.abspath(path_str)
 
     # Return original if nothing works (will fail later with clear error)
     return model_path
@@ -860,12 +1743,11 @@ def make_model_path_relative(model_path: object) -> object:
     if not model_path or not os.path.isabs(model_path):
         return model_path
 
-    models_dir = get_models_directory()
+    models_root = get_models_root_directory()
 
-    # Check if model is inside the models directory
+    # Store path relative to models/ root (e.g. obb/model.pt, detection/model.pt).
     try:
-        rel_path = os.path.relpath(model_path, models_dir)
-        # If relpath doesn't start with .., it's inside models_dir
+        rel_path = os.path.relpath(model_path, models_root)
         if not rel_path.startswith(".."):
             return rel_path
     except (ValueError, TypeError):
@@ -877,7 +1759,7 @@ def make_model_path_relative(model_path: object) -> object:
 
 def get_yolo_model_registry_path() -> object:
     """Return path to the local YOLO model metadata registry JSON."""
-    return os.path.join(get_models_directory(), "model_registry.json")
+    return os.path.join(get_models_root_directory(), "model_registry.json")
 
 
 def _sanitize_model_token(text: object) -> object:
@@ -896,24 +1778,21 @@ def _normalize_yolo_model_metadata(metadata: object) -> object:
     species = _sanitize_model_token(normalized.get("species", ""))
     model_info = _sanitize_model_token(normalized.get("model_info", ""))
 
-    # Legacy migration path: identifier/id -> species + model_info
-    legacy_identifier = normalized.get("identifier") or normalized.get("id") or ""
-    if (not species or not model_info) and legacy_identifier:
-        legacy_identifier = _sanitize_model_token(legacy_identifier)
-        parts = [p for p in legacy_identifier.split("_") if p]
-        if not species and parts:
-            species = parts[0]
-        if not model_info:
-            model_info = "_".join(parts[1:]) if len(parts) > 1 else "model"
-
     if species:
         normalized["species"] = species
     if model_info:
         normalized["model_info"] = model_info
 
-    # Drop deprecated fields
-    normalized.pop("identifier", None)
-    normalized.pop("id", None)
+    task_family = _sanitize_model_token(normalized.get("task_family", "")).lower()
+    usage_role = _sanitize_model_token(normalized.get("usage_role", "")).lower()
+    if task_family:
+        normalized["task_family"] = task_family
+    else:
+        normalized.pop("task_family", None)
+    if usage_role:
+        normalized["usage_role"] = usage_role
+    else:
+        normalized.pop("usage_role", None)
     return normalized
 
 
@@ -927,21 +1806,7 @@ def load_yolo_model_registry() -> object:
             data = json.load(f)
         if not isinstance(data, dict):
             return {}
-
-        migrated = {}
-        changed = False
-        for k, v in data.items():
-            key = str(k)
-            norm = _normalize_yolo_model_metadata(v)
-            migrated[key] = norm
-            if norm != v:
-                changed = True
-
-        if changed:
-            save_yolo_model_registry(migrated)
-            logger.info("Migrated YOLO model registry to species/model_info schema")
-
-        return migrated
+        return {str(k): _normalize_yolo_model_metadata(v) for k, v in data.items()}
     except Exception as e:
         logger.warning(f"Failed to load YOLO model registry: {e}")
         return {}
@@ -961,11 +1826,7 @@ def get_yolo_model_metadata(model_path: object) -> object:
     """Get metadata for a model path if registered."""
     rel_path = make_model_path_relative(model_path)
     registry = load_yolo_model_registry()
-    if rel_path in registry:
-        return _normalize_yolo_model_metadata(registry[rel_path])
-    # Backward compatibility: if absolute path was stored in older versions
-    abs_path = resolve_model_path(model_path)
-    return _normalize_yolo_model_metadata(registry.get(abs_path, {}))
+    return _normalize_yolo_model_metadata(registry.get(rel_path, {}))
 
 
 def register_yolo_model(model_path: object, metadata: object) -> object:
@@ -1003,22 +1864,22 @@ class CollapsibleGroupBox(QWidget):
         self._header_button = QToolButton()
         self._header_button.setStyleSheet("""
             QToolButton {
-                background-color: #3a3a3a;
-                border: 1px solid #555;
+                background-color: #2d2d30;
+                border: 1px solid #3e3e42;
                 border-radius: 4px;
                 padding: 8px 12px;
-                font-weight: bold;
+                font-weight: 600;
                 font-size: 12px;
-                color: #4a9eff;
+                color: #9cdcfe;
                 text-align: left;
             }
             QToolButton:hover {
-                background-color: #454545;
-                border-color: #666;
+                background-color: #37373d;
+                border-color: #4a4a4a;
             }
             QToolButton:checked {
-                background-color: #404040;
-                border-color: #4a9eff;
+                background-color: #37373d;
+                border-color: #007acc;
             }
         """)
         self._header_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -1135,139 +1996,200 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Multi-Animal-Tracker")
         self.resize(1360, 850)
 
-        # Set comprehensive dark mode styling
+        # Apply consistent VSCode dark theme (matches PoseKit and ClassKit)
         self.setStyleSheet("""
-            /* Main window and widgets */
-            QMainWindow, QWidget { background-color: #2b2b2b; color: #ffffff; font-family: -apple-system, system-ui, sans-serif; }
+            QMainWindow, QWidget {
+                background-color: #1e1e1e;
+                color: #e0e0e0;
+                font-family: "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, Arial, sans-serif;
+                font-size: 11px;
+            }
 
             /* Tabs */
-            QTabWidget::pane { border: 1px solid #444; top: -1px; }
+            QTabWidget::pane { border: 1px solid #3e3e42; top: -1px; background-color: #1e1e1e; }
             QTabBar::tab {
-                background: #353535; color: #aaa; padding: 8px 12px; margin-right: 2px;
+                background: #2d2d30; color: #cccccc; padding: 8px 14px; margin-right: 2px;
                 border-top-left-radius: 4px; border-top-right-radius: 4px;
+                border: 1px solid #3e3e42; border-bottom: none;
             }
-            QTabBar::tab:selected { background: #4a9eff; color: white; font-weight: bold; }
-            QTabBar::tab:hover { background: #404040; }
+            QTabBar::tab:selected { background: #1e1e1e; color: #ffffff; font-weight: 600; border-bottom: 2px solid #007acc; }
+            QTabBar::tab:hover:!selected { background: #37373d; }
 
             /* Group boxes */
             QGroupBox {
-                font-weight: bold; border: 1px solid #555; border-radius: 6px;
-                margin-top: 20px; padding-top: 10px; background-color: #323232;
+                font-weight: 600; border: 1px solid #3e3e42; border-radius: 6px;
+                margin-top: 10px; padding: 8px; background-color: #252526;
+                color: #cccccc;
             }
             QGroupBox::title {
-                subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #4a9eff;
+                subcontrol-origin: margin; subcontrol-position: top left;
+                left: 10px; padding: 2px 8px;
+                background-color: #1e1e1e; color: #9cdcfe; border-radius: 3px;
             }
 
             /* Buttons */
             QPushButton {
-                background-color: #444; border: 1px solid #555; color: #fff;
-                padding: 6px 12px; border-radius: 4px; min-height: 25px;
+                background-color: #0e639c; border: none; color: #ffffff;
+                padding: 6px 14px; border-radius: 4px; min-height: 24px; font-weight: 500;
             }
-            QPushButton:hover { background-color: #555; border-color: #666; }
-            QPushButton:pressed { background-color: #2a75c4; }
-            QPushButton:checked { background-color: #2a75c4; border: 1px solid #4a9eff; }
-            QPushButton:disabled { background-color: #333; color: #666; border-color: #333; }
+            QPushButton:hover { background-color: #1177bb; }
+            QPushButton:pressed { background-color: #0d5a8f; }
+            QPushButton:checked { background-color: #094771; border: 1px solid #007acc; }
+            QPushButton:disabled { background-color: #3e3e42; color: #777777; border: none; }
 
-            /* Specific Action Buttons */
-            QPushButton#ActionBtn { background-color: #4a9eff; font-weight: bold; font-size: 13px; }
-            QPushButton#ActionBtn:hover { background-color: #3d8bdb; }
+            /* Action / Stop buttons */
+            QPushButton#ActionBtn {
+                background-color: #0e639c; font-weight: bold; font-size: 11px;
+            }
+            QPushButton#ActionBtn:hover { background-color: #1177bb; }
             QPushButton#StopBtn { background-color: #d9534f; font-weight: bold; }
             QPushButton#StopBtn:hover { background-color: #c9302c; }
 
             /* Inputs */
             QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {
-                background-color: #222; border: 1px solid #555; border-radius: 3px;
-                padding: 4px; color: #fff; selection-background-color: #4a9eff;
-                min-width: 120px;
+                background-color: #3c3c3c; border: 1px solid #3e3e42; border-radius: 4px;
+                padding: 4px 8px; color: #e0e0e0;
+                selection-background-color: #094771; min-width: 100px; min-height: 22px;
             }
-            QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QComboBox:focus { border: 1px solid #4a9eff; }
+            QSpinBox:hover, QDoubleSpinBox:hover, QLineEdit:hover, QComboBox:hover {
+                border-color: #0e639c;
+            }
+            QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus, QComboBox:focus {
+                border-color: #007acc;
+            }
 
             /* ComboBox dropdown */
             QComboBox::drop-down {
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 20px;
-                border-left: 1px solid #555;
-                background-color: #555;
-                border-top-right-radius: 3px;
-                border-bottom-right-radius: 3px;
+                subcontrol-origin: padding; subcontrol-position: top right;
+                width: 20px; border-left: 1px solid #3e3e42;
+                background-color: #4a4a4a;
+                border-top-right-radius: 4px; border-bottom-right-radius: 4px;
             }
-            QComboBox::drop-down:hover { background-color: #666; }
-            QComboBox::down-arrow {
-                image: none;
-                border: 2px solid #fff;
-                width: 6px;
-                height: 6px;
-                border-top: none;
-                border-right: none;
-            }
+            QComboBox::drop-down:hover { background-color: #5a5a5a; }
             QComboBox QAbstractItemView {
-                background-color: #2b2b2b;
-                border: 1px solid #555;
-                selection-background-color: #4a9eff;
-                selection-color: #fff;
-                color: #fff;
-                padding: 4px;
-                min-width: 200px;
+                background-color: #252526; border: 1px solid #3e3e42;
+                selection-background-color: #094771; selection-color: #ffffff;
+                color: #e0e0e0; outline: none;
             }
-            QComboBox QAbstractItemView::item {
-                padding: 6px 8px;
-                min-height: 24px;
-                border: none;
-            }
-            QComboBox QAbstractItemView::item:hover {
-                background-color: #3d8bdb;
-                color: #fff;
-            }
-            QComboBox QAbstractItemView::item:selected {
-                background-color: #4a9eff;
-                color: #fff;
-            }
+            QComboBox QAbstractItemView::item { padding: 6px 10px; min-height: 22px; }
+            QComboBox QAbstractItemView::item:hover { background-color: #2a2d2e; }
+            QComboBox QAbstractItemView::item:selected { background-color: #094771; color: #ffffff; }
 
             /* SpinBox arrows */
             QSpinBox::up-button, QDoubleSpinBox::up-button {
-                subcontrol-origin: border;
-                subcontrol-position: top right;
-                width: 18px;
-                border-left: 1px solid #555;
-                background-color: #555;
-                border-top-right-radius: 3px;
+                subcontrol-origin: border; subcontrol-position: top right;
+                width: 18px; border-left: 1px solid #3e3e42;
+                background-color: #4a4a4a; border-top-right-radius: 4px;
             }
-            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover {
-                background-color: #666;
-            }
-            QSpinBox::up-button:pressed, QDoubleSpinBox::up-button:pressed {
-                background-color: #4a9eff;
-            }
-
+            QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover { background-color: #0e639c; }
             QSpinBox::down-button, QDoubleSpinBox::down-button {
-                subcontrol-origin: border;
-                subcontrol-position: bottom right;
-                width: 18px;
-                border-left: 1px solid #555;
-                background-color: #555;
-                border-bottom-right-radius: 3px;
+                subcontrol-origin: border; subcontrol-position: bottom right;
+                width: 18px; border-left: 1px solid #3e3e42;
+                background-color: #4a4a4a; border-bottom-right-radius: 4px;
             }
-            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
-                background-color: #666;
+            QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover { background-color: #0e639c; }
+
+            /* Checkboxes and Radio buttons */
+            QCheckBox, QRadioButton { color: #cccccc; spacing: 8px; }
+            QCheckBox::indicator, QRadioButton::indicator {
+                width: 14px; height: 14px; border: 1px solid #3e3e42;
+                border-radius: 3px; background-color: #3c3c3c;
             }
-            QSpinBox::down-button:pressed, QDoubleSpinBox::down-button:pressed {
-                background-color: #4a9eff;
+            QRadioButton::indicator { border-radius: 7px; }
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+                background-color: #0e639c; border-color: #007acc;
             }
+            QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: #007acc; }
+
+            /* Labels */
+            QLabel { color: #cccccc; background-color: transparent; }
+
+            /* Toolbar */
+            QToolBar {
+                background-color: #252526; border-bottom: 1px solid #3e3e42;
+                spacing: 6px; padding: 4px 6px;
+            }
+            QToolButton {
+                background-color: transparent; border: none; border-radius: 4px;
+                padding: 6px 10px; color: #cccccc;
+            }
+            QToolButton:hover { background-color: #2a2d2e; }
+            QToolButton:pressed, QToolButton:checked { background-color: #094771; color: #4fc1ff; }
+
+            /* Status bar */
+            QStatusBar {
+                background-color: #007acc; color: #ffffff;
+                border-top: 1px solid #0098ff; font-weight: 500; font-size: 11px;
+            }
+            QStatusBar QLabel { background-color: transparent; color: #ffffff; padding: 0px 4px; }
+
+            /* Menu */
+            QMenuBar {
+                background-color: #252526; color: #cccccc;
+                border-bottom: 1px solid #3e3e42; padding: 2px;
+            }
+            QMenuBar::item { padding: 5px 10px; background-color: transparent; border-radius: 3px; }
+            QMenuBar::item:selected { background-color: #2a2d2e; }
+            QMenu {
+                background-color: #252526; color: #cccccc;
+                border: 1px solid #3e3e42; border-radius: 4px; padding: 4px;
+            }
+            QMenu::item { padding: 6px 20px 6px 12px; border-radius: 3px; }
+            QMenu::item:selected { background-color: #094771; color: #ffffff; }
+            QMenu::separator { height: 1px; background-color: #3e3e42; margin: 4px 8px; }
+
+            /* Splitter */
+            QSplitter::handle { background-color: #3e3e42; }
+            QSplitter::handle:hover { background-color: #007acc; }
 
             /* Scrollbars */
-            QScrollBar:vertical { background: #2b2b2b; width: 12px; }
-            QScrollBar::handle:vertical { background: #555; border-radius: 6px; min-height: 20px; }
-            QScrollBar::handle:vertical:hover { background: #666; }
+            QScrollBar:vertical { background-color: #252526; width: 10px; border-radius: 5px; margin: 0px; }
+            QScrollBar::handle:vertical { background-color: #5a5a5a; border-radius: 5px; min-height: 24px; }
+            QScrollBar::handle:vertical:hover { background-color: #007acc; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+            QScrollBar:horizontal { background-color: #252526; height: 10px; border-radius: 5px; margin: 0px; }
+            QScrollBar::handle:horizontal { background-color: #5a5a5a; border-radius: 5px; min-width: 24px; }
+            QScrollBar::handle:horizontal:hover { background-color: #007acc; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }
 
-            /* Progress Bar */
+            /* Progress bar */
             QProgressBar {
-                border: 1px solid #555; border-radius: 4px; text-align: center; background: #222;
+                border: 1px solid #3e3e42; border-radius: 4px;
+                text-align: center; background-color: #252526; color: #cccccc; font-size: 11px;
             }
-            QProgressBar::chunk { background-color: #4a9eff; width: 10px; margin: 0.5px; }
+            QProgressBar::chunk { background-color: #0e639c; border-radius: 3px; }
 
-            QSplitter::handle { background-color: #444; }
+            /* Lists and Tables */
+            QListWidget, QTableWidget {
+                background-color: #252526; border: 1px solid #3e3e42; border-radius: 4px; outline: none;
+            }
+            QListWidget::item, QTableWidget::item { padding: 4px 8px; }
+            QListWidget::item:selected, QTableWidget::item:selected { background-color: #094771; color: #ffffff; }
+            QListWidget::item:hover:!selected, QTableWidget::item:hover:!selected { background-color: #2a2d2e; }
+            QHeaderView::section {
+                background-color: #2d2d30; color: #cccccc;
+                border: none; border-right: 1px solid #3e3e42; border-bottom: 1px solid #3e3e42;
+                padding: 4px 8px; font-weight: 600;
+            }
+
+            /* Text edits */
+            QPlainTextEdit, QTextEdit {
+                background-color: #252526; color: #e0e0e0;
+                border: 1px solid #3e3e42; border-radius: 4px; padding: 4px;
+            }
+            QPlainTextEdit:focus, QTextEdit:focus { border-color: #007acc; }
+
+            /* Sliders */
+            QSlider::groove:horizontal {
+                border: 1px solid #3e3e42; height: 4px;
+                background-color: #3c3c3c; border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background-color: #007acc; border: none;
+                width: 14px; height: 14px; border-radius: 7px; margin: -5px 0;
+            }
+            QSlider::handle:horizontal:hover { background-color: #1177bb; }
+            QSlider::sub-page:horizontal { background-color: #0e639c; border-radius: 2px; }
             """)
 
         # === STATE VARIABLES ===
@@ -1283,26 +2205,38 @@ class MainWindow(QMainWindow):
         self.roi_current_mode = "circle"  # 'circle' or 'polygon'
         self.roi_current_zone_type = "include"  # 'include' or 'exclude'
 
-        self.histogram_panel = None
-        self.histogram_window = None
         self.current_worker = None
 
         self.tracking_worker = None
+        self.merge_worker = None
         self.csv_writer_thread = None
         self.dataset_worker = None
         self.interp_worker = None
+        self.oriented_video_worker = None
+        self.preview_detection_worker = None
         self.reversal_worker = None
         self.final_full_trajs = []
         self.temporary_files = []  # Track temporary files for cleanup
         self.session_log_handler = None  # Track current session log file handler
         self._individual_dataset_run_id = None
+        self.current_individual_dataset_path = None
         self.current_detection_cache_path = None
+        self.current_individual_properties_cache_path = None
+        self.current_interpolated_roi_npz_path = None
+        self.current_interpolated_pose_csv_path = None
+        self.current_interpolated_pose_df = None
+        self._pending_pose_export_csv_path = None
+        self._pending_video_csv_path = None
+        self._pending_video_generation = False
+        self._pending_finish_after_track_videos = False
 
         # Preview frame for live image adjustments
         self.preview_frame_original = None  # Original frame without adjustments
         self.detection_test_result = None  # Store detection test result
         self.current_video_path = None
         self.detected_sizes = None  # Store detected object sizes for statistics
+        self.batch_videos = []  # List of video paths for batch mode
+        self.current_batch_index = -1
 
         # ROI optimization tracking
         self.roi_crop_warning_shown = (
@@ -1329,8 +2263,19 @@ class MainWindow(QMainWindow):
         # UI interaction state
         self._video_interactions_enabled = True
         self._ui_state = "idle"
+        self._splash_buttons = []
         self._saved_widget_enabled_states = {}
         self._pending_finish_after_interp = False
+        self._stop_all_requested = False
+
+        # Per-session summary state (reset at the start of each forward tracking run)
+        self._session_result_dataset = None
+        self._dataset_was_started = False
+        self._show_summary_on_dataset_done = False
+        self._session_wall_start = None
+        self._session_final_csv_path = None
+        self._session_fps_list = []
+        self._session_frames_processed = 0
 
         # Advanced configuration (for power users)
         self.advanced_config = self._load_advanced_config()
@@ -1367,8 +2312,21 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        self.main_stack = QStackedWidget()
+        root_layout.addWidget(self.main_stack)
+
+        self._welcome_page_index = self.main_stack.addWidget(self._make_welcome_page())
+
+        workspace_page = QWidget()
+        self._workspace_page_index = self.main_stack.addWidget(workspace_page)
+        self.main_stack.setCurrentIndex(self._welcome_page_index)
+
         # Main Layout is a horizontal splitter (Video Left | Controls Right)
-        main_layout = QHBoxLayout(central_widget)
+        main_layout = QHBoxLayout(workspace_page)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
@@ -1382,11 +2340,11 @@ class MainWindow(QMainWindow):
         # Video Area
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet("background-color: #000; border: none;")
+        self.scroll.setStyleSheet("background-color: #121212; border: none;")
         self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_label = QLabel("")
         self.video_label.setAlignment(Qt.AlignCenter)
-        self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+        self.video_label.setStyleSheet("color: #6a6a6a; font-size: 16px;")
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.scroll.setWidget(self.video_label)
         self._show_video_logo_placeholder()
@@ -1406,14 +2364,14 @@ class MainWindow(QMainWindow):
 
         # ROI Toolbar (Contextual to video)
         roi_frame = QFrame()
-        roi_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
+        roi_frame.setStyleSheet("background-color: #252526; border-radius: 6px;")
         roi_main_layout = QVBoxLayout(roi_frame)
         roi_main_layout.setContentsMargins(10, 5, 10, 5)
 
         # Top row: mode selection and controls
         roi_layout = QHBoxLayout()
         roi_label = QLabel("ROI controls")
-        roi_label.setStyleSheet("font-weight: bold; color: #bbb;")
+        roi_label.setStyleSheet("font-weight: bold; color: #cccccc;")
 
         # Mode selector
         self.combo_roi_mode = QComboBox()
@@ -1461,11 +2419,11 @@ class MainWindow(QMainWindow):
         self.btn_crop_video.setStyleSheet(
             "QPushButton { background-color: #2d7a3e; }"
             "QPushButton:hover { background-color: #3a9150; }"
-            "QPushButton:disabled { background-color: #333; color: #666; }"
+            "QPushButton:disabled { background-color: #3e3e42; color: #777777; }"
         )
 
         self.roi_status_label = QLabel("No ROI")
-        self.roi_status_label.setStyleSheet("color: #888; margin-left: 10px;")
+        self.roi_status_label.setStyleSheet("color: #6a6a6a; margin-left: 10px;")
 
         roi_layout.addWidget(roi_label)
         roi_layout.addWidget(self.combo_roi_mode)
@@ -1493,8 +2451,8 @@ class MainWindow(QMainWindow):
         self.roi_instructions = QLabel("")
         self.roi_instructions.setWordWrap(True)
         self.roi_instructions.setStyleSheet(
-            "color: #4a9eff; font-size: 11px; font-weight: bold; "
-            "padding: 6px; background-color: #1a3a5a; border-radius: 4px;"
+            "color: #4fc1ff; font-size: 11px; font-weight: bold; "
+            "padding: 6px; background-color: #0d3354; border-radius: 4px;"
         )
         roi_main_layout.addWidget(self.roi_instructions)
 
@@ -1506,8 +2464,8 @@ class MainWindow(QMainWindow):
         )
         self.interaction_help.setAlignment(Qt.AlignCenter)
         self.interaction_help.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic; "
-            "padding: 4px; background-color: #1a1a1a; border-radius: 3px;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic; "
+            "padding: 4px; background-color: #1e1e1e; border-radius: 3px;"
         )
         left_layout.addWidget(self.interaction_help)
 
@@ -1515,12 +2473,12 @@ class MainWindow(QMainWindow):
 
         # Zoom control under video
         zoom_frame = QFrame()
-        zoom_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
+        zoom_frame.setStyleSheet("background-color: #252526; border-radius: 6px;")
         zoom_layout = QHBoxLayout(zoom_frame)
         zoom_layout.setContentsMargins(10, 5, 10, 5)
 
         zoom_label = QLabel("Zoom")
-        zoom_label.setStyleSheet("font-weight: bold; color: #bbb;")
+        zoom_label.setStyleSheet("font-weight: bold; color: #cccccc;")
 
         self.slider_zoom = QSlider(Qt.Horizontal)
         self.slider_zoom.setRange(10, 500)  # 0.1x to 5.0x, scaled by 100
@@ -1531,7 +2489,7 @@ class MainWindow(QMainWindow):
 
         self.label_zoom_val = QLabel("1.00x")
         self.label_zoom_val.setStyleSheet(
-            "color: #4a9eff; font-weight: bold; min-width: 50px;"
+            "color: #4fc1ff; font-weight: bold; min-width: 50px;"
         )
 
         zoom_layout.addWidget(zoom_label)
@@ -1542,7 +2500,7 @@ class MainWindow(QMainWindow):
 
         # Preview detection button (uses current player frame)
         preview_frame = QFrame()
-        preview_frame.setStyleSheet("background-color: #323232; border-radius: 6px;")
+        preview_frame.setStyleSheet("background-color: #252526; border-radius: 6px;")
         preview_layout = QHBoxLayout(preview_frame)
         preview_layout.setContentsMargins(10, 5, 10, 5)
 
@@ -1550,7 +2508,7 @@ class MainWindow(QMainWindow):
         self.btn_test_detection.clicked.connect(self._test_detection_on_preview)
         self.btn_test_detection.setEnabled(False)
         self.btn_test_detection.setStyleSheet(
-            "background-color: #4a9eff; color: white; font-weight: bold;"
+            "background-color: #0e639c; color: white; font-weight: bold;"
         )
         preview_layout.addWidget(self.btn_test_detection)
 
@@ -1579,32 +2537,32 @@ class MainWindow(QMainWindow):
         self.setup_detection_ui()
         self.tabs.addTab(self.tab_detection, "Find Animals")
 
-        # Tab 3: Tracking (Kalman, Logic, Lifecycle)
+        # Tab 3: Individual Analysis (Identity)
+        self.tab_individual = QWidget()
+        self.setup_individual_analysis_ui()
+        self.tabs.addTab(self.tab_individual, "Analyze Individuals")
+
+        # Tab 4: Tracking (Kalman, Logic, Lifecycle)
         self.tab_tracking = QWidget()
         self.setup_tracking_ui()
         self.tabs.addTab(self.tab_tracking, "Track Movement")
 
-        # Tab 4: Data (Post-proc, Histograms)
+        # Tab 5: Data (Post-proc)
         self.tab_data = QWidget()
         self.setup_data_ui()
         self.tabs.addTab(self.tab_data, "Clean Results")
 
-        # Tab 5: Dataset Generation (Active Learning)
+        # Tab 6: Dataset Generation (Active Learning)
         self.tab_dataset = QWidget()
         self.setup_dataset_ui()
         self.tabs.addTab(self.tab_dataset, "Build Dataset")
-
-        # Tab 6: Individual Analysis (Identity)
-        self.tab_individual = QWidget()
-        self.setup_individual_analysis_ui()
-        self.tabs.addTab(self.tab_individual, "Analyze Individuals")
 
         right_layout.addWidget(self.tabs, stretch=1)
 
         # Persistent Action Panel (Bottom Right)
         action_frame = QFrame()
         action_frame.setStyleSheet(
-            "background-color: #252525; border-top: 1px solid #444; border-radius: 0px;"
+            "background-color: #1e1e1e; border-top: 1px solid #3e3e42; border-radius: 0px;"
         )
         action_layout = QVBoxLayout(action_frame)
 
@@ -1623,18 +2581,18 @@ class MainWindow(QMainWindow):
 
         self.label_current_fps = QLabel("FPS: --")
         self.label_current_fps.setStyleSheet(
-            "color: #4a9eff; font-weight: bold; font-size: 11px;"
+            "color: #4fc1ff; font-weight: bold; font-size: 11px;"
         )
         self.label_current_fps.setVisible(False)
         stats_layout.addWidget(self.label_current_fps)
 
         self.label_elapsed_time = QLabel("Elapsed: --")
-        self.label_elapsed_time.setStyleSheet("color: #888; font-size: 11px;")
+        self.label_elapsed_time.setStyleSheet("color: #6a6a6a; font-size: 11px;")
         self.label_elapsed_time.setVisible(False)
         stats_layout.addWidget(self.label_elapsed_time)
 
         self.label_eta = QLabel("ETA: --")
-        self.label_eta.setStyleSheet("color: #888; font-size: 11px;")
+        self.label_eta.setStyleSheet("color: #6a6a6a; font-size: 11px;")
         self.label_eta.setVisible(False)
         stats_layout.addWidget(self.label_eta)
 
@@ -1686,6 +2644,122 @@ class MainWindow(QMainWindow):
         # Load default preset (custom if available, otherwise default.json)
         self._load_default_preset_on_startup()
 
+    def _make_welcome_page(self):
+        """Create startup splash page with primary MAT session actions."""
+        page = QWidget()
+        page.setStyleSheet("background-color: #121212;")
+        layout = QVBoxLayout(page)
+        layout.setAlignment(Qt.AlignCenter)
+        layout.setSpacing(0)
+        layout.addStretch(1)
+
+        logo_label = QLabel()
+        logo_label.setAlignment(Qt.AlignCenter)
+
+        try:
+            project_root = Path(__file__).resolve().parents[2]
+            logo_path = project_root / "brand" / "multianimaltracker.svg"
+            renderer = QSvgRenderer(str(logo_path))
+            if renderer.isValid():
+                view_box = renderer.viewBoxF()
+                if view_box.isEmpty():
+                    default_size = renderer.defaultSize()
+                    view_box = QRectF(
+                        0,
+                        0,
+                        max(1, default_size.width()),
+                        max(1, default_size.height()),
+                    )
+
+                max_w, max_h = 560, 300
+                scale = min(
+                    max_w / max(view_box.width(), 1),
+                    max_h / max(view_box.height(), 1),
+                )
+                logo_w = max(1, int(view_box.width() * scale))
+                logo_h = max(1, int(view_box.height() * scale))
+                canvas = QPixmap(logo_w, logo_h)
+                canvas.fill(QColor(0, 0, 0, 0))
+
+                painter = QPainter(canvas)
+                painter.setRenderHint(QPainter.Antialiasing, True)
+                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+                renderer.render(painter, QRectF(0, 0, logo_w, logo_h))
+                painter.end()
+                logo_label.setPixmap(canvas)
+            else:
+                logo_label.setText("Multi-Animal-Tracker")
+                logo_label.setStyleSheet(
+                    "color: #ffffff; font-size: 28px; font-weight: bold;"
+                )
+        except Exception:
+            logo_label.setText("Multi-Animal-Tracker")
+            logo_label.setStyleSheet(
+                "color: #ffffff; font-size: 28px; font-weight: bold;"
+            )
+
+        subtitle = QLabel("Track  |  Analyze  |  Refine")
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet(
+            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        )
+
+        layout.addWidget(logo_label, alignment=Qt.AlignHCenter)
+        layout.addWidget(subtitle, alignment=Qt.AlignHCenter)
+        layout.addSpacing(40)
+
+        row_one = QHBoxLayout()
+        row_one.setAlignment(Qt.AlignCenter)
+        row_one.setSpacing(16)
+
+        btn_load_video = QPushButton("Load Video...")
+        btn_load_video.setFixedWidth(190)
+        btn_load_video.clicked.connect(self.select_file)
+        row_one.addWidget(btn_load_video)
+
+        btn_load_list = QPushButton("Load Video List...")
+        btn_load_list.setFixedWidth(190)
+        btn_load_list.clicked.connect(self._import_batch_list)
+        row_one.addWidget(btn_load_list)
+
+        row_two = QHBoxLayout()
+        row_two.setAlignment(Qt.AlignCenter)
+        row_two.setSpacing(16)
+
+        btn_load_config = QPushButton("Load Config...")
+        btn_load_config.setFixedWidth(190)
+        btn_load_config.clicked.connect(self.load_config)
+        row_two.addWidget(btn_load_config)
+
+        btn_quit = QPushButton("Quit")
+        btn_quit.setFixedWidth(190)
+        btn_quit.clicked.connect(self.close)
+        row_two.addWidget(btn_quit)
+
+        self._splash_buttons = [
+            btn_load_video,
+            btn_load_list,
+            btn_load_config,
+            btn_quit,
+        ]
+
+        button_container = QWidget()
+        button_layout = QVBoxLayout(button_container)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(10)
+        button_layout.addLayout(row_one)
+        button_layout.addLayout(row_two)
+
+        layout.addWidget(button_container, alignment=Qt.AlignHCenter)
+        layout.addStretch(1)
+
+        return page
+
+    def _show_workspace(self):
+        """Switch to the main MAT workspace view."""
+        if hasattr(self, "main_stack") and hasattr(self, "_workspace_page_index"):
+            self.main_stack.setCurrentIndex(self._workspace_page_index)
+
     # =========================================================================
     # TAB UI BUILDERS
     # =========================================================================
@@ -1733,7 +2807,7 @@ class MainWindow(QMainWindow):
 
         self.preset_status_label = QLabel("")
         self.preset_status_label.setStyleSheet(
-            "color: #888; font-style: italic; font-size: 10px;"
+            "color: #6a6a6a; font-style: italic; font-size: 10px;"
         )
 
         preset_layout.addWidget(preset_label)
@@ -1748,8 +2822,8 @@ class MainWindow(QMainWindow):
         self.preset_description_label = QLabel("")
         self.preset_description_label.setWordWrap(True)
         self.preset_description_label.setStyleSheet(
-            "color: #bbb; font-style: italic; font-size: 10px; padding: 5px; "
-            "background-color: #1a1a1a; border-radius: 3px;"
+            "color: #9a9a9a; font-style: italic; font-size: 10px; padding: 5px; "
+            "background-color: #252526; border-radius: 3px;"
         )
         self.preset_description_label.setVisible(False)
         vl_presets.addWidget(self.preset_description_label)
@@ -1812,11 +2886,83 @@ class MainWindow(QMainWindow):
         # FPS info label
         self.label_fps_info = QLabel()
         self.label_fps_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic;"
         )
         fl.addRow("", self.label_fps_info)
-
         vl_files.addLayout(fl)
+
+        # Batch Mode Section
+        self.g_batch = QGroupBox("Batch Mode (Multiple Videos)")
+        self.g_batch.setCheckable(True)
+        self.g_batch.setChecked(False)
+        self.g_batch.toggled.connect(self._on_batch_mode_toggled)
+        vl_batch = QVBoxLayout(self.g_batch)
+
+        # Warning label (always visible when group is open)
+        self.lbl_batch_warning = QLabel(
+            "⚠️ All videos in this batch will use the parameters currently selected for the Keystone video."
+        )
+        self.lbl_batch_warning.setWordWrap(True)
+        self.lbl_batch_warning.setStyleSheet(
+            "color: #f39c12; font-weight: bold; font-size: 11px; margin-bottom: 5px;"
+        )
+        vl_batch.addWidget(self.lbl_batch_warning)
+
+        # Container for the rest of the batch UI
+        self.container_batch = QWidget()
+        v_container = QVBoxLayout(self.container_batch)
+        v_container.setContentsMargins(0, 0, 0, 0)
+
+        batch_help = self._create_help_label(
+            "The 'Keystone' video (top of list) defines the tracking parameters. "
+            "Additional videos will save their own results using these shared settings."
+        )
+        v_container.addWidget(batch_help)
+
+        self.list_batch_videos = QListWidget()
+        self.list_batch_videos.setMaximumHeight(150)
+        self.list_batch_videos.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.list_batch_videos.itemClicked.connect(self._on_batch_video_selected)
+        self.list_batch_videos.itemDoubleClicked.connect(self._on_batch_video_selected)
+        v_container.addWidget(self.list_batch_videos)
+
+        batch_btns = QHBoxLayout()
+        self.btn_add_batch = QPushButton("Add Additional Videos...")
+        self.btn_add_batch.clicked.connect(self._add_videos_to_batch)
+        batch_btns.addWidget(self.btn_add_batch)
+
+        self.btn_remove_batch = QPushButton("Remove Selected")
+        self.btn_remove_batch.clicked.connect(self._remove_from_batch)
+        batch_btns.addWidget(self.btn_remove_batch)
+
+        self.btn_clear_batch = QPushButton("Clear Additional")
+        self.btn_clear_batch.clicked.connect(self._clear_batch)
+        batch_btns.addWidget(self.btn_clear_batch)
+        v_container.addLayout(batch_btns)
+
+        batch_io_btns = QHBoxLayout()
+        self.btn_export_batch = QPushButton("Export List...")
+        self.btn_export_batch.setToolTip(
+            "Save the current batch video list to a text file.\n"
+            "The first line will be the Keystone video path."
+        )
+        self.btn_export_batch.clicked.connect(self._export_batch_list)
+        batch_io_btns.addWidget(self.btn_export_batch)
+
+        self.btn_import_batch = QPushButton("Import List...")
+        self.btn_import_batch.setToolTip(
+            "Load a batch video list from a text file.\n"
+            "The first line must be the Keystone video.\n"
+            "Missing files will be reported before proceeding."
+        )
+        self.btn_import_batch.clicked.connect(self._import_batch_list)
+        batch_io_btns.addWidget(self.btn_import_batch)
+        v_container.addLayout(batch_io_btns)
+
+        vl_batch.addWidget(self.container_batch)
+        self.container_batch.setVisible(False)  # Default hidden
+
+        vl_files.addWidget(self.g_batch)
         form.addWidget(g_files)
 
         # ============================================================
@@ -1833,14 +2979,14 @@ class MainWindow(QMainWindow):
         # Video info label
         self.lbl_video_info = QLabel("No video loaded")
         self.lbl_video_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic; padding: 5px;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic; padding: 5px;"
         )
         vl_player.addWidget(self.lbl_video_info)
 
         # Timeline slider
         timeline_layout = QVBoxLayout()
         self.lbl_current_frame = QLabel("Frame: -")
-        self.lbl_current_frame.setStyleSheet("font-size: 10px; color: #aaa;")
+        self.lbl_current_frame.setStyleSheet("font-size: 10px; color: #9a9a9a;")
         timeline_layout.addWidget(self.lbl_current_frame)
 
         self.slider_timeline = QSlider(Qt.Horizontal)
@@ -1906,12 +3052,13 @@ class MainWindow(QMainWindow):
         vl_player.addLayout(controls_layout)
 
         # Frame range selection
-        range_group = QGroupBox("What frame range should be tracked?")
+        range_group = QGroupBox("Frame Range")
         range_layout = QFormLayout(range_group)
         range_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
-        # Start frame
-        start_layout = QHBoxLayout()
+        # Compact single row: Start [spinbox] [↕] · End [spinbox] [↕] [Reset]
+        _range_row = QHBoxLayout()
+        _range_row.addWidget(QLabel("Start:"))
         self.spin_start_frame = QSpinBox()
         self.spin_start_frame.setMinimum(0)
         self.spin_start_frame.setMaximum(0)
@@ -1919,17 +3066,15 @@ class MainWindow(QMainWindow):
         self.spin_start_frame.setEnabled(False)
         self.spin_start_frame.setToolTip("First frame to track (0-based index)")
         self.spin_start_frame.valueChanged.connect(self._on_frame_range_changed)
-        start_layout.addWidget(self.spin_start_frame)
-
-        self.btn_set_start_current = QPushButton("Set to Current")
+        _range_row.addWidget(self.spin_start_frame, 1)
+        self.btn_set_start_current = QPushButton("↕")
         self.btn_set_start_current.setEnabled(False)
+        self.btn_set_start_current.setMaximumWidth(30)
         self.btn_set_start_current.clicked.connect(self._set_start_to_current)
         self.btn_set_start_current.setToolTip("Set start frame to current frame")
-        start_layout.addWidget(self.btn_set_start_current)
-        range_layout.addRow("Which frame should tracking start from?", start_layout)
-
-        # End frame
-        end_layout = QHBoxLayout()
+        _range_row.addWidget(self.btn_set_start_current)
+        _range_row.addSpacing(10)
+        _range_row.addWidget(QLabel("End:"))
         self.spin_end_frame = QSpinBox()
         self.spin_end_frame.setMinimum(0)
         self.spin_end_frame.setMaximum(0)
@@ -1937,28 +3082,27 @@ class MainWindow(QMainWindow):
         self.spin_end_frame.setEnabled(False)
         self.spin_end_frame.setToolTip("Last frame to track (0-based index, inclusive)")
         self.spin_end_frame.valueChanged.connect(self._on_frame_range_changed)
-        end_layout.addWidget(self.spin_end_frame)
-
-        self.btn_set_end_current = QPushButton("Set to Current")
+        _range_row.addWidget(self.spin_end_frame, 1)
+        self.btn_set_end_current = QPushButton("↕")
         self.btn_set_end_current.setEnabled(False)
+        self.btn_set_end_current.setMaximumWidth(30)
         self.btn_set_end_current.clicked.connect(self._set_end_to_current)
         self.btn_set_end_current.setToolTip("Set end frame to current frame")
-        end_layout.addWidget(self.btn_set_end_current)
-        range_layout.addRow("Which frame should tracking stop at?", end_layout)
+        _range_row.addWidget(self.btn_set_end_current)
+        _range_row.addSpacing(10)
+        self.btn_reset_range = QPushButton("Reset")
+        self.btn_reset_range.setEnabled(False)
+        self.btn_reset_range.clicked.connect(self._reset_frame_range)
+        self.btn_reset_range.setToolTip("Reset to track entire video")
+        _range_row.addWidget(self.btn_reset_range)
+        range_layout.addRow("", _range_row)
 
         # Range info
         self.lbl_range_info = QLabel()
         self.lbl_range_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic; padding: 5px;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic; padding: 5px;"
         )
         range_layout.addRow("", self.lbl_range_info)
-
-        # Reset to full range button
-        self.btn_reset_range = QPushButton("Reset to Full Video")
-        self.btn_reset_range.setEnabled(False)
-        self.btn_reset_range.clicked.connect(self._reset_frame_range)
-        self.btn_reset_range.setToolTip("Reset to track entire video")
-        range_layout.addRow("", self.btn_reset_range)
 
         vl_player.addWidget(range_group)
         form.addWidget(self.g_video_player)
@@ -2006,7 +3150,7 @@ class MainWindow(QMainWindow):
         # Config status label
         self.config_status_label = QLabel("No config loaded (using defaults)")
         self.config_status_label.setStyleSheet(
-            "color: #888; font-style: italic; font-size: 10px;"
+            "color: #6a6a6a; font-style: italic; font-size: 10px;"
         )
         fl_output.addRow("", self.config_status_label)
         vl_output.addLayout(fl_output)
@@ -2037,9 +3181,21 @@ class MainWindow(QMainWindow):
             "1.0 = full resolution, 0.5 = half resolution (4× faster).\n"
             "All body-size-based parameters auto-scale with this value."
         )
-        fl_sys.addRow(
-            "How much should frames be downscaled before processing?", self.spin_resize
+        self.combo_compute_runtime = QComboBox()
+        self.combo_compute_runtime.setToolTip(
+            "Global compute runtime for detection and pose.\n"
+            "Only runtimes compatible with all enabled pipelines are shown."
         )
+        self.combo_compute_runtime.currentIndexChanged.connect(
+            self._on_runtime_context_changed
+        )
+        _perf_row = QHBoxLayout()
+        _perf_row.addWidget(QLabel("Downscale:"))
+        _perf_row.addWidget(self.spin_resize, 1)
+        _perf_row.addSpacing(8)
+        _perf_row.addWidget(QLabel("Runtime:"))
+        _perf_row.addWidget(self.combo_compute_runtime, 2)
+        fl_sys.addRow(_perf_row)
 
         self.check_save_confidence = QCheckBox("Save confidence metrics (slower)")
         self.check_save_confidence.setChecked(True)
@@ -2048,7 +3204,6 @@ class MainWindow(QMainWindow):
             "Useful for post-hoc quality control but adds ~10-20% processing time.\n"
             "Disable for maximum tracking speed."
         )
-        fl_sys.addRow("", self.check_save_confidence)
 
         # Use Cached Detections
         self.chk_use_cached_detections = QCheckBox(
@@ -2061,7 +3216,10 @@ class MainWindow(QMainWindow):
             "Massive speedup for re-processing with different tracking parameters.\n"
             "Disable to force fresh detection on every run."
         )
-        fl_sys.addRow("", self.chk_use_cached_detections)
+        _perf_chk_row = QHBoxLayout()
+        _perf_chk_row.addWidget(self.check_save_confidence)
+        _perf_chk_row.addWidget(self.chk_use_cached_detections)
+        fl_sys.addRow("", _perf_chk_row)
 
         # Visualization-Free Mode
         self.chk_visualization_free = QCheckBox(
@@ -2094,35 +3252,30 @@ class MainWindow(QMainWindow):
             )
         )
 
-        # Common overlays
+        # Common overlays (2 per row)
         self.chk_show_circles = QCheckBox("Show Track Markers (Circles)")
         self.chk_show_circles.setChecked(True)
         self.chk_show_circles.setToolTip("Draw circles around tracked animals.")
-        vl_display.addWidget(self.chk_show_circles)
 
         self.chk_show_orientation = QCheckBox("Show Orientation Lines")
         self.chk_show_orientation.setChecked(True)
         self.chk_show_orientation.setToolTip("Draw lines showing heading direction.")
-        vl_display.addWidget(self.chk_show_orientation)
 
         self.chk_show_trajectories = QCheckBox("Show Trajectory Trails")
         self.chk_show_trajectories.setChecked(True)
         self.chk_show_trajectories.setToolTip(
             "Draw recent path history for each track."
         )
-        vl_display.addWidget(self.chk_show_trajectories)
 
         self.chk_show_labels = QCheckBox("Show ID Labels")
         self.chk_show_labels.setChecked(True)
         self.chk_show_labels.setToolTip("Display unique track IDs on each animal.")
-        vl_display.addWidget(self.chk_show_labels)
 
         self.chk_show_state = QCheckBox("Show State Text")
         self.chk_show_state.setChecked(True)
         self.chk_show_state.setToolTip(
             "Display tracking state (ACTIVE, PREDICTED, etc.)."
         )
-        vl_display.addWidget(self.chk_show_state)
 
         self.chk_show_kalman_uncertainty = QCheckBox("Show prediction uncertainty")
         self.chk_show_kalman_uncertainty.setChecked(False)
@@ -2131,7 +3284,19 @@ class MainWindow(QMainWindow):
             "Larger ellipse = more uncertainty in predicted position.\n"
             "Useful for debugging tracking quality and filter convergence."
         )
-        vl_display.addWidget(self.chk_show_kalman_uncertainty)
+
+        _disp_r1 = QHBoxLayout()
+        _disp_r1.addWidget(self.chk_show_circles)
+        _disp_r1.addWidget(self.chk_show_orientation)
+        _disp_r2 = QHBoxLayout()
+        _disp_r2.addWidget(self.chk_show_trajectories)
+        _disp_r2.addWidget(self.chk_show_labels)
+        _disp_r3 = QHBoxLayout()
+        _disp_r3.addWidget(self.chk_show_state)
+        _disp_r3.addWidget(self.chk_show_kalman_uncertainty)
+        vl_display.addLayout(_disp_r1)
+        vl_display.addLayout(_disp_r2)
+        vl_display.addLayout(_disp_r3)
 
         # Trail length
         f_trail = QFormLayout(None)
@@ -2143,9 +3308,7 @@ class MainWindow(QMainWindow):
             "Longer = more visible path history but more cluttered.\n"
             "Recommended: 3-10 seconds."
         )
-        f_trail.addRow(
-            "How many seconds of trail history should be shown?", self.spin_traj_hist
-        )
+        f_trail.addRow("Trail history (seconds)", self.spin_traj_hist)
         vl_display.addLayout(f_trail)
 
         form.addWidget(self.g_display)
@@ -2169,6 +3332,8 @@ class MainWindow(QMainWindow):
         form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
+        self._populate_compute_runtime_options(preferred="cpu")
+        self._on_runtime_context_changed()
 
     def setup_detection_ui(self: object) -> object:
         """Tab 2: Detection - Method, Image Proc, Algo specific."""
@@ -2198,11 +3363,9 @@ class MainWindow(QMainWindow):
         self.combo_detection_method.currentIndexChanged.connect(
             self._on_detection_method_changed_ui
         )
-        f_method.addRow(
-            "Which detection method should be used?", self.combo_detection_method
-        )
+        f_method.addRow("Detection method", self.combo_detection_method)
 
-        # Device selection (shared between both detection methods)
+        # Legacy device selection (hidden; derived from canonical runtime).
         self.combo_device = QComboBox()
         device_options = ["auto", "cpu"]
         device_tooltip_parts = [
@@ -2230,6 +3393,10 @@ class MainWindow(QMainWindow):
         self.combo_device.addItems(device_options)
         self.combo_device.setToolTip("\n".join(device_tooltip_parts))
         f_method.addRow("Which compute device should run detection?", self.combo_device)
+        device_label = f_method.labelForField(self.combo_device)
+        if device_label is not None:
+            device_label.setVisible(False)
+        self.combo_device.setVisible(False)
 
         l_method_outer.addLayout(f_method)
         vbox.addWidget(g_method)
@@ -2267,7 +3434,7 @@ class MainWindow(QMainWindow):
         bright_label_row = QHBoxLayout()
         bright_label_row.addWidget(QLabel("Brightness"))
         self.label_brightness_val = QLabel("0")
-        self.label_brightness_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
+        self.label_brightness_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
         bright_label_row.addWidget(self.label_brightness_val)
         bright_label_row.addStretch()
         bright_layout.addLayout(bright_label_row)
@@ -2291,7 +3458,7 @@ class MainWindow(QMainWindow):
         contrast_label_row = QHBoxLayout()
         contrast_label_row.addWidget(QLabel("Contrast"))
         self.label_contrast_val = QLabel("1.0")
-        self.label_contrast_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
+        self.label_contrast_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
         contrast_label_row.addWidget(self.label_contrast_val)
         contrast_label_row.addStretch()
         contrast_layout.addLayout(contrast_label_row)
@@ -2315,7 +3482,7 @@ class MainWindow(QMainWindow):
         gamma_label_row = QHBoxLayout()
         gamma_label_row.addWidget(QLabel("Gamma"))
         self.label_gamma_val = QLabel("1.0")
-        self.label_gamma_val.setStyleSheet("color: #4a9eff; font-weight: bold;")
+        self.label_gamma_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
         gamma_label_row.addWidget(self.label_gamma_val)
         gamma_label_row.addStretch()
         gamma_layout.addLayout(gamma_label_row)
@@ -2366,9 +3533,7 @@ class MainWindow(QMainWindow):
             "Recommended: 10-100 frames.\n"
             "Use more if background varies or animals are present initially."
         )
-        f_bg.addRow(
-            "How many startup frames should build the background?", self.spin_bg_prime
-        )
+        f_bg.addRow("Startup frames", self.spin_bg_prime)
 
         self.chk_adaptive_bg = QCheckBox("Continuously update background model")
         self.chk_adaptive_bg.setChecked(True)
@@ -2388,8 +3553,6 @@ class MainWindow(QMainWindow):
             "Lower = slower adaptation (stable, good for mostly static background).\n"
             "Higher = faster adaptation (use for variable lighting/shadows)."
         )
-        f_bg.addRow("How quickly should the background adapt?", self.spin_bg_learning)
-
         self.spin_threshold = QSpinBox()
         self.spin_threshold.setRange(0, 255)
         self.spin_threshold.setValue(50)
@@ -2399,7 +3562,13 @@ class MainWindow(QMainWindow):
             "Higher = less sensitive (cleaner, may miss animals).\n"
             "Recommended: 30-70 depending on contrast."
         )
-        f_bg.addRow("What subtraction threshold should be used?", self.spin_threshold)
+        _bg_rate_row = QHBoxLayout()
+        _bg_rate_row.addWidget(QLabel("Learn rate:"))
+        _bg_rate_row.addWidget(self.spin_bg_learning, 1)
+        _bg_rate_row.addSpacing(8)
+        _bg_rate_row.addWidget(QLabel("Threshold:"))
+        _bg_rate_row.addWidget(self.spin_threshold, 1)
+        f_bg.addRow(_bg_rate_row)
         vl_bg_model.addLayout(f_bg)
         g_bg_model.setContentLayout(vl_bg_model)
         l_bg.addWidget(g_bg_model)
@@ -2434,10 +3603,6 @@ class MainWindow(QMainWindow):
             "Lower = faster response to sudden lighting shifts.\n"
             "Recommended: 0.9-0.98"
         )
-        f_light.addRow(
-            "How much lighting smoothing should be applied?", self.spin_lighting_smooth
-        )
-
         self.spin_lighting_median = QSpinBox()
         self.spin_lighting_median.setRange(3, 15)
         self.spin_lighting_median.setSingleStep(2)
@@ -2448,9 +3613,13 @@ class MainWindow(QMainWindow):
             "Smaller window = faster response, less smoothing.\n"
             "Recommended: 5-9"
         )
-        f_light.addRow(
-            "How many frames for the lighting median window?", self.spin_lighting_median
-        )
+        _light_row = QHBoxLayout()
+        _light_row.addWidget(QLabel("Smoothing:"))
+        _light_row.addWidget(self.spin_lighting_smooth, 1)
+        _light_row.addSpacing(8)
+        _light_row.addWidget(QLabel("Median (frames):"))
+        _light_row.addWidget(self.spin_lighting_median, 1)
+        f_light.addRow(_light_row)
         vl_light.addLayout(f_light)
         g_light.setContentLayout(vl_light)
         l_bg.addWidget(g_light)
@@ -2477,7 +3646,7 @@ class MainWindow(QMainWindow):
             "Smaller = preserves detail, may leave noise.\n"
             "Recommended: 3-7 for typical tracking scenarios."
         )
-        f_morph.addRow("What main kernel size should be used?", self.spin_morph_size)
+        f_morph.addRow("Kernel size", self.spin_morph_size)
 
         self.spin_min_contour = QSpinBox()
         self.spin_min_contour.setRange(0, 100000)
@@ -2488,10 +3657,6 @@ class MainWindow(QMainWindow):
             "Recommended: 20-100 depending on animal size and zoom.\n"
             "Note: Similar to min object size but in absolute pixels."
         )
-        f_morph.addRow(
-            "What is the smallest contour area to keep (px^2)?", self.spin_min_contour
-        )
-
         self.spin_max_contour_multiplier = QSpinBox()
         self.spin_max_contour_multiplier.setRange(5, 100)
         self.spin_max_contour_multiplier.setValue(20)
@@ -2501,7 +3666,13 @@ class MainWindow(QMainWindow):
             "Filters out very large blobs (clusters, shadows, artifacts).\n"
             "Recommended: 10-30"
         )
-        f_morph.addRow("Maximum contour multiplier", self.spin_max_contour_multiplier)
+        _contour_row = QHBoxLayout()
+        _contour_row.addWidget(QLabel("Min area (px²):"))
+        _contour_row.addWidget(self.spin_min_contour, 1)
+        _contour_row.addSpacing(8)
+        _contour_row.addWidget(QLabel("Max multiplier:"))
+        _contour_row.addWidget(self.spin_max_contour_multiplier, 1)
+        f_morph.addRow(_contour_row)
         vl_morph.addLayout(f_morph)
         g_morph.setContentLayout(vl_morph)
         l_bg.addWidget(g_morph)
@@ -2559,9 +3730,7 @@ class MainWindow(QMainWindow):
             "Lower = merge more aggressively, Higher = keep fragments separate.\n"
             "Recommended: 500-2000"
         )
-        f_split.addRow(
-            "What merge area threshold should be used?", self.spin_merge_threshold
-        )
+        f_split.addRow("Merge area (px\u00b2)", self.spin_merge_threshold)
 
         self.chk_additional_dilation = QCheckBox("Reconnect thin parts (dilation)")
         self.chk_additional_dilation.setToolTip(
@@ -2614,30 +3783,137 @@ class MainWindow(QMainWindow):
         self.yolo_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         f_yolo = QFormLayout(self.yolo_group)
 
+        self.combo_yolo_obb_mode = QComboBox()
+        self.combo_yolo_obb_mode.addItems(["Direct", "Sequential (Faster)"])
+        self.combo_yolo_obb_mode.currentIndexChanged.connect(self._on_yolo_mode_changed)
+        self.combo_yolo_obb_mode.setToolTip(
+            "Direct: run OBB on full frame.\n"
+            "Sequential: run detect model first, crop detections, then run OBB on crops."
+        )
+        f_yolo.addRow("YOLO OBB mode", self.combo_yolo_obb_mode)
+
+        self.lbl_obb_mode_warning = QLabel()
+        self.lbl_obb_mode_warning.setWordWrap(True)
+        self.lbl_obb_mode_warning.setStyleSheet(
+            "color: #f0ad4e; font-style: italic; padding: 2px 0px;"
+        )
+        self.lbl_obb_mode_warning.setVisible(False)
+        f_yolo.addRow("", self.lbl_obb_mode_warning)
+
         self.combo_yolo_model = QComboBox()
         self._refresh_yolo_model_combo()
         self.combo_yolo_model.currentIndexChanged.connect(self.on_yolo_model_changed)
-        self.combo_yolo_model.setToolTip(
-            "YOLO model for oriented bounding box detection.\n"
-            "yolo26s = balanced speed/accuracy, yolo26n = fastest.\n"
-            "Select 'Custom Model...' to use your own trained model."
-        )
-        f_yolo.addRow("Which YOLO model should be used?", self.combo_yolo_model)
+        self.combo_yolo_model.setToolTip("Direct-mode YOLO OBB model.")
+        f_yolo.addRow("Direct OBB model", self.combo_yolo_model)
 
-        # Custom model container (hidden by default)
-        self.yolo_custom_model_widget = QWidget()
-        h_cust = QHBoxLayout(self.yolo_custom_model_widget)
-        h_cust.setContentsMargins(0, 0, 0, 0)
-        self.yolo_custom_model_line = QLineEdit()
-        self.btn_yolo_custom_model = QPushButton("...")
-        self.btn_yolo_custom_model.clicked.connect(self.select_yolo_custom_model)
-        h_cust.addWidget(self.yolo_custom_model_line)
-        h_cust.addWidget(self.btn_yolo_custom_model)
-        f_yolo.addRow(
-            "Which custom YOLO model file should be used?",
-            self.yolo_custom_model_widget,
+        self.combo_yolo_detect_model = QComboBox()
+        self._refresh_yolo_detect_model_combo()
+        self.combo_yolo_detect_model.currentIndexChanged.connect(
+            self.on_yolo_detect_model_changed
         )
-        self.yolo_custom_model_widget.setVisible(False)
+        self.combo_yolo_detect_model.setToolTip(
+            "Sequential stage-1 model (axis-aligned detect)."
+        )
+        f_yolo.addRow("Seq detect model", self.combo_yolo_detect_model)
+
+        self.combo_yolo_crop_obb_model = QComboBox()
+        self._refresh_yolo_crop_obb_model_combo()
+        self.combo_yolo_crop_obb_model.currentIndexChanged.connect(
+            self.on_yolo_crop_obb_model_changed
+        )
+        self.combo_yolo_crop_obb_model.setToolTip(
+            "Sequential stage-2 OBB model trained on cropped detections."
+        )
+        f_yolo.addRow("Seq crop OBB model", self.combo_yolo_crop_obb_model)
+
+        # Head-tail classifier — type selects subdirectory (YOLO vs tiny)
+        self.combo_yolo_headtail_model_type = QComboBox()
+        self.combo_yolo_headtail_model_type.addItems(["YOLO", "tiny"])
+        self.combo_yolo_headtail_model_type.setToolTip(
+            "Architecture family of the head-tail classifier.\n"
+            "YOLO → models/classification/orientation/YOLO/\n"
+            "tiny → models/classification/orientation/tiny/"
+        )
+        self.combo_yolo_headtail_model_type.currentIndexChanged.connect(
+            self._on_headtail_model_type_changed
+        )
+
+        self.combo_yolo_headtail_model = QComboBox()
+        self._refresh_yolo_headtail_model_combo()
+        self.combo_yolo_headtail_model.currentIndexChanged.connect(
+            self.on_yolo_headtail_model_changed
+        )
+        self.combo_yolo_headtail_model.setToolTip(
+            "Optional head-tail classifier used to direct orientation along OBB major axis."
+        )
+
+        self.headtail_model_row_widget = QWidget()
+        _headtail_row = QHBoxLayout(self.headtail_model_row_widget)
+        _headtail_row.setContentsMargins(0, 0, 0, 0)
+        _headtail_row.setSpacing(4)
+        _headtail_row.addWidget(self.combo_yolo_headtail_model_type, 0)
+        _headtail_row.addWidget(self.combo_yolo_headtail_model, 1)
+        f_yolo.addRow("Head-tail model", self.headtail_model_row_widget)
+
+        self.chk_pose_overrides_headtail = QCheckBox(
+            "Pose orientation overrides head-tail"
+        )
+        self.chk_pose_overrides_headtail.setChecked(True)
+        self.chk_pose_overrides_headtail.setToolTip(
+            "When enabled, valid pose heading takes precedence over head-tail heading."
+        )
+        f_yolo.addRow("", self.chk_pose_overrides_headtail)
+
+        self.yolo_seq_advanced = CollapsibleGroupBox(
+            "Sequential Advanced Settings", initially_expanded=False
+        )
+        self.yolo_seq_advanced_content = QWidget()
+        f_seq_adv = QFormLayout(self.yolo_seq_advanced_content)
+        self.spin_yolo_seq_crop_pad = QDoubleSpinBox()
+        self.spin_yolo_seq_crop_pad.setRange(0.0, 1.0)
+        self.spin_yolo_seq_crop_pad.setSingleStep(0.01)
+        self.spin_yolo_seq_crop_pad.setValue(0.15)
+        f_seq_adv.addRow("Crop pad ratio", self.spin_yolo_seq_crop_pad)
+        self.spin_yolo_seq_min_crop_px = QSpinBox()
+        self.spin_yolo_seq_min_crop_px.setRange(8, 1024)
+        self.spin_yolo_seq_min_crop_px.setValue(64)
+        f_seq_adv.addRow("Min crop size (px)", self.spin_yolo_seq_min_crop_px)
+        self.chk_yolo_seq_square_crop = QCheckBox("Enforce square crop")
+        self.chk_yolo_seq_square_crop.setChecked(True)
+        f_seq_adv.addRow("", self.chk_yolo_seq_square_crop)
+        self.spin_yolo_seq_detect_conf = QDoubleSpinBox()
+        self.spin_yolo_seq_detect_conf.setRange(0.01, 1.0)
+        self.spin_yolo_seq_detect_conf.setSingleStep(0.01)
+        self.spin_yolo_seq_detect_conf.setValue(0.25)
+        self.spin_yolo_seq_detect_conf.setToolTip(
+            "Minimum confidence for the stage-1 detection model (sequential mode only).\n"
+            "Lower = more crops sent to stage-2 (higher recall, slower).\n"
+            "Higher = fewer crops (faster, may miss occluded animals).\n"
+            "Recommended: 0.1–0.3"
+        )
+        f_seq_adv.addRow("Stage-1 detect conf", self.spin_yolo_seq_detect_conf)
+        self.spin_yolo_headtail_conf = QDoubleSpinBox()
+        self.spin_yolo_headtail_conf.setRange(0.0, 1.0)
+        self.spin_yolo_headtail_conf.setSingleStep(0.01)
+        self.spin_yolo_headtail_conf.setValue(0.50)
+        f_seq_adv.addRow("Head-tail min confidence", self.spin_yolo_headtail_conf)
+        self.spin_yolo_seq_stage2_imgsz = QSpinBox()
+        self.spin_yolo_seq_stage2_imgsz.setRange(0, 2048)
+        self.spin_yolo_seq_stage2_imgsz.setValue(160)
+        self.spin_yolo_seq_stage2_imgsz.setToolTip(
+            "Crop OBB stage input size in pixels. Set 0 to disable pre-resize."
+        )
+        f_seq_adv.addRow("Stage-2 imgsz (px)", self.spin_yolo_seq_stage2_imgsz)
+        self.chk_yolo_seq_stage2_pow2_pad = QCheckBox(
+            "Pad stage-2 batch to power-of-two"
+        )
+        self.chk_yolo_seq_stage2_pow2_pad.setChecked(False)
+        self.chk_yolo_seq_stage2_pow2_pad.setToolTip(
+            "Reduces dynamic batch-size variants in sequential stage-2 inference."
+        )
+        f_seq_adv.addRow("", self.chk_yolo_seq_stage2_pow2_pad)
+        self.yolo_seq_advanced.setContentLayout(f_seq_adv)
+        f_yolo.addRow(self.yolo_seq_advanced)
 
         self.spin_yolo_confidence = QDoubleSpinBox()
         self.spin_yolo_confidence.setRange(0.01, 1.0)
@@ -2648,11 +3924,6 @@ class MainWindow(QMainWindow):
             "Higher = fewer detections (may miss animals).\n"
             "Recommended: 0.2-0.4"
         )
-        f_yolo.addRow(
-            "What minimum YOLO confidence should be accepted?",
-            self.spin_yolo_confidence,
-        )
-
         self.spin_yolo_iou = QDoubleSpinBox()
         self.spin_yolo_iou.setRange(0.01, 1.0)
         self.spin_yolo_iou.setValue(0.7)
@@ -2662,7 +3933,13 @@ class MainWindow(QMainWindow):
             "Higher = keep more overlapping detections.\n"
             "Recommended: 0.5-0.8"
         )
-        f_yolo.addRow("What IOU overlap threshold should YOLO use?", self.spin_yolo_iou)
+        _yolo_thresh_row = QHBoxLayout()
+        _yolo_thresh_row.addWidget(QLabel("Confidence:"))
+        _yolo_thresh_row.addWidget(self.spin_yolo_confidence, 1)
+        _yolo_thresh_row.addSpacing(8)
+        _yolo_thresh_row.addWidget(QLabel("IOU:"))
+        _yolo_thresh_row.addWidget(self.spin_yolo_iou, 1)
+        f_yolo.addRow(_yolo_thresh_row)
 
         self.chk_use_custom_obb_iou = QCheckBox("Use custom OBB overlap filtering")
         self.chk_use_custom_obb_iou.setChecked(True)
@@ -2680,7 +3957,8 @@ class MainWindow(QMainWindow):
             "Example: '0,1,2' to detect only classes 0, 1, and 2.\n"
             "Refer to your model's class definitions."
         )
-        f_yolo.addRow("Which classes should be detected?", self.line_yolo_classes)
+        f_yolo.addRow("Classes (optional)", self.line_yolo_classes)
+        self._on_yolo_mode_changed(self.combo_yolo_obb_mode.currentIndex())
 
         l_yolo.addWidget(self.yolo_group)
 
@@ -2699,8 +3977,6 @@ class MainWindow(QMainWindow):
         f_gpu.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         # TensorRT Optimization
-        from ..utils.gpu_utils import TENSORRT_AVAILABLE
-
         self.chk_enable_tensorrt = QCheckBox("Enable TensorRT (NVIDIA Only)")
         self.chk_enable_tensorrt.setChecked(False)
         self.chk_enable_tensorrt.setEnabled(TENSORRT_AVAILABLE)
@@ -2776,6 +4052,9 @@ class MainWindow(QMainWindow):
             "Larger = faster but uses more GPU memory.\n"
             "Typical values: 8-32 depending on GPU."
         )
+        self.spin_yolo_batch_size.valueChanged.connect(
+            self._on_yolo_manual_batch_size_changed
+        )
         self.lbl_yolo_batch_size = QLabel("Manual batch size")
         f_gpu.addRow(self.lbl_yolo_batch_size, self.spin_yolo_batch_size)
 
@@ -2783,6 +4062,7 @@ class MainWindow(QMainWindow):
         l_yolo.addWidget(self.g_gpu_accel)
 
         # Set initial visibility for TensorRT widgets
+        self.chk_enable_tensorrt.setVisible(False)
         self.spin_tensorrt_batch.setVisible(False)
         self.lbl_tensorrt_batch.setVisible(False)
 
@@ -2817,11 +4097,12 @@ class MainWindow(QMainWindow):
 
         self.chk_show_fg = QCheckBox("Show Foreground Mask")
         self.chk_show_fg.setChecked(True)
-        v_ov_bg.addWidget(self.chk_show_fg)
-
         self.chk_show_bg = QCheckBox("Show Background Model")
         self.chk_show_bg.setChecked(True)
-        v_ov_bg.addWidget(self.chk_show_bg)
+        _bg_ov_row = QHBoxLayout()
+        _bg_ov_row.addWidget(self.chk_show_fg)
+        _bg_ov_row.addWidget(self.chk_show_bg)
+        v_ov_bg.addLayout(_bg_ov_row)
 
         vbox.addWidget(self.g_overlays_bg)
 
@@ -2872,15 +4153,12 @@ class MainWindow(QMainWindow):
             "All distance/size parameters are scaled relative to this value."
         )
         self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
-        fl_body.addRow(
-            "What reference body size (px) should be used?",
-            self.spin_reference_body_size,
-        )
+        fl_body.addRow("Reference body size (px)", self.spin_reference_body_size)
 
         # Info label showing calculated area
         self.label_body_size_info = QLabel()
         self.label_body_size_info.setStyleSheet(
-            "color: #888; font-size: 10px; font-style: italic;"
+            "color: #6a6a6a; font-size: 10px; font-style: italic;"
         )
         fl_body.addRow("", self.label_body_size_info)
         vl_body_size.addLayout(fl_body)
@@ -2906,8 +4184,8 @@ class MainWindow(QMainWindow):
             "No detection data yet.\nRun 'Test Detection' to estimate sizes."
         )
         self.label_detection_stats.setStyleSheet(
-            "color: #aaa; font-size: 11px; padding: 8px; "
-            "background-color: #2a2a2a; border-radius: 4px;"
+            "color: #9a9a9a; font-size: 11px; padding: 8px; "
+            "background-color: #252526; border-radius: 4px;"
         )
         self.label_detection_stats.setWordWrap(True)
         vl_stats.addWidget(self.label_detection_stats)
@@ -2996,8 +4274,9 @@ class MainWindow(QMainWindow):
         vl_core = QVBoxLayout(g_core)
         vl_core.addWidget(
             self._create_help_label(
-                "These control basic track-to-detection matching. Max assignment distance sets how far an animal can "
-                "move between frames. Recovery search distance helps reconnect lost tracks."
+                "These control basic track-to-detection matching. Max movement sets how far an animal can "
+                "move between frames. Max speed gates Kalman predictions to physically plausible values. "
+                "Recovery search distance helps reconnect lost tracks."
             )
         )
         f_core = QFormLayout(None)
@@ -3010,7 +4289,7 @@ class MainWindow(QMainWindow):
             "Set this to the expected number of animals in your video.\n"
             "Higher values use more memory and may slow down processing."
         )
-        f_core.addRow("How many animals should be tracked?", self.spin_max_targets)
+        f_core.addRow("Number of animals", self.spin_max_targets)
 
         self.spin_max_dist = QDoubleSpinBox()
         self.spin_max_dist.setRange(0.1, 20.0)
@@ -3023,10 +4302,7 @@ class MainWindow(QMainWindow):
             "Too low = tracks break frequently, Too high = identity swaps.\n"
             "Recommended: 1-2× for normal motion, 3-5× for fast motion."
         )
-        f_core.addRow(
-            "How far can an animal move between frames (body lengths)?",
-            self.spin_max_dist,
-        )
+        f_core.addRow("Max movement (body lengths)", self.spin_max_dist)
 
         self.spin_continuity_thresh = QDoubleSpinBox()
         self.spin_continuity_thresh.setRange(0.1, 10.0)
@@ -3044,6 +4320,23 @@ class MainWindow(QMainWindow):
             self.spin_continuity_thresh,
         )
 
+        self.spin_kalman_max_velocity = QDoubleSpinBox()
+        self.spin_kalman_max_velocity.setRange(0.5, 10.0)
+        self.spin_kalman_max_velocity.setSingleStep(0.1)
+        self.spin_kalman_max_velocity.setDecimals(1)
+        self.spin_kalman_max_velocity.setValue(2.0)
+        self.spin_kalman_max_velocity.setToolTip(
+            "Maximum speed constraint (× body size per frame).\n"
+            "Limits how fast any Kalman prediction can move.\n"
+            "velocity_max = this_value × reference_body_size (pixels/frame)\n"
+            "Lower = more conservative, Higher = allows faster movement.\n"
+            "Recommended: 1.5-3.0 depending on animal speed"
+        )
+        f_core.addRow(
+            "Max speed (body lengths/frame)",
+            self.spin_kalman_max_velocity,
+        )
+
         self.chk_enable_backward = QCheckBox("Run reverse pass for better accuracy")
         self.chk_enable_backward.setChecked(True)
         self.chk_enable_backward.setToolTip(
@@ -3056,6 +4349,17 @@ class MainWindow(QMainWindow):
         f_core.addRow("", self.chk_enable_backward)
         vl_core.addLayout(f_core)
         vbox.addWidget(g_core)
+
+        # Parameter Helper Button
+        self.btn_param_helper = QPushButton("Auto-Tune Tracking Parameters...")
+        self.btn_param_helper.clicked.connect(self._open_parameter_helper)
+        self.btn_param_helper.setStyleSheet(
+            "background-color: #0e639c; color: white; font-weight: bold; padding: 5px; margin-top: 5px;"
+        )
+        self.btn_param_helper.setToolTip(
+            "Run automated bayesian search to find optimal tracking parameters for your video."
+        )
+        vbox.addWidget(self.btn_param_helper)
 
         # Create accordion for advanced tracking settings
         self.tracking_accordion = AccordionContainer()
@@ -3075,6 +4379,8 @@ class MainWindow(QMainWindow):
 
         self.spin_kalman_noise = QDoubleSpinBox()
         self.spin_kalman_noise.setRange(0.0, 1.0)
+        self.spin_kalman_noise.setDecimals(4)
+        self.spin_kalman_noise.setSingleStep(0.001)
         self.spin_kalman_noise.setValue(0.03)
         self.spin_kalman_noise.setToolTip(
             "Process noise covariance (0.0-1.0) for motion prediction.\n"
@@ -3087,6 +4393,8 @@ class MainWindow(QMainWindow):
 
         self.spin_kalman_meas = QDoubleSpinBox()
         self.spin_kalman_meas.setRange(0.0, 1.0)
+        self.spin_kalman_meas.setDecimals(4)
+        self.spin_kalman_meas.setSingleStep(0.001)
         self.spin_kalman_meas.setValue(0.1)
         self.spin_kalman_meas.setToolTip(
             "Measurement noise covariance (0.0-1.0).\n"
@@ -3099,9 +4407,9 @@ class MainWindow(QMainWindow):
         )
 
         self.spin_kalman_damping = QDoubleSpinBox()
-        self.spin_kalman_damping.setRange(0.5, 0.99)
+        self.spin_kalman_damping.setRange(0.5, 0.999)
         self.spin_kalman_damping.setSingleStep(0.01)
-        self.spin_kalman_damping.setDecimals(2)
+        self.spin_kalman_damping.setDecimals(3)
         self.spin_kalman_damping.setValue(0.95)
         self.spin_kalman_damping.setToolTip(
             "Velocity damping coefficient (0.5-0.99).\n"
@@ -3151,23 +4459,6 @@ class MainWindow(QMainWindow):
             self.spin_kalman_initial_velocity_retention,
         )
 
-        self.spin_kalman_max_velocity = QDoubleSpinBox()
-        self.spin_kalman_max_velocity.setRange(0.5, 10.0)
-        self.spin_kalman_max_velocity.setSingleStep(0.1)
-        self.spin_kalman_max_velocity.setDecimals(1)
-        self.spin_kalman_max_velocity.setValue(2.0)
-        self.spin_kalman_max_velocity.setToolTip(
-            "Maximum velocity constraint (body size multiplier).\n"
-            "Prevents unrealistic predictions during occlusions.\n"
-            "velocity_max = this_value × reference_body_size (pixels/frame)\n"
-            "Lower = more conservative, Higher = allows faster movement.\n"
-            "Recommended: 1.5-3.0 depending on animal speed"
-        )
-        f_kf.addRow(
-            "What maximum speed should prediction allow (body lengths/frame)?",
-            self.spin_kalman_max_velocity,
-        )
-
         # Anisotropic process noise
         aniso_label = QLabel("Should forward and sideways uncertainty differ?")
         aniso_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
@@ -3208,14 +4499,15 @@ class MainWindow(QMainWindow):
         g_kf.setContentLayout(vl_kf)
         vbox.addWidget(g_kf)
 
-        # Weights
-        g_weights = CollapsibleGroupBox("What should matching prioritize?")
+        # Matching cost
+        g_weights = CollapsibleGroupBox("How should match scoring work?")
         self.tracking_accordion.addCollapsible(g_weights)
         l_weights = QVBoxLayout()
         l_weights.addWidget(
             self._create_help_label(
-                "Control how different factors influence track-to-detection matching. Position is primary; orientation, "
-                "area, and aspect help resolve ambiguities. Increase Mahalanobis to trust Kalman predictions more."
+                "This is the core assignment cost used after motion gating. Position does most of the work; "
+                "orientation and coarse box geometry help break ties. The track feature settings control how "
+                "per-track appearance summaries adapt over time."
             )
         )
 
@@ -3224,22 +4516,21 @@ class MainWindow(QMainWindow):
         self.spin_Wp.setRange(0.0, 10.0)
         self.spin_Wp.setValue(1.0)
         self.spin_Wp.setToolTip(
-            "Weight for position distance in assignment cost.\n"
-            "Higher = prioritize spatial proximity.\n"
-            "Recommended: 1.0 (primary factor)"
+            "Weight for position distance in the assignment cost.\n"
+            "Higher = trust spatial proximity more.\n"
+            "Recommended: keep this as the dominant term."
         )
-        row1.addWidget(QLabel("Position importance"))
+        row1.addWidget(QLabel("Position weight"))
         row1.addWidget(self.spin_Wp)
 
         self.spin_Wo = QDoubleSpinBox()
         self.spin_Wo.setRange(0.0, 10.0)
         self.spin_Wo.setValue(1.0)
         self.spin_Wo.setToolTip(
-            "Weight for orientation difference in assignment cost.\n"
-            "Higher = penalize large orientation changes.\n"
-            "Recommended: 0.5-2.0 (helps maintain correct identity)"
+            "Weight for orientation difference in the assignment cost.\n"
+            "Higher = penalize large direction changes more strongly."
         )
-        row1.addWidget(QLabel("Direction importance"))
+        row1.addWidget(QLabel("Direction weight"))
         row1.addWidget(self.spin_Wo)
         l_weights.addLayout(row1)
 
@@ -3250,47 +4541,150 @@ class MainWindow(QMainWindow):
         self.spin_Wa.setDecimals(4)
         self.spin_Wa.setValue(0.001)
         self.spin_Wa.setToolTip(
-            "Weight for area difference in assignment cost.\n"
-            "Higher = penalize size changes.\n"
-            "Recommended: 0.001-0.01 (prevents size-based swaps)"
+            "Weight for area difference in the assignment cost.\n"
+            "Higher = penalize sudden size changes more strongly."
         )
-        row2.addWidget(QLabel("Size importance"))
+        row2.addWidget(QLabel("Area weight"))
         row2.addWidget(self.spin_Wa)
 
         self.spin_Wasp = QDoubleSpinBox()
         self.spin_Wasp.setRange(0.0, 10.0)
         self.spin_Wasp.setValue(0.1)
         self.spin_Wasp.setToolTip(
-            "Weight for aspect ratio difference in assignment cost.\n"
-            "Higher = penalize shape changes.\n"
-            "Recommended: 0.05-0.2 (helps with occlusions)"
+            "Weight for aspect-ratio difference in the assignment cost.\n"
+            "Higher = penalize coarse shape changes more strongly."
         )
-        row2.addWidget(QLabel("Shape importance"))
+        row2.addWidget(QLabel("Aspect weight"))
         row2.addWidget(self.spin_Wasp)
         l_weights.addLayout(row2)
 
         self.chk_use_mahal = QCheckBox("Use motion-aware distance")
         self.chk_use_mahal.setChecked(True)
         self.chk_use_mahal.setToolTip(
-            "Use Mahalanobis distance instead of Euclidean for position.\n"
-            "Accounts for velocity and uncertainty in motion prediction.\n"
-            "Recommended: Enable for better handling of motion variability."
+            "Use Mahalanobis distance instead of Euclidean distance for the position term.\n"
+            "This makes the matcher respect predicted velocity and uncertainty."
         )
         l_weights.addWidget(self.chk_use_mahal)
+
+        f_w2 = QFormLayout(None)
+
+        self.spin_track_feature_ema_alpha = QDoubleSpinBox()
+        self.spin_track_feature_ema_alpha.setRange(0.0, 0.99)
+        self.spin_track_feature_ema_alpha.setDecimals(2)
+        self.spin_track_feature_ema_alpha.setSingleStep(0.01)
+        self.spin_track_feature_ema_alpha.setValue(0.85)
+        self.spin_track_feature_ema_alpha.setToolTip(
+            "EMA retention for the per-track pose prototype and step-size summary.\n"
+            "Higher = slower adaptation (more stable but lags sudden changes).\n"
+            "Lower = faster adaptation (more responsive but noisier).\n"
+            "Recommended: 0.80-0.95"
+        )
+        f_w2.addRow("Track feature EMA", self.spin_track_feature_ema_alpha)
+
+        self.spin_assoc_high_conf_threshold = QDoubleSpinBox()
+        self.spin_assoc_high_conf_threshold.setRange(0.0, 1.0)
+        self.spin_assoc_high_conf_threshold.setDecimals(2)
+        self.spin_assoc_high_conf_threshold.setSingleStep(0.05)
+        self.spin_assoc_high_conf_threshold.setValue(0.7)
+        self.spin_assoc_high_conf_threshold.setToolTip(
+            "Minimum detection confidence required before updating the per-track\n"
+            "high-confidence step-size summary.\n"
+            "Recommended: 0.6-0.8"
+        )
+        f_w2.addRow("High-conf update threshold", self.spin_assoc_high_conf_threshold)
+
+        l_weights.addLayout(f_w2)
         g_weights.setContentLayout(l_weights)
         vbox.addWidget(g_weights)
 
-        # Assignment Algorithm (for large N optimization)
-        g_assign = CollapsibleGroupBox("How should matches be computed at scale?")
+        # Candidate gating and pose safeguards
+        g_assign = CollapsibleGroupBox("How should candidate matches be filtered?")
         self.tracking_accordion.addCollapsible(g_assign)
         vl_assign = QVBoxLayout()
         vl_assign.addWidget(
             self._create_help_label(
-                "Choose matching algorithm. Hungarian is optimal but slow for many animals (N>100). "
-                "Greedy approximation is faster but may produce suboptimal assignments."
+                "First, the tracker prunes impossible candidates using motion and coarse geometry. "
+                "Pose can then veto clearly incompatible matches when enough keypoints are visible."
             )
         )
         f_assign = QFormLayout(None)
+
+        self.spin_assoc_gate_multiplier = QDoubleSpinBox()
+        self.spin_assoc_gate_multiplier.setRange(0.5, 5.0)
+        self.spin_assoc_gate_multiplier.setDecimals(2)
+        self.spin_assoc_gate_multiplier.setSingleStep(0.05)
+        self.spin_assoc_gate_multiplier.setValue(1.4)
+        self.spin_assoc_gate_multiplier.setToolTip(
+            "Multiplier for the stage-1 motion gate before full scoring."
+        )
+        f_assign.addRow("Motion gate multiplier", self.spin_assoc_gate_multiplier)
+
+        self.spin_assoc_max_area_ratio = QDoubleSpinBox()
+        self.spin_assoc_max_area_ratio.setRange(1.0, 10.0)
+        self.spin_assoc_max_area_ratio.setDecimals(2)
+        self.spin_assoc_max_area_ratio.setSingleStep(0.1)
+        self.spin_assoc_max_area_ratio.setValue(2.5)
+        self.spin_assoc_max_area_ratio.setToolTip(
+            "Maximum allowed area ratio during candidate gating."
+        )
+        f_assign.addRow("Max area ratio", self.spin_assoc_max_area_ratio)
+
+        self.spin_assoc_max_aspect_diff = QDoubleSpinBox()
+        self.spin_assoc_max_aspect_diff.setRange(0.0, 5.0)
+        self.spin_assoc_max_aspect_diff.setDecimals(2)
+        self.spin_assoc_max_aspect_diff.setSingleStep(0.05)
+        self.spin_assoc_max_aspect_diff.setValue(0.8)
+        self.spin_assoc_max_aspect_diff.setToolTip(
+            "Maximum aspect-ratio change allowed during candidate gating."
+        )
+        f_assign.addRow("Max aspect diff", self.spin_assoc_max_aspect_diff)
+
+        self.chk_enable_pose_rejection = QCheckBox("Enable pose rejection")
+        self.chk_enable_pose_rejection.setChecked(True)
+        self.chk_enable_pose_rejection.setToolTip(
+            "Allow pose to veto motion-feasible matches when the same-keypoint layout\n"
+            "is clearly incompatible."
+        )
+        f_assign.addRow(self.chk_enable_pose_rejection)
+
+        self.spin_pose_rejection_threshold = QDoubleSpinBox()
+        self.spin_pose_rejection_threshold.setRange(0.0, 5.0)
+        self.spin_pose_rejection_threshold.setDecimals(2)
+        self.spin_pose_rejection_threshold.setSingleStep(0.05)
+        self.spin_pose_rejection_threshold.setValue(0.5)
+        self.spin_pose_rejection_threshold.setToolTip(
+            "Maximum normalized same-keypoint pose distance allowed before rejecting a match.\n"
+            "Lower = stricter pose veto."
+        )
+        f_assign.addRow("Pose rejection threshold", self.spin_pose_rejection_threshold)
+
+        self.spin_pose_rejection_min_visibility = QDoubleSpinBox()
+        self.spin_pose_rejection_min_visibility.setRange(0.0, 1.0)
+        self.spin_pose_rejection_min_visibility.setDecimals(2)
+        self.spin_pose_rejection_min_visibility.setSingleStep(0.05)
+        self.spin_pose_rejection_min_visibility.setValue(0.5)
+        self.spin_pose_rejection_min_visibility.setToolTip(
+            "Minimum pose visibility required before pose rejection is allowed to activate."
+        )
+        f_assign.addRow(
+            "Pose rejection min visibility", self.spin_pose_rejection_min_visibility
+        )
+
+        vl_assign.addLayout(f_assign)
+        g_assign.setContentLayout(vl_assign)
+        vbox.addWidget(g_assign)
+
+        # Assignment algorithm
+        g_solver = CollapsibleGroupBox("Which assignment algorithm should be used?")
+        self.tracking_accordion.addCollapsible(g_solver)
+        vl_solver = QVBoxLayout()
+        vl_solver.addWidget(
+            self._create_help_label(
+                "These settings select the core assignment algorithm and whether to use spatial indexing "
+                "to speed up matching for larger groups."
+            )
+        )
+        f_solver = QFormLayout(None)
 
         self.combo_assignment_method = QComboBox()
         self.combo_assignment_method.addItems(
@@ -3298,31 +4692,31 @@ class MainWindow(QMainWindow):
         )
         self.combo_assignment_method.setCurrentIndex(0)
         self.combo_assignment_method.setToolTip(
-            "Hungarian: Optimal global assignment (slow for N>100)\n"
-            "Greedy: Fast approximation for large N (200+)"
+            "Hungarian: optimal global assignment.\n"
+            "Greedy: faster approximation for very large groups."
         )
-        f_assign.addRow("Which method should be used?", self.combo_assignment_method)
+        f_solver.addRow("Assignment solver", self.combo_assignment_method)
 
         self.chk_spatial_optimization = QCheckBox("Speed up matching for many animals")
         self.chk_spatial_optimization.setChecked(False)
         self.chk_spatial_optimization.setToolTip(
-            "Uses KD-tree to reduce comparisons for large N (50+).\n"
-            "Disable for small N (8-50) to reduce overhead."
+            "Use spatial indexing to reduce comparisons when many animals are present.\n"
+            "Usually only helpful for larger groups."
         )
-        f_assign.addRow(self.chk_spatial_optimization)
+        f_solver.addRow(self.chk_spatial_optimization)
 
-        vl_assign.addLayout(f_assign)
-        g_assign.setContentLayout(vl_assign)
-        vbox.addWidget(g_assign)
+        vl_solver.addLayout(f_solver)
+        g_solver.setContentLayout(vl_solver)
+        vbox.addWidget(g_solver)
 
         # Orientation & Lifecycle
-        g_misc = CollapsibleGroupBox("How should direction changes be handled?")
+        g_misc = CollapsibleGroupBox("How should track direction be updated?")
         self.tracking_accordion.addCollapsible(g_misc)
         vl_misc = QVBoxLayout()
         vl_misc.addWidget(
             self._create_help_label(
-                "Control how orientation is calculated based on movement. Moving animals can flip orientation instantly, "
-                "stationary animals change orientation gradually within max angle limit."
+                "These settings control the tracked body axis. When pose direction is available it overrides OBB heading; "
+                "otherwise movement and smoothing determine how quickly direction can change."
             )
         )
         f_misc = QFormLayout(None)
@@ -3363,18 +4757,45 @@ class MainWindow(QMainWindow):
         f_misc.addRow(
             "Max direction change while stopped (degrees)", self.spin_max_orient
         )
+
+        self.chk_directed_orient_smoothing = QCheckBox(
+            "Apply consistency check to pose/head-tail orientation flips"
+        )
+        self.chk_directed_orient_smoothing.setChecked(True)
+        self.chk_directed_orient_smoothing.setToolTip(
+            "When enabled, 180° flips from directed models (pose / head-tail)\n"
+            "are only accepted when motion corroborates the new direction\n"
+            "and the detection confidence meets the threshold below.\n"
+            "Small changes (≤90°) are always accepted unchanged."
+        )
+        f_misc.addRow(self.chk_directed_orient_smoothing)
+
+        self.spin_directed_orient_flip_conf = QDoubleSpinBox()
+        self.spin_directed_orient_flip_conf.setRange(0.0, 1.0)
+        self.spin_directed_orient_flip_conf.setSingleStep(0.05)
+        self.spin_directed_orient_flip_conf.setDecimals(2)
+        self.spin_directed_orient_flip_conf.setValue(0.7)
+        self.spin_directed_orient_flip_conf.setToolTip(
+            "Minimum confidence to accept a >90° pose/head-tail orientation flip (0–1).\n"
+            "For pose-directed headings, this is the pose visibility score.\n"
+            "For head-tail-directed headings, this is the classifier confidence.\n"
+            "Higher = fewer spurious flips; lower = more responsive."
+        )
+        f_misc.addRow(
+            "Directed-flip confidence threshold", self.spin_directed_orient_flip_conf
+        )
+
         vl_misc.addLayout(f_misc)
         g_misc.setContentLayout(vl_misc)
         vbox.addWidget(g_misc)
 
         # Track Lifecycle
-        g_lifecycle = CollapsibleGroupBox("When should tracks start and end?")
+        g_lifecycle = CollapsibleGroupBox("When should tracks be created or dropped?")
         self.tracking_accordion.addCollapsible(g_lifecycle)
         vl_lifecycle = QVBoxLayout()
         vl_lifecycle.addWidget(
             self._create_help_label(
-                "Control when tracks start and end. Lost frames determines how long to wait before terminating a track. "
-                "Min respawn distance prevents creating duplicate IDs near existing animals."
+                "These settings control occlusion tolerance and duplicate-track prevention."
             )
         )
         f_lifecycle = QFormLayout(None)
@@ -3412,13 +4833,12 @@ class MainWindow(QMainWindow):
         vbox.addWidget(g_lifecycle)
 
         # Stability
-        g_stab = CollapsibleGroupBox("How strict should new track validation be?")
+        g_stab = CollapsibleGroupBox("How strict should track validation be?")
         self.tracking_accordion.addCollapsible(g_stab)
         vl_stab = QVBoxLayout()
         vl_stab.addWidget(
             self._create_help_label(
-                "Filter out unreliable tracks. Min detections to start prevents creating tracks from noise. "
-                "Min detect/tracking frames removes short-lived false tracks in post-processing."
+                "Use these settings to suppress noisy starts and remove short-lived fragments."
             )
         )
         f_stab = QFormLayout(None)
@@ -3444,7 +4864,6 @@ class MainWindow(QMainWindow):
             "Filters out short-lived false tracks in post-processing.\n"
             "Recommended: 5-20 frames."
         )
-        f_stab.addRow("Minimum detection frames to keep a track", self.spin_min_detect)
 
         self.spin_min_track = QSpinBox()
         self.spin_min_track.setRange(1, 500)
@@ -3454,10 +4873,132 @@ class MainWindow(QMainWindow):
             "Filters out tracks with too many gaps/predictions.\n"
             "Recommended: Similar to min detect frames."
         )
-        f_stab.addRow("Minimum total frames to keep a track", self.spin_min_track)
+        _min_frames_row = QHBoxLayout()
+        _min_frames_row.addWidget(QLabel("Min detection frames"))
+        _min_frames_row.addWidget(self.spin_min_detect)
+        _min_frames_row.addWidget(QLabel("Min total frames"))
+        _min_frames_row.addWidget(self.spin_min_track)
+        f_stab.addRow(_min_frames_row)
         vl_stab.addLayout(f_stab)
         g_stab.setContentLayout(vl_stab)
         vbox.addWidget(g_stab)
+
+        # Confidence Density Map
+        g_density = CollapsibleGroupBox(
+            "How should low-confidence density regions be detected?"
+        )
+        self.tracking_accordion.addCollapsible(g_density)
+        vl_density = QVBoxLayout()
+        vl_density.addWidget(
+            self._create_help_label(
+                "Builds a 3-D (x, y, time) confidence density map from the detection cache. "
+                "Spatial regions where detections are persistently uncertain are flagged so the "
+                "tracker can apply a tighter distance gate there, reducing identity swaps. "
+                "Small or short-lived blobs (single-animal artefacts) are suppressed by the "
+                "duration and area filters."
+            )
+        )
+        f_density = QFormLayout(None)
+        f_density.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        self.spin_density_gaussian_sigma_scale = QDoubleSpinBox()
+        self.spin_density_gaussian_sigma_scale.setRange(0.1, 5.0)
+        self.spin_density_gaussian_sigma_scale.setSingleStep(0.1)
+        self.spin_density_gaussian_sigma_scale.setDecimals(1)
+        self.spin_density_gaussian_sigma_scale.setValue(1.0)
+        self.spin_density_gaussian_sigma_scale.setToolTip(
+            "Scale factor for the Gaussian sigma derived from detection size.\n"
+            "Controls the spatial spread of each detection's contribution\n"
+            "to the confidence density map. Larger values produce smoother maps.\n"
+            "Range: 0.1–5.0. Default: 1.0."
+        )
+        f_density.addRow("Gaussian sigma scale", self.spin_density_gaussian_sigma_scale)
+
+        self.spin_density_temporal_sigma = QDoubleSpinBox()
+        self.spin_density_temporal_sigma.setRange(0.5, 10.0)
+        self.spin_density_temporal_sigma.setSingleStep(0.5)
+        self.spin_density_temporal_sigma.setDecimals(1)
+        self.spin_density_temporal_sigma.setValue(2.0)
+        self.spin_density_temporal_sigma.setToolTip(
+            "Standard deviation (in frames) for temporal Gaussian smoothing\n"
+            "of the confidence density volume. Higher values merge nearby\n"
+            "low-confidence events into broader temporal regions.\n"
+            "Range: 0.5–10.0. Default: 2.0."
+        )
+        f_density.addRow(
+            "Temporal smoothing sigma (frames)", self.spin_density_temporal_sigma
+        )
+
+        self.spin_density_binarize_threshold = QDoubleSpinBox()
+        self.spin_density_binarize_threshold.setRange(0.05, 0.95)
+        self.spin_density_binarize_threshold.setSingleStep(0.05)
+        self.spin_density_binarize_threshold.setDecimals(2)
+        self.spin_density_binarize_threshold.setValue(0.3)
+        self.spin_density_binarize_threshold.setToolTip(
+            "Threshold for binarizing the normalised density volume.\n"
+            "Voxels above this value become foreground regions where\n"
+            "density-aware conservative tracking is applied.\n"
+            "Range: 0.05–0.95. Default: 0.3."
+        )
+        f_density.addRow("Binarize threshold", self.spin_density_binarize_threshold)
+
+        self.spin_density_conservative_factor = QDoubleSpinBox()
+        self.spin_density_conservative_factor.setRange(0.3, 1.0)
+        self.spin_density_conservative_factor.setSingleStep(0.05)
+        self.spin_density_conservative_factor.setDecimals(2)
+        self.spin_density_conservative_factor.setValue(0.70)
+        self.spin_density_conservative_factor.setToolTip(
+            "Distance gate fraction for detections in flagged density regions.\n"
+            "Reduces the maximum assignment distance for in-region detections\n"
+            "to prevent long-range jumps into crowded zones.\n"
+            "1.0 = disabled, 0.7 = 70% of normal distance.\n"
+            "Range: 0.3–1.0. Default: 0.70."
+        )
+        f_density.addRow(
+            "Conservative distance gate", self.spin_density_conservative_factor
+        )
+
+        self.spin_density_min_duration = QSpinBox()
+        self.spin_density_min_duration.setRange(1, 50)
+        self.spin_density_min_duration.setValue(3)
+        self.spin_density_min_duration.setToolTip(
+            "Minimum temporal duration (frames) for a density region to be kept.\n"
+            "Regions shorter than this are discarded — they usually represent a\n"
+            "single isolated animal rather than a genuine crowding event.\n"
+            "Range: 1–50. Default: 3."
+        )
+        f_density.addRow("Min region duration (frames)", self.spin_density_min_duration)
+
+        self.spin_density_min_area_bodies = QDoubleSpinBox()
+        self.spin_density_min_area_bodies.setRange(0.0, 10.0)
+        self.spin_density_min_area_bodies.setSingleStep(0.05)
+        self.spin_density_min_area_bodies.setDecimals(2)
+        self.spin_density_min_area_bodies.setValue(0.25)
+        self.spin_density_min_area_bodies.setToolTip(
+            "Minimum spatial area of a density region expressed as multiples of\n"
+            "the reference body area (body_size²). Regions smaller than this in\n"
+            "the density grid are discarded as single-animal artefacts.\n"
+            "E.g. 0.25 requires the region to cover at least ¼ of one body area.\n"
+            "Range: 0.0–10.0. Default: 0.25."
+        )
+        f_density.addRow(
+            "Min region area (body areas)", self.spin_density_min_area_bodies
+        )
+
+        self.spin_density_downsample_factor = QSpinBox()
+        self.spin_density_downsample_factor.setRange(1, 32)
+        self.spin_density_downsample_factor.setValue(8)
+        self.spin_density_downsample_factor.setToolTip(
+            "Spatial downsampling factor applied to the density grid.\n"
+            "Higher values make computation faster but reduce spatial precision.\n"
+            "The grid will be (frame_h / factor) × (frame_w / factor).\n"
+            "Range: 1–32. Default: 8."
+        )
+        f_density.addRow("Grid downsample factor", self.spin_density_downsample_factor)
+
+        vl_density.addLayout(f_density)
+        g_density.setContentLayout(vl_density)
+        vbox.addWidget(g_density)
 
         vbox.addStretch()
         scroll.setWidget(content)
@@ -3533,6 +5074,117 @@ class MainWindow(QMainWindow):
         )
         self.lbl_max_occlusion_gap = QLabel("Maximum occlusion gap (frames)")
         f_pp.addRow(self.lbl_max_occlusion_gap, self.spin_max_occlusion_gap)
+
+        self.chk_enable_tracklet_relinking = QCheckBox(
+            "Relink fragments after pose interpolation"
+        )
+        self.chk_enable_tracklet_relinking.setChecked(False)
+        self.chk_enable_tracklet_relinking.setToolTip(
+            "⚠ USE WITH CAUTION — disabled by default.\n"
+            "\n"
+            "Reconnect short trajectory fragments after pose/interpolation completes.\n"
+            "In dense multi-animal scenes this can cause identity swaps by incorrectly\n"
+            "merging fragments from different animals into one trajectory.\n"
+            "\n"
+            "Bidirectional tracking (forward + backward pass) already handles most\n"
+            "occlusion recovery. Enable relinking only if you see fragmented trajectories\n"
+            "that bidirectional tracking could not repair, and verify results carefully."
+        )
+        self.lbl_enable_tracklet_relinking = QLabel("Enable relinking")
+        f_pp.addRow(
+            self.lbl_enable_tracklet_relinking, self.chk_enable_tracklet_relinking
+        )
+
+        self.spin_relink_pose_max_distance = QDoubleSpinBox()
+        self.spin_relink_pose_max_distance.setRange(0.05, 5.0)
+        self.spin_relink_pose_max_distance.setSingleStep(0.05)
+        self.spin_relink_pose_max_distance.setDecimals(2)
+        self.spin_relink_pose_max_distance.setValue(0.45)
+        self.spin_relink_pose_max_distance.setToolTip(
+            "Maximum normalized same-keypoint pose distance allowed when relinking fragments.\n"
+            "Lower values are stricter and reduce risky merges."
+        )
+        self.lbl_relink_pose_max_distance = QLabel("Max normalized pose distance")
+        f_pp.addRow(
+            self.lbl_relink_pose_max_distance, self.spin_relink_pose_max_distance
+        )
+
+        self.spin_pose_export_min_valid_fraction = QDoubleSpinBox()
+        self.spin_pose_export_min_valid_fraction.setRange(0.0, 1.0)
+        self.spin_pose_export_min_valid_fraction.setSingleStep(0.05)
+        self.spin_pose_export_min_valid_fraction.setDecimals(2)
+        self.spin_pose_export_min_valid_fraction.setValue(0.5)
+        self.spin_pose_export_min_valid_fraction.setToolTip(
+            "Minimum fraction of valid keypoints required for a pose row to be accepted.\n"
+            "Rows below this threshold have all confidence values zeroed but are kept\n"
+            "in the output with quality flags. Only active when pose extraction is enabled.\n"
+            "Range: 0.0–1.0. Recommended: 0.3–0.6."
+        )
+        self.lbl_pose_export_min_valid_fraction = QLabel("Min valid keypoint fraction")
+        f_pp.addRow(
+            self.lbl_pose_export_min_valid_fraction,
+            self.spin_pose_export_min_valid_fraction,
+        )
+
+        self.spin_pose_export_min_valid_keypoints = QSpinBox()
+        self.spin_pose_export_min_valid_keypoints.setRange(1, 50)
+        self.spin_pose_export_min_valid_keypoints.setValue(3)
+        self.spin_pose_export_min_valid_keypoints.setToolTip(
+            "Minimum absolute count of valid keypoints required for a pose row to be accepted.\n"
+            "Both this threshold and the fraction threshold must be satisfied."
+        )
+        self.lbl_pose_export_min_valid_keypoints = QLabel("Min valid keypoints (count)")
+        f_pp.addRow(
+            self.lbl_pose_export_min_valid_keypoints,
+            self.spin_pose_export_min_valid_keypoints,
+        )
+
+        self.spin_relink_min_pose_quality = QDoubleSpinBox()
+        self.spin_relink_min_pose_quality.setRange(0.0, 1.0)
+        self.spin_relink_min_pose_quality.setSingleStep(0.05)
+        self.spin_relink_min_pose_quality.setDecimals(2)
+        self.spin_relink_min_pose_quality.setValue(0.6)
+        self.spin_relink_min_pose_quality.setToolTip(
+            "Minimum pose quality score required at both endpoints of a candidate\n"
+            "fragment pair before pose distance contributes to relinking score.\n"
+            "Below this threshold, relinking uses motion-only scoring.\n"
+            "Higher values (0.6+) are strongly recommended — motion-only relinking\n"
+            "in dense scenes is likely to merge fragments from different animals."
+        )
+        self.lbl_relink_min_pose_quality = QLabel("Min pose quality for relinking")
+        f_pp.addRow(
+            self.lbl_relink_min_pose_quality,
+            self.spin_relink_min_pose_quality,
+        )
+
+        self.spin_pose_postproc_max_gap = QSpinBox()
+        self.spin_pose_postproc_max_gap.setRange(0, 50)
+        self.spin_pose_postproc_max_gap.setValue(5)
+        self.spin_pose_postproc_max_gap.setToolTip(
+            "Maximum consecutive missing frames to gap-fill via linear interpolation\n"
+            "during pose temporal post-processing. Set to 0 to disable gap-filling."
+        )
+        self.lbl_pose_postproc_max_gap = QLabel("Pose postproc max gap (frames)")
+        f_pp.addRow(
+            self.lbl_pose_postproc_max_gap,
+            self.spin_pose_postproc_max_gap,
+        )
+
+        self.spin_pose_temporal_outlier_zscore = QDoubleSpinBox()
+        self.spin_pose_temporal_outlier_zscore.setRange(0.0, 20.0)
+        self.spin_pose_temporal_outlier_zscore.setSingleStep(0.5)
+        self.spin_pose_temporal_outlier_zscore.setDecimals(1)
+        self.spin_pose_temporal_outlier_zscore.setValue(3.0)
+        self.spin_pose_temporal_outlier_zscore.setToolTip(
+            "Rolling z-score threshold for temporal keypoint outlier suppression.\n"
+            "Keypoint positions deviating beyond this threshold from their local\n"
+            "rolling mean are zeroed. Set to 0.0 to disable. Recommended: 2.5–5.0."
+        )
+        self.lbl_pose_temporal_outlier_zscore = QLabel("Pose temporal outlier z-score")
+        f_pp.addRow(
+            self.lbl_pose_temporal_outlier_zscore,
+            self.spin_pose_temporal_outlier_zscore,
+        )
 
         # Z-score based velocity breaking
         self.spin_max_velocity_zscore = QDoubleSpinBox()
@@ -3648,6 +5300,7 @@ class MainWindow(QMainWindow):
         self.chk_cleanup_temp_files.setToolTip(
             "Automatically delete temporary files after successful tracking:\n"
             "• Intermediate CSV files (*_forward.csv, *_backward.csv)\n"
+            "• Pose inference cache (posekit/ directory)\n"
             "Keeps only final merged/processed output files."
         )
         f_pp.addRow("", self.chk_cleanup_temp_files)
@@ -3764,6 +5417,104 @@ class MainWindow(QMainWindow):
         self.lbl_arrow_length = QLabel("Arrow length (body lengths)")
         f_video.addRow(self.lbl_arrow_length, self.spin_arrow_length)
 
+        f_video.addRow(QLabel(""))  # Spacer
+        self.lbl_video_pose_settings = QLabel("<b>Pose Overlay Settings</b>")
+        f_video.addRow(self.lbl_video_pose_settings)
+
+        self.check_video_show_pose = QCheckBox("Show Pose Keypoints/Skeleton")
+        self.check_video_show_pose.setChecked(
+            bool(self.advanced_config.get("video_show_pose", True))
+        )
+        self.check_video_show_pose.setToolTip(
+            "Overlay pose keypoints/skeleton in exported video.\n"
+            "Requires pose inference to be enabled in Analyze Individuals."
+        )
+        self.check_video_show_pose.toggled.connect(
+            self._sync_video_pose_overlay_controls
+        )
+        f_video.addRow("", self.check_video_show_pose)
+
+        self.combo_video_pose_color_mode = QComboBox()
+        self.combo_video_pose_color_mode.addItems(["Track Color", "Fixed Color"])
+        color_mode = str(
+            self.advanced_config.get("video_pose_color_mode", "track")
+        ).strip()
+        self.combo_video_pose_color_mode.setCurrentIndex(
+            0 if color_mode == "track" else 1
+        )
+        self.combo_video_pose_color_mode.setToolTip(
+            "Pose color source for video overlay."
+        )
+        self.combo_video_pose_color_mode.currentIndexChanged.connect(
+            self._sync_video_pose_overlay_controls
+        )
+        self.lbl_video_pose_color_mode = QLabel("Pose color mode")
+        f_video.addRow(self.lbl_video_pose_color_mode, self.combo_video_pose_color_mode)
+
+        pose_color_row = QHBoxLayout()
+        self.btn_video_pose_color = QPushButton()
+        self.btn_video_pose_color.setMaximumWidth(60)
+        self.btn_video_pose_color.setMinimumHeight(28)
+        self.btn_video_pose_color.clicked.connect(self._select_video_pose_color)
+        self.lbl_video_pose_color = QLabel("")
+        pose_color_row.addWidget(self.btn_video_pose_color)
+        pose_color_row.addWidget(self.lbl_video_pose_color)
+        pose_color_row.addStretch()
+        pose_color_cfg = self.advanced_config.get("video_pose_color", [255, 255, 255])
+        if isinstance(pose_color_cfg, (list, tuple)) and len(pose_color_cfg) == 3:
+            self._video_pose_color = tuple(
+                int(max(0, min(255, float(v)))) for v in pose_color_cfg
+            )
+        else:
+            self._video_pose_color = (255, 255, 255)
+        self._update_video_pose_color_button()
+        self.lbl_video_pose_color_label = QLabel("Fixed pose color (BGR)")
+        f_video.addRow(self.lbl_video_pose_color_label, pose_color_row)
+
+        self.spin_video_pose_point_radius = QSpinBox()
+        self.spin_video_pose_point_radius.setRange(1, 20)
+        self.spin_video_pose_point_radius.setValue(
+            int(self.advanced_config.get("video_pose_point_radius", 3))
+        )
+        self.spin_video_pose_point_radius.setToolTip(
+            "Radius of rendered pose keypoints in pixels."
+        )
+        self.lbl_video_pose_point_radius = QLabel("Pose keypoint radius (px)")
+        f_video.addRow(
+            self.lbl_video_pose_point_radius, self.spin_video_pose_point_radius
+        )
+
+        self.spin_video_pose_point_thickness = QSpinBox()
+        self.spin_video_pose_point_thickness.setRange(-1, 10)
+        self.spin_video_pose_point_thickness.setValue(
+            int(self.advanced_config.get("video_pose_point_thickness", -1))
+        )
+        self.spin_video_pose_point_thickness.setToolTip(
+            "Keypoint circle thickness (-1 fills circles)."
+        )
+        self.lbl_video_pose_point_thickness = QLabel("Pose keypoint thickness")
+        f_video.addRow(
+            self.lbl_video_pose_point_thickness, self.spin_video_pose_point_thickness
+        )
+
+        self.spin_video_pose_line_thickness = QSpinBox()
+        self.spin_video_pose_line_thickness.setRange(1, 12)
+        self.spin_video_pose_line_thickness.setValue(
+            int(self.advanced_config.get("video_pose_line_thickness", 2))
+        )
+        self.spin_video_pose_line_thickness.setToolTip(
+            "Skeleton edge line thickness in pixels."
+        )
+        self.lbl_video_pose_line_thickness = QLabel("Pose skeleton thickness (px)")
+        f_video.addRow(
+            self.lbl_video_pose_line_thickness, self.spin_video_pose_line_thickness
+        )
+
+        self.lbl_video_pose_disabled_hint = self._create_help_label(
+            "Enable Pose Extraction in Analyze Individuals to edit pose overlay settings."
+        )
+        f_video.addRow("", self.lbl_video_pose_disabled_hint)
+
         vl_video.addLayout(f_video)
         vbox.addWidget(g_video)
 
@@ -3783,43 +5534,39 @@ class MainWindow(QMainWindow):
         self.lbl_text_scale.setVisible(False)
         self.spin_arrow_length.setVisible(False)
         self.lbl_arrow_length.setVisible(False)
+        self.lbl_video_pose_settings.setVisible(False)
+        self.check_video_show_pose.setVisible(False)
+        self.lbl_video_pose_color_mode.setVisible(False)
+        self.combo_video_pose_color_mode.setVisible(False)
+        self.lbl_video_pose_color_label.setVisible(False)
+        self.btn_video_pose_color.setVisible(False)
+        self.lbl_video_pose_color.setVisible(False)
+        self.lbl_video_pose_point_radius.setVisible(False)
+        self.spin_video_pose_point_radius.setVisible(False)
+        self.lbl_video_pose_point_thickness.setVisible(False)
+        self.spin_video_pose_point_thickness.setVisible(False)
+        self.lbl_video_pose_line_thickness.setVisible(False)
+        self.spin_video_pose_line_thickness.setVisible(False)
+        self.lbl_video_pose_disabled_hint.setVisible(False)
 
-        # Histograms
-        g_hist = QGroupBox("Which live metrics should be displayed?")
-        vl_hist = QVBoxLayout(g_hist)
-        vl_hist.addWidget(
+        # MAT-afterhours launch button
+        g_afterhours = QGroupBox("Interactive Proofreading")
+        vl_afterhours = QVBoxLayout(g_afterhours)
+        vl_afterhours.addWidget(
             self._create_help_label(
-                "Collect and visualize statistics during tracking. Useful for monitoring behavior patterns in real-time. "
-                "History window controls how many recent frames to include in the analysis."
+                "Open completed tracking results in MAT-afterhours for "
+                "interactive identity proofreading and swap correction."
             )
         )
-        f_hist = QFormLayout(None)
-        self.enable_histograms = QCheckBox("Collect live analytics")
-        self.enable_histograms.setToolTip(
-            "Collect real-time statistics during tracking.\n"
-            "Tracks speed, direction, and spatial distributions.\n"
-            "Slight performance overhead but useful for monitoring."
+        self._btn_open_afterhours = QPushButton("Open in MAT-afterhours")
+        self._btn_open_afterhours.setToolTip(
+            "Open completed tracking results in MAT-afterhours for "
+            "interactive proofreading"
         )
-        f_hist.addRow(self.enable_histograms)
-
-        self.spin_histogram_history = QSpinBox()
-        self.spin_histogram_history.setRange(50, 5000)
-        self.spin_histogram_history.setValue(300)
-        self.spin_histogram_history.setToolTip(
-            "Number of frames to include in rolling statistics (50-5000).\n"
-            "Larger window = smoother trends but slower response.\n"
-            "Recommended: 100-500 frames for most videos."
-        )
-        f_hist.addRow(
-            "How many frames in live analytics history?", self.spin_histogram_history
-        )
-
-        self.btn_show_histograms = QPushButton("Open Plot Window")
-        self.btn_show_histograms.setCheckable(True)
-        self.btn_show_histograms.clicked.connect(self.toggle_histogram_window)
-        f_hist.addRow(self.btn_show_histograms)
-        vl_hist.addLayout(f_hist)
-        vbox.addWidget(g_hist)
+        self._btn_open_afterhours.setEnabled(False)
+        self._btn_open_afterhours.clicked.connect(self._open_afterhours)
+        vl_afterhours.addWidget(self._btn_open_afterhours)
+        vbox.addWidget(g_afterhours)
 
         vbox.addStretch()
         scroll.setWidget(content)
@@ -3857,9 +5604,6 @@ class MainWindow(QMainWindow):
         self.chk_enable_dataset_gen = QCheckBox(
             "Enable Dataset Generation for Active Learning"
         )
-        self.chk_enable_dataset_gen.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #4a9eff;"
-        )
         self.chk_enable_dataset_gen.setChecked(False)
         self.chk_enable_dataset_gen.toggled.connect(self._on_dataset_generation_toggled)
         vl_active.addWidget(self.chk_enable_dataset_gen)
@@ -3873,14 +5617,6 @@ class MainWindow(QMainWindow):
         f_config = QFormLayout(self.g_dataset_config)
         f_config.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
-        # Dataset name
-        self.line_dataset_name = QLineEdit()
-        self.line_dataset_name.setPlaceholderText("e.g., my_dataset_v1")
-        self.line_dataset_name.setToolTip(
-            "Name for the dataset (used for folder and zip file naming)."
-        )
-        f_config.addRow("Dataset name", self.line_dataset_name)
-
         # Class name
         self.line_dataset_class_name = QLineEdit()
         self.line_dataset_class_name.setPlaceholderText("e.g., ant")
@@ -3890,22 +5626,7 @@ class MainWindow(QMainWindow):
             "This will be used in the classes.txt file for YOLO training.\n"
             "Examples: ant, bee, mouse, fish, etc."
         )
-        f_config.addRow(
-            "What class label should be used?", self.line_dataset_class_name
-        )
-
-        # Output directory
-        h_output = QHBoxLayout()
-        self.line_dataset_output = QLineEdit()
-        self.line_dataset_output.setPlaceholderText("Select output directory...")
-        self.line_dataset_output.setToolTip(
-            "Directory where the dataset will be saved."
-        )
-        self.btn_browse_output = QPushButton("Browse...")
-        self.btn_browse_output.clicked.connect(self._select_dataset_output_dir)
-        h_output.addWidget(self.line_dataset_output)
-        h_output.addWidget(self.btn_browse_output)
-        f_config.addRow("Output directory", h_output)
+        f_config.addRow("Class label", self.line_dataset_class_name)
 
         vl_content.addWidget(self.g_dataset_config)
 
@@ -3939,10 +5660,7 @@ class MainWindow(QMainWindow):
             "• Higher (0.5-0.7): Flag moderately uncertain detections too\n\n"
             "Recommended: 0.5 (default) - captures frames that need model improvement"
         )
-        f_selection.addRow(
-            "What frame quality threshold should be used?",
-            self.spin_dataset_conf_threshold,
-        )
+        f_selection.addRow("Quality threshold", self.spin_dataset_conf_threshold)
 
         # Add help label explaining advanced options
         advanced_help = self._create_help_label(
@@ -3977,10 +5695,6 @@ class MainWindow(QMainWindow):
             "Provides temporal context which can improve annotation quality.\n"
             "Increases dataset size by 3x."
         )
-        f_selection.addRow(
-            "Include neighboring frames", self.chk_dataset_include_context
-        )
-
         self.chk_dataset_probabilistic = QCheckBox("Probabilistic Sampling")
         self.chk_dataset_probabilistic.setChecked(True)
         self.chk_dataset_probabilistic.setToolTip(
@@ -3989,7 +5703,10 @@ class MainWindow(QMainWindow):
             "Greedy: Always select absolute worst frames first (may be too extreme).\n"
             "Recommended: Enabled for better training data diversity."
         )
-        f_selection.addRow("Use probabilistic sampling", self.chk_dataset_probabilistic)
+        _sel_chk_row = QHBoxLayout()
+        _sel_chk_row.addWidget(self.chk_dataset_include_context)
+        _sel_chk_row.addWidget(self.chk_dataset_probabilistic)
+        f_selection.addRow(_sel_chk_row)
 
         vl_content.addWidget(self.g_frame_selection)
 
@@ -4002,15 +5719,11 @@ class MainWindow(QMainWindow):
         self.chk_metric_low_confidence.setToolTip(
             "Flag frames where YOLO confidence is below threshold."
         )
-        v_metrics.addWidget(self.chk_metric_low_confidence)
-
         self.chk_metric_count_mismatch = QCheckBox("Flag detection count mismatch")
         self.chk_metric_count_mismatch.setChecked(True)
         self.chk_metric_count_mismatch.setToolTip(
             "Flag frames where detected count doesn't match expected number of animals."
         )
-        v_metrics.addWidget(self.chk_metric_count_mismatch)
-
         self.chk_metric_high_assignment_cost = QCheckBox(
             "Flag uncertain track assignment"
         )
@@ -4018,20 +5731,24 @@ class MainWindow(QMainWindow):
         self.chk_metric_high_assignment_cost.setToolTip(
             "Flag frames where tracker struggles to match detections to tracks."
         )
-        v_metrics.addWidget(self.chk_metric_high_assignment_cost)
-
         self.chk_metric_track_loss = QCheckBox("Flag frequent track loss")
         self.chk_metric_track_loss.setChecked(True)
         self.chk_metric_track_loss.setToolTip(
             "Flag frames where tracks are frequently lost."
         )
-        v_metrics.addWidget(self.chk_metric_track_loss)
-
         self.chk_metric_high_uncertainty = QCheckBox("Flag high position uncertainty")
         self.chk_metric_high_uncertainty.setChecked(False)
         self.chk_metric_high_uncertainty.setToolTip(
             "Flag frames where Kalman filter is very uncertain about positions."
         )
+        _m_row1 = QHBoxLayout()
+        _m_row1.addWidget(self.chk_metric_low_confidence)
+        _m_row1.addWidget(self.chk_metric_count_mismatch)
+        _m_row2 = QHBoxLayout()
+        _m_row2.addWidget(self.chk_metric_high_assignment_cost)
+        _m_row2.addWidget(self.chk_metric_track_loss)
+        v_metrics.addLayout(_m_row1)
+        v_metrics.addLayout(_m_row2)
         v_metrics.addWidget(self.chk_metric_high_uncertainty)
 
         vl_content.addWidget(self.g_quality_metrics)
@@ -4082,13 +5799,13 @@ class MainWindow(QMainWindow):
         form.addWidget(self.g_xanylabeling)
 
         # ============================================================
-        # YOLO-OBB Training (separate section)
+        # YOLO Training Center (separate section)
         # ============================================================
-        self.g_yolo_training = QGroupBox("Do you want to train a YOLO-OBB model?")
+        self.g_yolo_training = QGroupBox("Do you want to train YOLO models?")
         vl_yolo_train = QVBoxLayout(self.g_yolo_training)
-        self.btn_open_training_dialog = QPushButton("Train YOLO-OBB Model...")
+        self.btn_open_training_dialog = QPushButton("Open Training Center...")
         self.btn_open_training_dialog.setToolTip(
-            "Open training dialog to merge datasets and train a YOLO-OBB model."
+            "Open role-aware training center for direct OBB, sequential detect/crop OBB, and head-tail models."
         )
         self.btn_open_training_dialog.clicked.connect(self._open_training_dialog)
         vl_yolo_train.addWidget(self.btn_open_training_dialog)
@@ -4109,24 +5826,32 @@ class MainWindow(QMainWindow):
         vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
         vl_ind_dataset.addWidget(
             self._create_help_label(
-                "Generate a clean dataset of isolated individuals during tracking.\n\n"
-                "• Extracts OBB-masked crops in real-time as tracking runs\n"
-                "• Only the detected animal (within OBB) is visible, rest is masked\n"
-                "• Perfect for training identity classifiers or pose models\n\n"
-                "Note: Only available when using YOLO OBB detection."
+                "Persist individual-analysis crop images to disk.\n\n"
+                "• This save option depends on Analyze Individuals pipeline being enabled\n"
+                "• Crops contain only the detected animal (OBB-masked)\n"
+                "• Intended for downstream labeling/training workflows\n\n"
+                "Note: Available only in YOLO OBB mode."
             )
         )
 
         self.chk_enable_individual_dataset = QCheckBox(
-            "Enable Real-time Individual Dataset Generation"
-        )
-        self.chk_enable_individual_dataset.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+            "Save Individual Analysis Images to Disk"
         )
         self.chk_enable_individual_dataset.toggled.connect(
             self._on_individual_dataset_toggled
         )
         vl_ind_dataset.addWidget(self.chk_enable_individual_dataset)
+
+        self.chk_generate_individual_track_videos = QCheckBox(
+            "Generate orientation-fixed videos for final tracks after cleanup"
+        )
+        self.chk_generate_individual_track_videos.setChecked(False)
+        self.chk_generate_individual_track_videos.setToolTip(
+            "After final cleaning completes, export one orientation-fixed video per\n"
+            "final TrajectoryID by streaming the source video and using the detection\n"
+            "cache plus interpolated ROI cache. Independent from saved crop files."
+        )
+        vl_ind_dataset.addWidget(self.chk_generate_individual_track_videos)
 
         # Output Configuration
         self.ind_output_group = QGroupBox(
@@ -4135,27 +5860,6 @@ class MainWindow(QMainWindow):
         ind_output_layout = QFormLayout(self.ind_output_group)
         ind_output_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
-        # Dataset name
-        self.line_individual_dataset_name = QLineEdit()
-        self.line_individual_dataset_name.setPlaceholderText("individual_dataset")
-        self.line_individual_dataset_name.setToolTip(
-            "Name for this dataset. Timestamp will be appended automatically."
-        )
-        ind_output_layout.addRow("Dataset name", self.line_individual_dataset_name)
-
-        # Output directory
-        h_ind_output = QHBoxLayout()
-        self.line_individual_output = QLineEdit()
-        self.line_individual_output.setPlaceholderText("Select output directory...")
-        self.line_individual_output.setToolTip(
-            "Directory where individual crops will be saved."
-        )
-        self.btn_browse_ind_output = QPushButton("Browse...")
-        self.btn_browse_ind_output.clicked.connect(self._select_individual_output_dir)
-        h_ind_output.addWidget(self.line_individual_output)
-        h_ind_output.addWidget(self.btn_browse_ind_output)
-        ind_output_layout.addRow("Output directory", h_ind_output)
-
         # Output format
         self.combo_individual_format = QComboBox()
         self.combo_individual_format.addItems(["PNG", "JPEG"])
@@ -4163,8 +5867,6 @@ class MainWindow(QMainWindow):
         self.combo_individual_format.setToolTip(
             "PNG: Lossless, larger files\nJPEG: Smaller files, slight quality loss"
         )
-        ind_output_layout.addRow("Image format", self.combo_individual_format)
-
         # Save interval
         self.spin_individual_interval = QSpinBox()
         self.spin_individual_interval.setRange(1, 100)
@@ -4174,72 +5876,35 @@ class MainWindow(QMainWindow):
             "Save crops every N frames.\n"
             "1 = every frame, 10 = every 10th frame, etc."
         )
-        ind_output_layout.addRow("Save every N frames", self.spin_individual_interval)
+        _ind_fmt_row = QHBoxLayout()
+        _ind_fmt_row.addWidget(QLabel("Format"))
+        _ind_fmt_row.addWidget(self.combo_individual_format)
+        _ind_fmt_row.addWidget(QLabel("Save every N frames"))
+        _ind_fmt_row.addWidget(self.spin_individual_interval)
+        ind_output_layout.addRow(_ind_fmt_row)
 
-        self.chk_individual_interpolate = QCheckBox(
-            "Interpolate Occluded Frames After Tracking"
-        )
-        self.chk_individual_interpolate.setChecked(True)
-        self.chk_individual_interpolate.setToolTip(
-            "After tracking completes, fill occluded gaps by interpolating center/size/angle\n"
-            "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
-        )
-        ind_output_layout.addRow(
-            "Interpolate occluded frames", self.chk_individual_interpolate
-        )
-
-        # Padding fraction (only crop parameter needed - size is determined by OBB)
-        self.spin_individual_padding = QDoubleSpinBox()
-        self.spin_individual_padding.setRange(0.0, 0.5)
-        self.spin_individual_padding.setValue(0.1)
-        self.spin_individual_padding.setSingleStep(0.05)
-        self.spin_individual_padding.setDecimals(2)
-        self.spin_individual_padding.setToolTip(
-            "Padding around OBB bounding box as fraction of size.\n"
-            "0.1 = 10% padding on each side."
-        )
-        ind_output_layout.addRow(
-            "What padding fraction should be used?", self.spin_individual_padding
-        )
-
-        # Background color for masked regions
-        bg_color_layout = QHBoxLayout()
-
-        # Color display and picker button
-        self.btn_background_color = QPushButton()
-        self.btn_background_color.setMaximumWidth(60)
-        self.btn_background_color.setMinimumHeight(30)
-        self.btn_background_color.setToolTip("Click to choose background color")
-        self.btn_background_color.clicked.connect(
-            self._select_individual_background_color
-        )
-        self._background_color = (0, 0, 0)  # BGR: black
-
-        bg_color_layout.addWidget(self.btn_background_color)
-
-        # Compute median color button
-        self.btn_median_color = QPushButton("Use Median from Frame")
-        self.btn_median_color.setToolTip(
-            "Compute median color from the preview frame and use as background"
-        )
-        self.btn_median_color.clicked.connect(self._compute_median_background_color)
-        bg_color_layout.addWidget(self.btn_median_color)
-
-        bg_color_layout.addStretch()
-
-        # Color value display
-        self.lbl_background_color = QLabel("(0, 0, 0)")
-        self.lbl_background_color.setToolTip("Current background color in BGR format")
-        bg_color_layout.addWidget(self.lbl_background_color)
-
-        # Now update the button display with all widgets created
-        self._update_background_color_button()
-
-        ind_output_layout.addRow(
-            "Which background color should crops use?", bg_color_layout
+        vl_ind_dataset.addWidget(
+            self._create_help_label(
+                "Interpolation, padding, and crop background settings are configured in:\n"
+                "Analyze Individuals -> Individual Analysis Pipeline Settings"
+            )
         )
 
         vl_ind_dataset.addWidget(self.ind_output_group)
+
+        self.chk_suppress_foreign_obb_dataset = QCheckBox(
+            "Suppress foreign animal regions in saved crops"
+        )
+        self.chk_suppress_foreign_obb_dataset.setChecked(False)
+        self.chk_suppress_foreign_obb_dataset.setToolTip(
+            "Fill overlapping animals' OBB areas with the background color before\n"
+            "saving each individual crop image.\n"
+            "\n"
+            "Prevents other animals from appearing in a detection's crop, which\n"
+            "can confuse downstream labeling or training.\n"
+            "Only applies to YOLO OBB detections (no effect in background-subtraction mode)."
+        )
+        vl_ind_dataset.addWidget(self.chk_suppress_foreign_obb_dataset)
 
         # Info label about filtering
         self.lbl_individual_info = self._create_help_label(
@@ -4280,6 +5945,7 @@ class MainWindow(QMainWindow):
         # Initially hide individual dataset widgets (checkbox starts unchecked)
         self.ind_output_group.setVisible(False)
         self.lbl_individual_info.setVisible(False)
+        self.chk_generate_individual_track_videos.setVisible(False)
 
         form.addStretch()
         scroll.setWidget(content)
@@ -4301,24 +5967,30 @@ class MainWindow(QMainWindow):
         info_layout = QVBoxLayout(info_box)
         info_layout.addWidget(
             self._create_help_label(
-                "Process individual animals for identity classification and dataset generation.\n\n"
-                "• Real-time Identity: Classify individual animals during tracking (color tags, AprilTags)\n"
-                "• Real-time Dataset: Generate OBB-masked crops during YOLO tracking for pose/identity training"
+                "Run the individual-analysis pipeline during tracking.\n\n"
+                "• Computes per-detection individual properties for filtered detections\n"
+                "• Supports pose extraction (YOLO/SLEAP) with reusable caches\n"
+                "• Individual analysis is available only in YOLO OBB mode\n"
+                "• Background-subtraction mode is intended for YOLO bootstrap dataset creation"
             )
         )
         form.addWidget(info_box)
 
         # Main Enable Checkbox
         self.chk_enable_individual_analysis = QCheckBox(
-            "Enable Real-time Identity Classification"
-        )
-        self.chk_enable_individual_analysis.setStyleSheet(
-            "font-weight: bold; font-size: 13px; color: #4a9eff;"
+            "Enable Individual Analysis Pipeline (YOLO OBB only)"
         )
         self.chk_enable_individual_analysis.toggled.connect(
             self._on_individual_analysis_toggled
         )
         form.addWidget(self.chk_enable_individual_analysis)
+
+        self.lbl_individual_yolo_only_notice = self._create_help_label(
+            "Individual analysis requires YOLO OBB mode.\n"
+            "Switch detection method to YOLO OBB to enable this pipeline."
+        )
+        self.lbl_individual_yolo_only_notice.setVisible(False)
+        form.addWidget(self.lbl_individual_yolo_only_notice)
 
         # Identity Classification Section
         self.g_identity = QGroupBox("Should identity classification run in real time?")
@@ -4445,18 +6117,299 @@ class MainWindow(QMainWindow):
         self.spin_identity_crop_min.setValue(64)
         self.spin_identity_crop_min.setSingleStep(16)
         self.spin_identity_crop_min.setToolTip("Minimum crop size in pixels")
-        crop_layout.addRow("Minimum crop size (px)", self.spin_identity_crop_min)
-
         self.spin_identity_crop_max = QSpinBox()
         self.spin_identity_crop_max.setRange(64, 1024)
         self.spin_identity_crop_max.setValue(256)
         self.spin_identity_crop_max.setSingleStep(16)
         self.spin_identity_crop_max.setToolTip("Maximum crop size in pixels")
-        crop_layout.addRow("Maximum crop size (px)", self.spin_identity_crop_max)
+        _crop_size_row = QHBoxLayout()
+        _crop_size_row.addWidget(QLabel("Min (px)"))
+        _crop_size_row.addWidget(self.spin_identity_crop_min)
+        _crop_size_row.addWidget(QLabel("Max (px)"))
+        _crop_size_row.addWidget(self.spin_identity_crop_max)
+        crop_layout.addRow("Crop size", _crop_size_row)
 
         vl_identity.addWidget(crop_group)
 
         form.addWidget(self.g_identity)
+
+        # Hide legacy identity skeleton UI while keeping controls available for
+        # backward-compatible config load/save paths.
+        self.g_identity.setVisible(False)
+
+        self.g_individual_pipeline_common = QGroupBox(
+            "Individual Analysis Pipeline Settings"
+        )
+        fl_common = QFormLayout(self.g_individual_pipeline_common)
+
+        self.chk_individual_interpolate = QCheckBox(
+            "Interpolate Occluded Frames After Tracking"
+        )
+        self.chk_individual_interpolate.setChecked(True)
+        self.chk_individual_interpolate.setToolTip(
+            "After tracking completes, fill occluded gaps by interpolating center/size/angle\n"
+            "and generate additional masked crops. Interpolated crops are prefixed with 'interp_'."
+        )
+        fl_common.addRow("Interpolate occluded frames", self.chk_individual_interpolate)
+
+        self.spin_individual_padding = QDoubleSpinBox()
+        self.spin_individual_padding.setRange(0.0, 0.5)
+        self.spin_individual_padding.setValue(0.1)
+        self.spin_individual_padding.setSingleStep(0.05)
+        self.spin_individual_padding.setDecimals(2)
+        self.spin_individual_padding.setToolTip(
+            "Padding around OBB bounding box as fraction of size.\n"
+            "0.1 = 10% padding on each side."
+        )
+        fl_common.addRow("Crop padding fraction", self.spin_individual_padding)
+
+        bg_color_layout = QHBoxLayout()
+        self.btn_background_color = QPushButton()
+        self.btn_background_color.setMaximumWidth(60)
+        self.btn_background_color.setMinimumHeight(30)
+        self.btn_background_color.setToolTip("Click to choose background color")
+        self.btn_background_color.clicked.connect(
+            self._select_individual_background_color
+        )
+        self._background_color = (0, 0, 0)  # BGR
+        bg_color_layout.addWidget(self.btn_background_color)
+
+        self.btn_median_color = QPushButton("Use Median from Frame")
+        self.btn_median_color.setToolTip(
+            "Compute median color from the preview frame and use as background"
+        )
+        self.btn_median_color.clicked.connect(self._compute_median_background_color)
+        bg_color_layout.addWidget(self.btn_median_color)
+        bg_color_layout.addStretch()
+
+        self.lbl_background_color = QLabel("(0, 0, 0)")
+        self.lbl_background_color.setToolTip("Current background color in BGR format")
+        bg_color_layout.addWidget(self.lbl_background_color)
+        self._update_background_color_button()
+        fl_common.addRow("Crop background color", bg_color_layout)
+
+        self.chk_suppress_foreign_obb = QCheckBox("Suppress foreign animal regions")
+        self.chk_suppress_foreign_obb.setChecked(True)
+        self.chk_suppress_foreign_obb.setToolTip(
+            "Fill overlapping animals' OBB areas with the background color before\n"
+            "pose inference, and zero out any keypoints that fall inside another\n"
+            "animal's bounding box after inference.\n"
+            "\n"
+            "Prevents pose contamination when animals are close or overlapping.\n"
+            "Disable only if you observe incorrect masking of valid keypoints."
+        )
+        fl_common.addRow(
+            "Pose contamination suppression", self.chk_suppress_foreign_obb
+        )
+
+        form.addWidget(self.g_individual_pipeline_common)
+
+        self.g_pose_runtime = QGroupBox("Pose Extraction Settings")
+        vl_pose = QVBoxLayout(self.g_pose_runtime)
+        vl_pose.addWidget(
+            self._create_help_label(
+                "Minimum runtime pose settings used by the individual-analysis pipeline."
+            )
+        )
+        fl_pose = QFormLayout(None)
+        fl_pose.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.form_pose_runtime = fl_pose
+
+        self.chk_enable_pose_extractor = QCheckBox("Enable Pose Extraction")
+        self.chk_enable_pose_extractor.setChecked(False)
+        self.chk_enable_pose_extractor.toggled.connect(
+            self._sync_video_pose_overlay_controls
+        )
+        self.chk_enable_pose_extractor.toggled.connect(self._on_runtime_context_changed)
+        self.chk_enable_pose_extractor.toggled.connect(self._on_cleaning_toggled)
+        fl_pose.addRow(self.chk_enable_pose_extractor)
+
+        self.combo_pose_model_type = QComboBox()
+        self.combo_pose_model_type.addItems(["YOLO", "SLEAP", "ViTPose"])
+        self.combo_pose_model_type.setToolTip("Pose backend for individual analysis.")
+        self.combo_pose_model_type.currentIndexChanged.connect(
+            self._sync_pose_backend_ui
+        )
+        fl_pose.addRow("Pose model type", self.combo_pose_model_type)
+
+        self.combo_pose_runtime_flavor = QComboBox()
+        self.combo_pose_runtime_flavor.setToolTip(
+            "Pose runtime implementation.\n"
+            "Auto/Native uses default backend runtime.\n"
+            "ONNX/TensorRT artifacts are exported and reused automatically."
+        )
+        self._populate_pose_runtime_flavor_options(backend="yolo")
+        self.combo_pose_runtime_flavor.currentIndexChanged.connect(
+            self._sync_pose_backend_ui
+        )
+        fl_pose.addRow("Pose runtime", self.combo_pose_runtime_flavor)
+        self._set_form_row_visible(fl_pose, self.combo_pose_runtime_flavor, False)
+
+        self.combo_pose_model = QComboBox()
+        self.combo_pose_model.setToolTip(
+            "Pose model for individual analysis.\n"
+            "Choose an imported model or select '＋ Add New Model…' to browse and import."
+        )
+        self.combo_pose_model.currentIndexChanged.connect(self.on_pose_model_changed)
+        self._refresh_pose_model_combo()
+        fl_pose.addRow("Pose model", self.combo_pose_model)
+
+        self.spin_pose_min_kpt_conf_valid = QDoubleSpinBox()
+        self.spin_pose_min_kpt_conf_valid.setRange(0.0, 1.0)
+        self.spin_pose_min_kpt_conf_valid.setSingleStep(0.05)
+        self.spin_pose_min_kpt_conf_valid.setDecimals(2)
+        self.spin_pose_min_kpt_conf_valid.setValue(0.2)
+        self.spin_pose_min_kpt_conf_valid.setToolTip(
+            "Minimum per-keypoint confidence to consider a keypoint valid."
+        )
+        fl_pose.addRow("Min keypoint confidence", self.spin_pose_min_kpt_conf_valid)
+
+        self.spin_pose_batch = QSpinBox()
+        self.spin_pose_batch.setRange(1, 256)
+        self.spin_pose_batch.setValue(
+            int(self.advanced_config.get("pose_batch_size", 4))
+        )
+        self.spin_pose_batch.setToolTip(
+            "Shared batch size for pose inference across YOLO and SLEAP backends."
+        )
+        fl_pose.addRow("Pose batch size", self.spin_pose_batch)
+
+        h_pose_skeleton = QHBoxLayout()
+        self.line_pose_skeleton_file = QLineEdit()
+        self.line_pose_skeleton_file.setPlaceholderText(
+            "Select skeleton JSON (keypoint_names + skeleton_edges)..."
+        )
+        default_skeleton = str(
+            self.advanced_config.get("pose_skeleton_file", "")
+        ).strip()
+        if not default_skeleton:
+            candidate = (
+                Path(__file__).resolve().parents[3]
+                / "configs"
+                / "skeletons"
+                / "ooceraea_biroi.json"
+            )
+            if candidate.exists():
+                default_skeleton = str(candidate)
+        if default_skeleton:
+            self.line_pose_skeleton_file.setText(default_skeleton)
+        self.btn_browse_pose_skeleton_file = QPushButton("Browse...")
+        self.btn_browse_pose_skeleton_file.clicked.connect(
+            self._select_pose_skeleton_file
+        )
+        self.line_pose_skeleton_file.textChanged.connect(
+            self._refresh_pose_direction_keypoint_lists
+        )
+        h_pose_skeleton.addWidget(self.line_pose_skeleton_file)
+        h_pose_skeleton.addWidget(self.btn_browse_pose_skeleton_file)
+        fl_pose.addRow("Skeleton file", h_pose_skeleton)
+
+        self.list_pose_ignore_keypoints = QListWidget()
+        self.list_pose_ignore_keypoints.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
+        )
+        self.list_pose_ignore_keypoints.setMinimumHeight(110)
+        self.list_pose_ignore_keypoints.setMaximumHeight(140)
+        self.list_pose_ignore_keypoints.setToolTip(
+            "Select keypoints to ignore in pose export and orientation logic."
+        )
+
+        self.list_pose_direction_anterior = QListWidget()
+        self.list_pose_direction_anterior.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
+        )
+        self.list_pose_direction_anterior.setMinimumHeight(110)
+        self.list_pose_direction_anterior.setMaximumHeight(140)
+        self.list_pose_direction_anterior.setToolTip(
+            "Select anterior keypoints from skeleton keypoint list."
+        )
+
+        self.list_pose_direction_posterior = QListWidget()
+        self.list_pose_direction_posterior.setSelectionMode(
+            QListWidget.SelectionMode.MultiSelection
+        )
+        self.list_pose_direction_posterior.setMinimumHeight(110)
+        self.list_pose_direction_posterior.setMaximumHeight(140)
+        self.list_pose_direction_posterior.setToolTip(
+            "Select posterior keypoints from skeleton keypoint list."
+        )
+
+        pose_kpt_groups_widget = QWidget()
+        pose_kpt_groups_layout = QHBoxLayout(pose_kpt_groups_widget)
+        pose_kpt_groups_layout.setContentsMargins(0, 0, 0, 0)
+        pose_kpt_groups_layout.setSpacing(8)
+
+        ignore_col = QVBoxLayout()
+        ignore_label = QLabel("Ignore")
+        ignore_label.setStyleSheet("font-weight: bold;")
+        ignore_col.addWidget(ignore_label)
+        ignore_col.addWidget(self.list_pose_ignore_keypoints)
+        pose_kpt_groups_layout.addLayout(ignore_col, 1)
+
+        anterior_col = QVBoxLayout()
+        anterior_label = QLabel("Anterior")
+        anterior_label.setStyleSheet("font-weight: bold;")
+        anterior_col.addWidget(anterior_label)
+        anterior_col.addWidget(self.list_pose_direction_anterior)
+        pose_kpt_groups_layout.addLayout(anterior_col, 1)
+
+        posterior_col = QVBoxLayout()
+        posterior_label = QLabel("Posterior")
+        posterior_label.setStyleSheet("font-weight: bold;")
+        posterior_col.addWidget(posterior_label)
+        posterior_col.addWidget(self.list_pose_direction_posterior)
+        pose_kpt_groups_layout.addLayout(posterior_col, 1)
+
+        fl_pose.addRow("Keypoint groups", pose_kpt_groups_widget)
+        self.list_pose_ignore_keypoints.itemSelectionChanged.connect(
+            lambda: self._on_pose_keypoint_group_changed("ignore")
+        )
+        self.list_pose_direction_anterior.itemSelectionChanged.connect(
+            lambda: self._on_pose_keypoint_group_changed("anterior")
+        )
+        self.list_pose_direction_posterior.itemSelectionChanged.connect(
+            lambda: self._on_pose_keypoint_group_changed("posterior")
+        )
+
+        h_sleap_env = QHBoxLayout()
+        self.combo_pose_sleap_env = QComboBox()
+        self.combo_pose_sleap_env.setToolTip(
+            "Conda environment name must start with 'sleap'."
+        )
+        h_sleap_env.addWidget(self.combo_pose_sleap_env, 1)
+        self.btn_refresh_pose_sleap_envs = QPushButton("Refresh")
+        self.btn_refresh_pose_sleap_envs.setToolTip("Refresh SLEAP conda envs list")
+        self.btn_refresh_pose_sleap_envs.clicked.connect(self._refresh_pose_sleap_envs)
+        h_sleap_env.addWidget(self.btn_refresh_pose_sleap_envs)
+        self.pose_sleap_env_row_widget = QWidget()
+        self.pose_sleap_env_row_widget.setLayout(h_sleap_env)
+        fl_pose.addRow("SLEAP env", self.pose_sleap_env_row_widget)
+
+        self.chk_sleap_experimental_features = QCheckBox("Allow experimental features")
+        self.chk_sleap_experimental_features.setChecked(False)
+        self.chk_sleap_experimental_features.setToolTip(
+            "Enable experimental SLEAP features (ONNX/TensorRT runtimes).\n"
+            "When disabled, ONNX/TensorRT runtime selections will revert to native runtime.\n"
+            "Experimental features may have stability or accuracy issues."
+        )
+        self.chk_sleap_experimental_features.stateChanged.connect(
+            self._on_sleap_experimental_toggled
+        )
+        self.pose_sleap_experimental_row_widget = QWidget()
+        sleap_exp_layout = QHBoxLayout()
+        sleap_exp_layout.setContentsMargins(0, 0, 0, 0)
+        sleap_exp_layout.addWidget(self.chk_sleap_experimental_features)
+        sleap_exp_layout.addStretch()
+        self.pose_sleap_experimental_row_widget.setLayout(sleap_exp_layout)
+        fl_pose.addRow("", self.pose_sleap_experimental_row_widget)
+
+        vl_pose.addLayout(fl_pose)
+        form.addWidget(self.g_pose_runtime)
+
+        self._refresh_pose_sleap_envs()
+        self._set_form_row_visible(
+            fl_pose, self.pose_sleap_experimental_row_widget, False
+        )
 
         form.addStretch()
         scroll.setWidget(content)
@@ -4464,30 +6417,257 @@ class MainWindow(QMainWindow):
 
         # Initially disable all controls
         self.g_identity.setEnabled(False)
+        self.g_pose_runtime.setEnabled(False)
+        self._refresh_pose_direction_keypoint_lists()
+        self._sync_pose_backend_ui()
+        self._sync_individual_analysis_mode_ui()
 
     def _on_dataset_generation_toggled(self, enabled):
         """Enable/disable dataset generation controls."""
         # Hide/show entire content container
         self.active_learning_content.setVisible(enabled)
 
-    def _select_dataset_output_dir(self):
-        """Browse for dataset output directory."""
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Dataset Output Directory"
-        )
-        if directory:
-            self.line_dataset_output.setText(directory)
-
     def _open_training_dialog(self):
         class_name = self.line_dataset_class_name.text().strip() or "object"
-        envs = []
-        for i in range(self.combo_xanylabeling_env.count()):
-            name = self.combo_xanylabeling_env.itemText(i)
-            if "No X-AnyLabeling" in name or "Conda not available" in name:
-                continue
-            envs.append(name)
-        dialog = TrainYoloDialog(self, class_name=class_name, conda_envs=envs)
+        dialog = TrainYoloDialog(self, class_name=class_name)
         dialog.exec()
+
+    def _find_or_plan_optimizer_cache_path(
+        self, video_path: str, params: dict, start_frame: int, end_frame: int
+    ) -> tuple:
+        """
+        Return (cache_path, already_valid) where:
+          - cache_path  : best path to use (existing covering cache, or new build target)
+          - already_valid: True when that path exists AND covers start_frame..end_frame
+
+        Search order:
+          1. current_detection_cache_path (set by the last tracking run in this session)
+             2. Any compatible detection cache in the video's dedicated cache directory,
+                 with legacy flat files still considered as a fallback
+             3. A freshly-computed optimizer-specific path in the dedicated cache directory
+        """
+        import re
+
+        from multi_tracker.data.detection_cache import DetectionCache
+
+        def _is_valid(path: str) -> bool:
+            """Return True if *path* is a compatible cache covering the frame range."""
+            if not path or not os.path.exists(path):
+                return False
+            try:
+                dc = DetectionCache(path, mode="r")
+                ok = dc.is_compatible() and dc.covers_frame_range(
+                    start_frame, end_frame
+                )
+                dc.close()
+                return ok
+            except Exception:
+                return False
+
+        # 1. Production cache from current session
+        if _is_valid(self.current_detection_cache_path):
+            return self.current_detection_cache_path, True
+
+        csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        artifact_base_dirs = candidate_artifact_base_dirs(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+
+        # 2. Scan known cache directories plus legacy flat directories.
+        for candidate in iter_detection_cache_candidates(
+            video_path,
+            artifact_base_dirs=artifact_base_dirs,
+        ):
+            candidate_str = str(candidate)
+            if _is_valid(candidate_str):
+                return candidate_str, True
+
+        # 3. Fallback: compute a write-target path for a new detection-only build
+        model_raw = os.path.splitext(
+            os.path.basename(params.get("YOLO_MODEL_PATH", "model"))
+        )[0]
+        model = re.sub(r"[^A-Za-z0-9_-]", "_", model_raw)
+        resize = int(params.get("RESIZE_FACTOR", 1.0) * 100)
+        artifact_base_dir = choose_writable_artifact_base_dir(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        new_path = build_optimizer_detection_cache_path(
+            video_path,
+            model,
+            resize,
+            artifact_base_dir=artifact_base_dir,
+        )
+        return str(new_path), False
+
+    def _build_optimizer_detection_cache(
+        self, video_path: str, cache_path: str, params: dict
+    ):
+        """Spin up a DetectionCacheBuilderWorker and show progress in the main window."""
+        self._cache_builder_worker = DetectionCacheBuilderWorker(
+            video_path,
+            cache_path,
+            params,
+            self.spin_start_frame.value(),
+            self.spin_end_frame.value(),
+        )
+        self._cache_builder_worker.progress_signal.connect(self.on_progress_update)
+        self._cache_builder_worker.finished_signal.connect(
+            self._on_optimizer_cache_built
+        )
+        self.progress_bar.setVisible(True)
+        self.progress_label.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Building detection cache for optimizer...")
+        self._cache_builder_worker.start()
+
+    def _on_optimizer_cache_built(self, ok: bool, cache_path: str):
+        """Called when DetectionCacheBuilderWorker finishes."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+
+        if getattr(self, "_stop_all_requested", False):
+            return
+
+        if not ok:
+            QMessageBox.critical(
+                self,
+                "Detection Failed",
+                "Could not build the detection cache. Check that the YOLO model "
+                "path is correct and that the video is readable.",
+            )
+            return
+        # Store built cache as the current cache so _open_parameter_helper finds it
+        self.current_detection_cache_path = cache_path
+        # Re-open the helper now that the cache is ready
+        self._open_parameter_helper()
+
+    def _on_preview_cache_built(self, ok: bool, cache_path: str):
+        """Called when DetectionCacheBuilderWorker finishes building the preview cache."""
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+
+        if getattr(self, "_stop_all_requested", False):
+            return
+
+        if not ok:
+            QMessageBox.critical(
+                self,
+                "Detection Failed",
+                "Could not build the detection cache. Check that the YOLO model "
+                "path is correct and that the video is readable.",
+            )
+            return
+        self.current_detection_cache_path = cache_path
+        video_path = getattr(
+            self, "_pending_preview_video_path", self.file_line.text().strip()
+        )
+        self.start_preview_on_video(video_path)
+
+    def _open_parameter_helper(self):
+        """Open the tracking parameter selection helper dialog."""
+        video_path = self.file_line.text().strip()
+        if not video_path or not os.path.exists(video_path):
+            QMessageBox.warning(self, "No Video", "Please load a video first.")
+            return
+
+        start_frame = self.spin_start_frame.value()
+        end_frame = self.spin_end_frame.value()
+
+        if (end_frame - start_frame) > 1000:
+            QMessageBox.warning(
+                self,
+                "Range Too Large",
+                "The selected range is very large. For faster optimization, "
+                "please select a smaller slice (e.g., 100-500 frames) using "
+                "the 'Start Frame' and 'End Frame' boxes.",
+            )
+            return
+
+        params = self.get_parameters_dict()
+
+        cache_path, already_valid = self._find_or_plan_optimizer_cache_path(
+            video_path, params, start_frame, end_frame
+        )
+
+        if not already_valid:
+            # No suitable cache found — build one
+            res = QMessageBox.question(
+                self,
+                "Detection Required",
+                "No detection cache covering frames "
+                f"{start_frame}–{end_frame} was found.\n\n"
+                "Run a quick detection-only scan now?\n"
+                "(No config save, no pose inference, no CSV output — "
+                "detections only.)",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if res == QMessageBox.Yes:
+                self._build_optimizer_detection_cache(video_path, cache_path, params)
+            return  # dialog opens via _on_optimizer_cache_built when ready
+
+        dialog = ParameterHelperDialog(
+            video_path, cache_path, start_frame, end_frame, params, self
+        )
+
+        if dialog.exec() == QDialog.Accepted:
+            new_params = dialog.get_selected_params()
+            if new_params:
+                # Update UI elements with new parameters
+                if "YOLO_CONFIDENCE_THRESHOLD" in new_params:
+                    self.spin_yolo_confidence.setValue(
+                        new_params["YOLO_CONFIDENCE_THRESHOLD"]
+                    )
+                if "YOLO_IOU_THRESHOLD" in new_params:
+                    self.spin_yolo_iou.setValue(new_params["YOLO_IOU_THRESHOLD"])
+                if "MAX_DISTANCE_MULTIPLIER" in new_params:
+                    self.spin_max_dist.setValue(new_params["MAX_DISTANCE_MULTIPLIER"])
+                if "KALMAN_NOISE_COVARIANCE" in new_params:
+                    self.spin_kalman_noise.setValue(
+                        new_params["KALMAN_NOISE_COVARIANCE"]
+                    )
+                if "KALMAN_MEASUREMENT_NOISE_COVARIANCE" in new_params:
+                    self.spin_kalman_meas.setValue(
+                        new_params["KALMAN_MEASUREMENT_NOISE_COVARIANCE"]
+                    )
+
+                # Weights
+                if "W_POSITION" in new_params:
+                    self.spin_Wp.setValue(new_params["W_POSITION"])
+                if "W_ORIENTATION" in new_params:
+                    self.spin_Wo.setValue(new_params["W_ORIENTATION"])
+                if "W_AREA" in new_params:
+                    self.spin_Wa.setValue(new_params["W_AREA"])
+                if "W_ASPECT" in new_params:
+                    self.spin_Wasp.setValue(new_params["W_ASPECT"])
+
+                # Kalman dynamics & lifecycle
+                if "KALMAN_DAMPING" in new_params:
+                    self.spin_kalman_damping.setValue(new_params["KALMAN_DAMPING"])
+                if "KALMAN_MATURITY_AGE" in new_params:
+                    self.spin_kalman_maturity_age.setValue(
+                        new_params["KALMAN_MATURITY_AGE"]
+                    )
+                if "KALMAN_MAX_VELOCITY_MULTIPLIER" in new_params:
+                    self.spin_kalman_max_velocity.setValue(
+                        new_params["KALMAN_MAX_VELOCITY_MULTIPLIER"]
+                    )
+                if "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER" in new_params:
+                    self.spin_kalman_longitudinal_noise.setValue(
+                        new_params["KALMAN_LONGITUDINAL_NOISE_MULTIPLIER"]
+                    )
+                if "LOST_THRESHOLD_FRAMES" in new_params:
+                    self.spin_lost_thresh.setValue(new_params["LOST_THRESHOLD_FRAMES"])
+
+                # Signals from setValue() calls above fire _on_parameter_changed
+                # automatically, which calls get_parameters_dict() and emits
+                # parameters_changed — no extra sync call needed.
+                QMessageBox.information(
+                    self,
+                    "Parameters Applied",
+                    "The optimized parameters have been applied to the UI.",
+                )
 
     def _refresh_xanylabeling_envs(self):
         """Scan for conda environments starting with 'x-anylabeling-'."""
@@ -4557,11 +6737,14 @@ class MainWindow(QMainWindow):
             )
             return
 
+        video_path = self.file_line.text().strip()
+        start_dir = os.path.dirname(video_path) if video_path else ""
+
         # Browse for dataset directory
         directory = QFileDialog.getExistingDirectory(
             self,
             "Select Dataset Directory",
-            self.line_dataset_output.text() if self.line_dataset_output.text() else "",
+            start_dir,
         )
 
         if not directory:
@@ -4686,11 +6869,12 @@ class MainWindow(QMainWindow):
 
     def _open_pose_label_ui(self):
         """Open a dataset folder in PoseKit Labeler."""
-        start_dir = (
-            self.line_individual_output.text().strip()
-            or self.line_dataset_output.text().strip()
-            or str(Path.home())
-        )
+        video_path = self.file_line.text().strip()
+        if video_path:
+            start_dir = os.path.dirname(video_path)
+        else:
+            start_dir = str(Path.home())
+
         directory = QFileDialog.getExistingDirectory(
             self,
             "Select Pose Dataset Folder",
@@ -4734,25 +6918,30 @@ class MainWindow(QMainWindow):
         import sys
 
         try:
-            # The labeler lives in the top-level posekit package.
+            # The labeler lives in the posekit.ui.main module.
             gui_dir = Path(__file__).parent
             package_root = gui_dir.parent
-            labeler_dir = package_root / "posekit"
-            pose_label_script = labeler_dir / "pose_label.py"
+            labeler_dir = package_root / "posekit" / "ui"
+            pose_label_script = labeler_dir / "main.py"
 
             if not pose_label_script.exists():
                 QMessageBox.critical(
                     self,
                     "Script Not Found",
-                    f"Could not find pose_label.py at:\n{pose_label_script}",
+                    f"Could not find posekit UI entry point at:\n{pose_label_script}",
                 )
                 return
 
-            # Use the current Python executable (same environment as mat)
-            # This avoids conda activation and terminal detection complexity
+            # Use the current Python executable (same environment as mat).
+            # Run as a module to support relative imports inside the package.
             subprocess.Popen(
-                [sys.executable, str(pose_label_script), str(dataset_root)],
-                cwd=str(labeler_dir),
+                [
+                    sys.executable,
+                    "-m",
+                    "multi_tracker.posekit.ui.main",
+                    str(dataset_root),
+                ],
+                cwd=str(package_root.parent),  # root where multi_tracker package lives
             )
 
             logger.info(f"Opened PoseKit Labeler for dataset: {dataset_root}")
@@ -4774,9 +6963,7 @@ class MainWindow(QMainWindow):
 
     def _on_individual_analysis_toggled(self, state):
         """Enable/disable individual analysis controls."""
-        # Directly check checkbox state for reliability
-        enabled = self.chk_enable_individual_analysis.isChecked()
-        self.g_identity.setEnabled(enabled)
+        self._sync_individual_analysis_mode_ui()
 
     def _on_identity_method_changed(self, index):
         """Update identity configuration stack when method changes."""
@@ -4852,12 +7039,937 @@ class MainWindow(QMainWindow):
 
     def _on_individual_dataset_toggled(self, enabled):
         """Enable/disable individual dataset generation controls."""
-        # Hide/show individual dataset configuration group and info label
-        self.ind_output_group.setVisible(enabled)
-        self.lbl_individual_info.setVisible(enabled)
+        self._sync_individual_analysis_mode_ui()
 
-        # Also control enable state
-        self.ind_output_group.setEnabled(enabled)
+    def _ensure_pose_model_path_store(self):
+        if not hasattr(self, "_pose_model_path_by_backend"):
+            self._pose_model_path_by_backend = {"yolo": "", "sleap": "", "vitpose": ""}
+
+    def _current_pose_backend_key(self):
+        if not hasattr(self, "combo_pose_model_type"):
+            return "yolo"
+        backend = self.combo_pose_model_type.currentText().strip().lower()
+        if backend == "sleap":
+            return "sleap"
+        if backend == "vitpose":
+            return "vitpose"
+        return "yolo"
+
+    def _pose_model_path_for_backend(self, backend=None):
+        self._ensure_pose_model_path_store()
+        key = (backend or self._current_pose_backend_key()).strip().lower()
+        if key not in ("sleap", "vitpose"):
+            key = "yolo"
+        return str(self._pose_model_path_by_backend.get(key, "")).strip()
+
+    def _set_pose_model_path_for_backend(self, path, backend=None, update_combo=False):
+        self._ensure_pose_model_path_store()
+        key = (backend or self._current_pose_backend_key()).strip().lower()
+        if key not in ("sleap", "vitpose"):
+            key = "yolo"
+        value = str(path or "").strip()
+        if value:
+            resolved = str(resolve_pose_model_path(value, backend=key)).strip()
+            if resolved and os.path.exists(resolved):
+                value = str(make_pose_model_path_relative(os.path.abspath(resolved)))
+        self._pose_model_path_by_backend[key] = value
+        if update_combo:
+            self._refresh_pose_model_combo(preferred_model_path=value)
+
+    def _handle_add_new_pose_model(self):
+        """Browse for a pose model, import it if outside repo, refresh combo, and select it.
+
+        Restores the previous selection if the user cancels.
+        """
+        combo = getattr(self, "combo_pose_model", None)
+        prev_data = None
+        if combo is not None:
+            for i in range(combo.count()):
+                d = combo.itemData(i, Qt.UserRole)
+                if d and d not in ("__add_new__", "__none__"):
+                    prev_data = d
+                    break
+
+        def _restore():
+            if combo is not None:
+                combo.blockSignals(True)
+                self._set_model_selection_for_selector(combo, prev_data)
+                combo.blockSignals(False)
+
+        backend = self.combo_pose_model_type.currentText().strip().lower()
+        backend_key = (
+            "sleap"
+            if backend == "sleap"
+            else ("vitpose" if backend == "vitpose" else "yolo")
+        )
+        current = self._pose_model_path_for_backend(backend)
+        if current:
+            resolved_current = str(resolve_pose_model_path(current, backend=backend))
+            start = (
+                resolved_current
+                if os.path.isdir(resolved_current)
+                else (os.path.dirname(resolved_current) or str(Path.home()))
+            )
+        else:
+            start = get_pose_models_directory(backend_key)
+
+        if backend == "sleap":
+            selected = QFileDialog.getExistingDirectory(
+                self, "Select SLEAP Model Directory", start
+            )
+            if not selected:
+                _restore()
+                return
+            selected_abs = os.path.abspath(selected)
+            pose_root = get_pose_models_directory(backend_key)
+            try:
+                rel_path = os.path.relpath(selected_abs, pose_root)
+                is_in_repo = not rel_path.startswith("..")
+            except (ValueError, TypeError):
+                is_in_repo = False
+            if is_in_repo:
+                final_path = make_pose_model_path_relative(selected_abs)
+            else:
+                final_path = self._import_pose_model_to_repository(
+                    selected_abs, backend=backend_key
+                )
+                if not final_path:
+                    _restore()
+                    return
+                QMessageBox.information(
+                    self,
+                    "Model Added",
+                    f"SLEAP model added to repository:\n{final_path}",
+                )
+            self._set_pose_model_path_for_backend(
+                final_path, backend=backend, update_combo=True
+            )
+            return
+
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Pose Weights",
+            start,
+            "PyTorch Weights (*.pt *.pth);;All Files (*)",
+        )
+        if not selected:
+            _restore()
+            return
+        selected_abs = os.path.abspath(selected)
+        pose_root = get_pose_models_directory(backend_key)
+        try:
+            rel_path = os.path.relpath(selected_abs, pose_root)
+            is_in_repo = not rel_path.startswith("..")
+        except (ValueError, TypeError):
+            is_in_repo = False
+        if is_in_repo:
+            final_path = make_pose_model_path_relative(selected_abs)
+        else:
+            final_path = self._import_pose_model_to_repository(
+                selected_abs, backend=backend_key
+            )
+            if not final_path:
+                _restore()
+                return
+            QMessageBox.information(
+                self,
+                "Model Added",
+                f"Pose model added to repository:\n{final_path}",
+            )
+        self._set_pose_model_path_for_backend(
+            final_path, backend=backend, update_combo=True
+        )
+
+    def _import_pose_model_to_repository(self, source_path, backend="yolo"):
+        """Copy a selected pose model into models/pose/{YOLO|SLEAP|ViTPose} and return relative path."""
+        src = str(source_path or "").strip()
+        if not src or not os.path.exists(src):
+            return None
+
+        bk = str(backend).strip().lower()
+        backend_key = (
+            "sleap" if bk == "sleap" else ("vitpose" if bk == "vitpose" else "yolo")
+        )
+        dest_dir = get_pose_models_directory(backend_key)
+
+        try:
+            src_path = Path(src).expanduser().resolve()
+        except Exception:
+            src_path = Path(src)
+
+        try:
+            rel_existing = os.path.relpath(str(src_path), str(Path(dest_dir).resolve()))
+            if not rel_existing.startswith(".."):
+                return make_pose_model_path_relative(str(src_path))
+        except Exception:
+            pass
+
+        # Metadata collection (same style as YOLO OBB import dialog).
+        now_preview = datetime.now()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Pose Model Metadata")
+        dlg_layout = QVBoxLayout(dlg)
+        dlg_form = QFormLayout()
+
+        stem_tokens = [t for t in src_path.stem.replace("-", "_").split("_") if t]
+        default_species = (
+            self._sanitize_model_token(stem_tokens[0]) if stem_tokens else "species"
+        )
+        default_info = (
+            self._sanitize_model_token("_".join(stem_tokens[1:]))
+            if len(stem_tokens) > 1
+            else "model"
+        )
+
+        size_combo = None
+        type_line = None
+        if backend_key == "yolo":
+            size_combo = QComboBox(dlg)
+            size_combo.addItems(
+                ["26n", "26s", "26m", "26l", "26x", "custom", "unknown"]
+            )
+            size_combo.setCurrentText("26s")
+            dlg_form.addRow("YOLO model size:", size_combo)
+        else:
+            default_type = self._sanitize_model_token(src_path.name) or "sleap_model"
+            type_line = QLineEdit(default_type, dlg)
+            type_line.setPlaceholderText("model-type")
+            dlg_form.addRow("Model type:", type_line)
+
+        species_line = QLineEdit(default_species, dlg)
+        species_line.setPlaceholderText("species")
+        dlg_form.addRow("Model species:", species_line)
+
+        info_line = QLineEdit(default_info, dlg)
+        info_line.setPlaceholderText("model-info")
+        dlg_form.addRow("Model info:", info_line)
+
+        ts_label = QLabel(now_preview.isoformat(timespec="seconds"), dlg)
+        ts_label.setToolTip("Timestamp applied when model is added to repository")
+        dlg_form.addRow("Added timestamp:", ts_label)
+
+        dlg_layout.addLayout(dlg_form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        dlg_layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+
+        model_species = self._sanitize_model_token(species_line.text())
+        model_info = self._sanitize_model_token(info_line.text())
+        if not model_species or not model_info:
+            QMessageBox.warning(
+                self,
+                "Invalid Metadata",
+                "Species and model info must both be provided.",
+            )
+            return None
+
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d-%H%M%S")
+        if backend_key == "sleap":
+            model_type = (
+                self._sanitize_model_token(type_line.text()) if type_line else ""
+            )
+            if not model_type:
+                QMessageBox.warning(
+                    self,
+                    "Invalid Metadata",
+                    "SLEAP model type must be provided.",
+                )
+                return None
+            target_name = f"{timestamp}_{model_type}_{model_species}_{model_info}"
+            dest_path = Path(dest_dir) / target_name
+            counter = 1
+            while dest_path.exists():
+                dest_path = Path(dest_dir) / f"{target_name}_{counter}"
+                counter += 1
+            try:
+                shutil.copytree(src_path, dest_path)
+            except Exception as exc:
+                logger.error("Failed to copy SLEAP model directory: %s", exc)
+                QMessageBox.warning(
+                    self,
+                    "Import Failed",
+                    f"Could not import SLEAP model directory:\n{exc}",
+                )
+                return None
+            return make_pose_model_path_relative(str(dest_path))
+
+        model_size = size_combo.currentText().strip() if size_combo else "unknown"
+        model_size = self._sanitize_model_token(model_size) or "unknown"
+        ext = src_path.suffix or ".pt"
+        target_name = f"{timestamp}_{model_size}_{model_species}_{model_info}{ext}"
+        dest_path = Path(dest_dir) / target_name
+        counter = 1
+        while dest_path.exists():
+            dest_path = (
+                Path(dest_dir)
+                / f"{timestamp}_{model_size}_{model_species}_{model_info}_{counter}{ext}"
+            )
+            counter += 1
+        try:
+            shutil.copy2(src_path, dest_path)
+        except Exception as exc:
+            logger.error("Failed to copy pose model: %s", exc)
+            QMessageBox.warning(
+                self,
+                "Import Failed",
+                f"Could not import pose model:\n{exc}",
+            )
+            return None
+        return make_pose_model_path_relative(str(dest_path))
+
+    def _select_pose_skeleton_file(self):
+        """Select pose skeleton JSON file."""
+        start = self.line_pose_skeleton_file.text().strip() or str(Path.home())
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Pose Skeleton JSON",
+            start,
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if selected:
+            self.line_pose_skeleton_file.setText(selected)
+
+    def _load_pose_skeleton_keypoint_names(self):
+        """Load keypoint names from selected skeleton JSON."""
+        skeleton_file = self.line_pose_skeleton_file.text().strip()
+        if not skeleton_file:
+            return []
+        try:
+            path = Path(skeleton_file).expanduser().resolve()
+            if not path.exists():
+                return []
+            data = json.loads(path.read_text(encoding="utf-8"))
+            raw = data.get("keypoint_names", data.get("keypoints", []))
+            names = [str(v).strip() for v in raw if str(v).strip()]
+            return names
+        except Exception:
+            return []
+
+    def _selected_pose_group_keypoints(self, list_widget):
+        """Return selected keypoint names for a pose direction list widget."""
+        if list_widget is None:
+            return []
+        return [
+            item.text().strip()
+            for item in list_widget.selectedItems()
+            if item.text().strip()
+        ]
+
+    def _set_pose_group_selection(self, list_widget, values):
+        """Select keypoints in list widget from config-provided values."""
+        if list_widget is None:
+            return
+        tokens = self._parse_pose_keypoint_tokens(values)
+        if not tokens:
+            return
+        items_by_name = {}
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            items_by_name[item.text().strip().lower()] = item
+        for tok in tokens:
+            if isinstance(tok, int):
+                if 0 <= tok < list_widget.count():
+                    list_widget.item(tok).setSelected(True)
+                continue
+            item = items_by_name.get(str(tok).strip().lower())
+            if item is not None:
+                item.setSelected(True)
+
+    def _apply_pose_keypoint_selection_set(self, list_widget, selected_names):
+        """Set list selection to exact keypoint-name set."""
+        if list_widget is None:
+            return
+        target = {str(v).strip().lower() for v in selected_names if str(v).strip()}
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            item_name = item.text().strip().lower()
+            item.setSelected(item_name in target)
+
+    def _set_pose_keypoints_enabled(self, list_widget, disabled_names):
+        """Disable keypoints in a list by name while preserving others."""
+        if list_widget is None:
+            return
+        disabled = {str(v).strip().lower() for v in disabled_names if str(v).strip()}
+        for i in range(list_widget.count()):
+            item = list_widget.item(i)
+            item_name = item.text().strip().lower()
+            flags = item.flags()
+            if item_name in disabled:
+                item.setSelected(False)
+                item.setFlags(flags & ~Qt.ItemIsEnabled)
+            else:
+                item.setFlags(flags | Qt.ItemIsEnabled)
+
+    def _apply_pose_keypoint_selection_constraints(self, changed_group="ignore"):
+        """Enforce exclusivity across ignore/anterior/posterior keypoint selections."""
+        ignore_list = getattr(self, "list_pose_ignore_keypoints", None)
+        ant_list = getattr(self, "list_pose_direction_anterior", None)
+        post_list = getattr(self, "list_pose_direction_posterior", None)
+        if ignore_list is None or ant_list is None or post_list is None:
+            return
+
+        ignore = {
+            k.lower()
+            for k in self._selected_pose_group_keypoints(ignore_list)
+            if k.strip()
+        }
+        anterior = {
+            k.lower()
+            for k in self._selected_pose_group_keypoints(ant_list)
+            if k.strip()
+        }
+        posterior = {
+            k.lower()
+            for k in self._selected_pose_group_keypoints(post_list)
+            if k.strip()
+        }
+
+        # Ignore selection always wins over directional groups.
+        anterior -= ignore
+        posterior -= ignore
+
+        # Anterior/posterior remain mutually exclusive. The changed group wins.
+        if changed_group == "posterior":
+            anterior -= posterior
+        else:
+            posterior -= anterior
+
+        ant_list.blockSignals(True)
+        post_list.blockSignals(True)
+        self._apply_pose_keypoint_selection_set(ant_list, anterior)
+        self._apply_pose_keypoint_selection_set(post_list, posterior)
+        self._set_pose_keypoints_enabled(ant_list, ignore)
+        self._set_pose_keypoints_enabled(post_list, ignore)
+        ant_list.blockSignals(False)
+        post_list.blockSignals(False)
+
+    def _on_pose_keypoint_group_changed(self, changed_group):
+        """Handle keypoint group updates and keep list constraints synchronized."""
+        self._apply_pose_keypoint_selection_constraints(changed_group)
+
+    def _refresh_pose_direction_keypoint_lists(self):
+        """Populate ignore/anterior/posterior keypoint pickers from skeleton file."""
+        if (
+            not hasattr(self, "list_pose_ignore_keypoints")
+            or not hasattr(self, "list_pose_direction_anterior")
+            or not hasattr(self, "list_pose_direction_posterior")
+        ):
+            return
+
+        prev_ignore = self._selected_pose_group_keypoints(
+            self.list_pose_ignore_keypoints
+        )
+        prev_anterior = self._selected_pose_group_keypoints(
+            self.list_pose_direction_anterior
+        )
+        prev_posterior = self._selected_pose_group_keypoints(
+            self.list_pose_direction_posterior
+        )
+        names = self._load_pose_skeleton_keypoint_names()
+
+        self.list_pose_ignore_keypoints.blockSignals(True)
+        self.list_pose_direction_anterior.blockSignals(True)
+        self.list_pose_direction_posterior.blockSignals(True)
+        self.list_pose_ignore_keypoints.clear()
+        self.list_pose_direction_anterior.clear()
+        self.list_pose_direction_posterior.clear()
+        self.list_pose_ignore_keypoints.addItems(names)
+        self.list_pose_direction_anterior.addItems(names)
+        self.list_pose_direction_posterior.addItems(names)
+        self._set_pose_group_selection(self.list_pose_ignore_keypoints, prev_ignore)
+        self._set_pose_group_selection(self.list_pose_direction_anterior, prev_anterior)
+        self._set_pose_group_selection(
+            self.list_pose_direction_posterior, prev_posterior
+        )
+        enabled = len(names) > 0
+        self.list_pose_ignore_keypoints.setEnabled(enabled)
+        self.list_pose_direction_anterior.setEnabled(enabled)
+        self.list_pose_direction_posterior.setEnabled(enabled)
+        self.list_pose_ignore_keypoints.blockSignals(False)
+        self.list_pose_direction_anterior.blockSignals(False)
+        self.list_pose_direction_posterior.blockSignals(False)
+        self._apply_pose_keypoint_selection_constraints("ignore")
+
+    def _parse_pose_keypoint_tokens(self, raw):
+        """Parse comma-separated keypoint names and/or indices."""
+        if not raw:
+            return []
+        if isinstance(raw, (list, tuple, set)):
+            tokens = []
+            for value in raw:
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if not text:
+                    continue
+                try:
+                    tokens.append(int(text))
+                except ValueError:
+                    tokens.append(text)
+            return tokens
+        out = []
+        for token in str(raw).split(","):
+            t = token.strip()
+            if not t:
+                continue
+            try:
+                out.append(int(t))
+            except ValueError:
+                out.append(t)
+        return out
+
+    def _parse_pose_ignore_keypoints(self):
+        """Parse keypoints to ignore from list selection."""
+        return self._selected_pose_group_keypoints(
+            getattr(self, "list_pose_ignore_keypoints", None)
+        )
+
+    def _parse_pose_direction_anterior_keypoints(self):
+        """Parse anterior keypoint group from list selection."""
+        return self._selected_pose_group_keypoints(
+            getattr(self, "list_pose_direction_anterior", None)
+        )
+
+    def _parse_pose_direction_posterior_keypoints(self):
+        """Parse posterior keypoint group from list selection."""
+        return self._selected_pose_group_keypoints(
+            getattr(self, "list_pose_direction_posterior", None)
+        )
+
+    def _refresh_pose_sleap_envs(self):
+        """Refresh conda environments starting with 'sleap'."""
+        if not hasattr(self, "combo_pose_sleap_env"):
+            return
+
+        self.combo_pose_sleap_env.clear()
+        self.combo_pose_sleap_env.setEnabled(True)
+        envs = []
+        preferred = str(self.advanced_config.get("pose_sleap_env", "sleap")).strip()
+        try:
+            import subprocess
+
+            res = subprocess.run(
+                ["conda", "env", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if res.returncode == 0:
+                for line in res.stdout.splitlines():
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if not parts:
+                        continue
+                    name = parts[0].strip()
+                    if name.lower().startswith("sleap"):
+                        envs.append(name)
+        except Exception:
+            envs = []
+
+        if not envs:
+            self.combo_pose_sleap_env.addItem("No sleap envs found")
+            self.combo_pose_sleap_env.setEnabled(False)
+            return
+
+        self.combo_pose_sleap_env.addItems(envs)
+        if preferred and preferred in envs:
+            self.combo_pose_sleap_env.setCurrentText(preferred)
+
+    def _selected_pose_sleap_env(self):
+        """Return valid selected SLEAP env name or default."""
+        if not hasattr(self, "combo_pose_sleap_env"):
+            return "sleap"
+        txt = self.combo_pose_sleap_env.currentText().strip()
+        if not txt or txt.lower().startswith("no sleap envs"):
+            return "sleap"
+        return txt
+
+    def _sleap_experimental_features_enabled(self):
+        """Return True if SLEAP experimental features (ONNX/TensorRT) are allowed."""
+        if not hasattr(self, "chk_sleap_experimental_features"):
+            return False
+        return self.chk_sleap_experimental_features.isChecked()
+
+    def _on_sleap_experimental_toggled(self):
+        """Handle experimental features checkbox toggle."""
+        if not hasattr(self, "combo_pose_runtime_flavor"):
+            return
+        # Refresh runtime options to show warning if needed
+        backend = (
+            self.combo_pose_model_type.currentText().strip().lower()
+            if hasattr(self, "combo_pose_model_type")
+            else "yolo"
+        )
+        if backend == "sleap":
+            current_flavor = self._selected_pose_runtime_flavor()
+            if (
+                current_flavor in ("onnx", "tensorrt")
+                and not self._sleap_experimental_features_enabled()
+            ):
+                # Show warning that runtime will revert to native
+                from PySide6.QtWidgets import QMessageBox
+
+                QMessageBox.warning(
+                    self,
+                    "Experimental Features Disabled",
+                    f"SLEAP {current_flavor.upper()} runtime is experimental.\\n"
+                    "With experimental features disabled, the runtime will revert to native.\\n\\n"
+                    "To use ONNX/TensorRT for SLEAP, enable experimental features.",
+                )
+
+    def _populate_pose_sleap_device_options(self):
+        """Populate SLEAP device options using gpu_utils availability flags."""
+        if not hasattr(self, "combo_pose_sleap_device"):
+            return
+        self.combo_pose_sleap_device.clear()
+        opts = ["auto", "cpu"]
+        if MPS_AVAILABLE:
+            opts.append("mps")
+        if TORCH_CUDA_AVAILABLE or ROCM_AVAILABLE:
+            opts.extend(["cuda", "cuda:0"])
+        self.combo_pose_sleap_device.addItems(opts)
+        default_sleap_device = str(
+            self.advanced_config.get("pose_sleap_device", "auto")
+        ).strip()
+        idx = self.combo_pose_sleap_device.findText(default_sleap_device)
+        if idx >= 0:
+            self.combo_pose_sleap_device.setCurrentIndex(idx)
+
+    def _runtime_pipelines_for_current_ui(self):
+        pipelines = []
+        if self._is_yolo_detection_mode():
+            pipelines.append("yolo_obb_detection")
+        if self._is_pose_inference_enabled():
+            backend = self.combo_pose_model_type.currentText().strip().lower()
+            if backend == "sleap":
+                pipelines.append("sleap_pose")
+            else:
+                pipelines.append("yolo_pose")
+        return pipelines
+
+    def _compute_runtime_options_for_current_ui(self):
+        allowed = allowed_runtimes_for_pipelines(
+            self._runtime_pipelines_for_current_ui()
+        )
+        if not allowed:
+            allowed = ["cpu"]
+        return [(runtime_label(rt), rt) for rt in allowed if rt in CANONICAL_RUNTIMES]
+
+    def _populate_compute_runtime_options(self, preferred: str | None = None):
+        if not hasattr(self, "combo_compute_runtime"):
+            return
+        combo = self.combo_compute_runtime
+        selected = (
+            str(preferred or self._selected_compute_runtime() or "cpu").strip().lower()
+        )
+        options = self._compute_runtime_options_for_current_ui()
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = values[0] if values else "cpu"
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _selected_compute_runtime(self) -> str:
+        if not hasattr(self, "combo_compute_runtime"):
+            return "cpu"
+        data = self.combo_compute_runtime.currentData()
+        if data:
+            return str(data).strip().lower()
+        txt = self.combo_compute_runtime.currentText().strip().lower()
+        if txt in CANONICAL_RUNTIMES:
+            return txt
+        return "cpu"
+
+    def _runtime_requires_fixed_yolo_batch(self, runtime: str | None = None) -> bool:
+        rt = str(runtime or self._selected_compute_runtime() or "").strip().lower()
+        return rt == "tensorrt" or rt.startswith("onnx")
+
+    def _on_runtime_context_changed(self, *_args):
+        previous = self._selected_compute_runtime()
+        self._populate_compute_runtime_options(preferred=previous)
+        selected_runtime = self._selected_compute_runtime()
+        self._update_obb_mode_warning()
+        # Keep hidden legacy controls synchronized for compatibility paths.
+        derived = derive_detection_runtime_settings(selected_runtime)
+        if hasattr(self, "combo_device"):
+            idx = self.combo_device.findText(
+                str(derived.get("yolo_device", "cpu")), Qt.MatchStartsWith
+            )
+            if idx >= 0:
+                self.combo_device.setCurrentIndex(idx)
+        if hasattr(self, "chk_enable_tensorrt"):
+            self.chk_enable_tensorrt.setChecked(
+                bool(derived.get("enable_tensorrt", False))
+            )
+        if (
+            self._runtime_requires_fixed_yolo_batch(selected_runtime)
+            and hasattr(self, "combo_yolo_batch_mode")
+            and hasattr(self, "spin_yolo_batch_size")
+            and hasattr(self, "chk_enable_yolo_batching")
+        ):
+            self.chk_enable_yolo_batching.setChecked(True)
+            self.chk_enable_yolo_batching.setEnabled(False)
+            self.combo_yolo_batch_mode.setCurrentIndex(1)  # Manual
+            self.combo_yolo_batch_mode.setEnabled(False)
+            self.spin_yolo_batch_size.setEnabled(True)
+            if hasattr(self, "spin_tensorrt_batch"):
+                self.spin_tensorrt_batch.setValue(self.spin_yolo_batch_size.value())
+        elif hasattr(self, "combo_yolo_batch_mode") and hasattr(
+            self, "chk_enable_yolo_batching"
+        ):
+            self.chk_enable_yolo_batching.setEnabled(True)
+            self.combo_yolo_batch_mode.setEnabled(
+                self.chk_enable_yolo_batching.isChecked()
+            )
+            self._on_yolo_batch_mode_changed(self.combo_yolo_batch_mode.currentIndex())
+        if hasattr(self, "combo_pose_model_type"):
+            self._populate_pose_runtime_flavor_options(
+                backend=self.combo_pose_model_type.currentText().strip().lower(),
+                preferred=self._selected_pose_runtime_flavor(),
+            )
+
+    def _pose_runtime_options_for_backend(self, backend: str):
+        derived = derive_pose_runtime_settings(
+            self._selected_compute_runtime(), backend_family=backend
+        )
+        flavor = str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
+        return [(runtime_label(self._selected_compute_runtime()), flavor)]
+
+    def _populate_pose_runtime_flavor_options(
+        self, backend: str, preferred: str | None = None
+    ):
+        if not hasattr(self, "combo_pose_runtime_flavor"):
+            return
+        combo = self.combo_pose_runtime_flavor
+        selected = (
+            str(preferred or self._selected_pose_runtime_flavor() or "auto")
+            .strip()
+            .lower()
+        )
+        options = self._pose_runtime_options_for_backend(backend)
+        values = [value for _label, value in options]
+        if selected not in values:
+            selected = values[0] if values else "cpu"
+        combo.blockSignals(True)
+        combo.clear()
+        for label, value in options:
+            combo.addItem(label, value)
+        idx = combo.findData(selected)
+        combo.setCurrentIndex(idx if idx >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _selected_pose_runtime_flavor(self) -> str:
+        backend = (
+            self.combo_pose_model_type.currentText().strip().lower()
+            if hasattr(self, "combo_pose_model_type")
+            else "yolo"
+        )
+        derived = derive_pose_runtime_settings(
+            self._selected_compute_runtime(), backend_family=backend
+        )
+        return str(derived.get("pose_runtime_flavor", "cpu")).strip().lower()
+
+    def _set_form_row_visible(self, form_layout, field_widget, visible: bool):
+        """Show/hide a QFormLayout row by field widget."""
+        if form_layout is None or field_widget is None:
+            return
+        label = form_layout.labelForField(field_widget)
+        if label is not None:
+            label.setVisible(bool(visible))
+        field_widget.setVisible(bool(visible))
+
+    def _sync_pose_backend_ui(self):
+        """Show/hide backend-specific pose controls."""
+        if not hasattr(self, "combo_pose_model_type"):
+            return
+        backend = self.combo_pose_model_type.currentText().strip().lower()
+        self._populate_pose_runtime_flavor_options(backend=backend)
+        is_sleap = backend == "sleap"
+        if hasattr(self, "form_pose_runtime") and hasattr(
+            self, "pose_sleap_env_row_widget"
+        ):
+            self._set_form_row_visible(
+                self.form_pose_runtime, self.pose_sleap_env_row_widget, is_sleap
+            )
+        if hasattr(self, "form_pose_runtime") and hasattr(
+            self, "pose_sleap_experimental_row_widget"
+        ):
+            self._set_form_row_visible(
+                self.form_pose_runtime,
+                self.pose_sleap_experimental_row_widget,
+                is_sleap,
+            )
+        # Refresh pose model combo to show models for the selected backend.
+        self._refresh_pose_model_combo(
+            preferred_model_path=self._pose_model_path_for_backend(backend)
+        )
+        self._on_runtime_context_changed()
+
+    def _is_pose_inference_enabled(self) -> bool:
+        """Return whether pose inference is actively enabled for the run."""
+        return bool(
+            self._is_individual_pipeline_enabled()
+            and hasattr(self, "chk_enable_pose_extractor")
+            and self.chk_enable_pose_extractor.isChecked()
+        )
+
+    def _sync_video_pose_overlay_controls(self, *_args):
+        """Gate pose video overlay controls based on pose inference enable state."""
+        has_controls = hasattr(self, "check_video_show_pose") and hasattr(
+            self, "combo_video_pose_color_mode"
+        )
+        if not has_controls:
+            return
+
+        video_visible = bool(
+            hasattr(self, "check_video_output") and self.check_video_output.isChecked()
+        )
+        pose_enabled = self._is_pose_inference_enabled()
+        enabled = bool(video_visible and pose_enabled)
+
+        self.check_video_show_pose.setEnabled(enabled)
+        show_pose = bool(enabled and self.check_video_show_pose.isChecked())
+        fixed_color_mode = self.combo_video_pose_color_mode.currentIndex() == 1
+
+        # Show detailed controls only when pose overlay is on.
+        self.lbl_video_pose_color_mode.setVisible(show_pose)
+        self.combo_video_pose_color_mode.setVisible(show_pose)
+        self.lbl_video_pose_point_radius.setVisible(show_pose)
+        self.spin_video_pose_point_radius.setVisible(show_pose)
+        self.lbl_video_pose_point_thickness.setVisible(show_pose)
+        self.spin_video_pose_point_thickness.setVisible(show_pose)
+        self.lbl_video_pose_line_thickness.setVisible(show_pose)
+        self.spin_video_pose_line_thickness.setVisible(show_pose)
+
+        show_fixed_color = bool(show_pose and fixed_color_mode)
+        self.lbl_video_pose_color_label.setVisible(show_fixed_color)
+        self.btn_video_pose_color.setVisible(show_fixed_color)
+        self.lbl_video_pose_color.setVisible(show_fixed_color)
+
+        self.combo_video_pose_color_mode.setEnabled(show_pose)
+        self.spin_video_pose_point_radius.setEnabled(show_pose)
+        self.spin_video_pose_point_thickness.setEnabled(show_pose)
+        self.spin_video_pose_line_thickness.setEnabled(show_pose)
+        self.btn_video_pose_color.setEnabled(show_fixed_color)
+
+        self.lbl_video_pose_disabled_hint.setVisible(video_visible)
+        if enabled:
+            self.lbl_video_pose_disabled_hint.setText(
+                "Pose overlay will use keypoints from pose-augmented tracking output."
+            )
+        else:
+            self.lbl_video_pose_disabled_hint.setText(
+                "Enable Pose Extraction in Analyze Individuals to edit pose overlay settings."
+            )
+
+    def _is_yolo_detection_mode(self) -> bool:
+        """Return True when current detection mode is YOLO OBB."""
+        if not hasattr(self, "combo_detection_method"):
+            return False
+        return self.combo_detection_method.currentIndex() == 1
+
+    def _is_individual_pipeline_enabled(self) -> bool:
+        """Return effective runtime state for individual analysis pipeline."""
+        if not hasattr(self, "chk_enable_individual_analysis"):
+            return False
+        return bool(
+            self.chk_enable_individual_analysis.isChecked()
+            and self._is_yolo_detection_mode()
+        )
+
+    def _is_individual_image_save_enabled(self) -> bool:
+        """Return effective runtime state for saving individual crops."""
+        if not hasattr(self, "chk_enable_individual_dataset"):
+            return False
+        return bool(
+            self.chk_enable_individual_dataset.isChecked()
+            and self._is_individual_pipeline_enabled()
+        )
+
+    def _should_generate_oriented_track_videos(self) -> bool:
+        """Return True when final per-track oriented videos should be exported."""
+        if not hasattr(self, "chk_generate_individual_track_videos"):
+            return False
+        return bool(
+            self.chk_generate_individual_track_videos.isChecked()
+            and self._is_individual_pipeline_enabled()
+        )
+
+    def _should_run_interpolated_postpass(self) -> bool:
+        """
+        Return True when interpolated post-pass should run.
+
+        We run this pass when interpolation is enabled and either:
+        - individual crop saving is enabled, or
+        - pose export is enabled (to fill occluded-frame pose rows in final CSV), or
+        - oriented track video export is enabled (to cache interpolated ROI geometry).
+        """
+        if not hasattr(self, "chk_individual_interpolate"):
+            return False
+        if not self.chk_individual_interpolate.isChecked():
+            return False
+        if not self._is_individual_pipeline_enabled():
+            return False
+        return bool(
+            self._is_individual_image_save_enabled()
+            or self._is_pose_export_enabled()
+            or self._should_generate_oriented_track_videos()
+        )
+
+    def _sync_individual_analysis_mode_ui(self):
+        """Enforce YOLO-only pipeline and run/save dependency in UI."""
+        has_analyze_toggle = hasattr(self, "chk_enable_individual_analysis")
+        has_save_toggle = hasattr(self, "chk_enable_individual_dataset")
+        is_yolo = self._is_yolo_detection_mode()
+
+        if has_analyze_toggle:
+            # Pipeline can only be enabled in YOLO mode.
+            if not is_yolo and self.chk_enable_individual_analysis.isChecked():
+                self.chk_enable_individual_analysis.blockSignals(True)
+                self.chk_enable_individual_analysis.setChecked(False)
+                self.chk_enable_individual_analysis.blockSignals(False)
+            self.chk_enable_individual_analysis.setEnabled(is_yolo)
+
+        pipeline_enabled = self._is_individual_pipeline_enabled()
+
+        if hasattr(self, "lbl_individual_yolo_only_notice"):
+            self.lbl_individual_yolo_only_notice.setVisible(not is_yolo)
+
+        if hasattr(self, "g_pose_runtime"):
+            self.g_pose_runtime.setEnabled(pipeline_enabled)
+        if hasattr(self, "g_individual_pipeline_common"):
+            self.g_individual_pipeline_common.setEnabled(pipeline_enabled)
+        self._sync_pose_backend_ui()
+
+        if has_save_toggle:
+            if not pipeline_enabled and self.chk_enable_individual_dataset.isChecked():
+                self.chk_enable_individual_dataset.blockSignals(True)
+                self.chk_enable_individual_dataset.setChecked(False)
+                self.chk_enable_individual_dataset.blockSignals(False)
+            self.chk_enable_individual_dataset.setEnabled(pipeline_enabled)
+
+        save_enabled = self._is_individual_image_save_enabled()
+        if hasattr(self, "ind_output_group"):
+            self.ind_output_group.setVisible(save_enabled)
+            self.ind_output_group.setEnabled(save_enabled)
+        if hasattr(self, "lbl_individual_info"):
+            self.lbl_individual_info.setVisible(save_enabled)
+        if hasattr(self, "chk_generate_individual_track_videos"):
+            self.chk_generate_individual_track_videos.setVisible(pipeline_enabled)
+            self.chk_generate_individual_track_videos.setEnabled(pipeline_enabled)
+        self._sync_video_pose_overlay_controls()
+        self._on_runtime_context_changed()
 
     def _select_individual_background_color(self):
         """Open color picker for individual dataset background color."""
@@ -4873,6 +7985,27 @@ class MainWindow(QMainWindow):
             # Convert RGB back to BGR for OpenCV
             self._background_color = (color.blue(), color.green(), color.red())
             self._update_background_color_button()
+
+    def _select_video_pose_color(self):
+        """Open color picker for fixed pose overlay color (BGR)."""
+        from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QColorDialog
+
+        b, g, r = self._video_pose_color
+        initial_color = QColor(r, g, b)
+        color = QColorDialog.getColor(initial_color, self, "Choose Pose Overlay Color")
+        if color.isValid():
+            self._video_pose_color = (color.blue(), color.green(), color.red())
+            self._update_video_pose_color_button()
+
+    def _update_video_pose_color_button(self):
+        """Update fixed pose-color preview button and text label."""
+        b, g, r = self._video_pose_color
+        self.btn_video_pose_color.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); "
+            f"border: 1px solid #333; border-radius: 2px;"
+        )
+        self.lbl_video_pose_color.setText(f"{self._video_pose_color}")
 
     def _update_background_color_button(self):
         """Update the color button display and label."""
@@ -4929,16 +8062,22 @@ class MainWindow(QMainWindow):
             logger.error(f"Failed to compute median color: {e}")
             QMessageBox.warning(self, "Error", f"Failed to compute median color:\n{e}")
 
-    def _select_individual_output_dir(self):
-        """Browse for individual dataset output directory."""
-        directory = QFileDialog.getExistingDirectory(
-            self, "Select Individual Dataset Output Directory"
-        )
-        if directory:
-            self.line_individual_output.setText(directory)
-
     def _on_yolo_batching_toggled(self, state):
         """Enable/disable YOLO batching controls based on checkbox."""
+        if self._runtime_requires_fixed_yolo_batch():
+            # TensorRT/ONNX runtimes require explicit fixed batch size.
+            if not self.chk_enable_yolo_batching.isChecked():
+                self.chk_enable_yolo_batching.setChecked(True)
+            self.chk_enable_yolo_batching.setEnabled(False)
+            self.combo_yolo_batch_mode.setVisible(True)
+            self.lbl_yolo_batch_mode.setVisible(True)
+            self.spin_yolo_batch_size.setVisible(True)
+            self.lbl_yolo_batch_size.setVisible(True)
+            self.combo_yolo_batch_mode.setCurrentIndex(1)
+            self.combo_yolo_batch_mode.setEnabled(False)
+            self.spin_yolo_batch_size.setEnabled(True)
+            return
+
         # Directly check checkbox state for reliability
         enabled = self.chk_enable_yolo_batching.isChecked()
 
@@ -4954,8 +8093,21 @@ class MainWindow(QMainWindow):
         manual_mode = self.combo_yolo_batch_mode.currentIndex() == 1
         self.spin_yolo_batch_size.setEnabled(enabled and manual_mode)
 
+    def _on_yolo_manual_batch_size_changed(self, value: int):
+        """Keep legacy fixed-batch field synchronized for fixed runtimes."""
+        if self._runtime_requires_fixed_yolo_batch() and hasattr(
+            self, "spin_tensorrt_batch"
+        ):
+            self.spin_tensorrt_batch.setValue(int(value))
+
     def _on_yolo_batch_mode_changed(self, index):
         """Show/hide manual batch size based on selected mode."""
+        if self._runtime_requires_fixed_yolo_batch():
+            # TensorRT/ONNX runtimes require explicit fixed batch size.
+            if self.combo_yolo_batch_mode.currentIndex() != 1:
+                self.combo_yolo_batch_mode.setCurrentIndex(1)
+            self.spin_yolo_batch_size.setEnabled(True)
+            return
         # index 0 = Auto, index 1 = Manual
         is_manual = index == 1
         batching_enabled = self.chk_enable_yolo_batching.isChecked()
@@ -4963,6 +8115,13 @@ class MainWindow(QMainWindow):
 
     def _on_tensorrt_toggled(self, state):
         """Enable/disable TensorRT batch size control based on checkbox."""
+        # TensorRT toggles are now derived from canonical compute runtime.
+        # Keep legacy widgets hidden from UI.
+        if not self.chk_enable_tensorrt.isVisible():
+            self.spin_tensorrt_batch.setVisible(False)
+            self.lbl_tensorrt_batch.setVisible(False)
+            return
+
         # Directly check checkbox state for reliability
         enabled = self.chk_enable_tensorrt.isChecked()
 
@@ -4985,6 +8144,10 @@ class MainWindow(QMainWindow):
         self.lbl_max_velocity_break.setVisible(enabled)
         self.spin_max_occlusion_gap.setVisible(enabled)
         self.lbl_max_occlusion_gap.setVisible(enabled)
+        self.chk_enable_tracklet_relinking.setVisible(enabled)
+        self.lbl_enable_tracklet_relinking.setVisible(enabled)
+        self.spin_relink_pose_max_distance.setVisible(enabled)
+        self.lbl_relink_pose_max_distance.setVisible(enabled)
         self.spin_max_velocity_zscore.setVisible(enabled)
         self.lbl_max_velocity_zscore.setVisible(enabled)
         self.spin_velocity_zscore_window.setVisible(enabled)
@@ -5005,6 +8168,8 @@ class MainWindow(QMainWindow):
         self.spin_min_trajectory_length.setEnabled(enabled)
         self.spin_max_velocity_break.setEnabled(enabled)
         self.spin_max_occlusion_gap.setEnabled(enabled)
+        self.chk_enable_tracklet_relinking.setEnabled(enabled)
+        self.spin_relink_pose_max_distance.setEnabled(enabled)
         self.spin_max_velocity_zscore.setEnabled(enabled)
         self.spin_velocity_zscore_window.setEnabled(enabled)
         self.spin_velocity_zscore_min_vel.setEnabled(enabled)
@@ -5013,6 +8178,25 @@ class MainWindow(QMainWindow):
         self.spin_merge_overlap_multiplier.setEnabled(enabled)
         self.spin_min_overlap_frames.setEnabled(enabled)
         self.chk_cleanup_temp_files.setEnabled(enabled)
+
+        # Pose quality widgets — visible only when post-processing AND pose export are active
+        pose_enabled = enabled and self._is_pose_export_enabled()
+        self.spin_pose_export_min_valid_fraction.setVisible(pose_enabled)
+        self.lbl_pose_export_min_valid_fraction.setVisible(pose_enabled)
+        self.spin_pose_export_min_valid_keypoints.setVisible(pose_enabled)
+        self.lbl_pose_export_min_valid_keypoints.setVisible(pose_enabled)
+        self.spin_relink_min_pose_quality.setVisible(pose_enabled)
+        self.lbl_relink_min_pose_quality.setVisible(pose_enabled)
+        self.spin_pose_postproc_max_gap.setVisible(pose_enabled)
+        self.lbl_pose_postproc_max_gap.setVisible(pose_enabled)
+        self.spin_pose_temporal_outlier_zscore.setVisible(pose_enabled)
+        self.lbl_pose_temporal_outlier_zscore.setVisible(pose_enabled)
+
+        self.spin_pose_export_min_valid_fraction.setEnabled(pose_enabled)
+        self.spin_pose_export_min_valid_keypoints.setEnabled(pose_enabled)
+        self.spin_relink_min_pose_quality.setEnabled(pose_enabled)
+        self.spin_pose_postproc_max_gap.setEnabled(pose_enabled)
+        self.spin_pose_temporal_outlier_zscore.setEnabled(pose_enabled)
 
     # =========================================================================
     # EVENT HANDLERS (Identical Logic to Original)
@@ -5030,6 +8214,7 @@ class MainWindow(QMainWindow):
         # Refresh preview to show correct mode
         self._update_preview_display()
         self.on_detection_method_changed(index)
+        self._on_runtime_context_changed()
 
     def select_file(self: object) -> object:
         """Select video file via file dialog."""
@@ -5037,6 +8222,16 @@ class MainWindow(QMainWindow):
             self, "Select Video", "", "Video Files (*.mp4 *.avi *.mov)"
         )
         if fp:
+            # If batch mode is checked, update the keystone
+            if self.g_batch.isChecked():
+                if not self.batch_videos:
+                    self.batch_videos = [fp]
+                else:
+                    if fp in self.batch_videos:
+                        self.batch_videos.remove(fp)
+                    self.batch_videos.insert(0, fp)
+                self._sync_batch_list_ui()
+
             self._setup_video_file(fp)
 
     def _setup_video_file(self, fp, skip_config_load=False):
@@ -5049,6 +8244,11 @@ class MainWindow(QMainWindow):
         """
         self.file_line.setText(fp)
         self.current_video_path = fp
+
+        # Reset caches for the new video
+        self.current_detection_cache_path = None
+        self.current_individual_properties_cache_path = None
+
         if self.roi_selection_active:
             self.clear_roi()
 
@@ -5072,6 +8272,13 @@ class MainWindow(QMainWindow):
         # Initialize video player
         self._init_video_player(fp)
 
+        # Update window title
+        self.setWindowTitle(f"Multi-Animal-Tracker - {os.path.basename(fp)}")
+
+        # Update Start/End frame spins
+        self.spin_start_frame.setValue(0)
+        self.spin_end_frame.setValue(self.video_total_frames - 1)
+
         # Auto-load config if it exists for this video (unless explicitly skipped)
         if not skip_config_load:
             config_path = get_video_config_path(fp)
@@ -5080,25 +8287,243 @@ class MainWindow(QMainWindow):
                 self.config_status_label.setText(
                     f"✓ Loaded: {os.path.basename(config_path)}"
                 )
-                self.config_status_label.setStyleSheet(
-                    "color: #4a9eff; font-style: italic; font-size: 10px;"
-                )
-                logger.info(
-                    f"Video selected: {fp} (auto-loaded config from {config_path})"
-                )
-            else:
-                self.config_status_label.setText(
-                    "No config found (using current settings)"
-                )
-                self.config_status_label.setStyleSheet(
-                    "color: #f39c12; font-style: italic; font-size: 10px;"
-                )
-                logger.info(
-                    f"Video selected: {fp} (no config found, using current settings)"
-                )
+        else:
+            self.config_status_label.setText(
+                "ℹ️ Using current UI parameters (Keystone)"
+            )
+            self.config_status_label.setStyleSheet(
+                "color: #f39c12; font-style: italic; font-size: 10px;"
+            )
 
-        # Enable full UI now that a video is loaded
+        # Enable controls
         self._apply_ui_state("idle")
+        self._show_workspace()
+
+    def _on_batch_mode_toggled(self, checked):
+        """Handle showing/hiding batch controls and syncing keystone video."""
+        self.container_batch.setVisible(checked)
+        if checked:
+            self._sync_keystone_to_batch()
+        else:
+            # If turning off batch mode, keep the current video but reset batch tracking state
+            self.current_batch_index = -1
+
+    def _sync_keystone_to_batch(self):
+        """Ensure the currently loaded video is the FIRST item in the batch list."""
+        video_path = self.file_line.text().strip()
+        if not video_path:
+            return
+
+        if not self.batch_videos:
+            self.batch_videos = [video_path]
+        else:
+            # If current video is already in list, move it to top
+            if video_path in self.batch_videos:
+                self.batch_videos.remove(video_path)
+            self.batch_videos.insert(0, video_path)
+
+        self._sync_batch_list_ui()
+
+    def _sync_batch_list_ui(self):
+        """Refresh the batch list widget with markers for the keystone."""
+        self.list_batch_videos.clear()
+        current_fp = (
+            os.path.normpath(self.file_line.text().strip())
+            if self.file_line.text().strip()
+            else ""
+        )
+
+        for i, fp in enumerate(self.batch_videos):
+            norm_fp = os.path.normpath(fp)
+            if i == 0:
+                item_text = f"⭐ KEYSTONE: {fp}"
+            else:
+                item_text = fp
+
+            if norm_fp == current_fp:
+                item_text = f"▶ CURRENT: {item_text}"
+
+            item = QListWidgetItem(item_text)
+            item.setToolTip(fp)
+
+            if norm_fp == current_fp:
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+
+            self.list_batch_videos.addItem(item)
+
+            if norm_fp == current_fp:
+                self.list_batch_videos.setCurrentItem(item)
+
+    def _add_videos_to_batch(self):
+        """Add additional videos to the batch list."""
+        fps, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select Additional Videos",
+            "",
+            "Video Files (*.mp4 *.avi *.mov *.mkv)",
+        )
+        if fps:
+            for fp in fps:
+                if fp not in self.batch_videos:
+                    self.batch_videos.append(fp)
+            self._sync_batch_list_ui()
+
+    def _on_batch_video_selected(self, *args):
+        """Load a video from the batch list for preview/tuning."""
+        row = self.list_batch_videos.currentRow()
+        if 0 <= row < len(self.batch_videos):
+            fp = self.batch_videos[row]
+            # If it's already the current video, do nothing
+            if fp == self.current_video_path:
+                return
+
+            # Skip config load so we keep using the keystone's parameters in the UI
+            self._setup_video_file(fp, skip_config_load=True)
+            self._sync_batch_list_ui()
+
+    def _remove_from_batch(self):
+        """Remove selected additional video from the batch list."""
+        row = self.list_batch_videos.currentRow()
+        if row == 0:
+            QMessageBox.information(
+                self,
+                "Cannot Remove",
+                "The Keystone video cannot be removed from the batch.",
+            )
+            return
+        if row > 0:
+            self.batch_videos.pop(row)
+            self._sync_batch_list_ui()
+
+    def _clear_batch(self):
+        """Clear all additional videos, keeping only the keystone."""
+        if len(self.batch_videos) > 1:
+            self.batch_videos = [self.batch_videos[0]]
+            self._sync_batch_list_ui()
+
+    def _export_batch_list(self):
+        """Save the current batch video list to a plain-text file (one path per line, keystone first)."""
+        if not self.batch_videos:
+            QMessageBox.information(
+                self,
+                "Nothing to Export",
+                "The batch list is empty. Add videos first.",
+            )
+            return
+
+        fp, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Batch Video List",
+            "",
+            "Batch List (*.txt);;All Files (*)",
+        )
+        if not fp:
+            return
+
+        try:
+            with open(fp, "w", encoding="utf-8") as fh:
+                for path in self.batch_videos:
+                    fh.write(path + "\n")
+            QMessageBox.information(
+                self,
+                "Exported",
+                f"Batch list saved to:\n{fp}\n\n"
+                f"{len(self.batch_videos)} video(s) listed (first = keystone).",
+            )
+        except OSError as exc:
+            QMessageBox.critical(self, "Export Failed", str(exc))
+
+    def _import_batch_list(self):
+        """Load a batch video list from a plain-text file and set up keystone + additional videos."""
+        fp, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Batch Video List",
+            "",
+            "Batch List (*.txt);;All Files (*)",
+        )
+        if not fp:
+            return
+
+        try:
+            with open(fp, "r", encoding="utf-8") as fh:
+                lines = [ln.rstrip("\n").strip() for ln in fh if ln.strip()]
+        except OSError as exc:
+            QMessageBox.critical(self, "Import Failed", str(exc))
+            return
+
+        if not lines:
+            QMessageBox.warning(
+                self, "Empty File", "The selected file contains no video paths."
+            )
+            return
+
+        missing = [p for p in lines if not os.path.isfile(p)]
+        valid = [p for p in lines if os.path.isfile(p)]
+
+        if missing:
+            missing_summary = "\n".join(f"  • {p}" for p in missing[:20])
+            if len(missing) > 20:
+                missing_summary += f"\n  … and {len(missing) - 20} more"
+
+            if not valid:
+                QMessageBox.critical(
+                    self,
+                    "Import Failed – All Paths Missing",
+                    f"None of the {len(missing)} path(s) in the file could be found:\n\n{missing_summary}",
+                )
+                return
+
+            if lines[0] not in valid:
+                QMessageBox.critical(
+                    self,
+                    "Import Failed – Keystone Missing",
+                    f"The keystone video (first line) does not exist:\n\n  {lines[0]}\n\n"
+                    "Cannot import without a valid keystone.",
+                )
+                return
+
+            reply = QMessageBox.question(
+                self,
+                "Missing Videos",
+                f"{len(missing)} path(s) could not be found and will be skipped:\n\n"
+                f"{missing_summary}\n\nProceed with {len(valid)} valid video(s)?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        if not valid:
+            QMessageBox.warning(
+                self, "Nothing Imported", "No valid video paths were found."
+            )
+            return
+
+        keystone = valid[0]
+
+        # Activate batch mode if not already on, then load the keystone
+        self.g_batch.setChecked(True)
+
+        # Replace the batch list with the imported paths (keystone first)
+        self.batch_videos = valid
+
+        # Trigger full keystone setup (loads config, autofills outputs, etc.)
+        self._setup_video_file(keystone)
+
+        # Sync the list widget now that keystone is loaded
+        self._sync_batch_list_ui()
+
+        QMessageBox.information(
+            self,
+            "Imported",
+            f"Loaded {len(valid)} video(s).\n\nKeystone: {keystone}",
+        )
+
+    def _process_batch(self):
+        """DEPRECATED: Now handled by the standard 'Start Full Tracking' logic when batch mode is on."""
+        pass
 
     def select_csv(self: object) -> object:
         """select_csv method documentation."""
@@ -5626,10 +9051,25 @@ class MainWindow(QMainWindow):
         self.lbl_text_scale.setVisible(checked)
         self.spin_arrow_length.setVisible(checked)
         self.lbl_arrow_length.setVisible(checked)
+        self.lbl_video_pose_settings.setVisible(checked)
+        self.check_video_show_pose.setVisible(checked)
+        self.lbl_video_pose_color_mode.setVisible(checked)
+        self.combo_video_pose_color_mode.setVisible(checked)
+        self.lbl_video_pose_color_label.setVisible(checked)
+        self.btn_video_pose_color.setVisible(checked)
+        self.lbl_video_pose_color.setVisible(checked)
+        self.lbl_video_pose_point_radius.setVisible(checked)
+        self.spin_video_pose_point_radius.setVisible(checked)
+        self.lbl_video_pose_point_thickness.setVisible(checked)
+        self.spin_video_pose_point_thickness.setVisible(checked)
+        self.lbl_video_pose_line_thickness.setVisible(checked)
+        self.spin_video_pose_line_thickness.setVisible(checked)
+        self.lbl_video_pose_disabled_hint.setVisible(checked)
 
         # Also control enable state
         self.btn_video_out.setEnabled(checked)
         self.video_out_line.setEnabled(checked)
+        self._sync_video_pose_overlay_controls()
 
     def _update_preview_display(self):
         """Update the video display with current brightness/contrast/gamma settings."""
@@ -5718,6 +9158,10 @@ class MainWindow(QMainWindow):
             logger.warning("No preview frame loaded")
             return
 
+        if self.preview_detection_worker and self.preview_detection_worker.isRunning():
+            logger.info("Preview detection is already running")
+            return
+
         # If size filtering is enabled, ask user whether to use it for the test
         use_size_filtering = False
         if self.chk_size_filtering.isChecked():
@@ -5753,468 +9197,203 @@ class MainWindow(QMainWindow):
                     "Running detection test WITHOUT size filtering (recommended for size estimation)"
                 )
 
-        from ..core.background.model import BackgroundModel
-        from ..core.detectors.engine import YOLOOBBDetector
-        from ..utils.image_processing import apply_image_adjustments
-
-        # Convert RGB preview to BGR for OpenCV
-        frame_bgr = cv2.cvtColor(self.preview_frame_original, cv2.COLOR_RGB2BGR)
-
-        # Get current parameters
-        detection_method = self.combo_detection_method.currentIndex()
-        is_background_subtraction = detection_method == 0
-
-        # Create a copy for visualization
-        test_frame = frame_bgr.copy()
-
-        try:
-            if is_background_subtraction:
-                # Build actual background model using priming frames
-                logger.info("Building background model for test detection...")
-
-                # Open video to sample priming frames
-                video_path = self.file_line.text()
-                cap = cv2.VideoCapture(video_path)
-                if not cap.isOpened():
-                    logger.error("Cannot open video for background priming")
-                    return
-
-                # Build parameters dict for BackgroundModel
-                bg_params = {
-                    "BACKGROUND_PRIME_FRAMES": self.spin_bg_prime.value(),
-                    "BRIGHTNESS": self.slider_brightness.value(),
-                    "CONTRAST": self.slider_contrast.value() / 100.0,
-                    "GAMMA": self.slider_gamma.value() / 100.0,
-                    "ROI_MASK": self.roi_mask,
-                    "RESIZE_FACTOR": self.spin_resize.value(),
-                    "DARK_ON_LIGHT_BACKGROUND": self.chk_dark_on_light.isChecked(),
-                    "THRESHOLD_VALUE": self.spin_threshold.value(),
-                    "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
-                    "ENABLE_ADDITIONAL_DILATION": self.chk_additional_dilation.isChecked(),
-                    "DILATION_KERNEL_SIZE": self.spin_dilation_kernel_size.value(),
-                    "DILATION_ITERATIONS": self.spin_dilation_iterations.value(),
-                }
-
-                # Create and prime background model
-                bg_model = BackgroundModel(bg_params)
-                bg_model.prime_background(cap)
-
-                if bg_model.lightest_background is None:
-                    logger.error("Failed to build background model")
-                    cap.release()
-                    return
-
-                # Now process the preview frame with the primed background
-                # Need to resize frame to match background dimensions if resize factor is set
-                resize_f = bg_params["RESIZE_FACTOR"]
-                frame_to_process = frame_bgr.copy()
-                if resize_f < 1.0:
-                    frame_to_process = cv2.resize(
-                        frame_to_process,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
-                    # Also resize the test_frame for visualization
-                    test_frame = cv2.resize(
-                        test_frame,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
-
-                gray = cv2.cvtColor(frame_to_process, cv2.COLOR_BGR2GRAY)
-                # GPU not needed for single-frame test
-                gray = apply_image_adjustments(
-                    gray,
-                    bg_params["BRIGHTNESS"],
-                    bg_params["CONTRAST"],
-                    bg_params["GAMMA"],
-                    use_gpu=False,
+        context = self._collect_preview_detection_context()
+        if (
+            int(context.get("detection_method", 0)) == 1
+            and str(context.get("yolo_obb_mode", "direct")).strip().lower()
+            == "sequential"
+        ):
+            detect_model = str(context.get("yolo_detect_model_path", "")).strip()
+            crop_obb_model = str(context.get("yolo_crop_obb_model_path", "")).strip()
+            if not detect_model or not crop_obb_model:
+                QMessageBox.warning(
+                    self,
+                    "Missing Sequential Models",
+                    "Sequential YOLO OBB mode in detection preview requires both a detect model and a crop OBB model.",
                 )
+                return
+        self.preview_detection_worker = PreviewDetectionWorker(
+            self.preview_frame_original.copy(),
+            context,
+            use_size_filtering,
+        )
+        self.preview_detection_worker.finished_signal.connect(
+            self._on_preview_detection_finished
+        )
+        self.preview_detection_worker.error_signal.connect(
+            self._on_preview_detection_error
+        )
+        self.preview_detection_worker.finished.connect(
+            self._on_preview_detection_worker_finished
+        )
+        self._set_preview_test_running(True)
+        self.preview_detection_worker.start()
 
-                # Apply ROI mask if exists (resize it too if needed)
-                roi_for_test = self.roi_mask
-                if self.roi_mask is not None:
-                    if resize_f < 1.0:
-                        roi_for_test = cv2.resize(
-                            self.roi_mask,
-                            (gray.shape[1], gray.shape[0]),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-                    gray = cv2.bitwise_and(gray, gray, mask=roi_for_test)
+    def _collect_preview_detection_context(self) -> dict:
+        """Capture current UI values for async preview detection."""
+        runtime_detection = derive_detection_runtime_settings(
+            self._selected_compute_runtime()
+        )
+        selected_runtime = self._selected_compute_runtime()
+        trt_batch_size = (
+            self.spin_yolo_batch_size.value()
+            if self._runtime_requires_fixed_yolo_batch(selected_runtime)
+            else self.spin_tensorrt_batch.value()
+        )
+        class_text = self.line_yolo_classes.text().strip()
+        target_classes = None
+        if class_text:
+            try:
+                target_classes = [int(x.strip()) for x in class_text.split(",")]
+            except ValueError:
+                target_classes = None
 
-                # Get background (use lightest_background as starting point)
-                bg_u8 = bg_model.lightest_background.astype(np.uint8)
+        return {
+            "detection_method": self.combo_detection_method.currentIndex(),
+            "video_path": self.file_line.text(),
+            "bg_prime_frames": self.spin_bg_prime.value(),
+            "brightness": self.slider_brightness.value(),
+            "contrast": self.slider_contrast.value() / 100.0,
+            "gamma": self.slider_gamma.value() / 100.0,
+            "roi_mask": self.roi_mask.copy() if self.roi_mask is not None else None,
+            "resize_factor": self.spin_resize.value(),
+            "dark_on_light": self.chk_dark_on_light.isChecked(),
+            "threshold_value": self.spin_threshold.value(),
+            "morph_kernel_size": self.spin_morph_size.value(),
+            "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
+            "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
+            "dilation_iterations": self.spin_dilation_iterations.value(),
+            "min_contour": self.spin_min_contour.value(),
+            "reference_body_size": self.spin_reference_body_size.value(),
+            "min_object_size": self.spin_min_object_size.value(),
+            "max_object_size": self.spin_max_object_size.value(),
+            "yolo_obb_mode": (
+                "sequential"
+                if self.combo_yolo_obb_mode.currentIndex() == 1
+                else "direct"
+            ),
+            "yolo_model_path": self._get_selected_yolo_model_path(),
+            "yolo_obb_direct_model_path": self._get_selected_yolo_model_path(),
+            "yolo_detect_model_path": self._get_selected_yolo_detect_model_path(),
+            "yolo_crop_obb_model_path": self._get_selected_yolo_crop_obb_model_path(),
+            "yolo_headtail_model_path": self._get_selected_yolo_headtail_model_path(),
+            "pose_overrides_headtail": self.chk_pose_overrides_headtail.isChecked(),
+            "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
+            "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
+            "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
+            "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
+            "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+            "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
+            "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
+            "yolo_confidence": self.spin_yolo_confidence.value(),
+            "yolo_iou": self.spin_yolo_iou.value(),
+            "yolo_target_classes": target_classes,
+            "yolo_device": runtime_detection["yolo_device"],
+            "enable_gpu_background": runtime_detection["enable_gpu_background"],
+            "enable_tensorrt": runtime_detection["enable_tensorrt"],
+            "enable_onnx_runtime": runtime_detection["enable_onnx_runtime"],
+            "tensorrt_max_batch_size": trt_batch_size,
+            "max_targets": self.spin_max_targets.value(),
+            "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
+        }
 
-                # Generate foreground mask (includes morphology operations)
-                fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
+    def _validate_yolo_model_requirements(self, params: dict, mode_label: str) -> bool:
+        """Validate YOLO mode-specific model requirements before starting runs."""
+        if str(params.get("DETECTION_METHOD", "")) != "yolo_obb":
+            return True
 
-                # Find contours
-                cnts, _ = cv2.findContours(
-                    fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
+        yolo_mode = str(params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+        if yolo_mode != "sequential":
+            return True
 
-                min_contour = self.spin_min_contour.value()
-                detections = []
-                detected_dimensions = (
-                    []
-                )  # Collect (major, minor) axis pairs for statistics
+        detect_model = str(params.get("YOLO_DETECT_MODEL_PATH", "")).strip()
+        crop_obb_model = str(params.get("YOLO_CROP_OBB_MODEL_PATH", "")).strip()
+        if detect_model and crop_obb_model:
+            return True
 
-                # Size filtering is based on body area multipliers, not mm²
-                # Calculate pixel areas from reference body size
-                reference_body_size = self.spin_reference_body_size.value()
-                reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
-                scaled_body_area = reference_body_area * (resize_f**2)
+        QMessageBox.warning(
+            self,
+            "Missing Sequential Models",
+            (
+                f"Sequential YOLO OBB mode in {mode_label} requires both a detect model "
+                "and a crop OBB model."
+            ),
+        )
+        return False
 
-                if use_size_filtering:
-                    min_size_multiplier = self.spin_min_object_size.value()
-                    max_size_multiplier = self.spin_max_object_size.value()
-                    min_size_px2 = min_size_multiplier * scaled_body_area
-                    max_size_px2 = max_size_multiplier * scaled_body_area
-                    logger.info("Background subtraction size filtering ENABLED:")
-                    logger.info(f"  Resize factor: {resize_f:.2f}")
-                    logger.info(f"  Reference body size: {reference_body_size:.1f} px")
-                    logger.info(
-                        f"  Reference body area (original): {reference_body_area:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Reference body area (resized): {scaled_body_area:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Min size multiplier: {min_size_multiplier:.2f}× → {min_size_px2:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Max size multiplier: {max_size_multiplier:.2f}× → {max_size_px2:.1f} px²"
-                    )
+    def _set_preview_test_running(self, running: bool):
+        """Lock/unlock UI while async preview detection is running."""
+        if running:
+            self._set_interactive_widgets_enabled(False, remember_state=True)
+            self._set_video_interaction_enabled(False)
+            self.btn_test_detection.setText("Testing Detection...")
+            self.btn_test_detection.setEnabled(False)
+            self.progress_label.setText("Testing detection on preview...")
+            self.progress_label.setVisible(True)
+            self.progress_bar.setRange(0, 0)
+            self.progress_bar.setVisible(True)
+            return
 
-                filtered_count = 0
-                detection_num = 0
-                for c in cnts:
-                    area = cv2.contourArea(c)
-                    if area < min_contour or len(c) < 5:
-                        continue
+        self._set_interactive_widgets_enabled(True, remember_state=True)
+        self._set_video_interaction_enabled(True)
+        self.btn_test_detection.setText("Test Detection on Preview")
+        self.btn_test_detection.setEnabled(self.preview_frame_original is not None)
+        self.progress_bar.setRange(0, 100)
+        self._refresh_progress_visibility()
 
-                    # Apply size filtering based on user choice
-                    if use_size_filtering:
-                        # Compare pixel area to size thresholds (already in pixels)
-                        passes_filter = min_size_px2 <= area <= max_size_px2
+    @Slot(dict)
+    def _on_preview_detection_finished(self, result: dict):
+        """Handle successful async preview detection completion."""
+        test_frame_rgb = result.get("test_frame_rgb")
+        resize_f = float(result.get("resize_factor", 1.0))
+        detected_dimensions = result.get("detected_dimensions") or []
 
-                        if detection_num < 5:  # Log first 5 detections for debugging
-                            logger.info(
-                                f"  Detection {detection_num + 1}: {area:.1f} px² (range: {min_size_px2:.1f}-{max_size_px2:.1f}) - {'PASS' if passes_filter else 'FILTERED OUT'}"
-                            )
+        if test_frame_rgb is None:
+            logger.warning("Preview detection completed without image result")
+            return
 
-                        detection_num += 1
+        self._update_detection_stats(detected_dimensions, resize_f)
+        self.detection_test_result = (test_frame_rgb.copy(), resize_f)
 
-                        if not passes_filter:
-                            filtered_count += 1
-                            continue
+        h, w, ch = test_frame_rgb.shape
+        bytes_per_line = ch * w
+        qimg = QImage(test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888)
 
-                    # Fit ellipse
-                    (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
-                    detections.append(((cx, cy), (ax1, ax2), ang, area))
-                    # Store major and minor axes (fitEllipse returns full axes, not semi-axes)
-                    major_axis = max(ax1, ax2)
-                    minor_axis = min(ax1, ax2)
-                    detected_dimensions.append((major_axis, minor_axis))
-
-                    # Draw ellipse
-                    cv2.ellipse(
-                        test_frame,
-                        ((int(cx), int(cy)), (int(ax1), int(ax2)), ang),
-                        (0, 255, 0),
-                        2,
-                    )
-                    cv2.circle(test_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
-
-                # Show foreground mask in corner
-                small_fg = cv2.resize(fg_mask, (0, 0), fx=0.3, fy=0.3)
-                test_frame[0 : small_fg.shape[0], 0 : small_fg.shape[1]] = cv2.cvtColor(
-                    small_fg, cv2.COLOR_GRAY2BGR
-                )
-
-                # Show estimated background in opposite corner
-                small_bg = cv2.resize(bg_u8, (0, 0), fx=0.3, fy=0.3)
-                bg_bgr = cv2.cvtColor(small_bg, cv2.COLOR_GRAY2BGR)
-                test_frame[0 : bg_bgr.shape[0], -bg_bgr.shape[1] :] = bg_bgr
-
-                # Add detection count and note
-                cv2.putText(
-                    test_frame,
-                    f"Detections: {len(detections)} (BG from {self.spin_bg_prime.value()} frames)",
-                    (10, test_frame.shape[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2,
-                )
-
-                cap.release()
-
-                if use_size_filtering:
-                    logger.info(
-                        f"Background subtraction test complete: {len(detections)} detections passed size filter, {filtered_count} filtered out"
-                    )
-                else:
-                    logger.info(
-                        f"Background subtraction test complete: {len(detections)} detections"
-                    )
-
-                # Update detection statistics (scale dimensions back to original resolution)
-                self._update_detection_stats(detected_dimensions, resize_f)
-            else:
-                # YOLO Detection
-                # Apply resize factor (same as tracking does)
-                resize_f = self.spin_resize.value()
-                frame_to_process = frame_bgr.copy()
-                if resize_f < 1.0:
-                    frame_to_process = cv2.resize(
-                        frame_to_process,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
-                    # Also resize the test_frame for visualization
-                    test_frame = cv2.resize(
-                        test_frame,
-                        (0, 0),
-                        fx=resize_f,
-                        fy=resize_f,
-                        interpolation=cv2.INTER_AREA,
-                    )
-
-                # Build parameters for YOLO
-                # Convert size multipliers to pixel areas for detector (same as full tracking run)
-                reference_body_size = self.spin_reference_body_size.value()
-                reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
-                scaled_body_area = reference_body_area * (resize_f**2)
-
-                if use_size_filtering:
-                    min_size_px2 = int(
-                        self.spin_min_object_size.value() * scaled_body_area
-                    )
-                    max_size_px2 = int(
-                        self.spin_max_object_size.value() * scaled_body_area
-                    )
-                else:
-                    min_size_px2 = 0
-                    max_size_px2 = float("inf")
-
-                yolo_params = {
-                    "YOLO_MODEL_PATH": resolve_model_path(
-                        self._get_selected_yolo_model_path()
-                    ),
-                    "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
-                    "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
-                    "USE_CUSTOM_OBB_IOU_FILTERING": True,
-                    "YOLO_TARGET_CLASSES": (
-                        [
-                            int(x.strip())
-                            for x in self.line_yolo_classes.text().split(",")
-                        ]
-                        if self.line_yolo_classes.text().strip()
-                        else None
-                    ),
-                    "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
-                    "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[
-                        0
-                    ]
-                    != "cpu",
-                    # Disable TensorRT for preview - it's optimized for batch processing
-                    # Preview processes one frame at a time, so TensorRT overhead isn't worth it
-                    "ENABLE_TENSORRT": False,
-                    "TENSORRT_MAX_BATCH_SIZE": self.spin_tensorrt_batch.value(),
-                    "MAX_TARGETS": self.spin_max_targets.value(),
-                    "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
-                    "ENABLE_SIZE_FILTERING": use_size_filtering,  # Use the user's choice
-                    "MIN_OBJECT_SIZE": min_size_px2,  # Already converted to pixels
-                    "MAX_OBJECT_SIZE": max_size_px2,  # Already converted to pixels
-                }
-
-                # Prepare ROI mask for filtering (resize if needed)
-                roi_for_yolo = None
-                if self.roi_mask is not None:
-                    roi_for_yolo = self.roi_mask
-                    if resize_f < 1.0:
-                        roi_for_yolo = cv2.resize(
-                            self.roi_mask,
-                            (frame_to_process.shape[1], frame_to_process.shape[0]),
-                            interpolation=cv2.INTER_NEAREST,
-                        )
-
-                # Log size filtering parameters if enabled
-                if use_size_filtering:
-                    # Logging parameters (already calculated above when building yolo_params)
-                    min_size_multiplier = self.spin_min_object_size.value()
-                    max_size_multiplier = self.spin_max_object_size.value()
-                    logger.info("YOLO size filtering ENABLED:")
-                    logger.info(f"  Resize factor: {resize_f:.2f}")
-                    logger.info(f"  Reference body size: {reference_body_size:.1f} px")
-                    logger.info(
-                        f"  Reference body area (original): {reference_body_area:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Reference body area (resized): {scaled_body_area:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Min size multiplier: {min_size_multiplier:.2f}× → {min_size_px2:.1f} px²"
-                    )
-                    logger.info(
-                        f"  Max size multiplier: {max_size_multiplier:.2f}× → {max_size_px2:.1f} px²"
-                    )
-
-                # Create detector and run detection on FULL frame (no masking)
-                # This preserves natural image context for better YOLO confidence
-                logger.info(
-                    f"Running YOLO detection (conf={yolo_params['YOLO_CONFIDENCE_THRESHOLD']:.2f}, "
-                    f"iou={yolo_params['YOLO_IOU_THRESHOLD']:.2f})"
-                )
-                detector = YOLOOBBDetector(yolo_params)
-                (
-                    raw_meas,
-                    raw_sizes,
-                    raw_shapes,
-                    yolo_results,
-                    raw_confidences,
-                    raw_obb_corners,
-                ) = detector.detect_objects(frame_to_process, 0, return_raw=True)
-                (
-                    meas,
-                    sizes,
-                    shapes,
-                    detection_confidences,
-                    filtered_obb_corners,
-                    _,
-                ) = detector.filter_raw_detections(
-                    raw_meas,
-                    raw_sizes,
-                    raw_shapes,
-                    raw_confidences,
-                    raw_obb_corners,
-                    roi_mask=roi_for_yolo,
-                    detection_ids=None,
-                )
-
-                if use_size_filtering:
-                    logger.info(f"YOLO detected {len(meas)} objects after filtering")
-                    if len(sizes) > 0:
-                        logger.info(
-                            f"  Size range: {min(sizes):.1f} - {max(sizes):.1f} px²"
-                        )
-                        logger.info(
-                            f"  Filtering range: {min_size_px2:.1f} - {max_size_px2:.1f} px²"
-                        )
-                        # Show first few detections
-                        for i in range(min(5, len(sizes))):
-                            passes_filter = min_size_px2 <= sizes[i] <= max_size_px2
-                            logger.info(
-                                f"  Detection {i + 1}: {sizes[i]:.1f} px² - {'PASS' if passes_filter else 'FILTERED OUT'}"
-                            )
-
-                # Collect detected dimensions for statistics (only for filtered detections)
-                detected_dimensions = []
-                for i, corners in enumerate(filtered_obb_corners):
-                    corners = np.asarray(corners, dtype=np.float32)
-                    major_axis = float(np.linalg.norm(corners[1] - corners[0]))
-                    minor_axis = float(np.linalg.norm(corners[2] - corners[1]))
-                    if major_axis < minor_axis:
-                        major_axis, minor_axis = minor_axis, major_axis
-                    detected_dimensions.append((major_axis, minor_axis))
-
-                    corners_int = corners.astype(np.int32)
-                    cv2.polylines(
-                        test_frame,
-                        [corners_int],
-                        isClosed=True,
-                        color=(0, 255, 255),
-                        thickness=2,
-                    )
-
-                    conf = (
-                        detection_confidences[i]
-                        if i < len(detection_confidences)
-                        else float("nan")
-                    )
-                    if not np.isnan(conf):
-                        cx = int(corners[:, 0].mean())
-                        cy = int(corners[:, 1].mean())
-                        cv2.putText(
-                            test_frame,
-                            f"{conf:.2f}",
-                            (cx - 15, cy - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            (0, 255, 255),
-                            2,
-                        )
-
-                # Draw detection centers and orientations
-                for i, m in enumerate(meas):
-                    cx, cy, angle_rad = m
-                    cv2.circle(test_frame, (int(cx), int(cy)), 5, (0, 255, 0), -1)
-                    # Draw orientation
-                    ex = int(cx + 30 * math.cos(angle_rad))
-                    ey = int(cy + 30 * math.sin(angle_rad))
-                    cv2.line(test_frame, (int(cx), int(cy)), (ex, ey), (0, 255, 0), 2)
-
-                # Add detection count and parameters
-                cv2.putText(
-                    test_frame,
-                    f"Detections: {len(meas)} (IOU={yolo_params['YOLO_IOU_THRESHOLD']:.2f})",
-                    (10, test_frame.shape[0] - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2,
-                )
-
-                # Update detection statistics (scale dimensions back to original resolution)
-                self._update_detection_stats(detected_dimensions, resize_f)
-
-            # Convert BGR to RGB for Qt display
-            test_frame_rgb = cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB)
-
-            # Store the detection test result for redisplay when zoom changes
-            self.detection_test_result = (test_frame_rgb.copy(), resize_f)
-
-            h, w, ch = test_frame_rgb.shape
-            bytes_per_line = ch * w
-
-            qimg = QImage(
-                test_frame_rgb.data, w, h, bytes_per_line, QImage.Format_RGB888
+        zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
+        effective_scale = zoom_val * resize_f
+        if effective_scale != 1.0 and self.preview_frame_original is not None:
+            orig_h, orig_w = self.preview_frame_original.shape[:2]
+            scaled_w = int(orig_w * effective_scale)
+            scaled_h = int(orig_h * effective_scale)
+            qimg = qimg.scaled(
+                scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
 
-            # Apply zoom (zoom is applied after any resize_factor processing)
-            # The zoom should be relative to the original frame size, not the resized one
-            zoom_val = max(self.slider_zoom.value() / 100.0, 0.1)
-            effective_scale = zoom_val * resize_f
+        self.video_label.setPixmap(QPixmap.fromImage(qimg))
+        self._fit_image_to_screen()
+        logger.info("Detection test completed on preview frame")
 
-            if effective_scale != 1.0:
-                # Get original dimensions
-                orig_h, orig_w = self.preview_frame_original.shape[:2]
-                scaled_w = int(orig_w * effective_scale)
-                scaled_h = int(orig_h * effective_scale)
-                qimg = qimg.scaled(
-                    scaled_w, scaled_h, Qt.KeepAspectRatio, Qt.SmoothTransformation
-                )
+    @Slot(str)
+    def _on_preview_detection_error(self, error_message: str):
+        """Handle async preview detection failure."""
+        logger.error(f"Detection test failed: {error_message}")
+        QMessageBox.warning(
+            self,
+            "Detection Test Failed",
+            "Detection test failed on preview frame. Check logs for details.",
+        )
 
-            pixmap = QPixmap.fromImage(qimg)
-            self.video_label.setPixmap(pixmap)
-
-            # Auto-fit to screen after detection
-            self._fit_image_to_screen()
-
-            logger.info("Detection test completed on preview frame")
-
-        except Exception as e:
-            logger.error(f"Detection test failed: {e}")
-            import traceback
-
-            traceback.print_exc()
+    @Slot()
+    def _on_preview_detection_worker_finished(self):
+        """Finalize async preview detection UI state and worker lifecycle."""
+        sender = self.sender()
+        if sender is self.preview_detection_worker:
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            self.preview_detection_worker = None
+        self._set_preview_test_running(False)
 
     def _on_roi_mode_changed(self, index):
         """Handle ROI mode selection change."""
@@ -6834,8 +10013,8 @@ class MainWindow(QMainWindow):
 
     def on_detection_method_changed(self: object, index: object) -> object:
         """on_detection_method_changed method documentation."""
-        # In new UI, this is handled by StackedWidget, but we keep this for compatibility logic
-        pass
+        # Keep compatibility hook and synchronize YOLO-only individual-analysis controls.
+        self._sync_individual_analysis_mode_ui()
 
     def _sanitize_model_token(self, text: object) -> object:
         """Sanitize model metadata token for safe filename use."""
@@ -6850,97 +10029,166 @@ class MainWindow(QMainWindow):
         size = metadata.get("size") or metadata.get("model_size")
         species = metadata.get("species")
         model_info = metadata.get("model_info")
+        task_family = str(metadata.get("task_family", "")).strip().lower()
+        usage_role = str(metadata.get("usage_role", "")).strip().lower()
         model_id = None
         if species and model_info:
             model_id = f"{species}_{model_info}"
         elif species:
             model_id = species
-        if size and model_id:
-            return f"{filename} ({size}, {model_id})"
-
-        builtins = {
-            "yolo26s-obb.pt": "Balanced",
-            "yolo26n-obb.pt": "Fastest",
-            "yolov11s-obb.pt": "Legacy",
-        }
-        if filename in builtins:
-            return f"{filename} ({builtins[filename]})"
+        suffix_parts = []
+        if size:
+            suffix_parts.append(str(size))
+        if model_id:
+            suffix_parts.append(str(model_id))
+        if usage_role:
+            suffix_parts.append(usage_role)
+        elif task_family:
+            suffix_parts.append(task_family)
+        if suffix_parts:
+            return f"{filename} ({', '.join(suffix_parts)})"
         return filename
 
-    def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
-        """Populate YOLO model combo from built-ins + repository models."""
+    @staticmethod
+    def _yolo_model_matches_filter(
+        metadata: object, task_family: str | None = None, usage_role: str | None = None
+    ) -> bool:
+        if not isinstance(metadata, dict):
+            return True
+        meta_task = str(metadata.get("task_family", "")).strip().lower()
+        meta_role = str(metadata.get("usage_role", "")).strip().lower()
+        if not meta_task and not meta_role:
+            # Backward compatibility for legacy entries with no role/type metadata.
+            return True
+        if task_family and meta_task and meta_task != task_family:
+            return False
+        if usage_role and meta_role and meta_role != usage_role:
+            return False
+        return True
+
+    def _populate_yolo_model_combo(
+        self,
+        combo: object,
+        preferred_model_path: object = None,
+        default_path: str = "",
+        include_none: bool = False,
+        task_family: str | None = None,
+        usage_role: str | None = None,
+        repository_dir: str | None = None,
+        recursive: bool = False,
+    ) -> object:
+        """Populate a YOLO-model combo with optional metadata role filtering."""
         selected_path = preferred_model_path
-        if selected_path is None and hasattr(self, "combo_yolo_model"):
-            selected_path = self._get_selected_yolo_model_path()
+        if selected_path is None:
+            selected_data = combo.currentData(Qt.UserRole)
+            if selected_data and selected_data not in ("__add_new__", "__none__"):
+                selected_path = str(selected_data)
 
         entries = {}
-        for built_in in ("yolo26s-obb.pt", "yolo26n-obb.pt", "yolov11s-obb.pt"):
-            entries[built_in] = self._format_yolo_model_label(built_in)
 
-        models_dir = get_models_directory()
-        try:
-            local_models = sorted(
-                f
-                for f in os.listdir(models_dir)
-                if os.path.splitext(f)[1].lower() in (".pt", ".pth")
+        models_dir = str(
+            repository_dir
+            or get_yolo_model_repository_directory(
+                task_family=task_family, usage_role=usage_role
             )
+        )
+        try:
+            if recursive:
+                local_model_paths = []
+                for dirpath, _dirnames, filenames in os.walk(models_dir):
+                    for fn in sorted(filenames):
+                        if os.path.splitext(fn)[1].lower() in (".pt", ".pth"):
+                            local_model_paths.append(os.path.join(dirpath, fn))
+            else:
+                local_model_paths = sorted(
+                    os.path.join(models_dir, f)
+                    for f in os.listdir(models_dir)
+                    if os.path.splitext(f)[1].lower() in (".pt", ".pth")
+                )
         except Exception as e:
             logger.warning(f"Failed to list YOLO model directory '{models_dir}': {e}")
-            local_models = []
+            local_model_paths = []
 
-        for filename in local_models:
-            rel_path = make_model_path_relative(os.path.join(models_dir, filename))
+        for model_abs in local_model_paths:
+            rel_path = make_model_path_relative(model_abs)
+            metadata = get_yolo_model_metadata(rel_path) or {}
+            if not self._yolo_model_matches_filter(
+                metadata, task_family=task_family, usage_role=usage_role
+            ):
+                continue
             entries[rel_path] = self._format_yolo_model_label(rel_path)
 
-        self.combo_yolo_model.blockSignals(True)
-        self.combo_yolo_model.clear()
+        combo.blockSignals(True)
+        combo.clear()
         for model_path, label in entries.items():
-            self.combo_yolo_model.addItem(label, model_path)
-        self.combo_yolo_model.addItem("Custom Model...", "__custom__")
-        self.combo_yolo_model.blockSignals(False)
+            combo.addItem(label, model_path)
+        if include_none:
+            combo.insertItem(0, "— None —", "__none__")
+        combo.addItem("＋ Add New Model…", "__add_new__")
+        combo.blockSignals(False)
 
-        self._set_yolo_model_selection(selected_path)
+        self._set_model_selection_for_selector(
+            combo,
+            selected_path,
+            default_path=default_path,
+        )
 
-    def _get_selected_yolo_model_path(self) -> object:
-        """Return currently selected YOLO model path (relative when available)."""
-        if not hasattr(self, "combo_yolo_model"):
-            return "yolo26s-obb.pt"
-        selected_data = self.combo_yolo_model.currentData(Qt.UserRole)
-        if selected_data and selected_data != "__custom__":
-            return str(selected_data)
-        if (
-            hasattr(self, "yolo_custom_model_line")
-            and self.yolo_custom_model_line.text().strip()
-        ):
-            return make_model_path_relative(self.yolo_custom_model_line.text().strip())
-        return "yolo26s-obb.pt"
-
-    def _set_yolo_model_selection(self, model_path: object) -> object:
-        """Set combo/custom selection from a model path."""
+    def _set_model_selection_for_selector(
+        self,
+        combo: object,
+        model_path: object,
+        default_path: str = "",
+    ) -> object:
         target_path = make_model_path_relative(model_path or "")
         if not target_path:
-            target_path = "yolo26s-obb.pt"
+            target_path = str(default_path or "")
 
-        for i in range(self.combo_yolo_model.count()):
-            item_data = self.combo_yolo_model.itemData(i, Qt.UserRole)
+        for i in range(combo.count()):
+            item_data = combo.itemData(i, Qt.UserRole)
             if item_data == target_path:
-                self.combo_yolo_model.setCurrentIndex(i)
-                if hasattr(self, "yolo_custom_model_line"):
-                    self.yolo_custom_model_line.setText("")
+                combo.setCurrentIndex(i)
                 return
 
-        custom_idx = self.combo_yolo_model.findData("__custom__", Qt.UserRole)
-        if custom_idx < 0:
-            custom_idx = self.combo_yolo_model.count() - 1
-        self.combo_yolo_model.setCurrentIndex(custom_idx)
-        if hasattr(self, "yolo_custom_model_line"):
-            self.yolo_custom_model_line.setText(target_path)
+        # Target not found — fall back to "— None —" or first item.
+        none_idx = combo.findData("__none__", Qt.UserRole)
+        if none_idx >= 0:
+            combo.setCurrentIndex(none_idx)
+        else:
+            combo.setCurrentIndex(0)
 
-    def _import_yolo_model_to_repository(self, source_path: object) -> object:
-        """Import a model file into models/YOLO-obb using metadata-based naming."""
+    def _get_selected_model_path_from_selector(
+        self, combo: object, default_path: str = ""
+    ) -> object:
+        selected_data = combo.currentData(Qt.UserRole)
+        if selected_data and selected_data not in ("__add_new__", "__none__"):
+            return str(selected_data)
+        return str(default_path or "")
+
+    def _import_yolo_model_to_repository(
+        self,
+        source_path: object,
+        task_family: str | None = None,
+        usage_role: str | None = None,
+        repository_dir: str | None = None,
+    ) -> object:
+        """Import a YOLO model file into models/obb with metadata."""
         src = str(source_path or "")
         if not src or not os.path.exists(src):
             return None
+
+        src_abs = os.path.abspath(src)
+        models_dir = str(
+            repository_dir
+            or get_yolo_model_repository_directory(
+                task_family=task_family, usage_role=usage_role
+            )
+        )
+        try:
+            rel_existing = os.path.relpath(src_abs, models_dir)
+            if not rel_existing.startswith(".."):
+                return make_model_path_relative(src_abs)
+        except Exception:
+            pass
 
         # Single dialog for metadata collection (size + species + model info + timestamp preview)
         now_preview = datetime.now()
@@ -7000,7 +10248,6 @@ class MainWindow(QMainWindow):
         timestamp_token = now.strftime("%Y%m%d-%H%M%S")
         added_at = now.isoformat(timespec="seconds")
         ext = os.path.splitext(src)[1].lower() or ".pt"
-        models_dir = get_models_directory()
 
         model_slug = f"{model_species}_{model_info}"
         base_name = f"{timestamp_token}_{model_size}_{model_slug}"
@@ -7030,79 +10277,422 @@ class MainWindow(QMainWindow):
             "source_path": src,
             "stored_filename": os.path.basename(dest_path),
         }
+        if task_family:
+            metadata["task_family"] = str(task_family).strip().lower()
+        if usage_role:
+            metadata["usage_role"] = str(usage_role).strip().lower()
         register_yolo_model(rel_path, metadata)
         logger.info(f"Imported model to repository: {dest_path}")
         return rel_path
 
+    def _refresh_yolo_model_combo(self, preferred_model_path: object = None) -> object:
+        """Populate direct OBB model combo from repository models."""
+        self._populate_yolo_model_combo(
+            self.combo_yolo_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_none=False,
+            task_family="obb",
+            usage_role="obb_direct",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="obb", usage_role="obb_direct"
+            ),
+        )
+
+    def _refresh_yolo_detect_model_combo(self, preferred_model_path: object = None):
+        self._populate_yolo_model_combo(
+            self.combo_yolo_detect_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_none=True,
+            task_family="detect",
+            usage_role="seq_detect",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="detect", usage_role="seq_detect"
+            ),
+        )
+
+    def _refresh_yolo_crop_obb_model_combo(self, preferred_model_path: object = None):
+        self._populate_yolo_model_combo(
+            self.combo_yolo_crop_obb_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_none=True,
+            task_family="obb",
+            usage_role="seq_crop_obb",
+            repository_dir=get_yolo_model_repository_directory(
+                task_family="obb", usage_role="seq_crop_obb"
+            ),
+        )
+
+    def _refresh_yolo_headtail_model_combo(self, preferred_model_path: object = None):
+        ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
+        subdir = ht_type.currentText() if ht_type else "YOLO"
+        repo_dir = os.path.join(
+            get_yolo_model_repository_directory(
+                task_family="classify", usage_role="headtail"
+            ),
+            subdir,
+        )
+        os.makedirs(repo_dir, exist_ok=True)
+        self._populate_yolo_model_combo(
+            self.combo_yolo_headtail_model,
+            preferred_model_path=preferred_model_path,
+            default_path="",
+            include_none=True,
+            task_family="classify",
+            usage_role="headtail",
+            repository_dir=repo_dir,
+        )
+
+    def _populate_pose_model_combo(
+        self,
+        combo: object,
+        backend: str,
+        preferred_model_path: object = None,
+    ) -> None:
+        """Populate the pose model combo for the given backend."""
+        selected_path = preferred_model_path
+        if selected_path is None:
+            selected_data = combo.currentData(Qt.UserRole)
+            if selected_data and selected_data not in ("__add_new__", "__none__"):
+                selected_path = str(selected_data)
+
+        backend_key = (
+            "sleap"
+            if backend == "sleap"
+            else ("vitpose" if backend == "vitpose" else "yolo")
+        )
+        repo_dir = get_pose_models_directory(backend_key)
+        os.makedirs(repo_dir, exist_ok=True)
+
+        entries = {}
+        try:
+            if backend_key == "sleap":
+                for name in sorted(os.listdir(repo_dir)):
+                    full = os.path.join(repo_dir, name)
+                    if os.path.isdir(full):
+                        rel = make_pose_model_path_relative(full)
+                        entries[rel] = name
+            else:
+                for fn in sorted(os.listdir(repo_dir)):
+                    if os.path.splitext(fn)[1].lower() in (".pt", ".pth"):
+                        full = os.path.join(repo_dir, fn)
+                        rel = make_pose_model_path_relative(full)
+                        entries[rel] = self._format_yolo_model_label(rel)
+        except Exception as e:
+            logger.warning(f"Failed to list pose model directory '{repo_dir}': {e}")
+
+        combo.blockSignals(True)
+        combo.clear()
+        for path, label in entries.items():
+            combo.addItem(label, path)
+        combo.insertItem(0, "— None —", "__none__")
+        combo.addItem("＋ Add New Model…", "__add_new__")
+        combo.blockSignals(False)
+
+        self._set_model_selection_for_selector(combo, selected_path, default_path="")
+
+    def _refresh_pose_model_combo(self, preferred_model_path: object = None) -> None:
+        """Refresh the pose model combo for the current backend."""
+        if not hasattr(self, "combo_pose_model"):
+            return
+        backend = self._current_pose_backend_key()
+        self._populate_pose_model_combo(
+            self.combo_pose_model,
+            backend=backend,
+            preferred_model_path=preferred_model_path,
+        )
+
+    def on_pose_model_changed(self, index: int) -> None:
+        """Handle selection change in the pose model combo."""
+        if not hasattr(self, "combo_pose_model"):
+            return
+        selected_data = self.combo_pose_model.itemData(index, Qt.UserRole)
+        if selected_data == "__add_new__":
+            self._handle_add_new_pose_model()
+            return
+        path = selected_data if selected_data and selected_data != "__none__" else ""
+        self._set_pose_model_path_for_backend(
+            path, backend=self._current_pose_backend_key(), update_combo=False
+        )
+
+    def _get_selected_pose_model_path(self) -> str:
+        """Return the currently selected pose model path from the combo."""
+        if not hasattr(self, "combo_pose_model"):
+            return self._pose_model_path_for_backend()
+        return self._get_selected_model_path_from_selector(
+            self.combo_pose_model, default_path=""
+        )
+
+    def _get_selected_yolo_model_path(self) -> object:
+        """Return currently selected direct OBB model path."""
+        if not hasattr(self, "combo_yolo_model"):
+            return ""
+        return self._get_selected_model_path_from_selector(
+            self.combo_yolo_model,
+            default_path="",
+        )
+
+    def _get_selected_yolo_detect_model_path(self) -> object:
+        return self._get_selected_model_path_from_selector(
+            self.combo_yolo_detect_model,
+            default_path="",
+        )
+
+    def _get_selected_yolo_crop_obb_model_path(self) -> object:
+        return self._get_selected_model_path_from_selector(
+            self.combo_yolo_crop_obb_model,
+            default_path="",
+        )
+
+    def _get_selected_yolo_headtail_model_path(self) -> object:
+        return self._get_selected_model_path_from_selector(
+            self.combo_yolo_headtail_model,
+            default_path="",
+        )
+
+    def _set_yolo_model_selection(self, model_path: object) -> object:
+        self._set_model_selection_for_selector(
+            self.combo_yolo_model,
+            model_path,
+        )
+
+    def _set_yolo_detect_model_selection(self, model_path: object) -> object:
+        self._set_model_selection_for_selector(
+            self.combo_yolo_detect_model,
+            model_path,
+        )
+
+    def _set_yolo_crop_obb_model_selection(self, model_path: object) -> object:
+        self._set_model_selection_for_selector(
+            self.combo_yolo_crop_obb_model,
+            model_path,
+        )
+
+    def _set_yolo_headtail_model_selection(self, model_path: object) -> object:
+        self._set_model_selection_for_selector(
+            self.combo_yolo_headtail_model,
+            model_path,
+        )
+
+    def _on_yolo_mode_changed(self, _index: object) -> object:
+        """Toggle direct/sequential model controls."""
+        form = self.yolo_group.layout() if hasattr(self, "yolo_group") else None
+
+        def _set_row_visible(widget: object, visible: bool):
+            if widget is None:
+                return
+            widget.setVisible(bool(visible))
+            if form is None:
+                return
+            try:
+                label = form.labelForField(widget)
+            except Exception:
+                label = None
+            if label is not None:
+                label.setVisible(bool(visible))
+
+        sequential = (
+            hasattr(self, "combo_yolo_obb_mode")
+            and self.combo_yolo_obb_mode.currentIndex() == 1
+        )
+
+        _set_row_visible(
+            getattr(self, "combo_yolo_model", None),
+            not sequential,
+        )
+
+        _set_row_visible(
+            getattr(self, "combo_yolo_detect_model", None),
+            sequential,
+        )
+        _set_row_visible(
+            getattr(self, "combo_yolo_crop_obb_model", None),
+            sequential,
+        )
+        _set_row_visible(
+            getattr(self, "yolo_seq_advanced", None),
+            sequential,
+        )
+        _set_row_visible(
+            getattr(self, "headtail_model_row_widget", None),
+            True,
+        )
+        _set_row_visible(getattr(self, "chk_pose_overrides_headtail", None), True)
+        if hasattr(self, "spin_yolo_headtail_conf"):
+            self.spin_yolo_headtail_conf.setEnabled(
+                bool(self._get_selected_yolo_headtail_model_path().strip())
+            )
+        self._update_obb_mode_warning()
+
+    def _on_headtail_model_type_changed(self, _index: object = None) -> None:
+        """Refresh the head-tail model combo when the user switches YOLO ↔ tiny."""
+        self._refresh_yolo_headtail_model_combo()
+
+    def _update_obb_mode_warning(self) -> None:
+        """Show a performance hint when device/mode is a suboptimal combination."""
+        if not hasattr(self, "lbl_obb_mode_warning"):
+            return
+        runtime = (
+            self._selected_compute_runtime()
+            if hasattr(self, "combo_compute_runtime")
+            else ""
+        )
+        sequential = (
+            hasattr(self, "combo_yolo_obb_mode")
+            and self.combo_yolo_obb_mode.currentIndex() == 1
+        )
+        is_mps = "mps" in runtime.lower()
+        is_cuda = "cuda" in runtime.lower()
+        if is_mps and sequential:
+            msg = (
+                "⚠ Sequential mode is significantly slower on Apple Silicon (MPS). "
+                "Direct mode is recommended for MPS — it runs ~4× faster."
+            )
+        elif is_cuda and not sequential:
+            msg = (
+                "⚠ Sequential mode is typically faster on CUDA GPUs. "
+                "Consider switching to Sequential for better throughput."
+            )
+        else:
+            msg = ""
+        self.lbl_obb_mode_warning.setText(msg)
+        self.lbl_obb_mode_warning.setVisible(bool(msg))
+
     def on_yolo_model_changed(self: object, index: object) -> object:
-        """on_yolo_model_changed method documentation."""
-        is_custom = self.combo_yolo_model.currentData(Qt.UserRole) == "__custom__"
-        self.yolo_custom_model_widget.setVisible(is_custom)
+        """Handle direct OBB model selection — triggers import when 'Add New' chosen."""
+        if self.combo_yolo_model.itemData(index, Qt.UserRole) == "__add_new__":
+            self._handle_add_new_yolo_model(
+                combo=self.combo_yolo_model,
+                refresh_callback=self._refresh_yolo_model_combo,
+                selection_callback=self._set_yolo_model_selection,
+                task_family="obb",
+                usage_role="obb_direct",
+                dialog_title="Add Direct OBB Model",
+            )
+            return
+        self._on_yolo_mode_changed(index)
 
-    def select_yolo_custom_model(self: object) -> object:
-        """select_yolo_custom_model method documentation."""
-        start_dir = get_models_directory()
+    def on_yolo_detect_model_changed(self: object, index: object) -> object:
+        if self.combo_yolo_detect_model.itemData(index, Qt.UserRole) == "__add_new__":
+            self._handle_add_new_yolo_model(
+                combo=self.combo_yolo_detect_model,
+                refresh_callback=self._refresh_yolo_detect_model_combo,
+                selection_callback=self._set_yolo_detect_model_selection,
+                task_family="detect",
+                usage_role="seq_detect",
+                dialog_title="Add Sequential Detect Model",
+            )
+            return
+        self._on_yolo_mode_changed(index)
 
+    def on_yolo_crop_obb_model_changed(self: object, index: object) -> object:
+        if self.combo_yolo_crop_obb_model.itemData(index, Qt.UserRole) == "__add_new__":
+            self._handle_add_new_yolo_model(
+                combo=self.combo_yolo_crop_obb_model,
+                refresh_callback=self._refresh_yolo_crop_obb_model_combo,
+                selection_callback=self._set_yolo_crop_obb_model_selection,
+                task_family="obb",
+                usage_role="seq_crop_obb",
+                dialog_title="Add Sequential Crop OBB Model",
+            )
+            return
+        self._on_yolo_mode_changed(index)
+
+    def on_yolo_headtail_model_changed(self: object, index: object) -> object:
+        if self.combo_yolo_headtail_model.itemData(index, Qt.UserRole) == "__add_new__":
+            ht_type = getattr(self, "combo_yolo_headtail_model_type", None)
+            subdir = ht_type.currentText() if ht_type else "YOLO"
+            repo_dir = os.path.join(
+                get_yolo_model_repository_directory(
+                    task_family="classify", usage_role="headtail"
+                ),
+                subdir,
+            )
+            os.makedirs(repo_dir, exist_ok=True)
+            self._handle_add_new_yolo_model(
+                combo=self.combo_yolo_headtail_model,
+                refresh_callback=self._refresh_yolo_headtail_model_combo,
+                selection_callback=self._set_yolo_headtail_model_selection,
+                task_family="classify",
+                usage_role="headtail",
+                dialog_title="Add Head-Tail Classifier",
+                repository_dir=repo_dir,
+            )
+            return
+        self._on_yolo_mode_changed(index)
+
+    def _handle_add_new_yolo_model(
+        self,
+        combo: object,
+        refresh_callback: object,
+        selection_callback: object,
+        task_family: str,
+        usage_role: str,
+        dialog_title: str,
+        repository_dir: str | None = None,
+    ) -> object:
+        """Browse for a model, import it, refresh the combo, and select it.
+
+        Restores the previous selection if the user cancels.
+        """
+        # Remember what was selected before this action item was triggered.
+        prev_data = None
+        for i in range(combo.count()):
+            d = combo.itemData(i, Qt.UserRole)
+            if d not in ("__add_new__", "__none__", None):
+                prev_data = d
+                break
+
+        start_dir = str(
+            repository_dir
+            or get_yolo_model_repository_directory(
+                task_family=task_family, usage_role=usage_role
+            )
+        )
         fp, _ = QFileDialog.getOpenFileName(
             self,
-            "Select YOLO Model",
+            dialog_title,
             start_dir,
             "PyTorch Model Files (*.pt *.pth);;All Files (*)",
         )
         if not fp:
+            # Cancelled — restore previous selection silently.
+            combo.blockSignals(True)
+            self._set_model_selection_for_selector(combo, prev_data)
+            combo.blockSignals(False)
             return
 
-        models_dir = get_models_directory()
         selected_abs = os.path.abspath(fp)
         try:
-            rel_path = os.path.relpath(selected_abs, models_dir)
-            is_in_repo = not rel_path.startswith("..")
+            rel_existing = os.path.relpath(selected_abs, start_dir)
+            is_in_repo = not rel_existing.startswith("..")
         except (ValueError, TypeError):
             is_in_repo = False
 
         if is_in_repo:
-            final_model_path = make_model_path_relative(selected_abs)
+            final_path = make_model_path_relative(selected_abs)
         else:
-            final_model_path = self._import_yolo_model_to_repository(selected_abs)
-            if not final_model_path:
+            final_path = self._import_yolo_model_to_repository(
+                selected_abs,
+                task_family=task_family,
+                usage_role=usage_role,
+                repository_dir=start_dir,
+            )
+            if not final_path:
+                combo.blockSignals(True)
+                self._set_model_selection_for_selector(combo, prev_data)
+                combo.blockSignals(False)
                 return
             QMessageBox.information(
                 self,
-                "Model Imported",
-                f"Model imported to repository as:\n{os.path.basename(final_model_path)}",
+                "Model Added",
+                f"Model added to repository:\n{os.path.basename(final_path)}",
             )
 
-        self._refresh_yolo_model_combo(preferred_model_path=final_model_path)
-        self._set_yolo_model_selection(final_model_path)
-
-    def toggle_histogram_window(self: object) -> object:
-        """toggle_histogram_window method documentation."""
-        if self.histogram_window is None:
-            if self.histogram_panel is None:
-                self.histogram_panel = HistogramPanel(
-                    history_frames=self.spin_histogram_history.value()
-                )
-            self.histogram_window = QMainWindow()
-            self.histogram_window.setWindowTitle("Real-Time Parameter Histograms")
-            self.histogram_window.setCentralWidget(self.histogram_panel)
-            self.histogram_window.resize(900, 700)
-            self.histogram_window.setStyleSheet(self.styleSheet())
-
-            def on_close():
-                self.btn_show_histograms.setChecked(False)
-                self.histogram_window.hide()
-
-            self.histogram_window.closeEvent = lambda event: (
-                on_close(),
-                event.accept(),
-            )
-
-        if self.btn_show_histograms.isChecked():
-            self.histogram_window.show()
-            self.histogram_window.raise_()
-            self.histogram_window.activateWindow()
-        else:
-            self.histogram_window.hide()
+        refresh_callback(preferred_model_path=final_path)
+        selection_callback(final_path)
 
     def toggle_preview(self: object, checked: object) -> object:
         """toggle_preview method documentation."""
@@ -7199,7 +10789,7 @@ class MainWindow(QMainWindow):
                 "Maximum speed processing mode active.\n"
                 "Real-time stats displayed below."
             )
-            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+            self.video_label.setStyleSheet("color: #9a9a9a; font-size: 14px;")
             logger.info("Visualization-Free Mode enabled - Maximum speed processing")
         elif is_tracking_active and not is_viz_free:
             # Restore previous state or default message
@@ -7207,7 +10797,7 @@ class MainWindow(QMainWindow):
                 self.video_label.setText(self._stored_preview_text)
             elif not self.video_label.pixmap():
                 self._show_video_logo_placeholder()
-            self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+            self.video_label.setStyleSheet("color: #6a6a6a; font-size: 16px;")
 
     def start_full(self: object) -> object:
         """start_full method documentation."""
@@ -7223,16 +10813,146 @@ class MainWindow(QMainWindow):
             from datetime import datetime
 
             self._individual_dataset_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.current_individual_dataset_path = None
             self.current_detection_cache_path = None
+            self.current_individual_properties_cache_path = None
+            self.current_interpolated_roi_npz_path = None
+            self.current_interpolated_pose_csv_path = None
+            self.current_interpolated_pose_df = None
+            self._pending_pose_export_csv_path = None
+            self._pending_video_csv_path = None
+            self._pending_video_generation = False
+            self._pending_finish_after_track_videos = False
 
         self.start_tracking(preview_mode=False)
 
+    def _request_qthread_stop(
+        self,
+        worker,
+        worker_name: str,
+        *,
+        timeout_ms: int = 1500,
+        force_terminate: bool = True,
+    ) -> None:
+        """Stop a QThread cooperatively, then force terminate if needed."""
+        if worker is None:
+            return
+        try:
+            if not worker.isRunning():
+                return
+        except Exception:
+            return
+
+        try:
+            if hasattr(worker, "stop"):
+                worker.stop()
+        except Exception:
+            logger.debug("Failed to call stop() on %s", worker_name, exc_info=True)
+
+        try:
+            worker.requestInterruption()
+        except Exception:
+            pass
+
+        stopped = False
+        try:
+            stopped = bool(worker.wait(int(timeout_ms)))
+        except Exception:
+            stopped = False
+
+        if stopped:
+            logger.info("%s stopped.", worker_name)
+            return
+
+        if not force_terminate:
+            logger.warning(
+                "%s did not stop within %d ms (cooperative stop only).",
+                worker_name,
+                int(timeout_ms),
+            )
+            return
+
+        logger.warning(
+            "%s did not stop cooperatively; forcing terminate().", worker_name
+        )
+        try:
+            worker.terminate()
+        except Exception:
+            logger.debug("terminate() failed for %s", worker_name, exc_info=True)
+        try:
+            worker.wait(max(500, int(timeout_ms)))
+        except Exception:
+            pass
+
+    def _stop_csv_writer(self, timeout_sec: float = 2.0) -> None:
+        """Stop background CSV writer thread safely without indefinite blocking."""
+        writer = self.csv_writer_thread
+        if writer is None:
+            return
+        try:
+            writer.stop()
+        except Exception:
+            logger.debug("Failed to request CSV writer stop.", exc_info=True)
+        try:
+            if writer.is_alive():
+                writer.join(timeout=timeout_sec)
+                if writer.is_alive():
+                    logger.warning("CSV writer did not stop within %.1fs.", timeout_sec)
+        except Exception:
+            logger.debug("Failed to join CSV writer thread.", exc_info=True)
+        finally:
+            self.csv_writer_thread = None
+
+    def _cleanup_thread_reference(self, attr_name: str) -> None:
+        """Delete finished QThread references safely."""
+        worker = getattr(self, attr_name, None)
+        if worker is None:
+            return
+        try:
+            running = bool(worker.isRunning())
+        except Exception:
+            running = False
+        if not running:
+            try:
+                worker.deleteLater()
+            except Exception:
+                pass
+            setattr(self, attr_name, None)
+
     def stop_tracking(self: object) -> object:
         """stop_tracking method documentation."""
-        if self.tracking_worker and self.tracking_worker.isRunning():
-            self.tracking_worker.stop()
-            self.progress_bar.setVisible(False)
-            self.progress_label.setVisible(False)
+        self._stop_all_requested = True
+        self._pending_finish_after_interp = False
+        self._pending_finish_after_track_videos = False
+        self._pending_pose_export_csv_path = None
+        self._pending_video_csv_path = None
+        self._pending_video_generation = False
+
+        # Stop all active workers and subprocess-like threads.
+        self._request_qthread_stop(
+            getattr(self, "_cache_builder_worker", None), "DetectionCacheBuilderWorker"
+        )
+        self._request_qthread_stop(
+            getattr(self, "merge_worker", None), "MergeWorker", timeout_ms=1200
+        )
+        self._request_qthread_stop(self.dataset_worker, "DatasetGenerationWorker")
+        self._request_qthread_stop(self.interp_worker, "InterpolatedCropsWorker")
+        self._request_qthread_stop(
+            self.oriented_video_worker, "OrientedTrackVideoWorker"
+        )
+        self._request_qthread_stop(self.tracking_worker, "TrackingWorker")
+        self._stop_csv_writer()
+
+        self._cleanup_thread_reference("_cache_builder_worker")
+        self._cleanup_thread_reference("merge_worker")
+        self._cleanup_thread_reference("dataset_worker")
+        self._cleanup_thread_reference("interp_worker")
+        self._cleanup_thread_reference("oriented_video_worker")
+
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Ready")
         self._set_ui_controls_enabled(True)
         # Ensure UI state is restored after stopping
         if self.current_video_path:
@@ -7248,7 +10968,12 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_preview.setEnabled(True)
         self._individual_dataset_run_id = None
+        self.current_individual_dataset_path = None
         self.current_detection_cache_path = None
+        self.current_individual_properties_cache_path = None
+        self.current_interpolated_roi_npz_path = None
+        self.current_interpolated_pose_csv_path = None
+        self.current_interpolated_pose_df = None
 
         # Hide stats labels when tracking stops
         self.label_current_fps.setVisible(False)
@@ -7257,6 +10982,7 @@ class MainWindow(QMainWindow):
 
         # Reset tracking frame size
         self._tracking_frame_size = None
+        self._cleanup_session_logging()
 
     def _set_ui_controls_enabled(self, enabled: bool):
         if enabled:
@@ -7353,19 +11079,19 @@ class MainWindow(QMainWindow):
         self.video_label.clear()
         if self._is_visualization_enabled():
             self.video_label.setText("")
-            self.video_label.setStyleSheet("color: #666; font-size: 16px;")
+            self.video_label.setStyleSheet("color: #6a6a6a; font-size: 16px;")
         else:
             self.video_label.setText(
                 "Visualization Disabled\n\n"
                 "Maximum speed processing mode active.\n"
                 "Real-time stats displayed below."
             )
-            self.video_label.setStyleSheet("color: #888; font-size: 14px;")
+            self.video_label.setStyleSheet("color: #9a9a9a; font-size: 14px;")
 
     def _show_video_logo_placeholder(self):
         """Show MAT logo in the video panel when no video is loaded."""
         try:
-            project_root = Path(__file__).resolve().parents[3]
+            project_root = Path(__file__).resolve().parents[2]
             logo_path = project_root / "brand" / "multianimaltracker.svg"
             vw = max(640, self.scroll.viewport().width())
             vh = max(420, self.scroll.viewport().height())
@@ -7437,12 +11163,18 @@ class MainWindow(QMainWindow):
                 self.btn_open_training_dialog,
                 self.btn_open_pose_label,
             ]
+            splash_allowed = list(getattr(self, "_splash_buttons", []))
             self._set_interactive_widgets_enabled(
                 False,
-                allowlist=[self.btn_file, self.btn_load_config] + extra_allowed,
+                allowlist=[self.btn_file, self.btn_load_config]
+                + extra_allowed
+                + splash_allowed,
                 remember_state=False,
             )
             self.btn_start.setEnabled(False)
+            self.btn_preview.setEnabled(False)
+            if hasattr(self, "btn_param_helper"):
+                self.btn_param_helper.setEnabled(False)
             self._set_video_interaction_enabled(False)
             self.g_video_player.setVisible(False)
             self._show_video_logo_placeholder()
@@ -7451,6 +11183,9 @@ class MainWindow(QMainWindow):
         if state == "idle":
             self._set_interactive_widgets_enabled(True)
             self.btn_start.setEnabled(True)
+            self.btn_preview.setEnabled(True)
+            if hasattr(self, "btn_param_helper"):
+                self.btn_param_helper.setEnabled(True)
             self._set_video_interaction_enabled(True)
             self._sync_contextual_controls()
             return
@@ -7588,12 +11323,34 @@ class MainWindow(QMainWindow):
         self: object, percentage: object, status_text: object
     ) -> object:
         """on_progress_update method documentation."""
+        if self._stop_all_requested:
+            return
         self.progress_bar.setValue(percentage)
         self.progress_label.setText(status_text)
+
+    @Slot(str)
+    def on_pose_exported_model_resolved(self, artifact_path: str) -> None:
+        """Update pose exported-model UI/config when runtime resolves an artifact path."""
+        if self._stop_all_requested:
+            return
+        path = str(artifact_path or "").strip()
+        if not path:
+            return
+        logger.info("Pose runtime resolved exported model artifact: %s", path)
+        try:
+            # Persist run metadata immediately.
+            self.save_config(prompt_if_exists=False)
+        except Exception:
+            logger.debug(
+                "Failed to persist resolved pose runtime artifact metadata.",
+                exc_info=True,
+            )
 
     @Slot(str, str)
     def on_tracking_warning(self: object, title: object, message: object) -> object:
         """Display tracking warnings in the UI."""
+        if self._stop_all_requested:
+            return
         QMessageBox.information(self, title, message)
 
     def show_gpu_info(self: object) -> object:
@@ -7659,9 +11416,17 @@ class MainWindow(QMainWindow):
     @Slot(dict)
     def on_stats_update(self: object, stats: object) -> object:
         """Update real-time tracking statistics."""
+        if self._stop_all_requested:
+            return
+        phase = str(stats.get("phase", "tracking"))
+        is_precompute = phase == "individual_precompute"
+
         # Update FPS
         if "fps" in stats:
-            self.label_current_fps.setText(f"FPS: {stats['fps']:.1f}")
+            if is_precompute:
+                self.label_current_fps.setText(f"Precompute Rate: {stats['fps']:.1f}/s")
+            else:
+                self.label_current_fps.setText(f"FPS: {stats['fps']:.1f}")
             self.label_current_fps.setVisible(True)
 
         # Update elapsed time
@@ -7674,7 +11439,10 @@ class MainWindow(QMainWindow):
                 elapsed_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
             else:
                 elapsed_str = f"{minutes:02d}:{seconds:02d}"
-            self.label_elapsed_time.setText(f"Elapsed: {elapsed_str}")
+            if is_precompute:
+                self.label_elapsed_time.setText(f"Precompute Elapsed: {elapsed_str}")
+            else:
+                self.label_elapsed_time.setText(f"Elapsed: {elapsed_str}")
             self.label_elapsed_time.setVisible(True)
 
         # Update ETA
@@ -7688,9 +11456,15 @@ class MainWindow(QMainWindow):
                     eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
                 else:
                     eta_str = f"{minutes:02d}:{seconds:02d}"
-                self.label_eta.setText(f"ETA: {eta_str}")
+                if is_precompute:
+                    self.label_eta.setText(f"Precompute ETA: {eta_str}")
+                else:
+                    self.label_eta.setText(f"ETA: {eta_str}")
             else:
-                self.label_eta.setText("ETA: calculating...")
+                if is_precompute:
+                    self.label_eta.setText("Precompute ETA: calculating...")
+                else:
+                    self.label_eta.setText("ETA: calculating...")
             self.label_eta.setVisible(True)
 
     @Slot(np.ndarray)
@@ -7829,6 +11603,8 @@ class MainWindow(QMainWindow):
 
     def merge_and_save_trajectories(self: object) -> object:
         """merge_and_save_trajectories method documentation."""
+        if self._stop_all_requested:
+            return
         logger.info("=" * 80)
         logger.info("Starting trajectory merging process...")
         logger.info("=" * 80)
@@ -7893,21 +11669,53 @@ class MainWindow(QMainWindow):
 
     def on_merge_progress(self: object, value: object, message: object) -> object:
         """Update progress bar during merge."""
+        if self._stop_all_requested:
+            return
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.merge_worker is not None
+            and sender is not self.merge_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
 
     def _on_interpolated_crops_finished(self, result):
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.interp_worker is not None
+            and sender is not self.interp_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            self._cleanup_thread_reference("interp_worker")
+            self._refresh_progress_visibility()
+            return
         saved = 0
         gaps = 0
         mapping_path = None
         roi_csv_path = None
         roi_npz_path = None
+        pose_csv_path = None
+        pose_rows = None
         try:
             saved = int(result.get("saved", 0))
             gaps = int(result.get("gaps", 0))
             mapping_path = result.get("mapping_path")
             roi_csv_path = result.get("roi_csv_path")
             roi_npz_path = result.get("roi_npz_path")
+            pose_csv_path = result.get("pose_csv_path")
+            pose_rows = result.get("pose_rows")
         except Exception:
             pass
         self._refresh_progress_visibility()
@@ -7917,19 +11725,257 @@ class MainWindow(QMainWindow):
         if roi_csv_path:
             logger.info(f"Interpolated ROIs CSV saved: {roi_csv_path}")
         if roi_npz_path:
+            self.current_interpolated_roi_npz_path = roi_npz_path
             logger.info(f"Interpolated ROIs cache saved: {roi_npz_path}")
+        if pose_csv_path:
+            self.current_interpolated_pose_csv_path = pose_csv_path
+            self.current_interpolated_pose_df = None
+            logger.info(f"Interpolated pose CSV saved: {pose_csv_path}")
+        elif pose_rows:
+            try:
+                self.current_interpolated_pose_df = pd.DataFrame(pose_rows)
+                self.current_interpolated_pose_csv_path = None
+                logger.info(
+                    "Interpolated pose rows kept in-memory: %d",
+                    len(self.current_interpolated_pose_df),
+                )
+            except Exception:
+                self.current_interpolated_pose_df = None
 
-        if self.interp_worker is not None and not self.interp_worker.isRunning():
-            self.interp_worker.deleteLater()
-            self.interp_worker = None
-            self._refresh_progress_visibility()
+        self._cleanup_thread_reference("interp_worker")
+        self._refresh_progress_visibility()
+
+        if self._pending_pose_export_csv_path:
+            self._relink_final_pose_augmented_csv(self._pending_pose_export_csv_path)
 
         if self._pending_finish_after_interp:
             self._pending_finish_after_interp = False
-            self._finalize_tracking_session_ui()
+            if self._start_pending_oriented_track_video_export(
+                self._session_final_csv_path
+            ):
+                return
+            self._run_pending_video_generation_or_finalize()
+
+    def _resolve_source_video_fps(self) -> float:
+        """Return the source video FPS, falling back to the UI value."""
+        fps = 0.0
+        video_path = self.file_line.text().strip() if hasattr(self, "file_line") else ""
+        if video_path and os.path.exists(video_path):
+            cap = cv2.VideoCapture(video_path)
+            try:
+                if cap.isOpened():
+                    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            finally:
+                cap.release()
+        if fps <= 0.0 and hasattr(self, "spin_fps"):
+            fps = float(self.spin_fps.value() or 0.0)
+        return max(1.0, fps or 1.0)
+
+    def _resolve_current_individual_dataset_dir(self):
+        """Resolve the active per-session individual dataset directory."""
+        params = self.get_parameters_dict()
+        dataset_dir = resolve_individual_dataset_dir(
+            params.get("INDIVIDUAL_DATASET_OUTPUT_DIR"),
+            params.get("INDIVIDUAL_DATASET_NAME"),
+            self._individual_dataset_run_id,
+        )
+        if dataset_dir is None:
+            return None
+        return Path(dataset_dir).expanduser()
+
+    def _generate_oriented_track_videos(self, final_csv_path):
+        """Export orientation-fixed videos for final trajectories."""
+        try:
+            if self._stop_all_requested:
+                return False
+            if not self._should_generate_oriented_track_videos():
+                return False
+            if not final_csv_path or not os.path.exists(final_csv_path):
+                return False
+
+            dataset_dir = self._resolve_current_individual_dataset_dir()
+            if dataset_dir is None:
+                logger.warning(
+                    "Skipping oriented track video export: no individual dataset directory found."
+                )
+                return False
+            if not self.current_detection_cache_path or not os.path.exists(
+                self.current_detection_cache_path
+            ):
+                logger.warning(
+                    "Skipping oriented track video export: no compatible detection cache is available."
+                )
+                return False
+
+            self.current_individual_dataset_path = str(dataset_dir)
+            self.progress_bar.setVisible(True)
+            self.progress_label.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.progress_label.setText("Generating oriented track videos...")
+
+            if (
+                self.oriented_video_worker is not None
+                and self.oriented_video_worker.isRunning()
+            ):
+                logger.warning(
+                    "Oriented track video export already running; skipping duplicate request."
+                )
+                return True
+            if (
+                self.oriented_video_worker is not None
+                and not self.oriented_video_worker.isRunning()
+            ):
+                self.oriented_video_worker.deleteLater()
+                self.oriented_video_worker = None
+
+            padding_fraction = (
+                float(self.spin_individual_padding.value())
+                if hasattr(self, "spin_individual_padding")
+                else 0.1
+            )
+            self.oriented_video_worker = OrientedTrackVideoWorker(
+                final_csv_path,
+                str(dataset_dir),
+                self.file_line.text().strip(),
+                self.current_detection_cache_path,
+                self.current_interpolated_roi_npz_path,
+                self._resolve_source_video_fps(),
+                max(0.0, padding_fraction),
+                tuple(int(c) for c in self._background_color),
+                bool(self.chk_suppress_foreign_obb_dataset.isChecked()),
+            )
+            self.oriented_video_worker.progress_signal.connect(self.on_progress_update)
+            self.oriented_video_worker.finished_signal.connect(
+                self._on_oriented_track_videos_finished
+            )
+            self.oriented_video_worker.error_signal.connect(
+                self._on_oriented_track_videos_error
+            )
+            self.oriented_video_worker.finished.connect(
+                self._on_oriented_track_video_worker_thread_finished
+            )
+            self.oriented_video_worker.start()
+            return True
+        except Exception as e:
+            logger.warning(f"Oriented track video export failed to start: {e}")
+            return False
+
+    def _start_pending_oriented_track_video_export(self, final_csv_path) -> bool:
+        """Start optional oriented track video export and hold the finish pipeline."""
+        started = self._generate_oriented_track_videos(final_csv_path)
+        if started:
+            self._pending_finish_after_track_videos = True
+        return started
+
+    def _on_oriented_track_video_worker_thread_finished(self):
+        """Release completed oriented track video worker safely."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.oriented_video_worker is not None
+            and sender is not self.oriented_video_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("oriented_video_worker")
+        self._refresh_progress_visibility()
+
+    def _on_oriented_track_videos_finished(self, result):
+        """Handle completion of oriented track video export."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.oriented_video_worker is not None
+            and sender is not self.oriented_video_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            self._cleanup_thread_reference("oriented_video_worker")
+            self._refresh_progress_visibility()
+            return
+
+        try:
+            exported_videos = int(result.get("exported_videos", 0))
+            exported_frames = int(result.get("exported_frames", 0))
+            exported_tracks = int(result.get("exported_tracks", 0))
+            missing_rows = int(result.get("missing_rows", 0))
+            output_dir = str(result.get("output_dir", "")).strip()
+        except Exception:
+            exported_videos = 0
+            exported_frames = 0
+            exported_tracks = 0
+            missing_rows = 0
+            output_dir = ""
+
+        if output_dir:
+            logger.info(
+                "Oriented track videos exported to %s (%d/%d tracks, %d frames, missing rows=%d)",
+                output_dir,
+                exported_videos,
+                exported_tracks,
+                exported_frames,
+                missing_rows,
+            )
+        else:
+            logger.info(
+                "Oriented track video export complete (%d/%d tracks, %d frames, missing rows=%d)",
+                exported_videos,
+                exported_tracks,
+                exported_frames,
+                missing_rows,
+            )
+
+        self._cleanup_thread_reference("oriented_video_worker")
+        self._refresh_progress_visibility()
+
+        if self._pending_finish_after_track_videos:
+            self._pending_finish_after_track_videos = False
+            self._run_pending_video_generation_or_finalize()
+
+    def _on_oriented_track_videos_error(self, error_message):
+        """Handle oriented track video export errors without aborting the session."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.oriented_video_worker is not None
+            and sender is not self.oriented_video_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        logger.warning("Oriented track video export failed: %s", error_message)
+        self._cleanup_thread_reference("oriented_video_worker")
+        self._refresh_progress_visibility()
+        if self._pending_finish_after_track_videos:
+            self._pending_finish_after_track_videos = False
+            self._run_pending_video_generation_or_finalize()
 
     def on_merge_error(self: object, error_message: object) -> object:
         """Handle merge errors."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.merge_worker is not None
+            and sender is not self.merge_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("merge_worker")
+        if self._stop_all_requested:
+            self._refresh_progress_visibility()
+            return
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
         QMessageBox.critical(
@@ -7939,6 +11985,21 @@ class MainWindow(QMainWindow):
 
     def on_merge_finished(self: object, resolved_trajectories: object) -> object:
         """Handle completion of trajectory merging."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.merge_worker is not None
+            and sender is not self.merge_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("merge_worker")
+        if self._stop_all_requested:
+            self._refresh_progress_visibility()
+            return
         self.progress_label.setText("Saving merged trajectories...")
 
         raw_csv_path = self.csv_line.text()
@@ -7955,22 +12016,20 @@ class MainWindow(QMainWindow):
                     self.temporary_files.append(raw_csv_path)
                 logger.info(f"✓ Merged trajectory data saved to: {merged_csv_path}")
 
-        # Generate video from post-processed trajectories if enabled
-        if self.check_video_output.isChecked() and self.video_out_line.text():
-            self._generate_video_from_trajectories(
-                resolved_trajectories, merged_csv_path
-            )
-        else:
-            # Complete the tracking session without video generation
-            self._finish_tracking_session(final_csv_path=merged_csv_path)
+        # Complete session pipeline. Video generation is deferred to the very end
+        # after pose export and interpolated individual analysis complete.
+        self._finish_tracking_session(final_csv_path=merged_csv_path)
 
-    def _generate_video_from_trajectories(self, trajectories_df, csv_path=None):
+    def _generate_video_from_trajectories(
+        self, trajectories_df, csv_path=None, finalize_on_complete=True
+    ):
         """
         Generate annotated video from post-processed trajectories.
 
         Args:
             trajectories_df: DataFrame with merged/interpolated trajectories
             csv_path: Path to the CSV file (optional, for logging)
+            finalize_on_complete: If True, continue full finish pipeline after render.
         """
         logger.info("=" * 80)
         logger.info("Generating video from post-processed trajectories...")
@@ -7986,16 +12045,22 @@ class MainWindow(QMainWindow):
         video_path = self.file_line.text()
         output_path = self.video_out_line.text()
 
+        def _complete_after_video():
+            if finalize_on_complete:
+                self._finish_tracking_session(final_csv_path=csv_path)
+            else:
+                self._finalize_tracking_session_ui()
+
         if not video_path or not output_path:
             logger.error("Video input or output path not specified")
-            self._finish_tracking_session()
+            _complete_after_video()
             return
 
         # Open video
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
             logger.error(f"Failed to open video: {video_path}")
-            self._finish_tracking_session()
+            _complete_after_video()
             return
 
         # Get video properties
@@ -8011,7 +12076,7 @@ class MainWindow(QMainWindow):
         if not out.isOpened():
             logger.error(f"Failed to create output video: {output_path}")
             cap.release()
-            self._finish_tracking_session()
+            _complete_after_video()
             return
 
         logger.info(f"Writing video: {frame_width}x{frame_height} @ {fps} FPS")
@@ -8037,7 +12102,7 @@ class MainWindow(QMainWindow):
             logger.error("Invalid frame range for video generation.")
             cap.release()
             out.release()
-            self._finish_tracking_session(final_csv_path=csv_path)
+            _complete_after_video()
             return
 
         # Seek once to the tracked start frame so we don't write unrelated frames.
@@ -8058,6 +12123,7 @@ class MainWindow(QMainWindow):
         marker_size = self.spin_marker_size.value()
         text_scale = self.spin_text_scale.value()
         arrow_length = self.spin_arrow_length.value()
+        advanced_config = params.get("ADVANCED_CONFIG", {})
 
         # NOTE: Trajectories in merged CSV are already scaled to original coordinates
         # (see MergeWorker line ~173: coordinates divided by resize_factor)
@@ -8070,21 +12136,204 @@ class MainWindow(QMainWindow):
         arrow_len = int(arrow_length * reference_body_size)
         text_size = 0.5 * text_scale
         marker_thickness = max(2, int(0.15 * reference_body_size))
+        pose_point_radius = int(
+            max(
+                1,
+                advanced_config.get(
+                    "video_pose_point_radius", max(2, marker_radius // 3)
+                ),
+            )
+        )
+        pose_point_thickness = int(
+            advanced_config.get("video_pose_point_thickness", -1)
+        )
+        pose_line_thickness = int(
+            max(1, advanced_config.get("video_pose_line_thickness", 2))
+        )
+        pose_color_mode = (
+            str(advanced_config.get("video_pose_color_mode", "track")).strip().lower()
+        )
+        pose_fixed_color_raw = advanced_config.get("video_pose_color", [255, 255, 255])
+        if (
+            isinstance(pose_fixed_color_raw, (list, tuple))
+            and len(pose_fixed_color_raw) == 3
+        ):
+            try:
+                pose_fixed_color = tuple(
+                    int(max(0, min(255, float(v)))) for v in pose_fixed_color_raw
+                )
+            except Exception:
+                pose_fixed_color = (255, 255, 255)
+        else:
+            pose_fixed_color = (255, 255, 255)
+        pose_min_conf = normalize_pose_render_min_conf(
+            params.get("POSE_MIN_KPT_CONF_VALID", 0.2)
+        )
+        pose_edges = []
+        pose_column_triplets = []
+        show_pose = bool(advanced_config.get("video_show_pose", True))
+        pose_col_pattern = re.compile(r"^PoseKpt_(.+)_(X|Y|Conf)$")
+        pose_labels_available = {}
+        for col in trajectories_df.columns:
+            m = pose_col_pattern.match(str(col))
+            if m is None:
+                continue
+            label = m.group(1)
+            axis = m.group(2)
+            pose_labels_available.setdefault(label, set()).add(axis)
+        if not pose_labels_available:
+            show_pose = False
+        if show_pose:
+            skeleton_names = []
+            skeleton_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
+            if skeleton_file and os.path.exists(skeleton_file):
+                try:
+                    with open(skeleton_file, "r", encoding="utf-8") as f:
+                        skeleton_data = json.load(f)
+                    names_raw = skeleton_data.get(
+                        "keypoint_names", skeleton_data.get("keypoints", [])
+                    )
+                    skeleton_names = [str(n) for n in names_raw]
+                    raw_edges = skeleton_data.get(
+                        "skeleton_edges", skeleton_data.get("edges", [])
+                    )
+                    for edge in raw_edges:
+                        if isinstance(edge, (list, tuple)) and len(edge) >= 2:
+                            try:
+                                pose_edges.append((int(edge[0]), int(edge[1])))
+                            except Exception:
+                                continue
+                except Exception:
+                    pose_edges = []
+            ordered_labels = build_pose_keypoint_labels(
+                skeleton_names, len(skeleton_names)
+            )
+            # Add any extra labels present in CSV but absent from skeleton.
+            extras = sorted(
+                [
+                    lbl
+                    for lbl in pose_labels_available.keys()
+                    if lbl not in ordered_labels
+                ]
+            )
+            ordered_labels.extend(extras)
+            for label in ordered_labels:
+                axes = pose_labels_available.get(label, set())
+                if {"X", "Y", "Conf"}.issubset(axes):
+                    pose_column_triplets.append(
+                        (
+                            f"PoseKpt_{label}_X",
+                            f"PoseKpt_{label}_Y",
+                            f"PoseKpt_{label}_Conf",
+                        )
+                    )
+            if not pose_column_triplets:
+                show_pose = False
 
-        # Build lookup for trajectories by frame and track
-        traj_by_frame = {}
-        traj_by_track = {}  # For trails
-        for _, row in trajectories_df.iterrows():
-            frame_num = int(row["FrameID"])
-            track_id = int(row["TrajectoryID"])
+        # ── Pre-extract trajectory arrays for O(1)/O(log N) lookups ─────────────
+        _frame_ids = trajectories_df["FrameID"].to_numpy(dtype=np.int32)
+        _track_ids = trajectories_df["TrajectoryID"].to_numpy(dtype=np.int32)
+        _xs = trajectories_df["X"].to_numpy(dtype=np.float64)
+        _ys = trajectories_df["Y"].to_numpy(dtype=np.float64)
+        _thetas = (
+            trajectories_df["Theta"].to_numpy(dtype=np.float64)
+            if "Theta" in trajectories_df.columns
+            else np.full(len(trajectories_df), np.nan)
+        )
 
-            if frame_num not in traj_by_frame:
-                traj_by_frame[frame_num] = []
-            traj_by_frame[frame_num].append(row)
+        # Pose arrays: shape (K, N, 3) extracted once to avoid per-row pandas overhead
+        _pose_kpts = None
+        if show_pose and pose_column_triplets:
+            _K = len(pose_column_triplets)
+            _N = len(trajectories_df)
+            _pose_kpts = np.full((_K, _N, 3), np.nan, dtype=np.float32)
+            for _k, (_x_col, _y_col, _c_col) in enumerate(pose_column_triplets):
+                if _x_col in trajectories_df.columns:
+                    _pose_kpts[_k, :, 0] = trajectories_df[_x_col].to_numpy(
+                        dtype=np.float32
+                    )
+                if _y_col in trajectories_df.columns:
+                    _pose_kpts[_k, :, 1] = trajectories_df[_y_col].to_numpy(
+                        dtype=np.float32
+                    )
+                if _c_col in trajectories_df.columns:
+                    _pose_kpts[_k, :, 2] = trajectories_df[_c_col].to_numpy(
+                        dtype=np.float32
+                    )
 
-            if track_id not in traj_by_track:
-                traj_by_track[track_id] = []
-            traj_by_track[track_id].append(row)
+        # Frame → row-index list (replaces slow iterrows + pandas Series access)
+        traj_indices_by_frame: dict = {}
+        for _i in range(len(_frame_ids)):
+            _fid = int(_frame_ids[_i])
+            if _fid not in traj_indices_by_frame:
+                traj_indices_by_frame[_fid] = []
+            traj_indices_by_frame[_fid].append(_i)
+
+        # Per-track sorted arrays for O(log N) trail window lookup via binary search
+        _track_sorted_row_indices: dict = {}
+        _track_sorted_frame_vals: dict = {}
+        if show_trails:
+            _tmp_track: dict = {}
+            for _i in range(len(_track_ids)):
+                _tid = int(_track_ids[_i])
+                if _tid not in _tmp_track:
+                    _tmp_track[_tid] = []
+                _tmp_track[_tid].append(_i)
+            for _tid, _idxs in _tmp_track.items():
+                _idx_arr = np.asarray(_idxs, dtype=np.int32)
+                _order = np.argsort(_frame_ids[_idx_arr])
+                _track_sorted_row_indices[_tid] = _idx_arr[_order]
+                _track_sorted_frame_vals[_tid] = _frame_ids[_idx_arr[_order]]
+
+        # Pre-compute palette and one color per track ID (avoid rebuilding every frame)
+        _category20_colors = [
+            (127, 127, 31),
+            (188, 189, 34),
+            (140, 86, 75),
+            (255, 127, 14),
+            (214, 39, 40),
+            (255, 152, 150),
+            (197, 176, 213),
+            (148, 103, 189),
+            (196, 156, 148),
+            (227, 119, 194),
+            (199, 199, 199),
+            (140, 140, 140),
+            (23, 190, 207),
+            (158, 218, 229),
+            (57, 59, 121),
+            (82, 84, 163),
+            (107, 110, 207),
+            (156, 158, 222),
+            (99, 121, 57),
+            (140, 162, 82),
+        ]
+        _n_cat = len(_category20_colors)
+        _max_track = int(_track_ids.max()) if len(_track_ids) > 0 else 0
+        _precomputed_colors = [
+            (
+                colors[_tid]
+                if colors and _tid < len(colors)
+                else _category20_colors[_tid % _n_cat]
+            )
+            for _tid in range(_max_track + 1)
+        ]
+
+        # Threaded writer: overlaps disk I/O with CPU rendering
+        import queue as _queue
+        import threading as _threading
+
+        _write_q: _queue.Queue = _queue.Queue()
+
+        def _writer_thread():
+            while True:
+                _item = _write_q.get()
+                if _item is None:
+                    break
+                out.write(_item)
+
+        _writer = _threading.Thread(target=_writer_thread, daemon=True)
+        _writer.start()
 
         # Process only the tracked frame range.
         for rel_idx in range(total_frames):
@@ -8093,95 +12342,82 @@ class MainWindow(QMainWindow):
             if not ret:
                 break
 
-            # Get trajectories for this frame
-            frame_trajs = traj_by_frame.get(frame_idx, [])
+            # Get row indices for this frame
+            frame_row_indices = traj_indices_by_frame.get(frame_idx, [])
 
             # Draw trails first (underneath current positions)
             if show_trails:
-                for traj in frame_trajs:
-                    track_id = int(traj["TrajectoryID"])
-
-                    # Get color for this track
-                    if colors and track_id < len(colors):
-                        color = colors[track_id]
-                    else:
-                        default_colors = [
-                            (0, 255, 0),
-                            (255, 0, 0),
-                            (0, 0, 255),
-                            (255, 255, 0),
-                        ]
-                        color = default_colors[track_id % len(default_colors)]
-
-                    # Get trail points (past N frames based on duration in seconds)
-                    trail_points = []
-                    if track_id in traj_by_track:
-                        for past_row in traj_by_track[track_id]:
-                            past_frame = int(past_row["FrameID"])
-                            if (
-                                frame_idx - trail_duration_frames
-                                <= past_frame
-                                < frame_idx
-                            ):
-                                px, py = past_row["X"], past_row["Y"]
-                                if not pd.isna(px) and not pd.isna(py):
-                                    # Coordinates already in original space from merged CSV
-                                    trail_points.append((int(px), int(py), past_frame))
-
-                    # Draw trail as fading line segments
-                    if len(trail_points) > 1:
-                        trail_points.sort(key=lambda p: p[2])  # Sort by frame
-                        for i in range(len(trail_points) - 1):
-                            pt1 = (trail_points[i][0], trail_points[i][1])
-                            pt2 = (trail_points[i + 1][0], trail_points[i + 1][1])
-
-                            # Calculate opacity based on age
-                            age = frame_idx - trail_points[i][2]
-                            alpha = 1.0 - (age / trail_duration_frames)
-                            faded_color = tuple(int(c * alpha) for c in color)
-
-                            cv2.line(
-                                frame,
-                                pt1,
-                                pt2,
-                                faded_color,
-                                max(1, marker_thickness // 2),
+                for row_i in frame_row_indices:
+                    track_id = int(_track_ids[row_i])
+                    color = (
+                        _precomputed_colors[track_id]
+                        if track_id < len(_precomputed_colors)
+                        else _category20_colors[track_id % _n_cat]
+                    )
+                    # Binary-search trail window: O(log N) instead of O(N) per frame
+                    if track_id in _track_sorted_frame_vals:
+                        _sfv = _track_sorted_frame_vals[track_id]
+                        _sri = _track_sorted_row_indices[track_id]
+                        _lo = int(
+                            np.searchsorted(
+                                _sfv, frame_idx - trail_duration_frames, side="left"
                             )
+                        )
+                        _hi = int(np.searchsorted(_sfv, frame_idx, side="left"))
+                        if _hi - _lo >= 2:
+                            _trail_xs = _xs[_sri[_lo:_hi]]
+                            _trail_ys = _ys[_sri[_lo:_hi]]
+                            _trail_fs = _sfv[_lo:_hi]
+                            _trail_lw = max(1, marker_thickness // 2)
+                            for _seg in range(_hi - _lo - 1):
+                                _px1, _py1 = _trail_xs[_seg], _trail_ys[_seg]
+                                _px2, _py2 = _trail_xs[_seg + 1], _trail_ys[_seg + 1]
+                                if (
+                                    np.isnan(_px1)
+                                    or np.isnan(_py1)
+                                    or np.isnan(_px2)
+                                    or np.isnan(_py2)
+                                ):
+                                    continue
+                                _age = frame_idx - int(_trail_fs[_seg])
+                                _alpha = 1.0 - (_age / trail_duration_frames)
+                                cv2.line(
+                                    frame,
+                                    (int(_px1), int(_py1)),
+                                    (int(_px2), int(_py2)),
+                                    (
+                                        int(color[0] * _alpha),
+                                        int(color[1] * _alpha),
+                                        int(color[2] * _alpha),
+                                    ),
+                                    _trail_lw,
+                                )
 
             # Draw current positions
-            for traj in frame_trajs:
-                track_id = int(traj["TrajectoryID"])
-                cx, cy = traj["X"], traj["Y"]
+            for row_i in frame_row_indices:
+                track_id = int(_track_ids[row_i])
+                cx_f, cy_f = _xs[row_i], _ys[row_i]
 
                 # Skip if NaN
-                if pd.isna(cx) or pd.isna(cy):
+                if np.isnan(cx_f) or np.isnan(cy_f):
                     continue
 
-                # Coordinates already in original space from merged CSV
-                cx, cy = int(cx), int(cy)
-
-                # Get color for this track
-                if colors and track_id < len(colors):
-                    color = colors[track_id]
-                else:
-                    default_colors = [
-                        (0, 255, 0),
-                        (255, 0, 0),
-                        (0, 0, 255),
-                        (255, 255, 0),
-                    ]
-                    color = default_colors[track_id % len(default_colors)]
+                cx, cy = int(cx_f), int(cy_f)
+                color = (
+                    _precomputed_colors[track_id]
+                    if track_id < len(_precomputed_colors)
+                    else _category20_colors[track_id % _n_cat]
+                )
 
                 # Draw circle at position
                 cv2.circle(frame, (cx, cy), marker_radius, color, marker_thickness)
 
                 # Draw label
                 if show_labels:
-                    label = f"ID{track_id}"
                     label_offset = int(marker_radius + 5)
                     cv2.putText(
                         frame,
-                        label,
+                        f"ID{track_id}",
                         (cx + label_offset, cy - label_offset),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         text_size,
@@ -8190,27 +12426,87 @@ class MainWindow(QMainWindow):
                     )
 
                 # Draw orientation if available
-                if show_orientation and "Theta" in traj and not pd.isna(traj["Theta"]):
-                    heading = traj["Theta"]
-                    end_x = int(cx + arrow_len * np.cos(heading))
-                    end_y = int(cy + arrow_len * np.sin(heading))
-                    cv2.arrowedLine(
-                        frame,
-                        (cx, cy),
-                        (end_x, end_y),
-                        color,
-                        marker_thickness,
-                        tipLength=0.3,
-                    )
+                if show_orientation:
+                    _theta = _thetas[row_i]
+                    if not np.isnan(_theta):
+                        cv2.arrowedLine(
+                            frame,
+                            (cx, cy),
+                            (
+                                int(cx + arrow_len * np.cos(_theta)),
+                                int(cy + arrow_len * np.sin(_theta)),
+                            ),
+                            color,
+                            marker_thickness,
+                            tipLength=0.3,
+                        )
 
-            # Write frame
-            out.write(frame)
+                # Draw pose keypoints/skeleton (uses pre-extracted numpy slice)
+                if show_pose and _pose_kpts is not None:
+                    kpts_arr = _pose_kpts[:, row_i, :]  # shape (K, 3) — zero-copy view
+                    if np.any(np.isfinite(kpts_arr[:, 2])):
+                        pose_color = (
+                            color if pose_color_mode == "track" else pose_fixed_color
+                        )
+                        if pose_edges:
+                            for e0, e1 in pose_edges:
+                                if (
+                                    e0 < 0
+                                    or e1 < 0
+                                    or e0 >= len(kpts_arr)
+                                    or e1 >= len(kpts_arr)
+                                ):
+                                    continue
+                                if not is_renderable_pose_keypoint(
+                                    kpts_arr[e0, 0],
+                                    kpts_arr[e0, 1],
+                                    kpts_arr[e0, 2],
+                                    pose_min_conf,
+                                ) or not is_renderable_pose_keypoint(
+                                    kpts_arr[e1, 0],
+                                    kpts_arr[e1, 1],
+                                    kpts_arr[e1, 2],
+                                    pose_min_conf,
+                                ):
+                                    continue
+                                cv2.line(
+                                    frame,
+                                    (
+                                        int(round(float(kpts_arr[e0, 0]))),
+                                        int(round(float(kpts_arr[e0, 1]))),
+                                    ),
+                                    (
+                                        int(round(float(kpts_arr[e1, 0]))),
+                                        int(round(float(kpts_arr[e1, 1]))),
+                                    ),
+                                    pose_color,
+                                    pose_line_thickness,
+                                )
+                        for kpt in kpts_arr:
+                            if not is_renderable_pose_keypoint(
+                                kpt[0], kpt[1], kpt[2], pose_min_conf
+                            ):
+                                continue
+                            cv2.circle(
+                                frame,
+                                (int(round(float(kpt[0]))), int(round(float(kpt[1])))),
+                                pose_point_radius,
+                                pose_color,
+                                pose_point_thickness,
+                            )
+
+            # Enqueue frame for background write (overlaps disk I/O with CPU rendering)
+            _write_q.put(frame)
 
             # Update progress every 30 frames
             if rel_idx % 30 == 0:
                 progress = int(((rel_idx + 1) / total_frames) * 100)
                 self.progress_bar.setValue(progress)
                 QApplication.processEvents()
+
+        # Signal writer thread to finish and wait for all frames to be flushed
+        _write_q.put(None)
+        _writer.join()
 
         # Cleanup
         cap.release()
@@ -8219,20 +12515,38 @@ class MainWindow(QMainWindow):
         logger.info(f"✓ Video saved to: {output_path}")
         logger.info("=" * 80)
 
-        # Now finish tracking session
-        self._finish_tracking_session(final_csv_path=csv_path)
+        _complete_after_video()
 
     @Slot(bool, list, list)
     def on_tracking_finished(
         self: object, finished_normally: object, fps_list: object, full_traj: object
     ) -> object:
         """on_tracking_finished method documentation."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.tracking_worker is not None
+            and sender is not self.tracking_worker
+        ):
+            logger.debug(
+                "Ignoring stale tracking finished signal from previous worker."
+            )
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
 
-        if self.csv_writer_thread:
-            self.csv_writer_thread.stop()
-            self.csv_writer_thread.join()
+        self._stop_csv_writer()
+
+        if self._stop_all_requested:
+            logger.info("Tracking stop requested; skipping post-processing pipeline.")
+            self._cleanup_thread_reference("tracking_worker")
+            self._refresh_progress_visibility()
+            gc.collect()
+            return
 
         # Check if this was preview mode
         was_preview_mode = self.btn_preview.isChecked()
@@ -8261,12 +12575,34 @@ class MainWindow(QMainWindow):
             gc.collect()
             return  # Exit early - no post-processing, no backward tracking for preview
 
+        worker_props_path = ""
+        if self.tracking_worker is not None:
+            worker_props_path = str(
+                getattr(self.tracking_worker, "individual_properties_cache_path", "")
+                or ""
+            ).strip()
+        if worker_props_path:
+            self.current_individual_properties_cache_path = worker_props_path
+            logger.info(
+                "Using individual properties cache for export: %s",
+                worker_props_path,
+            )
+
         if finished_normally:
             logger.info("Tracking completed successfully.")
             is_backward_mode = (
                 hasattr(self.tracking_worker, "backward_mode")
                 and self.tracking_worker.backward_mode
             )
+            # Accumulate fps_list across forward and backward passes
+            if isinstance(fps_list, (list, tuple)) and fps_list:
+                self._session_fps_list = list(self._session_fps_list) + [
+                    f for f in fps_list if f and f > 0
+                ]
+            if not is_backward_mode:
+                self._session_frames_processed = (
+                    len(fps_list) if isinstance(fps_list, (list, tuple)) else 0
+                )
             is_backward_enabled = self.chk_enable_backward.isChecked()
 
             processed_trajectories = full_traj
@@ -8390,39 +12726,10 @@ class MainWindow(QMainWindow):
                         ):
                             self.temporary_files.append(raw_csv_path)
 
-                    # Generate video from post-processed trajectories if enabled
-                    if (
-                        self.check_video_output.isChecked()
-                        and self.video_out_line.text()
-                    ):
-                        self._generate_video_from_trajectories(
-                            processed_trajectories, final_csv_path
-                        )
-                        # _generate_video_from_trajectories() calls
-                        # _finish_tracking_session(), which already handles dataset
-                        # generation and cleanup. Avoid running post-finish logic twice.
-                        return
-
-                    # Generate dataset if enabled (BEFORE cleanup so files are still available)
-                    if self.chk_enable_dataset_gen.isChecked():
-                        self._generate_training_dataset(
-                            override_csv_path=final_csv_path
-                        )
-
-                    # Interpolate occlusions for individual dataset (post-pass)
-                    if self.chk_enable_individual_dataset.isChecked():
-                        self._generate_interpolated_individual_crops(final_csv_path)
-
-                    # Clean up session logging - forward-only tracking complete
-                    self._cleanup_session_logging()
-                    self._cleanup_temporary_files()
-
-                    # Hide stats labels
-                    self.label_current_fps.setVisible(False)
-                    self.label_elapsed_time.setVisible(False)
-                    self.label_eta.setVisible(False)
-                    self._set_ui_controls_enabled(True)
-                    logger.info("✓ Tracking complete.")
+                    # Complete session pipeline. Video generation is deferred to
+                    # the final step after pose export + interpolation.
+                    self._finish_tracking_session(final_csv_path=final_csv_path)
+                    return
             else:
                 raw_csv_path = self.csv_line.text()
                 if raw_csv_path:
@@ -8478,29 +12785,447 @@ class MainWindow(QMainWindow):
                     # No merge needed, do cleanup now
                     # Pass the correct CSV path based on what we processed
                     self._finish_tracking_session(final_csv_path=processed_csv_path)
+        else:
+            logger.error("Tracking did not finish normally.")
+            QMessageBox.warning(
+                self,
+                "Tracking Failed",
+                "An error occurred during tracking. Check logs for details.",
+            )
+            if self.g_batch.isChecked():
+                self.current_batch_index = -1
+                logger.info("Batch mode aborted due to error.")
+            self._finish_tracking_session(final_csv_path=None)
+
+    def _is_pose_export_enabled(self) -> bool:
+        """Return True when pose extraction export should be produced."""
+        return bool(
+            self._is_individual_pipeline_enabled()
+            and hasattr(self, "chk_enable_pose_extractor")
+            and self.chk_enable_pose_extractor.isChecked()
+            and self._is_yolo_detection_mode()
+        )
+
+    def _build_pose_augmented_dataframe(self, final_csv_path):
+        """Load final CSV and merge available cached/interpolated pose columns."""
+        if not final_csv_path or not os.path.exists(final_csv_path):
+            return None
+        if not self._is_pose_export_enabled():
+            return None
+
+        cache_path = str(self.current_individual_properties_cache_path or "").strip()
+        cache_available = bool(cache_path and os.path.exists(cache_path))
+        interp_pose_path = str(self.current_interpolated_pose_csv_path or "").strip()
+        interp_available = bool(interp_pose_path and os.path.exists(interp_pose_path))
+        interp_pose_df_mem = getattr(self, "current_interpolated_pose_df", None)
+        interp_mem_available = (
+            isinstance(interp_pose_df_mem, pd.DataFrame)
+            and not interp_pose_df_mem.empty
+        )
+        if not cache_available and not interp_available and not interp_mem_available:
+            logger.warning(
+                "Pose export skipped: no pose sources found (cache=%s, interpolated=%s, in_memory=%s).",
+                cache_path or "<empty>",
+                interp_pose_path or "<empty>",
+                bool(interp_mem_available),
+            )
+            return None
+
+        try:
+            trajectories_df = pd.read_csv(final_csv_path)
+        except Exception:
+            logger.exception(
+                "Pose export skipped: failed to load trajectories CSV: %s",
+                final_csv_path,
+            )
+            return None
+
+        try:
+            with_pose_df = trajectories_df
+            if cache_available:
+                min_valid_conf = float(self.spin_pose_min_kpt_conf_valid.value())
+                with_pose_df = augment_trajectories_with_pose_cache(
+                    with_pose_df,
+                    cache_path,
+                    ignore_keypoints=self._parse_pose_ignore_keypoints(),
+                    min_valid_conf=min_valid_conf,
+                )
+            if interp_available:
+                interp_pose_df = pd.read_csv(interp_pose_path)
+                with_pose_df = merge_interpolated_pose_df(with_pose_df, interp_pose_df)
+            elif interp_mem_available:
+                with_pose_df = merge_interpolated_pose_df(
+                    with_pose_df, interp_pose_df_mem
+                )
+        except Exception:
+            logger.exception(
+                "Pose export skipped: failed while merging pose sources (cache=%s, interpolated=%s)",
+                cache_path or "<empty>",
+                interp_pose_path or "<empty>",
+            )
+            return None
+
+        if with_pose_df is None or with_pose_df.empty:
+            logger.warning(
+                "Pose export skipped: merged pose dataframe is empty for %s",
+                final_csv_path,
+            )
+            return None
+
+        # Extract pose labels from the merged DataFrame
+        import re as _re
+
+        _kpt_re = _re.compile(r"^PoseKpt_(.+)_X$")
+        pose_labels = [
+            m.group(1) for col in with_pose_df.columns if (m := _kpt_re.match(str(col)))
+        ]
+
+        if pose_labels:
+            params = self.get_parameters_dict()
+            # Resolve anterior/posterior indices for body-length calibration
+            from multi_tracker.core.tracking.pose_features import (
+                resolve_pose_group_indices,
+            )
+
+            kpt_names = []
+            try:
+                from multi_tracker.core.identity.properties_cache import (
+                    IndividualPropertiesCache,
+                )
+
+                _cache_path = str(
+                    self.current_individual_properties_cache_path or ""
+                ).strip()
+                if _cache_path and os.path.exists(_cache_path):
+                    _cache = IndividualPropertiesCache(_cache_path, mode="r")
+                    try:
+                        kpt_names = [
+                            str(v)
+                            for v in (
+                                _cache.metadata.get("pose_keypoint_names", []) or []
+                            )
+                        ]
+                    finally:
+                        _cache.close()
+            except Exception:
+                pass
+            anterior_indices = resolve_pose_group_indices(
+                params.get("POSE_DIRECTION_ANTERIOR_KEYPOINTS", []), kpt_names
+            )
+            posterior_indices = resolve_pose_group_indices(
+                params.get("POSE_DIRECTION_POSTERIOR_KEYPOINTS", []), kpt_names
+            )
+
+            # Load skeleton edges from the skeleton JSON for anatomy checks
+            skeleton_edges = []
+            try:
+                _skel_file = str(params.get("POSE_SKELETON_FILE", "")).strip()
+                if _skel_file and os.path.exists(_skel_file):
+                    with open(_skel_file, "r", encoding="utf-8") as _sf:
+                        _skel_data = json.load(_sf)
+                    for _edge in _skel_data.get(
+                        "skeleton_edges", _skel_data.get("edges", [])
+                    ):
+                        if isinstance(_edge, (list, tuple)) and len(_edge) >= 2:
+                            try:
+                                skeleton_edges.append((int(_edge[0]), int(_edge[1])))
+                            except Exception:
+                                pass
+            except Exception:
+                logger.exception(
+                    "Failed to load skeleton edges for anatomy check; skipping."
+                )
+                skeleton_edges = []
+
+            # Calibrate body-length prior from high-confidence frames
+            body_length_prior = None
+            if anterior_indices and posterior_indices:
+                try:
+                    body_length_prior = calibrate_body_length_prior(
+                        with_pose_df,
+                        pose_labels,
+                        anterior_indices,
+                        posterior_indices,
+                        min_valid_conf=float(
+                            params.get("POSE_MIN_KPT_CONF_VALID", 0.2)
+                        ),
+                    )
+                    if body_length_prior.is_valid:
+                        logger.info(
+                            "Body-length prior calibrated: median=%.1f px, MAD=%.1f px, n=%d",
+                            body_length_prior.median_px,
+                            body_length_prior.mad_px,
+                            body_length_prior.n_samples,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Body-length prior calibration failed; skipping anatomy check."
+                    )
+                    body_length_prior = None
+
+            # Calibrate per-edge length priors from high-confidence frames
+            edge_length_priors = None
+            if skeleton_edges:
+                try:
+                    edge_length_priors = calibrate_edge_length_priors(
+                        with_pose_df,
+                        pose_labels,
+                        skeleton_edges,
+                        min_valid_conf=float(
+                            params.get("POSE_MIN_KPT_CONF_VALID", 0.2)
+                        ),
+                    )
+                    if edge_length_priors.is_valid:
+                        logger.info(
+                            "Edge-length priors calibrated for %d edges.",
+                            len(edge_length_priors.priors),
+                        )
+                except Exception:
+                    logger.exception(
+                        "Edge-length prior calibration failed; skipping skeleton check."
+                    )
+                    edge_length_priors = None
+
+            # Per-frame quality gate
+            try:
+                with_pose_df = apply_quality_to_dataframe(
+                    with_pose_df,
+                    pose_labels,
+                    params,
+                    body_length_prior=body_length_prior,
+                    anterior_indices=anterior_indices if anterior_indices else None,
+                    posterior_indices=posterior_indices if posterior_indices else None,
+                    skeleton_edges=skeleton_edges if skeleton_edges else None,
+                    edge_length_priors=edge_length_priors,
+                )
+            except Exception:
+                logger.exception("Pose quality gating failed; using unfiltered pose.")
+
+            # Temporal post-processing per trajectory
+            max_gap = int(params.get("POSE_POSTPROC_MAX_GAP", 5))
+            z_threshold = float(params.get("POSE_TEMPORAL_OUTLIER_ZSCORE", 3.0))
+            if z_threshold > 0.0 and "TrajectoryID" in with_pose_df.columns:
+                try:
+                    parts = []
+                    for _, traj_group in with_pose_df.groupby(
+                        "TrajectoryID", sort=False
+                    ):
+                        parts.append(
+                            apply_temporal_pose_postprocessing(
+                                traj_group,
+                                pose_labels,
+                                max_gap=max_gap,
+                                z_score_threshold=z_threshold,
+                            )
+                        )
+                    if parts:
+                        with_pose_df = (
+                            pd.concat(parts, ignore_index=True)
+                            .sort_values(["TrajectoryID", "FrameID"], kind="stable")
+                            .reset_index(drop=True)
+                        )
+                except Exception:
+                    logger.exception(
+                        "Pose temporal post-processing failed; using unfiltered pose."
+                    )
+
+        return with_pose_df
+
+    def _export_pose_augmented_csv(self, final_csv_path):
+        """Write a pose-augmented trajectories CSV next to the final CSV."""
+        with_pose_df = self._build_pose_augmented_dataframe(final_csv_path)
+        if with_pose_df is None or with_pose_df.empty:
+            return None
+
+        base, ext = os.path.splitext(final_csv_path)
+        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
+        try:
+            with_pose_df.to_csv(with_pose_path, index=False)
+        except Exception:
+            logger.exception("Failed to save pose-augmented CSV to: %s", with_pose_path)
+            return None
+
+        logger.info("Pose-augmented trajectories saved to: %s", with_pose_path)
+        return with_pose_path
+
+    def _relink_final_pose_augmented_csv(self, final_csv_path):
+        """Rewrite final CSV IDs after pose-aware relinking and regenerate _with_pose.csv."""
+        if not final_csv_path or not os.path.exists(final_csv_path):
+            return None
+
+        with_pose_df = self._build_pose_augmented_dataframe(final_csv_path)
+        params = self.get_parameters_dict()
+
+        try:
+            base_df = pd.read_csv(final_csv_path)
+        except Exception:
+            logger.exception(
+                "Relinking skipped: failed to reload final CSV: %s", final_csv_path
+            )
+            return self._export_pose_augmented_csv(final_csv_path)
+
+        relink_input_df = (
+            with_pose_df
+            if with_pose_df is not None and not with_pose_df.empty
+            else base_df
+        )
+        relinked_with_pose = relink_trajectories_with_pose(relink_input_df, params)
+        if relinked_with_pose is None or relinked_with_pose.empty:
+            relinked_with_pose = relink_input_df
+
+        common_cols = [
+            col for col in base_df.columns if col in relinked_with_pose.columns
+        ]
+        relinked_base = relinked_with_pose.loc[:, common_cols].copy()
+        relinked_base = relinked_base.sort_values(
+            ["TrajectoryID", "FrameID"], kind="stable"
+        ).reset_index(drop=True)
+        relinked_with_pose = relinked_with_pose.sort_values(
+            ["TrajectoryID", "FrameID"], kind="stable"
+        ).reset_index(drop=True)
+
+        try:
+            relinked_base.to_csv(final_csv_path, index=False)
+        except Exception:
+            logger.exception("Failed to rewrite relinked final CSV: %s", final_csv_path)
+            return None
+
+        base, ext = os.path.splitext(final_csv_path)
+        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
+        if with_pose_df is not None and not with_pose_df.empty:
+            try:
+                relinked_with_pose.to_csv(with_pose_path, index=False)
+            except Exception:
+                logger.exception(
+                    "Failed to rewrite relinked pose-augmented CSV: %s", with_pose_path
+                )
+                return None
+        elif os.path.exists(with_pose_path):
+            try:
+                os.remove(with_pose_path)
+            except Exception:
+                logger.warning(
+                    "Failed to remove stale pose-augmented CSV: %s", with_pose_path
+                )
+
+        logger.info(
+            "Relinked final CSV rewritten: %s (%d trajectories)",
+            final_csv_path,
+            (
+                int(relinked_base["TrajectoryID"].nunique())
+                if "TrajectoryID" in relinked_base.columns
+                else 0
+            ),
+        )
+        if with_pose_df is not None and not with_pose_df.empty:
+            logger.info("Relinked pose-augmented CSV saved: %s", with_pose_path)
+            return with_pose_path
+        return final_csv_path
+
+    def _load_video_trajectories(self, final_csv_path):
+        """Load best available trajectories for video generation (prefers pose-augmented CSV)."""
+        if not final_csv_path:
+            return None, None
+        base, ext = os.path.splitext(final_csv_path)
+        with_pose_path = f"{base}_with_pose{ext or '.csv'}"
+        candidate = with_pose_path if os.path.exists(with_pose_path) else final_csv_path
+        if not os.path.exists(candidate):
+            return None, None
+        try:
+            return pd.read_csv(candidate), candidate
+        except Exception:
+            logger.exception("Failed to load video trajectories from: %s", candidate)
+            return None, None
+
+    def _run_pending_video_generation_or_finalize(self):
+        """Run video generation if queued; otherwise finalize UI/session cleanup."""
+        if self._stop_all_requested:
+            self._finalize_tracking_session_ui()
+            return
+        csv_path = self._pending_video_csv_path
+        should_render_video = bool(self._pending_video_generation and csv_path)
+        self._pending_video_generation = False
+        self._pending_video_csv_path = None
+        self._pending_pose_export_csv_path = None
+
+        if should_render_video:
+            trajectories_df, loaded_path = self._load_video_trajectories(csv_path)
+            if trajectories_df is None or trajectories_df.empty:
+                logger.warning(
+                    "Skipping final video generation: no trajectories loaded from %s",
+                    csv_path,
+                )
+                self._finalize_tracking_session_ui()
+                return
+            logger.info(
+                "Final video rendering uses trajectories from: %s",
+                loaded_path or csv_path,
+            )
+            self._generate_video_from_trajectories(
+                trajectories_df,
+                csv_path=csv_path,
+                finalize_on_complete=False,
+            )
+            return
+
+        self._finalize_tracking_session_ui()
 
     def _finish_tracking_session(self, final_csv_path=None):
         """Complete tracking session cleanup and UI updates."""
+        if self._stop_all_requested:
+            self._finalize_tracking_session_ui()
+            return
+        self._session_final_csv_path = final_csv_path
         # Hide progress elements
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
 
+        if final_csv_path:
+            self._pending_pose_export_csv_path = final_csv_path
+            self._export_pose_augmented_csv(final_csv_path)
+
+        self._pending_video_csv_path = final_csv_path
+        self._pending_video_generation = bool(
+            final_csv_path
+            and self.check_video_output.isChecked()
+            and self.video_out_line.text().strip()
+        )
+
         # Generate dataset if enabled (BEFORE cleanup so files are still available)
         if self.chk_enable_dataset_gen.isChecked():
             self._generate_training_dataset(override_csv_path=final_csv_path)
+            self._dataset_was_started = True
 
-        # Interpolate occlusions for individual dataset (post-pass)
-        if self.chk_enable_individual_dataset.isChecked():
+        # Interpolate occlusions for individual analysis (post-pass).
+        # This also powers pose enrichment on occluded frames in final CSV.
+        if self._should_run_interpolated_postpass():
             started = self._generate_interpolated_individual_crops(final_csv_path)
             if started:
                 # Hold final UI/session completion until interpolation finishes.
                 self._pending_finish_after_interp = True
                 return
 
-        self._finalize_tracking_session_ui()
+        if final_csv_path:
+            self._relink_final_pose_augmented_csv(final_csv_path)
+
+        if self._start_pending_oriented_track_video_export(final_csv_path):
+            return
+
+        self._run_pending_video_generation_or_finalize()
 
     def _finalize_tracking_session_ui(self):
         """Finalize session cleanup and return UI to idle state."""
+        self._pending_pose_export_csv_path = None
+        self._pending_video_csv_path = None
+        self._pending_video_generation = False
+        self._pending_finish_after_track_videos = False
+        self.current_interpolated_pose_df = None
+        self.current_interpolated_roi_npz_path = None
+        # Force-clear progress UI at terminal session state.
+        self.progress_bar.setVisible(False)
+        self.progress_label.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Ready")
         # Clean up session logging
         self._cleanup_session_logging()
         self._cleanup_temporary_files()
@@ -8509,17 +13234,70 @@ class MainWindow(QMainWindow):
         self.label_current_fps.setVisible(False)
         self.label_elapsed_time.setVisible(False)
         self.label_eta.setVisible(False)
-        self._set_ui_controls_enabled(True)
-        self.btn_start.blockSignals(True)
-        self.btn_start.setChecked(False)
-        self.btn_start.blockSignals(False)
-        self.btn_start.setText("Start Full Tracking")
-        self._apply_ui_state("idle" if self.current_video_path else "no_video")
-        logger.info("✓ Tracking session complete.")
+
+        # Determine if we are continuing a batch
+        is_batch_continuing = (
+            self.g_batch.isChecked()
+            and self.current_batch_index >= 0
+            and (self.current_batch_index + 1) < len(self.batch_videos)
+        )
+
+        if not is_batch_continuing:
+            self._set_ui_controls_enabled(True)
+            self.btn_start.blockSignals(True)
+            self.btn_start.setChecked(False)
+            self.btn_start.blockSignals(False)
+            self.btn_start.setText("Start Full Tracking")
+            self._apply_ui_state("idle" if self.current_video_path else "no_video")
+            logger.info("✓ Tracking session complete.")
+
+            # Show end-of-session summary. If the dataset worker is still running,
+            # defer the summary until it finishes so we can include its result.
+            if getattr(self, "_dataset_was_started", False) and self._is_worker_running(
+                self.dataset_worker
+            ):
+                self._show_summary_on_dataset_done = True
+            else:
+                self._show_session_summary()
+        else:
+            logger.info("✓ Video complete. Continuing batch...")
+            # Disable deferred summary for intermediate batch items so it doesn't block
+            self._show_summary_on_dataset_done = False
+
+        # --- Batch Mode Continuation ---
+        if self.g_batch.isChecked() and self.current_batch_index >= 0:
+            self.current_batch_index += 1
+            if self.current_batch_index < len(self.batch_videos):
+                # Load next video
+                fp = self.batch_videos[self.current_batch_index]
+                self.list_batch_videos.setCurrentRow(self.current_batch_index)
+
+                # We MUST skip_config_load here to preserve the keystone parameters
+                # currently in the UI so they are applied to this video.
+                self._setup_video_file(fp, skip_config_load=True)
+
+                # Small delay to ensure UI updates before starting next
+                logger.info(
+                    f"Batch Mode: Starting next video ({self.current_batch_index + 1}/{len(self.batch_videos)})"
+                )
+                QTimer.singleShot(1000, lambda: self.start_tracking(preview_mode=False))
+            else:
+                # Batch complete
+                self.current_batch_index = -1
+                QMessageBox.information(
+                    self,
+                    "Batch Complete",
+                    f"Finished processing {len(self.batch_videos)} videos.",
+                )
+        else:
+            # Ensure reset if batch mode is disabled mid-run or not used
+            self.current_batch_index = -1
 
     def _generate_interpolated_individual_crops(self, csv_path):
         """Post-pass interpolation for occluded segments in individual dataset."""
         try:
+            if self._stop_all_requested:
+                return False
             if not self.chk_individual_interpolate.isChecked():
                 return False
 
@@ -8536,6 +13314,23 @@ class MainWindow(QMainWindow):
                 return False
 
             params = self.get_parameters_dict()
+            output_dir = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
+            if not output_dir:
+                # Keep interpolated analysis available even when image-save toggle is off.
+                csv_dir = os.path.dirname(target_csv) if target_csv else ""
+                fallback_output = (
+                    os.path.join(csv_dir, "training_data") if csv_dir else ""
+                )
+                if fallback_output:
+                    try:
+                        os.makedirs(fallback_output, exist_ok=True)
+                    except Exception:
+                        pass
+                    params["INDIVIDUAL_DATASET_OUTPUT_DIR"] = fallback_output
+                    logger.info(
+                        "Interpolated analysis output dir not set; using fallback: %s",
+                        fallback_output,
+                    )
 
             self.progress_bar.setVisible(True)
             self.progress_label.setVisible(True)
@@ -8551,6 +13346,9 @@ class MainWindow(QMainWindow):
                 self.interp_worker.deleteLater()
                 self.interp_worker = None
 
+            self.current_interpolated_roi_npz_path = None
+            self.current_interpolated_pose_csv_path = None
+            self.current_interpolated_pose_df = None
             self.interp_worker = InterpolatedCropsWorker(
                 target_csv,
                 video_path,
@@ -8583,7 +13381,7 @@ class MainWindow(QMainWindow):
         if detection_cache is None or detection_id is None or pd.isna(detection_id):
             return None, None
         try:
-            _, _, shapes, _, obb_corners, detection_ids = detection_cache.get_frame(
+            _, _, shapes, _, obb_corners, detection_ids, *_ = detection_cache.get_frame(
                 int(frame_id)
             )
         except Exception:
@@ -8621,34 +13419,10 @@ class MainWindow(QMainWindow):
 
         return None, None
 
-    @Slot(dict)
-    def on_histogram_data(self: object, histogram_data: object) -> object:
-        """on_histogram_data method documentation."""
-        if (
-            self.enable_histograms.isChecked()
-            and self.histogram_window is not None
-            and self.histogram_window.isVisible()
-        ):
-
-            current_history = self.spin_histogram_history.value()
-            if self.histogram_panel.history_frames != current_history:
-                self.histogram_panel.set_history_frames(current_history)
-
-            if "velocities" in histogram_data:
-                self.histogram_panel.update_velocity_data(histogram_data["velocities"])
-            if "sizes" in histogram_data:
-                self.histogram_panel.update_size_data(histogram_data["sizes"])
-            if "orientations" in histogram_data:
-                self.histogram_panel.update_orientation_data(
-                    histogram_data["orientations"]
-                )
-            if "assignment_costs" in histogram_data:
-                self.histogram_panel.update_assignment_cost_data(
-                    histogram_data["assignment_costs"]
-                )
-
     def start_backward_tracking(self: object) -> object:
         """start_backward_tracking method documentation."""
+        if self._stop_all_requested:
+            return
         logger.info("=" * 80)
         logger.info("Starting backward tracking pass (using cached detections)...")
         logger.info("=" * 80)
@@ -8674,9 +13448,37 @@ class MainWindow(QMainWindow):
     ) -> object:
         """start_tracking method documentation."""
         if not preview_mode:
-            if not self.save_config():
+            # If batch mode group is checked, initialize batch processing
+            if self.g_batch.isChecked():
+                if self.current_batch_index < 0:
+                    res = QMessageBox.question(
+                        self,
+                        "Start Batch Process",
+                        f"This will process {len(self.batch_videos)} videos sequentially using the CURRENT parameters.\n\n"
+                        "Each video will have its own CSV and configuration file saved in its source directory.\n\n"
+                        "Continue?",
+                        QMessageBox.Yes | QMessageBox.No,
+                    )
+                    if res == QMessageBox.No:
+                        return
+
+                    # Start at the first video (Keystone)
+                    self.current_batch_index = 0
+                    self._sync_keystone_to_batch()
+                    fp = self.batch_videos[0]
+                    self.list_batch_videos.setCurrentRow(0)
+
+                    # Ensure the keystone video is loaded WITHOUT overwriting current UI params
+                    if self.current_video_path != fp:
+                        self._setup_video_file(fp, skip_config_load=True)
+
+            # Save config for the CURRENTLY LOADED video (this persists the keystone's params to the current video)
+            # In batch mode, we automatically overwrite to avoid halting the automated process.
+            if not self.save_config(prompt_if_exists=not self.g_batch.isChecked()):
                 # User cancelled config save, abort tracking
+                self.current_batch_index = -1  # Reset batch if cancelled
                 return
+
         video_fp = self.file_line.text()
         if not video_fp:
             QMessageBox.warning(self, "No video", "Please select a video file first.")
@@ -8690,6 +13492,8 @@ class MainWindow(QMainWindow):
         """start_preview_on_video method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+        self._stop_all_requested = False
+        self._pending_finish_after_interp = False
 
         # Stop video playback if active
         if self.is_playing:
@@ -8698,24 +13502,74 @@ class MainWindow(QMainWindow):
         # Reset first frame flag for auto-fit
         self._tracking_first_frame = True
         self.csv_writer_thread = None
+
+        params = self.get_parameters_dict()
+        if not self._validate_yolo_model_requirements(
+            params, mode_label="tracking preview"
+        ):
+            return
+        # Preview should always render frames regardless of visualization-free toggle
+        params["VISUALIZATION_FREE_MODE"] = False
+
+        # Reuse an existing detection cache when one covers the current frame
+        # range — this ensures preview uses the same detections as the autotune
+        # preview instead of re-running live YOLO inference, which can produce
+        # slightly different detection sets and cause visible jumps.
+        start_frame = params.get("START_FRAME", 0)
+        end_frame = params.get("END_FRAME", 0)
+        cache_path, cache_valid = self._find_or_plan_optimizer_cache_path(
+            video_path, params, start_frame, end_frame
+        )
+
+        if not cache_valid:
+            res = QMessageBox.question(
+                self,
+                "Build Detection Cache",
+                "No detection cache found for this frame range.\n\n"
+                "Build one now for a consistent preview?\n"
+                "(Detection-only scan — no CSV output, no config save.)",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if res == QMessageBox.Yes:
+                self._pending_preview_video_path = video_path
+                self._cache_builder_worker = DetectionCacheBuilderWorker(
+                    video_path,
+                    cache_path,
+                    params,
+                    start_frame,
+                    end_frame,
+                )
+                self._cache_builder_worker.progress_signal.connect(
+                    self.on_progress_update
+                )
+                self._cache_builder_worker.finished_signal.connect(
+                    self._on_preview_cache_built
+                )
+                self.progress_bar.setVisible(True)
+                self.progress_label.setVisible(True)
+                self.progress_bar.setValue(0)
+                self.progress_label.setText("Building detection cache for preview...")
+                self._cache_builder_worker.start()
+                return  # Will resume via _on_preview_cache_built
+
         self.tracking_worker = TrackingWorker(
             video_path,
             csv_writer_thread=None,
             video_output_path=None,
             backward_mode=False,
-            detection_cache_path=None,  # No caching in preview mode
-            preview_mode=True,  # Preview mode - frame-by-frame only
+            detection_cache_path=cache_path if cache_valid else None,
+            preview_mode=True,
+            use_cached_detections=cache_valid,
         )
-        params = self.get_parameters_dict()
-        # Preview should always render frames regardless of visualization-free toggle
-        params["VISUALIZATION_FREE_MODE"] = False
         self.tracking_worker.set_parameters(params)
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
-        self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
         self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
+        self.tracking_worker.pose_exported_model_resolved_signal.connect(
+            self.on_pose_exported_model_resolved
+        )
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
@@ -8732,6 +13586,17 @@ class MainWindow(QMainWindow):
         """start_tracking_on_video method documentation."""
         if self.tracking_worker and self.tracking_worker.isRunning():
             return
+        self._stop_all_requested = False
+        self._pending_finish_after_interp = False
+        if not backward_mode:
+            # Reset per-session summary state for each new forward tracking run.
+            self._session_result_dataset = None
+            self._dataset_was_started = False
+            self._show_summary_on_dataset_done = False
+            self._session_wall_start = time.time()
+            self._session_final_csv_path = None
+            self._session_fps_list = []
+            self._session_frames_processed = 0
 
         # Stop video playback if active
         if self.is_playing:
@@ -8799,6 +13664,8 @@ class MainWindow(QMainWindow):
         )
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
         use_cached_detections = self.chk_use_cached_detections.isChecked()
+        if not self._validate_yolo_model_requirements(params, mode_label="tracking"):
+            return
 
         # Generate model-specific cache name
         def get_inference_model_id() -> object:
@@ -8866,11 +13733,22 @@ class MainWindow(QMainWindow):
                 "DETECTION_METHOD",
                 "RESIZE_FACTOR",
                 "MAX_TARGETS",
+                "COMPUTE_RUNTIME",
             )
 
             if detection_method == "yolo_obb":
-                yolo_model = params.get("YOLO_MODEL_PATH", "best.pt")
-                model_fingerprint = get_model_fingerprint(yolo_model)
+                yolo_mode = str(params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+                direct_model = params.get(
+                    "YOLO_OBB_DIRECT_MODEL_PATH",
+                    params.get("YOLO_MODEL_PATH", "best.pt"),
+                )
+                crop_obb_model = params.get(
+                    "YOLO_CROP_OBB_MODEL_PATH", params.get("YOLO_MODEL_PATH", "best.pt")
+                )
+                active_obb_model = (
+                    direct_model if yolo_mode == "direct" else crop_obb_model
+                )
+                model_fingerprint = get_model_fingerprint(active_obb_model)
                 model_name = os.path.basename(
                     model_fingerprint["resolved_path"]
                     or model_fingerprint["configured_path"]
@@ -8885,11 +13763,33 @@ class MainWindow(QMainWindow):
                     "YOLO_DEVICE",
                     "ENABLE_TENSORRT",
                     "TENSORRT_MAX_BATCH_SIZE",
+                    "YOLO_OBB_MODE",
+                    "YOLO_SEQ_CROP_PAD_RATIO",
+                    "YOLO_SEQ_MIN_CROP_SIZE_PX",
+                    "YOLO_SEQ_ENFORCE_SQUARE_CROP",
+                    "YOLO_SEQ_STAGE2_IMGSZ",
+                    "YOLO_SEQ_STAGE2_POW2_PAD",
+                    "YOLO_HEADTAIL_CONF_THRESHOLD",
+                    "POSE_OVERRIDES_HEADTAIL",
                 )
                 cache_params = {
                     "common": extract_hash_params(common_detection_keys),
                     "yolo": extract_hash_params(yolo_inference_keys),
-                    "model": normalize_for_hash(model_fingerprint),
+                    "models": normalize_for_hash(
+                        {
+                            "active_obb": model_fingerprint,
+                            "direct_obb": get_model_fingerprint(direct_model),
+                            "detect": get_model_fingerprint(
+                                params.get("YOLO_DETECT_MODEL_PATH", "")
+                            ),
+                            "crop_obb": get_model_fingerprint(crop_obb_model),
+                            "headtail": get_model_fingerprint(
+                                params.get("YOLO_HEADTAIL_MODEL_PATH", "")
+                            ),
+                        }
+                    ),
+                    # Bump when raw detection extraction/filtering semantics change.
+                    "raw_detection_cache_version": 4,
                 }
                 # Class order should not change cache identity.
                 classes = cache_params["yolo"].get("YOLO_TARGET_CLASSES")
@@ -8956,28 +13856,40 @@ class MainWindow(QMainWindow):
             ).hexdigest()[:12]
             return f"bgsub_{resize_str}_{h}"
 
-        base_name = os.path.splitext(video_path)[0]
         model_id = get_inference_model_id()
         # Share the exact inference hash with downstream detector code so
         # TensorRT engine cache and raw detection cache are invalidated together.
         params["INFERENCE_MODEL_ID"] = model_id
-        base_prefix = os.path.basename(base_name) + "_detection_cache_"
-
-        # Choose a writable directory for cache (prefer video dir, then CSV dir, else temp)
-        cache_dir = os.path.dirname(video_path)
-        if not os.access(cache_dir, os.W_OK):
-            csv_dir = (
-                os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        artifact_base_dirs = candidate_artifact_base_dirs(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        artifact_base_dir = choose_writable_artifact_base_dir(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        if artifact_base_dir != Path(video_path).parent:
+            logger.warning(
+                "Video directory not writable; using artifact root: %s",
+                artifact_base_dir,
             )
-            if csv_dir and os.access(csv_dir, os.W_OK):
-                cache_dir = csv_dir
-            else:
-                cache_dir = tempfile.gettempdir()
-                logger.warning(
-                    f"Video directory not writable; using temp cache dir: {cache_dir}"
-                )
 
-        detection_cache_path = os.path.join(cache_dir, f"{base_prefix}{model_id}.npz")
+        existing_detection_cache = find_existing_detection_cache_path(
+            video_path,
+            model_id,
+            artifact_base_dirs=artifact_base_dirs,
+        )
+        if existing_detection_cache is not None:
+            detection_cache_path = str(existing_detection_cache)
+        else:
+            detection_cache_path = str(
+                build_detection_cache_path(
+                    video_path,
+                    model_id,
+                    artifact_base_dir=artifact_base_dir,
+                )
+            )
 
         # Do NOT delete old detection caches; keep all for reuse
         self.current_detection_cache_path = detection_cache_path
@@ -8996,9 +13908,11 @@ class MainWindow(QMainWindow):
         self.tracking_worker.frame_signal.connect(self.on_new_frame)
         self.tracking_worker.finished_signal.connect(self.on_tracking_finished)
         self.tracking_worker.progress_signal.connect(self.on_progress_update)
-        self.tracking_worker.histogram_data_signal.connect(self.on_histogram_data)
         self.tracking_worker.stats_signal.connect(self.on_stats_update)
         self.tracking_worker.warning_signal.connect(self.on_tracking_warning)
+        self.tracking_worker.pose_exported_model_resolved_signal.connect(
+            self.on_pose_exported_model_resolved
+        )
 
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
@@ -9023,9 +13937,22 @@ class MainWindow(QMainWindow):
             else "yolo_obb"
         )
 
-        yolo_path = resolve_model_path(
-            self._get_selected_yolo_model_path() or "yolo26s-obb.pt"
+        yolo_mode = (
+            "sequential" if self.combo_yolo_obb_mode.currentIndex() == 1 else "direct"
         )
+        yolo_direct_path = resolve_model_path(
+            self._get_selected_yolo_model_path() or ""
+        )
+        yolo_detect_path = resolve_model_path(
+            self._get_selected_yolo_detect_model_path() or ""
+        )
+        yolo_crop_obb_path = resolve_model_path(
+            self._get_selected_yolo_crop_obb_model_path() or ""
+        )
+        yolo_headtail_path = resolve_model_path(
+            self._get_selected_yolo_headtail_model_path() or ""
+        )
+        yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
 
         yolo_cls = None
         if self.line_yolo_classes.text().strip():
@@ -9080,6 +14007,38 @@ class MainWindow(QMainWindow):
             "auto" if self.combo_yolo_batch_mode.currentIndex() == 0 else "manual"
         )
         advanced_config["yolo_manual_batch_size"] = self.spin_yolo_batch_size.value()
+        advanced_config["video_show_pose"] = self.check_video_show_pose.isChecked()
+        advanced_config["video_pose_point_radius"] = (
+            self.spin_video_pose_point_radius.value()
+        )
+        advanced_config["video_pose_point_thickness"] = (
+            self.spin_video_pose_point_thickness.value()
+        )
+        advanced_config["video_pose_line_thickness"] = (
+            self.spin_video_pose_line_thickness.value()
+        )
+        advanced_config["video_pose_color_mode"] = (
+            "track" if self.combo_video_pose_color_mode.currentIndex() == 0 else "fixed"
+        )
+        advanced_config["video_pose_color"] = [
+            int(self._video_pose_color[0]),
+            int(self._video_pose_color[1]),
+            int(self._video_pose_color[2]),
+        ]
+
+        individual_pipeline_enabled = self._is_individual_pipeline_enabled()
+        individual_image_save_enabled = self._is_individual_image_save_enabled()
+        compute_runtime = self._selected_compute_runtime()
+        runtime_detection = derive_detection_runtime_settings(compute_runtime)
+        trt_batch_size = (
+            self.spin_yolo_batch_size.value()
+            if self._runtime_requires_fixed_yolo_batch(compute_runtime)
+            else self.spin_tensorrt_batch.value()
+        )
+        pose_backend_family = self.combo_pose_model_type.currentText().strip().lower()
+        runtime_pose = derive_pose_runtime_settings(
+            compute_runtime, backend_family=pose_backend_family
+        )
 
         return {
             "ADVANCED_CONFIG": advanced_config,  # Include advanced config for batch optimization
@@ -9090,15 +14049,29 @@ class MainWindow(QMainWindow):
             "START_FRAME": self.spin_start_frame.value(),
             "END_FRAME": self.spin_end_frame.value(),
             "YOLO_MODEL_PATH": yolo_path,
+            "YOLO_OBB_MODE": yolo_mode,
+            "YOLO_OBB_DIRECT_MODEL_PATH": yolo_direct_path,
+            "YOLO_DETECT_MODEL_PATH": yolo_detect_path,
+            "YOLO_CROP_OBB_MODEL_PATH": yolo_crop_obb_path,
+            "YOLO_HEADTAIL_MODEL_PATH": yolo_headtail_path,
+            "POSE_OVERRIDES_HEADTAIL": self.chk_pose_overrides_headtail.isChecked(),
+            "YOLO_SEQ_CROP_PAD_RATIO": self.spin_yolo_seq_crop_pad.value(),
+            "YOLO_SEQ_MIN_CROP_SIZE_PX": self.spin_yolo_seq_min_crop_px.value(),
+            "YOLO_SEQ_ENFORCE_SQUARE_CROP": self.chk_yolo_seq_square_crop.isChecked(),
+            "YOLO_SEQ_STAGE2_IMGSZ": self.spin_yolo_seq_stage2_imgsz.value(),
+            "YOLO_SEQ_STAGE2_POW2_PAD": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+            "YOLO_SEQ_DETECT_CONF_THRESHOLD": self.spin_yolo_seq_detect_conf.value(),
+            "YOLO_HEADTAIL_CONF_THRESHOLD": self.spin_yolo_headtail_conf.value(),
             "YOLO_CONFIDENCE_THRESHOLD": self.spin_yolo_confidence.value(),
             "YOLO_IOU_THRESHOLD": self.spin_yolo_iou.value(),
             "USE_CUSTOM_OBB_IOU_FILTERING": True,
             "YOLO_TARGET_CLASSES": yolo_cls,
-            "YOLO_DEVICE": self.combo_device.currentText().split(" ")[0],
-            "ENABLE_GPU_BACKGROUND": self.combo_device.currentText().split(" ")[0]
-            != "cpu",
-            "ENABLE_TENSORRT": self.chk_enable_tensorrt.isChecked(),
-            "TENSORRT_MAX_BATCH_SIZE": self.spin_tensorrt_batch.value(),
+            "COMPUTE_RUNTIME": compute_runtime,
+            "YOLO_DEVICE": runtime_detection["yolo_device"],
+            "ENABLE_GPU_BACKGROUND": runtime_detection["enable_gpu_background"],
+            "ENABLE_TENSORRT": runtime_detection["enable_tensorrt"],
+            "ENABLE_ONNX_RUNTIME": runtime_detection["enable_onnx_runtime"],
+            "TENSORRT_MAX_BATCH_SIZE": trt_batch_size,
             "MAX_TARGETS": N,
             "THRESHOLD_VALUE": self.spin_threshold.value(),
             "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
@@ -9108,10 +14081,18 @@ class MainWindow(QMainWindow):
             "MAX_OBJECT_SIZE": max_object_size_pixels,
             "MAX_CONTOUR_MULTIPLIER": self.spin_max_contour_multiplier.value(),
             "MAX_DISTANCE_THRESHOLD": max_distance_pixels,
+            "MAX_DISTANCE_MULTIPLIER": self.spin_max_dist.value(),
             "ENABLE_POSTPROCESSING": self.enable_postprocessing.isChecked(),
             "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
             "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
             "MAX_OCCLUSION_GAP": self.spin_max_occlusion_gap.value(),
+            "ENABLE_TRACKLET_RELINKING": self.chk_enable_tracklet_relinking.isChecked(),
+            "RELINK_POSE_MAX_DISTANCE": self.spin_relink_pose_max_distance.value(),
+            "POSE_EXPORT_MIN_VALID_FRACTION": self.spin_pose_export_min_valid_fraction.value(),
+            "POSE_EXPORT_MIN_VALID_KEYPOINTS": self.spin_pose_export_min_valid_keypoints.value(),
+            "RELINK_MIN_POSE_QUALITY": self.spin_relink_min_pose_quality.value(),
+            "POSE_POSTPROC_MAX_GAP": self.spin_pose_postproc_max_gap.value(),
+            "POSE_TEMPORAL_OUTLIER_ZSCORE": self.spin_pose_temporal_outlier_zscore.value(),
             "MAX_VELOCITY_ZSCORE": self.spin_max_velocity_zscore.value(),
             "VELOCITY_ZSCORE_WINDOW": self.spin_velocity_zscore_window.value(),
             "VELOCITY_ZSCORE_MIN_VELOCITY": self.spin_velocity_zscore_min_vel.value()
@@ -9137,6 +14118,13 @@ class MainWindow(QMainWindow):
             "KALMAN_MAX_VELOCITY_MULTIPLIER": self.spin_kalman_max_velocity.value(),
             "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER": self.spin_kalman_longitudinal_noise.value(),
             "KALMAN_LATERAL_NOISE_MULTIPLIER": self.spin_kalman_lateral_noise.value(),
+            # Derived anisotropy ratio for the autotune domain banner.
+            # Lateral = Longitudinal / ratio, so ratio = long / lat (clamped ≥ 1).
+            "KALMAN_ANISOTROPY_RATIO": max(
+                1.0,
+                self.spin_kalman_longitudinal_noise.value()
+                / max(self.spin_kalman_lateral_noise.value(), 1e-6),
+            ),
             "RESIZE_FACTOR": self.spin_resize.value(),
             "ENABLE_CONSERVATIVE_SPLIT": self.chk_conservative_split.isChecked(),
             "MERGE_AREA_THRESHOLD": self.spin_merge_threshold.value(),
@@ -9152,15 +14140,28 @@ class MainWindow(QMainWindow):
             "VELOCITY_THRESHOLD": velocity_threshold_pixels_per_frame,
             "INSTANT_FLIP_ORIENTATION": self.chk_instant_flip.isChecked(),
             "MAX_ORIENT_DELTA_STOPPED": self.spin_max_orient.value(),
+            "DIRECTED_ORIENT_SMOOTHING": self.chk_directed_orient_smoothing.isChecked(),
+            "DIRECTED_ORIENT_FLIP_CONFIDENCE": self.spin_directed_orient_flip_conf.value(),
             "LOST_THRESHOLD_FRAMES": self.spin_lost_thresh.value(),
             "W_POSITION": self.spin_Wp.value(),
             "W_ORIENTATION": self.spin_Wo.value(),
             "W_AREA": self.spin_Wa.value(),
             "W_ASPECT": self.spin_Wasp.value(),
+            "W_POSE_DIRECTION": 0.5,
+            "W_POSE_LENGTH": 0.0,
+            "POSE_VALID_ORIENTATION_SCALE": 0.15,
             "USE_MAHALANOBIS": self.chk_use_mahal.isChecked(),
             "ENABLE_GREEDY_ASSIGNMENT": self.combo_assignment_method.currentIndex()
             == 1,
             "ENABLE_SPATIAL_OPTIMIZATION": self.chk_spatial_optimization.isChecked(),
+            "ASSOCIATION_STAGE1_MOTION_GATE_MULTIPLIER": self.spin_assoc_gate_multiplier.value(),
+            "ASSOCIATION_STAGE1_MAX_AREA_RATIO": self.spin_assoc_max_area_ratio.value(),
+            "ASSOCIATION_STAGE1_MAX_ASPECT_DIFF": self.spin_assoc_max_aspect_diff.value(),
+            "ENABLE_POSE_REJECTION": self.chk_enable_pose_rejection.isChecked(),
+            "POSE_REJECTION_THRESHOLD": self.spin_pose_rejection_threshold.value(),
+            "POSE_REJECTION_MIN_VISIBILITY": self.spin_pose_rejection_min_visibility.value(),
+            "TRACK_FEATURE_EMA_ALPHA": self.spin_track_feature_ema_alpha.value(),
+            "ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD": self.spin_assoc_high_conf_threshold.value(),
             "TRAJECTORY_COLORS": colors,
             "SHOW_FG": self.chk_show_fg.isChecked(),
             "SHOW_BG": self.chk_show_bg.isChecked(),
@@ -9173,8 +14174,6 @@ class MainWindow(QMainWindow):
             "SHOW_KALMAN_UNCERTAINTY": self.chk_show_kalman_uncertainty.isChecked(),
             "VISUALIZATION_FREE_MODE": self.chk_visualization_free.isChecked(),
             "zoom_factor": self.slider_zoom.value() / 100.0,
-            "ENABLE_HISTOGRAMS": self.enable_histograms.isChecked(),
-            "HISTOGRAM_HISTORY_FRAMES": self.spin_histogram_history.value(),
             "ROI_MASK": self.roi_mask,
             "REFERENCE_BODY_SIZE": reference_body_size,
             # Conservative trajectory merging parameters (in resized coordinate space)
@@ -9186,9 +14185,17 @@ class MainWindow(QMainWindow):
             "MIN_OVERLAP_FRAMES": self.spin_min_overlap_frames.value(),
             # Dataset generation parameters
             "ENABLE_DATASET_GENERATION": self.chk_enable_dataset_gen.isChecked(),
-            "DATASET_NAME": self.line_dataset_name.text(),
+            "DATASET_NAME": "",
             "DATASET_CLASS_NAME": self.line_dataset_class_name.text(),
-            "DATASET_OUTPUT_DIR": self.line_dataset_output.text(),
+            "DATASET_OUTPUT_DIR": (
+                os.path.join(
+                    os.path.dirname(self.current_video_path),
+                    f"{os.path.splitext(os.path.basename(self.current_video_path))[0]}_datasets",
+                    "active_learning",
+                )
+                if self.current_video_path
+                else ""
+            ),
             "DATASET_MAX_FRAMES": self.spin_dataset_max_frames.value(),
             "DATASET_CONF_THRESHOLD": self.spin_dataset_conf_threshold.value(),
             # Dataset-specific YOLO parameters from advanced config (for export, not tracking)
@@ -9207,7 +14214,8 @@ class MainWindow(QMainWindow):
             "METRIC_TRACK_LOSS": self.chk_metric_track_loss.isChecked(),
             "METRIC_HIGH_UNCERTAINTY": self.chk_metric_high_uncertainty.isChecked(),
             # Individual analysis parameters
-            "ENABLE_IDENTITY_ANALYSIS": self.chk_enable_individual_analysis.isChecked(),
+            "ENABLE_IDENTITY_ANALYSIS": individual_pipeline_enabled,
+            "ENABLE_INDIVIDUAL_PIPELINE": individual_pipeline_enabled,
             "IDENTITY_METHOD": self.combo_identity_method.currentText()
             .lower()
             .replace(" ", "_")
@@ -9220,11 +14228,45 @@ class MainWindow(QMainWindow):
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
+            "ENABLE_POSE_EXTRACTOR": self.chk_enable_pose_extractor.isChecked(),
+            "POSE_MODEL_TYPE": self.combo_pose_model_type.currentText().strip().lower(),
+            "POSE_MODEL_DIR": resolve_pose_model_path(
+                self._pose_model_path_for_backend(
+                    self.combo_pose_model_type.currentText().strip().lower()
+                ),
+                backend=self.combo_pose_model_type.currentText().strip().lower(),
+            ),
+            "POSE_RUNTIME_FLAVOR": runtime_pose["pose_runtime_flavor"],
+            "POSE_EXPORTED_MODEL_PATH": "",
+            "POSE_MIN_KPT_CONF_VALID": self.spin_pose_min_kpt_conf_valid.value(),
+            "POSE_SKELETON_FILE": self.line_pose_skeleton_file.text().strip(),
+            "POSE_IGNORE_KEYPOINTS": self._parse_pose_ignore_keypoints(),
+            "POSE_DIRECTION_ANTERIOR_KEYPOINTS": self._parse_pose_direction_anterior_keypoints(),
+            "POSE_DIRECTION_POSTERIOR_KEYPOINTS": self._parse_pose_direction_posterior_keypoints(),
+            "POSE_YOLO_BATCH": self.spin_pose_batch.value(),
+            "POSE_BATCH_SIZE": self.spin_pose_batch.value(),
+            "POSE_SLEAP_ENV": self._selected_pose_sleap_env(),
+            "POSE_SLEAP_DEVICE": runtime_pose["pose_sleap_device"],
+            "POSE_SLEAP_BATCH": self.spin_pose_batch.value(),
+            "POSE_SLEAP_MAX_INSTANCES": 1,
+            "POSE_SLEAP_EXPERIMENTAL_FEATURES": self._sleap_experimental_features_enabled(),
+            "INDIVIDUAL_PROPERTIES_CACHE_PATH": str(
+                self.current_individual_properties_cache_path or ""
+            ).strip(),
             # Real-time Individual Dataset Generation parameters
-            "ENABLE_INDIVIDUAL_DATASET": self.chk_enable_individual_dataset.isChecked(),
-            "INDIVIDUAL_DATASET_NAME": self.line_individual_dataset_name.text().strip()
-            or "individual_dataset",
-            "INDIVIDUAL_DATASET_OUTPUT_DIR": self.line_individual_output.text(),
+            "ENABLE_INDIVIDUAL_DATASET": individual_image_save_enabled,
+            "ENABLE_INDIVIDUAL_IMAGE_SAVE": individual_image_save_enabled,
+            "GENERATE_ORIENTED_TRACK_VIDEOS": self._should_generate_oriented_track_videos(),
+            "INDIVIDUAL_DATASET_NAME": "",
+            "INDIVIDUAL_DATASET_OUTPUT_DIR": (
+                os.path.join(
+                    os.path.dirname(self.current_video_path),
+                    f"{os.path.splitext(os.path.basename(self.current_video_path))[0]}_datasets",
+                    "individual_crops",
+                )
+                if self.current_video_path
+                else ""
+            ),
             "INDIVIDUAL_OUTPUT_FORMAT": self.combo_individual_format.currentText().lower(),
             "INDIVIDUAL_SAVE_INTERVAL": self.spin_individual_interval.value(),
             "INDIVIDUAL_INTERPOLATE_OCCLUSIONS": self.chk_individual_interpolate.isChecked(),
@@ -9232,7 +14274,16 @@ class MainWindow(QMainWindow):
             "INDIVIDUAL_BACKGROUND_COLOR": [
                 int(c) for c in self._background_color
             ],  # Ensure JSON serializable
+            "SUPPRESS_FOREIGN_OBB_REGIONS": self.chk_suppress_foreign_obb.isChecked(),
+            "SUPPRESS_FOREIGN_OBB_DATASET": self.chk_suppress_foreign_obb_dataset.isChecked(),
             "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
+            "DENSITY_GAUSSIAN_SIGMA_SCALE": self.spin_density_gaussian_sigma_scale.value(),
+            "DENSITY_TEMPORAL_SIGMA": self.spin_density_temporal_sigma.value(),
+            "DENSITY_BINARIZE_THRESHOLD": self.spin_density_binarize_threshold.value(),
+            "DENSITY_CONSERVATIVE_FACTOR": self.spin_density_conservative_factor.value(),
+            "DENSITY_MIN_FRAME_DURATION": self.spin_density_min_duration.value(),
+            "DENSITY_MIN_AREA_BODIES": self.spin_density_min_area_bodies.value(),
+            "DENSITY_DOWNSAMPLE_FACTOR": self.spin_density_downsample_factor.value(),
         }
 
     def load_config(self: object) -> object:
@@ -9242,11 +14293,12 @@ class MainWindow(QMainWindow):
         )
         if config_path:
             self._load_config_from_file(config_path)
+            self._show_workspace()
             self.config_status_label.setText(
                 f"✓ Loaded: {os.path.basename(config_path)}"
             )
             self.config_status_label.setStyleSheet(
-                "color: #4a9eff; font-style: italic; font-size: 10px;"
+                "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
             logger.info(f"Configuration loaded from {config_path}")
 
@@ -9421,35 +14473,97 @@ class MainWindow(QMainWindow):
             )
 
             # === YOLO CONFIGURATION ===
-            yolo_model = get_cfg("yolo_model_path", default="yolo26s-obb.pt")
+            yolo_mode = str(get_cfg("yolo_obb_mode", default="direct")).strip().lower()
+            if yolo_mode not in {"direct", "sequential"}:
+                yolo_mode = "direct"
+            self.combo_yolo_obb_mode.setCurrentIndex(
+                1 if yolo_mode == "sequential" else 0
+            )
 
-            # Resolve model path (handles both relative and absolute)
-            resolved_yolo_model = resolve_model_path(yolo_model)
+            yolo_direct_model = get_cfg(
+                "yolo_obb_direct_model_path",
+                "yolo_model_path",
+                default="",
+            )
+            yolo_detect_model = get_cfg("yolo_detect_model_path", default="")
+            yolo_crop_obb_model = get_cfg(
+                "yolo_crop_obb_model_path",
+                default=yolo_direct_model,
+            )
+            yolo_headtail_model = get_cfg("yolo_headtail_model_path", default="")
 
-            # Validate model exists if it's a relative path from preset
-            if preset_mode and not os.path.isabs(yolo_model):
-                if not os.path.exists(resolved_yolo_model):
+            resolved_yolo_direct = resolve_model_path(yolo_direct_model)
+            resolved_yolo_detect = resolve_model_path(yolo_detect_model)
+            resolved_yolo_crop_obb = resolve_model_path(yolo_crop_obb_model)
+            resolved_yolo_headtail = resolve_model_path(yolo_headtail_model)
+
+            if preset_mode:
+                for model_key, model_cfg, model_resolved in (
+                    ("Direct OBB model", yolo_direct_model, resolved_yolo_direct),
+                    (
+                        "Sequential detect model",
+                        yolo_detect_model,
+                        resolved_yolo_detect,
+                    ),
+                    (
+                        "Sequential crop OBB model",
+                        yolo_crop_obb_model,
+                        resolved_yolo_crop_obb,
+                    ),
+                    ("Head-tail model", yolo_headtail_model, resolved_yolo_headtail),
+                ):
+                    if not model_cfg:
+                        continue
+                    if os.path.isabs(str(model_cfg)):
+                        continue
+                    if os.path.exists(model_resolved):
+                        continue
                     logger.warning(
-                        f"Preset references non-existent model: {yolo_model}\n"
-                        f"Expected location: {resolved_yolo_model}"
-                    )
-                    QMessageBox.warning(
-                        self,
-                        "Model Not Found",
-                        f"The preset references a model that doesn't exist:\n\n"
-                        f"Model: {yolo_model}\n"
-                        f"Expected at: {resolved_yolo_model}\n\n"
-                        f"Please ensure the model is in your local models archive:\n"
-                        f"{get_models_directory()}",
+                        "Preset references non-existent %s: %s (expected: %s)",
+                        model_key,
+                        model_cfg,
+                        model_resolved,
                     )
 
-            # Refresh model combo from repository and apply selection
-            self._refresh_yolo_model_combo(preferred_model_path=yolo_model)
-            if self._get_selected_yolo_model_path() != make_model_path_relative(
-                yolo_model
-            ):
-                # Fall back to resolved path when the configured relative path cannot be matched
-                self._set_yolo_model_selection(resolved_yolo_model)
+            self._refresh_yolo_model_combo(preferred_model_path=yolo_direct_model)
+            self._set_yolo_model_selection(resolved_yolo_direct)
+            self._refresh_yolo_detect_model_combo(
+                preferred_model_path=yolo_detect_model
+            )
+            self._set_yolo_detect_model_selection(resolved_yolo_detect)
+            self._refresh_yolo_crop_obb_model_combo(
+                preferred_model_path=yolo_crop_obb_model
+            )
+            self._set_yolo_crop_obb_model_selection(resolved_yolo_crop_obb)
+            self._refresh_yolo_headtail_model_combo(
+                preferred_model_path=yolo_headtail_model
+            )
+            self._set_yolo_headtail_model_selection(resolved_yolo_headtail)
+            self.chk_pose_overrides_headtail.setChecked(
+                bool(get_cfg("pose_overrides_headtail", default=True))
+            )
+            self.spin_yolo_seq_crop_pad.setValue(
+                float(get_cfg("yolo_seq_crop_pad_ratio", default=0.15))
+            )
+            self.spin_yolo_seq_min_crop_px.setValue(
+                int(get_cfg("yolo_seq_min_crop_size_px", default=64))
+            )
+            self.chk_yolo_seq_square_crop.setChecked(
+                bool(get_cfg("yolo_seq_enforce_square_crop", default=True))
+            )
+            self.spin_yolo_seq_stage2_imgsz.setValue(
+                int(get_cfg("yolo_seq_stage2_imgsz", default=160))
+            )
+            self.chk_yolo_seq_stage2_pow2_pad.setChecked(
+                bool(get_cfg("yolo_seq_stage2_pow2_pad", default=False))
+            )
+            self.spin_yolo_seq_detect_conf.setValue(
+                float(get_cfg("yolo_seq_detect_conf_threshold", default=0.25))
+            )
+            self.spin_yolo_headtail_conf.setValue(
+                float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
+            )
+            self._on_yolo_mode_changed(self.combo_yolo_obb_mode.currentIndex())
 
             self.spin_yolo_confidence.setValue(
                 get_cfg("yolo_confidence_threshold", default=0.25)
@@ -9459,25 +14573,48 @@ class MainWindow(QMainWindow):
             yolo_cls = get_cfg("yolo_target_classes", default=None)
             if yolo_cls:
                 self.line_yolo_classes.setText(",".join(map(str, yolo_cls)))
+            else:
+                self.line_yolo_classes.clear()
 
-            # Device selection (skip in preset mode)
-            if not preset_mode:
-                yolo_dev = get_cfg("yolo_device", default="auto")
-                idx = self.combo_device.findText(yolo_dev, Qt.MatchStartsWith)
-                if idx >= 0:
-                    self.combo_device.setCurrentIndex(idx)
-
-            # TensorRT
-            self.chk_enable_tensorrt.setChecked(
-                get_cfg("enable_tensorrt", default=False)
+            compute_runtime_cfg = (
+                str(
+                    get_cfg(
+                        "compute_runtime",
+                        default=infer_compute_runtime_from_legacy(
+                            yolo_device=str(get_cfg("yolo_device", default="auto")),
+                            enable_tensorrt=bool(
+                                get_cfg("enable_tensorrt", default=False)
+                            ),
+                            pose_runtime_flavor=str(
+                                get_cfg("pose_runtime_flavor", default="auto")
+                            ),
+                        ),
+                    )
+                )
+                .strip()
+                .lower()
             )
+            self._populate_compute_runtime_options(preferred=compute_runtime_cfg)
+            self._on_runtime_context_changed()
+
+            # TensorRT batch size is still configurable (runtime-derived usage).
             self.spin_tensorrt_batch.setValue(
                 get_cfg("tensorrt_max_batch_size", default=16)
             )
-            # Update TensorRT batch spinner state based on checkbox
-            tensorrt_enabled = self.chk_enable_tensorrt.isChecked()
-            self.spin_tensorrt_batch.setEnabled(tensorrt_enabled)
-            self.lbl_tensorrt_batch.setEnabled(tensorrt_enabled)
+            self.spin_tensorrt_batch.setEnabled(
+                bool(
+                    derive_detection_runtime_settings(self._selected_compute_runtime())[
+                        "enable_tensorrt"
+                    ]
+                )
+            )
+            self.lbl_tensorrt_batch.setEnabled(
+                bool(
+                    derive_detection_runtime_settings(self._selected_compute_runtime())[
+                        "enable_tensorrt"
+                    ]
+                )
+            )
 
             # YOLO Batching settings
             self.chk_enable_yolo_batching.setChecked(
@@ -9488,11 +14625,8 @@ class MainWindow(QMainWindow):
             self.spin_yolo_batch_size.setValue(
                 get_cfg("yolo_manual_batch_size", default=16)
             )
-            # Update spinner enabled state based on loaded checkbox and combo box values
-            batching_enabled = self.chk_enable_yolo_batching.isChecked()
-            is_manual = self.combo_yolo_batch_mode.currentIndex() == 1
-            self.spin_yolo_batch_size.setEnabled(batching_enabled and is_manual)
-            self.combo_yolo_batch_mode.setEnabled(batching_enabled)
+            # Re-apply runtime-derived constraints (e.g., TensorRT => manual batch mode).
+            self._on_runtime_context_changed()
 
             # === CORE TRACKING ===
             self.spin_max_targets.setValue(get_cfg("max_targets", default=4))
@@ -9560,6 +14694,62 @@ class MainWindow(QMainWindow):
             self.chk_spatial_optimization.setChecked(
                 get_cfg("enable_spatial_optimization", default=False)
             )
+            self.spin_assoc_gate_multiplier.setValue(
+                get_cfg(
+                    "association_stage1_motion_gate_multiplier",
+                    "ASSOCIATION_STAGE1_MOTION_GATE_MULTIPLIER",
+                    default=1.4,
+                )
+            )
+            self.spin_assoc_max_area_ratio.setValue(
+                get_cfg(
+                    "association_stage1_max_area_ratio",
+                    "ASSOCIATION_STAGE1_MAX_AREA_RATIO",
+                    default=2.5,
+                )
+            )
+            self.spin_assoc_max_aspect_diff.setValue(
+                get_cfg(
+                    "association_stage1_max_aspect_diff",
+                    "ASSOCIATION_STAGE1_MAX_ASPECT_DIFF",
+                    default=0.8,
+                )
+            )
+            self.chk_enable_pose_rejection.setChecked(
+                get_cfg(
+                    "enable_pose_rejection",
+                    "ENABLE_POSE_REJECTION",
+                    default=True,
+                )
+            )
+            self.spin_pose_rejection_threshold.setValue(
+                get_cfg(
+                    "pose_rejection_threshold",
+                    "POSE_REJECTION_THRESHOLD",
+                    default=0.5,
+                )
+            )
+            self.spin_pose_rejection_min_visibility.setValue(
+                get_cfg(
+                    "pose_rejection_min_visibility",
+                    "POSE_REJECTION_MIN_VISIBILITY",
+                    default=0.5,
+                )
+            )
+            self.spin_track_feature_ema_alpha.setValue(
+                get_cfg(
+                    "track_feature_ema_alpha",
+                    "TRACK_FEATURE_EMA_ALPHA",
+                    default=0.85,
+                )
+            )
+            self.spin_assoc_high_conf_threshold.setValue(
+                get_cfg(
+                    "association_high_confidence_threshold",
+                    "ASSOCIATION_HIGH_CONFIDENCE_THRESHOLD",
+                    default=0.7,
+                )
+            )
 
             # === ORIENTATION & MOTION ===
             self.spin_velocity.setValue(get_cfg("velocity_threshold", default=5.0))
@@ -9572,6 +14762,12 @@ class MainWindow(QMainWindow):
                     "max_orient_delta_stopped",
                     default=30.0,
                 )
+            )
+            self.chk_directed_orient_smoothing.setChecked(
+                bool(get_cfg("directed_orient_smoothing", default=True))
+            )
+            self.spin_directed_orient_flip_conf.setValue(
+                float(get_cfg("directed_orient_flip_confidence", default=0.7))
             )
 
             # === TRACK LIFECYCLE ===
@@ -9603,6 +14799,48 @@ class MainWindow(QMainWindow):
             )
             self.spin_max_occlusion_gap.setValue(
                 get_cfg("max_occlusion_gap", default=30)
+            )
+            self.chk_enable_tracklet_relinking.setChecked(
+                get_cfg("enable_tracklet_relinking", default=False)
+            )
+            self.spin_relink_pose_max_distance.setValue(
+                get_cfg("relink_pose_max_distance", default=0.45)
+            )
+            self.spin_pose_export_min_valid_fraction.setValue(
+                get_cfg("pose_export_min_valid_fraction", default=0.5)
+            )
+            self.spin_pose_export_min_valid_keypoints.setValue(
+                get_cfg("pose_export_min_valid_keypoints", default=3)
+            )
+            self.spin_relink_min_pose_quality.setValue(
+                get_cfg("relink_min_pose_quality", default=0.6)
+            )
+            self.spin_pose_postproc_max_gap.setValue(
+                get_cfg("pose_postproc_max_gap", default=5)
+            )
+            self.spin_pose_temporal_outlier_zscore.setValue(
+                get_cfg("pose_temporal_outlier_zscore", default=3.0)
+            )
+            self.spin_density_gaussian_sigma_scale.setValue(
+                get_cfg("density_gaussian_sigma_scale", default=1.0)
+            )
+            self.spin_density_temporal_sigma.setValue(
+                get_cfg("density_temporal_sigma", default=2.0)
+            )
+            self.spin_density_binarize_threshold.setValue(
+                get_cfg("density_binarize_threshold", default=0.3)
+            )
+            self.spin_density_conservative_factor.setValue(
+                get_cfg("density_conservative_factor", default=0.7)
+            )
+            self.spin_density_min_duration.setValue(
+                int(get_cfg("density_min_frame_duration", default=3))
+            )
+            self.spin_density_min_area_bodies.setValue(
+                float(get_cfg("density_min_area_bodies", default=0.25))
+            )
+            self.spin_density_downsample_factor.setValue(
+                int(get_cfg("density_downsample_factor", default=8))
             )
             self.spin_max_velocity_zscore.setValue(
                 get_cfg("max_velocity_zscore", default=0.0)
@@ -9651,14 +14889,59 @@ class MainWindow(QMainWindow):
             self.spin_marker_size.setValue(get_cfg("video_marker_size", default=0.3))
             self.spin_text_scale.setValue(get_cfg("video_text_scale", default=0.5))
             self.spin_arrow_length.setValue(get_cfg("video_arrow_length", default=0.7))
-
-            # === REAL-TIME ANALYTICS ===
-            self.enable_histograms.setChecked(
-                get_cfg("enable_histograms", default=False)
+            self.check_video_show_pose.setChecked(
+                get_cfg(
+                    "video_show_pose",
+                    default=bool(self.advanced_config.get("video_show_pose", True)),
+                )
             )
-            self.spin_histogram_history.setValue(
-                get_cfg("histogram_history_frames", default=300)
+            pose_color_mode = str(
+                get_cfg(
+                    "video_pose_color_mode",
+                    default=self.advanced_config.get("video_pose_color_mode", "track"),
+                )
+            ).strip()
+            self.combo_video_pose_color_mode.setCurrentIndex(
+                0 if pose_color_mode == "track" else 1
             )
+            self.spin_video_pose_point_radius.setValue(
+                int(
+                    get_cfg(
+                        "video_pose_point_radius",
+                        default=self.advanced_config.get("video_pose_point_radius", 3),
+                    )
+                )
+            )
+            self.spin_video_pose_point_thickness.setValue(
+                int(
+                    get_cfg(
+                        "video_pose_point_thickness",
+                        default=self.advanced_config.get(
+                            "video_pose_point_thickness", -1
+                        ),
+                    )
+                )
+            )
+            self.spin_video_pose_line_thickness.setValue(
+                int(
+                    get_cfg(
+                        "video_pose_line_thickness",
+                        default=self.advanced_config.get(
+                            "video_pose_line_thickness", 2
+                        ),
+                    )
+                )
+            )
+            pose_color = get_cfg(
+                "video_pose_color",
+                default=self.advanced_config.get("video_pose_color", [255, 255, 255]),
+            )
+            if isinstance(pose_color, (list, tuple)) and len(pose_color) == 3:
+                self._video_pose_color = tuple(
+                    int(max(0, min(255, float(v)))) for v in pose_color
+                )
+                self._update_video_pose_color_button()
+            self._sync_video_pose_overlay_controls()
 
             # === VISUALIZATION OVERLAYS ===
             self.chk_show_circles.setChecked(
@@ -9696,15 +14979,9 @@ class MainWindow(QMainWindow):
             self.chk_enable_dataset_gen.setChecked(
                 get_cfg("enable_dataset_generation", default=False)
             )
-            self.line_dataset_name.setText(get_cfg("dataset_name", default=""))
             self.line_dataset_class_name.setText(
                 get_cfg("dataset_class_name", default="object")
             )
-            # Skip output directory in preset mode
-            if not preset_mode:
-                self.line_dataset_output.setText(
-                    get_cfg("dataset_output_dir", default="")
-                )
             self.spin_dataset_max_frames.setValue(
                 get_cfg("dataset_max_frames", default=100)
             )
@@ -9742,9 +15019,12 @@ class MainWindow(QMainWindow):
             )
 
             # === INDIVIDUAL ANALYSIS ===
-            self.chk_enable_individual_analysis.setChecked(
-                get_cfg("enable_identity_analysis", default=False)
+            pipeline_enabled = get_cfg(
+                "enable_individual_pipeline",
+                "enable_identity_analysis",
+                default=False,
             )
+            self.chk_enable_individual_analysis.setChecked(bool(pipeline_enabled))
             method_map = {
                 "none_disabled": 0,
                 "color_tags_yolo": 1,
@@ -9808,18 +15088,85 @@ class MainWindow(QMainWindow):
                 get_cfg("apriltag_decimate", default=1.0)
             )
 
-            # === REAL-TIME INDIVIDUAL DATASET ===
-            self.chk_enable_individual_dataset.setChecked(
-                get_cfg("enable_individual_dataset", default=False)
+            self.chk_enable_pose_extractor.setChecked(
+                get_cfg("enable_pose_extractor", default=False)
             )
-            self.line_individual_dataset_name.setText(
-                get_cfg("individual_dataset_name", default="individual_dataset")
+            pose_backend = (
+                str(get_cfg("pose_model_type", default="yolo")).strip().upper()
             )
-            # Skip output directory in preset mode
-            if not preset_mode:
-                self.line_individual_output.setText(
-                    get_cfg("individual_dataset_output_dir", default="")
+            pose_backend_idx = self.combo_pose_model_type.findText(pose_backend)
+            if pose_backend_idx >= 0:
+                self.combo_pose_model_type.setCurrentIndex(pose_backend_idx)
+            yolo_pose_model = str(get_cfg("pose_yolo_model_dir", default="")).strip()
+            sleap_pose_model = str(get_cfg("pose_sleap_model_dir", default="")).strip()
+            legacy_pose_model = str(get_cfg("pose_model_dir", default="")).strip()
+            if not yolo_pose_model and pose_backend.lower() == "yolo":
+                yolo_pose_model = legacy_pose_model
+            if not sleap_pose_model and pose_backend.lower() == "sleap":
+                sleap_pose_model = legacy_pose_model
+            self._set_pose_model_path_for_backend(yolo_pose_model, backend="yolo")
+            self._set_pose_model_path_for_backend(sleap_pose_model, backend="sleap")
+            active_backend = self.combo_pose_model_type.currentText().strip().lower()
+            self._refresh_pose_model_combo(
+                preferred_model_path=self._pose_model_path_for_backend(active_backend)
+            )
+            pose_runtime_flavor = derive_pose_runtime_settings(
+                self._selected_compute_runtime(),
+                backend_family=self.combo_pose_model_type.currentText().strip().lower(),
+            )["pose_runtime_flavor"]
+            self._populate_pose_runtime_flavor_options(
+                backend=self.combo_pose_model_type.currentText().strip().lower(),
+                preferred=pose_runtime_flavor,
+            )
+            self.spin_pose_min_kpt_conf_valid.setValue(
+                get_cfg("pose_min_kpt_conf_valid", default=0.2)
+            )
+            self.line_pose_skeleton_file.setText(
+                get_cfg("pose_skeleton_file", default="")
+            )
+            self._refresh_pose_direction_keypoint_lists()
+            ignore_kpts = get_cfg("pose_ignore_keypoints", default=[])
+            self._set_pose_group_selection(self.list_pose_ignore_keypoints, ignore_kpts)
+            ant_kpts = get_cfg("pose_direction_anterior_keypoints", default=[])
+            self._set_pose_group_selection(self.list_pose_direction_anterior, ant_kpts)
+            post_kpts = get_cfg("pose_direction_posterior_keypoints", default=[])
+            self._set_pose_group_selection(
+                self.list_pose_direction_posterior, post_kpts
+            )
+            self._apply_pose_keypoint_selection_constraints("ignore")
+            self.advanced_config["pose_sleap_env"] = str(
+                get_cfg("pose_sleap_env", default="sleap")
+            )
+            self._refresh_pose_sleap_envs()
+            if hasattr(self, "chk_sleap_experimental_features"):
+                self.chk_sleap_experimental_features.setChecked(
+                    get_cfg("pose_sleap_experimental_features", default=False)
                 )
+            shared_pose_batch = int(
+                get_cfg(
+                    "pose_batch_size",
+                    default=get_cfg(
+                        "pose_yolo_batch",
+                        default=get_cfg("pose_sleap_batch", default=4),
+                    ),
+                )
+            )
+            self.spin_pose_batch.setValue(shared_pose_batch)
+
+            # === REAL-TIME INDIVIDUAL DATASET ===
+            self.chk_suppress_foreign_obb_dataset.setChecked(
+                get_cfg("suppress_foreign_obb_dataset", default=False)
+            )
+            self.chk_enable_individual_dataset.setChecked(
+                get_cfg(
+                    "enable_individual_image_save",
+                    "enable_individual_dataset",
+                    default=False,
+                )
+            )
+            self.chk_generate_individual_track_videos.setChecked(
+                get_cfg("generate_oriented_track_videos", default=False)
+            )
             format_text = get_cfg("individual_output_format", default="png").upper()
             format_idx = self.combo_individual_format.findText(format_text)
             if format_idx >= 0:
@@ -9838,6 +15185,10 @@ class MainWindow(QMainWindow):
             if isinstance(bg_color, (list, tuple)) and len(bg_color) == 3:
                 self._background_color = tuple(bg_color)
             self._update_background_color_button()
+            self.chk_suppress_foreign_obb.setChecked(
+                get_cfg("suppress_foreign_obb_regions", default=True)
+            )
+            self._sync_individual_analysis_mode_ui()
 
             # === ROI ===
             self.roi_shapes = cfg.get("roi_shapes", [])
@@ -9876,6 +15227,7 @@ class MainWindow(QMainWindow):
         preset_path: object = None,
         preset_name: object = None,
         preset_description: object = None,
+        prompt_if_exists: bool = True,
     ) -> object:
         """Save current configuration to JSON file.
 
@@ -9884,11 +15236,19 @@ class MainWindow(QMainWindow):
             preset_path: If provided, save directly to this path without prompting
             preset_name: Name for the preset (only used in preset_mode)
             preset_description: Description for the preset (only used in preset_mode)
+            prompt_if_exists: If False, overwrite default config path without interactive replace dialog.
 
         Returns:
             bool: True if config was saved successfully, False if cancelled or failed
         """
-        yolo_path = self._get_selected_yolo_model_path()
+        yolo_mode = (
+            "sequential" if self.combo_yolo_obb_mode.currentIndex() == 1 else "direct"
+        )
+        yolo_direct_path = self._get_selected_yolo_model_path()
+        yolo_detect_path = self._get_selected_yolo_detect_model_path()
+        yolo_crop_obb_path = self._get_selected_yolo_crop_obb_model_path()
+        yolo_headtail_path = self._get_selected_yolo_headtail_model_path()
+        yolo_path = yolo_direct_path if yolo_mode == "direct" else yolo_crop_obb_path
         yolo_cls = (
             [int(x.strip()) for x in self.line_yolo_classes.text().split(",")]
             if self.line_yolo_classes.text().strip()
@@ -9932,6 +15292,12 @@ class MainWindow(QMainWindow):
                     ),
                 }
             )
+
+        compute_runtime = self._selected_compute_runtime()
+        pose_runtime_derived = derive_pose_runtime_settings(
+            compute_runtime,
+            backend_family=self.combo_pose_model_type.currentText().strip().lower(),
+        )
 
         cfg.update(
             {
@@ -9979,6 +15345,25 @@ class MainWindow(QMainWindow):
                 # === YOLO CONFIGURATION ===
                 # Store relative path if model is in archive, otherwise absolute
                 "yolo_model_path": make_model_path_relative(yolo_path),
+                "yolo_obb_mode": yolo_mode,
+                "yolo_obb_direct_model_path": make_model_path_relative(
+                    yolo_direct_path
+                ),
+                "yolo_detect_model_path": make_model_path_relative(yolo_detect_path),
+                "yolo_crop_obb_model_path": make_model_path_relative(
+                    yolo_crop_obb_path
+                ),
+                "yolo_headtail_model_path": make_model_path_relative(
+                    yolo_headtail_path
+                ),
+                "pose_overrides_headtail": self.chk_pose_overrides_headtail.isChecked(),
+                "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
+                "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
+                "yolo_seq_enforce_square_crop": self.chk_yolo_seq_square_crop.isChecked(),
+                "yolo_seq_stage2_imgsz": self.spin_yolo_seq_stage2_imgsz.value(),
+                "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
+                "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
+                "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
                 "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
                 "yolo_iou_threshold": self.spin_yolo_iou.value(),
                 "use_custom_obb_iou_filtering": self.chk_use_custom_obb_iou.isChecked(),
@@ -9992,16 +15377,41 @@ class MainWindow(QMainWindow):
             cfg["yolo_model_info"] = yolo_meta.get("model_info", "")
             cfg["yolo_model_added_at"] = yolo_meta.get("added_at", "")
 
-        # === DEVICE-SPECIFIC SETTINGS ===
-        # Skip device selection when saving as preset
+        role_models = {
+            "yolo_obb_direct": yolo_direct_path,
+            "yolo_seq_detect": yolo_detect_path,
+            "yolo_seq_crop_obb": yolo_crop_obb_path,
+            "yolo_headtail": yolo_headtail_path,
+        }
+        for role_key, model_path in role_models.items():
+            if not model_path:
+                continue
+            role_meta = get_yolo_model_metadata(model_path) or {}
+            if not role_meta:
+                continue
+            cfg[f"{role_key}_model_size"] = role_meta.get("size", "")
+            cfg[f"{role_key}_model_species"] = role_meta.get("species", "")
+            cfg[f"{role_key}_model_info"] = role_meta.get("model_info", "")
+            cfg[f"{role_key}_model_added_at"] = role_meta.get("added_at", "")
+            cfg[f"{role_key}_task_family"] = role_meta.get("task_family", "")
+            cfg[f"{role_key}_usage_role"] = role_meta.get("usage_role", "")
+
+        # === COMPUTE RUNTIME ===
+        runtime_detection = derive_detection_runtime_settings(compute_runtime)
+        cfg["compute_runtime"] = compute_runtime
+        # Keep legacy fields writable for backward compatibility.
         if not preset_mode:
-            cfg["yolo_device"] = self.combo_device.currentText().split(" ")[0]
+            cfg["yolo_device"] = runtime_detection["yolo_device"]
 
         cfg.update(
             {
                 # TensorRT
-                "enable_tensorrt": self.chk_enable_tensorrt.isChecked(),
-                "tensorrt_max_batch_size": self.spin_tensorrt_batch.value(),
+                "enable_tensorrt": runtime_detection["enable_tensorrt"],
+                "tensorrt_max_batch_size": (
+                    self.spin_yolo_batch_size.value()
+                    if self._runtime_requires_fixed_yolo_batch(compute_runtime)
+                    else self.spin_tensorrt_batch.value()
+                ),
                 # YOLO Batching
                 "enable_yolo_batching": self.chk_enable_yolo_batching.isChecked(),
                 "yolo_batch_size_mode": (
@@ -10029,15 +15439,28 @@ class MainWindow(QMainWindow):
                 "weight_orientation": self.spin_Wo.value(),
                 "weight_area": self.spin_Wa.value(),
                 "weight_aspect_ratio": self.spin_Wasp.value(),
+                "weight_pose_direction": 0.5,
+                "weight_pose_length": 0.0,
+                "pose_valid_orientation_scale": 0.15,
                 "use_mahalanobis_distance": self.chk_use_mahal.isChecked(),
                 # === ASSIGNMENT ALGORITHM ===
                 "enable_greedy_assignment": self.combo_assignment_method.currentIndex()
                 == 1,
                 "enable_spatial_optimization": self.chk_spatial_optimization.isChecked(),
+                "association_stage1_motion_gate_multiplier": self.spin_assoc_gate_multiplier.value(),
+                "association_stage1_max_area_ratio": self.spin_assoc_max_area_ratio.value(),
+                "association_stage1_max_aspect_diff": self.spin_assoc_max_aspect_diff.value(),
+                "enable_pose_rejection": self.chk_enable_pose_rejection.isChecked(),
+                "pose_rejection_threshold": self.spin_pose_rejection_threshold.value(),
+                "pose_rejection_min_visibility": self.spin_pose_rejection_min_visibility.value(),
+                "track_feature_ema_alpha": self.spin_track_feature_ema_alpha.value(),
+                "association_high_confidence_threshold": self.spin_assoc_high_conf_threshold.value(),
                 # === ORIENTATION & MOTION ===
                 "velocity_threshold": self.spin_velocity.value(),
                 "enable_instant_flip": self.chk_instant_flip.isChecked(),
                 "max_orientation_delta_stopped": self.spin_max_orient.value(),
+                "directed_orient_smoothing": self.chk_directed_orient_smoothing.isChecked(),
+                "directed_orient_flip_confidence": self.spin_directed_orient_flip_conf.value(),
                 # === TRACK LIFECYCLE ===
                 "lost_frames_threshold": self.spin_lost_thresh.value(),
                 "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
@@ -10049,6 +15472,20 @@ class MainWindow(QMainWindow):
                 "min_trajectory_length": self.spin_min_trajectory_length.value(),
                 "max_velocity_break": self.spin_max_velocity_break.value(),
                 "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
+                "enable_tracklet_relinking": self.chk_enable_tracklet_relinking.isChecked(),
+                "relink_pose_max_distance": self.spin_relink_pose_max_distance.value(),
+                "pose_export_min_valid_fraction": self.spin_pose_export_min_valid_fraction.value(),
+                "pose_export_min_valid_keypoints": self.spin_pose_export_min_valid_keypoints.value(),
+                "relink_min_pose_quality": self.spin_relink_min_pose_quality.value(),
+                "pose_postproc_max_gap": self.spin_pose_postproc_max_gap.value(),
+                "pose_temporal_outlier_zscore": self.spin_pose_temporal_outlier_zscore.value(),
+                "density_gaussian_sigma_scale": self.spin_density_gaussian_sigma_scale.value(),
+                "density_temporal_sigma": self.spin_density_temporal_sigma.value(),
+                "density_binarize_threshold": self.spin_density_binarize_threshold.value(),
+                "density_conservative_factor": self.spin_density_conservative_factor.value(),
+                "density_min_frame_duration": self.spin_density_min_duration.value(),
+                "density_min_area_bodies": self.spin_density_min_area_bodies.value(),
+                "density_downsample_factor": self.spin_density_downsample_factor.value(),
                 "max_velocity_zscore": self.spin_max_velocity_zscore.value(),
                 "velocity_zscore_window": self.spin_velocity_zscore_window.value(),
                 "velocity_zscore_min_velocity": self.spin_velocity_zscore_min_vel.value(),
@@ -10067,9 +15504,20 @@ class MainWindow(QMainWindow):
                 "video_marker_size": self.spin_marker_size.value(),
                 "video_text_scale": self.spin_text_scale.value(),
                 "video_arrow_length": self.spin_arrow_length.value(),
-                # === REAL-TIME ANALYTICS ===
-                "enable_histograms": self.enable_histograms.isChecked(),
-                "histogram_history_frames": self.spin_histogram_history.value(),
+                "video_show_pose": self.check_video_show_pose.isChecked(),
+                "video_pose_color_mode": (
+                    "track"
+                    if self.combo_video_pose_color_mode.currentIndex() == 0
+                    else "fixed"
+                ),
+                "video_pose_color": [
+                    int(self._video_pose_color[0]),
+                    int(self._video_pose_color[1]),
+                    int(self._video_pose_color[2]),
+                ],
+                "video_pose_point_radius": self.spin_video_pose_point_radius.value(),
+                "video_pose_point_thickness": self.spin_video_pose_point_thickness.value(),
+                "video_pose_line_thickness": self.spin_video_pose_line_thickness.value(),
                 # === VISUALIZATION OVERLAYS ===
                 "show_track_markers": self.chk_show_circles.isChecked(),
                 "show_orientation_lines": self.chk_show_orientation.isChecked(),
@@ -10095,15 +15543,10 @@ class MainWindow(QMainWindow):
             {
                 # === DATASET GENERATION ===
                 "enable_dataset_generation": self.chk_enable_dataset_gen.isChecked(),
-                "dataset_name": self.line_dataset_name.text(),
                 "dataset_class_name": self.line_dataset_class_name.text(),
                 "dataset_max_frames": self.spin_dataset_max_frames.value(),
             }
         )
-
-        # Dataset output directory (device-specific)
-        if not preset_mode:
-            cfg["dataset_output_dir"] = self.line_dataset_output.text()
 
         cfg.update(
             {
@@ -10118,7 +15561,8 @@ class MainWindow(QMainWindow):
                 "metric_track_loss": self.chk_metric_track_loss.isChecked(),
                 "metric_high_uncertainty": self.chk_metric_high_uncertainty.isChecked(),
                 # === INDIVIDUAL ANALYSIS ===
-                "enable_identity_analysis": self.chk_enable_individual_analysis.isChecked(),
+                "enable_identity_analysis": self._is_individual_pipeline_enabled(),
+                "enable_individual_pipeline": self._is_individual_pipeline_enabled(),
                 "identity_method": self.combo_identity_method.currentText()
                 .lower()
                 .replace(" ", "_")
@@ -10148,17 +15592,44 @@ class MainWindow(QMainWindow):
             {
                 "apriltag_family": self.combo_apriltag_family.currentText(),
                 "apriltag_decimate": self.spin_apriltag_decimate.value(),
+                "enable_pose_extractor": self.chk_enable_pose_extractor.isChecked(),
+                "pose_model_type": self.combo_pose_model_type.currentText()
+                .strip()
+                .lower(),
+                "pose_model_dir": make_pose_model_path_relative(
+                    self._pose_model_path_for_backend(
+                        self.combo_pose_model_type.currentText().strip().lower()
+                    )
+                ),
+                "pose_yolo_model_dir": make_pose_model_path_relative(
+                    self._pose_model_path_for_backend("yolo")
+                ),
+                "pose_sleap_model_dir": make_pose_model_path_relative(
+                    self._pose_model_path_for_backend("sleap")
+                ),
+                "pose_runtime_flavor": pose_runtime_derived["pose_runtime_flavor"],
+                "pose_exported_model_path": "",
+                "pose_min_kpt_conf_valid": self.spin_pose_min_kpt_conf_valid.value(),
+                "pose_skeleton_file": self.line_pose_skeleton_file.text().strip(),
+                "pose_ignore_keypoints": self._parse_pose_ignore_keypoints(),
+                "pose_direction_anterior_keypoints": self._parse_pose_direction_anterior_keypoints(),
+                "pose_direction_posterior_keypoints": self._parse_pose_direction_posterior_keypoints(),
+                "pose_batch_size": self.spin_pose_batch.value(),
+                "pose_yolo_batch": self.spin_pose_batch.value(),
+                "pose_sleap_env": self._selected_pose_sleap_env(),
+                "pose_sleap_device": pose_runtime_derived["pose_sleap_device"],
+                "pose_sleap_batch": self.spin_pose_batch.value(),
+                "pose_sleap_max_instances": 1,
+                "pose_sleap_experimental_features": self._sleap_experimental_features_enabled(),
                 # === REAL-TIME INDIVIDUAL DATASET ===
-                "enable_individual_dataset": self.chk_enable_individual_dataset.isChecked(),
-                "individual_dataset_name": self.line_individual_dataset_name.text().strip()
-                or "individual_dataset",
+                "enable_individual_dataset": self._is_individual_image_save_enabled(),
+                "enable_individual_image_save": self._is_individual_image_save_enabled(),
+                "generate_oriented_track_videos": bool(
+                    self.chk_generate_individual_track_videos.isChecked()
+                ),
                 "individual_output_format": self.combo_individual_format.currentText().lower(),
             }
         )
-
-        # Individual output directory (device-specific)
-        if not preset_mode:
-            cfg["individual_dataset_output_dir"] = self.line_individual_output.text()
 
         cfg.update(
             {
@@ -10168,6 +15639,8 @@ class MainWindow(QMainWindow):
                 "individual_background_color": [
                     int(c) for c in self._background_color
                 ],  # Ensure JSON serializable
+                "suppress_foreign_obb_regions": self.chk_suppress_foreign_obb.isChecked(),
+                "suppress_foreign_obb_dataset": self.chk_suppress_foreign_obb_dataset.isChecked(),
             }
         )
 
@@ -10204,7 +15677,7 @@ class MainWindow(QMainWindow):
         config_path = None
 
         # If default path exists, ask user whether to replace or save elsewhere
-        if default_path and os.path.exists(default_path):
+        if default_path and os.path.exists(default_path) and prompt_if_exists:
             msg = QMessageBox()
             msg.setIcon(QMessageBox.Question)
             msg.setWindowTitle("Configuration File Exists")
@@ -10288,12 +15761,20 @@ class MainWindow(QMainWindow):
             logger.info("=" * 80)
             return
 
-        # Create log file next to the video
+        # Create a session log in the video's dedicated log directory.
         video_path = Path(video_path)
-        log_dir = video_path.parent
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"{video_path.stem}_tracking_{timestamp}.log"
-        log_path = log_dir / log_filename
+        csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
+        artifact_base_dir = choose_writable_artifact_base_dir(
+            video_path,
+            preferred_base_dirs=[csv_dir],
+        )
+        log_path = build_tracking_session_log_path(
+            video_path,
+            timestamp,
+            artifact_base_dir=artifact_base_dir,
+            create_dir=True,
+        )
 
         # Create file handler for session
         self.session_log_handler = logging.FileHandler(log_path, mode="w")
@@ -10328,6 +15809,8 @@ class MainWindow(QMainWindow):
     def _generate_training_dataset(self, override_csv_path=None):
         """Generate training dataset from tracking results for active learning."""
         try:
+            if self._stop_all_requested:
+                return
             logger.info("Starting training dataset generation...")
 
             # Prevent launching overlapping dataset threads; this can lead to
@@ -10341,41 +15824,34 @@ class MainWindow(QMainWindow):
                 self.dataset_worker.deleteLater()
                 self.dataset_worker = None
 
-            # Validate parameters
-            dataset_name = self.line_dataset_name.text().strip()
-            output_dir = self.line_dataset_output.text().strip()
-
-            if not dataset_name:
-                QMessageBox.warning(
-                    self, "Dataset Generation Error", "Please enter a dataset name."
-                )
-                return
-
-            if not output_dir:
-                QMessageBox.warning(
-                    self,
-                    "Dataset Generation Error",
-                    "Please select an output directory.",
-                )
-                return
-
-            if not os.path.exists(output_dir):
-                QMessageBox.warning(
-                    self,
-                    "Dataset Generation Error",
-                    f"Output directory does not exist: {output_dir}",
-                )
-                return
-
             video_path = self.file_line.text()
-            # Use override path if provided (e.g. valid processed CSV), otherwise fallback to UI field
-            csv_path = override_csv_path if override_csv_path else self.csv_line.text()
-
             if not video_path or not os.path.exists(video_path):
                 QMessageBox.warning(
                     self, "Dataset Generation Error", "Source video file not found."
                 )
                 return
+
+            # Validate parameters
+            # Auto-compute output directory
+            output_dir = os.path.join(
+                os.path.dirname(video_path),
+                f"{os.path.splitext(os.path.basename(video_path))[0]}_datasets",
+                "active_learning",
+            )
+
+            if not os.path.exists(output_dir):
+                try:
+                    os.makedirs(output_dir, exist_ok=True)
+                except Exception as e:
+                    QMessageBox.warning(
+                        self,
+                        "Dataset Generation Error",
+                        f"Could not create output directory: {output_dir}\nError: {e}",
+                    )
+                    return
+
+            # Use override path if provided (e.g. valid processed CSV), otherwise fallback to UI field
+            csv_path = override_csv_path if override_csv_path else self.csv_line.text()
 
             if not csv_path or not os.path.exists(csv_path):
                 QMessageBox.warning(
@@ -10407,7 +15883,7 @@ class MainWindow(QMainWindow):
                 csv_path=csv_path,
                 detection_cache_path=self.current_detection_cache_path,
                 output_dir=output_dir,
-                dataset_name=dataset_name,
+                dataset_name="",
                 class_name=class_name,
                 params=params,
                 max_frames=max_frames,
@@ -10433,6 +15909,19 @@ class MainWindow(QMainWindow):
 
     def on_dataset_progress(self: object, value: object, message: object) -> object:
         """Update progress bar during dataset generation."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.dataset_worker is not None
+            and sender is not self.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            return
         self.progress_bar.setValue(value)
         self.progress_label.setText(message)
 
@@ -10440,6 +15929,21 @@ class MainWindow(QMainWindow):
         self: object, dataset_dir: object, num_frames: object
     ) -> object:
         """Handle dataset generation completion."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.dataset_worker is not None
+            and sender is not self.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            self._cleanup_thread_reference("dataset_worker")
+            self._refresh_progress_visibility()
+            return
         self._refresh_progress_visibility()
 
         logger.info(f"Dataset generation complete: {dataset_dir}")
@@ -10448,31 +15952,166 @@ class MainWindow(QMainWindow):
             "Use 'Open Dataset in X-AnyLabeling' button to review/correct annotations"
         )
 
-        # Optional: Show success message
-        QMessageBox.information(
-            self,
-            "Dataset Generation Complete",
-            f"Successfully generated dataset with {num_frames} frames.\n\n"
-            f"Location: {dataset_dir}\n\n"
-            "Use 'Open Dataset in X-AnyLabeling' to review annotations.",
-        )
+        # Store result; popup is deferred to end-of-session summary.
+        self._session_result_dataset = {
+            "success": True,
+            "num_frames": num_frames,
+            "dir": dataset_dir,
+        }
+        if getattr(self, "_show_summary_on_dataset_done", False):
+            self._show_summary_on_dataset_done = False
+            self._show_session_summary()
 
     def on_dataset_error(self: object, error_message: object) -> object:
         """Handle dataset generation errors."""
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.dataset_worker is not None
+            and sender is not self.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        if self._stop_all_requested:
+            self._cleanup_thread_reference("dataset_worker")
+            self._refresh_progress_visibility()
+            return
         self._refresh_progress_visibility()
 
         logger.error(f"Dataset generation error: {error_message}")
-        QMessageBox.critical(
-            self,
-            "Dataset Generation Error",
-            f"Failed to generate dataset:\n{error_message}",
-        )
+
+        # Store result; popup is deferred to end-of-session summary.
+        self._session_result_dataset = {
+            "success": False,
+            "error": error_message,
+        }
+        if getattr(self, "_show_summary_on_dataset_done", False):
+            self._show_summary_on_dataset_done = False
+            self._show_session_summary()
+
+    def _show_session_summary(self):
+        """Show a single end-of-session summary dialog listing completed processes."""
+        lines = []
+
+        # --- Timing ---
+        if self._session_wall_start is not None:
+            elapsed = time.time() - self._session_wall_start
+            h = int(elapsed // 3600)
+            m = int((elapsed % 3600) // 60)
+            s = int(elapsed % 60)
+            elapsed_str = f"{h:02d}:{m:02d}:{s:02d}" if h > 0 else f"{m:02d}:{s:02d}"
+            lines.append(f"Duration: {elapsed_str}")
+
+        # --- Frames / FPS ---
+        frames = self._session_frames_processed
+        if frames > 0:
+            lines.append(f"Frames processed: {frames}")
+        fps_vals = [f for f in self._session_fps_list if f and f > 0]
+        if fps_vals:
+            avg_fps = sum(fps_vals) / len(fps_vals)
+            lines.append(f"Average FPS: {avg_fps:.1f}")
+
+        # --- Video / CSV ---
+        video_path = self.file_line.text()
+        if video_path:
+            lines.append(f"Video: {os.path.basename(video_path)}")
+        csv_path = self._session_final_csv_path or self.csv_line.text()
+        if csv_path:
+            lines.append(f"Output CSV: {os.path.basename(csv_path)}")
+
+        # --- Trajectory / track count ---
+        if csv_path and os.path.exists(csv_path):
+            try:
+                _df = pd.read_csv(csv_path, usecols=["TrajectoryID"])
+                n_trajs = int(_df["TrajectoryID"].nunique())
+                lines.append(f"Trajectories: {n_trajs}")
+            except Exception:
+                pass
+
+        # --- Pipelines run ---
+        pipelines = []
+        if self.enable_postprocessing.isChecked():
+            pipelines.append("Post-processing")
+        if self.chk_enable_backward.isChecked():
+            pipelines.append("Backward tracking")
+        if self._is_individual_pipeline_enabled():
+            pipelines.append("Individual analysis")
+            if self.chk_enable_pose_extractor.isChecked():
+                pipelines.append("Pose extraction")
+        if pipelines:
+            lines.append("Pipelines: " + ", ".join(pipelines))
+
+        # --- Separator before optional sub-results ---
+        lines.append("")
+
+        # --- Dataset generation result ---
+        result = getattr(self, "_session_result_dataset", None)
+        if result is not None:
+            if result.get("success"):
+                lines.append(
+                    f"\u2713 Dataset generated: {result['num_frames']} frame(s)"
+                    f"\n  Location: {result['dir']}"
+                )
+            else:
+                lines.append(
+                    f"\u2717 Dataset generation failed: {result.get('error', 'unknown error')}"
+                )
+
+        # Clean up state
+        self._session_result_dataset = None
+        self._dataset_was_started = False
+        self._show_summary_on_dataset_done = False
+
+        QMessageBox.information(self, "Tracking Complete", "\n".join(lines))
+
+        # Offer to open MAT-afterhours for interactive proofreading
+        self._btn_open_afterhours.setEnabled(bool(self.current_video_path))
+        if self.current_video_path:
+            reply = QMessageBox.question(
+                self,
+                "Open MAT-afterhours?",
+                "Tracking complete. Open in MAT-afterhours for "
+                "interactive identity proofreading?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                self._open_afterhours()
+
+    def _open_afterhours(self):
+        """Launch MAT-afterhours as a subprocess pointing at the current video."""
+        import subprocess
+        import sys
+
+        video_path = self.current_video_path
+        if not video_path:
+            QMessageBox.warning(
+                self,
+                "No Video",
+                "No video is currently loaded. Please load a video first.",
+            )
+            return
+        cmd = [sys.executable, "-m", "multi_tracker.afterhours.app", str(video_path)]
+        logger.info("Launching MAT-afterhours: %s", " ".join(cmd))
+        subprocess.Popen(cmd)
 
     def _on_dataset_worker_thread_finished(self):
         """Release completed dataset worker safely."""
-        if self.dataset_worker is not None and not self.dataset_worker.isRunning():
-            self.dataset_worker.deleteLater()
-            self.dataset_worker = None
+        sender = self.sender()
+        if (
+            sender is not None
+            and self.dataset_worker is not None
+            and sender is not self.dataset_worker
+        ):
+            try:
+                sender.deleteLater()
+            except Exception:
+                pass
+            return
+        self._cleanup_thread_reference("dataset_worker")
         self._refresh_progress_visibility()
 
     def _is_worker_running(self, worker):
@@ -10492,6 +16131,7 @@ class MainWindow(QMainWindow):
                 self._is_worker_running(getattr(self, "merge_worker", None)),
                 self._is_worker_running(self.dataset_worker),
                 self._is_worker_running(self.interp_worker),
+                self._is_worker_running(self.oriented_video_worker),
             ]
         )
 
@@ -10525,6 +16165,24 @@ class MainWindow(QMainWindow):
 
         # Clear the list after cleanup attempt
         self.temporary_files.clear()
+
+        # Also clean up posekit directories if they exist
+        params = self.get_parameters_dict()
+        output_dir = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
+        if output_dir and os.path.exists(output_dir):
+            posekit_dir = os.path.join(output_dir, "posekit")
+            if os.path.exists(posekit_dir) and os.path.isdir(posekit_dir):
+                try:
+                    import shutil
+
+                    shutil.rmtree(posekit_dir)
+                    logger.info(f"Removed posekit directory: {posekit_dir}")
+                    cleaned.append("posekit/")
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to remove posekit directory {posekit_dir}: {e}"
+                    )
+                    failed.append("posekit/")
 
         if cleaned:
             logger.info(
@@ -10571,7 +16229,7 @@ class MainWindow(QMainWindow):
         label = QLabel(text)
         label.setWordWrap(True)
         label.setStyleSheet(
-            "color: #aaa; font-size: 11px; font-weight: normal; "
+            "color: #9a9a9a; font-size: 11px; font-weight: normal; "
             "font-style: italic; padding: 4px 2px; margin: 2px 0px;"
         )
         return label
@@ -10707,7 +16365,7 @@ class MainWindow(QMainWindow):
             preset_name = self.combo_presets.currentText()
             self.preset_status_label.setText(f"✓ Loaded: {preset_name}")
             self.preset_status_label.setStyleSheet(
-                "color: #4a9eff; font-style: italic; font-size: 10px;"
+                "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
             logger.info(f"Loaded preset: {preset_name} from {filepath}")
 
@@ -10723,14 +16381,14 @@ class MainWindow(QMainWindow):
 
         # Name input
         name_label = QLabel("Preset name (e.g., danio rerio / zebrafish)")
-        name_label.setStyleSheet("color: #fff; font-weight: bold;")
+        name_label.setStyleSheet("color: #e0e0e0; font-weight: bold;")
         name_input = QLineEdit()
         name_input.setPlaceholderText("Scientific Name (Common Name)")
         name_input.setText("Custom")
 
         # Description input
         desc_label = QLabel("Description (optional)")
-        desc_label.setStyleSheet("color: #fff; font-weight: bold; margin-top: 10px;")
+        desc_label.setStyleSheet("color: #e0e0e0; font-weight: bold; margin-top: 10px;")
         desc_input = QTextEdit()
         desc_input.setPlaceholderText(
             "Describe the optimizations or use case for this preset..."
@@ -10799,7 +16457,7 @@ class MainWindow(QMainWindow):
 
             self.preset_status_label.setText(f"✓ Saved: {preset_name}")
             self.preset_status_label.setStyleSheet(
-                "color: #4a9eff; font-style: italic; font-size: 10px;"
+                "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
 
             filename = os.path.basename(custom_path)
@@ -11325,7 +16983,7 @@ class MainWindow(QMainWindow):
                             f"✓ Loaded: {os.path.basename(config_path)}"
                         )
                         self.config_status_label.setStyleSheet(
-                            "color: #4a9eff; font-style: italic; font-size: 10px;"
+                            "color: #4fc1ff; font-style: italic; font-size: 10px;"
                         )
                         logger.info(
                             f"Cropped video loaded: {output_path} (auto-loaded config)"
@@ -11373,5 +17031,7 @@ class MainWindow(QMainWindow):
         plt.plot(fps_list)
         plt.xlabel("Frame Index")
         plt.ylabel("FPS")
+        plt.title("Tracking FPS Over Time")
+        plt.show()
         plt.title("Tracking FPS Over Time")
         plt.show()

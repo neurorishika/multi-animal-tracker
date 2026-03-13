@@ -12,6 +12,7 @@ Usage:
 import os
 import subprocess
 import sys
+from importlib.util import find_spec
 
 
 def print_header(text):
@@ -161,8 +162,8 @@ def check_python_packages():
 
     # Check Ultralytics
     try:
-        from ultralytics import YOLO
-
+        if find_spec("ultralytics") is None:
+            raise ImportError("ultralytics not found")
         print_check("Ultralytics (YOLO) installed", True)
     except ImportError:
         print_check("Ultralytics (YOLO) installed", False)
@@ -190,14 +191,14 @@ def check_performance():
         start = time.time()
         a = torch.randn(size, size, device=device)
         b = torch.randn(size, size, device=device)
-        c = torch.mm(a, b)
+        _ = torch.mm(a, b)
         torch.cuda.synchronize()
         elapsed = time.time() - start
 
         print_check(
             f"PyTorch GPU matmul ({size}x{size})",
             True,
-            f"{elapsed*1000:.2f} ms",
+            f"{elapsed * 1000:.2f} ms",
         )
 
         # Test memory
@@ -218,14 +219,14 @@ def check_performance():
         start = time.time()
         a = cp.random.randn(size, size)
         b = cp.random.randn(size, size)
-        c = cp.dot(a, b)
+        _ = cp.dot(a, b)
         cp.cuda.Stream.null.synchronize()
         elapsed = time.time() - start
 
         print_check(
             f"CuPy GPU matmul ({size}x{size})",
             True,
-            f"{elapsed*1000:.2f} ms",
+            f"{elapsed * 1000:.2f} ms",
         )
 
     except Exception as e:
