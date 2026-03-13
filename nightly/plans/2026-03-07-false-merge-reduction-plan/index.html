@@ -20,7 +20,7 @@
     
     
       
-        <title>False-Merge Reduction Implementation Plan - Multi-Animal-Tracker Docs</title>
+        <title>Swap-Resistant Continuity Plan - Multi-Animal-Tracker Docs</title>
       
     
     
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#false-merge-reduction-implementation-plan" class="md-skip">
+        <a href="#swap-resistant-continuity-plan" class="md-skip">
           Skip to content
         </a>
       
@@ -112,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              False-Merge Reduction Implementation Plan
+              Swap-Resistant Continuity Plan
             
           </span>
         </div>
@@ -1517,27 +1517,69 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#goal" class="md-nav__link">
+  <a href="#why-this-plan-exists" class="md-nav__link">
     <span class="md-ellipsis">
-      Goal
+      Why This Plan Exists
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#non-goals" class="md-nav__link">
+  <a href="#executive-summary" class="md-nav__link">
     <span class="md-ellipsis">
-      Non-Goals
+      Executive Summary
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#current-relevant-pipeline" class="md-nav__link">
+  <a href="#audit-of-the-previous-plan" class="md-nav__link">
     <span class="md-ellipsis">
-      Current Relevant Pipeline
+      Audit Of The Previous Plan
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Audit Of The Previous Plan">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-was-right" class="md-nav__link">
+    <span class="md-ellipsis">
+      What Was Right
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-was-missing" class="md-nav__link">
+    <span class="md-ellipsis">
+      What Was Missing
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#main-conclusion-from-the-audit" class="md-nav__link">
+    <span class="md-ellipsis">
+      Main Conclusion From The Audit
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Core Strategy
     </span>
   </a>
   
@@ -1553,6 +1595,99 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#current-code-reality" class="md-nav__link">
+    <span class="md-ellipsis">
+      Current Code Reality
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failure-model-we-should-optimise-for" class="md-nav__link">
+    <span class="md-ellipsis">
+      Failure Model We Should Optimise For
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#new-operational-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      New Operational Model
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="New Operational Model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#regime-labels" class="md-nav__link">
+    <span class="md-ellipsis">
+      Regime Labels
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#regime-definitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Regime Definitions
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Regime Definitions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#isolated" class="md-nav__link">
+    <span class="md-ellipsis">
+      isolated
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tandem" class="md-nav__link">
+    <span class="md-ellipsis">
+      tandem
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cluster" class="md-nav__link">
+    <span class="md-ellipsis">
+      cluster
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recovery" class="md-nav__link">
+    <span class="md-ellipsis">
+      recovery
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#signals-to-use" class="md-nav__link">
     <span class="md-ellipsis">
       Signals To Use
@@ -1563,18 +1698,27 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#already-available" class="md-nav__link">
+  <a href="#existing-signals-we-should-leverage-better" class="md-nav__link">
     <span class="md-ellipsis">
-      Already Available
+      Existing Signals We Should Leverage Better
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#recommended-new-signals" class="md-nav__link">
+  <a href="#new-signals-worth-adding-first" class="md-nav__link">
     <span class="md-ellipsis">
-      Recommended New Signals
+      New Signals Worth Adding First
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#signals-to-avoid-over-trusting" class="md-nav__link">
+    <span class="md-ellipsis">
+      Signals To Avoid Over-Trusting
     </span>
   </a>
   
@@ -1586,55 +1730,64 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#proposed-phases" class="md-nav__link">
+  <a href="#proposed-implementation-plan" class="md-nav__link">
     <span class="md-ellipsis">
-      Proposed Phases
+      Proposed Implementation Plan
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#phase-0-instrumentation-and-diagnostics" class="md-nav__link">
+  <a href="#phase-0-instrument-the-real-swap-signals" class="md-nav__link">
     <span class="md-ellipsis">
-      Phase 0: Instrumentation and Diagnostics
+      Phase 0: Instrument The Real Swap Signals
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Phase 0: Instrumentation and Diagnostics">
+    <nav class="md-nav" aria-label="Phase 0: Instrument The Real Swap Signals">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#objective" class="md-nav__link">
+  <a href="#phase-0-objective" class="md-nav__link">
     <span class="md-ellipsis">
-      Objective
+      Phase 0 Objective
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#changes" class="md-nav__link">
+  <a href="#phase-0-changes" class="md-nav__link">
     <span class="md-ellipsis">
-      Changes
+      Phase 0 Changes
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#primary-files" class="md-nav__link">
+  <a href="#phase-0-rationale" class="md-nav__link">
     <span class="md-ellipsis">
-      Primary Files
+      Phase 0 Rationale
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#deliverable" class="md-nav__link">
+  <a href="#phase-0-primary-files" class="md-nav__link">
     <span class="md-ellipsis">
-      Deliverable
+      Phase 0 Primary Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-0-deliverable" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 0 Deliverable
     </span>
   </a>
   
@@ -1646,64 +1799,64 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#phase-1-ambiguity-window-detection" class="md-nav__link">
+  <a href="#phase-1-detect-interaction-regimes-instead-of-generic-crowding" class="md-nav__link">
     <span class="md-ellipsis">
-      Phase 1: Ambiguity Window Detection
+      Phase 1: Detect Interaction Regimes Instead Of Generic Crowding
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Phase 1: Ambiguity Window Detection">
+    <nav class="md-nav" aria-label="Phase 1: Detect Interaction Regimes Instead Of Generic Crowding">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#objective_1" class="md-nav__link">
+  <a href="#phase-1-objective" class="md-nav__link">
     <span class="md-ellipsis">
-      Objective
+      Phase 1 Objective
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#rationale" class="md-nav__link">
+  <a href="#phase-1-rationale" class="md-nav__link">
     <span class="md-ellipsis">
-      Rationale
+      Phase 1 Rationale
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#candidate-triggers" class="md-nav__link">
+  <a href="#phase-1-implementation-sketch" class="md-nav__link">
     <span class="md-ellipsis">
-      Candidate Triggers
+      Phase 1 Implementation Sketch
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#implementation-sketch" class="md-nav__link">
+  <a href="#phase-1-initial-heuristics" class="md-nav__link">
     <span class="md-ellipsis">
-      Implementation Sketch
+      Phase 1 Initial Heuristics
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#primary-files_1" class="md-nav__link">
+  <a href="#phase-1-primary-files" class="md-nav__link">
     <span class="md-ellipsis">
-      Primary Files
+      Phase 1 Primary Files
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#deliverable_1" class="md-nav__link">
+  <a href="#phase-1-deliverable" class="md-nav__link">
     <span class="md-ellipsis">
-      Deliverable
+      Phase 1 Deliverable
     </span>
   </a>
   
@@ -1715,73 +1868,106 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#phase-2-multi-cue-false-merge-break-scoring" class="md-nav__link">
+  <a href="#phase-2-replace-global-split-pressure-with-boundary-focused-break-logic" class="md-nav__link">
     <span class="md-ellipsis">
-      Phase 2: Multi-Cue False-Merge Break Scoring
+      Phase 2: Replace Global Split Pressure With Boundary-Focused Break Logic
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Phase 2: Multi-Cue False-Merge Break Scoring">
+    <nav class="md-nav" aria-label="Phase 2: Replace Global Split Pressure With Boundary-Focused Break Logic">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#objective_2" class="md-nav__link">
+  <a href="#phase-2-objective" class="md-nav__link">
     <span class="md-ellipsis">
-      Objective
+      Phase 2 Objective
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#rationale_1" class="md-nav__link">
+  <a href="#phase-2-rationale" class="md-nav__link">
     <span class="md-ellipsis">
-      Rationale
+      Phase 2 Rationale
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#candidate-cues" class="md-nav__link">
+  <a href="#phase-2-decision-policy-by-regime" class="md-nav__link">
     <span class="md-ellipsis">
-      Candidate Cues
+      Phase 2 Decision Policy By Regime
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase 2 Decision Policy By Regime">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#isolated-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      isolated Policy
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#decision-rule" class="md-nav__link">
+  <a href="#tandem-policy" class="md-nav__link">
     <span class="md-ellipsis">
-      Decision Rule
+      tandem Policy
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#implementation-sketch_1" class="md-nav__link">
+  <a href="#cluster-policy" class="md-nav__link">
     <span class="md-ellipsis">
-      Implementation Sketch
+      cluster Policy
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#primary-files_2" class="md-nav__link">
+  <a href="#recovery-policy" class="md-nav__link">
     <span class="md-ellipsis">
-      Primary Files
+      recovery Policy
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-recommended-helper" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 2 Recommended Helper
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#deliverable_2" class="md-nav__link">
+  <a href="#phase-2-primary-files" class="md-nav__link">
     <span class="md-ellipsis">
-      Deliverable
+      Phase 2 Primary Files
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-deliverable" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase 2 Deliverable
     </span>
   </a>
   
@@ -1793,100 +1979,73 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#phase-2a-optional-appearance-change-point-detection" class="md-nav__link">
+  <a href="#phase-3-add-boundary-re-anchoring-for-interaction-exits" class="md-nav__link">
     <span class="md-ellipsis">
-      Phase 2A: Optional Appearance Change-Point Detection
+      Phase 3: Add Boundary Re-Anchoring For Interaction Exits
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Phase 2A: Optional Appearance Change-Point Detection">
+    <nav class="md-nav" aria-label="Phase 3: Add Boundary Re-Anchoring For Interaction Exits">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#objective_3" class="md-nav__link">
+  <a href="#phase-3-objective" class="md-nav__link">
     <span class="md-ellipsis">
-      Objective
+      Phase 3 Objective
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#rationale_2" class="md-nav__link">
+  <a href="#phase-3-rationale" class="md-nav__link">
     <span class="md-ellipsis">
-      Rationale
+      Phase 3 Rationale
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#best-placement-in-the-pipeline" class="md-nav__link">
+  <a href="#phase-3-strategy" class="md-nav__link">
     <span class="md-ellipsis">
-      Best Placement In The Pipeline
+      Phase 3 Strategy
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#data-source-strategy" class="md-nav__link">
+  <a href="#phase-3-recommended-module" class="md-nav__link">
     <span class="md-ellipsis">
-      Data Source Strategy
+      Phase 3 Recommended Module
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#crop-strategy" class="md-nav__link">
+  <a href="#phase-3-important-constraint" class="md-nav__link">
     <span class="md-ellipsis">
-      Crop Strategy
+      Phase 3 Important Constraint
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#recommended-methods" class="md-nav__link">
+  <a href="#phase-3-primary-files" class="md-nav__link">
     <span class="md-ellipsis">
-      Recommended Methods
+      Phase 3 Primary Files
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#change-point-logic" class="md-nav__link">
+  <a href="#phase-3-deliverable" class="md-nav__link">
     <span class="md-ellipsis">
-      Change-Point Logic
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#suggested-parameters" class="md-nav__link">
-    <span class="md-ellipsis">
-      Suggested Parameters
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#primary-files_3" class="md-nav__link">
-    <span class="md-ellipsis">
-      Primary Files
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#deliverable_3" class="md-nav__link">
-    <span class="md-ellipsis">
-      Deliverable
+      Phase 3 Deliverable
     </span>
   </a>
   
@@ -1898,136 +2057,55 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#phase-2a-implementation-checklist" class="md-nav__link">
+  <a href="#phase-4-harden-general-relinking-so-it-cannot-undo-good-splits" class="md-nav__link">
     <span class="md-ellipsis">
-      Phase 2A Implementation Checklist
+      Phase 4: Harden General Relinking So It Cannot Undo Good Splits
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Phase 2A Implementation Checklist">
+    <nav class="md-nav" aria-label="Phase 4: Harden General Relinking So It Cannot Undo Good Splits">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#recommended-first-implementation-boundary" class="md-nav__link">
+  <a href="#phase-4-objective" class="md-nav__link">
     <span class="md-ellipsis">
-      Recommended First Implementation Boundary
+      Phase 4 Objective
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#1-shared-signature-utilities" class="md-nav__link">
+  <a href="#phase-4-changes" class="md-nav__link">
     <span class="md-ellipsis">
-      1. Shared Signature Utilities
+      Phase 4 Changes
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#2-appearance-change-point-module" class="md-nav__link">
+  <a href="#phase-4-rationale" class="md-nav__link">
     <span class="md-ellipsis">
-      2. Appearance Change-Point Module
+      Phase 4 Rationale
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#3-geometry-source-decision" class="md-nav__link">
+  <a href="#phase-4-primary-files" class="md-nav__link">
     <span class="md-ellipsis">
-      3. Geometry Source Decision
+      Phase 4 Primary Files
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#4-crop-extraction-path" class="md-nav__link">
+  <a href="#phase-4-deliverable" class="md-nav__link">
     <span class="md-ellipsis">
-      4. Crop Extraction Path
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#5-video-and-cache-access-strategy" class="md-nav__link">
-    <span class="md-ellipsis">
-      5. Video and Cache Access Strategy
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#6-signature-series-construction" class="md-nav__link">
-    <span class="md-ellipsis">
-      6. Signature Series Construction
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#7-change-point-detection-policy" class="md-nav__link">
-    <span class="md-ellipsis">
-      7. Change-Point Detection Policy
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#8-integration-point-in-mainwindow" class="md-nav__link">
-    <span class="md-ellipsis">
-      8. Integration Point In MainWindow
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#9-parameter-wiring" class="md-nav__link">
-    <span class="md-ellipsis">
-      9. Parameter Wiring
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#10-stats-and-logging" class="md-nav__link">
-    <span class="md-ellipsis">
-      10. Stats and Logging
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#11-testing-checklist" class="md-nav__link">
-    <span class="md-ellipsis">
-      11. Testing Checklist
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#12-documentation-checklist" class="md-nav__link">
-    <span class="md-ellipsis">
-      12. Documentation Checklist
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#13-exact-first-slice-to-implement" class="md-nav__link">
-    <span class="md-ellipsis">
-      13. Exact First Slice To Implement
+      Phase 4 Deliverable
     </span>
   </a>
   
@@ -2039,64 +2117,64 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#phase-3-hardening-forwardbackward-merge-resolution" class="md-nav__link">
+  <a href="#phase-5-add-optional-population-guardrails" class="md-nav__link">
     <span class="md-ellipsis">
-      Phase 3: Hardening Forward/Backward Merge Resolution
+      Phase 5: Add Optional Population Guardrails
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Phase 3: Hardening Forward/Backward Merge Resolution">
+    <nav class="md-nav" aria-label="Phase 5: Add Optional Population Guardrails">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#objective_4" class="md-nav__link">
+  <a href="#phase-5-objective" class="md-nav__link">
     <span class="md-ellipsis">
-      Objective
+      Phase 5 Objective
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#rationale_3" class="md-nav__link">
+  <a href="#phase-5-rationale" class="md-nav__link">
     <span class="md-ellipsis">
-      Rationale
+      Phase 5 Rationale
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#new-gating-rules" class="md-nav__link">
+  <a href="#phase-5-policy" class="md-nav__link">
     <span class="md-ellipsis">
-      New Gating Rules
+      Phase 5 Policy
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#suggested-new-parameters" class="md-nav__link">
+  <a href="#phase-5-important-limitation" class="md-nav__link">
     <span class="md-ellipsis">
-      Suggested New Parameters
+      Phase 5 Important Limitation
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#primary-files_4" class="md-nav__link">
+  <a href="#phase-5-primary-files" class="md-nav__link">
     <span class="md-ellipsis">
-      Primary Files
+      Phase 5 Primary Files
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#deliverable_4" class="md-nav__link">
+  <a href="#phase-5-deliverable" class="md-nav__link">
     <span class="md-ellipsis">
-      Deliverable
+      Phase 5 Deliverable
     </span>
   </a>
   
@@ -2108,151 +2186,55 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#phase-4-conservative-relinking-with-strong-reject-option" class="md-nav__link">
+  <a href="#phase-6-optional-appearance-veto-near-recovery-boundaries" class="md-nav__link">
     <span class="md-ellipsis">
-      Phase 4: Conservative Relinking With Strong Reject Option
+      Phase 6: Optional Appearance Veto Near Recovery Boundaries
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Phase 4: Conservative Relinking With Strong Reject Option">
+    <nav class="md-nav" aria-label="Phase 6: Optional Appearance Veto Near Recovery Boundaries">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#objective_5" class="md-nav__link">
+  <a href="#phase-6-objective" class="md-nav__link">
     <span class="md-ellipsis">
-      Objective
+      Phase 6 Objective
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#rationale_4" class="md-nav__link">
+  <a href="#phase-6-rationale" class="md-nav__link">
     <span class="md-ellipsis">
-      Rationale
+      Phase 6 Rationale
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#changes_1" class="md-nav__link">
+  <a href="#phase-6-recommended-scope" class="md-nav__link">
     <span class="md-ellipsis">
-      Changes
+      Phase 6 Recommended Scope
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#candidate-upgrade-path" class="md-nav__link">
+  <a href="#phase-6-suggested-helpers" class="md-nav__link">
     <span class="md-ellipsis">
-      Candidate Upgrade Path
+      Phase 6 Suggested Helpers
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#suggested-new-parameters_1" class="md-nav__link">
+  <a href="#phase-6-deliverable" class="md-nav__link">
     <span class="md-ellipsis">
-      Suggested New Parameters
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#primary-files_5" class="md-nav__link">
-    <span class="md-ellipsis">
-      Primary Files
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#deliverable_5" class="md-nav__link">
-    <span class="md-ellipsis">
-      Deliverable
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#phase-5-local-replay-around-suspect-events" class="md-nav__link">
-    <span class="md-ellipsis">
-      Phase 5: Local Replay Around Suspect Events
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Phase 5: Local Replay Around Suspect Events">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#objective_6" class="md-nav__link">
-    <span class="md-ellipsis">
-      Objective
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#rationale_5" class="md-nav__link">
-    <span class="md-ellipsis">
-      Rationale
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#hypotheses-to-compare" class="md-nav__link">
-    <span class="md-ellipsis">
-      Hypotheses To Compare
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#scoring-terms" class="md-nav__link">
-    <span class="md-ellipsis">
-      Scoring Terms
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#recommended-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      Recommended Scope
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#primary-files_6" class="md-nav__link">
-    <span class="md-ellipsis">
-      Primary Files
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#deliverable_6" class="md-nav__link">
-    <span class="md-ellipsis">
-      Deliverable
+      Phase 6 Deliverable
     </span>
   </a>
   
@@ -2273,46 +2255,28 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#proposed-parameter-surface" class="md-nav__link">
+  <a href="#concrete-first-slice" class="md-nav__link">
     <span class="md-ellipsis">
-      Proposed Parameter Surface
+      Concrete First Slice
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#validation-plan" class="md-nav__link">
-    <span class="md-ellipsis">
-      Validation Plan
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#test-assets" class="md-nav__link">
-    <span class="md-ellipsis">
-      Test Assets
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Test Assets">
+    <nav class="md-nav" aria-label="Concrete First Slice">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#metrics" class="md-nav__link">
+  <a href="#first-slice-contents" class="md-nav__link">
     <span class="md-ellipsis">
-      Metrics
+      First Slice Contents
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#acceptance-criteria" class="md-nav__link">
+  <a href="#why-this-is-the-right-first-slice" class="md-nav__link">
     <span class="md-ellipsis">
-      Acceptance Criteria
+      Why This Is The Right First Slice
     </span>
   </a>
   
@@ -2324,13 +2288,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#testing-and-documentation" class="md-nav__link">
+  <a href="#suggested-parameter-surface" class="md-nav__link">
     <span class="md-ellipsis">
-      Testing and Documentation
+      Suggested Parameter Surface
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Testing and Documentation">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing Plan
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testing Plan">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -2343,9 +2316,9 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#documentation-updates-after-implementation" class="md-nav__link">
+  <a href="#required-test-cases" class="md-nav__link">
     <span class="md-ellipsis">
-      Documentation Updates After Implementation
+      Required Test Cases
     </span>
   </a>
   
@@ -2357,9 +2330,18 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#concrete-first-slice" class="md-nav__link">
+  <a href="#validation-metrics" class="md-nav__link">
     <span class="md-ellipsis">
-      Concrete First Slice
+      Validation Metrics
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#documentation-updates-after-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Documentation Updates After Implementation
     </span>
   </a>
   
@@ -2375,9 +2357,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#summary" class="md-nav__link">
+  <a href="#final-recommendation" class="md-nav__link">
     <span class="md-ellipsis">
-      Summary
+      Final Recommendation
     </span>
   </a>
   
@@ -2406,665 +2388,577 @@
   
 
 
-<h1 id="false-merge-reduction-implementation-plan">False-Merge Reduction Implementation Plan<a class="headerlink" href="#false-merge-reduction-implementation-plan" title="Permanent link">&para;</a></h1>
-<p><strong>Date:</strong> 2026-03-07
+<h1 id="swap-resistant-continuity-plan">Swap-Resistant Continuity Plan<a class="headerlink" href="#swap-resistant-continuity-plan" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-03-09
 <strong>Branch:</strong> <code>mat-pose-integration</code>
-<strong>Status:</strong> Proposed - ready for phased implementation</p>
+<strong>Status:</strong> Proposed - replaces the earlier broad false-merge plan</p>
 <hr />
-<h2 id="goal">Goal<a class="headerlink" href="#goal" title="Permanent link">&para;</a></h2>
-<p>Reduce false trajectory merges as aggressively as practical, even if that increases fragmentation. The system should prefer splitting an uncertain continuity link over preserving a long but incorrect identity chain.</p>
-<p>This plan assumes a <strong>split-first, relink-later</strong> philosophy:</p>
+<h2 id="why-this-plan-exists">Why This Plan Exists<a class="headerlink" href="#why-this-plan-exists" title="Permanent link">&para;</a></h2>
+<p>The current tracker is already reasonably good. The main problem is not general tracking collapse; it is <strong>occasional identity swaps</strong> that appear during close interactions, especially when:</p>
 <ul>
-<li>False merges are more harmful than extra fragments.</li>
-<li>Relinking may remain conservative and incomplete.</li>
-<li>Stronger re-identification methods can be added later, but they are not required for this phase.</li>
+<li>two animals walk together in a stable tandem-like configuration</li>
+<li>several animals cluster in a small region</li>
+<li>detections remain available but individual visibility flickers</li>
+<li>short occlusions or contact events create ambiguous continuity</li>
+</ul>
+<p>That matters because the right fix is not to globally split more aggressively. A naive split-first policy would reduce some false merges, but it would also overfragment legitimate tandem walking and normal social clustering.</p>
+<p>This rewrite therefore changes the emphasis:</p>
+<ul>
+<li>target <strong>swap seams</strong>, not all close-contact frames</li>
+<li>distinguish <strong>structured proximity</strong> from <strong>identity ambiguity</strong></li>
+<li>treat cluster interiors as low-information regions where identity should often be deferred</li>
+<li>make re-assignment decisions mainly at <strong>entry and exit boundaries</strong></li>
+<li>keep appearance as optional negative-only evidence, not a primary solution</li>
 </ul>
 <hr />
-<h2 id="non-goals">Non-Goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h2>
-<ul>
-<li>Do not make merge or relink decisions based on appearance embeddings as positive identity evidence.</li>
-<li>Do not attempt full re-identification across the entire video.</li>
-<li>Do not optimize for the longest possible trajectories.</li>
-<li>Do not make risky joins simply because they are plausible.</li>
-</ul>
-<p>Appearance features may be explored later for manual review or offline analysis. If appearance enters this plan at all, it should do so only as <strong>split-only negative evidence</strong> through change-point detection, never as positive evidence for merging or relinking.</p>
+<h2 id="executive-summary">Executive Summary<a class="headerlink" href="#executive-summary" title="Permanent link">&para;</a></h2>
+<p>The new plan is to make the pipeline <strong>interaction-aware</strong>.</p>
+<p>Instead of treating all crowding as one generic risk signal, the post-processing path should classify each trajectory row into one of four regimes:</p>
+<ol>
+<li><strong>Isolated</strong>: continuity is trustworthy; normal motion-based tracking rules apply.</li>
+<li><strong>Tandem</strong>: two animals are close but moving coherently; continuity should usually be preserved, not split.</li>
+<li><strong>Cluster</strong>: local identity is genuinely ambiguous due to crowding, overlap, or visibility flicker; do not trust interior continuity too much.</li>
+<li><strong>Recovery</strong>: the first frames after a tandem or cluster dissolves; this is the highest-risk swap boundary and should receive the strongest checks.</li>
+</ol>
+<p>This is the central design decision behind the entire plan.</p>
 <hr />
-<h2 id="current-relevant-pipeline">Current Relevant Pipeline<a class="headerlink" href="#current-relevant-pipeline" title="Permanent link">&para;</a></h2>
-<p>The current stack already includes several conservative pieces:</p>
+<h2 id="audit-of-the-previous-plan">Audit Of The Previous Plan<a class="headerlink" href="#audit-of-the-previous-plan" title="Permanent link">&para;</a></h2>
+<p>The previous document contained several correct instincts, but it was too broad for the actual problem now facing this repository.</p>
+<h3 id="what-was-right">What Was Right<a class="headerlink" href="#what-was-right" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Velocity and z-score based splitting in <code>src/multi_tracker/core/post/processing.py</code></li>
-<li>Conservative forward/backward resolution in <code>src/multi_tracker/core/post/processing.py</code></li>
-<li>Spatial redundancy removal and overlap-aware merging in <code>src/multi_tracker/core/post/processing.py</code></li>
-<li>Greedy motion/pose-based fragment relinking in <code>src/multi_tracker/core/post/processing.py</code></li>
-<li>Confidence and uncertainty persistence from <code>src/multi_tracker/core/tracking/worker.py</code></li>
-<li>Forward/backward consistency scoring in <code>src/multi_tracker/core/tracking/optimizer.py</code></li>
+<li>It correctly prioritised false merges over trajectory length.</li>
+<li>It correctly treated appearance as dangerous if used as positive merge evidence.</li>
+<li>It correctly identified ambiguity, uncertainty, and assignment quality as the signals that matter most.</li>
+<li>It correctly aimed to harden relinking instead of trusting it to solve everything.</li>
 </ul>
-<p>This plan builds on that foundation by adding stronger negative evidence, more explicit ambiguity modeling, and stricter merge/relink gating.</p>
+<h3 id="what-was-missing">What Was Missing<a class="headerlink" href="#what-was-missing" title="Permanent link">&para;</a></h3>
+<p>The previous plan did not clearly separate three distinct cases:</p>
+<ol>
+<li>
+<p><strong>Animals are close, but identity is still stable.</strong>
+   Tandem walking often falls into this category.</p>
+</li>
+<li>
+<p><strong>Animals are close, and identity is temporarily unknowable.</strong>
+   Dense clusters with flickering visibility fall into this category.</p>
+</li>
+<li>
+<p><strong>Animals are leaving a close interaction, and continuity must be re-earned.</strong>
+   This is where many swaps actually happen.</p>
+</li>
+</ol>
+<p>Without that separation, the old plan risked turning all close contact into generic danger. That would be too blunt for ants and similar species, where proximity is normal biology.</p>
+<h3 id="main-conclusion-from-the-audit">Main Conclusion From The Audit<a class="headerlink" href="#main-conclusion-from-the-audit" title="Permanent link">&para;</a></h3>
+<p>The codebase should not ask, "Are animals close?" and then split more.</p>
+<p>It should ask:</p>
+<ul>
+<li>"Is this a stable tandem?"</li>
+<li>"Is this a genuinely ambiguous cluster?"</li>
+<li>"Are we at the boundary where identities can swap?"</li>
+</ul>
+<p>That is the basis of the new plan.</p>
+<hr />
+<h2 id="core-strategy">Core Strategy<a class="headerlink" href="#core-strategy" title="Permanent link">&para;</a></h2>
+<p>The repository should move to a <strong>boundary-focused, interaction-aware continuity model</strong>.</p>
+<p>The practical policy is:</p>
+<ul>
+<li>preserve continuity in isolated motion</li>
+<li>preserve continuity in stable tandem motion unless there is strong contradictory evidence</li>
+<li>avoid making strong identity claims inside ambiguous clusters</li>
+<li>apply the strongest swap checks at cluster or tandem exit boundaries</li>
+<li>relink only when continuity is clearly re-established</li>
+</ul>
+<p>This plan therefore aims to reduce ID swaps by changing <strong>where</strong> we spend conservatism:</p>
+<ul>
+<li>less aggression inside normal social contact</li>
+<li>much more aggression at the boundaries where identities separate again</li>
+</ul>
 <hr />
 <h2 id="design-principles">Design Principles<a class="headerlink" href="#design-principles" title="Permanent link">&para;</a></h2>
 <ol>
-<li><strong>Continuity must be earned.</strong> A trajectory should continue only when multiple cues support continuity.</li>
-<li><strong>Ambiguous windows are hostile territory.</strong> Crossings, contacts, and short occlusions should be treated as likely failure zones.</li>
-<li><strong>Negative evidence matters more than positive evidence.</strong> Motion jumps, uncertainty spikes, pose discontinuities, and ambiguous assignments should veto continuity.</li>
-<li><strong>Relinking should reject by default.</strong> If a candidate join is not clearly correct, it should remain split.</li>
-<li><strong>DetectionID is not a temporal identity signal.</strong> It is frame-local and should only be used for overlap reconciliation, not long-term identity continuity.</li>
-<li><strong>Appearance may veto continuity, but should not create it.</strong> A temporally weird crop jump can justify a split, but should not justify a merge.</li>
+<li>
+<p><strong>Close proximity is not itself an error.</strong>
+   For social insects, proximity is common. The pipeline must model it, not penalise it blindly.</p>
+</li>
+<li>
+<p><strong>Continuity inside an ambiguous cluster is provisional.</strong>
+   When visibility flickers and multiple animals overlap, the tracker should avoid overcommitting to identity.</p>
+</li>
+<li>
+<p><strong>Swap prevention is a boundary problem first.</strong>
+   Most damaging merges happen when animals enter, cross within, or exit an interaction zone.</p>
+</li>
+<li>
+<p><strong>Tandem and cluster are different states.</strong>
+   A two-animal coherent pair should not be treated the same as a multi-animal unstable cluster.</p>
+</li>
+<li>
+<p><strong>Relinking must be precision-first.</strong>
+   Unmatched fragments are acceptable. A confident but wrong join is not.</p>
+</li>
+<li>
+<p><strong>Appearance stays optional and negative-only.</strong>
+   If used at all, it should support vetoing suspicious continuity, never creating it.</p>
+</li>
 </ol>
 <hr />
+<h2 id="current-code-reality">Current Code Reality<a class="headerlink" href="#current-code-reality" title="Permanent link">&para;</a></h2>
+<p>This plan is designed around the current architecture rather than an imagined rewrite.</p>
+<p>Relevant existing hooks already exist in these files:</p>
+<ul>
+<li><code>src/multi_tracker/core/tracking/worker.py</code></li>
+<li><code>src/multi_tracker/core/assigners/hungarian.py</code></li>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+<li><code>src/multi_tracker/gui/main_window.py</code></li>
+</ul>
+<p>Important current facts:</p>
+<ul>
+<li>final post-processing already flows through <code>process_trajectories(...)</code> and <code>process_trajectories_from_csv(...)</code></li>
+<li>final pose-aware relinking is centralised in <code>MainWindow._relink_final_pose_augmented_csv(...)</code></li>
+<li>relinking is currently greedy and based on motion plus optional pose in <code>relink_trajectories_with_pose(...)</code></li>
+<li>confidence-style outputs already exist, including <code>AssignmentConfidence</code> and <code>PositionUncertainty</code></li>
+<li>the optimiser already acknowledges that generic crowding penalties are often unhelpful for ants and similar datasets</li>
+</ul>
+<p>This means the first implementation should extend the existing post-processing and relink path, not invent a parallel pipeline.</p>
+<hr />
+<h2 id="failure-model-we-should-optimise-for">Failure Model We Should Optimise For<a class="headerlink" href="#failure-model-we-should-optimise-for" title="Permanent link">&para;</a></h2>
+<p>We should explicitly optimise for this narrow failure mode:</p>
+<ul>
+<li>tracking is mostly correct during isolated motion</li>
+<li>the tracker enters a close-interaction window</li>
+<li>detections continue, but visibility flickers or assignments become low-margin</li>
+<li>continuity through that window is plausible but not trustworthy</li>
+<li>when animals separate, a wrong identity chain is preserved</li>
+</ul>
+<p>That is the failure mode this plan is built to catch.</p>
+<p>The plan is <strong>not</strong> designed to solve full-video re-identification, nor to prove identity across long unobserved gaps.</p>
+<hr />
+<h2 id="new-operational-model">New Operational Model<a class="headerlink" href="#new-operational-model" title="Permanent link">&para;</a></h2>
+<h3 id="regime-labels">Regime Labels<a class="headerlink" href="#regime-labels" title="Permanent link">&para;</a></h3>
+<p>Each trajectory row should be annotated with an interaction regime derived in post-processing:</p>
+<ul>
+<li><code>isolated</code></li>
+<li><code>tandem</code></li>
+<li><code>cluster</code></li>
+<li><code>recovery</code></li>
+</ul>
+<p>These labels should be pipeline-internal at first. They can be persisted later if they prove useful.</p>
+<h3 id="regime-definitions">Regime Definitions<a class="headerlink" href="#regime-definitions" title="Permanent link">&para;</a></h3>
+<h4 id="isolated"><code>isolated</code><a class="headerlink" href="#isolated" title="Permanent link">&para;</a></h4>
+<p>Use when the animal is well-separated and assignment quality is normal.</p>
+<p>Policy:</p>
+<ul>
+<li>normal motion and uncertainty checks apply</li>
+<li>false-merge scoring can be active</li>
+<li>continuity may be trusted if multiple signals agree</li>
+</ul>
+<h4 id="tandem"><code>tandem</code><a class="headerlink" href="#tandem" title="Permanent link">&para;</a></h4>
+<p>Use when two animals remain close over multiple frames but show structured, coherent movement rather than unstable mixing.</p>
+<p>Typical clues:</p>
+<ul>
+<li>only two animals involved</li>
+<li>distance remains low but stable</li>
+<li>headings are broadly aligned</li>
+<li>both remain detectable most frames</li>
+<li>assignment confidence may soften slightly, but not collapse</li>
+</ul>
+<p>Policy:</p>
+<ul>
+<li>do not split merely because the pair is close</li>
+<li>suppress generic crowding-based split pressure</li>
+<li>raise suspicion only if one of the animals flickers, swaps heading abruptly, or exits the pair with contradictory motion</li>
+</ul>
+<h4 id="cluster"><code>cluster</code><a class="headerlink" href="#cluster" title="Permanent link">&para;</a></h4>
+<p>Use when local identity is not reliable enough to defend frame-by-frame continuity.</p>
+<p>Typical clues:</p>
+<ul>
+<li>three or more animals in the local component, or two animals with repeated visibility flicker and overlap</li>
+<li>low assignment margin or unstable assignment confidence</li>
+<li>repeated transitions among <code>active</code>, <code>occluded</code>, and <code>lost</code></li>
+<li>uncertainty spikes during continued close contact</li>
+</ul>
+<p>Policy:</p>
+<ul>
+<li>avoid using cluster interior motion anomalies as direct split triggers</li>
+<li>treat continuity through the interior as provisional</li>
+<li>shift decision weight toward cluster entry and exit boundaries</li>
+</ul>
+<h4 id="recovery"><code>recovery</code><a class="headerlink" href="#recovery" title="Permanent link">&para;</a></h4>
+<p>Use for the first short window after a tandem or cluster state ends.</p>
+<p>Policy:</p>
+<ul>
+<li>this is the strongest anti-swap check region</li>
+<li>require continuity to be re-earned using position, velocity, heading, pose, and assignment evidence</li>
+<li>lower the threshold for boundary-focused split decisions here</li>
+<li>do not let generic relinking override a rejected recovery boundary</li>
+</ul>
+<hr />
 <h2 id="signals-to-use">Signals To Use<a class="headerlink" href="#signals-to-use" title="Permanent link">&para;</a></h2>
-<h3 id="already-available">Already Available<a class="headerlink" href="#already-available" title="Permanent link">&para;</a></h3>
+<h3 id="existing-signals-we-should-leverage-better">Existing Signals We Should Leverage Better<a class="headerlink" href="#existing-signals-we-should-leverage-better" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>X</code>, <code>Y</code>, <code>Theta</code>, <code>FrameID</code>, <code>State</code></li>
 <li><code>DetectionConfidence</code></li>
 <li><code>AssignmentConfidence</code></li>
 <li><code>PositionUncertainty</code></li>
-<li><code>DetectionID</code> (frame-local only)</li>
-<li>Pose keypoints and pose confidence in pose-augmented CSVs</li>
+<li><code>DetectionID</code> for frame-local reconciliation only</li>
+<li>pose keypoints and pose quality when present</li>
 </ul>
-<h3 id="recommended-new-signals">Recommended New Signals<a class="headerlink" href="#recommended-new-signals" title="Permanent link">&para;</a></h3>
+<h3 id="new-signals-worth-adding-first">New Signals Worth Adding First<a class="headerlink" href="#new-signals-worth-adding-first" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Normalized assignment cost per matched track</li>
-<li>Kalman innovation magnitude per update</li>
-<li>Per-frame nearest-neighbor distance between active tracks</li>
-<li>Per-frame OBB overlap or center-distance crowding score</li>
-<li>Optional assignment margin: best cost vs second-best cost</li>
-<li>Optional split-only appearance change metrics:</li>
-<li>pHash or dHash jump magnitude on canonicalized OBB crops</li>
-<li>grayscale or HSV histogram distance jump</li>
-<li>cheap low-dimensional crop embedding distance if it remains dataset-agnostic</li>
+<li>normalized assignment cost</li>
+<li>assignment margin where available</li>
+<li>Kalman innovation magnitude or a similar residual</li>
+<li>nearest-neighbor distance among active tracks</li>
+<li>local visibility flicker score over a short window</li>
+<li>interaction component size per frame</li>
 </ul>
-<p>These signals are useful because false merges usually happen around ambiguous assignments, not during stable isolated motion.</p>
-<p>The appearance signals are intentionally listed as optional and <strong>negative-only</strong>. They are not meant to prove identity, only to flag temporal discontinuities that are suspicious enough to split.</p>
+<h3 id="signals-to-avoid-over-trusting">Signals To Avoid Over-Trusting<a class="headerlink" href="#signals-to-avoid-over-trusting" title="Permanent link">&para;</a></h3>
+<ul>
+<li>raw proximity alone</li>
+<li>motion spikes inside stable tandem movement</li>
+<li>motion spikes inside dense cluster interiors</li>
+<li>appearance similarity as positive identity evidence</li>
+</ul>
 <hr />
-<h2 id="proposed-phases">Proposed Phases<a class="headerlink" href="#proposed-phases" title="Permanent link">&para;</a></h2>
-<h2 id="phase-0-instrumentation-and-diagnostics">Phase 0: Instrumentation and Diagnostics<a class="headerlink" href="#phase-0-instrumentation-and-diagnostics" title="Permanent link">&para;</a></h2>
-<h3 id="objective">Objective<a class="headerlink" href="#objective" title="Permanent link">&para;</a></h3>
-<p>Add the missing tracking diagnostics needed to identify high-risk continuity failures.</p>
-<h3 id="changes">Changes<a class="headerlink" href="#changes" title="Permanent link">&para;</a></h3>
+<h2 id="proposed-implementation-plan">Proposed Implementation Plan<a class="headerlink" href="#proposed-implementation-plan" title="Permanent link">&para;</a></h2>
+<h2 id="phase-0-instrument-the-real-swap-signals">Phase 0: Instrument The Real Swap Signals<a class="headerlink" href="#phase-0-instrument-the-real-swap-signals" title="Permanent link">&para;</a></h2>
+<h3 id="phase-0-objective">Phase 0 Objective<a class="headerlink" href="#phase-0-objective" title="Permanent link">&para;</a></h3>
+<p>Persist the minimum additional diagnostics needed to tell normal close contact apart from actual identity danger.</p>
+<h3 id="phase-0-changes">Phase 0 Changes<a class="headerlink" href="#phase-0-changes" title="Permanent link">&para;</a></h3>
 <ul>
-<li>Persist normalized assignment cost to tracking CSV output.</li>
-<li>Persist Kalman innovation magnitude or a closely related residual metric.</li>
-<li>Persist crowding features when possible:</li>
-<li>nearest-neighbor distance</li>
-<li>optional OBB overlap fraction</li>
-<li>optional assignment margin</li>
-<li>Extend post-processing stats so new split causes are counted separately.</li>
+<li>Persist normalized assignment cost.</li>
+<li>Persist assignment margin if it is cheap to extract.</li>
+<li>Persist Kalman innovation magnitude or an equivalent update residual.</li>
+<li>Persist nearest-neighbor distance for active tracks.</li>
+<li>Add a lightweight visibility flicker metric computed over a short trailing window.</li>
 </ul>
-<h3 id="primary-files">Primary Files<a class="headerlink" href="#primary-files" title="Permanent link">&para;</a></h3>
+<h3 id="phase-0-rationale">Phase 0 Rationale<a class="headerlink" href="#phase-0-rationale" title="Permanent link">&para;</a></h3>
+<p>Today the pipeline has confidence-like fields, but not enough direct evidence about ambiguous handoffs. Without that, later split logic will remain heuristic in the wrong way.</p>
+<h3 id="phase-0-primary-files">Phase 0 Primary Files<a class="headerlink" href="#phase-0-primary-files" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>src/multi_tracker/core/tracking/worker.py</code></li>
 <li><code>src/multi_tracker/core/assigners/hungarian.py</code></li>
 <li><code>src/multi_tracker/core/post/processing.py</code></li>
 <li><code>docs/developer-guide/confidence-metrics.md</code></li>
 </ul>
-<h3 id="deliverable">Deliverable<a class="headerlink" href="#deliverable" title="Permanent link">&para;</a></h3>
-<p>A richer per-frame CSV that makes risky handoffs measurable instead of implicit.</p>
+<h3 id="phase-0-deliverable">Phase 0 Deliverable<a class="headerlink" href="#phase-0-deliverable" title="Permanent link">&para;</a></h3>
+<p>A CSV and post-processing input set that can measure instability explicitly instead of inferring it indirectly.</p>
 <hr />
-<h2 id="phase-1-ambiguity-window-detection">Phase 1: Ambiguity Window Detection<a class="headerlink" href="#phase-1-ambiguity-window-detection" title="Permanent link">&para;</a></h2>
-<h3 id="objective_1">Objective<a class="headerlink" href="#objective_1" title="Permanent link">&para;</a></h3>
-<p>Detect windows where identity continuity is inherently unreliable and treat them as high-risk for false merges.</p>
-<h3 id="rationale">Rationale<a class="headerlink" href="#rationale" title="Permanent link">&para;</a></h3>
-<p>Most false merges happen during close approaches, body contacts, short occlusions, or low-margin assignments. These windows should be marked explicitly and used to raise split sensitivity.</p>
-<h3 id="candidate-triggers">Candidate Triggers<a class="headerlink" href="#candidate-triggers" title="Permanent link">&para;</a></h3>
+<h2 id="phase-1-detect-interaction-regimes-instead-of-generic-crowding">Phase 1: Detect Interaction Regimes Instead Of Generic Crowding<a class="headerlink" href="#phase-1-detect-interaction-regimes-instead-of-generic-crowding" title="Permanent link">&para;</a></h2>
+<h3 id="phase-1-objective">Phase 1 Objective<a class="headerlink" href="#phase-1-objective" title="Permanent link">&para;</a></h3>
+<p>Add a dedicated regime detector that classifies rows into <code>isolated</code>, <code>tandem</code>, <code>cluster</code>, or <code>recovery</code>.</p>
+<h3 id="phase-1-rationale">Phase 1 Rationale<a class="headerlink" href="#phase-1-rationale" title="Permanent link">&para;</a></h3>
+<p>This is the most important architectural change in the plan. If the pipeline cannot distinguish tandem from cluster, the rest of the logic will stay too blunt.</p>
+<h3 id="phase-1-implementation-sketch">Phase 1 Implementation Sketch<a class="headerlink" href="#phase-1-implementation-sketch" title="Permanent link">&para;</a></h3>
+<p>Create a helper module that works on the final trajectory table and returns:</p>
 <ul>
-<li>Two active tracks move within a distance threshold based on body size.</li>
-<li>OBBs overlap beyond a threshold.</li>
-<li>Assignment confidence drops below a threshold.</li>
-<li>Assignment margin becomes small.</li>
-<li>Position uncertainty spikes.</li>
-<li>State transitions into or out of <code>occluded</code> or <code>lost</code> near another animal.</li>
+<li>a row-level <code>InteractionRegime</code></li>
+<li>a per-frame interaction component identifier</li>
+<li>regime transition markers for entry and exit boundaries</li>
 </ul>
-<h3 id="implementation-sketch">Implementation Sketch<a class="headerlink" href="#implementation-sketch" title="Permanent link">&para;</a></h3>
-<p>Add a helper that produces per-frame or per-row risk flags, for example:</p>
+<p>Recommended helper file:</p>
 <ul>
-<li><code>RiskCrowding</code></li>
-<li><code>RiskLowAssignmentConfidence</code></li>
-<li><code>RiskHighUncertainty</code></li>
-<li><code>RiskOcclusionBoundary</code></li>
-<li><code>RiskAmbiguousWindow</code></li>
+<li><code>src/multi_tracker/core/post/interaction_events.py</code></li>
 </ul>
-<p>These flags can be computed either during tracking output or in post-processing from the final CSV and optional pose-augmented CSV.</p>
-<h3 id="primary-files_1">Primary Files<a class="headerlink" href="#primary-files_1" title="Permanent link">&para;</a></h3>
+<p>Recommended public entry point:</p>
 <ul>
-<li><code>src/multi_tracker/core/tracking/worker.py</code></li>
+<li><code>annotate_interaction_regimes(df, params)</code></li>
+</ul>
+<h3 id="phase-1-initial-heuristics">Phase 1 Initial Heuristics<a class="headerlink" href="#phase-1-initial-heuristics" title="Permanent link">&para;</a></h3>
+<p>Classify a component as likely <code>tandem</code> when:</p>
+<ul>
+<li>exactly two tracks participate</li>
+<li>inter-animal distance stays below a threshold for several frames</li>
+<li>motion direction remains broadly aligned</li>
+<li>visibility remains mostly stable</li>
+<li>there is no repeated identity-style flicker</li>
+</ul>
+<p>Classify a component as likely <code>cluster</code> when one or more of the following hold:</p>
+<ul>
+<li>three or more tracks are involved</li>
+<li>repeated visibility flicker occurs during continued proximity</li>
+<li>assignment confidence and margin are unstable for several frames</li>
+<li>uncertainty remains elevated inside the component</li>
+</ul>
+<p>Classify <code>recovery</code> for the first short post-interaction window after <code>tandem</code> or <code>cluster</code> ends.</p>
+<h3 id="phase-1-primary-files">Phase 1 Primary Files<a class="headerlink" href="#phase-1-primary-files" title="Permanent link">&para;</a></h3>
+<ul>
+<li>new: <code>src/multi_tracker/core/post/interaction_events.py</code></li>
 <li><code>src/multi_tracker/core/post/processing.py</code></li>
 </ul>
-<h3 id="deliverable_1">Deliverable<a class="headerlink" href="#deliverable_1" title="Permanent link">&para;</a></h3>
-<p>A reusable ambiguity-window signal that later phases can use for split and relink gating.</p>
+<h3 id="phase-1-deliverable">Phase 1 Deliverable<a class="headerlink" href="#phase-1-deliverable" title="Permanent link">&para;</a></h3>
+<p>A reusable state annotation layer that later split and relink logic can use.</p>
 <hr />
-<h2 id="phase-2-multi-cue-false-merge-break-scoring">Phase 2: Multi-Cue False-Merge Break Scoring<a class="headerlink" href="#phase-2-multi-cue-false-merge-break-scoring" title="Permanent link">&para;</a></h2>
-<h3 id="objective_2">Objective<a class="headerlink" href="#objective_2" title="Permanent link">&para;</a></h3>
-<p>Replace single-cue break logic with a multi-cue score that prefers splitting when continuity becomes untrustworthy.</p>
-<h3 id="rationale_1">Rationale<a class="headerlink" href="#rationale_1" title="Permanent link">&para;</a></h3>
-<p>Velocity alone is too brittle. False merges often show up as a combination of moderate anomalies rather than one extreme jump.</p>
-<h3 id="candidate-cues">Candidate Cues<a class="headerlink" href="#candidate-cues" title="Permanent link">&para;</a></h3>
+<h2 id="phase-2-replace-global-split-pressure-with-boundary-focused-break-logic">Phase 2: Replace Global Split Pressure With Boundary-Focused Break Logic<a class="headerlink" href="#phase-2-replace-global-split-pressure-with-boundary-focused-break-logic" title="Permanent link">&para;</a></h2>
+<h3 id="phase-2-objective">Phase 2 Objective<a class="headerlink" href="#phase-2-objective" title="Permanent link">&para;</a></h3>
+<p>Stop treating all ambiguous frames the same. Split mainly at the seams where an identity chain becomes undefendable.</p>
+<h3 id="phase-2-rationale">Phase 2 Rationale<a class="headerlink" href="#phase-2-rationale" title="Permanent link">&para;</a></h3>
+<p>The current risk is not that cluster interiors are always wrong. The risk is that the pipeline silently carries one identity through an ambiguous interaction and then keeps it after separation.</p>
+<h3 id="phase-2-decision-policy-by-regime">Phase 2 Decision Policy By Regime<a class="headerlink" href="#phase-2-decision-policy-by-regime" title="Permanent link">&para;</a></h3>
+<h4 id="isolated-policy"><code>isolated</code> Policy<a class="headerlink" href="#isolated-policy" title="Permanent link">&para;</a></h4>
+<p>Use the normal multi-cue break score.</p>
+<p>Candidate cues:</p>
 <ul>
-<li>Velocity z-score</li>
-<li>Heading jump</li>
-<li>Acceleration or jerk spike</li>
-<li>Curvature spike</li>
-<li>Assignment confidence drop</li>
-<li>Assignment cost spike</li>
-<li>Position uncertainty spike</li>
-<li>Ambiguity-window membership</li>
-<li>Pose discontinuity when pose data exists</li>
+<li>velocity z-score</li>
+<li>heading jump</li>
+<li>uncertainty spike</li>
+<li>assignment cost spike</li>
+<li>assignment margin collapse</li>
 </ul>
-<h3 id="decision-rule">Decision Rule<a class="headerlink" href="#decision-rule" title="Permanent link">&para;</a></h3>
-<p>Use a weighted score with a multi-cue requirement. Example:</p>
-<p><code>break_score = motion + geometry + uncertainty + assignment + pose + ambiguity</code></p>
-<p>Recommended policy:</p>
+<h4 id="tandem-policy"><code>tandem</code> Policy<a class="headerlink" href="#tandem-policy" title="Permanent link">&para;</a></h4>
+<p>Reduce split sensitivity.</p>
+<p>Only split if there is strong contradictory evidence such as:</p>
 <ul>
-<li>Split only if the total score exceeds a threshold.</li>
-<li>Also require either:</li>
-<li>at least two independent cues to fire, or</li>
-<li>a single extreme anomaly inside an ambiguity window.</li>
+<li>repeated visibility flicker affecting only one participant</li>
+<li>a sharp recovery-boundary mismatch when the pair separates</li>
+<li>a simultaneous motion and assignment anomaly that persists</li>
 </ul>
-<p>This avoids overfragmenting clean trajectories while still being much more aggressive near risky events.</p>
-<h3 id="implementation-sketch_1">Implementation Sketch<a class="headerlink" href="#implementation-sketch_1" title="Permanent link">&para;</a></h3>
-<p>Add a new helper such as:</p>
+<h4 id="cluster-policy"><code>cluster</code> Policy<a class="headerlink" href="#cluster-policy" title="Permanent link">&para;</a></h4>
+<p>Suppress most interior split triggers.</p>
+<p>Specifically:</p>
 <ul>
-<li><code>_compute_false_merge_breaks(...)</code></li>
+<li>do not split on velocity anomaly alone</li>
+<li>do not split on generic proximity alone</li>
+<li>do not split on uncertainty alone if the component is still in active cluster state</li>
 </ul>
-<p>Then integrate it into:</p>
+<p>Instead, record candidate concern points and defer actual identity decisions to entry and exit boundaries.</p>
+<h4 id="recovery-policy"><code>recovery</code> Policy<a class="headerlink" href="#recovery-policy" title="Permanent link">&para;</a></h4>
+<p>Increase split sensitivity.</p>
+<p>This is where a bad continuity chain should be broken if it cannot be defended.</p>
+<h3 id="phase-2-recommended-helper">Phase 2 Recommended Helper<a class="headerlink" href="#phase-2-recommended-helper" title="Permanent link">&para;</a></h3>
 <ul>
-<li><code>process_trajectories_from_csv(...)</code></li>
-<li><code>process_trajectories(...)</code></li>
+<li><code>_compute_boundary_break_candidates(...)</code></li>
 </ul>
-<p>Track new counters in <code>stats</code>, for example:</p>
+<p>This helper should accept regime labels and use different thresholds by regime.</p>
+<h3 id="phase-2-primary-files">Phase 2 Primary Files<a class="headerlink" href="#phase-2-primary-files" title="Permanent link">&para;</a></h3>
 <ul>
-<li><code>broken_ambiguity</code></li>
-<li><code>broken_assignment_confidence</code></li>
-<li><code>broken_uncertainty</code></li>
-<li><code>broken_pose_discontinuity</code></li>
-<li><code>broken_multicue</code></li>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+<li>optional new helper: <code>src/multi_tracker/core/post/boundary_breaks.py</code></li>
 </ul>
-<h3 id="primary-files_2">Primary Files<a class="headerlink" href="#primary-files_2" title="Permanent link">&para;</a></h3>
+<h3 id="phase-2-deliverable">Phase 2 Deliverable<a class="headerlink" href="#phase-2-deliverable" title="Permanent link">&para;</a></h3>
+<p>A split pass that is less trigger-happy during normal social contact but much stricter at post-contact swap seams.</p>
+<hr />
+<h2 id="phase-3-add-boundary-re-anchoring-for-interaction-exits">Phase 3: Add Boundary Re-Anchoring For Interaction Exits<a class="headerlink" href="#phase-3-add-boundary-re-anchoring-for-interaction-exits" title="Permanent link">&para;</a></h2>
+<h3 id="phase-3-objective">Phase 3 Objective<a class="headerlink" href="#phase-3-objective" title="Permanent link">&para;</a></h3>
+<p>When animals leave a tandem or cluster event, explicitly solve a small local continuity problem instead of relying on naive greedy fragment linking.</p>
+<h3 id="phase-3-rationale">Phase 3 Rationale<a class="headerlink" href="#phase-3-rationale" title="Permanent link">&para;</a></h3>
+<p>The current relinker in <code>processing.py</code> is greedy and works best when the fragments it sees are already clean. It should not bear the entire burden of disambiguating cluster exits.</p>
+<h3 id="phase-3-strategy">Phase 3 Strategy<a class="headerlink" href="#phase-3-strategy" title="Permanent link">&para;</a></h3>
+<p>For each interaction event boundary:</p>
+<ul>
+<li>collect short pre-boundary anchor summaries</li>
+<li>collect short post-boundary candidate summaries</li>
+<li>score plausible continuations using motion, heading, uncertainty, and pose if available</li>
+<li>accept only low-cost matches</li>
+<li>leave uncertain exits unmatched instead of forcing continuity</li>
+</ul>
+<p>This should be a local mini-assignment, not a full-video identity solver.</p>
+<h3 id="phase-3-recommended-module">Phase 3 Recommended Module<a class="headerlink" href="#phase-3-recommended-module" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>src/multi_tracker/core/post/interaction_anchoring.py</code></li>
+</ul>
+<p>Recommended public entry point:</p>
+<ul>
+<li><code>resolve_interaction_boundaries(df, regime_table, params)</code></li>
+</ul>
+<h3 id="phase-3-important-constraint">Phase 3 Important Constraint<a class="headerlink" href="#phase-3-important-constraint" title="Permanent link">&para;</a></h3>
+<p>Do not allow the later general relinker to override an explicit rejection made here.</p>
+<h3 id="phase-3-primary-files">Phase 3 Primary Files<a class="headerlink" href="#phase-3-primary-files" title="Permanent link">&para;</a></h3>
+<ul>
+<li>new: <code>src/multi_tracker/core/post/interaction_anchoring.py</code></li>
+<li><code>src/multi_tracker/core/post/processing.py</code></li>
+<li><code>src/multi_tracker/gui/main_window.py</code></li>
+</ul>
+<h3 id="phase-3-deliverable">Phase 3 Deliverable<a class="headerlink" href="#phase-3-deliverable" title="Permanent link">&para;</a></h3>
+<p>A precise, boundary-local defence against swaps at the exact point where animals separate.</p>
+<hr />
+<h2 id="phase-4-harden-general-relinking-so-it-cannot-undo-good-splits">Phase 4: Harden General Relinking So It Cannot Undo Good Splits<a class="headerlink" href="#phase-4-harden-general-relinking-so-it-cannot-undo-good-splits" title="Permanent link">&para;</a></h2>
+<h3 id="phase-4-objective">Phase 4 Objective<a class="headerlink" href="#phase-4-objective" title="Permanent link">&para;</a></h3>
+<p>Keep the existing relinker conservative and make it subordinate to the new boundary logic.</p>
+<h3 id="phase-4-changes">Phase 4 Changes<a class="headerlink" href="#phase-4-changes" title="Permanent link">&para;</a></h3>
+<ul>
+<li>add a hard reject threshold for motion-plus-pose relinking</li>
+<li>prevent relinking across recently rejected recovery boundaries</li>
+<li>penalise relinking over low-margin or high-uncertainty gaps</li>
+<li>prefer leaving fragments unmatched rather than greedily chaining them</li>
+<li>consider replacing greedy pairing with Hungarian matching only if the first hard-reject version is still too permissive</li>
+</ul>
+<h3 id="phase-4-rationale">Phase 4 Rationale<a class="headerlink" href="#phase-4-rationale" title="Permanent link">&para;</a></h3>
+<p>Boundary anchoring and general fragment relinking are different jobs. The first handles known high-risk seams. The second cleans up easy residual fragments.</p>
+<h3 id="phase-4-primary-files">Phase 4 Primary Files<a class="headerlink" href="#phase-4-primary-files" title="Permanent link">&para;</a></h3>
 <ul>
 <li><code>src/multi_tracker/core/post/processing.py</code></li>
 <li><code>src/multi_tracker/gui/main_window.py</code></li>
 </ul>
-<h3 id="deliverable_2">Deliverable<a class="headerlink" href="#deliverable_2" title="Permanent link">&para;</a></h3>
-<p>A new break pass that is more conservative than the current velocity-only approach and explicitly optimized for reducing false merges.</p>
+<h3 id="phase-4-deliverable">Phase 4 Deliverable<a class="headerlink" href="#phase-4-deliverable" title="Permanent link">&para;</a></h3>
+<p>A relinker that preserves the gains from earlier split decisions instead of smoothing them away.</p>
 <hr />
-<h2 id="phase-2a-optional-appearance-change-point-detection">Phase 2A: Optional Appearance Change-Point Detection<a class="headerlink" href="#phase-2a-optional-appearance-change-point-detection" title="Permanent link">&para;</a></h2>
-<h3 id="objective_3">Objective<a class="headerlink" href="#objective_3" title="Permanent link">&para;</a></h3>
-<p>Add a cheap image-based change-point detector that can split trajectories when the visual content of the tracked OBB crop changes too abruptly over time.</p>
-<h3 id="rationale_2">Rationale<a class="headerlink" href="#rationale_2" title="Permanent link">&para;</a></h3>
-<p>This is useful for false-merge prevention because a bad swap often produces a sudden crop discontinuity even when motion alone remains plausible. The key constraint is that appearance must be used only as <strong>negative evidence</strong> for splitting, not as positive evidence for merging.</p>
-<h3 id="best-placement-in-the-pipeline">Best Placement In The Pipeline<a class="headerlink" href="#best-placement-in-the-pipeline" title="Permanent link">&para;</a></h3>
-<p>The best insertion point is:</p>
+<h2 id="phase-5-add-optional-population-guardrails">Phase 5: Add Optional Population Guardrails<a class="headerlink" href="#phase-5-add-optional-population-guardrails" title="Permanent link">&para;</a></h2>
+<h3 id="phase-5-objective">Phase 5 Objective<a class="headerlink" href="#phase-5-objective" title="Permanent link">&para;</a></h3>
+<p>Use known animal count as a validator when the experiment provides it.</p>
+<h3 id="phase-5-rationale">Phase 5 Rationale<a class="headerlink" href="#phase-5-rationale" title="Permanent link">&para;</a></h3>
+<p>For many colony or arena experiments, the number of animals is known. That is valuable as a guardrail, but it should not be the main anti-swap mechanism.</p>
+<h3 id="phase-5-policy">Phase 5 Policy<a class="headerlink" href="#phase-5-policy" title="Permanent link">&para;</a></h3>
 <ul>
-<li><strong>after interpolation</strong></li>
-<li><strong>after forward/backward resolution if backward tracking is enabled</strong></li>
-<li><strong>before conservative relinking</strong></li>
+<li>if <code>MAX_EXPECTED_ANIMALS</code> is configured, use it to flag impossible post-processing states</li>
+<li>use it after split, anchoring, and relink passes</li>
+<li>default to warning or flagging before any automatic enforcement</li>
 </ul>
-<p>Concretely, the easiest place to integrate this in the current application flow is alongside the final pose-augmented relink pipeline in <code>src/multi_tracker/gui/main_window.py</code>, immediately before <code>relink_trajectories_with_pose(...)</code> runs.</p>
-<p>Recommended flow:</p>
-<ol>
-<li>build final merged trajectory DataFrame</li>
-<li>interpolate trajectories</li>
-<li>build pose-augmented DataFrame if available</li>
-<li>run appearance change-point split pass</li>
-<li>run conservative relinking on the already-split result</li>
-</ol>
-<p>This avoids two bad outcomes:</p>
+<h3 id="phase-5-important-limitation">Phase 5 Important Limitation<a class="headerlink" href="#phase-5-important-limitation" title="Permanent link">&para;</a></h3>
+<p>Population count does not tell us who is who. It only helps catch obviously invalid outcomes.</p>
+<h3 id="phase-5-primary-files">Phase 5 Primary Files<a class="headerlink" href="#phase-5-primary-files" title="Permanent link">&para;</a></h3>
 <ul>
-<li>running too early, before interpolation has produced the temporal support needed for continuity checks</li>
-<li>running too late, after relinking has already stitched a bad merge back together</li>
-</ul>
-<h3 id="data-source-strategy">Data Source Strategy<a class="headerlink" href="#data-source-strategy" title="Permanent link">&para;</a></h3>
-<p>The change-point pass should extract crops from raw video frames using per-row geometry from the final trajectory table.</p>
-<p>Preferred geometry source order:</p>
-<ol>
-<li>exact OBB geometry from detection cache when <code>DetectionID</code> is present</li>
-<li>interpolated width, height, and angle across gaps when exact detections are missing</li>
-<li>fallback to track-local median size if width and height cannot be reconstructed exactly</li>
-</ol>
-<p>This means interpolation remains useful: it provides a dense temporal path for crop extraction, even across short gaps.</p>
-<h3 id="crop-strategy">Crop Strategy<a class="headerlink" href="#crop-strategy" title="Permanent link">&para;</a></h3>
-<ul>
-<li>use masked OBB crops, not loose axis-aligned crops</li>
-<li>canonicalize orientation so the animal is compared in a consistent frame</li>
-<li>keep the crop cheap and deterministic</li>
-<li>ignore frames where crop extraction is too unstable or too small</li>
-</ul>
-<p>Existing repository helpers already support much of this:</p>
-<ul>
-<li>OBB masked crop extraction in <code>src/multi_tracker/core/identity/analysis.py</code></li>
-<li>lightweight perceptual hashing in <code>src/multi_tracker/tools/data_sieve/core.py</code></li>
-</ul>
-<h3 id="recommended-methods">Recommended Methods<a class="headerlink" href="#recommended-methods" title="Permanent link">&para;</a></h3>
-<p>Start with the cheapest robust options first:</p>
-<ol>
-<li>pHash over canonicalized masked OBB crops</li>
-<li>dHash as a simpler gradient-sensitive fallback</li>
-<li>grayscale or HSV histogram distance as a secondary cue</li>
-</ol>
-<p>If a learned embedding is later tested, it should remain optional and off by default unless it proves stable on real data.</p>
-<h3 id="change-point-logic">Change-Point Logic<a class="headerlink" href="#change-point-logic" title="Permanent link">&para;</a></h3>
-<p>Per trajectory:</p>
-<ul>
-<li>compute a crop signature per valid frame</li>
-<li>compute frame-to-frame or window-to-window signature distance</li>
-<li>smooth distances with a short robust window</li>
-<li>flag change-points when the appearance jump is large relative to the local baseline</li>
-</ul>
-<p>Recommended policy:</p>
-<ul>
-<li>do not split on appearance alone in normal frames</li>
-<li>allow appearance to trigger a split only when one of the following is also true:</li>
-<li>the frame lies inside an ambiguity window</li>
-<li>motion or uncertainty cues are also abnormal</li>
-<li>the jump is extreme and persists for multiple frames</li>
-</ul>
-<p>This keeps the method aligned with the overall split-first but artifact-aware design.</p>
-<h3 id="suggested-parameters">Suggested Parameters<a class="headerlink" href="#suggested-parameters" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>ENABLE_APPEARANCE_CHANGEPOINT_SPLITTING</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_METHOD</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_THRESHOLD</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_WINDOW</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_REQUIRE_AMBIGUITY</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_MIN_VALID_CROPS</code></li>
-</ul>
-<p>These should remain advanced or config-only at first.</p>
-<h3 id="primary-files_3">Primary Files<a class="headerlink" href="#primary-files_3" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>src/multi_tracker/gui/main_window.py</code></li>
 <li><code>src/multi_tracker/core/post/processing.py</code></li>
-<li>optional new helper module under <code>src/multi_tracker/core/post/</code></li>
-<li><code>src/multi_tracker/core/identity/analysis.py</code></li>
-<li><code>src/multi_tracker/tools/data_sieve/core.py</code></li>
+<li><code>src/multi_tracker/gui/main_window.py</code></li>
 </ul>
-<h3 id="deliverable_3">Deliverable<a class="headerlink" href="#deliverable_3" title="Permanent link">&para;</a></h3>
-<p>An optional split-only appearance change-point pass that catches temporally weird crop jumps before relinking.</p>
+<h3 id="phase-5-deliverable">Phase 5 Deliverable<a class="headerlink" href="#phase-5-deliverable" title="Permanent link">&para;</a></h3>
+<p>A sanity layer that can suppress the most obvious oversplitting mistakes in count-known experiments.</p>
 <hr />
-<h2 id="phase-2a-implementation-checklist">Phase 2A Implementation Checklist<a class="headerlink" href="#phase-2a-implementation-checklist" title="Permanent link">&para;</a></h2>
-<p>The checklist below is intentionally ordered so the first slice can land without forcing a full architecture refactor.</p>
-<h3 id="recommended-first-implementation-boundary">Recommended First Implementation Boundary<a class="headerlink" href="#recommended-first-implementation-boundary" title="Permanent link">&para;</a></h3>
-<p>Ship the first version with these constraints:</p>
+<h2 id="phase-6-optional-appearance-veto-near-recovery-boundaries">Phase 6: Optional Appearance Veto Near Recovery Boundaries<a class="headerlink" href="#phase-6-optional-appearance-veto-near-recovery-boundaries" title="Permanent link">&para;</a></h2>
+<h3 id="phase-6-objective">Phase 6 Objective<a class="headerlink" href="#phase-6-objective" title="Permanent link">&para;</a></h3>
+<p>Add appearance only as a narrow, negative-only cue near recovery seams after the structural fixes above are in place.</p>
+<h3 id="phase-6-rationale">Phase 6 Rationale<a class="headerlink" href="#phase-6-rationale" title="Permanent link">&para;</a></h3>
+<p>Appearance is still useful, but it should not be one of the first changes. The core problem here is state modelling, not missing embeddings.</p>
+<h3 id="phase-6-recommended-scope">Phase 6 Recommended Scope<a class="headerlink" href="#phase-6-recommended-scope" title="Permanent link">&para;</a></h3>
 <ul>
-<li>use pHash only</li>
-<li>use appearance only as split veto, never as merge or relink evidence</li>
-<li>run only in the final CSV path before relinking</li>
-<li>require either ambiguity-window support or another anomaly cue before splitting</li>
-<li>skip UI controls initially and keep the feature config-only</li>
+<li>run only near <code>recovery</code> windows or explicitly flagged boundary candidates</li>
+<li>use only as a veto for suspicious continuity</li>
+<li>never use to create a positive merge or relink decision</li>
+<li>keep it config-only and off by default in the first implementation</li>
 </ul>
-<p>That keeps the first implementation small, measurable, and easy to disable.</p>
-<h3 id="1-shared-signature-utilities">1. Shared Signature Utilities<a class="headerlink" href="#1-shared-signature-utilities" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Create a lightweight shared signature utility instead of importing <code>DataSieveCore</code> directly into post-processing.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Move or duplicate only the small hash helpers needed from <code>src/multi_tracker/tools/data_sieve/core.py</code>.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Recommended destination:</li>
+<h3 id="phase-6-suggested-helpers">Phase 6 Suggested Helpers<a class="headerlink" href="#phase-6-suggested-helpers" title="Permanent link">&para;</a></h3>
+<ul>
 <li><code>src/multi_tracker/core/post/appearance_signatures.py</code></li>
-<li>or <code>src/multi_tracker/utils/image_signatures.py</code></li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Implement these helpers as pure functions:</li>
-<li><code>compute_phash(image, hash_size=8)</code></li>
-<li><code>compute_dhash(image, hash_size=8)</code></li>
-<li><code>compute_hist_signature(image, bins=32)</code></li>
-<li><code>signature_distance(sig1, sig2, method="phash")</code></li>
-<li><code>hamming_distance(hash1, hash2)</code></li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep the implementation free of heavyweight DataSieve-only dependencies.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> If <code>DataSieveCore</code> continues to expose these methods, make it delegate to the shared helpers to avoid logic drift.</li>
-</ul>
-<h3 id="2-appearance-change-point-module">2. Appearance Change-Point Module<a class="headerlink" href="#2-appearance-change-point-module" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Create a dedicated helper module rather than bloating <code>processing.py</code> further.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Recommended file:</li>
 <li><code>src/multi_tracker/core/post/appearance_changepoints.py</code></li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add one public entry point:</li>
-<li><code>split_trajectories_with_appearance_changepoints(...)</code></li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add private helpers with narrow responsibilities:</li>
-<li><code>_resolve_row_geometry(...)</code></li>
-<li><code>_extract_canonical_crop(...)</code></li>
-<li><code>_compute_row_signature(...)</code></li>
-<li><code>_compute_trajectory_signature_series(...)</code></li>
-<li><code>_detect_signature_changepoints(...)</code></li>
-<li><code>_split_trajectory_at_frames(...)</code></li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep the module DataFrame-in/DataFrame-out so it composes cleanly with the existing post-processing path.</li>
 </ul>
-<h3 id="3-geometry-source-decision">3. Geometry Source Decision<a class="headerlink" href="#3-geometry-source-decision" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Decide whether to persist <code>Width</code> and <code>Height</code> all the way through the final CSV path.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> If yes, add them to the tracked trajectory DataFrame whenever available and preserve them through interpolation and save/load.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> If no, implement lazy reconstruction using this priority order:</li>
-<li>exact OBB corners from detection cache via <code>DetectionID</code></li>
-<li>size reconstruction via detection-cache shape info</li>
-<li>interpolated or track-median width and height fallback</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Reuse or adapt the existing detection-size lookup logic in <code>src/multi_tracker/gui/main_window.py</code> rather than inventing a second incompatible path.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add a guard for rows where geometry cannot be resolved reliably.</li>
-</ul>
-<h3 id="4-crop-extraction-path">4. Crop Extraction Path<a class="headerlink" href="#4-crop-extraction-path" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Reuse existing OBB masked crop behavior from <code>src/multi_tracker/core/identity/analysis.py</code> instead of inventing a new crop definition.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Extract common crop code into a shared helper if duplication becomes awkward.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Ensure crops are:</li>
-<li>masked to the OBB region</li>
-<li>padded consistently</li>
-<li>canonicalized by angle before hashing</li>
-<li>skipped if too small or mostly invalid</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add hard guards for unstable crops:</li>
-<li>minimum crop width and height</li>
-<li>finite center and angle</li>
-<li>finite width and height</li>
-<li>non-empty masked region</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep crop extraction deterministic so the same trajectory produces the same signatures across runs.</li>
-</ul>
-<h3 id="5-video-and-cache-access-strategy">5. Video and Cache Access Strategy<a class="headerlink" href="#5-video-and-cache-access-strategy" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Do not random-seek the video for every row.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Iterate frames in ascending <code>FrameID</code> order and process all trajectory rows belonging to the current frame.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Open the video once for the whole pass.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Open the detection cache once for the whole pass if it is available.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Gracefully skip the appearance pass if:</li>
-<li>the video path is missing</li>
-<li>the video cannot be opened</li>
-<li>the detection cache is unavailable and fallback geometry is insufficient</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Log whether the pass ran, skipped, or partially degraded.</li>
-</ul>
-<h3 id="6-signature-series-construction">6. Signature Series Construction<a class="headerlink" href="#6-signature-series-construction" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Restrict signature computation to rows with usable geometry and valid crops.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Prefer <code>State == "active"</code> rows for baseline continuity.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Allow interpolated rows to contribute only if crop geometry is credible.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Store per-row debugging fields in-memory while computing:</li>
-<li><code>AppearanceSignatureValid</code></li>
-<li><code>AppearanceDistancePrev</code></li>
-<li><code>AppearanceJumpScore</code></li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Do not persist raw hash values to the final CSV unless there is a strong debugging need.</li>
-</ul>
-<h3 id="7-change-point-detection-policy">7. Change-Point Detection Policy<a class="headerlink" href="#7-change-point-detection-policy" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Start with consecutive-frame signature distances.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Smooth distances with a short median or robust rolling window.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Compute a local baseline and detect unusually large positive jumps.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Require one of the following before splitting:</li>
-<li>ambiguity-window membership</li>
-<li>co-occurring motion or uncertainty anomaly</li>
-<li>extreme jump persisted for multiple valid frames</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Never allow appearance alone in a normal low-risk region to create a split in the first version.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Emit candidate split frame IDs, not row offsets, so the splitter stays compatible with current DataFrame logic.</li>
-</ul>
-<h3 id="8-integration-point-in-mainwindow">8. Integration Point In MainWindow<a class="headerlink" href="#8-integration-point-in-mainwindow" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Integrate the new pass inside <code>MainWindow._relink_final_pose_augmented_csv(...)</code>.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Insert it after the final <code>relink_input_df</code> has been built and before <code>relink_trajectories_with_pose(...)</code> is called.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Recommended flow inside that method:</li>
-<li>load base final CSV</li>
-<li>build pose-augmented DataFrame if available</li>
-<li>run appearance change-point splitting on <code>relink_input_df</code></li>
-<li>feed the split result into <code>relink_trajectories_with_pose(...)</code></li>
-<li>rewrite final CSV and <code>_with_pose.csv</code> from the relinked result</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep the integration behind a parameter gate so the behavior can be disabled instantly.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Ensure the pass runs for both forward-only and forward/backward workflows, since both converge on this method.</li>
-</ul>
-<h3 id="9-parameter-wiring">9. Parameter Wiring<a class="headerlink" href="#9-parameter-wiring" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add config-only parameters to the parameter dictionary path first.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Recommended initial parameters:</li>
-<li><code>ENABLE_APPEARANCE_CHANGEPOINT_SPLITTING</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_METHOD</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_THRESHOLD</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_WINDOW</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_REQUIRE_AMBIGUITY</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_MIN_VALID_CROPS</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_MIN_CROP_SIZE</code></li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Thread the parameters through <code>MainWindow.get_parameters_dict()</code> and config load/save.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Do not add UI controls in the first pass unless the feature stabilizes quickly.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> If a UI surface is later needed, put it under advanced post-processing settings.</li>
-</ul>
-<h3 id="10-stats-and-logging">10. Stats and Logging<a class="headerlink" href="#10-stats-and-logging" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add explicit counters for the new pass, for example:</li>
-<li><code>appearance_rows_considered</code></li>
-<li><code>appearance_valid_crops</code></li>
-<li><code>appearance_split_candidates</code></li>
-<li><code>broken_appearance_changepoint</code></li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Log how many trajectories were examined and how many were split.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Log the degrade mode when geometry or cache information is missing.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Keep logs concise enough for long jobs.</li>
-</ul>
-<h3 id="11-testing-checklist">11. Testing Checklist<a class="headerlink" href="#11-testing-checklist" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add <code>tests/test_post_processing_appearance_changepoints.py</code>.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Unit-test the shared signature helpers.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that stable synthetic crops do not trigger splits.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that an abrupt crop swap does trigger a split candidate.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that tiny or invalid crops are skipped cleanly.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that the pass is a no-op when disabled.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that the pass does not crash when video or cache inputs are unavailable.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Test that relinking receives the split result and not the original unsplit DataFrame.</li>
-</ul>
-<h3 id="12-documentation-checklist">12. Documentation Checklist<a class="headerlink" href="#12-documentation-checklist" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Update this plan if helper names or integration points change during implementation.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add a short developer note after implementation explaining:</li>
-<li>why appearance is split-only here</li>
-<li>why the pass runs before relinking</li>
-<li>which crop geometry fallbacks are used</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Update <code>docs/developer-guide/confidence-metrics.md</code> only if new persisted debug fields become user-visible.</li>
-</ul>
-<h3 id="13-exact-first-slice-to-implement">13. Exact First Slice To Implement<a class="headerlink" href="#13-exact-first-slice-to-implement" title="Permanent link">&para;</a></h3>
-<ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Create <code>appearance_signatures.py</code> with pHash and Hamming distance only.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Create <code>appearance_changepoints.py</code> with one public <code>split_trajectories_with_appearance_changepoints(...)</code> function.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Reuse the existing masked OBB crop behavior.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Use only pHash in the first pass.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Require ambiguity support or another anomaly cue before splitting.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Call the new function from <code>MainWindow._relink_final_pose_augmented_csv(...)</code> before <code>relink_trajectories_with_pose(...)</code>.</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Add one focused test file covering stable crops, abrupt swaps, and disabled-mode no-op behavior.</li>
-</ul>
-<p>If this first slice works well, then add dHash or histogram distance, stronger geometry persistence, and more detailed debug outputs in follow-up patches.</p>
-<hr />
-<h2 id="phase-3-hardening-forwardbackward-merge-resolution">Phase 3: Hardening Forward/Backward Merge Resolution<a class="headerlink" href="#phase-3-hardening-forwardbackward-merge-resolution" title="Permanent link">&para;</a></h2>
-<h3 id="objective_4">Objective<a class="headerlink" href="#objective_4" title="Permanent link">&para;</a></h3>
-<p>Make forward/backward consensus merging much stricter so ambiguous overlaps do not collapse into false continuity.</p>
-<h3 id="rationale_3">Rationale<a class="headerlink" href="#rationale_3" title="Permanent link">&para;</a></h3>
-<p>The current resolver already emphasizes agreement, but false merges can still survive if overlap evidence is sparse or fragmented.</p>
-<h3 id="new-gating-rules">New Gating Rules<a class="headerlink" href="#new-gating-rules" title="Permanent link">&para;</a></h3>
-<ul>
-<li>Require both absolute agreement count and agreement ratio.</li>
-<li>Require a minimum contiguous run of agreeing frames, not just scattered agreement.</li>
-<li>Require agreement near overlap boundaries when possible.</li>
-<li>Penalize alternating agree/disagree patterns.</li>
-<li>Reject merges if overlap occurs mostly inside a flagged ambiguity window.</li>
-<li>Prefer splitting when disagreement density is high, even if total agreement count passes threshold.</li>
-</ul>
-<h3 id="suggested-new-parameters">Suggested New Parameters<a class="headerlink" href="#suggested-new-parameters" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>MIN_OVERLAP_AGREEMENT_RATIO</code></li>
-<li><code>MIN_CONTIGUOUS_AGREEMENT_FRAMES</code></li>
-<li><code>MAX_DISAGREEMENT_SWITCHES</code></li>
-<li><code>MERGE_REJECT_IN_AMBIGUOUS_WINDOWS</code></li>
-</ul>
-<h3 id="primary-files_4">Primary Files<a class="headerlink" href="#primary-files_4" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>src/multi_tracker/core/post/processing.py</code></li>
-</ul>
-<h3 id="deliverable_4">Deliverable<a class="headerlink" href="#deliverable_4" title="Permanent link">&para;</a></h3>
-<p>A forward/backward merge stage that is less willing to average through ambiguous overlaps and more willing to preserve fragments.</p>
-<hr />
-<h2 id="phase-4-conservative-relinking-with-strong-reject-option">Phase 4: Conservative Relinking With Strong Reject Option<a class="headerlink" href="#phase-4-conservative-relinking-with-strong-reject-option" title="Permanent link">&para;</a></h2>
-<h3 id="objective_5">Objective<a class="headerlink" href="#objective_5" title="Permanent link">&para;</a></h3>
-<p>Keep relinking conservative and explicitly biased toward leaving fragments unmatched unless continuity is very clear.</p>
-<h3 id="rationale_4">Rationale<a class="headerlink" href="#rationale_4" title="Permanent link">&para;</a></h3>
-<p>If the splitter becomes stronger, relinking must not undo those gains by greedily reconnecting risky fragments.</p>
-<h3 id="changes_1">Changes<a class="headerlink" href="#changes_1" title="Permanent link">&para;</a></h3>
-<ul>
-<li>Keep motion and pose only; do not introduce appearance.</li>
-<li>Replace greedy pairing with a global matching step when feasible.</li>
-<li>Add a hard reject threshold so unmatched fragments remain unmatched by default.</li>
-<li>Prevent relinking across strong ambiguity windows unless the motion and pose score is exceptionally good.</li>
-<li>Penalize relinking across uncertainty spikes or low-confidence regions.</li>
-</ul>
-<h3 id="candidate-upgrade-path">Candidate Upgrade Path<a class="headerlink" href="#candidate-upgrade-path" title="Permanent link">&para;</a></h3>
-<ol>
-<li>Tighten current greedy relinking thresholds.</li>
-<li>Add explicit rejection criteria.</li>
-<li>Replace greedy chain-building with Hungarian or min-cost flow over fragment endpoints.</li>
-</ol>
-<h3 id="suggested-new-parameters_1">Suggested New Parameters<a class="headerlink" href="#suggested-new-parameters_1" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>RELINK_MAX_SCORE</code></li>
-<li><code>RELINK_REJECT_IN_AMBIGUOUS_WINDOWS</code></li>
-<li><code>RELINK_MAX_UNCERTAINTY</code></li>
-<li><code>RELINK_MIN_ASSIGNMENT_CONFIDENCE</code></li>
-</ul>
-<h3 id="primary-files_5">Primary Files<a class="headerlink" href="#primary-files_5" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>src/multi_tracker/core/post/processing.py</code></li>
-<li><code>src/multi_tracker/gui/main_window.py</code></li>
-</ul>
-<h3 id="deliverable_5">Deliverable<a class="headerlink" href="#deliverable_5" title="Permanent link">&para;</a></h3>
-<p>A relinking stage that preserves precision even if recall is modest.</p>
-<hr />
-<h2 id="phase-5-local-replay-around-suspect-events">Phase 5: Local Replay Around Suspect Events<a class="headerlink" href="#phase-5-local-replay-around-suspect-events" title="Permanent link">&para;</a></h2>
-<h3 id="objective_6">Objective<a class="headerlink" href="#objective_6" title="Permanent link">&para;</a></h3>
-<p>Use the detection cache to re-evaluate short windows around suspected merge points with stricter hypotheses.</p>
-<h3 id="rationale_5">Rationale<a class="headerlink" href="#rationale_5" title="Permanent link">&para;</a></h3>
-<p>False merges are often local mistakes. A short replay window can compare competing explanations without rerunning the entire video.</p>
-<h3 id="hypotheses-to-compare">Hypotheses To Compare<a class="headerlink" href="#hypotheses-to-compare" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>H0</code>: continuity is correct; keep one chain</li>
-<li><code>H1</code>: continuity failed; split into two fragments</li>
-</ul>
-<h3 id="scoring-terms">Scoring Terms<a class="headerlink" href="#scoring-terms" title="Permanent link">&para;</a></h3>
-<ul>
-<li>cumulative assignment cost</li>
-<li>uncertainty growth</li>
-<li>number of occlusion frames</li>
-<li>motion smoothness</li>
-<li>pose continuity if available</li>
-<li>penalty for passing through ambiguity windows as one identity</li>
-</ul>
-<h3 id="recommended-scope">Recommended Scope<a class="headerlink" href="#recommended-scope" title="Permanent link">&para;</a></h3>
-<ul>
-<li>Start with short windows around only the highest-confidence suspect events.</li>
-<li>Keep this phase optional behind a parameter flag.</li>
-</ul>
-<h3 id="primary-files_6">Primary Files<a class="headerlink" href="#primary-files_6" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>src/multi_tracker/core/post/processing.py</code></li>
-<li><code>src/multi_tracker/core/tracking/optimizer.py</code></li>
-<li>optional new helper module under <code>src/multi_tracker/core/post/</code></li>
-</ul>
-<h3 id="deliverable_6">Deliverable<a class="headerlink" href="#deliverable_6" title="Permanent link">&para;</a></h3>
-<p>A principled tie-breaker for difficult local cases without requiring full global replay.</p>
+<h3 id="phase-6-deliverable">Phase 6 Deliverable<a class="headerlink" href="#phase-6-deliverable" title="Permanent link">&para;</a></h3>
+<p>An optional last-layer veto for stubborn swap cases, without turning the tracker into an appearance-driven system.</p>
 <hr />
 <h2 id="recommended-implementation-order">Recommended Implementation Order<a class="headerlink" href="#recommended-implementation-order" title="Permanent link">&para;</a></h2>
 <ol>
-<li>Phase 0 instrumentation</li>
-<li>Phase 1 ambiguity windows</li>
-<li>Phase 2 multi-cue split scoring</li>
-<li>Phase 2A optional appearance change-point splitting</li>
-<li>Phase 3 stricter forward/backward merge gating</li>
-<li>Phase 4 conservative relinking upgrades</li>
-<li>Phase 5 optional local replay</li>
+<li>Phase 0: instrumentation</li>
+<li>Phase 1: interaction regime detection</li>
+<li>Phase 2: boundary-focused break logic</li>
+<li>Phase 3: interaction boundary anchoring</li>
+<li>Phase 4: conservative relinking hardening</li>
+<li>Phase 5: optional population guardrails</li>
+<li>Phase 6: optional appearance veto</li>
 </ol>
-<p>This order is intentional:</p>
+<p>This order is intentional.</p>
 <ul>
-<li>It improves observability first.</li>
-<li>It reduces false merges before relinking changes.</li>
-<li>It keeps higher-cost replay work until the core heuristics are validated.</li>
-</ul>
-<hr />
-<h2 id="proposed-parameter-surface">Proposed Parameter Surface<a class="headerlink" href="#proposed-parameter-surface" title="Permanent link">&para;</a></h2>
-<p>The following parameters should be added only as needed and kept hidden or advanced by default until stabilized:</p>
-<ul>
-<li><code>ENABLE_FALSE_MERGE_GUARD</code></li>
-<li><code>FALSE_MERGE_REQUIRE_MULTI_CUE</code></li>
-<li><code>FALSE_MERGE_BREAK_SCORE_THRESHOLD</code></li>
-<li><code>FALSE_MERGE_AMBIGUITY_DISTANCE_MULTIPLIER</code></li>
-<li><code>FALSE_MERGE_UNCERTAINTY_ZSCORE_THRESHOLD</code></li>
-<li><code>FALSE_MERGE_ASSIGNMENT_COST_ZSCORE_THRESHOLD</code></li>
-<li><code>ENABLE_APPEARANCE_CHANGEPOINT_SPLITTING</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_METHOD</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_THRESHOLD</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_WINDOW</code></li>
-<li><code>APPEARANCE_CHANGEPOINT_REQUIRE_AMBIGUITY</code></li>
-<li><code>MIN_OVERLAP_AGREEMENT_RATIO</code></li>
-<li><code>MIN_CONTIGUOUS_AGREEMENT_FRAMES</code></li>
-<li><code>MAX_DISAGREEMENT_SWITCHES</code></li>
-<li><code>RELINK_MAX_SCORE</code></li>
-<li><code>RELINK_REJECT_IN_AMBIGUOUS_WINDOWS</code></li>
-<li><code>ENABLE_LOCAL_REPLAY_ON_SUSPECT_WINDOWS</code></li>
-</ul>
-<p>The UI should expose only the minimal stable subset at first. The rest can stay in config or experimental settings until the behavior is well understood.</p>
-<hr />
-<h2 id="validation-plan">Validation Plan<a class="headerlink" href="#validation-plan" title="Permanent link">&para;</a></h2>
-<h2 id="test-assets">Test Assets<a class="headerlink" href="#test-assets" title="Permanent link">&para;</a></h2>
-<p>Build a small benchmark set of short clips with known failure modes:</p>
-<ul>
-<li>simple isolated motion</li>
-<li>crossings without contact</li>
-<li>crossings with contact</li>
-<li>short occlusion and re-emergence</li>
-<li>dense crowding</li>
-<li>turning events without identity swaps</li>
-</ul>
-<h3 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h3>
-<ul>
-<li>false merges per 1000 frames</li>
-<li>number of split points near manually marked swap events</li>
-<li>fragment count increase relative to baseline</li>
-<li>relink precision on benchmark fragments</li>
-<li>forward/backward consistency improvement</li>
-<li>regression rate on clean isolated clips</li>
-</ul>
-<h3 id="acceptance-criteria">Acceptance Criteria<a class="headerlink" href="#acceptance-criteria" title="Permanent link">&para;</a></h3>
-<ul>
-<li>false merges decrease substantially on crowded and crossing clips</li>
-<li>overfragmentation increase remains acceptable on clean clips</li>
-<li>relinking precision does not fall below the current conservative baseline</li>
-<li>no major regression in processing time for default settings</li>
-</ul>
-<hr />
-<h2 id="testing-and-documentation">Testing and Documentation<a class="headerlink" href="#testing-and-documentation" title="Permanent link">&para;</a></h2>
-<h3 id="new-tests">New Tests<a class="headerlink" href="#new-tests" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>tests/test_post_processing_false_merge_breaks.py</code></li>
-<li><code>tests/test_post_processing_appearance_changepoints.py</code></li>
-<li><code>tests/test_post_processing_merge_gating.py</code></li>
-<li><code>tests/test_tracklet_relinking_conservative.py</code></li>
-<li>optional replay-focused tests if Phase 5 lands</li>
-</ul>
-<h3 id="documentation-updates-after-implementation">Documentation Updates After Implementation<a class="headerlink" href="#documentation-updates-after-implementation" title="Permanent link">&para;</a></h3>
-<ul>
-<li>update <code>docs/developer-guide/confidence-metrics.md</code></li>
-<li>update <code>docs/developer-guide/tracking-optimization.md</code> if new metrics are surfaced in tuning</li>
-<li>add a developer note describing ambiguity windows and the split-first philosophy</li>
+<li>It first improves observability.</li>
+<li>Then it adds the missing biological state model.</li>
+<li>Then it changes split logic.</li>
+<li>Only after that does it touch relinking and appearance.</li>
 </ul>
 <hr />
 <h2 id="concrete-first-slice">Concrete First Slice<a class="headerlink" href="#concrete-first-slice" title="Permanent link">&para;</a></h2>
-<p>The most practical first implementation slice is:</p>
+<p>The first implementation should stay narrow and measurable.</p>
+<h3 id="first-slice-contents">First Slice Contents<a class="headerlink" href="#first-slice-contents" title="Permanent link">&para;</a></h3>
 <ol>
-<li>Log one or two new diagnostics from tracking:</li>
+<li>Persist two or three missing diagnostics:</li>
 <li>normalized assignment cost</li>
-<li>nearest-neighbor distance or crowding score</li>
-<li>Add ambiguity-window detection in post-processing.</li>
-<li>Add a multi-cue break helper that uses:</li>
-<li>velocity z-score</li>
-<li>assignment confidence or cost anomaly</li>
-<li>uncertainty spike</li>
-<li>ambiguity-window membership</li>
-<li>Optionally add a pHash-based change-point veto before relinking.</li>
-<li>Tighten merge gating to require agreement ratio plus contiguous agreement.</li>
-<li>Leave relinking conservative and mostly unchanged for the first pass.</li>
+<li>assignment margin if cheap</li>
+<li>nearest-neighbor distance</li>
+<li>Add row-level interaction regime detection:</li>
+<li><code>isolated</code></li>
+<li><code>tandem</code></li>
+<li><code>cluster</code></li>
+<li><code>recovery</code></li>
+<li>Add a boundary-focused split helper that:</li>
+<li>is conservative in <code>tandem</code></li>
+<li>suppresses cluster-interior motion splits</li>
+<li>is aggressive in <code>recovery</code></li>
+<li>Prevent general relinking from reconnecting fragments across a rejected recovery boundary.</li>
 </ol>
-<p>This slice should deliver the highest reduction in false merges with the lowest architectural disruption.</p>
+<h3 id="why-this-is-the-right-first-slice">Why This Is The Right First Slice<a class="headerlink" href="#why-this-is-the-right-first-slice" title="Permanent link">&para;</a></h3>
+<p>It directly addresses the real failure mode without committing the project to appearance pipelines, global re-identification, or an oversized architecture refactor.</p>
 <hr />
-<h2 id="open-questions">Open Questions<a class="headerlink" href="#open-questions" title="Permanent link">&para;</a></h2>
+<h2 id="suggested-parameter-surface">Suggested Parameter Surface<a class="headerlink" href="#suggested-parameter-surface" title="Permanent link">&para;</a></h2>
+<p>These should remain config-only or advanced at first.</p>
 <ul>
-<li>Should nearest-neighbor distance be computed during tracking or reconstructed later from the final CSV?</li>
-<li>Is assignment margin available cheaply enough to log without materially slowing tracking?</li>
-<li>Should ambiguity windows be computed at the frame level, the trajectory-row level, or both?</li>
-<li>Should local replay reuse existing optimizer code paths, or remain isolated in post-processing?</li>
-<li>Which advanced thresholds deserve UI exposure versus remaining config-only?</li>
+<li><code>ENABLE_SWAP_RESISTANT_CONTINUITY</code></li>
+<li><code>INTERACTION_TANDEM_MAX_DISTANCE_MULTIPLIER</code></li>
+<li><code>INTERACTION_TANDEM_MIN_DURATION_FRAMES</code></li>
+<li><code>INTERACTION_CLUSTER_MIN_SIZE</code></li>
+<li><code>INTERACTION_CLUSTER_MIN_DURATION_FRAMES</code></li>
+<li><code>INTERACTION_RECOVERY_WINDOW_FRAMES</code></li>
+<li><code>BOUNDARY_BREAK_SCORE_THRESHOLD</code></li>
+<li><code>BOUNDARY_BREAK_RECOVERY_MULTIPLIER</code></li>
+<li><code>BOUNDARY_BREAK_TANDEM_MULTIPLIER</code></li>
+<li><code>BOUNDARY_BREAK_CLUSTER_INTERIOR_SUPPRESS</code></li>
+<li><code>ENABLE_INTERACTION_BOUNDARY_ANCHORING</code></li>
+<li><code>INTERACTION_ANCHOR_LOOKBACK_FRAMES</code></li>
+<li><code>INTERACTION_ANCHOR_LOOKAHEAD_FRAMES</code></li>
+<li><code>INTERACTION_ANCHOR_MAX_COST</code></li>
+<li><code>RELINK_RESPECT_REJECTED_BOUNDARIES</code></li>
+<li><code>MAX_EXPECTED_ANIMALS</code></li>
+<li><code>POPULATION_CEILING_ENFORCE_MODE</code></li>
+<li><code>ENABLE_APPEARANCE_BOUNDARY_VETO</code></li>
 </ul>
 <hr />
-<h2 id="summary">Summary<a class="headerlink" href="#summary" title="Permanent link">&para;</a></h2>
-<p>The core strategy is to stop asking post-processing to prove identity and instead ask it to prove that continuity is still trustworthy. If continuity cannot be defended with motion, geometry, uncertainty, assignment quality, and optional pose continuity, the system should split.</p>
-<p>That bias is the right one for this repository because conservative relinking already exists, stronger re-identification can be added later, and false merges are more damaging than extra fragments.</p>
+<h2 id="testing-plan">Testing Plan<a class="headerlink" href="#testing-plan" title="Permanent link">&para;</a></h2>
+<h3 id="new-tests">New Tests<a class="headerlink" href="#new-tests" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>tests/test_post_processing_interaction_regimes.py</code></li>
+<li><code>tests/test_post_processing_boundary_breaks.py</code></li>
+<li><code>tests/test_post_processing_interaction_anchoring.py</code></li>
+<li><code>tests/test_tracklet_relinking_conservative.py</code></li>
+<li>optional later: <code>tests/test_post_processing_appearance_changepoints.py</code></li>
+</ul>
+<h3 id="required-test-cases">Required Test Cases<a class="headerlink" href="#required-test-cases" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Stable isolated motion does not fragment.</li>
+<li>Stable tandem walking does not split purely because of proximity.</li>
+<li>A two-animal tandem that separates cleanly preserves identity through the boundary.</li>
+<li>A dense cluster with visibility flicker does not create interior motion-based split spam.</li>
+<li>A bad post-cluster continuity chain is split at recovery.</li>
+<li>General relinking cannot rejoin fragments across an explicitly rejected recovery seam.</li>
+<li>Population guardrails warn or flag impossible active counts when configured.</li>
+</ol>
+<hr />
+<h2 id="validation-metrics">Validation Metrics<a class="headerlink" href="#validation-metrics" title="Permanent link">&para;</a></h2>
+<p>The previous plan measured false merges broadly. This plan should measure boundary performance specifically.</p>
+<p>Recommended metrics:</p>
+<ul>
+<li>ID swaps per 1000 frames</li>
+<li>swap rate at interaction exits</li>
+<li>fragmentation increase outside interaction windows</li>
+<li>fragmentation increase inside tandem windows</li>
+<li>relink precision on post-interaction fragments</li>
+<li>number of rejected recovery joins left unmatched</li>
+<li>regression rate on clean isolated clips</li>
+</ul>
+<p>The critical acceptance criterion is:</p>
+<p><strong>swap reduction must improve materially without causing tandem walking to explode into fragments.</strong></p>
+<hr />
+<h2 id="documentation-updates-after-implementation">Documentation Updates After Implementation<a class="headerlink" href="#documentation-updates-after-implementation" title="Permanent link">&para;</a></h2>
+<ul>
+<li>update <code>docs/developer-guide/confidence-metrics.md</code> for any new persisted diagnostics</li>
+<li>add a short developer note describing the four interaction regimes</li>
+<li>document that crowding is no longer treated as a single generic post-processing concept</li>
+<li>document that appearance, if enabled, is a recovery-boundary veto only</li>
+</ul>
+<hr />
+<h2 id="open-questions">Open Questions<a class="headerlink" href="#open-questions" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Should <code>InteractionRegime</code> remain pipeline-internal, or be persisted to the final CSV for downstream review?</li>
+<li>What is the cleanest heuristic boundary between <code>tandem</code> and small unstable two-animal <code>cluster</code> events?</li>
+<li>Is assignment margin cheap enough to log on all paths, or should it remain optional?</li>
+<li>Should interaction boundary anchoring live as a separate module, or as a tightly gated mode of post-processing relinking?</li>
+<li>For species with strong pose signals, should pose be mandatory at recovery boundaries when available?</li>
+</ol>
+<hr />
+<h2 id="final-recommendation">Final Recommendation<a class="headerlink" href="#final-recommendation" title="Permanent link">&para;</a></h2>
+<p>The repository does not need a broad "more splitting everywhere" strategy.</p>
+<p>It needs a <strong>swap-resistant continuity strategy</strong> built around the fact that close contact has multiple meanings:</p>
+<ul>
+<li>isolated motion is easy</li>
+<li>tandem motion is structured and often legitimate</li>
+<li>cluster interiors are ambiguous and should be treated cautiously</li>
+<li>exit boundaries are where identity must be re-earned</li>
+</ul>
+<p>That is the right abstraction for this codebase, for this species mix, and for the specific problem of occasional ID swaps in otherwise decent tracking.</p>
 
 
 

@@ -1818,6 +1818,39 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;get_density_region_flags
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" get_density_region_flags">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags--parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parameters
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags--returns" class="md-nav__link">
+    <span class="md-ellipsis">
+      Returns
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2964,6 +2997,39 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;get_density_region_flags
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" get_density_region_flags">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags--parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parameters
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags--returns" class="md-nav__link">
+    <span class="md-ellipsis">
+      Returns
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -4061,7 +4127,7 @@ which is a rotated rectangle with dimensions (major_axis × minor_axis).</p>
 
 
 <h4 id="multi_tracker.core.IndividualDatasetGenerator.process_frame" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">process_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ellipse_params</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">confidences</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">track_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trajectory_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">coord_scale_factor</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">process_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ellipse_params</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">confidences</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">track_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trajectory_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">coord_scale_factor</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">velocities</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.IndividualDatasetGenerator.process_frame" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -4085,7 +4151,10 @@ in the tracking pipeline - no additional filtering needed.</p>
     track_ids: Optional list of track IDs for each detection
     trajectory_ids: Optional list of trajectory IDs for each detection
     coord_scale_factor: Scale factor to convert detection coords to original resolution (1/resize_factor)
-    detection_ids: Optional list of unique Detection IDs for each detection</p>
+    detection_ids: Optional list of unique Detection IDs for each detection
+    heading_hints: Optional directed heading angles (radians) per detection from head-tail model.
+    directed_mask: Optional boolean mask (0/1) per detection indicating whether heading_hints is valid.
+    velocities: Optional (vx, vy) tuples per detection for motion-based fallback orientation.</p>
 <p>Returns:
     num_saved: Number of crops saved from this frame</p>
 
@@ -4097,7 +4166,7 @@ in the tracking pipeline - no additional filtering needed.</p>
 
 
 <h4 id="multi_tracker.core.IndividualDatasetGenerator.save_interpolated_crop" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">save_interpolated_crop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">w</span><span class="p">,</span> <span class="n">h</span><span class="p">,</span> <span class="n">theta</span><span class="p">,</span> <span class="n">traj_id</span><span class="p">,</span> <span class="n">interp_from</span><span class="p">,</span> <span class="n">interp_index</span><span class="p">,</span> <span class="n">interp_total</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">save_interpolated_crop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">w</span><span class="p">,</span> <span class="n">h</span><span class="p">,</span> <span class="n">theta</span><span class="p">,</span> <span class="n">traj_id</span><span class="p">,</span> <span class="n">interp_from</span><span class="p">,</span> <span class="n">interp_index</span><span class="p">,</span> <span class="n">interp_total</span><span class="p">,</span> <span class="n">heading_angle</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_directed</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.IndividualDatasetGenerator.save_interpolated_crop" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -4582,6 +4651,35 @@ identical to the original monolithic implementation.</p>
 
 </div>
 
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="multi_tracker.core.tracking.worker.get_density_region_flags" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">get_density_region_flags</span><span class="p">(</span><span class="n">meas</span><span class="p">,</span> <span class="n">regions</span><span class="p">,</span> <span class="n">frame_idx</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.tracking.worker.get_density_region_flags" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return a boolean mask indicating which detections fall inside a density region.</p>
+<h5 id="multi_tracker.core.tracking.worker.get_density_region_flags--parameters">Parameters<a class="headerlink" href="#multi_tracker.core.tracking.worker.get_density_region_flags--parameters" title="Permanent link">&para;</a></h5>
+<p>meas:
+    List/array of detection measurements.  Each element must be indexable
+    with <code>[0]</code> (x) and <code>[1]</code> (y).
+regions:
+    List of :class:<code>DensityRegion</code> to test against.
+frame_idx:
+    Current frame index.</p>
+<h5 id="multi_tracker.core.tracking.worker.get_density_region_flags--returns">Returns<a class="headerlink" href="#multi_tracker.core.tracking.worker.get_density_region_flags--returns" title="Permanent link">&para;</a></h5>
+<p>np.ndarray
+    Shape <code>(M,)</code> bool array — <code>True</code> for detections inside a flagged
+    region.</p>
+
+    </div>
+
+</div>
 
 
 
@@ -5727,7 +5825,7 @@ which is a rotated rectangle with dimensions (major_axis × minor_axis).</p>
 
 
 <h4 id="multi_tracker.core.identity.analysis.IndividualDatasetGenerator.process_frame" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">process_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ellipse_params</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">confidences</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">track_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trajectory_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">coord_scale_factor</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">process_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ellipse_params</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">confidences</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">track_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trajectory_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">coord_scale_factor</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">velocities</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.process_frame" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -5751,7 +5849,10 @@ in the tracking pipeline - no additional filtering needed.</p>
     track_ids: Optional list of track IDs for each detection
     trajectory_ids: Optional list of trajectory IDs for each detection
     coord_scale_factor: Scale factor to convert detection coords to original resolution (1/resize_factor)
-    detection_ids: Optional list of unique Detection IDs for each detection</p>
+    detection_ids: Optional list of unique Detection IDs for each detection
+    heading_hints: Optional directed heading angles (radians) per detection from head-tail model.
+    directed_mask: Optional boolean mask (0/1) per detection indicating whether heading_hints is valid.
+    velocities: Optional (vx, vy) tuples per detection for motion-based fallback orientation.</p>
 <p>Returns:
     num_saved: Number of crops saved from this frame</p>
 
@@ -5763,7 +5864,7 @@ in the tracking pipeline - no additional filtering needed.</p>
 
 
 <h4 id="multi_tracker.core.identity.analysis.IndividualDatasetGenerator.save_interpolated_crop" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">save_interpolated_crop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">w</span><span class="p">,</span> <span class="n">h</span><span class="p">,</span> <span class="n">theta</span><span class="p">,</span> <span class="n">traj_id</span><span class="p">,</span> <span class="n">interp_from</span><span class="p">,</span> <span class="n">interp_index</span><span class="p">,</span> <span class="n">interp_total</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">save_interpolated_crop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">w</span><span class="p">,</span> <span class="n">h</span><span class="p">,</span> <span class="n">theta</span><span class="p">,</span> <span class="n">traj_id</span><span class="p">,</span> <span class="n">interp_from</span><span class="p">,</span> <span class="n">interp_index</span><span class="p">,</span> <span class="n">interp_total</span><span class="p">,</span> <span class="n">heading_angle</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_directed</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.save_interpolated_crop" class="headerlink" title="Permanent link">&para;</a></h4>
 

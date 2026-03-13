@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-06-classkit-production-design/">
+        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-09-mat-afterhours-design/">
       
       
       
@@ -20,7 +20,7 @@
     
     
       
-        <title>ClassKit Production Design - Multi-Animal-Tracker Docs</title>
+        <title>MAT-afterhours: Interactive Identity Proofreading — Design Document - Multi-Animal-Tracker Docs</title>
       
     
     
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#classkit-production-design" class="md-skip">
+        <a href="#mat-afterhours-interactive-identity-proofreading-design-document" class="md-skip">
           Skip to content
         </a>
       
@@ -112,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              ClassKit Production Design
+              MAT-afterhours: Interactive Identity Proofreading — Design Document
             
           </span>
         </div>
@@ -1517,37 +1517,55 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#goal" class="md-nav__link">
+  <a href="#problem" class="md-nav__link">
     <span class="md-ellipsis">
-      Goal
+      Problem
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#1-data-model" class="md-nav__link">
+  <a href="#solution-overview" class="md-nav__link">
     <span class="md-ellipsis">
-      1. Data Model
+      Solution Overview
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="1. Data Model">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#component-1-confidence-density-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      Component 1: Confidence Density Map
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Component 1: Confidence Density Map">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#labelingscheme-new-dataclasses-in-classkitconfigschemaspy" class="md-nav__link">
+  <a href="#location" class="md-nav__link">
     <span class="md-ellipsis">
-      LabelingScheme — new dataclasses in classkit/config/schemas.py
+      Location
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#preset-factory-functions-new-classkitpresetspy" class="md-nav__link">
+  <a href="#algorithm" class="md-nav__link">
     <span class="md-ellipsis">
-      Preset factory functions — new classkit/presets.py
+      Algorithm
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#config-keys-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      Config keys (new)
     </span>
   </a>
   
@@ -1559,19 +1577,28 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-labeling-ux-factor-stepper" class="md-nav__link">
+  <a href="#component-2-density-aware-assignment" class="md-nav__link">
     <span class="md-ellipsis">
-      2. Labeling UX — Factor Stepper
+      Component 2: Density-Aware Assignment
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="2. Labeling UX — Factor Stepper">
+    <nav class="md-nav" aria-label="Component 2: Density-Aware Assignment">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#new-widget-classkitguiwidgetsfactor_stepperpy-factorstepperwidget" class="md-nav__link">
+  <a href="#insertion-point" class="md-nav__link">
     <span class="md-ellipsis">
-      New widget: classkit/gui/widgets/factor_stepper.py — FactorStepperWidget
+      Insertion point
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      Mechanism
     </span>
   </a>
   
@@ -1583,19 +1610,55 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-classkit-training-surface" class="md-nav__link">
+  <a href="#component-3-mat-afterhours-application" class="md-nav__link">
     <span class="md-ellipsis">
-      3. ClassKit Training Surface
+      Component 3: MAT-afterhours Application
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="3. ClassKit Training Surface">
+    <nav class="md-nav" aria-label="Component 3: MAT-afterhours Application">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#replaces-trainingdialog-in-classkitguidialogspy" class="md-nav__link">
+  <a href="#application-structure" class="md-nav__link">
     <span class="md-ellipsis">
-      Replaces TrainingDialog in classkit/gui/dialogs.py
+      Application structure
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ui-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      UI Layout
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#swap-suspicion-scoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      Swap Suspicion Scoring
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#review-workflow-swap-review-tab" class="md-nav__link">
+    <span class="md-ellipsis">
+      Review Workflow (Swap Review tab)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#session-persistence" class="md-nav__link">
+    <span class="md-ellipsis">
+      Session Persistence
     </span>
   </a>
   
@@ -1607,102 +1670,9 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#4-model-storage" class="md-nav__link">
+  <a href="#architecture-boundaries" class="md-nav__link">
     <span class="md-ellipsis">
-      4. Model Storage
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="4. Model Storage">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#new-trainingrole-enum-values-in-trainingcontractspy" class="md-nav__link">
-    <span class="md-ellipsis">
-      New TrainingRole enum values in training/contracts.py
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#storage-layout" class="md-nav__link">
-    <span class="md-ellipsis">
-      Storage layout
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#model_registryjson-additions" class="md-nav__link">
-    <span class="md-ellipsis">
-      model_registry.json additions
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-mat-migration" class="md-nav__link">
-    <span class="md-ellipsis">
-      5. MAT Migration
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="5. MAT Migration">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#trainyolodialog-changes" class="md-nav__link">
-    <span class="md-ellipsis">
-      TrainYoloDialog changes
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#trainingcontractspy" class="md-nav__link">
-    <span class="md-ellipsis">
-      training/contracts.py
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#trainingrunnerpy" class="md-nav__link">
-    <span class="md-ellipsis">
-      training/runner.py
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mat-identity-pipeline" class="md-nav__link">
-    <span class="md-ellipsis">
-      MAT identity pipeline
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#out-of-scope" class="md-nav__link">
-    <span class="md-ellipsis">
-      Out of Scope
+      Architecture Boundaries
     </span>
   </a>
   
@@ -1723,7 +1693,7 @@
                   
 
   
-    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/plans/2026-03-06-classkit-production-design.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/plans/2026-03-09-mat-afterhours-design.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1731,184 +1701,313 @@
   
 
 
-<h1 id="classkit-production-design">ClassKit Production Design<a class="headerlink" href="#classkit-production-design" title="Permanent link">&para;</a></h1>
-<p><strong>Date:</strong> 2026-03-06
-<strong>Branch:</strong> <code>mat-pose-integration</code>
-<strong>Status:</strong> Approved — ready for implementation planning</p>
+<h1 id="mat-afterhours-interactive-identity-proofreading-design-document">MAT-afterhours: Interactive Identity Proofreading — Design Document<a class="headerlink" href="#mat-afterhours-interactive-identity-proofreading-design-document" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-03-09
+<strong>Status:</strong> Approved
+<strong>Branch:</strong> mat-pose-integration</p>
 <hr />
-<h2 id="goal">Goal<a class="headerlink" href="#goal" title="Permanent link">&para;</a></h2>
-<p>Bring ClassKit to production-ready status as the sole animal labeling and classification training tool. This covers multi-factor labeling, preset workflows, a full training surface (replacing MAT's classification training), and publishing trained models to the shared <code>models/</code> registry for MAT discovery.</p>
-<p>Active learning (<code>classkit/al/</code>) is explicitly out of scope — stretch goal for a future iteration.</p>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>Identity swaps occur when social animals cluster together. The tracker already employs conservative merging, velocity z-score breaks, pose quality gating, and DetectionID confirmation — but swaps still occur in high-density, low-confidence regions. The key failure modes are:</p>
+<ul>
+<li>Animals coming close and exchanging identity post-separation</li>
+<li>Detection flickering in crowds causing jumps between animals</li>
+<li>No structured way for users to find, review, or correct suspected swaps</li>
+</ul>
 <hr />
-<h2 id="1-data-model">1. Data Model<a class="headerlink" href="#1-data-model" title="Permanent link">&para;</a></h2>
-<h3 id="labelingscheme-new-dataclasses-in-classkitconfigschemaspy"><code>LabelingScheme</code> — new dataclasses in <code>classkit/config/schemas.py</code><a class="headerlink" href="#labelingscheme-new-dataclasses-in-classkitconfigschemaspy" title="Permanent link">&para;</a></h3>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nd">@dataclass</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">Factor</span><span class="p">:</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>               <span class="c1"># e.g. &quot;tag_1&quot;, &quot;direction&quot;</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">labels</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>       <span class="c1"># ordered list, e.g. [&quot;red&quot;,&quot;blue&quot;,&quot;green&quot;,&quot;yellow&quot;,&quot;white&quot;]</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">shortcut_keys</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">=</span> <span class="n">field</span><span class="p">(</span><span class="n">default_factory</span><span class="o">=</span><span class="nb">list</span><span class="p">)</span>  <span class="c1"># optional key hints</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="nd">@dataclass</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="k">class</span><span class="w"> </span><span class="nc">LabelingScheme</span><span class="p">:</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>               <span class="c1"># e.g. &quot;color_tags_2factor&quot;</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">factors</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">Factor</span><span class="p">]</span>   <span class="c1"># ordered; single factor = flat classification</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">training_modes</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>  <span class="c1"># subset of [&quot;flat_tiny&quot;,&quot;flat_yolo&quot;,&quot;multihead_tiny&quot;,&quot;multihead_yolo&quot;]</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">description</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;&quot;</span>
-</span></code></pre></div>
-<p><strong>Composite label encoding:</strong> factor values joined by pipe — <code>"red|blue"</code>. Reversible, human-readable, valid as a YOLO class folder name.</p>
-<p><strong><code>ProjectConfig</code></strong> gains one new field:
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">scheme</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">LabelingScheme</span><span class="p">]</span> <span class="o">=</span> <span class="kc">None</span>
-</span></code></pre></div>
-When <code>None</code>, ClassKit behaves exactly as today (free-form flat label list, no stepper).</p>
-<h3 id="preset-factory-functions-new-classkitpresetspy">Preset factory functions — new <code>classkit/presets.py</code><a class="headerlink" href="#preset-factory-functions-new-classkitpresetspy" title="Permanent link">&para;</a></h3>
+<h2 id="solution-overview">Solution Overview<a class="headerlink" href="#solution-overview" title="Permanent link">&para;</a></h2>
+<p>Three coordinated components:</p>
+<ol>
+<li><strong>Confidence density map</strong> — computed during pre-tracking detection, characterises where tracking is hard</li>
+<li><strong>Density-aware assignment</strong> — forward and backward passes use the density map to prefer fragmentation over risky identity maintenance in ambiguous zones</li>
+<li><strong>MAT-afterhours</strong> — a standalone Qt application (fifth app in the suite) for interactive post-hoc proofreading of swap events</li>
+</ol>
+<hr />
+<h2 id="component-1-confidence-density-map">Component 1: Confidence Density Map<a class="headerlink" href="#component-1-confidence-density-map" title="Permanent link">&para;</a></h2>
+<h3 id="location">Location<a class="headerlink" href="#location" title="Permanent link">&para;</a></h3>
+<p><code>src/multi_tracker/afterhours/core/confidence_density.py</code>
+Called from the pre-tracking detection phase (made default for all runs).</p>
+<h3 id="algorithm">Algorithm<a class="headerlink" href="#algorithm" title="Permanent link">&para;</a></h3>
+<p><strong>Accumulation (per frame, during pre-detection):</strong></p>
+<p>For each detection at position <code>(x, y)</code> with confidence <code>c</code>:
+- Place a 2D Gaussian at <code>(x, y)</code> with sigma proportional to <code>bbox_diagonal</code> (body-size-scaled)
+- Gaussian is normalised; amplitude = <code>(1 - c)</code>
+- Low confidence → strong signal; high confidence → near-zero; empty space → zero
+- Accumulated into a per-frame float32 density frame stored in the detection cache <code>.npz</code></p>
+<p><strong>Post-detection processing:</strong></p>
+<ol>
+<li>Load all per-frame density frames from cache</li>
+<li>Apply temporal Gaussian smoothing across frames</li>
+<li>Binarize at a configurable threshold</li>
+<li>Run 3D connected-components (<code>scipy.ndimage.label</code>) on the <code>(H, W, T)</code> volume</li>
+<li>Extract each component's bounding box (pixel coords + frame range) → <code>Region-N</code></li>
+<li>Tag each detection in cache with its region label (<code>open_field</code> or <code>region-N</code>)</li>
+<li>Write <code>&lt;name&gt;_confidence_regions.json</code></li>
+</ol>
+<p><strong>Diagnostic video export (<code>&lt;name&gt;_confidence_map.mp4</code>):</strong></p>
+<p>Generated automatically as part of the standard MAT post-processing artifact set:
+- Original video frames with semi-transparent red heatmap overlay on low-confidence zones
+- Animal IDs drawn in warning colour inside flagged regions
+- Region labels (<code>Region-1 [frames 240–310]</code>) annotated in frame corners
+- Exported at original resolution</p>
+<h3 id="config-keys-new">Config keys (new)<a class="headerlink" href="#config-keys-new" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
-<th>Preset</th>
-<th>Factors</th>
-<th>Classes</th>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>head_tail_preset()</code></td>
-<td>1</td>
-<td>left / right / up / down</td>
+<td><code>density_gaussian_sigma_scale</code></td>
+<td>1.0</td>
+<td>Gaussian sigma as multiple of bbox_diagonal</td>
 </tr>
 <tr>
-<td><code>color_tag_preset(n_factors, colors)</code></td>
-<td>N</td>
-<td>M colors each → M^N composites</td>
+<td><code>density_temporal_sigma</code></td>
+<td>2.0</td>
+<td>Frames for temporal Gaussian smoothing</td>
 </tr>
 <tr>
-<td><code>age_preset(extra_classes=[])</code></td>
-<td>1</td>
-<td>young / old + extras</td>
+<td><code>density_binarize_threshold</code></td>
+<td>0.3</td>
+<td>Threshold after normalisation</td>
 </tr>
 </tbody>
 </table>
-<p>Presets are pure data — they return a <code>LabelingScheme</code>. The <code>NewProjectDialog</code> gains a preset selector that populates the scheme, with a "Custom" option for free-form.</p>
 <hr />
-<h2 id="2-labeling-ux-factor-stepper">2. Labeling UX — Factor Stepper<a class="headerlink" href="#2-labeling-ux-factor-stepper" title="Permanent link">&para;</a></h2>
-<h3 id="new-widget-classkitguiwidgetsfactor_stepperpy-factorstepperwidget">New widget: <code>classkit/gui/widgets/factor_stepper.py</code> — <code>FactorStepperWidget</code><a class="headerlink" href="#new-widget-classkitguiwidgetsfactor_stepperpy-factorstepperwidget" title="Permanent link">&para;</a></h3>
-<p>Replaces the flat label button row when a multi-factor scheme is active.</p>
-<p><strong>Layout per step:</strong>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Factor 1 of 2: tag_1
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>[Red]  [Blue]  [Green]  [Yellow]  [White]
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>&lt;Back    Skip&gt;
-</span></code></pre></div></p>
-<p><strong>Interaction flow:</strong>
-1. On image load, stepper resets to factor 1
-2. Clicking a label (or pressing its shortcut key) commits that factor and auto-advances
-3. After the final factor, composite key is assembled (<code>"red|blue"</code>) and emitted via signal
-4. <code>MainWindow._set_label_for_index()</code> receives the composite string — no changes needed there
-5. Back clears the last factor choice and steps back one
-6. Skip leaves the image unlabeled and emits a skip signal</p>
-<p><strong>Shortcut binding:</strong>
-- <code>MainWindow.setup_label_shortcuts()</code> is extended to handle multi-factor mode
-- In multi-factor mode, keys 1–9 map to the active factor's labels and rebind on each factor advance
-- <code>Factor.shortcut_keys</code> provides explicit key overrides per label</p>
-<p><strong>UMAP / explorer coloring:</strong>
-- Default: color by full composite label (hashed to consistent color per combination)
-- Toggle: color by factor 1 only (useful for large Cartesian products, e.g. 125 classes)</p>
-<p><strong>History strip / undo:</strong>
-- Unchanged — composite label is stored as a single string; undo pops the whole composite assignment</p>
+<h2 id="component-2-density-aware-assignment">Component 2: Density-Aware Assignment<a class="headerlink" href="#component-2-density-aware-assignment" title="Permanent link">&para;</a></h2>
+<h3 id="insertion-point">Insertion point<a class="headerlink" href="#insertion-point" title="Permanent link">&para;</a></h3>
+<p>Pre-tracking detection is made the <strong>default</strong> for all runs (currently default only for batched runs). This ensures the density map is always available before both the forward and backward tracking passes.</p>
+<h3 id="mechanism">Mechanism<a class="headerlink" href="#mechanism" title="Permanent link">&para;</a></h3>
+<p>During assignment in flagged regions (<code>region-N</code> detections):
+- <strong>Tighter max assignment distance</strong> — search radius reduced to discourage long-distance matches
+- <strong>Lower acceptance threshold</strong> — prefer "no assignment → new fragment" over risky match
+- <strong>Occlusion preference</strong> — in flagged zones, prefer marking as occluded over forcing an assignment through a crowd</p>
+<p>This shifts the outcome in hard zones from <em>noisy identity maintenance</em> to <em>clean fragments awaiting proofreading</em> — exactly what MAT-afterhours is designed to handle.</p>
 <hr />
-<h2 id="3-classkit-training-surface">3. ClassKit Training Surface<a class="headerlink" href="#3-classkit-training-surface" title="Permanent link">&para;</a></h2>
-<h3 id="replaces-trainingdialog-in-classkitguidialogspy">Replaces <code>TrainingDialog</code> in <code>classkit/gui/dialogs.py</code><a class="headerlink" href="#replaces-trainingdialog-in-classkitguidialogspy" title="Permanent link">&para;</a></h3>
-<p>New <code>ClassKitTrainingDialog</code> modeled on MAT's <code>TrainYoloDialog</code> — live log panel, progress bar, cancel, publish action.</p>
-<p><strong>Dialog sections:</strong>
-1. <strong>Scheme summary</strong> — displays scheme name and total class count (computed from factors)
-2. <strong>Training mode selector</strong> — radio buttons, only valid modes shown for the active scheme:
-   - Flat – Tiny CNN
-   - Flat – YOLO-classify
-   - Multi-head Tiny (one tiny CNN per factor)
-   - Multi-head YOLO (one YOLO-classify per factor)
-3. <strong>Hyperparameters</strong> — device, base model (for YOLO), epochs, batch, LR, val fraction
-4. <strong>Live log panel</strong> — scrolling <code>QPlainTextEdit</code>, same pattern as <code>TrainYoloDialog</code>
-5. <strong>Progress bar</strong>
-6. <strong>Action buttons</strong> — Start / Cancel / Publish (enabled after successful run)</p>
-<p><strong>Training mode availability rules:</strong>
-- Single factor: all four modes available
-- Multiple factors, total composites ≤ 100: all modes available
-- Multiple factors, total composites &gt; 100: flat YOLO recommended; flat tiny available; multi-head always available</p>
-<p><strong>Worker thread:</strong>
-- Mirrors <code>RoleTrainingWorker</code> from MAT
-- Flat modes: calls <code>training/runner.py run_training()</code> once with the full composite class export
-- Multi-head modes: calls <code>run_training()</code> once per factor, each with a single-factor derived dataset</p>
-<p><strong>Dataset preparation:</strong>
-- Reuses <code>classkit/export/ultralytics_classify.py export_ultralytics_classify()</code> before each training run
-- Multi-head derives N single-factor datasets by projecting composite labels to the Nth factor</p>
-<p><strong>Publish action (active after successful run):</strong>
-- Calls <code>training/model_publish.py publish_trained_model()</code> with new role values
-- Flat models: single call per training run
-- Multi-head models: one call per factor, each with <code>factor_index</code> in metadata</p>
-<p><strong><code>MainWindow.train_classifier()</code></strong> updated to open <code>ClassKitTrainingDialog</code> instead of <code>TrainingDialog</code>.</p>
-<hr />
-<h2 id="4-model-storage">4. Model Storage<a class="headerlink" href="#4-model-storage" title="Permanent link">&para;</a></h2>
-<h3 id="new-trainingrole-enum-values-in-trainingcontractspy">New <code>TrainingRole</code> enum values in <code>training/contracts.py</code><a class="headerlink" href="#new-trainingrole-enum-values-in-trainingcontractspy" title="Permanent link">&para;</a></h3>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>CLASSIFY_FLAT_YOLO
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>CLASSIFY_FLAT_TINY
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>CLASSIFY_MULTIHEAD_YOLO
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>CLASSIFY_MULTIHEAD_TINY
+<h2 id="component-3-mat-afterhours-application">Component 3: MAT-afterhours Application<a class="headerlink" href="#component-3-mat-afterhours-application" title="Permanent link">&para;</a></h2>
+<h3 id="application-structure">Application structure<a class="headerlink" href="#application-structure" title="Permanent link">&para;</a></h3>
+<p>Follows the ClassKit pattern exactly:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>src/multi_tracker/
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>└── afterhours/
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    ├── __init__.py
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    ├── app.py                          # main() entry point
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    ├── core/
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    │   ├── __init__.py
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    │   ├── confidence_density.py       # Density map + diagnostic video
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    │   ├── swap_scorer.py              # Suspicion scoring engine
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    │   └── correction_writer.py        # Edits _proofread.csv atomically
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    └── gui/
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        ├── __init__.py
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        ├── main_window.py              # MainWindow(QMainWindow)
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        ├── widgets/
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        │   ├── suspicion_queue.py      # Ranked queue panel
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        │   ├── video_player.py         # Video + trajectory overlay
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        │   └── timeline_panel.py       # Per-animal horizontal timeline
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        └── dialogs/
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>            ├── frame_picker.py         # Step 1: pick split frame
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>            └── identity_assignment.py  # Step 2: before/after thumbnail reassignment
 </span></code></pre></div>
-<h3 id="storage-layout">Storage layout<a class="headerlink" href="#storage-layout" title="Permanent link">&para;</a></h3>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>models/
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>  YOLO-classify/
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    orientation/                    # existing head-tail (unchanged)
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    &lt;scheme_name&gt;/                  # flat YOLO ClassKit models
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>      20260306-143022_n_&lt;species&gt;_&lt;tag&gt;.pt
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>  tiny-classify/
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    &lt;scheme_name&gt;/                  # flat tiny CNN ClassKit models
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>      20260306-143022_tiny_&lt;species&gt;_&lt;tag&gt;.pth
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>  YOLO-classify/multihead/
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>    &lt;scheme_name&gt;/
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>      factor_0_&lt;factor_name&gt;.pt     # one file per factor
-</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>      factor_1_&lt;factor_name&gt;.pt
-</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>  tiny-classify/multihead/
-</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a>    &lt;scheme_name&gt;/
-</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>      factor_0_&lt;factor_name&gt;.pth
-</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a>      factor_1_&lt;factor_name&gt;.pth
-</span></code></pre></div>
-<h3 id="model_registryjson-additions"><code>model_registry.json</code> additions<a class="headerlink" href="#model_registryjson-additions" title="Permanent link">&para;</a></h3>
-<p>All ClassKit-published entries include:
-<div class="language-json highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;task_family&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;classify&quot;</span><span class="p">,</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="nt">&quot;usage_role&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;classify_flat_yolo&quot;</span><span class="p">,</span><span class="w">   </span><span class="c1">// or multihead variant</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="nt">&quot;scheme_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;color_tags_2factor&quot;</span><span class="p">,</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span><span class="nt">&quot;factor_index&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">                 </span><span class="c1">// or 0, 1, 2 for multi-head</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span><span class="nt">&quot;factor_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span><span class="w">                  </span><span class="c1">// or &quot;tag_1&quot;, &quot;tag_2&quot;</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span><span class="nt">&quot;factors&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">]</span><span class="w">                      </span><span class="c1">// full Factor list for multi-head grouping</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="p">}</span>
+<p><strong>Entry points (pyproject.toml):</strong>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">mat-afterhours</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;multi_tracker.afterhours.app:main&quot;</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">afterhours</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;multi_tracker.afterhours.app:main&quot;</span>
 </span></code></pre></div></p>
-<p>MAT discovers these at startup via the existing <code>load_model_registry()</code> scan — no MAT startup changes needed.</p>
+<p><strong>MAT integration:</strong>
+- Post-processing tab gets an "Open in MAT-afterhours" button
+- After a full tracking run, a <code>QMessageBox</code> prompts "Open in MAT-afterhours?"</p>
 <hr />
-<h2 id="5-mat-migration">5. MAT Migration<a class="headerlink" href="#5-mat-migration" title="Permanent link">&para;</a></h2>
-<h3 id="trainyolodialog-changes"><code>TrainYoloDialog</code> changes<a class="headerlink" href="#trainyolodialog-changes" title="Permanent link">&para;</a></h3>
-<ul>
-<li>Remove <code>HEADTAIL_TINY</code> and <code>HEADTAIL_YOLO</code> from the roles panel</li>
-<li>Add info banner: <em>"Classification training has moved to ClassKit labeler (<code>classkit-labeler</code>)"</em> with optional launch button</li>
-<li>Remove <code>_choose_headtail_override</code>, <code>_set_headtail_source</code>, and the head-tail override file picker</li>
-<li>Remove classify branches from <code>_base_model_for_role()</code> and <code>_build_role_datasets()</code></li>
-</ul>
-<h3 id="trainingcontractspy"><code>training/contracts.py</code><a class="headerlink" href="#trainingcontractspy" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>HEADTAIL_TINY</code> and <code>HEADTAIL_YOLO</code> kept in enum (backwards compatibility for existing registry entries)</li>
-<li>Marked deprecated in docstring — not exposed in any dialog</li>
-</ul>
-<h3 id="trainingrunnerpy"><code>training/runner.py</code><a class="headerlink" href="#trainingrunnerpy" title="Permanent link">&para;</a></h3>
-<ul>
-<li><code>_train_tiny_headtail()</code> stays (needed to re-run existing published tiny models)</li>
-<li><code>_iter_classify_samples()</code> generalized to accept arbitrary class folder names (not hardcoded <code>head_left</code>/<code>head_right</code>) so ClassKit's flat tiny training can reuse it</li>
-</ul>
-<h3 id="mat-identity-pipeline">MAT identity pipeline<a class="headerlink" href="#mat-identity-pipeline" title="Permanent link">&para;</a></h3>
-<p>No changes in this iteration. MAT auto-discovers ClassKit-published models from <code>model_registry.json</code>. Integration of multi-head bundles into the tracking pipeline is a follow-up task once models exist in practice.</p>
+<h3 id="ui-layout">UI Layout<a class="headerlink" href="#ui-layout" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>┌──────────────────────────────────────────────────────────────────────┐
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>│  MAT-afterhours  |  [◀ prev]  fly_run_01  (2/8)  [next ▶]  [⊕ load] │
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>├──────────────────────────────────────────────────────────────────────┤
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>│  [Swap Review] [Merge Review] [Manual Edit] [...]                    │
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>├──────────────────┬───────────────────────────────────────────────────┤
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>│  SUSPICION QUEUE │  VIDEO PLAYER + OVERLAY                          │
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>│                  │                                                   │
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>│  ● 0.91  Cr+Hd   │  [video frame with trajectory overlays]          │
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>│    T214–T231     │  colored dots + ID labels                        │
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>│    tracks 2 &amp; 5  │  flagged tracks: pulsing highlight ring          │
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>│    open_field    │  low-conf zones: semi-transparent red tint        │
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>│                  │                                                   │
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>│  ● 0.78  Pr+Hd   │  [scrub bar]  ◀ ▶  frame 214 / 3200             │
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>│    T445–T461     │                                                   │
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>│    tracks 1 &amp; 3  ├───────────────────────────────────────────────────┤
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>│    region-2      │  TIMELINE PANEL                                   │
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>│                  │                                                   │
+</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>│  ○ 0.61  Pr      │  track 2  ━━━━━━╋━━━━━━━━━━━━━━━━━━━━━━━━━      │
+</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>│    T892–T910     │  track 5  ━━━━━━╋━━━━━━━━━━━━━━━━━━━━━━━━━      │
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>│    tracks 4 &amp; 2  │           ↑ flagged zone highlighted             │
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>│                  │  [all tracks, click to split, drag to reassign]  │
+</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>│  [show more ↓]   │                                                   │
+</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>└──────────────────┴───────────────────────────────────────────────────┘
+</span></code></pre></div>
+<p><strong>Top bar — Session navigator:</strong>
+- <code>[⊕ load]</code>: pick single video+CSV pair, or load a <code>.txt</code> file (one video path per line; matching CSV auto-discovered)
+- <code>[◀ prev]</code> / <code>[next ▶]</code>: step through loaded list
+- Session counter <code>(2/8)</code> shows position
+- Unsaved changes prompt on navigation</p>
+<p><strong>Content tabs (extensible):</strong>
+- <code>Swap Review</code> — ranked queue + frame-picker + identity assignment (v1)
+- <code>Merge Review</code> — future: review over-split fragments
+- <code>Manual Edit</code> — future: free-form editing without a queue
+- <code>[...]</code> — additional tabs without window restructuring</p>
+<p>Video player and timeline panel are <strong>shared across all tabs</strong>.</p>
 <hr />
-<h2 id="out-of-scope">Out of Scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h2>
+<h3 id="swap-suspicion-scoring">Swap Suspicion Scoring<a class="headerlink" href="#swap-suspicion-scoring" title="Permanent link">&para;</a></h3>
+<p><strong><code>SwapSuspicionEvent</code> dataclass:</strong>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nd">@dataclass</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">SwapSuspicionEvent</span><span class="p">:</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">track_a</span><span class="p">:</span> <span class="nb">int</span>           <span class="c1"># TrajectoryID</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">track_b</span><span class="p">:</span> <span class="nb">int</span>           <span class="c1"># TrajectoryID (None for single-track anomaly)</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">frame_peak</span><span class="p">:</span> <span class="nb">int</span>        <span class="c1"># Frame of highest suspicion</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">frame_range</span><span class="p">:</span> <span class="nb">tuple</span>     <span class="c1"># (start, end) for clip extraction</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="n">score</span><span class="p">:</span> <span class="nb">float</span>           <span class="c1"># 0–1</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="n">signals</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>     <span class="c1"># signals fired: &#39;Cr&#39;, &#39;Pr&#39;, &#39;Hd&#39;, &#39;Pq&#39;</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="n">region_label</span><span class="p">:</span> <span class="nb">str</span>      <span class="c1"># &#39;open_field&#39; or &#39;region-N&#39;</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="n">region_boundary</span><span class="p">:</span> <span class="nb">bool</span>  <span class="c1"># True if event is at region edge</span>
+</span></code></pre></div></p>
+<p><strong>Signals:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Signal</th>
+<th>Abbrev</th>
+<th>Description</th>
+<th>Weight</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Crossing / position exchange</td>
+<td><code>Cr</code></td>
+<td>Tracks swap relative position within T frames</td>
+<td>High</td>
+</tr>
+<tr>
+<td>Close approach + separation</td>
+<td><code>Pr</code></td>
+<td>Tracks come within D_close px then diverge, no exchange required</td>
+<td>~40–50% of Cr</td>
+</tr>
+<tr>
+<td>Heading discontinuity</td>
+<td><code>Hd</code></td>
+<td>Sudden heading reversal (&gt;120°) coinciding with nearby track</td>
+<td>Medium</td>
+</tr>
+<tr>
+<td>Pose quality drop</td>
+<td><code>Pq</code></td>
+<td>PoseQualityScore z-score drop near crossing event; gated on pose availability</td>
+<td>Amplifier</td>
+</tr>
+<tr>
+<td>Confidence region discount</td>
+<td>—</td>
+<td>Event inside low-confidence zone → score reduced</td>
+<td>Negative</td>
+</tr>
+<tr>
+<td>Region boundary bonus</td>
+<td>—</td>
+<td>Event at zone boundary (entering/leaving crowd) → score increased</td>
+<td>Positive</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Combined score:</strong>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>score = w1a * crossing_signal
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>      + w1b * proximity_signal
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>      + w2  * heading_discontinuity
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>      + w3  * pose_quality_drop        # 0 if no pose
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>      - w4  * confidence_region_discount
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>      + w5  * region_boundary_bonus
+</span></code></pre></div></p>
+<p>Normalised 0–1. Events below ~0.15 hidden by default, surfaced via "Show more."</p>
+<p><strong>Queue behaviour:</strong>
+- Scored events shown highest-first (most obvious swaps)
+- "Show more" button at bottom expands with next threshold tier
+- User works until satisfied and stops — no forced completion
+- Scoring runs in background <code>QThread</code>, queue populates progressively</p>
+<hr />
+<h3 id="review-workflow-swap-review-tab">Review Workflow (Swap Review tab)<a class="headerlink" href="#review-workflow-swap-review-tab" title="Permanent link">&para;</a></h3>
+<p><strong>Per-event flow:</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Click queue card
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>      ↓
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>Video seeks to frame_peak; flagged tracks highlighted
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>      ↓
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>User: [Review]  [Skip]  [Mark OK]
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>      ↓ Review
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>FramePickerDialog
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>  Cropped clip of the two tracks ±margin, in-memory frame cache
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>  User scrubs, clicks exact split frame N
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>      ↓
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>IdentityAssignmentDialog
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>  Before: thumbnail grid of frames N-T ... N
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>  After:  thumbnail grid of frames N ... N+T
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>  User clicks to assign &quot;track A before = track B after&quot;
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>      ↓
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>correction_writer.py:
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>  1. Break track A at frame N → two new TrajectoryID segments
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>  2. Break track B at frame N → two new TrajectoryID segments
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>  3. Swap post-split segment IDs per user assignment
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>  4. Re-interpolate any gaps created
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>  5. Atomic write (_proofread.csv.tmp → rename)
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a>      ↓
+</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>Queue card checkmarked; timeline panel refreshes
+</span></code></pre></div>
+<p><strong>Skip:</strong> card stays in queue unresolved
+<strong>Mark OK:</strong> written to <code>_proofread_dismissed.json</code>, never re-surfaced</p>
+<p><strong>Manual timeline edits:</strong>
+- Click track bar at frame → Force split (skips FramePickerDialog, frame already known) → IdentityAssignmentDialog
+- Drag segment to another track row → reassign identity
+- Right-click → context menu: "Force split here", "Mark as reviewed", "Ignore segment"</p>
+<hr />
+<h3 id="session-persistence">Session Persistence<a class="headerlink" href="#session-persistence" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Contents</th>
+<th>Mutability</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>&lt;name&gt;_proofread.csv</code></td>
+<td>Corrected trajectory data</td>
+<td>Edited in place by MAT-afterhours</td>
+</tr>
+<tr>
+<td><code>&lt;name&gt;_proofread_dismissed.json</code></td>
+<td>Events marked OK</td>
+<td>Written by MAT-afterhours</td>
+</tr>
+<tr>
+<td><code>&lt;name&gt;_confidence_regions.json</code></td>
+<td>Density region definitions</td>
+<td>Read-only (from MAT)</td>
+</tr>
+<tr>
+<td><code>&lt;name&gt;_confidence_map.mp4</code></td>
+<td>Diagnostic overlay video</td>
+<td>Read-only (from MAT)</td>
+</tr>
+</tbody>
+</table>
+<p>On session re-open:
+- Dismissed events excluded from queue
+- Already-corrected segments shown in distinct timeline colour
+- Scoring re-runs only on uncorrected regions</p>
+<hr />
+<h2 id="architecture-boundaries">Architecture Boundaries<a class="headerlink" href="#architecture-boundaries" title="Permanent link">&para;</a></h2>
 <ul>
-<li>Active learning wiring (<code>classkit/al/</code>) — stretch goal</li>
-<li>MAT identity/post-processing integration for multi-head bundles — follow-up</li>
-<li>ONNX/TensorRT export of ClassKit models — follow-up</li>
+<li><code>afterhours/core/</code> modules are pure Python — no Qt dependencies, fully testable</li>
+<li><code>afterhours/gui/</code> imports from <code>afterhours/core/</code> and <code>multi_tracker.core.*</code></li>
+<li><code>confidence_density.py</code> is called from MAT's existing post-processing pipeline; <code>afterhours/</code> does not import from <code>gui/</code></li>
+<li>Correction writer edits only <code>_proofread.csv</code> — never the original processed CSV</li>
 </ul>
 
 
