@@ -690,7 +690,7 @@ def export_diagnostic_video(
 
     all_vals = (
         np.concatenate([g.ravel() for g in density_grids])
-        if density_grids
+        if len(density_grids) > 0
         else np.array([0.0])
     )
     global_max = float(all_vals.max()) if all_vals.max() > 0 else 1.0
