@@ -324,29 +324,6 @@ class TrackingWorker(QThread):
         return theta0 if d0 <= d1 else theta1
 
     @staticmethod
-    def _parse_pose_group_tokens(raw_spec):
-        """Parse keypoint group spec from list/tuple/string into tokens."""
-        if raw_spec is None:
-            return []
-        if isinstance(raw_spec, str):
-            raw_tokens = raw_spec.split(",")
-        elif isinstance(raw_spec, (list, tuple)):
-            raw_tokens = list(raw_spec)
-        else:
-            raw_tokens = [raw_spec]
-
-        tokens = []
-        for token in raw_tokens:
-            t = str(token).strip()
-            if not t:
-                continue
-            try:
-                tokens.append(int(t))
-            except Exception:
-                tokens.append(t)
-        return tokens
-
-    @staticmethod
     def _estimate_detection_crop_quality(shape, reference_body_size):
         """Estimate crop quality from detection geometry."""
         try:

@@ -717,7 +717,7 @@ class YOLOOBBDetector:
                     nn.Linear(64, 1),
                 )
 
-            def forward(self, x):
+            def forward(self, x):  # noqa: DC04  (nn.Module; called via __call__)
                 x = self.features(x)
                 return self.classifier(x)
 

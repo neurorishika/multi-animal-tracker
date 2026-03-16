@@ -51,7 +51,7 @@ class MergeCandidate:
     spatial_dist: float
     predicted_dist: float
     heading_agreement: float
-    overlap_frames: int
+    overlap_frames: int  # noqa: DC01  (dataclass field)
     score: float
 
 
@@ -70,8 +70,8 @@ class SwapCandidate:
     swap_frame: int
     min_distance: float
     heading_continuity: float
-    velocity_continuity: float
-    prediction_match: float
+    velocity_continuity: float  # noqa: DC01  (dataclass field)
+    prediction_match: float  # noqa: DC01  (dataclass field)
     score: float
 
 

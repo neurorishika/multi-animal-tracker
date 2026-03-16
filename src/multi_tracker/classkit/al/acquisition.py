@@ -27,9 +27,11 @@ class BatchConfig:
     uncertainty_fraction: float = 0.40
     diversity_fraction: float = 0.35
     representative_fraction: float = 0.15
-    audit_fraction: float = 0.10
+    audit_fraction: float = 0.10  # noqa: DC01  (dataclass field)
     per_cluster_cap: Optional[int] = None  # Max samples per cluster
-    min_per_class: int = 0  # Minimum per class if imbalanced
+    min_per_class: int = (
+        0  # noqa: DC01  (dataclass field) — minimum per class if imbalanced
+    )
 
 
 class UncertaintySelector:

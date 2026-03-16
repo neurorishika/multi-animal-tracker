@@ -60,7 +60,6 @@ from .dialogs.skeleton import SkeletonEditorDialog
 from .io import load_yolo_pose_label, migrate_labels_keypoints, save_yolo_pose_label
 from .models import DataSource, FrameAnn, Keypoint, Project, compute_bbox_from_kpts
 from .project import (
-    add_source_to_project,
     build_image_list,
     create_standalone_project_via_wizard,
     find_project,
@@ -93,7 +92,6 @@ try:
     )
     from multi_tracker.posekit.inference.service import PoseInferenceService
     from multi_tracker.posekit.ui.dialogs.active_learning import ActiveLearningDialog
-    from multi_tracker.posekit.ui.dialogs.add_source import AddSourceDialog
     from multi_tracker.posekit.ui.dialogs.evaluation import EvaluationDashboardDialog
     from multi_tracker.posekit.ui.dialogs.exploration import SmartSelectDialog
     from multi_tracker.posekit.ui.dialogs.training import TrainingRunnerDialog
@@ -3682,61 +3680,6 @@ class MainWindow(QMainWindow):
         if proj is None:
             return
         self._switch_project_window(proj)
-
-    def open_dataset_folder(self: object) -> object:
-        """Backward-compatible alias."""
-        self.open_project()
-
-    def open_project_dialog(self: object) -> object:
-        """Backward-compatible alias."""
-        self.open_project()
-
-    def add_dataset_source(self) -> None:
-        """Add a new dataset source folder to the current multi-source project."""
-        try:
-            dlg = AddSourceDialog(self.project, parent=self)
-        except NameError:
-            QMessageBox.warning(
-                self, "Unavailable", "AddSourceDialog could not be loaded."
-            )
-            return
-        if dlg.exec() != QDialog.Accepted or dlg.selected_dir is None:
-            return
-
-        dataset_dir = dlg.selected_dir
-        description = dlg.description
-
-        try:
-            new_src = add_source_to_project(self.project, dataset_dir, description)
-        except Exception as exc:
-            QMessageBox.critical(self, "Add Source Failed", str(exc))
-            return
-
-        # Rebuild image list and source index in place
-        cur_path = self.image_paths[self.current_index] if self.image_paths else None
-        self.image_paths = build_image_list(self.project)
-        self._rebuild_path_index()
-
-        # Restore current position
-        if cur_path and str(cur_path) in self._path_to_index:
-            self.current_index = self._path_to_index[str(cur_path)]
-        else:
-            self.current_index = 0
-
-        self._populate_frames()
-        self._select_frame_in_list(self.current_index)
-        self.save_project()
-        self._update_info()
-        QMessageBox.information(
-            self,
-            "Source Added",
-            f"Added '{new_src.description}' as '{new_src.source_id}' "
-            f"({len(list_images(new_src.images_dir)):,} images).",
-        )
-
-    def open_images_folder(self: object) -> object:
-        """Backward-compatible alias."""
-        self.open_project()
 
     def export_dataset_dialog(self: object) -> object:
         """export_dataset_dialog method documentation."""

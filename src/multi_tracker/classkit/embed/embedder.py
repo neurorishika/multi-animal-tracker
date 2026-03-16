@@ -18,32 +18,6 @@ except ImportError:
 from ...utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
 from .embedder_base import EmbedderBase
 
-DEFAULT_MODELS = [
-    # DINO v2 models (recommended for general image understanding)
-    "vit_base_patch14_dinov2.lvd142m",  # ~86M params, excellent quality
-    "vit_small_patch14_dinov2.lvd142m",  # ~22M params, good balance
-    "vit_large_patch14_dinov2.lvd142m",  # ~304M params, best quality
-    "vit_giant_patch14_dinov2.lvd142m",  # ~1.1B params, huge model
-    # CLIP models (text+image understanding, good for semantic search)
-    "vit_base_patch32_clip_224.openai",  # ~88M params, good balance
-    "vit_bigG_14_clip_224.laion400M_e32",  # ~2B params, best quality
-    "convnext_base_w_clip.laion2b_s29B_b131k_ft_in1k",  # ~88M params, efficient
-    # ResNet models (faster, smaller)
-    "resnet50.a1_in1k",  # ~25M params, fast
-    "resnet18.a1_in1k",  # ~11M params, very fast
-    "resnet101.a1_in1k",  # ~44M params, more capacity
-    # EfficientNet models (efficient, good accuracy/speed tradeoff)
-    "efficientnet_b0.ra_in1k",  # ~5M params, very efficient
-    "efficientnet_b3.ra2_in1k",  # ~12M params, good balance
-    "efficientnet_b5.sw_in12k_ft_in1k",  # ~30M params, high quality
-    # MobileNet models (fastest, smallest)
-    "mobilenetv3_small_100.lamb_in1k",  # ~2M params, mobile
-    "mobilenetv3_large_100.ra_in1k",  # ~5M params, mobile
-    # ConvNeXt models (modern convnets)
-    "convnext_tiny.fb_in1k",  # ~28M params, modern
-    "convnext_base.fb_in1k",  # ~88M params, powerful
-]
-
 
 class ModelLoadError(RuntimeError):
     """Raised when pretrained timm weights cannot be loaded."""

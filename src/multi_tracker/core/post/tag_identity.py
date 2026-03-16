@@ -4,8 +4,6 @@ Post-processing tag identity utilities.
 Functions to:
 1. Assign a majority-vote TagID to each trajectory segment.
 2. Detect identity swaps based on tag observations.
-3. Build tag-only trajectories from tag observations + interpolation
-   (standalone alternative to YOLO+Kalman tracking).
 """
 
 from __future__ import annotations
@@ -192,8 +190,3 @@ def detect_tag_swaps(
             tag_last_traj[tid] = assoc_traj
 
     return swaps
-
-
-# ---------------------------------------------------------------------------
-# 3.  Tag-only trajectories (standalone mode)
-# ---------------------------------------------------------------------------

@@ -123,7 +123,6 @@ class PoseCanvas(QGraphicsView):
     def set_image(self, img_bgr: np.ndarray) -> None:
         """Load a BGR image into the canvas and fit it to the current viewport."""
         h, w = img_bgr.shape[:2]
-        self._img_h = w, h
         rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
         self.pix_item.setPixmap(QPixmap.fromImage(qimg))
@@ -588,7 +587,9 @@ class FrameListDelegate(QStyledItemDelegate):
     KP_COUNT_ROLE = Qt.UserRole + 3
     CLUSTER_ROLE = Qt.UserRole + 4
 
-    def paint(self: object, painter: object, option: object, index: object) -> None:
+    def paint(
+        self: object, painter: object, option: object, index: object
+    ) -> None:  # noqa: DC04  (Qt delegate override)
         """Render frame row with elided name plus confidence and label counters."""
         opt = QStyleOptionViewItem(option)
         self.initStyleOption(opt, index)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from .contracts import ValidationIssue, ValidationReport
-from .dataset_inspector import ClassifyInspection, DatasetInspection
+from .dataset_inspector import DatasetInspection
 
 
 def _parse_label_lines(path: Path) -> list[list[str]]:
@@ -164,58 +164,6 @@ def validate_obb_dataset(
                 ),
             )
         )
-
-    return ValidationReport(
-        valid=not any(i.severity == "error" for i in issues), issues=issues, stats=stats
-    )
-
-
-def validate_classify_dataset(
-    inspection: ClassifyInspection,
-    *,
-    required_classes: tuple[str, str] = ("head_left", "head_right"),
-    require_val: bool = True,
-) -> ValidationReport:
-    """Validate classify-style head-tail datasets."""
-
-    issues: list[ValidationIssue] = []
-    stats: dict[str, object] = {
-        "root_dir": inspection.root_dir,
-        "split_class_counts": {},
-    }
-
-    train_split = inspection.splits.get("train", {})
-    if not train_split:
-        issues.append(
-            ValidationIssue(
-                severity="error",
-                code="missing_train",
-                message="Classify dataset is missing train split.",
-            )
-        )
-
-    if require_val and not inspection.splits.get("val", {}):
-        issues.append(
-            ValidationIssue(
-                severity="error",
-                code="missing_val",
-                message="Classify dataset is missing val split.",
-            )
-        )
-
-    req = set(required_classes)
-    for split, classes in inspection.splits.items():
-        stats["split_class_counts"][split] = {k: len(v) for k, v in classes.items()}
-        class_set = set(classes.keys())
-        missing = sorted(req - class_set)
-        if missing:
-            issues.append(
-                ValidationIssue(
-                    severity="error",
-                    code="missing_required_class",
-                    message=f"Split '{split}' missing required class(es): {', '.join(missing)}",
-                )
-            )
 
     return ValidationReport(
         valid=not any(i.severity == "error" for i in issues), issues=issues, stats=stats

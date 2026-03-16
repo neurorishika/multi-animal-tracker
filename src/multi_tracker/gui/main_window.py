@@ -2248,11 +2248,6 @@ class MainWindow(QMainWindow):
         self.batch_videos = []  # List of video paths for batch mode
         self.current_batch_index = -1
 
-        # ROI optimization tracking
-        self.roi_crop_warning_shown = (
-            False  # Track if we've warned about cropping this session
-        )
-
         # ROI display caching (for performance)
         self._roi_masked_cache = {}  # Cache: {(frame_id, roi_hash): masked_image}
         # Interactive pan/zoom state
@@ -16259,28 +16254,6 @@ class MainWindow(QMainWindow):
         )
         return label
 
-    def _get_roi_hash(self):
-        """Generate a hash of current ROI configuration for caching."""
-        if not self.roi_shapes:
-            return None
-
-        # Create a simple hash from ROI shapes
-        roi_str = str(
-            [
-                (
-                    s["type"],
-                    (
-                        tuple(s["params"])
-                        if isinstance(s["params"], list)
-                        else s["params"]
-                    ),
-                    s.get("mode", "include"),
-                )
-                for s in self.roi_shapes
-            ]
-        )
-        return hash(roi_str)
-
     def _invalidate_roi_cache(self):
         """Invalidate ROI display cache when ROI changes."""
         self._roi_masked_cache.clear()
@@ -16950,7 +16923,6 @@ class MainWindow(QMainWindow):
                     self.btn_crop_video.setEnabled(False)
                     if hasattr(self, "roi_optimization_label"):
                         self.roi_optimization_label.setText("")
-                    self.roi_crop_warning_shown = False
 
                     # Auto-load config if it exists
                     config_path = get_video_config_path(output_path)

@@ -102,7 +102,7 @@ class PublishPolicy:
     """Post-training artifact publishing policy."""
 
     auto_import: bool = True
-    auto_select: bool = False
+    auto_select: bool = False  # noqa: DC01  (dataclass field)
 
 
 @dataclass(slots=True)
@@ -110,7 +110,7 @@ class TrainingRunSpec:
     """Full run spec persisted to local registry."""
 
     role: TrainingRole
-    source_datasets: list[SourceDataset]
+    source_datasets: list[SourceDataset]  # noqa: DC01  (dataclass field)
     derived_dataset_dir: str
     base_model: str
     hyperparams: TrainingHyperParams

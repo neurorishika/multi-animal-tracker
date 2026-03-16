@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class RuntimeMetrics:
-    startup_ms: float = 0.0
-    warmup_ms: float = 0.0
-    closed_ms: float = 0.0
+class RuntimeMetrics:  # noqa: DC03  (metrics contract; used when lifecycle profiling is enabled)
+    startup_ms: float = 0.0  # noqa: DC01  (dataclass field)
+    warmup_ms: float = 0.0  # noqa: DC01  (dataclass field)
+    closed_ms: float = 0.0  # noqa: DC01  (dataclass field)

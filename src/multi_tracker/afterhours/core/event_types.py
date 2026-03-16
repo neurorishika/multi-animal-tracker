@@ -47,7 +47,7 @@ class EventType(enum.Enum):
 # ---------------------------------------------------------------------------
 
 #: Human-readable label for each type.
-EVENT_TYPE_LABEL: Dict[EventType, str] = {
+EVENT_TYPE_LABEL: Dict[EventType, str] = {  # noqa: DC01  (display constant for UI)
     EventType.SWAP: "Swap",
     EventType.FLICKER: "Flicker",
     EventType.FRAGMENTATION: "Fragment",
@@ -58,7 +58,7 @@ EVENT_TYPE_LABEL: Dict[EventType, str] = {
 }
 
 #: Badge colour for each type (dark-theme-safe hex).
-EVENT_TYPE_COLOR: Dict[EventType, str] = {
+EVENT_TYPE_COLOR: Dict[EventType, str] = {  # noqa: DC01  (display constant for UI)
     EventType.SWAP: "#f48771",  # warm red-orange
     EventType.FLICKER: "#dcdcaa",  # muted yellow
     EventType.FRAGMENTATION: "#9cdcfe",  # light blue

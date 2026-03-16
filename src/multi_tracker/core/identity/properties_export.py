@@ -17,6 +17,9 @@ POSE_SUMMARY_COLUMNS = [
     "PoseNumKeypoints",
 ]
 
+# Backward-compatible / test-facing alias.
+POSE_EXPORT_COLUMNS = POSE_SUMMARY_COLUMNS
+
 
 # Backward-compatible alias used by tests/importers.
 def _pose_value_columns(df: pd.DataFrame) -> List[str]:

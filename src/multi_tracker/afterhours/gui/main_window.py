@@ -75,7 +75,6 @@ class MainWindow(QMainWindow):
         self._sessions: List[str] = []
         self._session_idx: int = -1
         self._video_path: Optional[str] = None
-        self._csv_path: Optional[Path] = None
         self._writer: Optional[CorrectionWriter] = None
         self._df: Optional[pd.DataFrame] = None
         self._scorer: Optional[EventScorer] = None

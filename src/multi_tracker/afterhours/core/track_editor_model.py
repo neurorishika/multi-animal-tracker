@@ -199,13 +199,6 @@ class TrackEditorModel:
     def frame_range(self) -> Tuple[int, int]:
         return self._frame_range
 
-    def fragments_on_track(self, track_id: int) -> List[TrackFragment]:
-        """Return non-deleted fragments on *track_id*, sorted by start frame."""
-        return sorted(
-            (f for f in self._fragments if f.track_id == track_id and not f.deleted),
-            key=lambda f: f.frame_start,
-        )
-
     def fragment_by_id(self, frag_id: int) -> Optional[TrackFragment]:
         for f in self._fragments:
             if f.frag_id == frag_id:

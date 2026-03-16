@@ -50,7 +50,9 @@ def probe_ann_backend() -> Dict[str, Any]:
 # "not installed" response instead of an ImportError.
 
 
-def probe_metalfaiss_backend() -> Dict[str, Any]:
+def probe_metalfaiss_backend() -> (
+    Dict[str, Any]
+):  # noqa: DC02  (legacy shim; callers get a safe "not installed" response)
     """Legacy shim — metalfaiss removed; use probe_ann_backend() instead."""
     return {
         "installed": False,

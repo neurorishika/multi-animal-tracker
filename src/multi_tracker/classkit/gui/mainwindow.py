@@ -2692,7 +2692,6 @@ class MainWindow(QMainWindow):
     def _on_ingest_batch_item_done(self, result):
         """Called when one folder in the ingest batch finishes."""
         self._ingest_queue.pop(0)
-        self._ingest_batch_done += 1
         if self._ingest_queue:
             # More folders to go
             self._run_next_ingest()
@@ -3971,104 +3970,6 @@ class MainWindow(QMainWindow):
                 self,
                 "Checkpoint Load Failed",
                 f"Failed to load checkpoint:\n\n{exc}",
-            )
-
-    def predict_unlabeled_images(self):
-        """Run classifier predictions on unlabeled items and persist confidences."""
-        self._flush_pending_label_updates(force=True)
-
-        if self.embeddings is None:
-            QMessageBox.warning(
-                self,
-                "No Embeddings",
-                "Compute embeddings before running predictions.",
-            )
-            return
-
-        if self._trained_classifier is None:
-            QMessageBox.warning(
-                self,
-                "No Classifier",
-                "Train or load a classifier checkpoint first.",
-            )
-            return
-
-        unlabeled_indices = [
-            idx for idx, label in enumerate(self.image_labels) if not label
-        ]
-        if not unlabeled_indices:
-            QMessageBox.information(
-                self,
-                "No Unlabeled Images",
-                "All images already have labels.",
-            )
-            return
-
-        try:
-            idx_array = np.array(unlabeled_indices, dtype=np.int64)
-            unlabeled_embeddings = self.embeddings[idx_array]
-            probs = self._trained_classifier.predict_proba(
-                unlabeled_embeddings,
-                calibrated=True,
-            )
-
-            pred_ids = probs.argmax(axis=1).astype(int)
-            confidences = probs.max(axis=1).astype(float)
-            pred_labels = [
-                (
-                    self.classes[pred_idx]
-                    if pred_idx < len(self.classes)
-                    else f"class_{pred_idx}"
-                )
-                for pred_idx in pred_ids
-            ]
-
-            # Update local state
-            for idx, label, conf in zip(
-                unlabeled_indices, pred_labels, confidences.tolist()
-            ):
-                if idx < len(self.image_confidences):
-                    self.image_confidences[idx] = conf
-
-            from ..store.db import ClassKitDB
-
-            db = ClassKitDB(self.db_path)
-            pred_paths = [str(self.image_paths[idx]) for idx in unlabeled_indices]
-            db.save_predictions(
-                paths=pred_paths,
-                predicted_labels=pred_labels,
-                predicted_indices=pred_ids.tolist(),
-                confidences=confidences.tolist(),
-            )
-
-            predictions_dir = self.project_path / "models"
-            predictions_dir.mkdir(parents=True, exist_ok=True)
-            artifact_path = predictions_dir / "predictions_latest.csv"
-            with open(artifact_path, "w") as f:
-                f.write("image_path,predicted_label,predicted_index,confidence\n")
-                for path, label, pred_idx, conf in zip(
-                    pred_paths, pred_labels, pred_ids.tolist(), confidences.tolist()
-                ):
-                    safe_path = path.replace(",", "%2C")
-                    safe_label = str(label).replace(",", "%2C")
-                    f.write(f"{safe_path},{safe_label},{pred_idx},{conf:.6f}\n")
-
-            high_conf = int(np.sum(confidences >= 0.8))
-            self.status.showMessage(
-                f"Predicted {len(unlabeled_indices):,} unlabeled images (>=0.8 conf: {high_conf:,})"
-            )
-            QMessageBox.information(
-                self,
-                "Prediction Complete",
-                f"Scored {len(unlabeled_indices):,} unlabeled images.\n"
-                f"High confidence (>= 0.8): {high_conf:,}\n\n"
-                f"Saved predictions to:\n{artifact_path}",
-            )
-        except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "Prediction Failed",
-                f"Failed to run predictions:\n\n{exc}",
             )
 
     def on_export_progress(self, percentage, message):

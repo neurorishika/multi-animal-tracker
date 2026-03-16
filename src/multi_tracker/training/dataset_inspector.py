@@ -28,14 +28,6 @@ class DatasetInspection:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
-class ClassifyInspection:
-    """Inspection result for classify-style datasets."""
-
-    root_dir: str
-    splits: dict[str, dict[str, list[str]]] = field(default_factory=dict)
-
-
 def _read_yaml(path: Path) -> dict[str, Any]:
     try:
         import yaml  # type: ignore

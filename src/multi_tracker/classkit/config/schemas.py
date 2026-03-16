@@ -13,7 +13,7 @@ class ModelConfig:
 @dataclass
 class ALConfig:
     batch_size: int = 40
-    strategy_weights: Dict[str, float] = field(
+    strategy_weights: Dict[str, float] = field(  # noqa: DC01  (dataclass field)
         default_factory=lambda: {
             "uncertainty": 0.4,
             "diversity": 0.35,
@@ -105,7 +105,7 @@ class ProjectConfig:
 class ClassKitConfig:
     project: ProjectConfig
     model: ModelConfig = field(default_factory=ModelConfig)
-    al: ALConfig = field(default_factory=ALConfig)
-    viz_umap_n_neighbors: int = 15
-    viz_umap_min_dist: float = 0.1
-    index_hnsw_m: int = 32
+    al: ALConfig = field(default_factory=ALConfig)  # noqa: DC01  (dataclass field)
+    viz_umap_n_neighbors: int = 15  # noqa: DC01  (dataclass field)
+    viz_umap_min_dist: float = 0.1  # noqa: DC01  (dataclass field)
+    index_hnsw_m: int = 32  # noqa: DC01  (dataclass field)

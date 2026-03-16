@@ -32,7 +32,6 @@ class AddSourceDialog(QDialog):
         self.setMinimumWidth(520)
         self._project = project
         self._selected_dir: Optional[Path] = None
-        self._resolved_images_dir: Optional[Path] = None
 
         layout = QVBoxLayout(self)
 
@@ -176,7 +175,6 @@ class AddSourceDialog(QDialog):
                 return
 
         self._selected_dir = d
-        self._resolved_images_dir = resolved
         self._le_folder.setText(str(d))
         if not self._le_desc.text().strip():
             self._le_desc.setText(d.name)

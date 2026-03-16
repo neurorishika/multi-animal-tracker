@@ -102,12 +102,6 @@ class MetadataManager:
             self.metadata[image_path] = FrameMetadata(image_path=image_path)
         return self.metadata[image_path]
 
-    def get_frames_by_tag(self, tag: str) -> List[str]:
-        """Get all frames with a specific tag."""
-        return [
-            img_path for img_path, meta in self.metadata.items() if tag in meta.tags
-        ]
-
 
 # -----------------------------
 # Crash-safe recovery

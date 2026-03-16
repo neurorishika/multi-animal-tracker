@@ -43,12 +43,14 @@ class RoleRunConfig:
 class TrainingSessionResult:
     """Session result summary for UI."""
 
-    merged_dataset: str = ""
+    merged_dataset: str = ""  # noqa: DC01  (dataclass field)
 
     role_dataset_dirs: dict[str, str] = field(default_factory=dict)
-    run_ids: list[str] = field(default_factory=list)
-    published_models: dict[str, str] = field(default_factory=dict)
-    errors: list[str] = field(default_factory=list)
+    run_ids: list[str] = field(default_factory=list)  # noqa: DC01  (dataclass field)
+    published_models: dict[str, str] = field(
+        default_factory=dict
+    )  # noqa: DC01  (dataclass field)
+    errors: list[str] = field(default_factory=list)  # noqa: DC01  (dataclass field)
 
 
 class TrainingOrchestrator:

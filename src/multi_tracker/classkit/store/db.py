@@ -630,46 +630,6 @@ class ClassKitDB:
                 payload.update(json.loads(meta_json))
             return payload
 
-    def save_predictions(
-        self,
-        paths: List[str],
-        predicted_labels: List[str],
-        predicted_indices: List[int],
-        confidences: List[float],
-    ):
-        """Persist prediction outputs for images.
-
-        Writes confidence to the dedicated `confidence` column and stores
-        prediction metadata inside `meta_json`.
-        """
-        rows = zip(paths, predicted_labels, predicted_indices, confidences)
-
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            for path, pred_label, pred_idx, confidence in rows:
-                c.execute("SELECT meta_json FROM images WHERE file_path = ?", (path,))
-                existing = c.fetchone()
-                meta = {}
-                if existing and existing[0]:
-                    try:
-                        meta = json.loads(existing[0])
-                    except Exception:
-                        meta = {}
-
-                meta["predicted_label"] = pred_label
-                meta["predicted_index"] = int(pred_idx)
-                meta["prediction_confidence"] = float(confidence)
-
-                c.execute(
-                    """
-                    UPDATE images
-                    SET confidence = ?, meta_json = ?
-                    WHERE file_path = ?
-                    """,
-                    (float(confidence), json.dumps(meta), path),
-                )
-            conn.commit()
-
     def close(self):
         pass
 

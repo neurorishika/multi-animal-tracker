@@ -51,7 +51,6 @@ class _TimelineCanvas(QWidget):
         self._tracks: Dict[int, Tuple[int, int]] = {}
         self._track_order: List[int] = []
         self._total_frames: int = 1
-        self._highlight_range: Optional[Tuple[int, int]] = None
         self._row_height: int = _DEFAULT_ROW_HEIGHT
 
         # Right-click drag selection state
@@ -81,7 +80,6 @@ class _TimelineCanvas(QWidget):
         self.setMinimumHeight(max(len(self._track_order) * self._row_height + 4, 50))
 
     def set_highlight_range(self, frame_range: Optional[Tuple[int, int]]) -> None:
-        self._highlight_range = frame_range
         self.update()
 
     # ------------------------------------------------------------------

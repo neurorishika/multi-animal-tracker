@@ -171,7 +171,6 @@ class TrackEditorDialog(QDialog):
         super().__init__(parent)
         self._video_path = video_path
         self._df = df
-        self._event = event
         self._applied = False
         self._edit_ops: List[EditOp] = []
 

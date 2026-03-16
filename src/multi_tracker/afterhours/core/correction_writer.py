@@ -14,7 +14,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List
 
 import pandas as pd
 
@@ -28,30 +28,6 @@ _NEW_ID_OFFSET = 100_000
 # ---------------------------------------------------------------------------
 # Atomic operations (pure functions on DataFrames)
 # ---------------------------------------------------------------------------
-
-
-def apply_split_and_swap(
-    df: pd.DataFrame,
-    track_a: int,
-    track_b: int,
-    split_frame: int,
-    swap_post: bool,
-) -> pd.DataFrame:
-    """
-    Split track_a and track_b at split_frame, optionally swapping post-split IDs.
-    """
-    df = df.copy()
-    mask_a_post = (df["TrajectoryID"] == track_a) & (df["FrameID"] >= split_frame)
-    mask_b_post = (df["TrajectoryID"] == track_b) & (df["FrameID"] >= split_frame)
-
-    if swap_post:
-        df.loc[mask_a_post, "TrajectoryID"] = track_b + _NEW_ID_OFFSET
-        df.loc[mask_b_post, "TrajectoryID"] = track_a + _NEW_ID_OFFSET
-    else:
-        df.loc[mask_a_post, "TrajectoryID"] = track_a + _NEW_ID_OFFSET
-        df.loc[mask_b_post, "TrajectoryID"] = track_b + _NEW_ID_OFFSET
-
-    return df
 
 
 def merge_fragments(
@@ -70,73 +46,6 @@ def merge_fragments(
     for tid in track_ids:
         if tid != target:
             df.loc[df["TrajectoryID"] == tid, "TrajectoryID"] = target
-    return df
-
-
-def delete_track(
-    df: pd.DataFrame,
-    track_id: int,
-    frame_range: Optional[Tuple[int, int]] = None,
-) -> pd.DataFrame:
-    """Remove rows for *track_id*, optionally only within *frame_range*."""
-    df = df.copy()
-    mask = df["TrajectoryID"] == track_id
-    if frame_range is not None:
-        mask = (
-            mask & (df["FrameID"] >= frame_range[0]) & (df["FrameID"] <= frame_range[1])
-        )
-    return df[~mask].reset_index(drop=True)
-
-
-def erase_flicker(
-    df: pd.DataFrame,
-    track_a: int,
-    track_b: int,
-    frame_start: int,
-    frame_end: int,
-) -> pd.DataFrame:
-    """Undo a flicker by swapping IDs at *frame_start* and *frame_end*.
-
-    Within the flicker window ``[frame_start, frame_end]`` the IDs of
-    track_a and track_b are exchanged, effectively reversing two rapid
-    swaps.
-    """
-    df = df.copy()
-    window = (df["FrameID"] >= frame_start) & (df["FrameID"] <= frame_end)
-    mask_a = (df["TrajectoryID"] == track_a) & window
-    mask_b = (df["TrajectoryID"] == track_b) & window
-
-    # Use temp offset to avoid collision
-    df.loc[mask_a, "TrajectoryID"] = track_b + _NEW_ID_OFFSET
-    df.loc[mask_b, "TrajectoryID"] = track_a
-    df.loc[df["TrajectoryID"] == track_b + _NEW_ID_OFFSET, "TrajectoryID"] = track_b
-
-    return df
-
-
-def reassign_chain(
-    df: pd.DataFrame,
-    assignments: Dict[int, int],
-    split_frame: int,
-) -> pd.DataFrame:
-    """N-way relabeling: remap track IDs from *split_frame* onward.
-
-    *assignments* maps ``{old_id: new_id}``.  A temporary offset is used
-    to prevent collision during the relabeling.
-    """
-    df = df.copy()
-    post = df["FrameID"] >= split_frame
-
-    # First pass: shift to temp IDs to avoid overwriting
-    for old_id in assignments:
-        mask = (df["TrajectoryID"] == old_id) & post
-        df.loc[mask, "TrajectoryID"] = old_id + _NEW_ID_OFFSET
-
-    # Second pass: assign final IDs
-    for old_id, new_id in assignments.items():
-        mask = (df["TrajectoryID"] == old_id + _NEW_ID_OFFSET) & post
-        df.loc[mask, "TrajectoryID"] = new_id
-
     return df
 
 
