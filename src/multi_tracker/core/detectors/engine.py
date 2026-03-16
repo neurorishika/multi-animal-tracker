@@ -717,6 +717,10 @@ class YOLOOBBDetector:
                     nn.Linear(64, 1),
                 )
 
+            def forward(self, x):
+                x = self.features(x)
+                return self.classifier(x)
+
         return _TinyHeadClassifier(input_size=input_size)
 
     def _try_load_tiny_head_classifier(self, model_path_str: str):
