@@ -237,15 +237,55 @@ def smooth_and_binarize(
     np.ndarray
         Uint8 binary array of shape ``(T, H, W)`` with values in ``{0, 1}``.
     """
-    # Apply Gaussian smoothing along axis 0 (time) only.
-    smoothed = gaussian_filter(frames, sigma=(temporal_sigma, 0.0, 0.0))
+    T, H, W = frames.shape
+    binary = np.zeros((T, H, W), dtype=np.uint8)
+    if T == 0:
+        return binary
 
-    # Global normalisation so threshold is meaningful across recordings.
-    global_max = smoothed.max()
-    if global_max > 0.0:
-        smoothed = smoothed / global_max
+    # Effective Gaussian kernel radius (scipy default truncate=4.0).
+    radius = int(np.ceil(4.0 * temporal_sigma)) + 1
+    chunk_size = 500  # frames per chunk; tunes peak-RAM vs. pass count
 
-    binary = (smoothed >= threshold).astype(np.uint8)
+    # --- Pass 1: find global max across all smoothed chunks ---
+    # Each slice is a VIEW into `frames` (no copy), so only the
+    # gaussian_filter output — at most (chunk_size + 2*radius, H, W) —
+    # is allocated per iteration instead of the full (T, H, W) volume.
+    global_max = 0.0
+    for chunk_start in range(0, T, chunk_size):
+        chunk_end = min(T, chunk_start + chunk_size)
+        ext_start = max(0, chunk_start - radius)
+        ext_end = min(T, chunk_end + radius)
+        smoothed_chunk = gaussian_filter(
+            frames[ext_start:ext_end], sigma=(temporal_sigma, 0.0, 0.0)
+        )
+        trim_s = chunk_start - ext_start
+        trim_e = trim_s + (chunk_end - chunk_start)
+        chunk_max = float(smoothed_chunk[trim_s:trim_e].max())
+        if chunk_max > global_max:
+            global_max = chunk_max
+
+    if global_max <= 0.0:
+        return binary
+
+    # Avoid a second `/` allocation: compare raw values against
+    # threshold * global_max (mathematically equivalent to normalising first).
+    raw_threshold = threshold * global_max
+
+    # --- Pass 2: binarize chunk by chunk without retaining the full
+    # smoothed float32 volume in memory ---
+    for chunk_start in range(0, T, chunk_size):
+        chunk_end = min(T, chunk_start + chunk_size)
+        ext_start = max(0, chunk_start - radius)
+        ext_end = min(T, chunk_end + radius)
+        smoothed_chunk = gaussian_filter(
+            frames[ext_start:ext_end], sigma=(temporal_sigma, 0.0, 0.0)
+        )
+        trim_s = chunk_start - ext_start
+        trim_e = trim_s + (chunk_end - chunk_start)
+        binary[chunk_start:chunk_end] = (
+            smoothed_chunk[trim_s:trim_e] >= raw_threshold
+        ).astype(np.uint8)
+
     return binary
 
 
@@ -500,7 +540,10 @@ def compute_density_map_from_cache(
 
     sorted_frames = sorted(detection_cache.keys())
     n_total = len(sorted_frames)
-    raw_grids: List[np.ndarray] = []
+    # Pre-allocate the full (T, grid_h, grid_w) array once and accumulate
+    # directly into it — avoids building a Python list then calling np.stack,
+    # which would briefly hold two copies of the entire volume in RAM.
+    frame_grids = np.zeros((n_total, grid_h, grid_w), dtype=np.float32)
     for i, frame_idx in enumerate(sorted_frames):
         meas, confs, sizes = detection_cache[frame_idx]
         # Scale detection positions and sizes to the downsampled grid.
@@ -512,16 +555,12 @@ def compute_density_map_from_cache(
         else:
             meas_scaled = meas
             sizes_scaled = sizes
-        grid = np.zeros((grid_h, grid_w), dtype=np.float32)
         accumulate_frame(
-            grid, meas_scaled, confs, sizes_scaled, sigma_scale=sigma_scale
+            frame_grids[i], meas_scaled, confs, sizes_scaled, sigma_scale=sigma_scale
         )
-        raw_grids.append(grid)
         if progress_callback is not None and (i % 50 == 0 or i == n_total - 1):
             pct = int(40 * (i + 1) / n_total)  # 0–40% for accumulation
             progress_callback(pct, f"Density map: accumulating frame {i + 1}/{n_total}")
-
-    frame_grids = np.stack(raw_grids, axis=0)  # (T, grid_h, grid_w)
 
     if progress_callback is not None:
         progress_callback(42, "Density map: temporal smoothing...")
@@ -562,7 +601,9 @@ def compute_density_map_from_cache(
         frame_w=grid_w,
         binary_volume=binary,
     )
-    return cdm, raw_grids
+    # Return frame_grids as the second value (a numpy array supports the same
+    # [frame_idx] access as the former raw_grids list, so callers are unaffected).
+    return cdm, frame_grids
 
 
 # ---------------------------------------------------------------------------

@@ -141,7 +141,7 @@ class SieveWorker(QThread):
             if self.config.get("canonicalize_enabled"):
                 import tempfile
 
-                from ..core.canonicalization import get_canon_transform
+                from ...core.canonicalization import get_canon_transform
 
                 self.temp_dir = tempfile.mkdtemp(prefix="datasieve_canon_")
                 self.progress.emit(10, "Step 2/7: Applying canonicalization")

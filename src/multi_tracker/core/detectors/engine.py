@@ -896,7 +896,10 @@ class YOLOOBBDetector:
     ):
         """Run OBB model prediction with backend-specific constraints."""
         fixed_batch = self._runtime_fixed_batch_size()
-        predict_device = getattr(self, "obb_predict_device", self.device)
+        # obb_predict_device is None when the model was placed via .to(device).
+        # Always fall back to self.device so the explicit device= argument is always
+        # passed to predict(), preventing Ultralytics from auto-selecting a wrong device.
+        predict_device = getattr(self, "obb_predict_device", None) or self.device
 
         if isinstance(source, list):
             if len(source) == 0:
@@ -1017,7 +1020,10 @@ class YOLOOBBDetector:
                 classified.append((direction, float(conf)))
             return classified
 
-        predict_device = getattr(self, "headtail_predict_device", self.device)
+        # headtail_predict_device is None when the model was placed via .to(device).
+        # Always fall back to self.device so the explicit device= argument is always
+        # passed to predict(), preventing Ultralytics from auto-selecting a wrong device.
+        predict_device = getattr(self, "headtail_predict_device", None) or self.device
         try:
             kwargs = dict(
                 source=source_crops,
@@ -1359,7 +1365,12 @@ class YOLOOBBDetector:
     ):
         if self.detect_model is None:
             return [], [], [], [], [], None
-        detect_predict_device = getattr(self, "detect_predict_device", self.device)
+        # detect_predict_device is None when the model was placed via .to(device).
+        # Always fall back to self.device so the explicit device= argument is always
+        # passed to predict(), preventing Ultralytics from auto-selecting a wrong device.
+        detect_predict_device = (
+            getattr(self, "detect_predict_device", None) or self.device
+        )
         detect_target_classes = self.params.get(
             "YOLO_DETECT_TARGET_CLASSES", target_classes
         )
@@ -2385,7 +2396,12 @@ class YOLOOBBDetector:
 
         if fixed_batch_size is not None:
             all_results = []
-            obb_predict_device = getattr(self, "obb_predict_device", self.device)
+            # obb_predict_device is None when the model was placed via .to(device).
+            # Always fall back to self.device so the explicit device= argument is always
+            # passed to predict(), preventing Ultralytics from auto-selecting a wrong device.
+            obb_predict_device = (
+                getattr(self, "obb_predict_device", None) or self.device
+            )
 
             # Process in fixed-size chunks
             for chunk_start in range(0, actual_frame_count, fixed_batch_size):
@@ -2430,7 +2446,12 @@ class YOLOOBBDetector:
             # Standard PyTorch inference - no chunking needed
             # Use custom polygon-based IOU filtering OR YOLO's built-in NMS based on user preference
             try:
-                obb_predict_device = getattr(self, "obb_predict_device", self.device)
+                # obb_predict_device is None when the model was placed via .to(device).
+                # Always fall back to self.device so the explicit device= argument is always
+                # passed to predict(), preventing Ultralytics from auto-selecting a wrong device.
+                obb_predict_device = (
+                    getattr(self, "obb_predict_device", None) or self.device
+                )
                 predict_kwargs = dict(
                     source=frames,
                     conf=raw_conf_floor,
