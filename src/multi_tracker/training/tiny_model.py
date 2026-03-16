@@ -53,9 +53,6 @@ def _build_tiny_classifier_class():
             layers.append(nn.Linear(in_d, n_classes))
             self.classifier = nn.Sequential(nn.Flatten(), *layers)
 
-        def forward(self, x):
-            return self.classifier(self.features(x))
-
     return TinyClassifier
 
 

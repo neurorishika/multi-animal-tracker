@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import List, Optional, Protocol, Sequence, Tuple
 
 import numpy as np
 
@@ -63,6 +63,3 @@ class PoseInferenceBackend(Protocol):
 
     def close(self) -> None:
         """Release backend resources."""
-
-    def benchmark(self, crops: Sequence[np.ndarray], runs: int = 3) -> Dict[str, float]:
-        """Benchmark inference speed on provided crops."""

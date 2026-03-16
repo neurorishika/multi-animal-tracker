@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -80,8 +80,6 @@ def _badge_item(cost: float, display: str) -> QTableWidgetItem:
 
 
 class ParameterHelperDialog(QDialog):
-    preview_frame_signal = Signal(object)
-
     def __init__(
         self,
         video_path: str,

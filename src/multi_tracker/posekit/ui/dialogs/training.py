@@ -110,7 +110,6 @@ class TrainingWorker(QObject):
         self.translate = float(translate)
         self.scale = float(scale)
         self._cancel = False
-        self._log_handler = None
         self._model = None
         self._proc = None
 
@@ -119,26 +118,6 @@ class TrainingWorker(QObject):
         try:
             if self._proc and self._proc.poll() is None:
                 self._proc.terminate()
-        except Exception:
-            pass
-
-    def _on_epoch_end(self, trainer):
-        try:
-            self.progress.emit(int(trainer.epoch) + 1, int(trainer.epochs))
-        except Exception:
-            pass
-
-    def _on_batch_end(self, trainer):
-        if self._cancel:
-            try:
-                trainer.stop = True
-            except Exception:
-                pass
-
-    def _attach_logger(self):
-        try:
-            # We skip attaching directly to python logger if using subprocess
-            pass
         except Exception:
             pass
 

@@ -31,16 +31,6 @@ def _create_gamma_lut(gamma):
 if NUMBA_AVAILABLE:
 
     @njit(cache=True, fastmath=True)
-    def _apply_brightness_contrast_numba(gray, contrast, brightness):
-        """Numba-optimized brightness/contrast adjustment."""
-        out = np.empty_like(gray)
-        for i in range(gray.shape[0]):
-            for j in range(gray.shape[1]):
-                val = int(gray[i, j] * contrast + brightness)
-                out[i, j] = min(max(val, 0), 255)
-        return out
-
-    @njit(cache=True, fastmath=True)
     def _compute_percentiles_numba(data, percentiles):
         """Fast percentile computation using sorting (Numba-optimized)."""
         sorted_data = np.sort(data.ravel())

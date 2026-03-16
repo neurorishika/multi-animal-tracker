@@ -153,8 +153,6 @@ class YOLOOBBDetector:
         self.device = self._detect_device()
         self.use_tensorrt = False
         self.use_onnx = False
-        self.tensorrt_model_path = None
-        self.onnx_model_path = None
         self.onnx_imgsz = None
         self.onnx_batch_size = 1
         self.tensorrt_batch_size = 1
@@ -319,7 +317,6 @@ class YOLOOBBDetector:
                 logger.info(f"Loading ONNX model from: {onnx_path}")
                 self.model = YOLO(str(onnx_path), task="obb")
                 self.use_onnx = True
-                self.onnx_model_path = str(onnx_path)
                 self.onnx_imgsz = int(onnx_imgsz)
                 self.onnx_batch_size = int(onnx_batch_size)
                 return
@@ -351,7 +348,6 @@ class YOLOOBBDetector:
                 logger.info(f"Loading ONNX model from: {onnx_path}")
                 self.model = YOLO(str(onnx_path), task="obb")
                 self.use_onnx = True
-                self.onnx_model_path = str(onnx_path)
                 self.onnx_imgsz = onnx_imgsz
                 self.onnx_batch_size = int(onnx_batch_size)
                 return
@@ -381,7 +377,6 @@ class YOLOOBBDetector:
             )
             self.model = YOLO(str(onnx_path), task="obb")
             self.use_onnx = True
-            self.onnx_model_path = str(onnx_path)
             self.onnx_imgsz = onnx_imgsz
             self.onnx_batch_size = int(onnx_batch_size)
             logger.info(f"ONNX model ready: {onnx_path}")
@@ -423,7 +418,6 @@ class YOLOOBBDetector:
                 try:
                     self.model = YOLO(str(engine_path), task="obb")
                     self.use_tensorrt = True
-                    self.tensorrt_model_path = str(engine_path)
                     self.tensorrt_batch_size = (
                         max_batch_size  # Store batch size for chunking
                     )
@@ -473,7 +467,6 @@ class YOLOOBBDetector:
                 # Load the TensorRT model
                 self.model = YOLO(str(engine_path), task="obb")
                 self.use_tensorrt = True
-                self.tensorrt_model_path = str(engine_path)
                 self.tensorrt_batch_size = max_batch_size  # Store for batching logic
                 logger.info("=" * 60)
                 logger.info(f"TENSORRT OPTIMIZATION COMPLETE (batch={max_batch_size})")
@@ -723,11 +716,6 @@ class YOLOOBBDetector:
                     nn.Dropout(0.2),
                     nn.Linear(64, 1),
                 )
-
-            def forward(self, x):
-                x = self.features(x)
-                x = self.classifier(x)
-                return x
 
         return _TinyHeadClassifier(input_size=input_size)
 
@@ -2238,9 +2226,7 @@ class YOLOOBBDetector:
 
         if return_raw:
             if yolo_results is not None:
-                yolo_results._raw_obb_corners = raw_obb_corners
-                yolo_results._raw_heading_hints = raw_heading_hints
-                yolo_results._raw_directed_mask = raw_directed_mask
+                pass
             return (
                 raw_meas,
                 raw_sizes,
@@ -2279,9 +2265,7 @@ class YOLOOBBDetector:
         # Return filtered OBB corners alongside other data
         # Store in results object for access by individual dataset generator
         if yolo_results is not None:
-            yolo_results._filtered_obb_corners = obb_corners_list
-            yolo_results._filtered_heading_hints = filtered_heading_hints
-            yolo_results._filtered_directed_mask = filtered_directed_mask
+            pass
 
         return meas, sizes, shapes, yolo_results, confidences
 

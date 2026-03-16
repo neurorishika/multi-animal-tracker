@@ -55,9 +55,6 @@ class PoseCanvas(QGraphicsView):
         self.pred_items: List[Optional[QGraphicsEllipseItem]] = []
         self.pred_edge_items: List[Optional[QGraphicsLineItem]] = []
         self.pred_labels: List[Optional[QGraphicsTextItem]] = []
-
-        self._img_w = 1
-        self._img_h = 1
         self._current_kpt = 0
         self._kpt_radius = DEFAULT_KPT_RADIUS
         self._label_font_size = DEFAULT_LABEL_FONT_SIZE
@@ -126,7 +123,7 @@ class PoseCanvas(QGraphicsView):
     def set_image(self, img_bgr: np.ndarray) -> None:
         """Load a BGR image into the canvas and fit it to the current viewport."""
         h, w = img_bgr.shape[:2]
-        self._img_w, self._img_h = w, h
+        self._img_h = w, h
         rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
         qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format_RGB888).copy()
         self.pix_item.setPixmap(QPixmap.fromImage(qimg))

@@ -102,32 +102,6 @@ class MetadataManager:
             self.metadata[image_path] = FrameMetadata(image_path=image_path)
         return self.metadata[image_path]
 
-    def add_tag(self: object, image_path: str, tag: str) -> object:
-        """Add a tag to a frame."""
-        meta = self.get_metadata(image_path)
-        meta.tags.add(tag)
-        self.save()
-
-    def remove_tag(self: object, image_path: str, tag: str) -> object:
-        """Remove a tag from a frame."""
-        meta = self.get_metadata(image_path)
-        meta.tags.discard(tag)
-        self.save()
-
-    def set_notes(self: object, image_path: str, notes: str) -> object:
-        """Set notes for a frame."""
-        meta = self.get_metadata(image_path)
-        meta.notes = notes
-        self.save()
-
-    def set_cluster_id(
-        self: object, image_path: str, cluster_id: Optional[int]
-    ) -> object:
-        """Set cluster ID for a frame."""
-        meta = self.get_metadata(image_path)
-        meta.cluster_id = cluster_id
-        self.save()
-
     def get_frames_by_tag(self, tag: str) -> List[str]:
         """Get all frames with a specific tag."""
         return [
@@ -213,46 +187,6 @@ class LabelVersioning:
 
         except Exception as e:
             logger.error(f"Failed to backup {label_path}: {e}")
-
-    def restore_label(
-        self: object, label_path: Path, version: Optional[int] = None
-    ) -> object:
-        """Restore a label from backup."""
-        stem = label_path.stem
-        existing = sorted(self.backup_dir.glob(f"{stem}.v*.txt"))
-
-        if not existing:
-            logger.warning(f"No backups found for {stem}")
-            return False
-
-        if version is None:
-            # Restore latest
-            backup_path = existing[-1]
-        else:
-            backup_path = self.backup_dir / f"{stem}.v{version:03d}.txt"
-            if not backup_path.exists():
-                logger.warning(f"Backup version {version} not found")
-                return False
-
-        try:
-            shutil.copy2(backup_path, label_path)
-            logger.info(f"Restored {label_path.name} from {backup_path.name}")
-            return True
-        except Exception as e:
-            logger.error(f"Failed to restore: {e}")
-            return False
-
-    def list_versions(self, label_stem: str) -> List[Tuple[int, Path]]:
-        """List all backup versions for a label."""
-        existing = sorted(self.backup_dir.glob(f"{label_stem}.v*.txt"))
-        versions = []
-        for backup in existing:
-            try:
-                version = int(backup.stem.split(".v")[1])
-                versions.append((version, backup))
-            except (IndexError, ValueError):
-                continue
-        return versions
 
 
 # -----------------------------

@@ -297,11 +297,6 @@ class SyncedVideoGrid(QWidget):
         self._prefetch_cache[key] = loader
         loader.start()
 
-    def set_panel_visible(self, idx: int, visible: bool) -> None:
-        """Show or hide a specific panel."""
-        if 0 <= idx < self._n_panels:
-            self._panels[idx].setVisible(visible)
-
     def seek(self, frame: int) -> None:
         """Seek to a specific frame."""
         frame = max(self._frame_start, min(self._frame_end, frame))
@@ -328,10 +323,6 @@ class SyncedVideoGrid(QWidget):
             self._btn_play.setText("❚❚")
             self._play_timer.start()
 
-    @property
-    def panel_count(self) -> int:
-        return self._n_panels
-
     def panel(self, idx: int) -> InteractiveCanvas:
         return self._panels[idx]
 
@@ -354,12 +345,6 @@ class SyncedVideoGrid(QWidget):
         """Step one frame backward."""
         if self._current_frame > self._frame_start:
             self.seek(self._current_frame - 1)
-
-    def _step_forward(self) -> None:
-        self.step_forward()
-
-    def _step_back(self) -> None:
-        self.step_back()
 
     def _on_play_tick(self) -> None:
         if self._current_frame >= self._frame_end:

@@ -22,9 +22,6 @@ from multi_tracker.core.tracking.pose_features import (
 from multi_tracker.core.tracking.pose_features import (
     build_pose_detection_keypoint_map as _pf_build_keypoint_map,
 )
-from multi_tracker.core.tracking.pose_features import (  # noqa: F401 (re-exported via parity path)
-    collapse_obb_axis_theta as _pf_collapse_obb_axis,
-)
 from multi_tracker.core.tracking.pose_features import (
     compute_detection_pose_features as _pf_compute_det_features,
 )
@@ -1109,11 +1106,6 @@ class TrackingOptimizer(QThread):
             composite += 0.3 * float(np.std(sub_scores_arr[active_mask]))
 
         return composite, sub_scores, frame_positions
-
-    def _run_tracking_pass_cached(self, params: Dict[str, Any]) -> float:
-        """Thin wrapper retained for backwards compatibility."""
-        score, _, _ = self._run_tracking_loop(params)
-        return score
 
 
 class DetectionCacheBuilderWorker(QThread):

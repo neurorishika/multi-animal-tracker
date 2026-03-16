@@ -571,7 +571,6 @@ class MainWindow(QMainWindow):
             self._update_nav_state()
             return
 
-        self._csv_path = csv_path
         self._writer = CorrectionWriter(csv_path)
         self._writer.open()
         self._df = self._writer.df

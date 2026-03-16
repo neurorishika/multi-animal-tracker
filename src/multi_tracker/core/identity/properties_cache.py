@@ -267,9 +267,6 @@ class IndividualPropertiesCache:
     def is_compatible(self) -> bool:
         return self._compatible
 
-    def has_frame(self, frame_idx: int) -> bool:
-        return int(frame_idx) in self._cached_frames
-
     def get_cached_frames(self) -> Iterable[int]:
         return sorted(self._cached_frames)
 
@@ -376,38 +373,6 @@ class IndividualPropertiesCache:
             "pose_num_keypoints": num_kpts_list,
             "pose_keypoints": list(pose_arr.tolist()),
         }
-
-    def get_detection(
-        self, frame_idx: int, detection_id: float, min_valid_conf: float = 0.2
-    ) -> Optional[Dict[str, Any]]:
-        """Get detection data with summary statistics computed on-demand.
-
-        Args:
-            frame_idx: Frame index
-            detection_id: Detection ID to retrieve
-            min_valid_conf: Minimum confidence threshold for keypoint validity
-        """
-        frame = self.get_frame(frame_idx, min_valid_conf=min_valid_conf)
-        ids = frame.get("detection_ids", [])
-        try:
-            target = int(detection_id)
-        except Exception:
-            return None
-        for i, did in enumerate(ids):
-            try:
-                if int(did) != target:
-                    continue
-            except Exception:
-                continue
-            return {
-                "detection_id": did,
-                "pose_mean_conf": frame["pose_mean_conf"][i],
-                "pose_valid_fraction": frame["pose_valid_fraction"][i],
-                "pose_num_valid": frame["pose_num_valid"][i],
-                "pose_num_keypoints": frame["pose_num_keypoints"][i],
-                "pose_keypoints": frame["pose_keypoints"][i],
-            }
-        return None
 
     def close(self) -> None:
         if self._loaded_data is not None:

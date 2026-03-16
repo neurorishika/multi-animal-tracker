@@ -196,10 +196,5 @@ class AddSourceDialog(QDialog):
         return self._selected_dir
 
     @property
-    def selected_images_dir(self) -> Optional[Path]:
-        """The resolved images folder (may be inside selected_dir/images/ or selected_dir itself)."""
-        return self._resolved_images_dir
-
-    @property
     def description(self) -> str:
         return self._le_desc.text().strip()

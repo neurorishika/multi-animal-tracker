@@ -55,7 +55,6 @@ class MainWindow(QMainWindow):
         self.embeddings = None
         self.umap_coords = None
         self.cluster_assignments = None
-        self.current_image_index = 0
         self.image_paths = []
         self.image_labels = []
         self.image_confidences = []
@@ -68,10 +67,8 @@ class MainWindow(QMainWindow):
         self._label_shortcuts = []
         self.label_history = []
         self.last_assigned_stack = []
-        self.last_cluster_result = None
         self.last_umap_params = {"n_neighbors": 15, "min_dist": 0.1}
         self.last_preview_index = None
-        self._history_refresh_pending = False
         self._history_icon_cache = {}
         self._history_thumb_load_budget = 2
         self._command_busy = False
@@ -1004,31 +1001,6 @@ class MainWindow(QMainWindow):
         self.setup_label_shortcuts()
         self.rebuild_label_buttons()
 
-    def create_placeholder_page(self, title: str, description: str) -> QWidget:
-        """Create a styled placeholder page."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setContentsMargins(40, 40, 40, 40)
-
-        title_label = QLabel(
-            f"<h1 style='color: #ffffff; font-weight: 300;'>{title}</h1>"
-        )
-        title_label.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title_label)
-
-        desc_label = QLabel(description.replace("\\n", "<br>"))
-        desc_label.setAlignment(Qt.AlignCenter)
-        desc_label.setWordWrap(True)
-        desc_label.setStyleSheet(
-            "color: #aaaaaa; font-size: 12px; padding: 24px; "
-            + "background-color: #252526; border-radius: 8px; line-height: 1.8;"
-        )
-        layout.addWidget(desc_label)
-
-        layout.addStretch()
-        return widget
-
     def setup_statusbar(self):
         """Setup status bar."""
         self.status = QStatusBar()
@@ -1812,13 +1784,8 @@ class MainWindow(QMainWindow):
             return
         self.request_update_explorer_plot()
 
-    def apply_class_changes(self):
-        """Delegate to the dedicated class editor dialog."""
-        self.open_class_editor()
-
     def refresh_label_history_strip(self):
         """Refresh bottom strip of recently labeled items for quick undo/relabel."""
-        self._history_refresh_pending = False
         recent = list(reversed(self.label_history[-24:]))
         allow_thumbnail_load = (not self._command_busy) and (
             time.monotonic() >= self._command_block_until
@@ -1871,7 +1838,6 @@ class MainWindow(QMainWindow):
 
     def request_refresh_label_history_strip(self):
         """Coalesce strip rebuilds to avoid repeated widget churn during rapid labeling."""
-        self._history_refresh_pending = True
         self._history_refresh_timer.start()
 
     def keyPressEvent(self, event):
@@ -2207,16 +2173,6 @@ class MainWindow(QMainWindow):
             f"Uncertainty outline threshold: {self._outline_threshold:.2f}"
         )
 
-    def toggle_explorer_mode(self):
-        """Cycle explore -> labeling -> predictions -> explore."""
-        cycle = ["explore", "labeling", "predictions"]
-        try:
-            idx = cycle.index(self.explorer_mode)
-        except ValueError:
-            idx = 0
-        new_mode = cycle[(idx + 1) % len(cycle)]
-        self.set_explorer_mode(new_mode)
-
     def on_sample_next_triggered(self):
         """Action for 'Sample Next' button."""
         self.sample_candidates_for_labeling()
@@ -2464,7 +2420,6 @@ class MainWindow(QMainWindow):
 
         neighbor_index = int(self._current_knn_neighbors[0]["index"])
         self.selected_point_index = neighbor_index
-        self.current_image_index = neighbor_index
         self.hover_locked = True
         self.request_preview_for_index(neighbor_index, source="knn-jump")
         self.request_update_explorer_selection(neighbor_index)
@@ -2711,7 +2666,6 @@ class MainWindow(QMainWindow):
         # chain of workers.  For now launch one per source and reload on all done.
         self._ingest_queue = list(all_image_dirs)
         self._ingest_batch_total = len(self._ingest_queue)
-        self._ingest_batch_done = 0
         self._run_next_ingest()
 
     def _run_next_ingest(self):
@@ -3200,16 +3154,6 @@ class MainWindow(QMainWindow):
             self.shortcut_help.setText("".join(lines))
 
     # ── startup overlay ──────────────────────────────────────────────────
-
-    def show_startup_overlay(self):
-        """Legacy compatibility hook.
-
-        ClassKit now starts on the central splash page, so no modal startup
-        chooser is shown anymore. If a project is already loaded, ensure the
-        working layout is visible.
-        """
-        if hasattr(self, "_stacked"):
-            self._stacked.setCurrentIndex(1 if self.project_path else 0)
 
     def compute_embeddings(self):
         """Compute embeddings for all images."""
@@ -3811,35 +3755,6 @@ class MainWindow(QMainWindow):
         dialog.publish_btn.clicked.connect(_on_publish)
         dialog.exec()
 
-    def _split_train_val_indices(self, y: np.ndarray, val_fraction: float):
-        """Create stratified train/val index split from label vector."""
-        rng = np.random.default_rng(42)
-        train_parts = []
-        val_parts = []
-
-        for class_id in np.unique(y):
-            class_indices = np.where(y == class_id)[0]
-            rng.shuffle(class_indices)
-
-            if len(class_indices) < 3 or val_fraction <= 0.0:
-                train_parts.append(class_indices)
-                continue
-
-            n_val = int(round(len(class_indices) * val_fraction))
-            n_val = max(1, n_val)
-            n_val = min(n_val, len(class_indices) - 1)
-
-            val_parts.append(class_indices[:n_val])
-            train_parts.append(class_indices[n_val:])
-
-        train_idx = (
-            np.concatenate(train_parts) if train_parts else np.array([], dtype=np.int64)
-        )
-        val_idx = (
-            np.concatenate(val_parts) if val_parts else np.array([], dtype=np.int64)
-        )
-        return train_idx, val_idx
-
     def export_dataset(self):
         """Export labeled dataset."""
         self._flush_pending_label_updates(force=True)
@@ -4191,17 +4106,12 @@ class MainWindow(QMainWindow):
 
     # ================== UI Callbacks ==================
 
-    def on_nav_changed(self, index):
-        """Legacy callback retained for compatibility."""
-        self.status.showMessage("Explorer layout is active")
-
     def on_explorer_point_clicked(self, index):
         """Handle point click in explorer."""
         if self.explorer_mode != "labeling":
             self.status.showMessage("Selection is disabled outside Labeling mode")
             return
         self.selected_point_index = index
-        self.current_image_index = index
         self.hover_locked = True
         self.request_preview_for_index(index, source="click")
         self.request_update_explorer_selection(index)
@@ -4434,16 +4344,6 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(percentage)
         self.status.showMessage(f"[Step 1/5] Ingesting: {message}")
 
-    def on_ingest_success(self, result):
-        """Handle successful ingestion (single-folder legacy path).
-
-        Batch ingest uses _on_ingest_batch_item_done instead.
-        """
-        num_images = result.get("num_images", 0)
-        self.status.showMessage(f"Ingested {num_images:,} images")
-        self.load_project_data()
-        self.update_context_panel()
-
     def on_ingest_error(self, error_msg):
         """Handle ingestion error."""
         QMessageBox.critical(
@@ -4486,7 +4386,6 @@ class MainWindow(QMainWindow):
     def on_clustering_success(self, result):
         """Handle successful clustering."""
         self.cluster_assignments = result["assignments"]
-        self.last_cluster_result = result
         self.candidate_indices = []
         n_clusters = len(set(self.cluster_assignments))
 
@@ -4559,133 +4458,6 @@ class MainWindow(QMainWindow):
         ):
             self.status.showMessage("Auto-triggering UMAP projection...")
             self.compute_umap()
-
-    def on_training_progress(self, percentage, message):
-        """Update progress for classifier training."""
-        self.progress_bar.setValue(percentage)
-        self.status.showMessage(f"[Step 5/5] Training: {message}")
-
-    def on_training_success(self, result):
-        """Handle successful classifier training."""
-        trainer = result.get("trainer")
-        history = result.get("history", {})
-        metrics = result.get("metrics")
-        self._trained_classifier = trainer
-
-        val_acc_values = history.get("val_acc", []) if isinstance(history, dict) else []
-        best_val_acc = max(val_acc_values) if val_acc_values else None
-
-        summary = (
-            f"Best validation accuracy: {best_val_acc:.3f}"
-            if best_val_acc is not None
-            else "No validation split used"
-        )
-
-        # Update Metrics tab if we have evaluation results
-        if metrics:
-            self._update_metrics_display(metrics)
-
-        saved_note = ""
-        if trainer is not None and self.project_path is not None:
-            try:
-                model_dir = self.project_path / "models"
-                model_dir.mkdir(parents=True, exist_ok=True)
-                timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
-                latest_path = model_dir / "classifier_latest.pt"
-                snapshot_path = model_dir / f"classifier_{timestamp}.pt"
-                trainer.save(latest_path)
-                trainer.save(snapshot_path)
-
-                metadata = {
-                    "timestamp": timestamp,
-                    "best_val_acc": (
-                        float(best_val_acc) if best_val_acc is not None else None
-                    ),
-                    "history": history,
-                    "settings": self._last_training_settings or {},
-                    "latest_checkpoint": str(latest_path),
-                    "snapshot_checkpoint": str(snapshot_path),
-                }
-                # If we have metrics, add them to the saved metadata too
-                if metrics:
-                    metadata["metrics"] = {
-                        "accuracy": metrics.accuracy,
-                        "macro_f1": metrics.macro_f1,
-                    }
-
-                with open(model_dir / "classifier_latest.json", "w") as f:
-                    json.dump(metadata, f, indent=2)
-                saved_note = f"\nCheckpoints saved to {model_dir}"
-            except Exception as exc:
-                saved_note = f"\nModel save warning: {exc}"
-
-        QMessageBox.information(
-            self,
-            "Training Complete",
-            "Embedding head training finished successfully.\n\n" + summary + saved_note,
-        )
-        self.status.showMessage("Classifier training complete")
-
-        # Auto-populate model probs + update confidences so AL batch builder works
-        if trainer is not None and self.embeddings is not None:
-            probs = trainer.predict_proba(self.embeddings, calibrated=True)
-            self._model_probs = probs
-            self._model_class_names = list(self.classes)
-            self.umap_model_coords = None
-            self.pca_model_coords = None
-            self._show_model_umap = False
-            self._show_model_pca = False
-            self.btn_umap_embedding.setChecked(True)
-            self.btn_umap_model.setChecked(False)
-            if hasattr(self, "btn_pca_model"):
-                self.btn_pca_model.setChecked(False)
-            self.image_confidences = list(probs.max(axis=1).astype(float))
-            self._set_model_projection_buttons_enabled(True)
-            self._update_al_status()
-            self.update_explorer_plot()
-
-        unlabeled_count = sum(1 for label in self.image_labels if not label)
-        if unlabeled_count > 0 and self._ask_yes_no(
-            "Run Predictions Now?",
-            f"There are {unlabeled_count:,} unlabeled images.\n\n"
-            "Run classifier predictions for unlabeled images now?",
-        ):
-            QTimer.singleShot(0, self.predict_unlabeled_images)
-
-    def on_training_error(self, error_msg):
-        """Handle classifier training error."""
-        QMessageBox.critical(
-            self,
-            "Training Error",
-            f"Failed to train classifier:\\n\\n{error_msg}",
-        )
-        self.status.showMessage("Classifier training failed")
-
-    def create_placeholder_page(self, title, description):
-        """Create a styled placeholder page for upcoming features."""
-        page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setAlignment(Qt.AlignCenter)
-
-        container = QFrame()
-        container.setFixedWidth(500)
-        container.setStyleSheet(
-            "background: #252526; border-radius: 8px; padding: 40px;"
-        )
-        vbox = QVBoxLayout(container)
-
-        lbl_title = QLabel(f"<h2>{title}</h2>")
-        lbl_title.setAlignment(Qt.AlignCenter)
-        vbox.addWidget(lbl_title)
-
-        lbl_desc = QLabel(description)
-        lbl_desc.setWordWrap(True)
-        lbl_desc.setAlignment(Qt.AlignCenter)
-        lbl_desc.setStyleSheet("color: #aaaaaa; font-size: 14px; margin-top: 10px;")
-        vbox.addWidget(lbl_desc)
-
-        layout.addWidget(container)
-        return page
 
     def closeEvent(self, event):
         """Ensure pending label updates are flushed before close."""
@@ -5145,10 +4917,6 @@ class MainWindow(QMainWindow):
             "model_pca": "Model Logits (PCA)",
         }.get(target, target)
         self.status.showMessage(f"Explorer space → {label}")
-
-    def _switch_umap_view(self, use_model: bool):
-        """Backward-compatible wrapper for old callers."""
-        self._switch_projection_space("model_umap" if use_model else "embedding")
 
     def _replot_umap_model_space(self, auto_switch: bool = True):
         """Compute UMAP from current model probabilities and switch explorer to it."""

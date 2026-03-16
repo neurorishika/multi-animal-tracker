@@ -302,12 +302,6 @@ class DetectionCache:
         """Get the frame range stored in cache."""
         return self._start_frame, self._end_frame
 
-    def matches_frame_range(
-        self: object, start_frame: object, end_frame: object
-    ) -> object:
-        """Check if cache matches the requested frame range."""
-        return self._start_frame == start_frame and self._end_frame == end_frame
-
     def covers_frame_range(
         self: object, start_frame: object, end_frame: object
     ) -> object:

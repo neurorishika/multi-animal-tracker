@@ -263,8 +263,6 @@ class MainWindow(QMainWindow):
 
         # Canvas
         # Load UI settings - will be applied after widgets are created
-        self._ui_settings = load_ui_settings()
-
         self.canvas = PoseCanvas(parent=self)
         self.canvas.set_callbacks(
             self.on_place_kpt, self.on_move_kpt, self.on_select_kpt
@@ -679,7 +677,6 @@ class MainWindow(QMainWindow):
         self.status_sleap = QLabel("SLEAP: off")
         self.status_sleap.setVisible(False)
         self.statusBar().addPermanentWidget(self.status_sleap)
-        self._last_saved_at = None
         self.status_autosave = QLabel("Saved")
         self.statusBar().addPermanentWidget(self.status_autosave)
 
@@ -1250,15 +1247,6 @@ class MainWindow(QMainWindow):
                 return
         except Exception:
             pass
-
-    def show_startup_open_overlay(self: object) -> object:
-        """Legacy compatibility hook.
-
-        PoseKit now uses an in-window splash page rather than a modal startup
-        chooser dialog.
-        """
-        if hasattr(self, "_content_stack"):
-            self._content_stack.setCurrentIndex(1 if self.image_paths else 0)
 
     def new_project_wizard(self) -> None:
         """Run the New Project wizard and switch to the created project."""
@@ -2869,7 +2857,6 @@ class MainWindow(QMainWindow):
 
     def _set_saved_status(self):
         ts = datetime.now().strftime("%H:%M:%S")
-        self._last_saved_at = ts
         self._set_autosave_status(f"Saved {ts}")
 
     def _set_dirty(self):
@@ -4674,13 +4661,6 @@ class MainWindow(QMainWindow):
             return p
         return None
 
-    def _get_pred_exported_model_or_prompt(self) -> Optional[Path]:
-        path = self._get_pred_exported_model_silent()
-        if path is not None:
-            return path
-        self._browse_pred_exported_model()
-        return self._get_pred_exported_model_silent()
-
     def _pred_cache_model(
         self,
         model: Optional[Path],
@@ -5401,10 +5381,6 @@ class MainWindow(QMainWindow):
         dlg.exec()
 
     # Backwards/alternate name used in older menu wiring.
-    def open_active_learning_sampler(self: object) -> object:
-        """open_active_learning_sampler method documentation."""
-        self.open_active_learning()
-
     def _load_metadata_ui(self):
         if not self.image_paths:
             return
@@ -5455,9 +5431,3 @@ class MainWindow(QMainWindow):
             else:
                 cluster_ids.append(-1)
         return cluster_ids
-
-    def _on_clusters_updated(self):
-        self._cluster_ids_cache = None
-        self._cluster_ids_mtime = None
-        self._populate_frames()
-        self._populate_frames()

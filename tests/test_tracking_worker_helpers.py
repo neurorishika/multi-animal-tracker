@@ -74,6 +74,9 @@ def _load_worker_module():
     detection_cache = types.ModuleType("multi_tracker.data.detection_cache")
     detection_cache.DetectionCache = object
 
+    tag_observation_cache = types.ModuleType("multi_tracker.data.tag_observation_cache")
+    tag_observation_cache.TagObservationCache = object
+
     batch_optimizer = types.ModuleType("multi_tracker.utils.batch_optimizer")
     batch_optimizer.BatchOptimizer = object
 
@@ -124,6 +127,12 @@ def _load_worker_module():
     identity = types.ModuleType("multi_tracker.core.identity.analysis")
     identity.IndividualDatasetGenerator = object
 
+    tag_features = types.ModuleType("multi_tracker.core.tracking.tag_features")
+    tag_features.NO_TAG = -1
+    tag_features.TrackTagHistory = object
+    tag_features.build_detection_tag_id_list = lambda *_args, **_kwargs: []
+    tag_features.build_tag_detection_map = lambda *_args, **_kwargs: {}
+
     stubs = {
         "cv2": make_cv2_stub(),
         "PySide6": pyside,
@@ -137,6 +146,7 @@ def _load_worker_module():
         "multi_tracker.utils.geometry": geometry,
         "multi_tracker.utils.video_artifacts": video_artifacts,
         "multi_tracker.data.detection_cache": detection_cache,
+        "multi_tracker.data.tag_observation_cache": tag_observation_cache,
         "multi_tracker.utils.batch_optimizer": batch_optimizer,
         "multi_tracker.utils.frame_prefetcher": frame_prefetcher,
         "multi_tracker.core.filters": core_filters,
@@ -150,6 +160,7 @@ def _load_worker_module():
         "multi_tracker.core.detectors.engine": detectors_engine,
         "multi_tracker.core.assigners.hungarian": assigner,
         "multi_tracker.core.identity.analysis": identity,
+        "multi_tracker.core.tracking.tag_features": tag_features,
     }
 
     return load_src_module(
@@ -300,6 +311,24 @@ def test_individual_properties_cache_path_defaults_to_video_cache_dir(
 
     assert cache_path.parent == tmp_path / "clip_caches"
     assert cache_path.name == "clip_individual_properties_props_4_9.npz"
+
+
+def test_confidence_density_enabled_defaults_true_and_respects_flag() -> None:
+    mod = _load_worker_module()
+    worker = mod.TrackingWorker("dummy.mp4")
+
+    assert worker._confidence_density_enabled({}) is True
+    assert (
+        worker._confidence_density_enabled({"ENABLE_CONFIDENCE_DENSITY_MAP": True})
+        is True
+    )
+    assert (
+        worker._confidence_density_enabled({"ENABLE_CONFIDENCE_DENSITY_MAP": False})
+        is False
+    )
+
+    worker.set_parameters({"ENABLE_CONFIDENCE_DENSITY_MAP": False})
+    assert worker._confidence_density_enabled() is False
 
 
 def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:

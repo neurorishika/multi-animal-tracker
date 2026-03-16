@@ -118,3 +118,35 @@ def test_xanylabeling_env_preference_restores_and_updates(
     assert saved_preferences
     assert saved_preferences[-1]["xanylabeling_env"] == "x-anylabeling-alpha"
     window.close()
+
+
+def test_confidence_density_toggle_roundtrip_updates_visibility(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    window = _make_main_window(monkeypatch)
+
+    assert not window.g_density.isHidden()
+
+    window.chk_enable_confidence_density_map.setChecked(False)
+
+    assert window.g_density.isHidden()
+    assert window.get_parameters_dict()["ENABLE_CONFIDENCE_DENSITY_MAP"] is False
+
+    config_path = tmp_path / "confidence_density_toggle.json"
+    assert window.save_config(preset_mode=True, preset_path=str(config_path))
+    saved_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_cfg["enable_confidence_density_map"] is False
+    window.close()
+
+    reloaded_window = _make_main_window(monkeypatch)
+    reloaded_window._load_config_from_file(str(config_path), preset_mode=True)
+
+    assert reloaded_window.chk_enable_confidence_density_map.isChecked() is False
+    assert reloaded_window.g_density.isHidden()
+
+    reloaded_window.chk_enable_confidence_density_map.setChecked(True)
+
+    assert not reloaded_window.g_density.isHidden()
+    reloaded_window.close()

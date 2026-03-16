@@ -226,38 +226,6 @@ def inspect_obb_or_detect_dataset(root_dir: str | Path) -> DatasetInspection:
     raise RuntimeError(f"No valid OBB/detect dataset layout found in {root}")
 
 
-def inspect_classify_dataset(root_dir: str | Path) -> ClassifyInspection:
-    """Inspect a classify dataset with split/class/image directory layout."""
-
-    root = Path(root_dir).expanduser().resolve()
-    if not root.exists():
-        raise RuntimeError(f"Classify dataset root not found: {root}")
-
-    splits: dict[str, dict[str, list[str]]] = {}
-    for split in ("train", "val", "test"):
-        split_dir = root / split
-        if not split_dir.exists() or not split_dir.is_dir():
-            continue
-        classes: dict[str, list[str]] = {}
-        for class_dir in sorted(split_dir.iterdir()):
-            if not class_dir.is_dir():
-                continue
-            images = [
-                str(p.resolve())
-                for p in sorted(class_dir.rglob("*"))
-                if p.suffix.lower() in IMAGE_EXTS
-            ]
-            if images:
-                classes[class_dir.name] = images
-        if classes:
-            splits[split] = classes
-
-    if not splits:
-        raise RuntimeError(f"No valid classify split structure found in {root}")
-
-    return ClassifyInspection(root_dir=str(root), splits=splits)
-
-
 def split_items_for_training(
     inspection: DatasetInspection, split_cfg: tuple[float, float, float], seed: int
 ) -> dict[str, list[DatasetItem]]:

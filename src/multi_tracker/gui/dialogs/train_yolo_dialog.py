@@ -42,7 +42,7 @@ from ...training import (
     TrainingRole,
     TrainingRunSpec,
 )
-from ...training.validation import ValidationReport, format_validation_report
+from ...training.validation import format_validation_report
 from ...utils.gpu_utils import get_device_info
 
 logger = logging.getLogger(__name__)
@@ -137,8 +137,6 @@ class TrainYoloDialog(QDialog):
         self.workspace_default = self.repo_root / "training" / "YOLO"
         self.orchestrator = TrainingOrchestrator(self.workspace_default)
 
-        self.validation_report: ValidationReport | None = None
-        self.merged_dataset_dir = ""
         self.role_dataset_dirs: dict[str, str] = {}
 
         self._build_ui()
@@ -488,7 +486,6 @@ class TrainYoloDialog(QDialog):
             QMessageBox.critical(self, "Validation Error", str(exc))
             return False
 
-        self.validation_report = report
         self.validation_view.setPlainText(format_validation_report(report))
 
         status = "Validated" if report.valid else "Validation Failed"
@@ -535,7 +532,6 @@ class TrainYoloDialog(QDialog):
                 seed=self.spin_seed.value(),
                 dedup=self.chk_dedup.isChecked(),
             )
-            self.merged_dataset_dir = merged.dataset_dir
             self.role_dataset_dirs = {}
             self._append_log(f"Merged dataset: {merged.dataset_dir}")
 

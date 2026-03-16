@@ -145,20 +145,6 @@ class IndividualDatasetGenerator:
             f"output_dir={self.output_dir}"
         )
 
-    def set_background_color(self, color: Tuple[int, int, int]) -> None:
-        """
-        Set the background color for masked crops.
-
-        Args:
-            color: Tuple of (B, G, R) values (0-255) or single value for grayscale
-        """
-        if isinstance(color, (list, tuple)) and len(color) == 3:
-            self.background_color = tuple(color)
-        else:
-            raise ValueError(
-                f"Background color must be a tuple of 3 values (BGR), got {color}"
-            )
-
     @staticmethod
     def compute_median_color_from_frame(frame: np.ndarray) -> Tuple[int, int, int]:
         """

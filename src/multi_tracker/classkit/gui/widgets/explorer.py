@@ -37,7 +37,6 @@ class ExplorerView(QGraphicsView):
         self.setScene(self.scene)
 
         self.points = []  # Keep track of items
-        self.data_indices = []  # Map item index to data index
         self.selected_index = None
         self.candidate_indices = set()
         self.round_labeled_indices = set()
@@ -286,7 +285,6 @@ class ExplorerView(QGraphicsView):
         self._base_colors = []
         self._base_radii = []
         self._point_centers = []
-        self.data_indices = range(len(coords))
         self.selected_index = selected_index
         self.candidate_indices = set(candidate_indices or [])
         self.round_labeled_indices = set(round_labeled_indices or [])

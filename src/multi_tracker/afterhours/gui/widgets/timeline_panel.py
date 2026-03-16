@@ -9,8 +9,8 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
-from PySide6.QtCore import QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QAction, QColor, QMouseEvent, QPainter, QPen, QWheelEvent
+from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtGui import QAction, QMouseEvent, QWheelEvent
 from PySide6.QtWidgets import QLabel, QMenu, QScrollArea, QVBoxLayout, QWidget
 
 # Colour palette (RGB) — same order as video player but in RGB for Qt.
@@ -105,55 +105,6 @@ class _TimelineCanvas(QWidget):
     # ------------------------------------------------------------------
     # Painting
     # ------------------------------------------------------------------
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-
-        painter.fillRect(QRect(0, 0, _LABEL_WIDTH, self.height()), QColor(37, 37, 38))
-
-        for row, tid in enumerate(self._track_order):
-            y_top = row * self._row_height + _BAR_MARGIN
-            bar_h = self._row_height - 2 * _BAR_MARGIN
-
-            painter.setPen(QPen(QColor(204, 204, 204)))
-            label_rect = QRect(0, y_top, _LABEL_WIDTH - 4, bar_h)
-            painter.drawText(
-                label_rect,
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                str(tid),
-            )
-
-            fmin, fmax = self._tracks[tid]
-            x1 = self._frame_to_x(fmin)
-            x2 = self._frame_to_x(fmax)
-            r, g, b = _PALETTE_RGB[tid % len(_PALETTE_RGB)]
-            painter.fillRect(
-                QRect(x1, y_top, max(x2 - x1, 2), bar_h),
-                QColor(r, g, b, 180),
-            )
-
-        total_bar_h = max(len(self._track_order) * self._row_height, self.height())
-
-        # Event highlight range (orange)
-        if self._highlight_range is not None:
-            hl_x1 = self._frame_to_x(self._highlight_range[0])
-            hl_x2 = self._frame_to_x(self._highlight_range[1])
-            painter.setPen(QPen(QColor(255, 165, 0, 200), 2))
-            painter.drawRect(QRect(hl_x1, 0, max(hl_x2 - hl_x1, 2), total_bar_h))
-
-        # Right-click drag selection (cyan tint)
-        if self._sel_start_x is not None and self._sel_end_x is not None:
-            sx1 = min(self._sel_start_x, self._sel_end_x)
-            sx2 = max(self._sel_start_x, self._sel_end_x)
-            painter.fillRect(
-                QRect(sx1, 0, max(sx2 - sx1, 1), total_bar_h),
-                QColor(100, 200, 255, 50),
-            )
-            painter.setPen(QPen(QColor(100, 200, 255, 200), 1, Qt.PenStyle.DashLine))
-            painter.drawRect(QRect(sx1, 0, max(sx2 - sx1, 1), total_bar_h))
-
-        painter.end()
 
     # ------------------------------------------------------------------
     # Mouse events

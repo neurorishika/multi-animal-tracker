@@ -392,53 +392,6 @@ def find_regions(
 # ---------------------------------------------------------------------------
 
 
-def tag_detections(
-    detections: List[Dict[str, Any]],
-    regions: List[DensityRegion],
-) -> List[Dict[str, Any]]:
-    """Annotate each detection dict with region membership information.
-
-    Each dict in *detections* must contain keys ``"frame"``, ``"cx"``,
-    ``"cy"``.  Two keys are added (or overwritten) in-place:
-
-    - ``"region_label"``: the label of the first matching
-      :class:`DensityRegion`, or ``"open_field"`` if none match.
-    - ``"region_boundary"``: ``True`` if the detection falls in the temporal
-      boundary of its region (uses default margin of 3 frames).
-
-    Parameters
-    ----------
-    detections:
-        List of detection dicts.
-    regions:
-        List of :class:`DensityRegion` to test against.
-
-    Returns
-    -------
-    List[Dict[str, Any]]
-        The same list (modified in-place) for convenience.
-    """
-    for det in detections:
-        frame = int(det["frame"])
-        cx = float(det["cx"])
-        cy = float(det["cy"])
-
-        matched_region: Optional[DensityRegion] = None
-        for region in regions:
-            if region.contains(frame, cx, cy):
-                matched_region = region
-                break
-
-        if matched_region is None:
-            det["region_label"] = "open_field"
-            det["region_boundary"] = False
-        else:
-            det["region_label"] = matched_region.label
-            det["region_boundary"] = matched_region.is_boundary_frame(frame)
-
-    return detections
-
-
 # ---------------------------------------------------------------------------
 # save_regions / load_regions
 # ---------------------------------------------------------------------------

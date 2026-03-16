@@ -161,25 +161,6 @@ class CorrectionWriter:
             logger.info("Created proofread copy: %s", self.proofread_path)
         self._df = pd.read_csv(self.proofread_path)
 
-    def apply_correction(
-        self,
-        track_a: int,
-        track_b: int,
-        split_frame: int,
-        swap_post: bool,
-    ) -> None:
-        """Apply a split+swap correction and write atomically."""
-        if self._df is None:
-            raise RuntimeError("Call open() before apply_correction()")
-        self._df = apply_split_and_swap(
-            self._df,
-            track_a,
-            track_b,
-            split_frame,
-            swap_post,
-        )
-        self._write_atomic()
-
     def apply_merge(self, track_ids: List[int]) -> None:
         """Merge fragment track IDs into one and persist."""
         if self._df is None:
@@ -216,41 +197,6 @@ class CorrectionWriter:
         df.loc[mask_relabel, "TrajectoryID"] = source_id
 
         self._df = df
-        self._write_atomic()
-
-    def apply_delete(
-        self,
-        track_id: int,
-        frame_range: Optional[Tuple[int, int]] = None,
-    ) -> None:
-        """Delete a track (or part of it) and persist."""
-        if self._df is None:
-            raise RuntimeError("Call open() before apply_delete()")
-        self._df = delete_track(self._df, track_id, frame_range)
-        self._write_atomic()
-
-    def apply_erase_flicker(
-        self,
-        track_a: int,
-        track_b: int,
-        frame_start: int,
-        frame_end: int,
-    ) -> None:
-        """Erase a flicker (swap IDs within window) and persist."""
-        if self._df is None:
-            raise RuntimeError("Call open() before apply_erase_flicker()")
-        self._df = erase_flicker(self._df, track_a, track_b, frame_start, frame_end)
-        self._write_atomic()
-
-    def apply_reassign_chain(
-        self,
-        assignments: Dict[int, int],
-        split_frame: int,
-    ) -> None:
-        """N-way relabeling from *split_frame* onward and persist."""
-        if self._df is None:
-            raise RuntimeError("Call open() before apply_reassign_chain()")
-        self._df = reassign_chain(self._df, assignments, split_frame)
         self._write_atomic()
 
     def _write_atomic(self) -> None:

@@ -16,10 +16,9 @@ POSE_SUMMARY_COLUMNS = [
     "PoseNumValid",
     "PoseNumKeypoints",
 ]
+
+
 # Backward-compatible alias used by tests/importers.
-POSE_EXPORT_COLUMNS = POSE_SUMMARY_COLUMNS
-
-
 def _pose_value_columns(df: pd.DataFrame) -> List[str]:
     return [c for c in df.columns if str(c).startswith("Pose")]
 

@@ -66,22 +66,6 @@ class IngestWorker:
         """
         self.db = db
 
-    def scan_folder(self, folder: Path, extensions: List[str] = None) -> List[Path]:
-        """Scan a folder for images.
-
-        Args:
-            folder: Path to folder to scan
-            extensions: List of valid extensions (default: ['.jpg', '.png', '.jpeg'])
-
-        Returns:
-            List of image paths
-        """
-        if extensions is None:
-            extensions = [".jpg", ".png", ".jpeg"]
-
-        images = list(scan_images(folder, extensions))
-        return images
-
     def ingest(self, image_paths: List[Path], compute_hashes: bool = True):
         """Ingest images into database.
 

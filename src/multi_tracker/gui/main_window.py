@@ -20,7 +20,6 @@ from datetime import datetime
 from pathlib import Path
 
 import cv2
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal, Slot
@@ -98,12 +97,7 @@ from ..core.tracking.worker import TrackingWorker
 from ..data.csv_writer import CSVWriterThread
 from ..data.detection_cache import DetectionCache
 from ..utils.geometry import fit_circle_to_points, wrap_angle_degs
-from ..utils.gpu_utils import (
-    MPS_AVAILABLE,
-    ROCM_AVAILABLE,
-    TENSORRT_AVAILABLE,
-    TORCH_CUDA_AVAILABLE,
-)
+from ..utils.gpu_utils import MPS_AVAILABLE, TENSORRT_AVAILABLE, TORCH_CUDA_AVAILABLE
 from ..utils.pose_visualization import (
     is_renderable_pose_keypoint,
     normalize_pose_render_min_conf,
@@ -1885,7 +1879,6 @@ class CollapsibleGroupBox(QWidget):
         super().__init__(parent)
         self._is_expanded = initially_expanded
         self._title = title
-        self._content_widget = None
         self._accordion_group = None  # Reference to accordion container
 
         # Main layout
@@ -1947,7 +1940,6 @@ class CollapsibleGroupBox(QWidget):
         content_widget = QWidget()
         content_widget.setLayout(layout)
         self._content_layout.addWidget(content_widget)
-        self._content_widget = content_widget
 
     def addWidget(self: object, widget: object) -> object:
         """Add a widget to the content area."""
@@ -2004,16 +1996,6 @@ class AccordionContainer:
         for collapsible in self._collapsibles:
             if collapsible is not keep_expanded and collapsible.isExpanded():
                 collapsible.setExpanded(False)
-
-    def collapseAll(self: object) -> object:
-        """Collapse all collapsibles."""
-        for collapsible in self._collapsibles:
-            collapsible.setExpanded(False)
-
-    def expandFirst(self: object) -> object:
-        """Expand the first collapsible (if any)."""
-        if self._collapsibles:
-            self._collapsibles[0].setExpanded(True)
 
 
 class MainWindow(QMainWindow):
@@ -2238,8 +2220,6 @@ class MainWindow(QMainWindow):
         self.roi_current_mode = "circle"  # 'circle' or 'polygon'
         self.roi_current_zone_type = "include"  # 'include' or 'exclude'
 
-        self.current_worker = None
-
         self.tracking_worker = None
         self.merge_worker = None
         self.csv_writer_thread = None
@@ -2247,12 +2227,9 @@ class MainWindow(QMainWindow):
         self.interp_worker = None
         self.oriented_video_worker = None
         self.preview_detection_worker = None
-        self.reversal_worker = None
-        self.final_full_trajs = []
         self.temporary_files = []  # Track temporary files for cleanup
         self.session_log_handler = None  # Track current session log file handler
         self._individual_dataset_run_id = None
-        self.current_individual_dataset_path = None
         self.current_detection_cache_path = None
         self.current_individual_properties_cache_path = None
         self.current_interpolated_roi_npz_path = None
@@ -2278,8 +2255,6 @@ class MainWindow(QMainWindow):
 
         # ROI display caching (for performance)
         self._roi_masked_cache = {}  # Cache: {(frame_id, roi_hash): masked_image}
-        self._roi_hash = None  # Hash of current ROI configuration
-
         # Interactive pan/zoom state
         self._is_panning = False
         self._pan_start_pos = None
@@ -2295,7 +2270,6 @@ class MainWindow(QMainWindow):
 
         # UI interaction state
         self._video_interactions_enabled = True
-        self._ui_state = "idle"
         self._splash_buttons = []
         self._saved_widget_enabled_states = {}
         self._pending_finish_after_interp = False
@@ -4382,6 +4356,18 @@ class MainWindow(QMainWindow):
             "Disable for faster processing if accuracy is sufficient."
         )
         f_core.addRow("", self.chk_enable_backward)
+
+        self.chk_enable_confidence_density_map = QCheckBox(
+            "Enable low-confidence detection map"
+        )
+        self.chk_enable_confidence_density_map.setChecked(True)
+        self.chk_enable_confidence_density_map.setToolTip(
+            "Build and apply the low-confidence density map during tracking.\n"
+            "When enabled, the advanced density-map controls below are shown\n"
+            "and density-aware conservative matching is applied.\n"
+            "Disable to skip the extra density-map pass entirely."
+        )
+        f_core.addRow("", self.chk_enable_confidence_density_map)
         vl_core.addLayout(f_core)
         vbox.addWidget(g_core)
 
@@ -4919,10 +4905,10 @@ class MainWindow(QMainWindow):
         vbox.addWidget(g_stab)
 
         # Confidence Density Map
-        g_density = CollapsibleGroupBox(
+        self.g_density = CollapsibleGroupBox(
             "How should low-confidence density regions be detected?"
         )
-        self.tracking_accordion.addCollapsible(g_density)
+        self.tracking_accordion.addCollapsible(self.g_density)
         vl_density = QVBoxLayout()
         vl_density.addWidget(
             self._create_help_label(
@@ -5032,8 +5018,15 @@ class MainWindow(QMainWindow):
         f_density.addRow("Grid downsample factor", self.spin_density_downsample_factor)
 
         vl_density.addLayout(f_density)
-        g_density.setContentLayout(vl_density)
-        vbox.addWidget(g_density)
+        self.g_density.setContentLayout(vl_density)
+        vbox.addWidget(self.g_density)
+
+        self.chk_enable_confidence_density_map.stateChanged.connect(
+            self._on_confidence_density_map_toggled
+        )
+        self._on_confidence_density_map_toggled(
+            self.chk_enable_confidence_density_map.checkState()
+        )
 
         vbox.addStretch()
         scroll.setWidget(content)
@@ -7696,24 +7689,6 @@ class MainWindow(QMainWindow):
                     "To use ONNX/TensorRT for SLEAP, enable experimental features.",
                 )
 
-    def _populate_pose_sleap_device_options(self):
-        """Populate SLEAP device options using gpu_utils availability flags."""
-        if not hasattr(self, "combo_pose_sleap_device"):
-            return
-        self.combo_pose_sleap_device.clear()
-        opts = ["auto", "cpu"]
-        if MPS_AVAILABLE:
-            opts.append("mps")
-        if TORCH_CUDA_AVAILABLE or ROCM_AVAILABLE:
-            opts.extend(["cuda", "cuda:0"])
-        self.combo_pose_sleap_device.addItems(opts)
-        default_sleap_device = str(
-            self.advanced_config.get("pose_sleap_device", "auto")
-        ).strip()
-        idx = self.combo_pose_sleap_device.findText(default_sleap_device)
-        if idx >= 0:
-            self.combo_pose_sleap_device.setCurrentIndex(idx)
-
     def _runtime_pipelines_for_current_ui(self):
         pipelines = []
         if self._is_yolo_detection_mode():
@@ -8231,6 +8206,15 @@ class MainWindow(QMainWindow):
         self.spin_tensorrt_batch.setEnabled(enabled)
         self.lbl_tensorrt_batch.setEnabled(enabled)
 
+    def _on_confidence_density_map_toggled(self, state):
+        """Show or hide the density-map controls from the top-level tracking toggle."""
+        if not hasattr(self, "g_density"):
+            return
+
+        enabled = self.chk_enable_confidence_density_map.isChecked()
+        self.g_density.setVisible(enabled)
+        self.g_density.setEnabled(enabled)
+
     def _on_cleaning_toggled(self, state):
         """Enable/disable trajectory cleaning controls based on checkbox."""
         enabled = self.enable_postprocessing.isChecked()
@@ -8619,10 +8603,6 @@ class MainWindow(QMainWindow):
             f"Loaded {len(valid)} video(s).\n\nKeystone: {keystone}",
         )
 
-    def _process_batch(self):
-        """DEPRECATED: Now handled by the standard 'Start Full Tracking' logic when batch mode is on."""
-        pass
-
     def select_csv(self: object) -> object:
         """select_csv method documentation."""
         fp, _ = QFileDialog.getSaveFileName(self, "Select CSV", "", "CSV Files (*.csv)")
@@ -8636,39 +8616,6 @@ class MainWindow(QMainWindow):
         )
         if fp:
             self.video_out_line.setText(fp)
-
-    def _load_preview_frame(self):
-        """Load a random frame from the video for live preview."""
-        if not self.current_video_path:
-            return
-
-        cap = cv2.VideoCapture(self.current_video_path)
-        if not cap.isOpened():
-            logger.warning("Cannot open video for preview")
-            return
-
-        # Get total frames and pick a random one
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames > 0:
-            random_frame_idx = np.random.randint(0, total_frames)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, random_frame_idx)
-
-        ret, frame = cap.read()
-        cap.release()
-
-        if ret:
-            # Store original frame for adjustments
-            self.preview_frame_original = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            # Clear any previous detection test result
-            self.detection_test_result = None
-            self._update_preview_display()
-            # Auto-fit to screen - use QTimer to ensure display is updated first
-            from PySide6.QtCore import QTimer
-
-            QTimer.singleShot(10, self._fit_image_to_screen)
-            logger.info(f"Loaded preview frame {random_frame_idx}/{total_frames}")
-        else:
-            logger.warning("Failed to read preview frame")
 
     # =========================================================================
     # VIDEO PLAYER FUNCTIONS
@@ -10523,14 +10470,6 @@ class MainWindow(QMainWindow):
             path, backend=self._current_pose_backend_key(), update_combo=False
         )
 
-    def _get_selected_pose_model_path(self) -> str:
-        """Return the currently selected pose model path from the combo."""
-        if not hasattr(self, "combo_pose_model"):
-            return self._pose_model_path_for_backend()
-        return self._get_selected_model_path_from_selector(
-            self.combo_pose_model, default_path=""
-        )
-
     def _get_selected_yolo_model_path(self) -> object:
         """Return currently selected direct OBB model path."""
         if not hasattr(self, "combo_yolo_model"):
@@ -10919,7 +10858,6 @@ class MainWindow(QMainWindow):
             from datetime import datetime
 
             self._individual_dataset_run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.current_individual_dataset_path = None
             self.current_detection_cache_path = None
             self.current_individual_properties_cache_path = None
             self.current_interpolated_roi_npz_path = None
@@ -11074,7 +11012,6 @@ class MainWindow(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_preview.setEnabled(True)
         self._individual_dataset_run_id = None
-        self.current_individual_dataset_path = None
         self.current_detection_cache_path = None
         self.current_individual_properties_cache_path = None
         self.current_interpolated_roi_npz_path = None
@@ -11259,8 +11196,6 @@ class MainWindow(QMainWindow):
             )
 
     def _apply_ui_state(self, state: str):
-        self._ui_state = state
-
         if state == "no_video":
             extra_allowed = [
                 self.combo_xanylabeling_env,
@@ -11361,68 +11296,6 @@ class MainWindow(QMainWindow):
 
         # Use boundary overlay for all detection methods
         return self._draw_roi_overlay(qimage)
-
-    def _apply_roi_mask_darkening(self, qimage):
-        """Apply ROI mask to darken areas outside the ROI (with caching).
-        Used for background subtraction where the image is actually masked.
-        """
-        if self.roi_mask is None or not self.roi_shapes:
-            return qimage
-
-        # Generate cache key from image pointer and ROI hash
-        frame_id = id(qimage)
-        roi_hash = self._get_roi_hash()
-        cache_key = (frame_id, roi_hash)
-
-        # Return cached result if available
-        if cache_key in self._roi_masked_cache:
-            return self._roi_masked_cache[cache_key]
-
-        # Convert QImage to numpy array
-        width = qimage.width()
-        height = qimage.height()
-
-        # Ensure image is in RGB888 format
-        if qimage.format() != QImage.Format_RGB888:
-            qimage = qimage.convertToFormat(QImage.Format_RGB888)
-
-        # Convert to numpy array using buffer protocol
-        ptr = qimage.bits()
-        if hasattr(ptr, "setsize"):
-            # Older PySide versions (sip.voidptr)
-            ptr.setsize(height * width * 3)
-            arr = np.array(ptr).reshape(height, width, 3)
-        else:
-            # PySide6 and newer versions (memoryview)
-            arr = np.frombuffer(ptr, dtype=np.uint8).reshape(height, width, 3)
-
-        # Create a copy to modify
-        arr_copy = arr.copy()
-
-        # Resize ROI mask to match image dimensions if needed
-        if self.roi_mask.shape != (height, width):
-            roi_resized = cv2.resize(
-                self.roi_mask, (width, height), interpolation=cv2.INTER_NEAREST
-            )
-        else:
-            roi_resized = self.roi_mask
-
-        # Darken areas outside ROI (multiply by 0.3 for 70% darkening)
-        mask_inv = roi_resized == 0
-        arr_copy[mask_inv] = (arr_copy[mask_inv] * 0.3).astype(np.uint8)
-
-        # Create new QImage from modified array
-        result = QImage(arr_copy.data, width, height, width * 3, QImage.Format_RGB888)
-        # Make a copy to ensure data persistence
-        result_copy = result.copy()
-
-        # Cache the result (limit cache size to prevent memory bloat)
-        if len(self._roi_masked_cache) > 50:
-            # Remove oldest entries
-            self._roi_masked_cache.clear()
-        self._roi_masked_cache[cache_key] = result_copy
-
-        return result_copy
 
     @Slot(int, str)
     def on_progress_update(
@@ -11926,7 +11799,6 @@ class MainWindow(QMainWindow):
                 )
                 return False
 
-            self.current_individual_dataset_path = str(dataset_dir)
             self.progress_bar.setVisible(True)
             self.progress_label.setVisible(True)
             self.progress_bar.setValue(0)
@@ -14417,6 +14289,7 @@ class MainWindow(QMainWindow):
             "SUPPRESS_FOREIGN_OBB_REGIONS": self.chk_suppress_foreign_obb.isChecked(),
             "SUPPRESS_FOREIGN_OBB_DATASET": self.chk_suppress_foreign_obb_dataset.isChecked(),
             "INDIVIDUAL_DATASET_RUN_ID": self._individual_dataset_run_id,
+            "ENABLE_CONFIDENCE_DENSITY_MAP": self.chk_enable_confidence_density_map.isChecked(),
             "DENSITY_GAUSSIAN_SIGMA_SCALE": self.spin_density_gaussian_sigma_scale.value(),
             "DENSITY_TEMPORAL_SIGMA": self.spin_density_temporal_sigma.value(),
             "DENSITY_BINARIZE_THRESHOLD": self.spin_density_binarize_threshold.value(),
@@ -14972,6 +14845,9 @@ class MainWindow(QMainWindow):
             self.spin_pose_temporal_outlier_zscore.setValue(
                 get_cfg("pose_temporal_outlier_zscore", default=3.0)
             )
+            self.chk_enable_confidence_density_map.setChecked(
+                get_cfg("enable_confidence_density_map", default=True)
+            )
             self.spin_density_gaussian_sigma_scale.setValue(
                 get_cfg("density_gaussian_sigma_scale", default=1.0)
             )
@@ -14992,6 +14868,9 @@ class MainWindow(QMainWindow):
             )
             self.spin_density_downsample_factor.setValue(
                 int(get_cfg("density_downsample_factor", default=8))
+            )
+            self._on_confidence_density_map_toggled(
+                self.chk_enable_confidence_density_map.checkState()
             )
             self.spin_max_velocity_zscore.setValue(
                 get_cfg("max_velocity_zscore", default=0.0)
@@ -15623,6 +15502,7 @@ class MainWindow(QMainWindow):
                 "relink_min_pose_quality": self.spin_relink_min_pose_quality.value(),
                 "pose_postproc_max_gap": self.spin_pose_postproc_max_gap.value(),
                 "pose_temporal_outlier_zscore": self.spin_pose_temporal_outlier_zscore.value(),
+                "enable_confidence_density_map": self.chk_enable_confidence_density_map.isChecked(),
                 "density_gaussian_sigma_scale": self.spin_density_gaussian_sigma_scale.value(),
                 "density_temporal_sigma": self.spin_density_temporal_sigma.value(),
                 "density_binarize_threshold": self.spin_density_binarize_threshold.value(),
@@ -16402,7 +16282,6 @@ class MainWindow(QMainWindow):
     def _invalidate_roi_cache(self):
         """Invalidate ROI display cache when ROI changes."""
         self._roi_masked_cache.clear()
-        self._roi_hash = self._get_roi_hash()
 
     # =========================================================================
     # PRESET MANAGEMENT
@@ -16794,54 +16673,6 @@ class MainWindow(QMainWindow):
         elif hasattr(self, "roi_optimization_label"):
             self.roi_optimization_label.setText("")
 
-    def _check_roi_optimization_warning(self):
-        """Check if we should warn the user about ROI optimization."""
-        if not self.advanced_config.get("roi_crop_auto_suggest", True):
-            return
-
-        # Don't warn if already shown this session (unless configured otherwise)
-        if self.roi_crop_warning_shown and not self.advanced_config.get(
-            "roi_crop_remind_every_session", False
-        ):
-            return
-
-        coverage, speedup = self._estimate_roi_efficiency()
-        if coverage is None:
-            return
-
-        threshold = self.advanced_config.get("roi_crop_warning_threshold", 0.6) * 100
-
-        if coverage < threshold:
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Information)
-            msg.setWindowTitle("ROI Optimization Opportunity")
-            msg.setText("⚡ Performance Optimization Available")
-            msg.setInformativeText(
-                f"Your ROI covers only {coverage:.1f}% of the video frame.\\n\\n"
-                f"Cropping the video to the ROI bounding box could provide\\n"
-                f"up to {speedup:.1f}x speedup in tracking performance!\\n\\n"
-                f"Would you like to:"
-            )
-
-            btn_crop_now = msg.addButton("Crop Video Now", QMessageBox.AcceptRole)
-            btn_remind_later = msg.addButton(
-                "Remind Me When Tracking", QMessageBox.ActionRole
-            )
-            btn_dont_show = msg.addButton("Don't Show Again", QMessageBox.RejectRole)
-            msg.setDefaultButton(btn_crop_now)
-
-            msg.exec()
-            clicked = msg.clickedButton()
-
-            if clicked == btn_crop_now:
-                self.crop_video_to_roi()
-            elif clicked == btn_remind_later:
-                self.roi_crop_warning_shown = True
-            elif clicked == btn_dont_show:
-                self.advanced_config["roi_crop_auto_suggest"] = False
-                self._save_advanced_config()
-                self.roi_crop_warning_shown = True
-
     def crop_video_to_roi(self: object) -> object:
         """Crop the video to the ROI bounding box and save as new file."""
         if self.roi_mask is None:
@@ -17166,16 +16997,3 @@ class MainWindow(QMainWindow):
 
             # Clean up
             del self._crop_process
-
-    def plot_fps(self: object, fps_list: object) -> object:
-        """plot_fps method documentation."""
-        if len(fps_list) < 2:
-            return
-        plt.figure()
-        plt.plot(fps_list)
-        plt.xlabel("Frame Index")
-        plt.ylabel("FPS")
-        plt.title("Tracking FPS Over Time")
-        plt.show()
-        plt.title("Tracking FPS Over Time")
-        plt.show()

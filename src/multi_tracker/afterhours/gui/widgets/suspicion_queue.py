@@ -62,8 +62,6 @@ class _EventCard(QFrame):
     def __init__(self, event: SuspicionEvent, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.swap_event = event
-        self._resolved = False
-
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._apply_style(resolved=False)
@@ -110,7 +108,6 @@ class _EventCard(QFrame):
 
     def mark_resolved(self) -> None:
         """Visually mark this card as resolved."""
-        self._resolved = True
         self._apply_style(resolved=True)
 
     def _apply_style(self, resolved: bool) -> None:

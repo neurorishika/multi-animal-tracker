@@ -224,4 +224,3 @@ def _build_knn_fn(embeddings: np.ndarray, k: int):
 
 # Backward-compat alias so any code that does
 # `from .clusterer import FAISSClusterer` keeps working.
-FAISSClusterer = SKLearnClusterer

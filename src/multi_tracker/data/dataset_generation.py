@@ -232,10 +232,6 @@ class FrameQualityScorer:
 
         return selected
 
-    def get_frame_metadata(self: object, frame_id: object) -> object:
-        """Get stored metadata for a specific frame."""
-        return self.frame_scores.get(frame_id, {"score": 0.0, "metrics": {}})
-
 
 def export_dataset(
     video_path: object,

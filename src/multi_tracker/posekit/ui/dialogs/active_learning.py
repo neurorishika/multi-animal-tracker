@@ -310,7 +310,6 @@ class ActiveLearningDialog(QDialog):
                 self._path_to_index[str(p.resolve())] = i
             except Exception:
                 self._path_to_index[str(p)] = i
-        self._scores = []
         self.infer = make_pose_infer(self.project.out_root, self.project.keypoint_names)
 
         layout = QVBoxLayout(self)
@@ -816,7 +815,6 @@ class ActiveLearningDialog(QDialog):
             self.progress.setValue(min(100, max(0, pct)))
 
     def _on_finished(self, scores: List[Tuple[str, float]]):
-        self._scores = scores
         n = min(self.n_spin.value(), len(scores))
         for path, score in scores[:n]:
             try:

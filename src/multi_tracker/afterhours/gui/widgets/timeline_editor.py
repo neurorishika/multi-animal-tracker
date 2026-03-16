@@ -19,7 +19,7 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QKeyEvent, QMouseEvent, QPainter, QPen
+from PySide6.QtGui import QAction, QColor, QKeyEvent, QMouseEvent, QPen
 from PySide6.QtWidgets import QLabel, QMenu, QScrollArea, QToolTip, QVBoxLayout, QWidget
 
 from multi_tracker.afterhours.core.track_editor_model import (
@@ -162,62 +162,6 @@ class _TimelineEditorCanvas(QWidget):
     # ------------------------------------------------------------------
     # Painting
     # ------------------------------------------------------------------
-
-    def paintEvent(self, event) -> None:  # noqa: N802
-        if not self._model:
-            return
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-
-        tracks = self._model.visible_tracks
-
-        # Label column background
-        painter.fillRect(QRect(0, 0, _LABEL_WIDTH, self.height()), QColor(37, 37, 38))
-
-        for row, tid in enumerate(tracks):
-            y_top = row * _ROW_HEIGHT + _BAR_MARGIN
-            bar_h = _ROW_HEIGHT - 2 * _BAR_MARGIN
-
-            # Label
-            painter.setPen(QPen(QColor(204, 204, 204)))
-            label_rect = QRect(0, y_top, _LABEL_WIDTH - 4, bar_h)
-            painter.drawText(
-                label_rect,
-                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                f"T{tid}",
-            )
-
-        # Draw fragments
-        for frag in self._model.fragments:
-            rect = self._frag_rect(frag)
-            if frag.deleted:
-                painter.fillRect(rect, _DELETED_COLOR)
-                painter.setPen(QPen(QColor(120, 120, 120), 1, Qt.PenStyle.DotLine))
-                painter.drawRect(rect)
-                continue
-
-            r, g, b = PALETTE_RGB[frag.track_id % len(PALETTE_RGB)]
-            painter.fillRect(rect, QColor(r, g, b, 160))
-
-            # Selection highlight
-            if frag.frag_id == self._selected_frag_id:
-                painter.setPen(_SELECTED_PEN)
-                painter.drawRect(rect)
-
-        # Draw drag target lane indicator
-        if self._dragging and self._drag_target_track is not None:
-            row = self._track_to_row(self._drag_target_track)
-            y = row * _ROW_HEIGHT
-            painter.setPen(_TARGET_LANE_PEN)
-            painter.drawRect(QRect(_LABEL_WIDTH, y, self._bar_width(), _ROW_HEIGHT))
-
-        # Draw cursor line
-        if self._cursor_frame is not None:
-            cx = self._frame_to_x(self._cursor_frame)
-            painter.setPen(QPen(QColor(255, 165, 0, 200), 1))
-            painter.drawLine(cx, 0, cx, self.height())
-
-        painter.end()
 
     # ------------------------------------------------------------------
     # Mouse events

@@ -131,8 +131,6 @@ class TrackingWorker(QThread):
         self.params_mutex = QMutex()
         self.parameters = {}
         self.individual_properties_cache_path = None
-        self.individual_properties_id = ""
-
         # Stats tracking for FPS/ETA
         self.start_time = None
         self.frame_times = deque(maxlen=30)  # Keep last 30 frames for FPS calculation
@@ -169,6 +167,11 @@ class TrackingWorker(QThread):
         p = dict(self.parameters)
         self.params_mutex.unlock()
         return p
+
+    def _confidence_density_enabled(self, params=None) -> bool:
+        """Return whether confidence-density mapping should be active for this run."""
+        p = self.get_current_params() if params is None else params
+        return bool(p.get("ENABLE_CONFIDENCE_DENSITY_MAP", True))
 
     def stop(self: object) -> object:
         """Request cooperative stop for current processing loop."""
@@ -343,227 +346,6 @@ class TrackingWorker(QThread):
                 tokens.append(t)
         return tokens
 
-    def _resolve_pose_group_indices(self, raw_spec, keypoint_names):
-        """Resolve keypoint group names/indices to deduplicated index list."""
-        names = [str(v) for v in (keypoint_names or [])]
-        tokens = self._parse_pose_group_tokens(raw_spec)
-        if not tokens:
-            return []
-
-        lower_map = {name.lower(): idx for idx, name in enumerate(names)}
-        indices = []
-        seen = set()
-        for tok in tokens:
-            idx = None
-            if isinstance(tok, int):
-                if 0 <= tok < len(names):
-                    idx = int(tok)
-            else:
-                idx = lower_map.get(str(tok).strip().lower(), None)
-            if idx is None or idx in seen:
-                continue
-            seen.add(idx)
-            indices.append(idx)
-        return indices
-
-    def _compute_pose_heading_from_keypoints(
-        self,
-        keypoints,
-        anterior_indices,
-        posterior_indices,
-        min_valid_conf,
-    ):
-        """
-        Estimate directed heading (posterior -> anterior) from pose keypoints.
-
-        Returns None if either group has no valid keypoints above min_valid_conf.
-        """
-        if keypoints is None:
-            return None
-        arr = np.asarray(keypoints, dtype=np.float32)
-        if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
-            return None
-
-        def weighted_centroid(indices):
-            pts = []
-            weights = []
-            for idx in indices:
-                if idx < 0 or idx >= len(arr):
-                    continue
-                x, y, conf = arr[idx]
-                if (
-                    not np.isfinite(x)
-                    or not np.isfinite(y)
-                    or not np.isfinite(conf)
-                    or float(conf) < float(min_valid_conf)
-                ):
-                    continue
-                pts.append((float(x), float(y)))
-                weights.append(max(1e-6, float(conf)))
-            if not pts:
-                return None
-            pts_arr = np.asarray(pts, dtype=np.float64)
-            w_arr = np.asarray(weights, dtype=np.float64)
-            cx = float(np.average(pts_arr[:, 0], weights=w_arr))
-            cy = float(np.average(pts_arr[:, 1], weights=w_arr))
-            return cx, cy
-
-        ant = weighted_centroid(anterior_indices)
-        post = weighted_centroid(posterior_indices)
-        if ant is None or post is None:
-            return None
-
-        dx = ant[0] - post[0]
-        dy = ant[1] - post[1]
-        if not np.isfinite(dx) or not np.isfinite(dy):
-            return None
-        return self._normalize_theta(math.atan2(dy, dx))
-
-    def _build_pose_detection_keypoint_map(self, pose_props_cache, frame_idx):
-        """Build detection_id -> pose_keypoints map for one frame from cache."""
-        if pose_props_cache is None:
-            return {}
-        try:
-            frame = pose_props_cache.get_frame(int(frame_idx))
-        except Exception:
-            return {}
-        ids = frame.get("detection_ids", [])
-        keypoints = frame.get("pose_keypoints", [])
-        n = min(len(ids), len(keypoints))
-        out = {}
-        for i in range(n):
-            try:
-                det_id = int(ids[i])
-            except Exception:
-                continue
-            out[det_id] = keypoints[i]
-        return out
-
-    def _compute_pose_geometry_from_keypoints(
-        self,
-        keypoints,
-        anterior_indices,
-        posterior_indices,
-        min_valid_conf,
-        ignore_indices=None,
-    ):
-        """Extract heading, body length, and visibility from pose keypoints."""
-        if keypoints is None:
-            return None
-        arr = np.asarray(keypoints, dtype=np.float32)
-        if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
-            return None
-
-        ignore_set = {int(idx) for idx in (ignore_indices or [])}
-
-        def weighted_centroid(indices):
-            pts = []
-            weights = []
-            for idx in indices:
-                if idx in ignore_set or idx < 0 or idx >= len(arr):
-                    continue
-                x, y, conf = arr[idx]
-                if (
-                    not np.isfinite(x)
-                    or not np.isfinite(y)
-                    or not np.isfinite(conf)
-                    or float(conf) < float(min_valid_conf)
-                ):
-                    continue
-                pts.append((float(x), float(y)))
-                weights.append(max(1e-6, float(conf)))
-            if not pts:
-                return None
-            pts_arr = np.asarray(pts, dtype=np.float64)
-            w_arr = np.asarray(weights, dtype=np.float64)
-            cx = float(np.average(pts_arr[:, 0], weights=w_arr))
-            cy = float(np.average(pts_arr[:, 1], weights=w_arr))
-            return cx, cy
-
-        valid_total = 0
-        visible_total = 0
-        for idx in range(len(arr)):
-            if idx in ignore_set:
-                continue
-            valid_total += 1
-            conf = arr[idx, 2]
-            if np.isfinite(conf) and float(conf) >= float(min_valid_conf):
-                visible_total += 1
-        visibility = (
-            float(visible_total) / float(valid_total) if valid_total > 0 else 0.0
-        )
-
-        ant = weighted_centroid(anterior_indices)
-        post = weighted_centroid(posterior_indices)
-        if ant is None or post is None:
-            return {
-                "heading": None,
-                "body_length": None,
-                "visibility": float(np.clip(visibility, 0.0, 1.0)),
-            }
-
-        dx = ant[0] - post[0]
-        dy = ant[1] - post[1]
-        if not np.isfinite(dx) or not np.isfinite(dy):
-            heading = None
-            body_length = None
-        else:
-            heading = self._normalize_theta(math.atan2(dy, dx))
-            body_length = float(math.hypot(dx, dy))
-
-        return {
-            "heading": heading,
-            "body_length": body_length,
-            "visibility": float(np.clip(visibility, 0.0, 1.0)),
-        }
-
-    def _normalize_pose_keypoints(self, keypoints, min_valid_conf, ignore_indices=None):
-        """Center and scale pose keypoints for same-keypoint shape comparison."""
-        if keypoints is None:
-            return None
-        arr = np.asarray(keypoints, dtype=np.float32)
-        if arr.ndim != 2 or arr.shape[1] != 3 or len(arr) == 0:
-            return None
-
-        ignore_set = {int(idx) for idx in (ignore_indices or [])}
-        valid = np.zeros(len(arr), dtype=bool)
-        valid_points = []
-        valid_weights = []
-        for idx in range(len(arr)):
-            if idx in ignore_set:
-                continue
-            x, y, conf = arr[idx]
-            if (
-                np.isfinite(x)
-                and np.isfinite(y)
-                and np.isfinite(conf)
-                and float(conf) >= float(min_valid_conf)
-            ):
-                valid[idx] = True
-                valid_points.append((float(x), float(y)))
-                valid_weights.append(max(1e-6, float(conf)))
-
-        if not valid_points:
-            return None
-
-        pts_arr = np.asarray(valid_points, dtype=np.float64)
-        w_arr = np.asarray(valid_weights, dtype=np.float64)
-        cx = float(np.average(pts_arr[:, 0], weights=w_arr))
-        cy = float(np.average(pts_arr[:, 1], weights=w_arr))
-        centered = pts_arr - np.array([[cx, cy]], dtype=np.float64)
-        radii = np.sqrt(np.sum(centered**2, axis=1))
-        scale = float(np.median(radii[radii > 1e-6])) if np.any(radii > 1e-6) else 1.0
-        scale = max(scale, 1.0)
-
-        out = np.full((len(arr), 3), np.nan, dtype=np.float32)
-        out[:, 2] = 0.0
-        valid_indices = np.where(valid)[0]
-        for src_idx, kp_idx in enumerate(valid_indices):
-            out[kp_idx, 0] = np.float32(centered[src_idx, 0] / scale)
-            out[kp_idx, 1] = np.float32(centered[src_idx, 1] / scale)
-            out[kp_idx, 2] = np.float32(arr[kp_idx, 2])
-        return out
-
     @staticmethod
     def _estimate_detection_crop_quality(shape, reference_body_size):
         """Estimate crop quality from detection geometry."""
@@ -614,31 +396,6 @@ class TrackingWorker(QThread):
                 reference_theta = candidate
 
         return self._collapse_obb_axis_theta(measured_theta, reference_theta)
-
-    @staticmethod
-    def _select_directed_heading(
-        pose_heading,
-        pose_directed,
-        headtail_heading,
-        headtail_directed,
-        pose_overrides_headtail=True,
-    ):
-        """Choose directed heading source (pose/head-tail) according to precedence."""
-        pose_valid = bool(pose_directed) and np.isfinite(float(pose_heading))
-        headtail_valid = bool(headtail_directed) and np.isfinite(
-            float(headtail_heading)
-        )
-        if pose_overrides_headtail:
-            if pose_valid:
-                return float(pose_heading), True
-            if headtail_valid:
-                return float(headtail_heading), True
-            return float("nan"), False
-        if headtail_valid:
-            return float(headtail_heading), True
-        if pose_valid:
-            return float(pose_heading), True
-        return float("nan"), False
 
     def _precompute_pose_data(
         self,
@@ -702,7 +459,6 @@ class TrackingWorker(QThread):
             pose_cache_path = self._build_individual_properties_cache_path(
                 properties_id, start_frame, end_frame
             )
-            self.individual_properties_id = str(properties_id)
             self.individual_properties_cache_path = str(pose_cache_path)
             params["INDIVIDUAL_PROPERTIES_ID"] = properties_id
             params["INDIVIDUAL_PROPERTIES_CACHE_PATH"] = str(pose_cache_path)
@@ -1365,6 +1121,9 @@ class TrackingWorker(QThread):
         gc.collect()
         self._stop_requested = False
         p = self.get_current_params()
+        density_map_enabled = self._confidence_density_enabled(p)
+        if not density_map_enabled:
+            self._density_regions = []
 
         cap = cv2.VideoCapture(self.video_path)
         if not cap.isOpened():
@@ -1646,7 +1405,7 @@ class TrackingWorker(QThread):
             # Load density regions for backward pass from the sidecar JSON written
             # by the forward pass (backward mode skips pre-detection, so regions are
             # not computed here — they are loaded from disk instead).
-            if self.backward_mode and not self._density_regions:
+            if density_map_enabled and self.backward_mode and not self._density_regions:
                 try:
                     from pathlib import Path as _Path
 
@@ -1717,7 +1476,8 @@ class TrackingWorker(QThread):
         # Runs for BOTH fresh and cached detections (forward pass only).
         # Backward pass loads regions from the sidecar JSON instead.
         if (
-            not self.backward_mode
+            density_map_enabled
+            and not self.backward_mode
             and self.detection_cache_path
             and detection_cache is not None
             and use_cached_detections
@@ -2345,7 +2105,7 @@ class TrackingWorker(QThread):
                     filtered_directed_mask, dtype=np.uint8
                 )
                 if yolo_results is not None:
-                    yolo_results._filtered_obb_corners = filtered_obb_corners
+                    pass
 
             else:
                 # No frame and no cached detections - skip this iteration

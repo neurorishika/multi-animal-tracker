@@ -88,10 +88,6 @@ class TrackFragment:
     frame_end: int
     deleted: bool = False
 
-    @property
-    def frame_span(self) -> int:
-        return self.frame_end - self.frame_start + 1
-
 
 # ---------------------------------------------------------------------------
 # TrackEditorModel

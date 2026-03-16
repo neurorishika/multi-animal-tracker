@@ -184,18 +184,6 @@ class ClassKitDB:
             conn.commit()
         return updated
 
-    def get_unlabeled(self, limit: int = 100) -> List[Tuple[Any]]:
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("SELECT * FROM images WHERE label IS NULL LIMIT ?", (limit,))
-            return c.fetchall()
-
-    def update_label(self, path: str, label: str):
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("UPDATE images SET label = ? WHERE file_path = ?", (label, path))
-            conn.commit()
-
     def update_labels_batch(self, updates: Dict[str, Optional[str]]) -> int:
         """Batch update labels for multiple images in a single transaction.
 
@@ -216,18 +204,6 @@ class ClassKitDB:
                 updated_count += c.rowcount
             conn.commit()
         return updated_count
-
-    def get_image_path_by_id(self, idx: int) -> Optional[str]:
-        """Get path for image at index (0-based ID or offset-based in list).
-        Actually let's use ROWID/Order for now to match embedding index.
-        """
-        # CAUTION: This assumes rows are never deleted so ID matches index + 1
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            # Assuming id corresponds to embedding index + 1
-            c.execute("SELECT file_path FROM images WHERE id = ?", (idx + 1,))
-            res = c.fetchone()
-            return res[0] if res else None
 
     def get_all_labels(self) -> List[Optional[str]]:
         with sqlite3.connect(self.db_path) as conn:
@@ -385,38 +361,6 @@ class ClassKitDB:
                 metadata.update(json.loads(meta_json))
 
             return embeddings, metadata
-
-    def list_cached_embeddings(self) -> List[Dict[str, Any]]:
-        """
-        List all cached embeddings.
-
-        Returns:
-            List of embedding metadata dictionaries
-        """
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            c.execute("""
-                SELECT model_name, device, num_images, dimension, timestamp, file_path
-                FROM embeddings
-                ORDER BY timestamp DESC
-                """)
-
-            results = []
-            for row in c.fetchall():
-                model_name, device, num_images, dimension, timestamp, file_path = row
-                results.append(
-                    {
-                        "model_name": model_name,
-                        "device": device,
-                        "num_images": num_images,
-                        "dimension": dimension,
-                        "timestamp": timestamp,
-                        "file_path": file_path,
-                        "exists": Path(file_path).exists(),
-                    }
-                )
-
-            return results
 
     def get_most_recent_embeddings(self) -> Optional[Tuple[np.ndarray, Dict[str, Any]]]:
         """Load most recently cached embeddings regardless of model/device."""

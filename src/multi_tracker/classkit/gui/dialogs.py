@@ -149,89 +149,6 @@ CLASSKIT_SIEVE_THRESHOLD = 5000
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-class StartupDialog(QDialog):
-    """Shown on cold start: open existing project, create new, or quit.
-
-    Cannot be dismissed via Escape or the window close button — the user must
-    make an explicit choice (Create, Open, or Quit).
-    """
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Welcome to ClassKit")
-        self.setMinimumWidth(520)
-        self.setStyleSheet(_DARK_STYLE)
-        # Remove the OS-level close button so the only way out is the Quit button
-        self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.CustomizeWindowHint)
-
-        layout = QVBoxLayout(self)
-        layout.setSpacing(18)
-
-        hdr = QLabel(
-            "<h2 style='color:#ffffff; margin:0;'>ClassKit</h2>"
-            "<p style='color:#888; margin:4px 0 0 0;'>Active Learning Dataset Builder</p>"
-        )
-        hdr.setStyleSheet("background:#252526; padding:16px; border-radius:6px;")
-        layout.addWidget(hdr)
-
-        btn_new = QPushButton("  Create New Project…")
-        btn_new.setMinimumHeight(42)
-        btn_new.clicked.connect(self._new)
-        layout.addWidget(btn_new)
-
-        btn_open = QPushButton("  Open Existing Project…")
-        btn_open.setMinimumHeight(42)
-        btn_open.setStyleSheet(
-            "QPushButton { background-color:#3e3e42; color:#e0e0e0; "
-            "border:none; border-radius:4px; padding:8px 16px; }"
-            "QPushButton:hover { background-color:#555558; }"
-        )
-        btn_open.clicked.connect(self._open)
-        layout.addWidget(btn_open)
-
-        btn_quit = QPushButton("  Quit")
-        btn_quit.setMinimumHeight(36)
-        btn_quit.setStyleSheet(
-            "QPushButton { background-color:transparent; color:#888; "
-            "border:1px solid #3e3e42; border-radius:4px; padding:6px 16px; }"
-            "QPushButton:hover { background-color:#2a2d2e; color:#cccccc; }"
-        )
-        btn_quit.clicked.connect(self._quit)
-        layout.addWidget(btn_quit)
-
-        self._choice: Optional[str] = None  # "new" | "open" | "quit"
-
-    # Block Escape key — only the explicit Quit button may close the app
-    def keyPressEvent(self, event):
-        from PySide6.QtCore import Qt as _Qt
-
-        if event.key() == _Qt.Key_Escape:
-            event.ignore()
-            return
-        super().keyPressEvent(event)
-
-    def reject(self):
-        """Ignore implicit reject (Escape, window close) — use _quit() instead."""
-        pass
-
-    def _new(self):
-        self._choice = "new"
-        self.accept()
-
-    def _open(self):
-        self._choice = "open"
-        self.accept()
-
-    def _quit(self):
-        self._choice = "quit"
-        # Bypass the overridden reject() to actually close
-        QDialog.reject(self)
-
-    @property
-    def choice(self) -> Optional[str]:
-        return self._choice
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Add-source dialog (pick a folder of images, optionally run DataSieve)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2137,9 +2054,6 @@ class ClassKitTrainingDialog(QDialog):
             # Label-switching expansion
             "label_expansion": label_expansion,
         }
-
-
-TrainingDialog = ClassKitTrainingDialog
 
 
 class ExportDialog(QDialog):

@@ -44,6 +44,7 @@ class TrainingSessionResult:
     """Session result summary for UI."""
 
     merged_dataset: str = ""
+
     role_dataset_dirs: dict[str, str] = field(default_factory=dict)
     run_ids: list[str] = field(default_factory=list)
     published_models: dict[str, str] = field(default_factory=dict)

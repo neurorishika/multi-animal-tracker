@@ -228,20 +228,6 @@ def list_sleap_envs() -> Tuple[List[str], str]:
         return [], f"Env scan failed: {e}"
 
 
-class SignalLogHandler(logging.Handler):
-    def __init__(self, signal):
-        super().__init__()
-        self._signal = signal
-
-    def emit(self: object, record: object) -> object:
-        """emit method documentation."""
-        try:
-            msg = self.format(record)
-            self._signal.emit(msg)
-        except Exception:
-            pass
-
-
 def make_histogram_image(values, bins: int = 20, width: int = 360, height: int = 120):
     img = QImage(width, height, QImage.Format_ARGB32)
     img.fill(QColor(248, 248, 248))

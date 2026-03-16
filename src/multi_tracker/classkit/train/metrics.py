@@ -172,23 +172,3 @@ def compute_label_coverage(
         coverage[cluster_id] = labeled / len(cluster_labels)
 
     return coverage
-
-
-def compute_class_balance(labels: np.ndarray) -> Dict[int, float]:
-    """
-    Compute class balance.
-
-    Args:
-        labels: (N,) labels (only labeled samples, no -1)
-
-    Returns:
-        Dictionary: class_id -> fraction
-    """
-    unique, counts = np.unique(labels, return_counts=True)
-    total = counts.sum()
-
-    balance = {}
-    for class_id, count in zip(unique, counts):
-        balance[int(class_id)] = count / total
-
-    return balance

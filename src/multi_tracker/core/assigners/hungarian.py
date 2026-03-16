@@ -135,15 +135,6 @@ class TrackAssigner:
         return float(max(0.0, odiff))
 
     @staticmethod
-    def _pose_paired_distance(
-        det_pose, track_pose, min_shared: int = 3
-    ) -> float | None:
-        pose_dist, _ = TrackAssigner._pose_paired_stats(
-            det_pose, track_pose, min_shared=min_shared
-        )
-        return pose_dist
-
-    @staticmethod
     def _pose_paired_stats(
         det_pose, track_pose, min_shared: int = 3
     ) -> tuple[float | None, int]:

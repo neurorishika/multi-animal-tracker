@@ -29,9 +29,6 @@ class LinearHead(nn.Module):
 
         self.classifier = nn.Sequential(*layers)
 
-    def forward(self, x):
-        return self.classifier(x)
-
 
 class MLPHead(nn.Module):
     """Small MLP classifier on embeddings."""
@@ -72,9 +69,6 @@ class MLPHead(nn.Module):
         layers.append(nn.Linear(current_dim, num_classes))
 
         self.classifier = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.classifier(x)
 
 
 def create_head(
