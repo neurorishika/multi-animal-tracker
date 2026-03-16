@@ -5981,6 +5981,7 @@ class MainWindow(QMainWindow):
         form.addWidget(self.g_pose_label)
 
         # Initially hide individual dataset widgets (checkbox starts unchecked)
+        self.g_individual_dataset.setVisible(False)
         self.ind_output_group.setVisible(False)
         self.lbl_individual_info.setVisible(False)
         self.chk_generate_individual_track_videos.setVisible(False)
@@ -6046,13 +6047,12 @@ class MainWindow(QMainWindow):
         # Identity Method
         self.combo_identity_method = QComboBox()
         self.combo_identity_method.addItems(
-            ["None (Disabled)", "Color Tags (YOLO)", "AprilTags", "Custom"]
+            ["None (Disabled)", "Color Tags (YOLO)", "AprilTags"]
         )
         self.combo_identity_method.setToolTip(
             "Select method for identifying individual animals:\n"
             "• Color Tags: Detect color markers using YOLO model\n"
-            "• AprilTags: Detect fiducial markers\n"
-            "• Custom: Implement your own classifier"
+            "• AprilTags: Detect fiducial markers"
         )
         self.combo_identity_method.currentIndexChanged.connect(
             self._on_identity_method_changed
@@ -6142,21 +6142,8 @@ class MainWindow(QMainWindow):
         )
         self.identity_config_stack.addWidget(apriltag_widget)
 
-        # Page 3: Custom
-        custom_widget = QWidget()
-        custom_layout = QVBoxLayout(custom_widget)
-        custom_layout.addWidget(
-            self._create_help_label(
-                "Implement custom identity classifier in:\n"
-                "src/multi_tracker/core/identity/analysis.py"
-            )
-        )
-        self.identity_config_stack.addWidget(custom_widget)
-
         vl_identity.addLayout(fl_identity)
         vl_identity.addWidget(self.identity_config_stack)
-
-        form.addWidget(self.g_identity)
 
         self.g_individual_pipeline_common = QGroupBox(
             "Individual Analysis Pipeline Settings"
@@ -6224,6 +6211,7 @@ class MainWindow(QMainWindow):
         )
 
         form.addWidget(self.g_individual_pipeline_common)
+        form.addWidget(self.g_identity)
 
         self.g_pose_runtime = QGroupBox("Pose Extraction Settings")
         vl_pose = QVBoxLayout(self.g_pose_runtime)
@@ -6439,6 +6427,9 @@ class MainWindow(QMainWindow):
         # Initially disable all controls (sync will show/hide based on state)
         self.g_identity.setVisible(False)
         self.g_identity.setEnabled(False)
+        self.g_individual_pipeline_common.setVisible(False)
+        self.g_individual_pipeline_common.setEnabled(False)
+        self.g_pose_runtime.setVisible(False)
         self.g_pose_runtime.setEnabled(False)
         self._refresh_pose_direction_keypoint_lists()
         self._sync_pose_backend_ui()
@@ -8032,9 +8023,14 @@ class MainWindow(QMainWindow):
             self.g_identity.setVisible(pipeline_enabled)
             self.g_identity.setEnabled(pipeline_enabled)
         if hasattr(self, "g_pose_runtime"):
+            self.g_pose_runtime.setVisible(pipeline_enabled)
             self.g_pose_runtime.setEnabled(pipeline_enabled)
         if hasattr(self, "g_individual_pipeline_common"):
+            self.g_individual_pipeline_common.setVisible(pipeline_enabled)
             self.g_individual_pipeline_common.setEnabled(pipeline_enabled)
+        if hasattr(self, "g_individual_dataset"):
+            self.g_individual_dataset.setVisible(pipeline_enabled)
+            self.g_individual_dataset.setEnabled(pipeline_enabled)
         self._sync_pose_backend_ui()
 
         if has_save_toggle:
@@ -14138,6 +14134,16 @@ class MainWindow(QMainWindow):
 
         individual_pipeline_enabled = self._is_individual_pipeline_enabled()
         individual_image_save_enabled = self._is_individual_image_save_enabled()
+        pose_extractor_enabled = self._is_pose_inference_enabled()
+        identity_method = (
+            self.combo_identity_method.currentText()
+            .lower()
+            .replace(" ", "_")
+            .replace("(", "")
+            .replace(")", "")
+            if individual_pipeline_enabled
+            else "none_disabled"
+        )
         compute_runtime = self._selected_compute_runtime()
         runtime_detection = derive_detection_runtime_settings(compute_runtime)
         trt_batch_size = (
@@ -14326,18 +14332,14 @@ class MainWindow(QMainWindow):
             # Individual analysis parameters
             "ENABLE_IDENTITY_ANALYSIS": individual_pipeline_enabled,
             "ENABLE_INDIVIDUAL_PIPELINE": individual_pipeline_enabled,
-            "IDENTITY_METHOD": self.combo_identity_method.currentText()
-            .lower()
-            .replace(" ", "_")
-            .replace("(", "")
-            .replace(")", ""),
+            "IDENTITY_METHOD": identity_method,
             "COLOR_TAG_MODEL_PATH": self.line_color_tag_model.text(),
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
             "TAG_MATCH_BONUS": self.spin_tag_match_bonus.value(),
             "TAG_MISMATCH_PENALTY": self.spin_tag_mismatch_penalty.value(),
-            "ENABLE_POSE_EXTRACTOR": self.chk_enable_pose_extractor.isChecked(),
+            "ENABLE_POSE_EXTRACTOR": pose_extractor_enabled,
             "POSE_MODEL_TYPE": self.combo_pose_model_type.currentText().strip().lower(),
             "POSE_MODEL_DIR": resolve_pose_model_path(
                 self._pose_model_path_for_backend(
@@ -15149,9 +15151,15 @@ class MainWindow(QMainWindow):
                 "none_disabled": 0,
                 "color_tags_yolo": 1,
                 "apriltags": 2,
-                "custom": 3,
+                "custom": 0,
             }
-            identity_method = get_cfg("identity_method", default="none_disabled")
+            identity_method = (
+                str(get_cfg("identity_method", default="none_disabled"))
+                .lower()
+                .replace(" ", "_")
+                .replace("(", "")
+                .replace(")", "")
+            )
             self.combo_identity_method.setCurrentIndex(
                 method_map.get(identity_method, 0)
             )

@@ -9,5 +9,6 @@
   "mps_memory_fraction": 0.3,
   "cuda_memory_fraction": 0.7,
   "dataset_yolo_confidence_threshold": 0.05,
-  "dataset_yolo_iou_threshold": 0.5
+  "dataset_yolo_iou_threshold": 0.5,
+  "xanylabeling_env": "x-anylabeling-cpu"
 }
