@@ -398,3 +398,4 @@ training/YOLO-obb/training_runs/combined_dataset*
 
 # ignore anything but directory structures in the models directory
 models/*/*
+models/model_registry.json

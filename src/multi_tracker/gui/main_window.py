@@ -12310,11 +12310,13 @@ class MainWindow(QMainWindow):
             for _tid in range(_max_track + 1)
         ]
 
-        # Threaded writer: overlaps disk I/O with CPU rendering
+        # Threaded writer: overlaps disk I/O with CPU rendering.
+        # maxsize=4 caps in-flight frames so fast rendering on Linux cannot
+        # exhaust memory before the writer thread drains the queue.
         import queue as _queue
         import threading as _threading
 
-        _write_q: _queue.Queue = _queue.Queue()
+        _write_q: _queue.Queue = _queue.Queue(maxsize=4)
 
         def _writer_thread():
             while True:
