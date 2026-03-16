@@ -68,7 +68,8 @@ class AprilTagConfig:
 
     # Filtering
     max_tag_id: Optional[int] = None  # ignore IDs above this (None = no limit)
-    pad_pixels: int = 10  # padding around OBB bbox before cropping (pixels)
+    # Crop padding as a fraction of OBB size — reuses INDIVIDUAL_CROP_PADDING
+    padding_fraction: float = 0.1
 
     @classmethod
     def from_params(cls, params: Dict[str, Any]) -> "AprilTagConfig":
@@ -90,7 +91,7 @@ class AprilTagConfig:
                 if params.get("APRILTAG_MAX_TAG_ID") is not None
                 else None
             ),
-            pad_pixels=int(params.get("APRILTAG_PAD_PIXELS", 10)),
+            padding_fraction=float(params.get("INDIVIDUAL_CROP_PADDING", 0.1)),
         )
 
 
@@ -202,7 +203,9 @@ class AprilTagDetector:
             return []
 
         h, w = frame_bgr.shape[:2]
-        pad = self.config.pad_pixels
+        pf = (
+            self.config.padding_fraction
+        )  # proportional, same as INDIVIDUAL_CROP_PADDING
 
         crops: List[np.ndarray] = []
         offsets_xy: List[Tuple[int, int]] = []
@@ -210,17 +213,28 @@ class AprilTagDetector:
 
         for i, box in enumerate(obb_boxes):
             box = np.asarray(box, dtype=np.float32)
-            # Determine axis-aligned bounding rect of the OBB
             if box.ndim == 2 and box.shape[0] == 4:
-                x1 = max(0, int(np.floor(box[:, 0].min())) - pad)
-                y1 = max(0, int(np.floor(box[:, 1].min())) - pad)
-                x2 = min(w, int(np.ceil(box[:, 0].max())) + pad)
-                y2 = min(h, int(np.ceil(box[:, 1].max())) + pad)
+                # OBB corners: centroid-based proportional expansion
+                centroid = box.mean(axis=0)
+                expanded = box.copy()
+                for j in range(4):
+                    expanded[j] = centroid + (box[j] - centroid) * (1.0 + pf)
+                expanded[:, 0] = np.clip(expanded[:, 0], 0, w - 1)
+                expanded[:, 1] = np.clip(expanded[:, 1], 0, h - 1)
+                x1 = max(0, int(np.floor(expanded[:, 0].min())))
+                y1 = max(0, int(np.floor(expanded[:, 1].min())))
+                x2 = min(w, int(np.ceil(expanded[:, 0].max())) + 1)
+                y2 = min(h, int(np.ceil(expanded[:, 1].max())) + 1)
             elif box.ndim == 1 and box.shape[0] == 4:
-                x1 = max(0, int(box[0]) - pad)
-                y1 = max(0, int(box[1]) - pad)
-                x2 = min(w, int(box[2]) + pad)
-                y2 = min(h, int(box[3]) + pad)
+                # AABB: proportional centre-out expansion
+                cx = (float(box[0]) + float(box[2])) / 2
+                cy = (float(box[1]) + float(box[3])) / 2
+                hw = (float(box[2]) - float(box[0])) / 2 * (1.0 + pf)
+                hh_ = (float(box[3]) - float(box[1])) / 2 * (1.0 + pf)
+                x1 = max(0, int(np.floor(cx - hw)))
+                y1 = max(0, int(np.floor(cy - hh_)))
+                x2 = min(w, int(np.ceil(cx + hw)) + 1)
+                y2 = min(h, int(np.ceil(cy + hh_)) + 1)
             else:
                 continue  # skip unrecognised geometry
 

@@ -976,6 +976,16 @@ class TrackingWorker(QThread):
         tags_detected = 0
         frames_with_tags = 0
 
+        # Reuse the shared crop-quality settings from Individual Analysis Pipeline
+        _at_padding = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+        _at_suppress = bool(params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True))
+        _bg_raw = params.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
+        _at_bg_color = (
+            tuple(int(c) for c in _bg_raw)
+            if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
+            else (0, 0, 0)
+        )
+
         self.progress_signal.emit(0, "AprilTag precompute: starting...")
 
         # We need actual video frames to crop from
@@ -1026,8 +1036,41 @@ class TrackingWorker(QThread):
                 else [int(d) for d in detection_ids]
             )
 
-            observations = at_detector.detect_in_frame(
-                frame, scaled_corners, det_indices=det_idx_list
+            # Extract crops using the shared pipeline infrastructure so we get
+            # the same padding, background fill, and foreign-OBB suppression as
+            # the pose / dataset pipelines.
+            at_crops: list = []
+            at_offsets: list = []
+            at_det_indices: list = []
+            for _di, _corners in enumerate(scaled_corners):
+                _crop, _offset = self._extract_expanded_obb_crop(
+                    frame, _corners, _at_padding
+                )
+                if _crop is None or _offset is None:
+                    continue
+                if _at_suppress and len(scaled_corners) > 1:
+                    from multi_tracker.core.tracking.pose_features import (
+                        apply_foreign_obb_mask,
+                    )
+
+                    _other = [
+                        scaled_corners[_j]
+                        for _j in range(len(scaled_corners))
+                        if _j != _di
+                    ]
+                    _crop = apply_foreign_obb_mask(
+                        _crop,
+                        _offset[0],
+                        _offset[1],
+                        _other,
+                        background_color=_at_bg_color,
+                    )
+                at_crops.append(_crop)
+                at_offsets.append(_offset)
+                at_det_indices.append(det_idx_list[_di])
+
+            observations = at_detector.detect_in_crops(
+                at_crops, at_offsets, det_indices=at_det_indices
             )
 
             if observations:

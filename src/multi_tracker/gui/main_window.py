@@ -2922,6 +2922,17 @@ class MainWindow(QMainWindow):
             "color: #6a6a6a; font-size: 10px; font-style: italic;"
         )
         fl.addRow("", self.label_fps_info)
+
+        self.spin_max_targets = QSpinBox()
+        self.spin_max_targets.setRange(1, 200)
+        self.spin_max_targets.setValue(4)
+        self.spin_max_targets.setToolTip(
+            "Maximum number of animals to track simultaneously (1-200).\n"
+            "Set this to the expected number of animals in your video.\n"
+            "Higher values use more memory and may slow down processing."
+        )
+        fl.addRow("How many animals are in the video?", self.spin_max_targets)
+
         vl_files.addLayout(fl)
 
         # Batch Mode Section
@@ -4314,15 +4325,6 @@ class MainWindow(QMainWindow):
         )
         f_core = QFormLayout(None)
         f_core.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        self.spin_max_targets = QSpinBox()
-        self.spin_max_targets.setRange(1, 200)
-        self.spin_max_targets.setValue(4)
-        self.spin_max_targets.setToolTip(
-            "Maximum number of animals to track simultaneously (1-200).\n"
-            "Set this to the expected number of animals in your video.\n"
-            "Higher values use more memory and may slow down processing."
-        )
-        f_core.addRow("Number of animals", self.spin_max_targets)
 
         self.spin_max_dist = QDoubleSpinBox()
         self.spin_max_dist.setRange(0.1, 20.0)
@@ -5798,6 +5800,9 @@ class MainWindow(QMainWindow):
             "Select a conda environment with X-AnyLabeling installed.\n"
             "Environment names should start with 'x-anylabeling-' to be detected."
         )
+        self.combo_xanylabeling_env.currentTextChanged.connect(
+            self._on_xanylabeling_env_changed
+        )
         h_env.addWidget(self.combo_xanylabeling_env, 1)
         self.btn_refresh_envs = QPushButton("🔄")
         self.btn_refresh_envs.setMaximumWidth(40)
@@ -6096,12 +6101,10 @@ class MainWindow(QMainWindow):
         apriltag_widget = QWidget()
         apriltag_layout = QFormLayout(apriltag_widget)
         self.combo_apriltag_family = QComboBox()
-        self.combo_apriltag_family.setEditable(True)
-        self.combo_apriltag_family.addItems(
-            ["tag36h11", "tag25h9", "tag16h5", "tagCircle21h7", "tagStandard41h12"]
-        )
+        self.combo_apriltag_family.addItems(self._get_apriltag_families())
         self.combo_apriltag_family.setToolTip(
-            "AprilTag family to detect (select or type a custom family name)"
+            "AprilTag family to detect.\n"
+            "The list is populated from your installed apriltag library."
         )
         apriltag_layout.addRow(
             "Which AprilTag family should be used?", self.combo_apriltag_family
@@ -6153,45 +6156,7 @@ class MainWindow(QMainWindow):
         vl_identity.addLayout(fl_identity)
         vl_identity.addWidget(self.identity_config_stack)
 
-        # Crop Parameters
-        crop_group = QGroupBox("How should identity crops be extracted?")
-        crop_layout = QFormLayout(crop_group)
-
-        self.spin_identity_crop_multiplier = QDoubleSpinBox()
-        self.spin_identity_crop_multiplier.setRange(1.0, 10.0)
-        self.spin_identity_crop_multiplier.setValue(3.0)
-        self.spin_identity_crop_multiplier.setSingleStep(0.5)
-        self.spin_identity_crop_multiplier.setDecimals(1)
-        self.spin_identity_crop_multiplier.setToolTip(
-            "Crop size = body_size × multiplier\n"
-            "Larger values include more context, smaller values focus on the animal"
-        )
-        crop_layout.addRow("Crop size multiplier", self.spin_identity_crop_multiplier)
-
-        self.spin_identity_crop_min = QSpinBox()
-        self.spin_identity_crop_min.setRange(32, 512)
-        self.spin_identity_crop_min.setValue(64)
-        self.spin_identity_crop_min.setSingleStep(16)
-        self.spin_identity_crop_min.setToolTip("Minimum crop size in pixels")
-        self.spin_identity_crop_max = QSpinBox()
-        self.spin_identity_crop_max.setRange(64, 1024)
-        self.spin_identity_crop_max.setValue(256)
-        self.spin_identity_crop_max.setSingleStep(16)
-        self.spin_identity_crop_max.setToolTip("Maximum crop size in pixels")
-        _crop_size_row = QHBoxLayout()
-        _crop_size_row.addWidget(QLabel("Min (px)"))
-        _crop_size_row.addWidget(self.spin_identity_crop_min)
-        _crop_size_row.addWidget(QLabel("Max (px)"))
-        _crop_size_row.addWidget(self.spin_identity_crop_max)
-        crop_layout.addRow("Crop size", _crop_size_row)
-
-        vl_identity.addWidget(crop_group)
-
         form.addWidget(self.g_identity)
-
-        # Hide legacy identity skeleton UI while keeping controls available for
-        # backward-compatible config load/save paths.
-        self.g_identity.setVisible(False)
 
         self.g_individual_pipeline_common = QGroupBox(
             "Individual Analysis Pipeline Settings"
@@ -6471,7 +6436,8 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-        # Initially disable all controls
+        # Initially disable all controls (sync will show/hide based on state)
+        self.g_identity.setVisible(False)
         self.g_identity.setEnabled(False)
         self.g_pose_runtime.setEnabled(False)
         self._refresh_pose_direction_keypoint_lists()
@@ -6728,6 +6694,7 @@ class MainWindow(QMainWindow):
     def _refresh_xanylabeling_envs(self):
         """Scan for conda environments starting with 'x-anylabeling-'."""
         self.combo_xanylabeling_env.clear()
+        preferred = str(self.advanced_config.get("xanylabeling_env", "")).strip()
 
         try:
             import subprocess
@@ -6752,6 +6719,8 @@ class MainWindow(QMainWindow):
 
                 if envs:
                     self.combo_xanylabeling_env.addItems(envs)
+                    if preferred in envs:
+                        self.combo_xanylabeling_env.setCurrentText(preferred)
                     self.btn_open_xanylabeling.setEnabled(True)
                     logger.info(f"Found {len(envs)} X-AnyLabeling conda environment(s)")
                 else:
@@ -6775,6 +6744,31 @@ class MainWindow(QMainWindow):
             self.combo_xanylabeling_env.addItem("Error detecting envs")
             self.btn_open_xanylabeling.setEnabled(False)
             logger.error(f"Error detecting conda environments: {e}")
+
+    def _selected_xanylabeling_env(self) -> str:
+        """Return the selected X-AnyLabeling env or an empty string."""
+        if not hasattr(self, "combo_xanylabeling_env"):
+            return ""
+        env_name = self.combo_xanylabeling_env.currentText().strip()
+        invalid_prefixes = (
+            "no x-anylabeling envs",
+            "conda not available",
+            "conda not installed",
+            "error detecting envs",
+        )
+        if not env_name or env_name.lower().startswith(invalid_prefixes):
+            return ""
+        return env_name
+
+    def _on_xanylabeling_env_changed(self, _text: str) -> None:
+        """Persist the preferred X-AnyLabeling env as a global UI preference."""
+        env_name = self._selected_xanylabeling_env()
+        if not env_name:
+            return
+        if self.advanced_config.get("xanylabeling_env") == env_name:
+            return
+        self.advanced_config["xanylabeling_env"] = env_name
+        self._save_advanced_config()
 
     def _open_in_xanylabeling(self):
         """Open a dataset directory in X-AnyLabeling."""
@@ -7024,6 +7018,38 @@ class MainWindow(QMainWindow):
     def _on_identity_method_changed(self, index):
         """Update identity configuration stack when method changes."""
         self.identity_config_stack.setCurrentIndex(index)
+
+    @staticmethod
+    def _get_apriltag_families() -> list:
+        """Return the list of tag families supported by the installed apriltag library.
+
+        Probes the library by passing an intentionally invalid family name and
+        parsing the error message, which always lists every known family.  Falls
+        back to a static list if the library is not installed.
+        """
+        _FALLBACK = [
+            "tag36h11",
+            "tag25h9",
+            "tag16h5",
+            "tagCircle21h7",
+            "tagCircle49h12",
+            "tagStandard41h12",
+            "tagStandard52h13",
+            "tagCustom48h12",
+        ]
+        try:
+            import apriltag as _at  # type: ignore[import-untyped]
+        except ImportError:
+            return _FALLBACK
+        try:
+            _at.apriltag("__probe__")
+        except Exception as exc:
+            import re
+
+            families = re.findall(r"^\s+(\S+)$", str(exc), re.MULTILINE)
+            if families:
+                return sorted(families)
+        return _FALLBACK
 
     def _select_color_tag_model(self):
         """Browse for color tag YOLO model."""
@@ -8002,6 +8028,9 @@ class MainWindow(QMainWindow):
         if hasattr(self, "lbl_individual_yolo_only_notice"):
             self.lbl_individual_yolo_only_notice.setVisible(not is_yolo)
 
+        if hasattr(self, "g_identity"):
+            self.g_identity.setVisible(pipeline_enabled)
+            self.g_identity.setEnabled(pipeline_enabled)
         if hasattr(self, "g_pose_runtime"):
             self.g_pose_runtime.setEnabled(pipeline_enabled)
         if hasattr(self, "g_individual_pipeline_common"):
@@ -10400,6 +10429,15 @@ class MainWindow(QMainWindow):
             usage_role="headtail",
             repository_dir=repo_dir,
         )
+
+    @staticmethod
+    def _infer_yolo_headtail_model_type(model_path: object) -> str:
+        """Infer the head-tail model family from its stored path."""
+        normalized = str(make_model_path_relative(model_path or "")).replace("\\", "/")
+        normalized_lower = f"/{normalized.lower().strip('/')}" if normalized else ""
+        if "/tiny/" in normalized_lower:
+            return "tiny"
+        return "YOLO"
 
     def _populate_pose_model_combo(
         self,
@@ -14293,9 +14331,6 @@ class MainWindow(QMainWindow):
             .replace(" ", "_")
             .replace("(", "")
             .replace(")", ""),
-            "IDENTITY_CROP_SIZE_MULTIPLIER": self.spin_identity_crop_multiplier.value(),
-            "IDENTITY_CROP_MIN_SIZE": self.spin_identity_crop_min.value(),
-            "IDENTITY_CROP_MAX_SIZE": self.spin_identity_crop_max.value(),
             "COLOR_TAG_MODEL_PATH": self.line_color_tag_model.text(),
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
@@ -14565,6 +14600,12 @@ class MainWindow(QMainWindow):
                 default=yolo_direct_model,
             )
             yolo_headtail_model = get_cfg("yolo_headtail_model_path", default="")
+            yolo_headtail_model_type = str(
+                get_cfg(
+                    "yolo_headtail_model_type",
+                    default=self._infer_yolo_headtail_model_type(yolo_headtail_model),
+                )
+            ).strip()
 
             resolved_yolo_direct = resolve_model_path(yolo_direct_model)
             resolved_yolo_detect = resolve_model_path(yolo_detect_model)
@@ -14609,6 +14650,11 @@ class MainWindow(QMainWindow):
                 preferred_model_path=yolo_crop_obb_model
             )
             self._set_yolo_crop_obb_model_selection(resolved_yolo_crop_obb)
+            headtail_type_idx = self.combo_yolo_headtail_model_type.findText(
+                "tiny" if yolo_headtail_model_type.lower() == "tiny" else "YOLO"
+            )
+            if headtail_type_idx >= 0:
+                self.combo_yolo_headtail_model_type.setCurrentIndex(headtail_type_idx)
             self._refresh_yolo_headtail_model_combo(
                 preferred_model_path=yolo_headtail_model
             )
@@ -15109,15 +15155,6 @@ class MainWindow(QMainWindow):
             self.combo_identity_method.setCurrentIndex(
                 method_map.get(identity_method, 0)
             )
-            self.spin_identity_crop_multiplier.setValue(
-                get_cfg("identity_crop_size_multiplier", default=3.0)
-            )
-            self.spin_identity_crop_min.setValue(
-                get_cfg("identity_crop_min_size", default=64)
-            )
-            self.spin_identity_crop_max.setValue(
-                get_cfg("identity_crop_max_size", default=256)
-            )
             # Skip model path in preset mode
             if not preset_mode and not self.line_color_tag_model.text().strip():
                 color_tag_model = get_cfg("color_tag_model_path", default="")
@@ -15147,20 +15184,8 @@ class MainWindow(QMainWindow):
                 get_cfg("color_tag_confidence", default=0.5)
             )
             apriltag_family = get_cfg("apriltag_family", default="tag36h11")
-            families = [
-                "tag36h11",
-                "tag25h9",
-                "tag16h5",
-                "tagCircle21h7",
-                "tagStandard41h12",
-            ]
-            if apriltag_family in families:
-                self.combo_apriltag_family.setCurrentIndex(
-                    families.index(apriltag_family)
-                )
-            else:
-                # Custom family string — set as editable text
-                self.combo_apriltag_family.setEditText(str(apriltag_family))
+            idx = self.combo_apriltag_family.findText(apriltag_family)
+            self.combo_apriltag_family.setCurrentIndex(max(0, idx))
             self.spin_apriltag_decimate.setValue(
                 get_cfg("apriltag_decimate", default=1.0)
             )
@@ -15437,6 +15462,7 @@ class MainWindow(QMainWindow):
                 "yolo_headtail_model_path": make_model_path_relative(
                     yolo_headtail_path
                 ),
+                "yolo_headtail_model_type": self.combo_yolo_headtail_model_type.currentText(),
                 "pose_overrides_headtail": self.chk_pose_overrides_headtail.isChecked(),
                 "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
                 "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
@@ -15649,9 +15675,6 @@ class MainWindow(QMainWindow):
                 .replace(" ", "_")
                 .replace("(", "")
                 .replace(")", ""),
-                "identity_crop_size_multiplier": self.spin_identity_crop_multiplier.value(),
-                "identity_crop_min_size": self.spin_identity_crop_min.value(),
-                "identity_crop_max_size": self.spin_identity_crop_max.value(),
                 "color_tag_confidence": self.spin_color_tag_conf.value(),
             }
         )
@@ -16603,6 +16626,7 @@ class MainWindow(QMainWindow):
             # Dataset Generation - YOLO Detection Parameters (separate from tracking)
             "dataset_yolo_confidence_threshold": 0.05,  # Very low - detect all animals including uncertain ones for annotation
             "dataset_yolo_iou_threshold": 0.5,  # Moderate - remove obvious duplicates but keep borderline cases for manual review
+            "xanylabeling_env": "",  # Preferred X-AnyLabeling conda env
         }
 
         if os.path.exists(config_path):
