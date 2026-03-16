@@ -7695,6 +7695,23 @@ class MainWindow(QMainWindow):
         rt = str(runtime or self._selected_compute_runtime() or "").strip().lower()
         return rt == "tensorrt" or rt.startswith("onnx")
 
+    @staticmethod
+    def _preview_safe_runtime(runtime: str) -> str:
+        """Downgrade ONNX/TensorRT runtimes to their native equivalents.
+
+        Preview mode and test-detection-on-preview do not benefit from
+        ONNX/TensorRT (single-frame, no warm-up) and those runtimes add
+        unnecessary latency.  Map them back to the underlying device runtime.
+        """
+        rt = str(runtime or "cpu").strip().lower()
+        if rt == "onnx_cpu":
+            return "cpu"
+        if rt in ("onnx_cuda", "tensorrt"):
+            return "cuda"
+        if rt == "onnx_rocm":
+            return "rocm"
+        return rt
+
     def _on_runtime_context_changed(self, *_args):
         previous = self._selected_compute_runtime()
         self._populate_compute_runtime_options(preferred=previous)
@@ -9231,10 +9248,9 @@ class MainWindow(QMainWindow):
 
     def _collect_preview_detection_context(self) -> dict:
         """Capture current UI values for async preview detection."""
-        runtime_detection = derive_detection_runtime_settings(
-            self._selected_compute_runtime()
-        )
-        selected_runtime = self._selected_compute_runtime()
+        # ONNX/TensorRT are not used for single-frame preview detection.
+        selected_runtime = self._preview_safe_runtime(self._selected_compute_runtime())
+        runtime_detection = derive_detection_runtime_settings(selected_runtime)
         trt_batch_size = (
             self.spin_yolo_batch_size.value()
             if self._runtime_requires_fixed_yolo_batch(selected_runtime)
@@ -13510,6 +13526,19 @@ class MainWindow(QMainWindow):
             return
         # Preview should always render frames regardless of visualization-free toggle
         params["VISUALIZATION_FREE_MODE"] = False
+        # Preview must not use ONNX/TensorRT — downgrade to the native device runtime.
+        safe_rt = self._preview_safe_runtime(params.get("COMPUTE_RUNTIME", "cpu"))
+        if safe_rt != params.get("COMPUTE_RUNTIME"):
+            safe_det = derive_detection_runtime_settings(safe_rt)
+            params["COMPUTE_RUNTIME"] = safe_rt
+            params["YOLO_DEVICE"] = safe_det["yolo_device"]
+            params["ENABLE_GPU_BACKGROUND"] = safe_det["enable_gpu_background"]
+            params["ENABLE_TENSORRT"] = safe_det["enable_tensorrt"]
+            params["ENABLE_ONNX_RUNTIME"] = safe_det["enable_onnx_runtime"]
+            safe_pose = derive_pose_runtime_settings(
+                safe_rt, backend_family=params.get("POSE_MODEL_TYPE", "yolo")
+            )
+            params["POSE_RUNTIME_FLAVOR"] = safe_pose["pose_runtime_flavor"]
 
         # Reuse an existing detection cache when one covers the current frame
         # range — this ensures preview uses the same detections as the autotune

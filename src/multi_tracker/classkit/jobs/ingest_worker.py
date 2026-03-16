@@ -69,9 +69,11 @@ class IngestWorker(QRunnable):
             # 3. Embeddings
             self.signals.progress.emit("Loading Embedder...", 20)
             try:
+                from ..embed.embedder import ModelLoadError
+
                 embedder = TimmEmbedder(model_name=self.model_name, device=self.device)
                 embedder.load_model()
-            except ImportError as e:
+            except (ImportError, ModelLoadError) as e:
                 self.signals.error.emit(f"Failed to load embedder: {e}")
                 return
 

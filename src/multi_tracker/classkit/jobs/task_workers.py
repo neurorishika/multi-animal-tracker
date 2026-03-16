@@ -97,6 +97,20 @@ class EmbeddingWorker(QRunnable):
 
     @Slot()
     def run(self):
+        db_cls = None
+        if self.db_path:
+            from ..store.db import ClassKitDB as _ClassKitDB
+
+            db_cls = _ClassKitDB
+
+        from ..embed.embedder import (
+            ModelLoadError,
+            TimmEmbedder,
+            resolve_embedder_device,
+        )
+
+        resolved_device = resolve_embedder_device(self.device)
+
         try:
             self.signals.started.emit()
             cache_model_name = self.model_name
@@ -104,14 +118,12 @@ class EmbeddingWorker(QRunnable):
                 cache_model_name = f"{self.model_name}__matcanon_v1"
 
             # Check for cached embeddings
-            if self.db_path and not self.force_recompute:
+            if db_cls is not None and not self.force_recompute:
                 self.signals.progress.emit(0, "Checking for cached embeddings...")
 
-                from ..store.db import ClassKitDB
+                db = db_cls(self.db_path)
 
-                db = ClassKitDB(self.db_path)
-
-                cached = db.get_embeddings(cache_model_name, self.device)
+                cached = db.get_embeddings(cache_model_name, resolved_device)
                 if cached is not None:
                     embeddings, metadata = cached
                     self.signals.progress.emit(
@@ -136,11 +148,9 @@ class EmbeddingWorker(QRunnable):
 
             self.signals.progress.emit(0, f"Loading model: {self.model_name}...")
 
-            from ..embed.embedder import TimmEmbedder
-
             # Create embedder
-            self.signals.progress.emit(5, f"Creating embedder on {self.device}...")
-            embedder = TimmEmbedder(model_name=self.model_name, device=self.device)
+            self.signals.progress.emit(5, f"Creating embedder on {resolved_device}...")
+            embedder = TimmEmbedder(model_name=self.model_name, device=resolved_device)
 
             self.signals.progress.emit(8, "Loading model weights...")
             embedder.load_model()
@@ -150,7 +160,7 @@ class EmbeddingWorker(QRunnable):
                 10, f"Computing embeddings for {len(self.image_paths):,} images..."
             )
             self.signals.progress.emit(
-                12, f"Batch size: {self.batch_size}, Device: {self.device}"
+                12, f"Batch size: {self.batch_size}, Device: {embedder.device}"
             )
 
             # Compute embeddings
@@ -165,13 +175,13 @@ class EmbeddingWorker(QRunnable):
             )
 
             # Save to cache
-            if self.db_path:
+            if db_cls is not None:
                 self.signals.progress.emit(92, "Saving embeddings to cache...")
-                db = ClassKitDB(self.db_path)
+                db = db_cls(self.db_path)
                 db.save_embeddings(
                     embeddings,
                     cache_model_name,
-                    self.device,
+                    embedder.device,
                     self.batch_size,
                     meta={
                         "model_name": self.model_name,
@@ -195,6 +205,8 @@ class EmbeddingWorker(QRunnable):
                 }
             )
 
+        except (ImportError, ModelLoadError) as e:
+            self.signals.error.emit(str(e))
         except Exception as e:
             traceback.print_exc()
             self.signals.error.emit(str(e))
@@ -1379,6 +1391,10 @@ class TinyCNNInferenceWorker(QRunnable):
             traceback.print_exc()
             self.signals.error.emit(str(e))
         finally:
+            self.signals.finished.emit()
+            self.signals.finished.emit()
+            self.signals.finished.emit()
+            self.signals.finished.emit()
             self.signals.finished.emit()
             self.signals.finished.emit()
             self.signals.finished.emit()
