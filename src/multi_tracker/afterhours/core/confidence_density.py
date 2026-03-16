@@ -333,12 +333,20 @@ def find_regions(
 
     # Full 26-connectivity structure for 3-D labelling.
     structure = np.ones((3, 3, 3), dtype=np.int32)
-    labeled, num_features = label(binary, structure=structure)
+    # Force int32 output (scipy default is int64 on 64-bit platforms, which
+    # would allocate 8× the binary volume's size).  int32 supports up to
+    # ~2 billion distinct regions — far beyond any practical limit here.
+    labeled = np.empty(binary.shape, dtype=np.int32)
+    # When output= is a pre-allocated array, scipy returns only the feature count.
+    label(binary, structure=structure, output=labeled)
 
     # find_objects returns bounding slices per component in O(N) — much
     # faster than per-component np.nonzero which allocates a full (T,H,W)
     # boolean mask each time.
     slices = find_objects(labeled)
+    # Free the labeled volume immediately — it can be ~4× the binary volume
+    # (int32 vs uint8) and is no longer needed once bounding slices are known.
+    del labeled
 
     regions: List[DensityRegion] = []
     for component_id, obj_slices in enumerate(slices, start=1):
