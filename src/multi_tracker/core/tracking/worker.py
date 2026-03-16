@@ -38,7 +38,14 @@ from multi_tracker.core.tracking.pose_features import (
 from multi_tracker.core.tracking.pose_features import (
     resolve_pose_group_indices as _pf_resolve_indices,
 )
+from multi_tracker.core.tracking.tag_features import (
+    NO_TAG,
+    TrackTagHistory,
+    build_detection_tag_id_list,
+    build_tag_detection_map,
+)
 from multi_tracker.data.detection_cache import DetectionCache
+from multi_tracker.data.tag_observation_cache import TagObservationCache
 from multi_tracker.utils.batch_optimizer import BatchOptimizer
 from multi_tracker.utils.frame_prefetcher import FramePrefetcher
 from multi_tracker.utils.geometry import wrap_angle_degs
@@ -892,6 +899,241 @@ class TrackingWorker(QThread):
             str(pose_cache_path) if pose_cache_path else None
         ), not pose_enabled or pose_cache_hit
 
+    # ------------------------------------------------------------------
+    # AprilTag precompute
+    # ------------------------------------------------------------------
+
+    def _should_precompute_apriltag_data(self, params, detection_method):
+        """Return True when the apriltag precompute phase should run."""
+        identity_method = str(params.get("IDENTITY_METHOD", "none_disabled")).lower()
+        return bool(
+            not self.backward_mode
+            and not self.preview_mode
+            and detection_method == "yolo_obb"
+            and identity_method == "apriltags"
+        )
+
+    def _build_tag_cache_path(self, start_frame, end_frame):
+        """Derive the tag observation cache path from the detection cache path."""
+        if not self.detection_cache_path:
+            return None
+        from pathlib import Path as _P
+
+        base = _P(self.detection_cache_path)
+        return base.with_name(base.stem + f"_tags_{start_frame}_{end_frame}.npz")
+
+    def _run_apriltag_precompute(
+        self, detection_cache, params, cap, start_frame, end_frame
+    ):
+        """Run AprilTag detection on cached OBB crops and write TagObservationCache.
+
+        Returns the path to the tag observation cache (str), or *None* on failure.
+        """
+        from multi_tracker.core.identity.apriltag_detector import (
+            AprilTagConfig,
+            AprilTagDetector,
+        )
+
+        tag_cache_path = self._build_tag_cache_path(start_frame, end_frame)
+        if tag_cache_path is None:
+            return None
+
+        # Check for existing, valid cache
+        if tag_cache_path.exists():
+            probe = TagObservationCache(str(tag_cache_path), mode="r")
+            if probe.is_compatible() and probe.covers_frame_range(
+                start_frame, end_frame
+            ):
+                logger.info(
+                    "Reusing existing tag observation cache: %s", tag_cache_path
+                )
+                probe.close()
+                return str(tag_cache_path)
+            probe.close()
+            tag_cache_path.unlink(missing_ok=True)
+
+        logger.info("=" * 80)
+        logger.info("APRILTAG PRECOMPUTE: scanning OBB crops for tags")
+        logger.info("=" * 80)
+
+        cfg = AprilTagConfig.from_params(params)
+        try:
+            at_detector = AprilTagDetector(cfg)
+        except ImportError as exc:
+            logger.warning("AprilTag precompute skipped: %s", exc)
+            self.warning_signal.emit(
+                "AprilTag Unavailable",
+                str(exc),
+            )
+            return None
+
+        tag_cache = TagObservationCache(
+            str(tag_cache_path), mode="w", start_frame=start_frame, end_frame=end_frame
+        )
+
+        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
+        total = max(1, end_frame - start_frame + 1)
+        tags_detected = 0
+        frames_with_tags = 0
+
+        # Reuse the shared crop-quality settings from Individual Analysis Pipeline
+        _at_padding = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+        _at_suppress = bool(params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True))
+        _bg_raw = params.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
+        _at_bg_color = (
+            tuple(int(c) for c in _bg_raw)
+            if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
+            else (0, 0, 0)
+        )
+
+        self.progress_signal.emit(0, "AprilTag precompute: starting...")
+
+        # We need actual video frames to crop from
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        for fid in range(start_frame, end_frame + 1):
+            if self._stop_requested:
+                logger.info("AprilTag precompute cancelled by user.")
+                tag_cache.close()
+                at_detector.close()
+                return None
+
+            # Read frame
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                tag_cache.add_frame(fid, [], [], [], [])
+                continue
+
+            # Get cached detections for this frame
+            try:
+                (
+                    meas,
+                    _sizes,
+                    _shapes,
+                    _confs,
+                    obb_corners,
+                    detection_ids,
+                    _hh,
+                    _dm,
+                ) = detection_cache.get_frame(fid)
+            except Exception:
+                tag_cache.add_frame(fid, [], [], [], [])
+                continue
+
+            if not obb_corners:
+                tag_cache.add_frame(fid, [], [], [], [])
+                continue
+
+            # Scale OBB corners from detection resolution to original frame resolution
+            scale = 1.0 / resize_f if resize_f > 0 else 1.0
+            scaled_corners = [
+                np.asarray(c, dtype=np.float32) * scale for c in obb_corners
+            ]
+
+            det_idx_list = (
+                list(range(len(obb_corners)))
+                if not detection_ids
+                else [int(d) for d in detection_ids]
+            )
+
+            # Extract crops using the shared pipeline infrastructure so we get
+            # the same padding, background fill, and foreign-OBB suppression as
+            # the pose / dataset pipelines.
+            at_crops: list = []
+            at_offsets: list = []
+            at_det_indices: list = []
+            for _di, _corners in enumerate(scaled_corners):
+                _crop, _offset = self._extract_expanded_obb_crop(
+                    frame, _corners, _at_padding
+                )
+                if _crop is None or _offset is None:
+                    continue
+                if _at_suppress and len(scaled_corners) > 1:
+                    from multi_tracker.core.tracking.pose_features import (
+                        apply_foreign_obb_mask,
+                    )
+
+                    _other = [
+                        scaled_corners[_j]
+                        for _j in range(len(scaled_corners))
+                        if _j != _di
+                    ]
+                    _crop = apply_foreign_obb_mask(
+                        _crop,
+                        _offset[0],
+                        _offset[1],
+                        _other,
+                        background_color=_at_bg_color,
+                    )
+                at_crops.append(_crop)
+                at_offsets.append(_offset)
+                at_det_indices.append(det_idx_list[_di])
+
+            observations = at_detector.detect_in_crops(
+                at_crops, at_offsets, det_indices=at_det_indices
+            )
+
+            if observations:
+                tag_cache.add_frame(
+                    fid,
+                    tag_ids=[o.tag_id for o in observations],
+                    centers_xy=[o.center_xy for o in observations],
+                    corners=[o.corners for o in observations],
+                    det_indices=[o.det_index for o in observations],
+                    hammings=[o.hamming for o in observations],
+                )
+                tags_detected += len(observations)
+                frames_with_tags += 1
+            else:
+                tag_cache.add_frame(fid, [], [], [], [])
+
+            # Progress update every 50 frames
+            done = fid - start_frame + 1
+            if done % 50 == 0 or fid == end_frame:
+                pct = int(100 * done / total)
+                self.progress_signal.emit(
+                    pct,
+                    f"AprilTag precompute: {done}/{total} frames, "
+                    f"{tags_detected} tags in {frames_with_tags} frames",
+                )
+
+        # Save
+        from multi_tracker.data.tag_observation_cache import detection_cache_hash
+
+        det_hash = ""
+        try:
+            det_hash = detection_cache_hash(self.detection_cache_path)
+        except Exception:
+            pass
+
+        tag_cache.save(
+            metadata={
+                "family": cfg.family,
+                "detection_cache_hash": det_hash,
+                "video_path": str(Path(self.video_path).expanduser().resolve()),
+                "start_frame": start_frame,
+                "end_frame": end_frame,
+            }
+        )
+        tag_cache.close()
+        at_detector.close()
+
+        # Reset video position for subsequent phases
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        logger.info(
+            "AprilTag precompute complete: %d tags in %d/%d frames → %s",
+            tags_detected,
+            frames_with_tags,
+            total,
+            tag_cache_path,
+        )
+        self.progress_signal.emit(
+            100,
+            f"AprilTag precompute done: {tags_detected} tags in {frames_with_tags} frames.",
+        )
+        return str(tag_cache_path)
+
     def _run_batched_detection_phase(
         self, cap, detection_cache, detector, params, start_frame, end_frame
     ):
@@ -1584,11 +1826,10 @@ class TrackingWorker(QThread):
                         _Path(self.video_path).stem + "_confidence_map.mp4"
                     )
                     _fps = cap.get(_cv2.CAP_PROP_FPS) or 25.0
-                    _n_frames_total = int(cap.get(_cv2.CAP_PROP_FRAME_COUNT))
 
-                    # Use a sequential reader: reset to frame 0 and call
-                    # cap.read() in order — much faster than random seeks.
-                    cap.set(_cv2.CAP_PROP_POS_FRAMES, 0)
+                    # Use a sequential reader: seek to start_frame so the
+                    # diagnostic video only covers the selected subset.
+                    cap.set(_cv2.CAP_PROP_POS_FRAMES, start_frame)
 
                     def _diag_reader(_fidx, _cap=cap):
                         # Sequential read — _fidx is expected to increase
@@ -1608,7 +1849,7 @@ class TrackingWorker(QThread):
 
                     export_diagnostic_video(
                         frame_reader=_diag_reader,
-                        n_frames=_n_frames_total,
+                        n_frames=total_frames,
                         frame_h=_out_h,
                         frame_w=_out_w,
                         density_grids=_raw_grids,
@@ -1668,6 +1909,46 @@ class TrackingWorker(QThread):
                     self.video_writer.release()
                 self.finished_signal.emit(False, [], [])
                 return
+
+        # === APRILTAG PRECOMPUTE ===
+        apriltag_precompute_enabled = self._should_precompute_apriltag_data(
+            p, detection_method
+        )
+        tag_observation_cache_path = None
+        if (
+            apriltag_precompute_enabled
+            and detection_cache is not None
+            and use_cached_detections
+        ):
+            try:
+                tag_observation_cache_path = self._run_apriltag_precompute(
+                    detection_cache, p, cap, start_frame, end_frame
+                )
+            except Exception:
+                logger.exception("AprilTag precompute failed (non-fatal).")
+                self.warning_signal.emit(
+                    "AprilTag Precompute Failed",
+                    "AprilTag detection could not be completed. "
+                    "Tracking will proceed without tag identity signals.",
+                )
+
+        # Open tag observation cache for reading during tracking loop.
+        tag_obs_cache = None
+        track_tag_history = None
+        if tag_observation_cache_path and os.path.exists(tag_observation_cache_path):
+            tag_obs_cache = TagObservationCache(tag_observation_cache_path, mode="r")
+            if not tag_obs_cache.is_compatible():
+                logger.warning("Tag observation cache incompatible; ignoring.")
+                tag_obs_cache.close()
+                tag_obs_cache = None
+            else:
+                track_tag_history = TrackTagHistory(
+                    N, window=int(p.get("TAG_HISTORY_WINDOW", 30))
+                )
+                logger.info(
+                    "Tag observation cache loaded for tracking: %s",
+                    tag_observation_cache_path,
+                )
 
         # Optional pose-properties reader for directional orientation override.
         pose_props_cache = None
@@ -2192,6 +2473,17 @@ class TrackingWorker(QThread):
                 assign_start = time.time()
                 preds = self.kf_manager.get_predictions()
 
+                # --- AprilTag detection map for this frame ---
+                _tag_det_map = build_tag_detection_map(
+                    tag_obs_cache, actual_frame_index
+                )
+                _det_tag_ids = build_detection_tag_id_list(_tag_det_map, len(meas))
+                _track_tag_ids = (
+                    track_tag_history.build_track_tag_id_list(N)
+                    if track_tag_history is not None
+                    else [NO_TAG] * N
+                )
+
                 # The Assigner now takes the kf_manager directly to access X and S_inv
                 association_data = {
                     "detection_confidences": detection_confidences,
@@ -2201,6 +2493,8 @@ class TrackingWorker(QThread):
                     "detection_pose_visibility": detection_pose_visibility,
                     "track_pose_prototypes": track_pose_prototypes,
                     "track_avg_step": track_avg_step,
+                    "detection_tag_ids": _det_tag_ids,
+                    "track_last_tag_ids": _track_tag_ids,
                 }
 
                 # --- Density-aware pre-gate ---
@@ -2352,6 +2646,15 @@ class TrackingWorker(QThread):
                         track_states[r], tracking_continuity[r] = "lost", 0
                     elif track_states[r] != "lost":
                         track_states[r] = "occluded"
+
+                # --- Record tag observations for matched tracks ---
+                if track_tag_history is not None:
+                    track_tag_history.resize(N)
+                    # Clear history for respawned tracks first (new trajectory)
+                    for r in respawned_matches:
+                        track_tag_history.clear_track(r)
+                    for r, c in zip(rows, cols):
+                        track_tag_history.record(r, actual_frame_index, _det_tag_ids[c])
 
                 # --- KF Update & State Update ---
                 total_cost = 0.0
@@ -2545,6 +2848,11 @@ class TrackingWorker(QThread):
                         )
                         row_data.append(det_id)
 
+                        # Add TagID (majority-vote tag for this track, or NaN)
+                        if track_tag_history is not None:
+                            _tag = track_tag_history.majority_tag(r)
+                            row_data.append(_tag if _tag != NO_TAG else float("nan"))
+
                         self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1
                     current_cost = cost[r, c]
@@ -2583,6 +2891,11 @@ class TrackingWorker(QThread):
 
                         # Add DetectionID (NaN for unmatched tracks)
                         row_data.append(float("nan"))
+
+                        # Add TagID (majority-vote tag for this track, or NaN)
+                        if track_tag_history is not None:
+                            _tag = track_tag_history.majority_tag(r)
+                            row_data.append(_tag if _tag != NO_TAG else float("nan"))
 
                         self.csv_writer_thread.enqueue(row_data)
                         local_counts[r] += 1

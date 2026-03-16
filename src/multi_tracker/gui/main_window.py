@@ -148,6 +148,7 @@ class MergeWorker(QThread):
         resize_factor,
         interp_method,
         max_gap,
+        tag_cache_path=None,
     ):
         super().__init__()
         self.forward_trajs = forward_trajs
@@ -157,6 +158,7 @@ class MergeWorker(QThread):
         self.resize_factor = resize_factor
         self.interp_method = interp_method
         self.max_gap = max_gap
+        self.tag_cache_path = tag_cache_path
         self._stop_requested = False
 
     def stop(self):
@@ -243,6 +245,37 @@ class MergeWorker(QThread):
             if self._should_stop():
                 return
             self.progress_signal.emit(90, "Scaling to original space...")
+
+            # --- AprilTag identity resolution (before coordinate rescaling) ---
+            if (
+                isinstance(resolved_trajectories, pd.DataFrame)
+                and self.tag_cache_path is not None
+            ):
+                try:
+                    from ..core.post.tag_identity import (
+                        detect_tag_swaps,
+                        resolve_tag_identities,
+                    )
+                    from ..data.tag_observation_cache import TagObservationCache
+
+                    self.progress_signal.emit(92, "Resolving tag identities...")
+                    tag_cache = TagObservationCache(str(self.tag_cache_path), mode="r")
+                    resolved_trajectories = resolve_tag_identities(
+                        resolved_trajectories, tag_cache, self.params
+                    )
+                    swaps = detect_tag_swaps(
+                        resolved_trajectories, tag_cache, self.params
+                    )
+                    if swaps:
+                        logger.warning(
+                            "Detected %d potential tag-swap events", len(swaps)
+                        )
+                    tag_cache.close()
+                except Exception:
+                    logger.warning(
+                        "Tag identity resolution failed (non-fatal)",
+                        exc_info=True,
+                    )
 
             # Scale coordinates back to original video space
             if isinstance(resolved_trajectories, pd.DataFrame):
@@ -2889,6 +2922,17 @@ class MainWindow(QMainWindow):
             "color: #6a6a6a; font-size: 10px; font-style: italic;"
         )
         fl.addRow("", self.label_fps_info)
+
+        self.spin_max_targets = QSpinBox()
+        self.spin_max_targets.setRange(1, 200)
+        self.spin_max_targets.setValue(4)
+        self.spin_max_targets.setToolTip(
+            "Maximum number of animals to track simultaneously (1-200).\n"
+            "Set this to the expected number of animals in your video.\n"
+            "Higher values use more memory and may slow down processing."
+        )
+        fl.addRow("How many animals are in the video?", self.spin_max_targets)
+
         vl_files.addLayout(fl)
 
         # Batch Mode Section
@@ -4281,15 +4325,6 @@ class MainWindow(QMainWindow):
         )
         f_core = QFormLayout(None)
         f_core.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        self.spin_max_targets = QSpinBox()
-        self.spin_max_targets.setRange(1, 200)
-        self.spin_max_targets.setValue(4)
-        self.spin_max_targets.setToolTip(
-            "Maximum number of animals to track simultaneously (1-200).\n"
-            "Set this to the expected number of animals in your video.\n"
-            "Higher values use more memory and may slow down processing."
-        )
-        f_core.addRow("Number of animals", self.spin_max_targets)
 
         self.spin_max_dist = QDoubleSpinBox()
         self.spin_max_dist.setRange(0.1, 20.0)
@@ -5765,6 +5800,9 @@ class MainWindow(QMainWindow):
             "Select a conda environment with X-AnyLabeling installed.\n"
             "Environment names should start with 'x-anylabeling-' to be detected."
         )
+        self.combo_xanylabeling_env.currentTextChanged.connect(
+            self._on_xanylabeling_env_changed
+        )
         h_env.addWidget(self.combo_xanylabeling_env, 1)
         self.btn_refresh_envs = QPushButton("🔄")
         self.btn_refresh_envs.setMaximumWidth(40)
@@ -5943,6 +5981,7 @@ class MainWindow(QMainWindow):
         form.addWidget(self.g_pose_label)
 
         # Initially hide individual dataset widgets (checkbox starts unchecked)
+        self.g_individual_dataset.setVisible(False)
         self.ind_output_group.setVisible(False)
         self.lbl_individual_info.setVisible(False)
         self.chk_generate_individual_track_videos.setVisible(False)
@@ -6008,13 +6047,12 @@ class MainWindow(QMainWindow):
         # Identity Method
         self.combo_identity_method = QComboBox()
         self.combo_identity_method.addItems(
-            ["None (Disabled)", "Color Tags (YOLO)", "AprilTags", "Custom"]
+            ["None (Disabled)", "Color Tags (YOLO)", "AprilTags"]
         )
         self.combo_identity_method.setToolTip(
             "Select method for identifying individual animals:\n"
             "• Color Tags: Detect color markers using YOLO model\n"
-            "• AprilTags: Detect fiducial markers\n"
-            "• Custom: Implement your own classifier"
+            "• AprilTags: Detect fiducial markers"
         )
         self.combo_identity_method.currentIndexChanged.connect(
             self._on_identity_method_changed
@@ -6063,10 +6101,11 @@ class MainWindow(QMainWindow):
         apriltag_widget = QWidget()
         apriltag_layout = QFormLayout(apriltag_widget)
         self.combo_apriltag_family = QComboBox()
-        self.combo_apriltag_family.addItems(
-            ["tag36h11", "tag25h9", "tag16h5", "tagCircle21h7", "tagStandard41h12"]
+        self.combo_apriltag_family.addItems(self._get_apriltag_families())
+        self.combo_apriltag_family.setToolTip(
+            "AprilTag family to detect.\n"
+            "The list is populated from your installed apriltag library."
         )
-        self.combo_apriltag_family.setToolTip("AprilTag family to detect")
         apriltag_layout.addRow(
             "Which AprilTag family should be used?", self.combo_apriltag_family
         )
@@ -6081,61 +6120,30 @@ class MainWindow(QMainWindow):
             "How much AprilTag downsampling should be used?",
             self.spin_apriltag_decimate,
         )
-        self.identity_config_stack.addWidget(apriltag_widget)
-
-        # Page 3: Custom
-        custom_widget = QWidget()
-        custom_layout = QVBoxLayout(custom_widget)
-        custom_layout.addWidget(
-            self._create_help_label(
-                "Implement custom identity classifier in:\n"
-                "src/multi_tracker/core/identity/analysis.py"
-            )
+        self.spin_tag_match_bonus = QDoubleSpinBox()
+        self.spin_tag_match_bonus.setRange(0.0, 200.0)
+        self.spin_tag_match_bonus.setValue(20.0)
+        self.spin_tag_match_bonus.setSingleStep(5.0)
+        self.spin_tag_match_bonus.setToolTip(
+            "Cost bonus (subtracted) when a detection's tag matches the track's tag"
         )
-        self.identity_config_stack.addWidget(custom_widget)
+        apriltag_layout.addRow(
+            "Tag match bonus (lower cost)?", self.spin_tag_match_bonus
+        )
+        self.spin_tag_mismatch_penalty = QDoubleSpinBox()
+        self.spin_tag_mismatch_penalty.setRange(0.0, 500.0)
+        self.spin_tag_mismatch_penalty.setValue(50.0)
+        self.spin_tag_mismatch_penalty.setSingleStep(10.0)
+        self.spin_tag_mismatch_penalty.setToolTip(
+            "Cost penalty (added) when a detection's tag differs from the track's tag"
+        )
+        apriltag_layout.addRow(
+            "Tag mismatch penalty (higher cost)?", self.spin_tag_mismatch_penalty
+        )
+        self.identity_config_stack.addWidget(apriltag_widget)
 
         vl_identity.addLayout(fl_identity)
         vl_identity.addWidget(self.identity_config_stack)
-
-        # Crop Parameters
-        crop_group = QGroupBox("How should identity crops be extracted?")
-        crop_layout = QFormLayout(crop_group)
-
-        self.spin_identity_crop_multiplier = QDoubleSpinBox()
-        self.spin_identity_crop_multiplier.setRange(1.0, 10.0)
-        self.spin_identity_crop_multiplier.setValue(3.0)
-        self.spin_identity_crop_multiplier.setSingleStep(0.5)
-        self.spin_identity_crop_multiplier.setDecimals(1)
-        self.spin_identity_crop_multiplier.setToolTip(
-            "Crop size = body_size × multiplier\n"
-            "Larger values include more context, smaller values focus on the animal"
-        )
-        crop_layout.addRow("Crop size multiplier", self.spin_identity_crop_multiplier)
-
-        self.spin_identity_crop_min = QSpinBox()
-        self.spin_identity_crop_min.setRange(32, 512)
-        self.spin_identity_crop_min.setValue(64)
-        self.spin_identity_crop_min.setSingleStep(16)
-        self.spin_identity_crop_min.setToolTip("Minimum crop size in pixels")
-        self.spin_identity_crop_max = QSpinBox()
-        self.spin_identity_crop_max.setRange(64, 1024)
-        self.spin_identity_crop_max.setValue(256)
-        self.spin_identity_crop_max.setSingleStep(16)
-        self.spin_identity_crop_max.setToolTip("Maximum crop size in pixels")
-        _crop_size_row = QHBoxLayout()
-        _crop_size_row.addWidget(QLabel("Min (px)"))
-        _crop_size_row.addWidget(self.spin_identity_crop_min)
-        _crop_size_row.addWidget(QLabel("Max (px)"))
-        _crop_size_row.addWidget(self.spin_identity_crop_max)
-        crop_layout.addRow("Crop size", _crop_size_row)
-
-        vl_identity.addWidget(crop_group)
-
-        form.addWidget(self.g_identity)
-
-        # Hide legacy identity skeleton UI while keeping controls available for
-        # backward-compatible config load/save paths.
-        self.g_identity.setVisible(False)
 
         self.g_individual_pipeline_common = QGroupBox(
             "Individual Analysis Pipeline Settings"
@@ -6203,6 +6211,7 @@ class MainWindow(QMainWindow):
         )
 
         form.addWidget(self.g_individual_pipeline_common)
+        form.addWidget(self.g_identity)
 
         self.g_pose_runtime = QGroupBox("Pose Extraction Settings")
         vl_pose = QVBoxLayout(self.g_pose_runtime)
@@ -6415,8 +6424,12 @@ class MainWindow(QMainWindow):
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
-        # Initially disable all controls
+        # Initially disable all controls (sync will show/hide based on state)
+        self.g_identity.setVisible(False)
         self.g_identity.setEnabled(False)
+        self.g_individual_pipeline_common.setVisible(False)
+        self.g_individual_pipeline_common.setEnabled(False)
+        self.g_pose_runtime.setVisible(False)
         self.g_pose_runtime.setEnabled(False)
         self._refresh_pose_direction_keypoint_lists()
         self._sync_pose_backend_ui()
@@ -6672,6 +6685,7 @@ class MainWindow(QMainWindow):
     def _refresh_xanylabeling_envs(self):
         """Scan for conda environments starting with 'x-anylabeling-'."""
         self.combo_xanylabeling_env.clear()
+        preferred = str(self.advanced_config.get("xanylabeling_env", "")).strip()
 
         try:
             import subprocess
@@ -6696,6 +6710,8 @@ class MainWindow(QMainWindow):
 
                 if envs:
                     self.combo_xanylabeling_env.addItems(envs)
+                    if preferred in envs:
+                        self.combo_xanylabeling_env.setCurrentText(preferred)
                     self.btn_open_xanylabeling.setEnabled(True)
                     logger.info(f"Found {len(envs)} X-AnyLabeling conda environment(s)")
                 else:
@@ -6719,6 +6735,31 @@ class MainWindow(QMainWindow):
             self.combo_xanylabeling_env.addItem("Error detecting envs")
             self.btn_open_xanylabeling.setEnabled(False)
             logger.error(f"Error detecting conda environments: {e}")
+
+    def _selected_xanylabeling_env(self) -> str:
+        """Return the selected X-AnyLabeling env or an empty string."""
+        if not hasattr(self, "combo_xanylabeling_env"):
+            return ""
+        env_name = self.combo_xanylabeling_env.currentText().strip()
+        invalid_prefixes = (
+            "no x-anylabeling envs",
+            "conda not available",
+            "conda not installed",
+            "error detecting envs",
+        )
+        if not env_name or env_name.lower().startswith(invalid_prefixes):
+            return ""
+        return env_name
+
+    def _on_xanylabeling_env_changed(self, _text: str) -> None:
+        """Persist the preferred X-AnyLabeling env as a global UI preference."""
+        env_name = self._selected_xanylabeling_env()
+        if not env_name:
+            return
+        if self.advanced_config.get("xanylabeling_env") == env_name:
+            return
+        self.advanced_config["xanylabeling_env"] = env_name
+        self._save_advanced_config()
 
     def _open_in_xanylabeling(self):
         """Open a dataset directory in X-AnyLabeling."""
@@ -6968,6 +7009,38 @@ class MainWindow(QMainWindow):
     def _on_identity_method_changed(self, index):
         """Update identity configuration stack when method changes."""
         self.identity_config_stack.setCurrentIndex(index)
+
+    @staticmethod
+    def _get_apriltag_families() -> list:
+        """Return the list of tag families supported by the installed apriltag library.
+
+        Probes the library by passing an intentionally invalid family name and
+        parsing the error message, which always lists every known family.  Falls
+        back to a static list if the library is not installed.
+        """
+        _FALLBACK = [
+            "tag36h11",
+            "tag25h9",
+            "tag16h5",
+            "tagCircle21h7",
+            "tagCircle49h12",
+            "tagStandard41h12",
+            "tagStandard52h13",
+            "tagCustom48h12",
+        ]
+        try:
+            import apriltag as _at  # type: ignore[import-untyped]
+        except ImportError:
+            return _FALLBACK
+        try:
+            _at.apriltag("__probe__")
+        except Exception as exc:
+            import re
+
+            families = re.findall(r"^\s+(\S+)$", str(exc), re.MULTILINE)
+            if families:
+                return sorted(families)
+        return _FALLBACK
 
     def _select_color_tag_model(self):
         """Browse for color tag YOLO model."""
@@ -7963,10 +8036,18 @@ class MainWindow(QMainWindow):
         if hasattr(self, "lbl_individual_yolo_only_notice"):
             self.lbl_individual_yolo_only_notice.setVisible(not is_yolo)
 
+        if hasattr(self, "g_identity"):
+            self.g_identity.setVisible(pipeline_enabled)
+            self.g_identity.setEnabled(pipeline_enabled)
         if hasattr(self, "g_pose_runtime"):
+            self.g_pose_runtime.setVisible(pipeline_enabled)
             self.g_pose_runtime.setEnabled(pipeline_enabled)
         if hasattr(self, "g_individual_pipeline_common"):
+            self.g_individual_pipeline_common.setVisible(pipeline_enabled)
             self.g_individual_pipeline_common.setEnabled(pipeline_enabled)
+        if hasattr(self, "g_individual_dataset"):
+            self.g_individual_dataset.setVisible(pipeline_enabled)
+            self.g_individual_dataset.setEnabled(pipeline_enabled)
         self._sync_pose_backend_ui()
 
         if has_save_toggle:
@@ -10361,6 +10442,15 @@ class MainWindow(QMainWindow):
             repository_dir=repo_dir,
         )
 
+    @staticmethod
+    def _infer_yolo_headtail_model_type(model_path: object) -> str:
+        """Infer the head-tail model family from its stored path."""
+        normalized = str(make_model_path_relative(model_path or "")).replace("\\", "/")
+        normalized_lower = f"/{normalized.lower().strip('/')}" if normalized else ""
+        if "/tiny/" in normalized_lower:
+            return "tiny"
+        return "YOLO"
+
     def _populate_pose_model_combo(
         self,
         combo: object,
@@ -11669,6 +11759,18 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("Merging trajectories...")
 
         # Create and start merge worker thread
+        # Discover tag observation cache for AprilTag identity resolution
+        _tag_cache_path = None
+        if current_params.get("IDENTITY_METHOD") == "AprilTags":
+            _det_cache = getattr(self, "current_detection_cache_path", None)
+            if _det_cache and os.path.exists(str(_det_cache)):
+                import glob as _glob
+
+                _pattern = str(_det_cache).replace(".npz", "") + "_tags_*.npz"
+                _candidates = sorted(_glob.glob(_pattern))
+                if _candidates:
+                    _tag_cache_path = _candidates[-1]
+
         self.merge_worker = MergeWorker(
             forward_trajs,
             backward_trajs,
@@ -11677,6 +11779,7 @@ class MainWindow(QMainWindow):
             resize_factor,
             interp_method,
             max_gap,
+            tag_cache_path=_tag_cache_path,
         )
         self.merge_worker.progress_signal.connect(self.on_merge_progress)
         self.merge_worker.finished_signal.connect(self.on_merge_finished)
@@ -13668,6 +13771,9 @@ class MainWindow(QMainWindow):
                     "State",
                     "DetectionID",
                 ]
+            # Append TagID column when AprilTag identity is active
+            if self.combo_identity_method.currentText() == "AprilTags":
+                hdr.append("TagID")
             csv_path = self.csv_line.text()
             base, ext = os.path.splitext(csv_path)
             if backward_mode:
@@ -14057,6 +14163,16 @@ class MainWindow(QMainWindow):
 
         individual_pipeline_enabled = self._is_individual_pipeline_enabled()
         individual_image_save_enabled = self._is_individual_image_save_enabled()
+        pose_extractor_enabled = self._is_pose_inference_enabled()
+        identity_method = (
+            self.combo_identity_method.currentText()
+            .lower()
+            .replace(" ", "_")
+            .replace("(", "")
+            .replace(")", "")
+            if individual_pipeline_enabled
+            else "none_disabled"
+        )
         compute_runtime = self._selected_compute_runtime()
         runtime_detection = derive_detection_runtime_settings(compute_runtime)
         trt_batch_size = (
@@ -14245,19 +14361,14 @@ class MainWindow(QMainWindow):
             # Individual analysis parameters
             "ENABLE_IDENTITY_ANALYSIS": individual_pipeline_enabled,
             "ENABLE_INDIVIDUAL_PIPELINE": individual_pipeline_enabled,
-            "IDENTITY_METHOD": self.combo_identity_method.currentText()
-            .lower()
-            .replace(" ", "_")
-            .replace("(", "")
-            .replace(")", ""),
-            "IDENTITY_CROP_SIZE_MULTIPLIER": self.spin_identity_crop_multiplier.value(),
-            "IDENTITY_CROP_MIN_SIZE": self.spin_identity_crop_min.value(),
-            "IDENTITY_CROP_MAX_SIZE": self.spin_identity_crop_max.value(),
+            "IDENTITY_METHOD": identity_method,
             "COLOR_TAG_MODEL_PATH": self.line_color_tag_model.text(),
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
-            "ENABLE_POSE_EXTRACTOR": self.chk_enable_pose_extractor.isChecked(),
+            "TAG_MATCH_BONUS": self.spin_tag_match_bonus.value(),
+            "TAG_MISMATCH_PENALTY": self.spin_tag_mismatch_penalty.value(),
+            "ENABLE_POSE_EXTRACTOR": pose_extractor_enabled,
             "POSE_MODEL_TYPE": self.combo_pose_model_type.currentText().strip().lower(),
             "POSE_MODEL_DIR": resolve_pose_model_path(
                 self._pose_model_path_for_backend(
@@ -14520,6 +14631,12 @@ class MainWindow(QMainWindow):
                 default=yolo_direct_model,
             )
             yolo_headtail_model = get_cfg("yolo_headtail_model_path", default="")
+            yolo_headtail_model_type = str(
+                get_cfg(
+                    "yolo_headtail_model_type",
+                    default=self._infer_yolo_headtail_model_type(yolo_headtail_model),
+                )
+            ).strip()
 
             resolved_yolo_direct = resolve_model_path(yolo_direct_model)
             resolved_yolo_detect = resolve_model_path(yolo_detect_model)
@@ -14564,6 +14681,11 @@ class MainWindow(QMainWindow):
                 preferred_model_path=yolo_crop_obb_model
             )
             self._set_yolo_crop_obb_model_selection(resolved_yolo_crop_obb)
+            headtail_type_idx = self.combo_yolo_headtail_model_type.findText(
+                "tiny" if yolo_headtail_model_type.lower() == "tiny" else "YOLO"
+            )
+            if headtail_type_idx >= 0:
+                self.combo_yolo_headtail_model_type.setCurrentIndex(headtail_type_idx)
             self._refresh_yolo_headtail_model_combo(
                 preferred_model_path=yolo_headtail_model
             )
@@ -15058,20 +15180,17 @@ class MainWindow(QMainWindow):
                 "none_disabled": 0,
                 "color_tags_yolo": 1,
                 "apriltags": 2,
-                "custom": 3,
+                "custom": 0,
             }
-            identity_method = get_cfg("identity_method", default="none_disabled")
+            identity_method = (
+                str(get_cfg("identity_method", default="none_disabled"))
+                .lower()
+                .replace(" ", "_")
+                .replace("(", "")
+                .replace(")", "")
+            )
             self.combo_identity_method.setCurrentIndex(
                 method_map.get(identity_method, 0)
-            )
-            self.spin_identity_crop_multiplier.setValue(
-                get_cfg("identity_crop_size_multiplier", default=3.0)
-            )
-            self.spin_identity_crop_min.setValue(
-                get_cfg("identity_crop_min_size", default=64)
-            )
-            self.spin_identity_crop_max.setValue(
-                get_cfg("identity_crop_max_size", default=256)
             )
             # Skip model path in preset mode
             if not preset_mode and not self.line_color_tag_model.text().strip():
@@ -15102,19 +15221,14 @@ class MainWindow(QMainWindow):
                 get_cfg("color_tag_confidence", default=0.5)
             )
             apriltag_family = get_cfg("apriltag_family", default="tag36h11")
-            families = [
-                "tag36h11",
-                "tag25h9",
-                "tag16h5",
-                "tagCircle21h7",
-                "tagStandard41h12",
-            ]
-            if apriltag_family in families:
-                self.combo_apriltag_family.setCurrentIndex(
-                    families.index(apriltag_family)
-                )
+            idx = self.combo_apriltag_family.findText(apriltag_family)
+            self.combo_apriltag_family.setCurrentIndex(max(0, idx))
             self.spin_apriltag_decimate.setValue(
                 get_cfg("apriltag_decimate", default=1.0)
+            )
+            self.spin_tag_match_bonus.setValue(get_cfg("tag_match_bonus", default=20.0))
+            self.spin_tag_mismatch_penalty.setValue(
+                get_cfg("tag_mismatch_penalty", default=50.0)
             )
 
             self.chk_enable_pose_extractor.setChecked(
@@ -15385,6 +15499,7 @@ class MainWindow(QMainWindow):
                 "yolo_headtail_model_path": make_model_path_relative(
                     yolo_headtail_path
                 ),
+                "yolo_headtail_model_type": self.combo_yolo_headtail_model_type.currentText(),
                 "pose_overrides_headtail": self.chk_pose_overrides_headtail.isChecked(),
                 "yolo_seq_crop_pad_ratio": self.spin_yolo_seq_crop_pad.value(),
                 "yolo_seq_min_crop_size_px": self.spin_yolo_seq_min_crop_px.value(),
@@ -15597,9 +15712,6 @@ class MainWindow(QMainWindow):
                 .replace(" ", "_")
                 .replace("(", "")
                 .replace(")", ""),
-                "identity_crop_size_multiplier": self.spin_identity_crop_multiplier.value(),
-                "identity_crop_min_size": self.spin_identity_crop_min.value(),
-                "identity_crop_max_size": self.spin_identity_crop_max.value(),
                 "color_tag_confidence": self.spin_color_tag_conf.value(),
             }
         )
@@ -15621,6 +15733,8 @@ class MainWindow(QMainWindow):
             {
                 "apriltag_family": self.combo_apriltag_family.currentText(),
                 "apriltag_decimate": self.spin_apriltag_decimate.value(),
+                "tag_match_bonus": self.spin_tag_match_bonus.value(),
+                "tag_mismatch_penalty": self.spin_tag_mismatch_penalty.value(),
                 "enable_pose_extractor": self.chk_enable_pose_extractor.isChecked(),
                 "pose_model_type": self.combo_pose_model_type.currentText()
                 .strip()
@@ -16549,6 +16663,7 @@ class MainWindow(QMainWindow):
             # Dataset Generation - YOLO Detection Parameters (separate from tracking)
             "dataset_yolo_confidence_threshold": 0.05,  # Very low - detect all animals including uncertain ones for annotation
             "dataset_yolo_iou_threshold": 0.5,  # Moderate - remove obvious duplicates but keep borderline cases for manual review
+            "xanylabeling_env": "",  # Preferred X-AnyLabeling conda env
         }
 
         if os.path.exists(config_path):

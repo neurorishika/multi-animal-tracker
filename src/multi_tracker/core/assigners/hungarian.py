@@ -322,6 +322,13 @@ class TrackAssigner:
         pose_veto_threshold = float(p.get("POSE_REJECTION_THRESHOLD", 0.5))
         pose_min_visibility = float(p.get("POSE_REJECTION_MIN_VISIBILITY", 0.5))
 
+        # --- AprilTag identity cost ---
+        _det_tag_ids = association_data.get("detection_tag_ids", [])
+        _track_tag_ids = association_data.get("track_last_tag_ids", [])
+        _tag_match_bonus = float(p.get("TAG_MATCH_BONUS", 20.0))
+        _tag_mismatch_penalty = float(p.get("TAG_MISMATCH_PENALTY", 50.0))
+        _NO_TAG = -1
+
         for track_idx, det_indices in candidates.items():
             inv_S = S_inv_batch[track_idx, :2, :2]
             pred_theta = pred_ori[track_idx]
@@ -385,6 +392,20 @@ class TrackAssigner:
                     + area_cost
                     + aspect_cost
                 )
+
+                # --- AprilTag identity bonus / penalty ---
+                _dt = _det_tag_ids[det_idx] if det_idx < len(_det_tag_ids) else _NO_TAG
+                _tt = (
+                    _track_tag_ids[track_idx]
+                    if track_idx < len(_track_tag_ids)
+                    else _NO_TAG
+                )
+                if _dt != _NO_TAG and _tt != _NO_TAG:
+                    if _dt == _tt:
+                        motion_core_cost -= _tag_match_bonus
+                    else:
+                        motion_core_cost += _tag_mismatch_penalty
+
                 cost[track_idx, det_idx] = motion_core_cost
 
         return cost, candidates
