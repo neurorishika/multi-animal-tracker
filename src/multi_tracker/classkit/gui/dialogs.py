@@ -100,7 +100,7 @@ class _KeyCapture(QLineEdit):
             Qt.Key.Key_unknown,
         ):
             return
-        self._seq = QKeySequence(int(event.modifiers()) | int(key))
+        self._seq = QKeySequence(event.modifiers().value | int(key))
         self._capturing = False
         self._refresh()
 
@@ -321,6 +321,276 @@ class AddSourceDialog(QDialog):
     def sources(self) -> List[Tuple[Path, Path, str]]:
         """List of (dataset_root, resolved_images_dir, description)."""
         return list(self._sources)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Source Manager dialog  (view / add / remove image source folders)
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class SourceManagerDialog(QDialog):
+    """Full source manager showing existing sources with add/remove capability.
+
+    The dialog reads the current source folders from the project database,
+    displays them with image counts, and lets the user add new folders or
+    remove existing ones.  On accept it returns the lists of folders to add
+    and folders to remove so the caller can apply the changes.
+    """
+
+    def __init__(self, db_path: Path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Source Manager")
+        self.setMinimumSize(640, 480)
+        self.setStyleSheet(_DARK_STYLE)
+
+        self._db_path = db_path
+        # Folders to add: list of resolved Path
+        self._to_add: List[Path] = []
+        # Folders to remove: list of folder path strings (as stored in DB)
+        self._to_remove: List[str] = []
+        # Existing source info loaded from DB
+        self._existing: List[dict] = []  # [{"folder": str, "count": int}, ...]
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # Header
+        header = QLabel(
+            "<b>Image Sources</b><br>"
+            "Manage the folders that supply images to this project. "
+            "Adding a folder will ingest its images; removing one will "
+            "delete those images from the database."
+        )
+        header.setWordWrap(True)
+        layout.addWidget(header)
+
+        # Source list
+        self._list = QListWidget()
+        self._list.setMinimumHeight(200)
+        self._list.setSelectionMode(QListWidget.SelectionMode.ExtendedSelection)
+        layout.addWidget(self._list)
+
+        # Buttons row
+        btn_row = QHBoxLayout()
+
+        btn_add = QPushButton("Add Folder…")
+        btn_add.setStyleSheet(
+            "QPushButton { background-color:#1a4a1a; color:#e0e0e0; "
+            "border:none; border-radius:4px; padding:8px 16px; }"
+            "QPushButton:hover { background-color:#235a23; }"
+        )
+        btn_add.clicked.connect(self._browse_add)
+        btn_row.addWidget(btn_add)
+
+        btn_row.addStretch(1)
+
+        self._btn_remove = QPushButton("Remove Selected")
+        self._btn_remove.setStyleSheet(
+            "QPushButton { background-color:#6b1c1c; color:#e0e0e0; "
+            "border:none; border-radius:4px; padding:8px 16px; }"
+            "QPushButton:hover { background-color:#8b2424; }"
+        )
+        self._btn_remove.clicked.connect(self._remove_selected)
+        self._btn_remove.setEnabled(False)
+        btn_row.addWidget(self._btn_remove)
+
+        layout.addLayout(btn_row)
+
+        self._list.itemSelectionChanged.connect(
+            lambda: self._btn_remove.setEnabled(bool(self._list.selectedItems()))
+        )
+
+        # Summary label
+        self._summary = QLabel("")
+        self._summary.setStyleSheet("color: #888888; font-size: 11px;")
+        layout.addWidget(self._summary)
+
+        # Dialog buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Apply")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._load_existing_sources()
+
+    # ── data loading ─────────────────────────────────────────────────────
+
+    def _load_existing_sources(self):
+        """Load current source folders from the database."""
+        from ..store.db import ClassKitDB
+
+        db = ClassKitDB(self._db_path)
+        self._existing = db.get_source_folders()
+        self._rebuild_list()
+
+    def _rebuild_list(self):
+        """Refresh the QListWidget from internal state."""
+        self._list.clear()
+        total_images = 0
+
+        for src in self._existing:
+            folder = src["folder"]
+            count = src["count"]
+
+            # Check if this is marked for removal
+            is_pending_remove = folder in self._to_remove
+
+            item = QListWidgetItem()
+            display = f"{Path(folder).name}  —  {count:,} images\n{folder}"
+            if is_pending_remove:
+                display = f"[REMOVING]  {display}"
+                item.setForeground(Qt.GlobalColor.darkRed)
+
+            item.setText(display)
+            item.setData(Qt.ItemDataRole.UserRole, folder)
+            self._list.addItem(item)
+            if not is_pending_remove:
+                total_images += count
+
+        # Show pending additions
+        for add_path in self._to_add:
+            count = self._count_images(add_path)
+            item = QListWidgetItem()
+            item.setText(f"[NEW]  {add_path.name}  —  {count:,} images\n{add_path}")
+            item.setData(Qt.ItemDataRole.UserRole, str(add_path))
+            item.setForeground(Qt.GlobalColor.darkGreen)
+            self._list.addItem(item)
+            total_images += count
+
+        n_sources = len(self._existing) - len(self._to_remove) + len(self._to_add)
+        self._summary.setText(
+            f"{n_sources} source(s)  ·  ~{total_images:,} images total"
+        )
+
+    # ── add ──────────────────────────────────────────────────────────────
+
+    def _browse_add(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Select folder containing images", str(Path.home())
+        )
+        if not path:
+            return
+
+        d = Path(path).expanduser().resolve()
+
+        # Prefer images/ subdirectory
+        candidate = d / CLASSKIT_IMAGES_SUBDIR
+        if candidate.is_dir() and self._has_images(candidate):
+            resolved = candidate
+        else:
+            resolved = d
+
+        count = self._count_images(resolved)
+        if count == 0:
+            QMessageBox.warning(
+                self,
+                "No Images Found",
+                f"No images found in:\n{resolved}\n\n"
+                "Select a folder containing .jpg / .jpeg / .png files.",
+            )
+            return
+
+        # Duplicate check against existing sources and pending adds
+        existing_folders = {s["folder"] for s in self._existing}
+        pending_add_folders = {str(p) for p in self._to_add}
+        if str(resolved) in existing_folders or str(resolved) in pending_add_folders:
+            QMessageBox.warning(
+                self, "Already Added", "That folder is already a source."
+            )
+            return
+
+        # DataSieve check
+        if count > CLASSKIT_SIEVE_THRESHOLD:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("Large Dataset Detected")
+            msg.setText(
+                f"This folder contains {count:,} images — that is a lot to label.\n\n"
+                "DataSieve can reduce near-duplicates and create a smaller "
+                "representative subset before labeling."
+            )
+            msg.setInformativeText(
+                "Open this folder in DataSieve now, or add it as-is?"
+            )
+            btn_sieve = msg.addButton("Open in DataSieve", QMessageBox.AcceptRole)
+            btn_add = msg.addButton("Add Anyway", QMessageBox.DestructiveRole)
+            msg.addButton(QMessageBox.Cancel)
+            msg.exec()
+            clicked = msg.clickedButton()
+            if clicked == btn_sieve:
+                try:
+                    subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-m",
+                            "multi_tracker.tools.data_sieve.gui",
+                            str(d),
+                        ],
+                        start_new_session=True,
+                    )
+                except Exception as exc:
+                    QMessageBox.warning(
+                        self, "Launch Failed", f"Could not launch DataSieve:\n{exc}"
+                    )
+                return
+            if clicked != btn_add:
+                return
+
+        self._to_add.append(resolved)
+        self._rebuild_list()
+
+    # ── remove ───────────────────────────────────────────────────────────
+
+    def _remove_selected(self):
+        for item in self._list.selectedItems():
+            folder = item.data(Qt.ItemDataRole.UserRole)
+            if not folder:
+                continue
+
+            folder_path = Path(folder).resolve()
+
+            # If it's a pending add, just un-add it
+            for i, p in enumerate(self._to_add):
+                if p == folder_path or str(p) == folder:
+                    self._to_add.pop(i)
+                    break
+            else:
+                # It's an existing source — mark for removal
+                if folder not in self._to_remove:
+                    self._to_remove.append(folder)
+
+        self._rebuild_list()
+
+    # ── static helpers ───────────────────────────────────────────────────
+
+    @staticmethod
+    def _has_images(folder: Path) -> bool:
+        exts = {".jpg", ".jpeg", ".png"}
+        return any(p.suffix.lower() in exts for p in folder.iterdir() if p.is_file())
+
+    @staticmethod
+    def _count_images(folder: Path) -> int:
+        exts = {".jpg", ".jpeg", ".png"}
+        return sum(
+            1 for p in folder.iterdir() if p.is_file() and p.suffix.lower() in exts
+        )
+
+    # ── results ──────────────────────────────────────────────────────────
+
+    @property
+    def folders_to_add(self) -> List[Path]:
+        """Resolved folders to ingest."""
+        return list(self._to_add)
+
+    @property
+    def folders_to_remove(self) -> List[str]:
+        """Folder path strings (as stored in DB) to remove."""
+        return list(self._to_remove)
+
+    @property
+    def has_changes(self) -> bool:
+        return bool(self._to_add) or bool(self._to_remove)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

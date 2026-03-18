@@ -289,10 +289,10 @@ class MainWindow(QMainWindow):
 
         file_menu.addSeparator()
 
-        ingest_action = QAction("&Adjust Sources...", self)
-        ingest_action.setShortcut("Ctrl+I")
-        ingest_action.triggered.connect(self.ingest_images)
-        file_menu.addAction(ingest_action)
+        source_mgr_action = QAction("&Source Manager...", self)
+        source_mgr_action.setShortcut("Ctrl+I")
+        source_mgr_action.triggered.connect(self.manage_sources)
+        file_menu.addAction(source_mgr_action)
 
         file_menu.addSeparator()
 
@@ -415,10 +415,10 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
 
         # Data section
-        ingest_btn = QAction("Adjust Sources", self)
-        ingest_btn.setStatusTip("Add or manage image source folders")
-        ingest_btn.triggered.connect(self.ingest_images)
-        toolbar.addAction(ingest_btn)
+        source_mgr_btn = QAction("Source Manager", self)
+        source_mgr_btn.setStatusTip("View, add, or remove image source folders")
+        source_mgr_btn.triggered.connect(self.manage_sources)
+        toolbar.addAction(source_mgr_btn)
 
         toolbar.addSeparator()
 
@@ -1005,6 +1005,12 @@ class MainWindow(QMainWindow):
         """Setup status bar."""
         self.status = QStatusBar()
         self.setStatusBar(self.status)
+        self.labeling_progress_label = QLabel()
+        self.labeling_progress_label.setVisible(False)
+        self.labeling_progress_label.setStyleSheet(
+            "color: #7ec8e3; font-size: 12px; padding: 0 8px;"
+        )
+        self.status.addPermanentWidget(self.labeling_progress_label)
         self.autosave_indicator = QLabel("Autosave ○ no project")
         self.status.addPermanentWidget(self.autosave_indicator)
         self.status.showMessage("Ready • No project loaded")
@@ -1201,6 +1207,7 @@ class MainWindow(QMainWindow):
                 "• <b>File → Open Project</b> to load<br>"
                 "</div>"
             )
+            self._update_labeling_progress_indicator()
             return
 
         labeled_count = sum(1 for label in self.image_labels if label)
@@ -1238,7 +1245,7 @@ class MainWindow(QMainWindow):
         # ── Next Step guidance ──────────────────────────────────────────
         next_step = ""
         if total_count == 0:
-            next_step = "• <b>Actions → Add Image Sources</b>"
+            next_step = "• <b>File → Source Manager</b>"
         elif self.embeddings is None:
             next_step = "• <b>Actions → Compute Embeddings</b>"
         elif self.cluster_assignments is None:
@@ -1258,6 +1265,45 @@ class MainWindow(QMainWindow):
         info_html += "</div>"
 
         self.context_info.setText(info_html)
+        self._update_labeling_progress_indicator()
+
+    def _update_labeling_progress_indicator(self):
+        """Update the status bar progress label and context panel progress bar."""
+        in_labeling = self.explorer_mode == "labeling" and bool(
+            self.candidate_indices or self.round_labeled_indices
+        )
+        if not in_labeling:
+            self.labeling_progress_label.setVisible(False)
+            self.progress_bar.setVisible(False)
+            return
+
+        # Batch progress: how many candidates in current set have been labeled
+        candidate_set = set(self.candidate_indices) | set(self.round_labeled_indices)
+        batch_total = len(candidate_set)
+        labels = self.image_labels or []
+        batch_labeled = sum(
+            1 for i in self.round_labeled_indices if i < len(labels) and labels[i]
+        )
+
+        # Overall progress across entire dataset
+        total_count = len(self.image_paths)
+        total_labeled = sum(1 for lbl in labels if lbl)
+
+        # Status bar label
+        remaining = batch_total - batch_labeled
+        self.labeling_progress_label.setText(
+            f"Batch: {batch_labeled}/{batch_total}  ·  "
+            f"Total: {total_labeled:,}/{total_count:,}  ·  "
+            f"{remaining} remaining"
+        )
+        self.labeling_progress_label.setVisible(True)
+
+        # Context panel progress bar
+        self.progress_bar.setMaximum(batch_total)
+        self.progress_bar.setValue(batch_labeled)
+        pct = int(100 * batch_labeled / batch_total) if batch_total else 0
+        self.progress_bar.setFormat(f"Batch: {batch_labeled}/{batch_total} ({pct}%)")
+        self.progress_bar.setVisible(True)
 
     def _ask_yes_no(self, title: str, text: str) -> bool:
         """Reusable yes/no prompt helper."""
@@ -1938,7 +1984,18 @@ class MainWindow(QMainWindow):
         """Called when the stepper completes all factors for the current image."""
         if self.selected_point_index is None:
             return
-        self._set_label_for_index(self.selected_point_index, composite_label)
+        index = self.selected_point_index
+        self._set_label_for_index(index, composite_label)
+        self.round_labeled_indices = [
+            i for i in self.round_labeled_indices if i != index
+        ]
+        self.round_labeled_indices.append(index)
+        self._remove_history_for_index(index)
+        self.label_history.append({"index": index, "label": composite_label})
+        self.request_refresh_label_history_strip()
+        self.on_label_assigned(composite_label)
+        self.request_update_explorer_plot()
+        self.request_update_context_panel()
         # Flush immediately after each composite label is finished to ensure data safety
         self._flush_pending_label_updates()
         self.on_next_image()
@@ -2639,8 +2696,8 @@ class MainWindow(QMainWindow):
 
     # ================== Data Operations ==================
 
-    def ingest_images(self):
-        """Add or adjust image source folder(s), then auto-run pipeline."""
+    def manage_sources(self):
+        """Open the Source Manager to view, add, or remove image source folders."""
         if not self.project_path:
             QMessageBox.warning(
                 self,
@@ -2650,23 +2707,46 @@ class MainWindow(QMainWindow):
             )
             return
 
-        from .dialogs import AddSourceDialog
+        from .dialogs import SourceManagerDialog
 
-        # Show existing ingested folder as hint
-        existing: list = []
-        dlg = AddSourceDialog(existing_sources=existing, parent=self)
-        if dlg.exec() != AddSourceDialog.Accepted or not dlg.sources:
+        dlg = SourceManagerDialog(db_path=self.db_path, parent=self)
+        if dlg.exec() != SourceManagerDialog.Accepted or not dlg.has_changes:
             return
 
-        # Run ingest for each selected source sequentially using the first resolved dir.
-        # (Multi-source is batched into one DB operation for simplicity.)
-        all_image_dirs = [resolved for _, resolved, _ in dlg.sources]
+        folders_to_remove = dlg.folders_to_remove
+        folders_to_add = dlg.folders_to_add
 
-        # We pass the first root to the worker; for multiple sources we start a
-        # chain of workers.  For now launch one per source and reload on all done.
-        self._ingest_queue = list(all_image_dirs)
-        self._ingest_batch_total = len(self._ingest_queue)
-        self._run_next_ingest()
+        # ── removals ────────────────────────────────────────────────
+        if folders_to_remove:
+            from ..store.db import ClassKitDB
+
+            db = ClassKitDB(self.db_path)
+            total_removed = 0
+            for folder in folders_to_remove:
+                total_removed += db.remove_images_by_folder_exact(folder)
+            if total_removed:
+                self.status.showMessage(
+                    f"Removed {total_removed:,} images from {len(folders_to_remove)} source(s)"
+                )
+
+        # ── additions ───────────────────────────────────────────────
+        if folders_to_add:
+            self._ingest_queue = list(folders_to_add)
+            self._ingest_batch_total = len(self._ingest_queue)
+            self._run_next_ingest()
+        elif folders_to_remove:
+            # Removals only — reload and offer to redo pipeline
+            self._flush_pending_label_updates(force=True)
+            self.load_project_data()
+            self.update_context_panel()
+            # Caches are now stale (image count changed) — offer auto-redo
+            self.embeddings = None
+            self.cluster_assignments = None
+            self.umap_coords = None
+            QTimer.singleShot(200, self._auto_pipeline_after_source_change)
+
+    # keep legacy name as alias for internal callers
+    ingest_images = manage_sources
 
     def _run_next_ingest(self):
         """Start the next item in the ingest queue."""
@@ -2713,15 +2793,225 @@ class MainWindow(QMainWindow):
             )
             self.load_project_data()
             self.update_context_panel()
-            # ── auto-pipeline chain ──────────────────────────────────
-            QTimer.singleShot(200, self._auto_pipeline_check)
+            # Caches are now stale — invalidate and offer to redo
+            self.embeddings = None
+            self.cluster_assignments = None
+            self.umap_coords = None
+            QTimer.singleShot(200, self._auto_pipeline_after_source_change)
+
+    # ── auto-pipeline after source changes ─────────────────────────────
+
+    def _auto_pipeline_after_source_change(self):
+        """After sources changed: offer to re-run the full embed → cluster → UMAP
+        pipeline using existing settings (without showing configuration dialogs)."""
+        if not self.image_paths:
+            return
+
+        # Retrieve the most recent embedding settings from the DB so we can
+        # re-run without prompting for configuration.
+        from ..store.db import ClassKitDB
+
+        db = ClassKitDB(self.db_path)
+
+        # Look for last embedding metadata to recover settings
+        last_embed_meta = self._get_last_embedding_settings(db)
+        last_cluster_meta = self._get_last_cluster_settings(db)
+
+        if last_embed_meta is None:
+            # No previous pipeline — fall back to the interactive flow
+            self._auto_pipeline_check()
+            return
+
+        model_name = last_embed_meta.get("model_name", "dinov2_vitb14")
+        device = last_embed_meta.get("device", "cpu")
+        batch_size = last_embed_meta.get("batch_size", 32)
+        canonicalize_mat = bool(last_embed_meta.get("canonicalize_mat", False))
+
+        n_clusters = 500
+        cluster_method = "minibatch"
+        if last_cluster_meta:
+            n_clusters = last_cluster_meta.get("n_clusters", 500)
+            cluster_method = last_cluster_meta.get("method", "minibatch")
+
+        n_neighbors = self.last_umap_params.get("n_neighbors", 15)
+        min_dist = self.last_umap_params.get("min_dist", 0.1)
+
+        summary = (
+            f"Sources have changed. Re-run the pipeline with previous settings?\n\n"
+            f"  Embedding: {model_name} on {device} (batch {batch_size})\n"
+            f"  Clustering: {cluster_method}, k={n_clusters}\n"
+            f"  UMAP: n_neighbors={n_neighbors}, min_dist={min_dist}\n\n"
+            f"Images: {len(self.image_paths):,}"
+        )
+
+        reply = QMessageBox.question(
+            self,
+            "Re-run Pipeline?",
+            summary,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # Chain: embed → cluster → UMAP using saved settings (no dialogs)
+        self._auto_rerun_embed(
+            model_name,
+            device,
+            batch_size,
+            canonicalize_mat,
+            n_clusters,
+            cluster_method,
+            n_neighbors,
+            min_dist,
+        )
+
+    def _get_last_embedding_settings(self, db):
+        """Return the metadata dict from the most recent embedding run, or None."""
+        with __import__("sqlite3").connect(db.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT model_name, device, batch_size, meta_json
+                FROM embeddings
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)
+            row = c.fetchone()
+        if not row:
+            return None
+        model_name, device, batch_size, meta_json = row
+        result = {"model_name": model_name, "device": device, "batch_size": batch_size}
+        if meta_json:
+            import json as _json
+
+            try:
+                meta = _json.loads(meta_json)
+                if isinstance(meta, dict):
+                    result.update(meta)
+            except Exception:
+                pass
+        return result
+
+    def _get_last_cluster_settings(self, db):
+        """Return the metadata from the most recent cluster run, or None."""
+        with __import__("sqlite3").connect(db.db_path) as conn:
+            c = conn.cursor()
+            c.execute("""
+                SELECT n_clusters, method
+                FROM cluster_cache
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)
+            row = c.fetchone()
+        if not row:
+            return None
+        return {"n_clusters": row[0], "method": row[1]}
+
+    def _auto_rerun_embed(
+        self,
+        model_name,
+        device,
+        batch_size,
+        canonicalize_mat,
+        n_clusters,
+        cluster_method,
+        n_neighbors,
+        min_dist,
+    ):
+        """Start embeddings computation with given settings, then chain cluster + UMAP."""
+        from ..jobs.task_workers import EmbeddingWorker
+
+        worker = EmbeddingWorker(
+            self.image_paths,
+            model_name,
+            device,
+            batch_size,
+            db_path=self.db_path,
+            force_recompute=True,
+            canonicalize_mat=canonicalize_mat,
+        )
+        worker.signals.started.connect(
+            lambda: self.status.showMessage("Re-computing embeddings…")
+        )
+        worker.signals.progress.connect(self.on_embedding_progress)
+        worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
+
+        def _on_embed_success(result):
+            self.on_embedding_success(result)
+            # Chain to clustering
+            QTimer.singleShot(
+                200,
+                lambda: self._auto_rerun_cluster(
+                    n_clusters,
+                    cluster_method,
+                    n_neighbors,
+                    min_dist,
+                ),
+            )
+
+        worker.signals.success.connect(_on_embed_success)
+        worker.signals.error.connect(self.on_embedding_error)
+
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self._threadpool_start(worker)
+
+    def _auto_rerun_cluster(self, n_clusters, method, n_neighbors, min_dist):
+        """Run clustering with given settings, then chain UMAP."""
+        if self.embeddings is None:
+            return
+
+        from ..jobs.task_workers import ClusteringWorker
+
+        worker = ClusteringWorker(self.embeddings, n_clusters, method)
+        worker.signals.started.connect(
+            lambda: self.status.showMessage("Re-clustering data…")
+        )
+        worker.signals.progress.connect(self.on_clustering_progress)
+        worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
+
+        def _on_cluster_success(result):
+            self.on_clustering_success(result)
+            # Chain to UMAP
+            QTimer.singleShot(
+                200,
+                lambda: self._auto_rerun_umap(n_neighbors, min_dist),
+            )
+
+        worker.signals.success.connect(_on_cluster_success)
+        worker.signals.error.connect(self.on_clustering_error)
+
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self._threadpool_start(worker)
+
+    def _auto_rerun_umap(self, n_neighbors, min_dist):
+        """Run UMAP with given settings."""
+        if self.embeddings is None:
+            return
+
+        from ..jobs.task_workers import UMAPWorker
+
+        self.last_umap_params = {"n_neighbors": n_neighbors, "min_dist": min_dist}
+        worker = UMAPWorker(self.embeddings, n_neighbors, min_dist)
+        worker.signals.started.connect(
+            lambda: self.status.showMessage("Re-computing UMAP…")
+        )
+        worker.signals.progress.connect(self.on_umap_progress)
+        worker.signals.success.connect(self.on_umap_success)
+        worker.signals.error.connect(self.on_umap_error)
+        worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
+
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self._threadpool_start(worker)
 
     # ── guided-setup helpers ───────────────────────────────────────────────
 
     def _prompt_adjust_sources_if_empty(self):
-        """After new-project creation: automatically open Adjust Sources if no images yet."""
+        """After new-project creation: automatically open Source Manager if no images yet."""
         if not self.image_paths:
-            self.ingest_images()
+            self.manage_sources()
 
     def _guide_to_next_step(self):
         """After opening an existing project, guide the user to the next incomplete step."""

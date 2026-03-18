@@ -944,3 +944,82 @@ class ClassKitDB:
         """Return the most recent model cache entry whose artifact still exists."""
         entries = self.list_model_caches()
         return entries[0] if entries else None
+
+    # ── Source folder helpers ────────────────────────────────────────────────
+
+    def get_source_folders(self) -> List[Dict[str, Any]]:
+        """Derive distinct source folders from stored image paths.
+
+        Returns a list of dicts with keys:
+            folder (str): parent directory path
+            count  (int): number of images from that folder
+        Sorted by folder name.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            c.execute("SELECT file_path FROM images ORDER BY id")
+            rows = c.fetchall()
+
+        folder_counts: Dict[str, int] = {}
+        for (fp,) in rows:
+            parent = str(Path(fp).parent)
+            folder_counts[parent] = folder_counts.get(parent, 0) + 1
+
+        return sorted(
+            [{"folder": f, "count": n} for f, n in folder_counts.items()],
+            key=lambda d: d["folder"],
+        )
+
+    def remove_images_by_folder(self, folder: str) -> int:
+        """Delete all images whose file_path lives under *folder*.
+
+        Uses a prefix match on the resolved folder string so that
+        ``/data/set1/images/img001.png`` is matched by ``/data/set1/images``.
+
+        Returns the number of rows deleted.
+        """
+        folder_prefix = str(Path(folder).resolve())
+        if not folder_prefix.endswith("/"):
+            folder_prefix += "/"
+
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            # Match images whose path starts with the folder prefix, or whose
+            # parent *is* the folder exactly.
+            c.execute(
+                "DELETE FROM images WHERE file_path LIKE ? OR "
+                "REPLACE(file_path, RTRIM(file_path, REPLACE(file_path, '/', '')), '') = ?",
+                (folder_prefix + "%", folder_prefix.rstrip("/")),
+            )
+            # Simpler: just match on prefix
+            deleted = c.rowcount
+            conn.commit()
+        return deleted
+
+    def remove_images_by_folder_exact(self, folder: str) -> int:
+        """Delete images whose parent directory is exactly *folder*.
+
+        More precise than prefix matching — only removes images that live
+        directly inside the given directory.
+
+        Returns the number of rows deleted.
+        """
+        folder_resolved = str(Path(folder).resolve())
+
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            # Fetch ids to delete (SQLite doesn't have dirname())
+            c.execute("SELECT id, file_path FROM images")
+            ids_to_delete = []
+            for row_id, fp in c.fetchall():
+                if str(Path(fp).parent) == folder_resolved:
+                    ids_to_delete.append(row_id)
+
+            if ids_to_delete:
+                placeholders = ",".join("?" for _ in ids_to_delete)
+                c.execute(
+                    f"DELETE FROM images WHERE id IN ({placeholders})",  # noqa: S608
+                    ids_to_delete,
+                )
+            conn.commit()
+        return len(ids_to_delete)
