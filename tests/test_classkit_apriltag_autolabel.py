@@ -42,3 +42,66 @@ def test_apriltag_preset_max_tag_id_zero():
     scheme = apriltag_preset("tag36h11", max_tag_id=0)
     assert scheme.factors[0].labels == ["tag_0", "no_tag"]
     assert scheme.total_classes == 2
+
+
+import sqlite3
+from pathlib import Path
+
+from multi_tracker.classkit.store.db import ClassKitDB
+
+
+def _make_db(tmp_path: Path) -> ClassKitDB:
+    """Create a DB with two test images."""
+    db = ClassKitDB(tmp_path / "test.db")
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute(
+            "INSERT INTO images (file_path, file_hash) VALUES (?, ?)",
+            ("/img/a.jpg", "aaa"),
+        )
+        conn.execute(
+            "INSERT INTO images (file_path, file_hash) VALUES (?, ?)",
+            ("/img/b.jpg", "bbb"),
+        )
+        conn.commit()
+    return db
+
+
+def test_update_labels_with_confidence_batch_writes_label_and_confidence(tmp_path):
+    db = _make_db(tmp_path)
+    db.update_labels_with_confidence_batch(
+        {
+            "/img/a.jpg": ("tag_3", 0.8),
+            "/img/b.jpg": ("no_tag", 1.0),
+        }
+    )
+    with sqlite3.connect(db.db_path) as conn:
+        rows = conn.execute(
+            "SELECT file_path, label, confidence FROM images ORDER BY file_path"
+        ).fetchall()
+    assert rows[0] == ("/img/a.jpg", "tag_3", 0.8)
+    assert rows[1] == ("/img/b.jpg", "no_tag", 1.0)
+
+
+def test_update_labels_with_confidence_batch_empty_is_noop(tmp_path):
+    db = _make_db(tmp_path)
+    db.update_labels_with_confidence_batch({})  # must not raise
+    labels = db.get_all_labels()
+    assert all(lbl is None for lbl in labels)
+
+
+def test_clear_all_labels_sets_null(tmp_path):
+    db = _make_db(tmp_path)
+    db.update_labels_with_confidence_batch(
+        {
+            "/img/a.jpg": ("tag_3", 0.8),
+        }
+    )
+    db.clear_all_labels()
+    with sqlite3.connect(db.db_path) as conn:
+        rows = conn.execute("SELECT label, confidence FROM images").fetchall()
+    assert all(row[0] is None and row[1] is None for row in rows)
+
+
+def test_clear_all_labels_on_empty_db_is_noop(tmp_path):
+    db = ClassKitDB(tmp_path / "empty.db")
+    db.clear_all_labels()  # must not raise

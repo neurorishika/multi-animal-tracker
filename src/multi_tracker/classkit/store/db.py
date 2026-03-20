@@ -205,6 +205,32 @@ class ClassKitDB:
             conn.commit()
         return updated_count
 
+    def update_labels_with_confidence_batch(
+        self, updates: Dict[str, Tuple[str, float]]
+    ) -> None:
+        """Write label and confidence for multiple images in one transaction.
+
+        Args:
+            updates: mapping of {file_path: (label, confidence)}
+        """
+        if not updates:
+            return
+        rows = [
+            (label, confidence, path) for path, (label, confidence) in updates.items()
+        ]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.executemany(
+                "UPDATE images SET label = ?, confidence = ? WHERE file_path = ?",
+                rows,
+            )
+            conn.commit()
+
+    def clear_all_labels(self) -> None:
+        """Set label=NULL and confidence=NULL for all images."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("UPDATE images SET label = NULL, confidence = NULL")
+            conn.commit()
+
     def get_all_labels(self) -> List[Optional[str]]:
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
