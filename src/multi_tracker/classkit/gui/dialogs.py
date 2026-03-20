@@ -2993,7 +2993,9 @@ class AprilTagAutoLabelDialog(QDialog):
         self._decimate_spin = QDoubleSpinBox()
         self._decimate_spin.setRange(1.0, 8.0)
         self._decimate_spin.setSingleStep(0.5)
-        self._decimate_spin.setValue(2.0)
+        self._decimate_spin.setValue(
+            2.0
+        )  # faster than MAT default (1.0); good for small crops
         det_form.addRow("Decimate:", self._decimate_spin)
 
         self._blur_spin = QDoubleSpinBox()
@@ -3001,14 +3003,6 @@ class AprilTagAutoLabelDialog(QDialog):
         self._blur_spin.setSingleStep(0.1)
         self._blur_spin.setValue(0.8)
         det_form.addRow("Blur:", self._blur_spin)
-
-        self._contrast_spin = QDoubleSpinBox()
-        self._contrast_spin.setRange(0.5, 5.0)
-        self._contrast_spin.setSingleStep(0.1)
-        self._contrast_spin.setValue(1.5)
-        det_form.addRow(
-            "Contrast factor (unsharp_strong profile):", self._contrast_spin
-        )
 
         self._unsharp_amount_spin = QDoubleSpinBox()
         self._unsharp_amount_spin.setRange(0.0, 10.0)
@@ -3120,7 +3114,6 @@ class AprilTagAutoLabelDialog(QDialog):
             max_hamming=self._max_hamming_spin.value(),
             decimate=self._decimate_spin.value(),
             blur=self._blur_spin.value(),
-            contrast_factor=self._contrast_spin.value(),
             unsharp_amount=self._unsharp_amount_spin.value(),
             unsharp_sigma=self._unsharp_sigma_spin.value(),
             unsharp_kernel_size=(n, n),
