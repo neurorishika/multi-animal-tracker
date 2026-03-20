@@ -3815,13 +3815,13 @@ class MainWindow(QMainWindow):
 
         self.combo_yolo_model = QComboBox()
         self._refresh_yolo_model_combo()
-        self.combo_yolo_model.currentIndexChanged.connect(self.on_yolo_model_changed)
+        self.combo_yolo_model.activated.connect(self.on_yolo_model_changed)
         self.combo_yolo_model.setToolTip("Direct-mode YOLO OBB model.")
         f_yolo.addRow("Direct OBB model", self.combo_yolo_model)
 
         self.combo_yolo_detect_model = QComboBox()
         self._refresh_yolo_detect_model_combo()
-        self.combo_yolo_detect_model.currentIndexChanged.connect(
+        self.combo_yolo_detect_model.activated.connect(
             self.on_yolo_detect_model_changed
         )
         self.combo_yolo_detect_model.setToolTip(
@@ -3831,7 +3831,7 @@ class MainWindow(QMainWindow):
 
         self.combo_yolo_crop_obb_model = QComboBox()
         self._refresh_yolo_crop_obb_model_combo()
-        self.combo_yolo_crop_obb_model.currentIndexChanged.connect(
+        self.combo_yolo_crop_obb_model.activated.connect(
             self.on_yolo_crop_obb_model_changed
         )
         self.combo_yolo_crop_obb_model.setToolTip(
@@ -3853,7 +3853,7 @@ class MainWindow(QMainWindow):
 
         self.combo_yolo_headtail_model = QComboBox()
         self._refresh_yolo_headtail_model_combo()
-        self.combo_yolo_headtail_model.currentIndexChanged.connect(
+        self.combo_yolo_headtail_model.activated.connect(
             self.on_yolo_headtail_model_changed
         )
         self.combo_yolo_headtail_model.setToolTip(
