@@ -59,3 +59,19 @@ def age_preset(extra_classes: list[str] | None = None) -> LabelingScheme:
         training_modes=["flat_tiny", "flat_yolo"],
         description="Age classification: " + ", ".join(labels),
     )
+
+
+def apriltag_preset(family: str, max_tag_id: int) -> LabelingScheme:
+    """Single-factor scheme for AprilTag ID classification.
+
+    Args:
+        family: AprilTag family string (e.g. 'tag36h11').
+        max_tag_id: Highest tag ID to include. Labels will be tag_0..tag_N + no_tag.
+    """
+    labels = [f"tag_{i}" for i in range(max_tag_id + 1)] + ["no_tag"]
+    return LabelingScheme(
+        name=f"apriltag_{family}",
+        factors=[Factor(name=family, labels=labels)],
+        training_modes=["flat_tiny", "flat_yolo"],
+        description=f"AprilTag {family} classifier: tag_0..tag_{max_tag_id} + no_tag",
+    )
