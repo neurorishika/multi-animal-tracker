@@ -5408,9 +5408,6 @@ class MainWindow(QMainWindow):
 
     def _run_apriltag_autolabel(self) -> None:
         """Open the AprilTag auto-label dialog and start the background worker."""
-        import json
-        from pathlib import Path
-
         from ..gui.dialogs import AprilTagAutoLabelDialog
         from ..jobs.task_workers import AprilTagAutoLabelWorker
         from ..presets import apriltag_preset
@@ -5434,8 +5431,6 @@ class MainWindow(QMainWindow):
         # Warn if existing scheme will be replaced
         scheme_path = self.project_path / "scheme.json"
         if scheme_path.exists():
-            from PySide6.QtWidgets import QMessageBox
-
             reply = QMessageBox.question(
                 self,
                 "Replace Existing Scheme?",
@@ -5464,8 +5459,6 @@ class MainWindow(QMainWindow):
         unlabeled = [p for p, lbl in zip(all_paths, labels) if lbl is None]
 
         if not unlabeled:
-            from PySide6.QtWidgets import QMessageBox
-
             QMessageBox.information(
                 self, "Auto-label", "No unlabeled images to process."
             )
@@ -5489,6 +5482,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Auto-label complete: {n_tag} tagged, {n_no} no_tag, {n_skip} uncertain"
             )
+            self.image_labels = db.get_all_labels()
             self._update_labeling_progress_indicator()
 
         def _on_error(msg: str) -> None:
@@ -5497,4 +5491,7 @@ class MainWindow(QMainWindow):
         worker.signals.progress.connect(_on_progress)
         worker.signals.success.connect(_on_success)
         worker.signals.error.connect(_on_error)
+        worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
         self._threadpool_start(worker)
