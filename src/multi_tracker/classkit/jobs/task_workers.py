@@ -1392,10 +1392,93 @@ class TinyCNNInferenceWorker(QRunnable):
             self.signals.error.emit(str(e))
         finally:
             self.signals.finished.emit()
-            self.signals.finished.emit()
-            self.signals.finished.emit()
-            self.signals.finished.emit()
-            self.signals.finished.emit()
-            self.signals.finished.emit()
-            self.signals.finished.emit()
+
+
+class AprilTagAutoLabelWorker(QRunnable):
+    """Background worker that runs AprilTag auto-labeling on a list of images.
+
+    The caller (mainwindow) is responsible for:
+    - pre-filtering image_paths to unlabeled images only
+    - writing the labeling scheme before starting the worker
+    - connecting signals to update the UI
+
+    This worker uses ``db`` only for writing labels — it never reads from it.
+    """
+
+    def __init__(
+        self,
+        image_paths: List[Path],
+        config,  # AprilTagConfig — imported lazily to avoid hard dep at module load
+        threshold: float,
+        db,  # ClassKitDB — imported lazily
+    ):
+        super().__init__()
+        self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
+        self.image_paths = image_paths
+        self.config = config
+        self.threshold = threshold
+        self.db = db
+        self.signals = TaskSignals()
+        self._canceled = False
+
+    def cancel(self) -> None:
+        self._canceled = True
+
+    @Slot()
+    def run(self) -> None:
+        from ..autolabel.apriltag import autolabel_images
+
+        try:
+            self.signals.started.emit()
+            total = len(self.image_paths)
+            if total == 0:
+                self.signals.success.emit(
+                    {"n_labeled": 0, "n_skipped": 0, "n_no_tag": 0}
+                )
+                return
+
+            self.signals.progress.emit(0, f"Auto-labeling {total:,} images...")
+
+            n_labeled = 0
+            n_skipped = 0
+            n_no_tag = 0
+            batch_size = 100
+
+            for batch_start in range(0, total, batch_size):
+                if self._canceled:
+                    self.signals.error.emit("Canceled by user")
+                    return
+
+                batch = self.image_paths[batch_start : batch_start + batch_size]
+                results = autolabel_images(batch, self.config, self.threshold)
+
+                updates: Dict[str, tuple] = {}
+                for path, result in zip(batch, results):
+                    if result.label is not None:
+                        updates[str(path)] = (result.label, result.confidence)
+                        if result.label == "no_tag":
+                            n_no_tag += 1
+                        else:
+                            n_labeled += 1
+                    else:
+                        n_skipped += 1
+
+                if updates:
+                    self.db.update_labels_with_confidence_batch(updates)
+
+                done = min(batch_start + batch_size, total)
+                pct = int(done * 100 / total)
+                self.signals.progress.emit(
+                    pct,
+                    f"Labeled {n_labeled + n_no_tag}, skipped {n_skipped} of {total}",
+                )
+
+            self.signals.success.emit(
+                {"n_labeled": n_labeled, "n_skipped": n_skipped, "n_no_tag": n_no_tag}
+            )
+
+        except Exception as exc:
+            traceback.print_exc()
+            self.signals.error.emit(str(exc))
+        finally:
             self.signals.finished.emit()
