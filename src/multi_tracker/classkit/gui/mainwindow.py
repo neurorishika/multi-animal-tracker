@@ -347,6 +347,13 @@ class MainWindow(QMainWindow):
         build_al_action.triggered.connect(self._build_al_batch)
         compute_menu.addAction(build_al_action)
 
+        compute_menu.addSeparator()
+
+        self._autolabel_apriltag_action = QAction("Auto-label AprilTags\u2026", self)
+        self._autolabel_apriltag_action.setEnabled(False)
+        self._autolabel_apriltag_action.triggered.connect(self._run_apriltag_autolabel)
+        compute_menu.addAction(self._autolabel_apriltag_action)
+
         # View menu
         view_menu = menubar.addMenu("&View")
 
@@ -1185,6 +1192,11 @@ class MainWindow(QMainWindow):
             self._update_autosave_heartbeat_text()
             self.try_autoload_cached_artifacts(db)
             self.update_explorer_plot()
+
+            if hasattr(self, "_autolabel_apriltag_action"):
+                self._autolabel_apriltag_action.setEnabled(
+                    self.project_path is not None
+                )
 
             self.status.showMessage(
                 f"Loaded {len(self.image_paths):,} images from database"
@@ -5393,3 +5405,96 @@ class MainWindow(QMainWindow):
             self.update_explorer_plot()
             self.load_preview_for_index(int(idx))
             self.load_preview_for_index(int(idx))
+
+    def _run_apriltag_autolabel(self) -> None:
+        """Open the AprilTag auto-label dialog and start the background worker."""
+        import json
+        from pathlib import Path
+
+        from ..gui.dialogs import AprilTagAutoLabelDialog
+        from ..jobs.task_workers import AprilTagAutoLabelWorker
+        from ..presets import apriltag_preset
+        from ..store.db import ClassKitDB
+
+        if self.project_path is None:
+            return
+
+        # Collect all image paths (dialog needs them for preview)
+        db = ClassKitDB(self.db_path)
+        all_paths = [Path(p) for p in db.get_all_image_paths()]
+
+        dlg = AprilTagAutoLabelDialog(image_paths=all_paths, parent=self)
+        if dlg.exec() != AprilTagAutoLabelDialog.DialogCode.Accepted:
+            return
+
+        config = dlg.get_config()
+        threshold = dlg.get_threshold()
+        max_tag_id = config.max_tag_id
+
+        # Warn if existing scheme will be replaced
+        scheme_path = self.project_path / "scheme.json"
+        if scheme_path.exists():
+            from PySide6.QtWidgets import QMessageBox
+
+            reply = QMessageBox.question(
+                self,
+                "Replace Existing Scheme?",
+                "A labeling scheme already exists.\n\n"
+                "Replacing it will ERASE all existing labels.\n\n"
+                "Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        # 1. Write the new scheme to disk
+        scheme = apriltag_preset(config.family, max_tag_id)
+        with open(scheme_path, "w") as f:
+            json.dump(scheme.to_dict(), f, indent=2)
+
+        # 2. Clear all existing labels (prevents stale labels under new scheme)
+        db.clear_all_labels()
+
+        # 3. Update self.classes and rebuild label buttons
+        self.classes = scheme.factors[0].labels
+        self.rebuild_label_buttons()
+
+        # 4. Collect unlabeled image paths
+        labels = db.get_all_labels()
+        unlabeled = [p for p, lbl in zip(all_paths, labels) if lbl is None]
+
+        if not unlabeled:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.information(
+                self, "Auto-label", "No unlabeled images to process."
+            )
+            return
+
+        # 5. Start worker
+        worker = AprilTagAutoLabelWorker(
+            image_paths=unlabeled,
+            config=config,
+            threshold=threshold,
+            db=db,
+        )
+
+        def _on_progress(pct: int, msg: str) -> None:
+            self.statusBar().showMessage(f"AprilTag auto-label: {msg} ({pct}%)")
+
+        def _on_success(result: dict) -> None:
+            n_tag = result.get("n_labeled", 0)
+            n_no = result.get("n_no_tag", 0)
+            n_skip = result.get("n_skipped", 0)
+            self.statusBar().showMessage(
+                f"Auto-label complete: {n_tag} tagged, {n_no} no_tag, {n_skip} uncertain"
+            )
+            self._update_labeling_progress_indicator()
+
+        def _on_error(msg: str) -> None:
+            self.statusBar().showMessage(f"Auto-label error: {msg}")
+
+        worker.signals.progress.connect(_on_progress)
+        worker.signals.success.connect(_on_success)
+        worker.signals.error.connect(_on_error)
+        self._threadpool_start(worker)
