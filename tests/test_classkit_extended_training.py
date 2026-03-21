@@ -208,7 +208,7 @@ def test_checkpoint_format_required_keys(tmp_path):
     ckpt_path = tmp_path / "test.pth"
     save_torchvision_checkpoint(
         model=model,
-        arch="resnet18",
+        backbone="resnet18",
         class_names=["a", "b"],
         factor_names=[],
         input_size=(224, 224),
@@ -248,7 +248,7 @@ def test_load_torchvision_classifier_roundtrip(tmp_path):
     ckpt_path = tmp_path / "model.pth"
     save_torchvision_checkpoint(
         model=model,
-        arch="resnet18",
+        backbone="resnet18",
         class_names=["x", "y", "z"],
         factor_names=[],
         input_size=(224, 224),
@@ -280,7 +280,7 @@ def test_export_torchvision_to_onnx_smoke(tmp_path):
     ckpt_path = tmp_path / "model.pth"
     save_torchvision_checkpoint(
         model=model,
-        arch="resnet18",
+        backbone="resnet18",
         class_names=["a", "b"],
         factor_names=[],
         input_size=(224, 224),
@@ -303,3 +303,49 @@ def test_export_torchvision_to_onnx_smoke(tmp_path):
         None, {sess.get_inputs()[0].name: np.zeros((1, 3, 224, 224), dtype=np.float32)}
     )
     assert out[0].shape == (1, 2)
+
+
+# ---------------------------------------------------------------------------
+# Spec-required tests: backbone registry and tinyclassifier integration
+# ---------------------------------------------------------------------------
+
+
+def test_torchvision_backbones_list_contains_expected():
+    from multi_tracker.training.torchvision_model import TORCHVISION_BACKBONES
+
+    assert "convnext_tiny" in TORCHVISION_BACKBONES
+    assert "tinyclassifier" in TORCHVISION_BACKBONES
+    assert "vit_b_16" in TORCHVISION_BACKBONES
+
+
+def test_backbone_display_names_covers_all_backbones():
+    from multi_tracker.training.torchvision_model import (
+        BACKBONE_DISPLAY_NAMES,
+        TORCHVISION_BACKBONES,
+    )
+
+    for b in TORCHVISION_BACKBONES:
+        assert b in BACKBONE_DISPLAY_NAMES
+
+
+def test_build_torchvision_classifier_tinyclassifier():
+    from multi_tracker.training.contracts import CustomCNNParams
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+
+    params = (
+        CustomCNNParams()
+    )  # defaults: hidden_layers=1, hidden_dim=64, dropout=0.2, input_width=128, input_height=64
+    model = build_torchvision_classifier(
+        "tinyclassifier",
+        num_classes=3,
+        trainable_layers=0,
+        hidden_layers=params.hidden_layers,
+        hidden_dim=params.hidden_dim,
+        dropout=params.dropout,
+        input_width=params.input_width,
+        input_height=params.input_height,
+    )
+    assert model is not None
+    x = torch.randn(2, 3, params.input_height, params.input_width)
+    out = model(x)
+    assert out.shape == (2, 3)

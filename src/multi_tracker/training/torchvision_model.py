@@ -18,26 +18,22 @@ import torchvision.models as tvm
 # Backbone registry
 # ---------------------------------------------------------------------------
 
-TORCHVISION_BACKBONES: dict[str, str] = {
-    "convnext_tiny": "convnext_tiny",
-    "convnext_small": "convnext_small",
-    "convnext_base": "convnext_base",
-    "efficientnet_b0": "efficientnet_b0",
-    "efficientnet_b3": "efficientnet_b3",
-    "efficientnet_b7": "efficientnet_b7",
-    "resnet18": "resnet18",
-    "resnet50": "resnet50",
-    "vit_b_16": "vit_b_16",
-}
+TORCHVISION_BACKBONES: list[str] = [
+    "tinyclassifier",
+    "convnext_tiny",
+    "convnext_small",
+    "efficientnet_b0",
+    "resnet18",
+    "resnet50",
+    "vit_b_16",
+]
 
 # Human-readable labels for the GUI
 BACKBONE_DISPLAY_NAMES: dict[str, str] = {
-    "convnext_tiny": "ConvNeXt-T",
-    "convnext_small": "ConvNeXt-S",
-    "convnext_base": "ConvNeXt-B",
+    "tinyclassifier": "TinyClassifier",
+    "convnext_tiny": "ConvNeXt-Tiny",
+    "convnext_small": "ConvNeXt-Small",
     "efficientnet_b0": "EfficientNet-B0",
-    "efficientnet_b3": "EfficientNet-B3",
-    "efficientnet_b7": "EfficientNet-B7",
     "resnet18": "ResNet-18",
     "resnet50": "ResNet-50",
     "vit_b_16": "ViT-B/16",
@@ -89,8 +85,11 @@ def get_layer_groups(model: nn.Module, backbone: str) -> list[nn.Module]:
     ViT-B/16 returns individual encoder layers.
     """
     if backbone.startswith("convnext"):
-        # features[0]=stem, features[1..6]=stages (interleaved norms+stages)
-        # Expose the 4 main ConvNeXt stages: indices 1, 3, 5, 7
+        # ConvNeXt's features Sequential interleaves LayerNorm downsampling
+        # transitions at even indices (0, 2, 4, 6) with the four main ConvNeXt
+        # stage blocks at odd indices (1, 3, 5, 7).  We expose only the four
+        # stage blocks so that trainable_layers=N unfreezes the last N stages,
+        # skipping the lightweight transition layers.
         return [model.features[i] for i in [1, 3, 5, 7]]
     elif backbone.startswith("resnet"):
         return [model.layer1, model.layer2, model.layer3, model.layer4]
@@ -138,18 +137,41 @@ def freeze_backbone(model: nn.Module, backbone: str, trainable_layers: int) -> N
 
 
 def build_torchvision_classifier(
-    backbone: str, num_classes: int, trainable_layers: int
+    backbone: str,
+    num_classes: int,
+    trainable_layers: int,
+    *,
+    hidden_layers: int = 1,
+    hidden_dim: int = 64,
+    dropout: float = 0.2,
+    input_width: int = 128,
+    input_height: int = 64,
 ) -> nn.Module:
     """Build a pretrained torchvision classifier with a new head.
 
     Args:
-        backbone: One of the keys in TORCHVISION_BACKBONES.
+        backbone: One of the keys in TORCHVISION_BACKBONES, or "tinyclassifier".
         num_classes: Number of output classes.
         trainable_layers: 0=frozen, -1=all, N=last N groups unfrozen.
+        hidden_layers: Number of hidden MLP layers (TinyClassifier only).
+        hidden_dim: Hidden MLP dimension (TinyClassifier only).
+        dropout: Dropout rate for the MLP head (TinyClassifier only).
+        input_width: Input image width in pixels (TinyClassifier only).
+        input_height: Input image height in pixels (TinyClassifier only).
 
     Returns:
         nn.Module in train mode with head replaced and freezing applied.
     """
+    if backbone == "tinyclassifier":
+        from multi_tracker.training.tiny_model import _build_tiny_classifier_class
+
+        TinyClassifier = _build_tiny_classifier_class()
+        return TinyClassifier(
+            n_classes=num_classes,
+            hidden_layers=hidden_layers,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+        )
     model = _load_pretrained(backbone)
     model = _replace_head(model, backbone, num_classes)
     freeze_backbone(model, backbone, trainable_layers)
@@ -159,7 +181,7 @@ def build_torchvision_classifier(
 def save_torchvision_checkpoint(
     *,
     model: nn.Module,
-    arch: str,
+    backbone: str,
     class_names: list[str],
     factor_names: list[str],
     input_size: tuple[int, int],
@@ -173,7 +195,7 @@ def save_torchvision_checkpoint(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     ckpt = {
-        "arch": arch,
+        "arch": backbone,
         "class_names": class_names,
         "factor_names": factor_names,
         "input_size": input_size,
