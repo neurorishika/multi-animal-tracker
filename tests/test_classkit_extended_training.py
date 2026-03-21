@@ -412,3 +412,25 @@ def test_runner_flat_custom_dispatches_to_custom_classify():
     ) as mock_fn:
         runner.run_training(spec, "/tmp/run")
         mock_fn.assert_called_once()
+
+
+def test_all_presets_include_flat_custom():
+    """Every single-factor preset function must include 'flat_custom' in training_modes."""
+    from multi_tracker.classkit.presets import (
+        age_preset,
+        apriltag_preset,
+        head_tail_preset,
+    )
+
+    assert "flat_custom" in apriltag_preset("tag36h11", 9).training_modes
+    assert "flat_custom" in head_tail_preset().training_modes
+    assert "flat_custom" in age_preset().training_modes
+
+
+def test_color_tag_preset_includes_multihead_custom():
+    """Multi-factor preset must include both flat_custom and multihead_custom."""
+    from multi_tracker.classkit.presets import color_tag_preset
+
+    scheme = color_tag_preset(n_factors=2, colors=["red", "blue"])
+    assert "flat_custom" in scheme.training_modes
+    assert "multihead_custom" in scheme.training_modes

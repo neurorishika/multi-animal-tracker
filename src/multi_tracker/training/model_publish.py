@@ -37,6 +37,10 @@ def _repo_dir_for_role(role: TrainingRole, scheme_name: str = "classkit") -> Pat
         out = root / "YOLO-classify" / "multihead" / scheme_name
     elif role == TrainingRole.CLASSIFY_MULTIHEAD_TINY:
         out = root / "tiny-classify" / "multihead" / scheme_name
+    elif role == TrainingRole.CLASSIFY_FLAT_CUSTOM:
+        out = root / "custom-classify" / scheme_name
+    elif role == TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM:
+        out = root / "custom-classify" / "multihead" / scheme_name
     else:
         raise RuntimeError(f"Unsupported publish role: {role.value}")
     out.mkdir(parents=True, exist_ok=True)
@@ -54,6 +58,11 @@ def _task_usage_for_role(role: TrainingRole) -> tuple[str, str]:
         return "classify", "classify_yolo"
     if role in (TrainingRole.CLASSIFY_FLAT_TINY, TrainingRole.CLASSIFY_MULTIHEAD_TINY):
         return "classify", "classify_tiny"
+    if role in (
+        TrainingRole.CLASSIFY_FLAT_CUSTOM,
+        TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM,
+    ):
+        return "classify", "classify_custom"
     raise RuntimeError(f"Unsupported publish role: {role.value}")
 
 

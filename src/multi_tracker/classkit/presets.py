@@ -16,7 +16,7 @@ def head_tail_preset() -> LabelingScheme:
                 shortcut_keys=["a", "d", "w", "s"],
             )
         ],
-        training_modes=["flat_tiny", "flat_yolo"],
+        training_modes=["flat_tiny", "flat_yolo", "flat_custom"],
         description="Head/tail orientation: left, right, up, down",
     )
 
@@ -37,9 +37,16 @@ def color_tag_preset(n_factors: int, colors: list[str]) -> LabelingScheme:
         Factor(name=f"tag_{i + 1}", labels=list(colors)) for i in range(n_factors)
     ]
     if n_factors == 1:
-        modes = ["flat_tiny", "flat_yolo"]
+        modes = ["flat_tiny", "flat_yolo", "flat_custom"]
     else:
-        modes = ["flat_tiny", "flat_yolo", "multihead_tiny", "multihead_yolo"]
+        modes = [
+            "flat_tiny",
+            "flat_yolo",
+            "flat_custom",
+            "multihead_tiny",
+            "multihead_yolo",
+            "multihead_custom",
+        ]
 
     total = len(colors) ** n_factors
     return LabelingScheme(
@@ -56,7 +63,7 @@ def age_preset(extra_classes: list[str] | None = None) -> LabelingScheme:
     return LabelingScheme(
         name="age",
         factors=[Factor(name="age", labels=labels)],
-        training_modes=["flat_tiny", "flat_yolo"],
+        training_modes=["flat_tiny", "flat_yolo", "flat_custom"],
         description="Age classification: " + ", ".join(labels),
     )
 
@@ -72,6 +79,6 @@ def apriltag_preset(family: str, max_tag_id: int) -> LabelingScheme:
     return LabelingScheme(
         name=f"apriltag_{family}",
         factors=[Factor(name=family, labels=labels)],
-        training_modes=["flat_tiny", "flat_yolo"],
+        training_modes=["flat_tiny", "flat_yolo", "flat_custom"],
         description=f"AprilTag {family} classifier: tag_0..tag_{max_tag_id} + no_tag",
     )
