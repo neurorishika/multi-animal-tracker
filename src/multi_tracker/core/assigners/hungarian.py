@@ -11,6 +11,8 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
 
+from multi_tracker.core.identity.cnn_identity import _apply_cnn_identity_cost
+
 try:
     from numba import njit
 
@@ -414,11 +416,13 @@ class TrackAssigner:
                     if track_idx < len(_track_cnn_identities)
                     else None
                 )
-                if _det_cls is not None and _track_cls is not None:
-                    if _det_cls == _track_cls:
-                        motion_core_cost -= _cnn_match_bonus
-                    else:
-                        motion_core_cost += _cnn_mismatch_penalty
+                motion_core_cost = _apply_cnn_identity_cost(
+                    motion_core_cost,
+                    _det_cls,
+                    _track_cls,
+                    _cnn_match_bonus,
+                    _cnn_mismatch_penalty,
+                )
 
                 cost[track_idx, det_idx] = motion_core_cost
 

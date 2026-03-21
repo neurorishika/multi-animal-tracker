@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import Counter as _Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -363,8 +364,6 @@ class CNNIdentityBackend:
 # ---------------------------------------------------------------------------
 # TrackCNNHistory
 # ---------------------------------------------------------------------------
-
-from collections import Counter as _Counter
 
 
 class TrackCNNHistory:
