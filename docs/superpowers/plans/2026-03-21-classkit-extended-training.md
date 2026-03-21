@@ -246,6 +246,22 @@ def test_get_layer_groups_resnet_count():
     assert len(groups) == 4
 
 
+def test_get_layer_groups_efficientnet_count():
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier, get_layer_groups
+    model = build_torchvision_classifier("efficientnet_b0", num_classes=2, trainable_layers=0)
+    groups = get_layer_groups(model, "efficientnet_b0")
+    # EfficientNet-B0 features Sequential has 9 blocks (indices 0–8)
+    assert len(groups) == 9
+
+
+def test_get_layer_groups_vit_count():
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier, get_layer_groups
+    model = build_torchvision_classifier("vit_b_16", num_classes=2, trainable_layers=0)
+    groups = get_layer_groups(model, "vit_b_16")
+    # ViT-B/16 encoder has 12 transformer layers
+    assert len(groups) == 12
+
+
 def test_freeze_backbone_frozen():
     from multi_tracker.training.torchvision_model import build_torchvision_classifier
     model = build_torchvision_classifier("resnet18", num_classes=2, trainable_layers=0)
