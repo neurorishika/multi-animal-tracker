@@ -4293,7 +4293,7 @@ class MainWindow(QMainWindow):
                         else int(input_size)
                     )
                     resolved = ckpt_names or list(self.classes)
-                    self._active_model_mode = "tiny"
+                    self._active_model_mode = "custom_cnn"
                     self.status.showMessage(
                         f"Loading Custom CNN ({arch}): {path.name}..."
                     )
@@ -4933,8 +4933,9 @@ class MainWindow(QMainWindow):
                 f"Custom CNN done: {len(self.image_paths):,} images, "
                 f"{len(self._model_class_names)} classes"
             )
+            self._active_model_mode = "custom_cnn"
             self._persist_prediction_cache(
-                self._model_probs, self._model_class_names, "tiny"
+                self._model_probs, self._model_class_names, "custom_cnn"
             )
             if on_success:
                 on_success(result)
@@ -5401,6 +5402,8 @@ class MainWindow(QMainWindow):
             model_name = "multi-head YOLO"
         elif self._active_model_mode == "tiny":
             model_name = "tiny CNN"
+        elif self._active_model_mode == "custom_cnn":
+            model_name = "custom CNN"
         elif self._trained_classifier is not None:
             model_name = "embedding head"
         else:

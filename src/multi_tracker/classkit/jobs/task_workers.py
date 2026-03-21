@@ -1440,7 +1440,9 @@ class TorchvisionInferenceWorker(QRunnable):
 
         try:
             self.signals.started.emit()
-            rt = self.compute_runtime
+            from ...core.runtime.compute_runtime import _normalize_runtime
+
+            rt = _normalize_runtime(self.compute_runtime)
             sz = self.input_size
             mean = [0.485, 0.456, 0.406]
             std = [0.229, 0.224, 0.225]
@@ -1453,11 +1455,16 @@ class TorchvisionInferenceWorker(QRunnable):
             )
 
             use_onnx = rt in ("onnx_cpu", "onnx_cuda", "onnx_rocm", "tensorrt")
+            if use_onnx:
+                onnx_path = self.model_path.with_suffix(".onnx")
+                if not onnx_path.exists():
+                    use_onnx = False
 
             if use_onnx:
                 import onnxruntime as ort
 
                 onnx_path = self.model_path.with_suffix(".onnx")
+                # ROCm: onnxruntime has no ROCMExecutionProvider; falls through to CPU
                 providers = (
                     ["CUDAExecutionProvider", "CPUExecutionProvider"]
                     if "cuda" in rt
