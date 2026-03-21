@@ -358,3 +358,95 @@ class CNNIdentityBackend:
         self._model = None
         self._infer_fn = None
         self._loaded = False
+
+
+# ---------------------------------------------------------------------------
+# TrackCNNHistory
+# ---------------------------------------------------------------------------
+
+from collections import Counter as _Counter
+
+
+class TrackCNNHistory:
+    """Maintains a sliding-window CNN identity history for every track slot.
+
+    Follows the same pattern as TrackTagHistory in tag_features.py.
+    The majority class across the window is the track's assigned identity.
+    Returns ``None`` when no majority exists (empty window or exact tie).
+    """
+
+    def __init__(self, n_tracks: int, window: int = 10) -> None:
+        self._window = max(1, window)
+        # _history[track_idx] is a list of (frame_idx, class_name) pairs
+        self._history: list[list[tuple[int, str]]] = [[] for _ in range(n_tracks)]
+
+    @property
+    def n_tracks(self) -> int:
+        return len(self._history)
+
+    def resize(self, n_tracks: int) -> None:
+        """Grow (never shrink) the history to accommodate *n_tracks*."""
+        while len(self._history) < n_tracks:
+            self._history.append([])
+
+    def record(self, track_idx: int, frame_idx: int, class_name: str) -> None:
+        """Record a confident CNN prediction for *track_idx* on *frame_idx*."""
+        if track_idx >= len(self._history):
+            self.resize(track_idx + 1)
+        self._history[track_idx].append((frame_idx, class_name))
+        # Trim entries older than window
+        cutoff = frame_idx - self._window
+        hist = self._history[track_idx]
+        while hist and hist[0][0] < cutoff:
+            hist.pop(0)
+
+    def majority_class(self, track_idx: int) -> str | None:
+        """Return majority-vote class for *track_idx*, or None if no clear winner."""
+        if track_idx >= len(self._history):
+            return None
+        hist = self._history[track_idx]
+        if not hist:
+            return None
+        counts = _Counter(cls for _, cls in hist)
+        if len(counts) == 0:
+            return None
+        top_two = counts.most_common(2)
+        if len(top_two) == 2 and top_two[0][1] == top_two[1][1]:
+            return None  # exact tie → no majority
+        return str(top_two[0][0])
+
+    def clear_track(self, track_idx: int) -> None:
+        """Clear history for a track slot (e.g., after identity loss)."""
+        if track_idx < len(self._history):
+            self._history[track_idx].clear()
+
+    def build_track_identity_list(self, n_tracks: int) -> list[str | None]:
+        """Return list of length *n_tracks*: majority class per slot (or None).
+
+        This is what goes into ``association_data["track_cnn_identities"]``.
+        """
+        self.resize(n_tracks)
+        return [self.majority_class(i) for i in range(n_tracks)]
+
+
+# ---------------------------------------------------------------------------
+# Hungarian cost helper
+# ---------------------------------------------------------------------------
+
+
+def _apply_cnn_identity_cost(
+    cost: float,
+    det_class: str | None,
+    track_identity: str | None,
+    match_bonus: float,
+    mismatch_penalty: float,
+) -> float:
+    """Apply CNN identity match bonus / mismatch penalty to a cost value.
+
+    Returns cost unchanged when either side is uncertain (None).
+    """
+    if det_class is None or track_identity is None:
+        return cost
+    if det_class == track_identity:
+        return cost - match_bonus
+    return cost + mismatch_penalty

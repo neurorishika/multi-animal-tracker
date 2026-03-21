@@ -257,3 +257,134 @@ def test_registry_entry_format_after_import(tmp_path):
     assert required.issubset(set(loaded_entry.keys()))
     assert loaded_entry["usage_role"] == "cnn_identity"
     assert loaded_entry["num_classes"] == 11
+
+
+# ---------------------------------------------------------------------------
+# TrackCNNHistory tests
+# ---------------------------------------------------------------------------
+
+
+def test_track_cnn_history_majority_vote():
+    """3 out of 5 frames predict the same class → that class is the identity."""
+    from multi_tracker.core.identity.cnn_identity import TrackCNNHistory
+
+    hist = TrackCNNHistory(n_tracks=1, window=10)
+    hist.record(0, 1, "tag_3")
+    hist.record(0, 2, "tag_3")
+    hist.record(0, 3, "tag_3")
+    hist.record(0, 4, "tag_0")
+    hist.record(0, 5, "tag_1")
+    assert hist.majority_class(0) == "tag_3"
+
+
+def test_track_cnn_history_no_observations_returns_none():
+    from multi_tracker.core.identity.cnn_identity import TrackCNNHistory
+
+    hist = TrackCNNHistory(n_tracks=2, window=10)
+    assert hist.majority_class(0) is None
+    assert hist.majority_class(1) is None
+
+
+def test_track_cnn_history_tied_returns_none():
+    """Exact tie in majority vote → no clear identity."""
+    from multi_tracker.core.identity.cnn_identity import TrackCNNHistory
+
+    hist = TrackCNNHistory(n_tracks=1, window=10)
+    hist.record(0, 1, "tag_0")
+    hist.record(0, 2, "tag_1")
+    # Tied: no majority → returns None
+    assert hist.majority_class(0) is None
+
+
+def test_track_cnn_history_window_drops_old():
+    """Observations outside the window are not counted."""
+    from multi_tracker.core.identity.cnn_identity import TrackCNNHistory
+
+    hist = TrackCNNHistory(n_tracks=1, window=3)
+    # Old observations (frames 0-2): tag_0 wins
+    hist.record(0, 0, "tag_0")
+    hist.record(0, 1, "tag_0")
+    hist.record(0, 2, "tag_0")
+    # New observations (frames 3-5): tag_1 wins; frame 0-2 drop out
+    hist.record(0, 3, "tag_1")
+    hist.record(0, 4, "tag_1")
+    hist.record(0, 5, "tag_1")
+    assert hist.majority_class(0) == "tag_1"
+
+
+def test_track_cnn_history_build_list():
+    from multi_tracker.core.identity.cnn_identity import TrackCNNHistory
+
+    hist = TrackCNNHistory(n_tracks=3, window=10)
+    hist.record(0, 1, "tag_0")
+    hist.record(0, 2, "tag_0")
+    hist.record(2, 1, "no_tag")
+    identity_list = hist.build_track_identity_list(3)
+    assert identity_list[0] == "tag_0"
+    assert identity_list[1] is None
+    assert identity_list[2] == "no_tag"
+
+
+# ---------------------------------------------------------------------------
+# Hungarian cost adjustment tests
+# ---------------------------------------------------------------------------
+
+
+def test_hungarian_cnn_match_bonus_applied():
+    """When detection class == track identity, cost decreases by match_bonus."""
+    from multi_tracker.core.identity.cnn_identity import _apply_cnn_identity_cost
+
+    cost = 50.0
+    adjusted = _apply_cnn_identity_cost(
+        cost=cost,
+        det_class="tag_3",
+        track_identity="tag_3",
+        match_bonus=20.0,
+        mismatch_penalty=50.0,
+    )
+    assert adjusted == pytest.approx(50.0 - 20.0)
+
+
+def test_hungarian_cnn_mismatch_penalty_applied():
+    """When detection class != track identity, cost increases by mismatch_penalty."""
+    from multi_tracker.core.identity.cnn_identity import _apply_cnn_identity_cost
+
+    cost = 50.0
+    adjusted = _apply_cnn_identity_cost(
+        cost=cost,
+        det_class="tag_0",
+        track_identity="tag_3",
+        match_bonus=20.0,
+        mismatch_penalty=50.0,
+    )
+    assert adjusted == pytest.approx(50.0 + 50.0)
+
+
+def test_hungarian_cnn_no_adjustment_when_det_none():
+    """No cost adjustment when det_class is None (low confidence)."""
+    from multi_tracker.core.identity.cnn_identity import _apply_cnn_identity_cost
+
+    cost = 50.0
+    adjusted = _apply_cnn_identity_cost(
+        cost=cost,
+        det_class=None,
+        track_identity="tag_3",
+        match_bonus=20.0,
+        mismatch_penalty=50.0,
+    )
+    assert adjusted == pytest.approx(50.0)
+
+
+def test_hungarian_cnn_no_adjustment_when_track_identity_none():
+    """No cost adjustment when track identity is None (unassigned)."""
+    from multi_tracker.core.identity.cnn_identity import _apply_cnn_identity_cost
+
+    cost = 50.0
+    adjusted = _apply_cnn_identity_cost(
+        cost=cost,
+        det_class="tag_3",
+        track_identity=None,
+        match_bonus=20.0,
+        mismatch_penalty=50.0,
+    )
+    assert adjusted == pytest.approx(50.0)

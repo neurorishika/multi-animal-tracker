@@ -320,6 +320,12 @@ class TrackAssigner:
         _tag_mismatch_penalty = float(p.get("TAG_MISMATCH_PENALTY", 50.0))
         _NO_TAG = -1
 
+        # --- CNN Classifier identity cost config ---
+        _det_cnn_classes = association_data.get("detection_cnn_classes", [])
+        _track_cnn_identities = association_data.get("track_cnn_identities", [])
+        _cnn_match_bonus = float(p.get("CNN_CLASSIFIER_MATCH_BONUS", 20.0))
+        _cnn_mismatch_penalty = float(p.get("CNN_CLASSIFIER_MISMATCH_PENALTY", 50.0))
+
         for track_idx, det_indices in candidates.items():
             inv_S = S_inv_batch[track_idx, :2, :2]
             pred_theta = pred_ori[track_idx]
@@ -396,6 +402,23 @@ class TrackAssigner:
                         motion_core_cost -= _tag_match_bonus
                     else:
                         motion_core_cost += _tag_mismatch_penalty
+
+                # --- CNN identity bonus / penalty ---
+                _det_cls = (
+                    _det_cnn_classes[det_idx]
+                    if det_idx < len(_det_cnn_classes)
+                    else None
+                )
+                _track_cls = (
+                    _track_cnn_identities[track_idx]
+                    if track_idx < len(_track_cnn_identities)
+                    else None
+                )
+                if _det_cls is not None and _track_cls is not None:
+                    if _det_cls == _track_cls:
+                        motion_core_cost -= _cnn_match_bonus
+                    else:
+                        motion_core_cost += _cnn_mismatch_penalty
 
                 cost[track_idx, det_idx] = motion_core_cost
 
