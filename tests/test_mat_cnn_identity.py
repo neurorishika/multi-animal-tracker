@@ -153,12 +153,35 @@ def test_backend_predict_batch_cardinality():
 
 def test_backend_below_confidence_returns_none_class():
     """Predictions below confidence threshold return class_name=None."""
-    from multi_tracker.core.identity.cnn_identity import ClassPrediction
+    from unittest.mock import patch
 
-    # A ClassPrediction with confidence below threshold should have class_name=None
-    # This tests the contract, not the implementation (backend internals tested separately)
-    pred = ClassPrediction(class_name=None, confidence=0.3, det_index=0)
-    assert pred.class_name is None
+    import numpy as np
+
+    from multi_tracker.core.identity.cnn_identity import (
+        CNNIdentityBackend,
+        CNNIdentityConfig,
+    )
+
+    # With confidence=0.9, softmax of [1.0, 1.0, 1.0] = [0.333, 0.333, 0.333] < 0.9
+    cfg = CNNIdentityConfig(model_path="/tmp/m.pth", confidence=0.9)
+    crops = [np.zeros((64, 64, 3), dtype=np.uint8)]
+    backend = CNNIdentityBackend(cfg, model_path="/tmp/m.pth", compute_runtime="cpu")
+
+    # Equal logits → max softmax = 0.333 < 0.9 threshold
+    flat_logits = np.array([[1.0, 1.0, 1.0]], dtype=np.float32)
+
+    def fake_ensure_loaded():
+        backend._loaded = True
+        backend._class_names = ["tag_0", "tag_1", "no_tag"]
+        backend._input_size = (64, 64)
+        backend._infer_fn = lambda batch_np: flat_logits
+
+    with patch.object(backend, "_ensure_loaded", fake_ensure_loaded):
+        results = backend.predict_batch(crops)
+
+    assert len(results) == 1
+    assert results[0].class_name is None
+    assert results[0].confidence == pytest.approx(1.0 / 3.0, abs=1e-3)
 
 
 # ---------------------------------------------------------------------------
