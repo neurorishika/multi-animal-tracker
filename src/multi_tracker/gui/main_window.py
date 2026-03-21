@@ -14321,6 +14321,8 @@ class MainWindow(QMainWindow):
         # Backward compat: map old color_tag keys to new cnn_classifier keys
         if not p.get("CNN_CLASSIFIER_MODEL_PATH"):
             p["CNN_CLASSIFIER_MODEL_PATH"] = p.get("COLOR_TAG_MODEL_PATH", "")
+        # TODO(Task 5): CNN_CLASSIFIER_CONFIDENCE is always set above from advanced_config (never None);
+        # this guard is a placeholder — Task 5 will wire spin_cnn_confidence properly.
         if p.get("CNN_CLASSIFIER_CONFIDENCE") is None:
             p["CNN_CLASSIFIER_CONFIDENCE"] = float(p.get("COLOR_TAG_CONFIDENCE", 0.5))
 
