@@ -553,10 +553,10 @@ def _train_custom_classify(
     class_names = train_ds.classes
 
     train_loader = DataLoader(
-        train_ds, batch_size=params.batch, shuffle=True, num_workers=2, pin_memory=True
+        train_ds, batch_size=params.batch, shuffle=True, num_workers=0, pin_memory=True
     )
     val_loader = DataLoader(
-        val_ds, batch_size=params.batch, shuffle=False, num_workers=2, pin_memory=True
+        val_ds, batch_size=params.batch, shuffle=False, num_workers=0, pin_memory=True
     )
 
     # _pick_torch_device is defined in runner.py and handles "auto", MPS, CUDA fallback
@@ -584,6 +584,10 @@ def _train_custom_classify(
         )
 
     optimizer = torch.optim.AdamW(param_groups, weight_decay=params.weight_decay)
+    # NOTE: params.class_rebalance_mode and class_rebalance_power are stored
+    # in CustomCNNParams but not yet applied in the torchvision training path
+    # (only label_smoothing is passed to CrossEntropyLoss). A WeightedRandomSampler
+    # or loss weighting implementation can be added here in a future task.
     criterion = nn.CrossEntropyLoss(label_smoothing=params.label_smoothing)
 
     best_val_acc = 0.0

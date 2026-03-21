@@ -4053,6 +4053,8 @@ class MainWindow(QMainWindow):
                 "flat_yolo": "classify_flat_yolo",
                 "multihead_tiny": "classify_multihead_tiny",
                 "multihead_yolo": "classify_multihead_yolo",
+                "flat_custom": "classify_flat_custom",
+                "multihead_custom": "classify_multihead_custom",
             }
             from ...training.contracts import TrainingRole
             from ...training.model_publish import publish_trained_model

@@ -1485,7 +1485,7 @@ class TorchvisionInferenceWorker(QRunnable):
                 )
 
                 def _infer(batch_np):
-                    t = torch.tensor(batch_np).to(device)
+                    t = torch.from_numpy(batch_np).to(device)
                     with torch.no_grad():
                         return model(t).cpu().numpy()
 
