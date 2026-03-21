@@ -6,6 +6,10 @@
 
 **Architecture:** A new `core/identity/cnn_identity.py` module owns `CNNIdentityConfig`, `ClassPrediction`, `CNNIdentityCache`, `CNNIdentityBackend`, and `TrackCNNHistory`; `worker.py` adds a precompute phase following the AprilTag pattern; `hungarian.py` extends its cost loop with CNN identity bonus/penalty; `main_window.py` renames "Color Tags (YOLO)" to "CNN Classifier" and adds the settings panel and import handler.
 
+**Prerequisite:** The `src/multi_tracker/training/torchvision_model.py` module created in Spec A (ClassKit Extended Training) must exist before this plan's `CNNIdentityBackend` can load torchvision `.pth` checkpoints. Implement Spec A first, or add a `try/except ImportError` guard around the torchvision import path in `_load_pth` if implementing in parallel.
+
+**Config key casing convention:** `configs/default.json` uses lowercase keys (e.g. `cnn_classifier_model_path`) for UI persistence. The params dict `p` passed to the worker and assigner uses UPPERCASE keys (e.g. `CNN_CLASSIFIER_MODEL_PATH`) — set explicitly in `main_window.py`'s params-building block (line ~14233). There is no automatic casing conversion. Follow the same pattern as `TAG_MATCH_BONUS` / `COLOR_TAG_MODEL_PATH` — add uppercase keys to the params dict explicitly.
+
 **Tech Stack:** Python, PyTorch, torchvision, onnxruntime, numpy, PySide6, ultralytics (for YOLO .pt inference), existing MAT infrastructure.
 
 **File Map:**
@@ -16,7 +20,9 @@
 | `src/multi_tracker/core/tracking/worker.py` | Modify | Add CNN identity precompute phase |
 | `src/multi_tracker/core/assigners/hungarian.py` | Modify | Add CNN identity match bonus / mismatch penalty |
 | `src/multi_tracker/gui/main_window.py` | Modify | Rename identity method, settings panel, import handler |
-| `configs/default.json` | Modify | Add 8 new `CNN_CLASSIFIER_*` config keys |
+| `src/multi_tracker/gui/dialogs/cnn_identity_import_dialog.py` | Create | `CNNIdentityImportDialog` |
+| `src/multi_tracker/gui/dialogs/__init__.py` | Modify | Export `CNNIdentityImportDialog` |
+| `configs/default.json` | Modify | Add 8 new `cnn_classifier_*` config keys |
 | `tests/test_mat_cnn_identity.py` | Create | Full test suite |
 
 ---
@@ -138,28 +144,24 @@ def test_cnn_identity_cache_missing_frame_returns_empty(tmp_path):
 
 def test_backend_predict_batch_cardinality():
     """predict_batch() must return exactly one ClassPrediction per input crop."""
-    from unittest.mock import patch, MagicMock
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+    import numpy as np
+    from unittest.mock import patch
+    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig, CNNIdentityBackend
 
     cfg = CNNIdentityConfig(model_path="/tmp/m.pth", confidence=0.5)
-    crops = [
-        np.zeros((64, 64, 3), dtype=np.uint8),
-        np.zeros((64, 64, 3), dtype=np.uint8),
-        np.zeros((64, 64, 3), dtype=np.uint8),
-    ]
-
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityBackend
+    crops = [np.zeros((64, 64, 3), dtype=np.uint8) for _ in range(3)]
     backend = CNNIdentityBackend(cfg, model_path="/tmp/m.pth", compute_runtime="cpu")
 
-    # Mock the internal model to return fixed logits
-    mock_model = MagicMock()
-    import torch
-    mock_model.return_value = torch.tensor([[1.0, 2.0, 0.5]] * 3)
-    mock_model.eval = MagicMock(return_value=mock_model)
+    # Mock _ensure_loaded and _infer_fn together to avoid touching disk
+    fixed_logits = np.array([[1.0, 2.0, 0.5]] * 3, dtype=np.float32)
 
-    with patch.object(backend, "_model", mock_model, create=True), \
-         patch.object(backend, "_class_names", ["tag_0", "tag_1", "no_tag"], create=True), \
-         patch.object(backend, "_loaded", True, create=True):
+    def fake_ensure_loaded():
+        backend._loaded = True
+        backend._class_names = ["tag_0", "tag_1", "no_tag"]
+        backend._input_size = (64, 64)
+        backend._infer_fn = lambda batch_np: fixed_logits
+
+    with patch.object(backend, "_ensure_loaded", fake_ensure_loaded):
         results = backend.predict_batch(crops)
 
     assert len(results) == len(crops)
@@ -173,6 +175,67 @@ def test_backend_below_confidence_returns_none_class():
     # This tests the contract, not the implementation (backend internals tested separately)
     pred = ClassPrediction(class_name=None, confidence=0.3, det_index=0)
     assert pred.class_name is None
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint metadata extraction tests (for _handle_add_new_cnn_identity_model)
+# ---------------------------------------------------------------------------
+
+def test_pth_checkpoint_metadata_extraction(tmp_path):
+    """Verify that .pth checkpoint fields are correctly extracted during import."""
+    import torch
+    from pathlib import Path
+
+    ckpt = {
+        "arch": "resnet18",
+        "class_names": ["tag_0", "tag_1", "no_tag"],
+        "factor_names": [],
+        "input_size": (224, 224),
+        "num_classes": 3,
+        "model_state_dict": {},
+        "best_val_acc": 0.95,
+        "history": {},
+        "trainable_layers": 0,
+        "backbone_lr_scale": 0.1,
+    }
+    ckpt_path = tmp_path / "model.pth"
+    torch.save(ckpt, str(ckpt_path))
+
+    loaded = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    assert loaded["arch"] == "resnet18"
+    assert loaded["class_names"] == ["tag_0", "tag_1", "no_tag"]
+    assert loaded["num_classes"] == 3
+    assert list(loaded["input_size"]) == [224, 224]
+
+
+def test_registry_entry_format_after_import(tmp_path):
+    """Registry entry for a CNN identity model has all required fields."""
+    import json
+    from datetime import datetime
+
+    entry = {
+        "arch": "convnext_tiny",
+        "num_classes": 11,
+        "class_names": [f"tag_{i}" for i in range(10)] + ["no_tag"],
+        "factor_names": [],
+        "input_size": [224, 224],
+        "species": "ant",
+        "classification_label": "apriltag",
+        "added_at": datetime.now().isoformat(),
+        "task_family": "classify",
+        "usage_role": "cnn_identity",
+    }
+    registry_path = tmp_path / "model_registry.json"
+    registry = {"classification/identity/test.pth": entry}
+    registry_path.write_text(json.dumps(registry))
+
+    loaded = json.loads(registry_path.read_text())
+    loaded_entry = loaded["classification/identity/test.pth"]
+    required = {"arch", "num_classes", "class_names", "factor_names", "input_size",
+                "species", "classification_label", "added_at", "task_family", "usage_role"}
+    assert required.issubset(set(loaded_entry.keys()))
+    assert loaded_entry["usage_role"] == "cnn_identity"
+    assert loaded_entry["num_classes"] == 11
 ```
 
 ### Step 1.2 — Run tests to verify they fail
@@ -371,9 +434,10 @@ class CNNIdentityBackend:
             self._infer_fn = self._infer_onnx
         else:
             if self._arch == "tinyclassifier":
-                from multi_tracker.core.identity.runtime_utils import load_tiny_classifier_pth
-                self._model = load_tiny_classifier_pth(self._model_path, device=device)
+                from multi_tracker.training.tiny_model import load_tiny_classifier
+                self._model = load_tiny_classifier(self._model_path, device=device)
             else:
+                # Requires Spec A (ClassKit Extended Training) to be implemented first
                 from multi_tracker.training.torchvision_model import load_torchvision_classifier
                 self._model, _ = load_torchvision_classifier(self._model_path, device=device)
             self._infer_fn = lambda batch_np, dev=device: self._infer_torch(batch_np, dev)
@@ -402,9 +466,9 @@ class CNNIdentityBackend:
         if os.path.exists(onnx_path):
             return onnx_path
         if self._arch == "tinyclassifier":
-            from multi_tracker.core.identity.runtime_utils import load_tiny_classifier_pth
+            from multi_tracker.training.tiny_model import load_tiny_classifier
             import torch
-            model = load_tiny_classifier_pth(self._model_path, device="cpu")
+            model = load_tiny_classifier(self._model_path, device="cpu")
             h, w = self._input_size
             dummy = torch.zeros(1, 3, h, w)
             torch.onnx.export(
@@ -1014,13 +1078,13 @@ After the entire AprilTag precompute block (lines 1651–1671), add the CNN iden
                     cnn_track_history.resize(N)
                     frame_cnn_preds = cnn_identity_cache.load(actual_frame_index)
                     _pred_by_det = {p.det_index: p for p in frame_cnn_preds}
-                    for r, c in zip(row_ind, col_ind):
+                    for r, c in zip(rows, cols):
                         pred = _pred_by_det.get(c)
                         if pred is not None and pred.class_name is not None:
                             cnn_track_history.record(r, actual_frame_index, pred.class_name)
 ```
 
-Note: `row_ind` and `col_ind` are the assignment result arrays from the Hungarian solver. These variable names must match the actual names in the loop — verify by reading the assignment block near line 2380. If the names differ, adjust accordingly.
+Note: The assignment result arrays in `worker.py` are `rows` and `cols` (confirmed at lines 2393–2394, e.g. `for r, c in zip(rows, cols):`). The code snippet uses these names correctly.
 
 ### Step 3.3 — Verify import
 
@@ -1356,9 +1420,17 @@ def _handle_add_new_cnn_identity_model(self) -> None:
         self._update_cnn_identity_verification_panel(rel_path)
 ```
 
-### Step 5.6 — Add `CNNIdentityImportDialog` to `gui/dialogs.py`
+### Step 5.6 — Add `CNNIdentityImportDialog` to the `gui/dialogs/` package
 
-- [ ] In `src/multi_tracker/gui/dialogs.py`, add a simple import metadata dialog near the end of the file:
+Note: `src/multi_tracker/gui/dialogs/` is a **package directory**, not a single file. It contains `__init__.py`, `parameter_helper.py`, and `train_yolo_dialog.py`.
+
+- [ ] Create `src/multi_tracker/gui/dialogs/cnn_identity_import_dialog.py` with the dialog class.
+- [ ] Export it from `src/multi_tracker/gui/dialogs/__init__.py` by adding:
+  ```python
+  from .cnn_identity_import_dialog import CNNIdentityImportDialog
+  ```
+
+Dialog class to write in the new file:
 
 ```python
 class CNNIdentityImportDialog(QDialog):
