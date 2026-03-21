@@ -95,6 +95,41 @@ def get_density_region_flags(
     return flags
 
 
+def _cnn_build_association_entries(
+    cnn_identity_cache, cnn_track_history, frame_idx, n_det, N
+):
+    """Return (det_classes, track_identities) for CNN identity assigner fields.
+
+    Returns two lists ready to insert into *association_data*.  Either
+    argument may be None; in that case empty/None lists are returned and the
+    caller should skip the update.
+    """
+    if cnn_identity_cache is None or cnn_track_history is None:
+        return None, None
+    frame_preds = cnn_identity_cache.load(frame_idx)
+    det_classes = [None] * n_det
+    for pred in frame_preds:
+        if pred.det_index < n_det:
+            det_classes[pred.det_index] = pred.class_name
+    track_identities = cnn_track_history.build_track_identity_list(N)
+    return det_classes, track_identities
+
+
+def _cnn_update_track_history(
+    cnn_track_history, cnn_identity_cache, frame_idx, N, rows, cols
+):
+    """Record CNN predictions for the matched (track, detection) pairs."""
+    if cnn_track_history is None or cnn_identity_cache is None:
+        return
+    cnn_track_history.resize(N)
+    frame_preds = cnn_identity_cache.load(frame_idx)
+    pred_by_det = {pred.det_index: pred for pred in frame_preds}
+    for r, c in zip(rows, cols):
+        pred = pred_by_det.get(c)
+        if pred is not None and pred.class_name is not None:
+            cnn_track_history.record(r, frame_idx, pred.class_name)
+
+
 class TrackingWorker(QThread):
     """
     Core tracking engine. Orchestrates tracking components to be functionally
@@ -645,6 +680,157 @@ class TrackingWorker(QThread):
             and detection_method == "yolo_obb"
             and identity_method == "apriltags"
         )
+
+    # ------------------------------------------------------------------
+    # CNN Identity precompute
+    # ------------------------------------------------------------------
+
+    def _should_precompute_cnn_identity_data(self, params, detection_method):
+        """Return True when the CNN identity precompute phase should run."""
+        identity_method = str(params.get("IDENTITY_METHOD", "none_disabled")).lower()
+        return bool(
+            not self.backward_mode
+            and not self.preview_mode
+            and detection_method == "yolo_obb"
+            and identity_method == "cnn_classifier"
+        )
+
+    def _build_cnn_identity_cache_path(self, start_frame, end_frame):
+        """Derive the CNN identity cache path from the detection cache path."""
+        if not self.detection_cache_path:
+            return None
+        from pathlib import Path as _P
+
+        base = _P(self.detection_cache_path)
+        return str(
+            base.with_name(base.stem + f"_cnn_identity_{start_frame}_{end_frame}.npz")
+        )
+
+    def _run_cnn_identity_precompute(
+        self, detection_cache, params, cap, start_frame, end_frame
+    ):
+        """Run CNN identity classification on all frames and cache predictions.
+
+        Follows the same lifecycle as _run_apriltag_precompute():
+        - Reads OBB crops from detection_cache frame by frame
+        - Calls CNNIdentityBackend.predict_batch() in batches
+        - Writes predictions to CNNIdentityCache (flush() at end)
+        - Emits progress_signal per frame
+        - Returns cache path or None on failure
+        """
+        import os
+
+        from multi_tracker.core.identity.cnn_identity import (
+            CNNIdentityBackend,
+            CNNIdentityCache,
+            CNNIdentityConfig,
+        )
+
+        model_path = str(params.get("CNN_CLASSIFIER_MODEL_PATH", ""))
+        if not model_path or not os.path.exists(model_path):
+            logger.warning(
+                "CNN identity precompute: model_path not found: %s", model_path
+            )
+            return None
+
+        cache_path = self._build_cnn_identity_cache_path(start_frame, end_frame)
+        if cache_path is None:
+            return None
+
+        cfg = CNNIdentityConfig(
+            model_path=model_path,
+            confidence=float(params.get("CNN_CLASSIFIER_CONFIDENCE", 0.5)),
+            batch_size=int(params.get("CNN_CLASSIFIER_BATCH_SIZE", 64)),
+            crop_padding=float(params.get("CNN_CLASSIFIER_CROP_PADDING", 0.1)),
+        )
+        compute_runtime = str(params.get("COMPUTE_RUNTIME", "cpu"))
+        backend = CNNIdentityBackend(
+            cfg, model_path=model_path, compute_runtime=compute_runtime
+        )
+        cache = CNNIdentityCache(cache_path)
+
+        total_frames = end_frame - start_frame
+        self.progress_signal.emit(0, "CNN identity precompute: starting...")
+
+        import cv2
+
+        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
+        scale = 1.0 / resize_f if resize_f > 0 else 1.0
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        for frame_offset in range(total_frames):
+            frame_idx = start_frame + frame_offset
+
+            if self._stop_requested:
+                logger.info("CNN identity precompute cancelled.")
+                backend.close()
+                return None
+
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                cache.save(frame_idx, [])
+                continue
+
+            try:
+                (
+                    _meas,
+                    _sizes,
+                    _shapes,
+                    _confs,
+                    obb_corners,
+                    detection_ids,
+                    _hh,
+                    _dm,
+                ) = detection_cache.get_frame(frame_idx)
+            except Exception:
+                cache.save(frame_idx, [])
+                continue
+
+            if not obb_corners:
+                cache.save(frame_idx, [])
+                continue
+
+            scaled_corners = [
+                np.asarray(c, dtype=np.float32) * scale for c in obb_corners
+            ]
+            det_idx_list = (
+                list(range(len(obb_corners)))
+                if not detection_ids
+                else [int(d) for d in detection_ids]
+            )
+
+            crops = []
+            crop_det_indices = []
+            for _di, _corners in enumerate(scaled_corners):
+                _crop, _offset = self._extract_expanded_obb_crop(
+                    frame, _corners, cfg.crop_padding
+                )
+                if _crop is None:
+                    continue
+                crops.append(_crop)
+                crop_det_indices.append(det_idx_list[_di])
+
+            if crops:
+                predictions = backend.predict_batch(crops)
+                for pred, det_idx in zip(predictions, crop_det_indices):
+                    pred.det_index = det_idx
+            else:
+                predictions = []
+
+            cache.save(frame_idx, predictions)
+
+            pct = int((frame_offset + 1) * 100 / max(total_frames, 1))
+            if frame_offset % 50 == 0 or frame_offset == total_frames - 1:
+                self.progress_signal.emit(
+                    pct,
+                    f"CNN identity precompute: frame {frame_offset + 1}/{total_frames}",
+                )
+
+        backend.close()
+        cache.flush()  # write all in-memory predictions to disk at once
+        self.progress_signal.emit(100, "CNN identity precompute: complete.")
+        logger.info("CNN identity cache written: %s", cache_path)
+        return cache_path
 
     def _build_tag_cache_path(self, start_frame, end_frame):
         """Derive the tag observation cache path from the detection cache path."""
@@ -1669,6 +1855,30 @@ class TrackingWorker(QThread):
                     "Tracking will proceed without tag identity signals.",
                 )
 
+        # CNN Identity precompute — mirrors AprilTag precompute pattern
+        cnn_identity_cache_path = None
+        cnn_identity_precompute_enabled = self._should_precompute_cnn_identity_data(
+            p, detection_method
+        )
+        if (
+            cnn_identity_precompute_enabled
+            and detection_cache is not None
+            and use_cached_detections
+        ):
+            try:
+                cnn_identity_cache_path = self._run_cnn_identity_precompute(
+                    detection_cache, p, cap, start_frame, end_frame
+                )
+            except Exception as _cnn_pre_exc:
+                logger.warning(
+                    "CNN identity precompute failed (tracking continues without it): %s",
+                    _cnn_pre_exc,
+                )
+                self.warning_signal.emit(
+                    "CNN Identity Precompute Failed",
+                    f"CNN identity precompute failed: {_cnn_pre_exc}",
+                )
+
         # Open tag observation cache for reading during tracking loop.
         tag_obs_cache = None
         track_tag_history = None
@@ -1686,6 +1896,21 @@ class TrackingWorker(QThread):
                     "Tag observation cache loaded for tracking: %s",
                     tag_observation_cache_path,
                 )
+
+        # Open CNN identity cache for reading during tracking loop.
+        cnn_identity_cache = None
+        cnn_track_history = None
+        if cnn_identity_cache_path and os.path.exists(cnn_identity_cache_path):
+            from multi_tracker.core.identity.cnn_identity import (
+                CNNIdentityCache,
+                TrackCNNHistory,
+            )
+
+            cnn_identity_cache = CNNIdentityCache(cnn_identity_cache_path)
+            cnn_track_history = TrackCNNHistory(
+                N, window=int(p.get("CNN_CLASSIFIER_WINDOW", 10))
+            )
+            logger.info("CNN identity cache loaded: %s", cnn_identity_cache_path)
 
         # Optional pose-properties reader for directional orientation override.
         pose_props_cache = None
@@ -2234,6 +2459,18 @@ class TrackingWorker(QThread):
                     "track_last_tag_ids": _track_tag_ids,
                 }
 
+                # CNN identity data for assigner
+                _det_cnn_classes, _track_cnn_ids = _cnn_build_association_entries(
+                    cnn_identity_cache,
+                    cnn_track_history,
+                    actual_frame_index,
+                    len(meas),
+                    N,
+                )
+                if _det_cnn_classes is not None:
+                    association_data["detection_cnn_classes"] = _det_cnn_classes
+                    association_data["track_cnn_identities"] = _track_cnn_ids
+
                 # --- Density-aware pre-gate ---
                 # For detections inside a high-density region, apply a tighter
                 # distance threshold in the cost matrix.  This blocks long-range
@@ -2392,6 +2629,16 @@ class TrackingWorker(QThread):
                         track_tag_history.clear_track(r)
                     for r, c in zip(rows, cols):
                         track_tag_history.record(r, actual_frame_index, _det_tag_ids[c])
+
+                # Update CNN track history after assignment
+                _cnn_update_track_history(
+                    cnn_track_history,
+                    cnn_identity_cache,
+                    actual_frame_index,
+                    N,
+                    rows,
+                    cols,
+                )
 
                 # --- KF Update & State Update ---
                 total_cost = 0.0
