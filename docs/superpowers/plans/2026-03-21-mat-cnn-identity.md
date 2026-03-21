@@ -1177,20 +1177,41 @@ Note: `color_tag_model_path` and `color_tag_confidence` are kept as backward-com
 
 ### Step 4.2 — Rename identity method in `main_window.py`
 
-- [ ] Open `src/multi_tracker/gui/main_window.py`. Grep for the identity method combo and "color_tags" or "Color Tags (YOLO)" strings. The identity method dropdown uses a `method_map`-style dict or addItem calls. Find and update:
+- [ ] Open `src/multi_tracker/gui/main_window.py`. Find and update the identity method combo label:
+  - Display text: `"Color Tags (YOLO)"` → `"CNN Classifier"` (in the `addItem` calls for the identity method combo)
 
-  - Display text: `"Color Tags (YOLO)"` → `"CNN Classifier"`
-  - Method key: `"color_tags_yolo"` → `"cnn_classifier"` (in the `method_map` dict and any `if identity_method ==` comparisons)
-
-- [ ] Add backward compat migration: when loading a config where `IDENTITY_METHOD == "color_tags_yolo"`, silently substitute `"cnn_classifier"`. Find the config loading path in `main_window.py` (likely `load_config()` or `_apply_config_to_ui()`) and add:
+- [ ] In `_apply_config_to_ui()` at line ~15055, find the `method_map` dict:
 
 ```python
-# Backward compat: rename color_tags_yolo → cnn_classifier
-if p.get("IDENTITY_METHOD", "").lower() == "color_tags_yolo":
-    p["IDENTITY_METHOD"] = "cnn_classifier"
+method_map = {
+    "none_disabled": 0,
+    "color_tags_yolo": 1,
+    "apriltags": 2,
+    "custom": 0,
+}
 ```
 
-Also add both backward compat aliases in the same loading path:
+Update to include `"cnn_classifier"` at the same index (1 = CNN Classifier slot), and keep `"color_tags_yolo"` for backward compat:
+
+```python
+method_map = {
+    "none_disabled": 0,
+    "color_tags_yolo": 1,   # backward compat for old saved configs
+    "cnn_classifier": 1,    # new key
+    "apriltags": 2,
+    "custom": 0,
+}
+```
+
+- [ ] Add the backward compat identity method migration IMMEDIATELY BEFORE `method_map.get(identity_method, 0)` is called (i.e., after `identity_method = str(get_cfg(...)).lower()...` but before the lookup):
+
+```python
+# Backward compat: rename color_tags_yolo → cnn_classifier on load
+if identity_method == "color_tags_yolo":
+    identity_method = "cnn_classifier"
+```
+
+- [ ] In the params dict building path (where `COLOR_TAG_MODEL_PATH` is written, line ~14234), add both backward compat aliases so the new widgets populate correctly when loading an old config:
 
 ```python
 # Backward compat: map old color_tag keys to new cnn_classifier keys
@@ -1283,13 +1304,13 @@ Layout: wrap all these in a `QGroupBox("CNN Classifier")` or similar container. 
 
 ### Step 5.2 — Populate combo from model registry on startup
 
-- [ ] Add `_refresh_cnn_identity_model_combo()` method:
+- [ ] Add `_refresh_cnn_identity_model_combo()` method. Note: `get_models_root_directory()` is a **module-level function** in `main_window.py` (line ~1626), not an instance attribute — use it directly (no `self.`). You can also use `get_yolo_model_registry_path()` (line ~1787) as a shortcut for `os.path.join(get_models_root_directory(), "model_registry.json")`.
 
 ```python
 def _refresh_cnn_identity_model_combo(self) -> None:
     """Populate the CNN identity model combo from model_registry.json."""
     import json
-    registry_path = os.path.join(self._models_dir, "model_registry.json")
+    registry_path = os.path.join(get_models_root_directory(), "model_registry.json")
     try:
         with open(registry_path) as f:
             registry = json.load(f)
@@ -1343,7 +1364,7 @@ def _on_cnn_identity_model_selected(self, index: int) -> None:
 def _update_cnn_identity_verification_panel(self, rel_path: str) -> None:
     """Populate the read-only verification labels from the registry entry."""
     import json
-    registry_path = os.path.join(self._models_dir, "model_registry.json")
+    registry_path = os.path.join(get_models_root_directory(), "model_registry.json")
     try:
         with open(registry_path) as f:
             registry = json.load(f)
@@ -1381,7 +1402,7 @@ def _handle_add_new_cnn_identity_model(self) -> None:
     src_path, _ = QFileDialog.getOpenFileName(
         self,
         "Import ClassKit Model for CNN Identity",
-        os.path.join(self._models_dir, "classification", "identity"),
+        os.path.join(get_models_root_directory(), "classification", "identity"),
         "ClassKit Model Files (*.pth *.pt);;All Files (*)",
     )
     if not src_path:
@@ -1425,7 +1446,7 @@ def _handle_add_new_cnn_identity_model(self) -> None:
     classification_label = dlg.classification_label()
 
     # Copy to models/classification/identity/
-    dest_dir = os.path.join(self._models_dir, "classification", "identity")
+    dest_dir = os.path.join(get_models_root_directory(), "classification", "identity")
     os.makedirs(dest_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     ext = Path(src_path).suffix
@@ -1434,8 +1455,8 @@ def _handle_add_new_cnn_identity_model(self) -> None:
     shutil.copy2(src_path, dest_path)
 
     # Register in model_registry.json
-    rel_path = os.path.relpath(dest_path, self._models_dir)
-    registry_path = os.path.join(self._models_dir, "model_registry.json")
+    rel_path = os.path.relpath(dest_path, get_models_root_directory())
+    registry_path = os.path.join(get_models_root_directory(), "model_registry.json")
     try:
         with open(registry_path) as f:
             registry = json.load(f)
@@ -1525,14 +1546,15 @@ class CNNIdentityImportDialog(QDialog):
 
 ```python
 "CNN_CLASSIFIER_MODEL_PATH": os.path.join(
-    self._models_dir, self.combo_cnn_identity_model.currentData() or ""
+    get_models_root_directory(), self.combo_cnn_identity_model.currentData() or ""
 ) if self.combo_cnn_identity_model.currentData() not in (None, "", "__add_new__") else "",
 "CNN_CLASSIFIER_CONFIDENCE": self.spin_cnn_confidence.value(),
 "CNN_CLASSIFIER_MATCH_BONUS": self.spin_cnn_match_bonus.value(),
 "CNN_CLASSIFIER_MISMATCH_PENALTY": self.spin_cnn_mismatch_penalty.value(),
 "CNN_CLASSIFIER_WINDOW": self.spin_cnn_window.value(),
-"CNN_CLASSIFIER_BATCH_SIZE": 64,
+"CNN_CLASSIFIER_BATCH_SIZE": 64,  # not user-configurable via UI; internal default
 "CNN_CLASSIFIER_CROP_PADDING": self.spin_cnn_crop_padding.value(),
+"CNN_CLASSIFIER_LABEL": "",  # cosmetic only; read from registry entry if needed
 ```
 
 - [ ] In the config-to-UI loading path (`_apply_config_to_ui()` or equivalent), populate the CNN controls from the saved config.
