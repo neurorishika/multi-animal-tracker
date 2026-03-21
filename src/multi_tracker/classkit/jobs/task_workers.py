@@ -1394,6 +1394,136 @@ class TinyCNNInferenceWorker(QRunnable):
             self.signals.finished.emit()
 
 
+class TorchvisionInferenceWorker(QRunnable):
+    """Run torchvision Custom CNN classification inference on all project images.
+
+    Supports PyTorch (cpu/mps/cuda/rocm) and ONNX runtimes via
+    ``compute_runtime``. Output contract: same as TinyCNNInferenceWorker —
+    emits ``{"probs": ndarray(N, C), "class_names": list}`` via success signal.
+    """
+
+    def __init__(
+        self,
+        model_path: Path,
+        image_paths: List[Path],
+        class_names: List[str],
+        input_size: int = 224,
+        compute_runtime: str = "cpu",
+        batch_size: int = 64,
+    ):
+        super().__init__()
+        self.setAutoDelete(False)
+        self.model_path = Path(model_path)
+        self.image_paths = list(image_paths)
+        self.class_names = list(class_names)
+        self.input_size = input_size
+        self.compute_runtime = str(compute_runtime or "cpu")
+        self.batch_size = batch_size
+        self.signals = TaskSignals()
+
+    @staticmethod
+    def _torch_device(rt: str) -> str:
+        """Map canonical runtime to PyTorch device string."""
+        if rt in ("cuda", "onnx_cuda", "tensorrt"):
+            return "cuda"
+        if rt == "mps":
+            return "mps"
+        if rt in ("rocm", "onnx_rocm"):
+            return "cuda"
+        return "cpu"
+
+    @Slot()
+    def run(self) -> None:
+        import numpy as _np
+        import torch
+        from torchvision import transforms
+
+        try:
+            self.signals.started.emit()
+            rt = self.compute_runtime
+            sz = self.input_size
+            mean = [0.485, 0.456, 0.406]
+            std = [0.229, 0.224, 0.225]
+            tf = transforms.Compose(
+                [
+                    transforms.Resize((sz, sz)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean, std),
+                ]
+            )
+
+            use_onnx = rt in ("onnx_cpu", "onnx_cuda", "onnx_rocm", "tensorrt")
+
+            if use_onnx:
+                import onnxruntime as ort
+
+                onnx_path = self.model_path.with_suffix(".onnx")
+                providers = (
+                    ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                    if "cuda" in rt
+                    else ["CPUExecutionProvider"]
+                )
+                sess = ort.InferenceSession(str(onnx_path), providers=providers)
+                input_name = sess.get_inputs()[0].name
+
+                def _infer(batch_np):
+                    return sess.run(None, {input_name: batch_np})[0]
+
+            else:
+                from ...training.torchvision_model import load_torchvision_classifier
+
+                device = self._torch_device(rt)
+                model, _ = load_torchvision_classifier(
+                    str(self.model_path), device=device
+                )
+
+                def _infer(batch_np):
+                    t = torch.tensor(batch_np).to(device)
+                    with torch.no_grad():
+                        return model(t).cpu().numpy()
+
+            from PIL import Image
+
+            all_probs = []
+            total = len(self.image_paths)
+            for i in range(0, total, self.batch_size):
+                batch_paths = self.image_paths[i : i + self.batch_size]
+                batch_tensors = []
+                for p in batch_paths:
+                    try:
+                        img = Image.open(str(p)).convert("RGB")
+                        batch_tensors.append(tf(img).numpy())
+                    except Exception:
+                        batch_tensors.append(_np.zeros((3, sz, sz), dtype=_np.float32))
+                batch_np = _np.stack(batch_tensors).astype(_np.float32)
+                logits = _infer(batch_np)
+                # Softmax
+                exp = _np.exp(logits - logits.max(axis=1, keepdims=True))
+                probs = exp / exp.sum(axis=1, keepdims=True)
+                all_probs.append(probs)
+                pct = int(min(i + self.batch_size, total) * 100 / total)
+                self.signals.progress.emit(
+                    pct, f"Inferring {min(i + self.batch_size, total)}/{total}"
+                )
+
+            all_probs_np = (
+                _np.concatenate(all_probs, axis=0)
+                if all_probs
+                else _np.zeros((0, len(self.class_names)))
+            )
+            self.signals.success.emit(
+                {"probs": all_probs_np, "class_names": self.class_names}
+            )
+
+        except Exception as exc:
+            import traceback
+
+            traceback.print_exc()
+            self.signals.error.emit(str(exc))
+        finally:
+            self.signals.finished.emit()
+
+
 class AprilTagAutoLabelWorker(QRunnable):
     """Background worker that runs AprilTag auto-labeling on a list of images.
 

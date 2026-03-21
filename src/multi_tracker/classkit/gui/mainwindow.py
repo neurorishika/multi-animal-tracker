@@ -3701,6 +3701,8 @@ class MainWindow(QMainWindow):
                 "flat_yolo": TrainingRole.CLASSIFY_FLAT_YOLO,
                 "multihead_tiny": TrainingRole.CLASSIFY_MULTIHEAD_TINY,
                 "multihead_yolo": TrainingRole.CLASSIFY_MULTIHEAD_YOLO,
+                "flat_custom": TrainingRole.CLASSIFY_FLAT_CUSTOM,
+                "multihead_custom": TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM,
             }
             role = role_map.get(mode, TrainingRole.CLASSIFY_FLAT_TINY)
 
@@ -3728,6 +3730,10 @@ class MainWindow(QMainWindow):
             class_names_int = {i: s for s, i in label_map_int.items()}
 
             def _make_spec(dataset_dir):
+                import dataclasses
+
+                from ...training.contracts import CustomCNNParams
+
                 aug = AugmentationProfile(
                     enabled=True,
                     flipud=settings.get("flipud", 0.0),
@@ -3736,7 +3742,7 @@ class MainWindow(QMainWindow):
                     label_expansion=settings.get("label_expansion") or {},
                 )
 
-                return TrainingRunSpec(
+                spec = TrainingRunSpec(
                     role=role,
                     source_datasets=[],
                     derived_dataset_dir=str(dataset_dir),
@@ -3767,6 +3773,31 @@ class MainWindow(QMainWindow):
                     training_space="canonical" if use_canonical else "original",
                     augmentation_profile=aug,
                 )
+                if mode in ("flat_custom", "multihead_custom"):
+                    spec = dataclasses.replace(
+                        spec,
+                        custom_params=CustomCNNParams(
+                            backbone=settings.get("custom_backbone", "tinyclassifier"),
+                            trainable_layers=settings.get("custom_trainable_layers", 0),
+                            backbone_lr_scale=settings.get(
+                                "custom_backbone_lr_scale", 0.1
+                            ),
+                            input_size=settings.get("custom_input_size", 224),
+                            epochs=settings.get("epochs", 50),
+                            batch=settings.get("batch", 32),
+                            lr=settings.get("lr", 1e-3),
+                            patience=settings.get("patience", 10),
+                            weight_decay=1e-2,
+                            label_smoothing=settings.get("tiny_label_smoothing", 0.0),
+                            class_rebalance_mode=settings.get(
+                                "tiny_rebalance_mode", "none"
+                            ),
+                            class_rebalance_power=settings.get(
+                                "tiny_rebalance_power", 1.0
+                            ),
+                        ),
+                    )
+                return spec
 
             # Start export → then chain to training
             def _on_export_success(result):
@@ -3876,16 +3907,46 @@ class MainWindow(QMainWindow):
                                     Path(artifact), on_success=_post_inference_chain
                                 )
                         else:
-                            # Tiny CNN .pth — full inference pipeline
+                            # Custom CNN or Tiny CNN .pth — dispatch based on arch field
+                            import torch as _torch
+
+                            _ckpt = _torch.load(
+                                str(artifact), map_location="cpu", weights_only=False
+                            )
+                            _arch = (
+                                _ckpt.get("arch", "tinyclassifier")
+                                if isinstance(_ckpt, dict)
+                                else "tinyclassifier"
+                            )
+                            _class_names = _ckpt.get("class_names") or sorted(
+                                set(labels_str)
+                            )
                             self._active_model_mode = "tiny"
-                            dialog.append_log(
-                                f"Running tiny CNN inference: {Path(artifact).name}..."
-                            )
-                            self._run_tiny_inference(
-                                Path(artifact),
-                                class_names=sorted(set(labels_str)),
-                                on_success=_post_inference_chain,
-                            )
+                            if _arch != "tinyclassifier":
+                                _sz = _ckpt.get("input_size", (224, 224))
+                                _sz = (
+                                    _sz[0]
+                                    if isinstance(_sz, (list, tuple))
+                                    else int(_sz)
+                                )
+                                dialog.append_log(
+                                    f"Running Custom CNN inference ({_arch}): {Path(artifact).name}..."
+                                )
+                                self._run_torchvision_inference(
+                                    Path(artifact),
+                                    class_names=_class_names,
+                                    input_size=_sz,
+                                    on_success=_post_inference_chain,
+                                )
+                            else:
+                                dialog.append_log(
+                                    f"Running tiny CNN inference: {Path(artifact).name}..."
+                                )
+                                self._run_tiny_inference(
+                                    Path(artifact),
+                                    class_names=_class_names,
+                                    on_success=_post_inference_chain,
+                                )
 
             def _on_error(err: str) -> None:
                 dialog.append_log(f"ERROR: {err}")
@@ -4217,38 +4278,73 @@ class MainWindow(QMainWindow):
                     self, "Checkpoint Loaded", f"Loaded embedding head: {path.name}"
                 )
             elif is_tiny_cnn:
-                # ── Tiny CNN format (.pth / model_state_dict key) ─────
-                ckpt_names = ckpt.get("class_names")
-                # Look up class names from project DB cache for this artifact
-                db_names = None
-                if self.db_path:
-                    try:
-                        from ..store.db import ClassKitDB as _CKDb
-
-                        for _entry in _CKDb(self.db_path).list_model_caches():
-                            if str(path) in _entry.get("artifact_paths", []):
-                                db_names = _entry.get("class_names")
-                                break
-                    except Exception:
-                        pass
-                resolved = ckpt_names or db_names or list(self.classes)
-                self._active_model_mode = "tiny"
-                self.status.showMessage(f"Loading tiny CNN: {path.name}...")
-                self._run_tiny_inference(
-                    path,
-                    class_names=resolved,
-                    on_success=lambda r: (
-                        self._evaluate_model_on_labeled(),
-                        QTimer.singleShot(100, self._replot_umap_model_space),
-                        QMessageBox.information(
-                            self,
-                            "Tiny CNN Loaded",
-                            f"Loaded: {path.name}\n"
-                            f"Inference on {len(self.image_paths):,} images complete.\n"
-                            "Metrics tab updated. Model UMAP computing...",
-                        ),
-                    ),
+                arch = (
+                    ckpt.get("arch", "tinyclassifier")
+                    if isinstance(ckpt, dict)
+                    else "tinyclassifier"
                 )
+                if arch != "tinyclassifier":
+                    # ── Torchvision Custom CNN format ──────────────────
+                    ckpt_names = ckpt.get("class_names")
+                    input_size = ckpt.get("input_size", (224, 224))
+                    sz = (
+                        input_size[0]
+                        if isinstance(input_size, (list, tuple))
+                        else int(input_size)
+                    )
+                    resolved = ckpt_names or list(self.classes)
+                    self._active_model_mode = "tiny"
+                    self.status.showMessage(
+                        f"Loading Custom CNN ({arch}): {path.name}..."
+                    )
+                    self._run_torchvision_inference(
+                        path,
+                        class_names=resolved,
+                        input_size=sz,
+                        on_success=lambda r: (
+                            self._evaluate_model_on_labeled(),
+                            QTimer.singleShot(100, self._replot_umap_model_space),
+                            QMessageBox.information(
+                                self,
+                                "Custom CNN Loaded",
+                                f"Loaded: {path.name}\n"
+                                f"Inference on {len(self.image_paths):,} images complete.\n"
+                                "Metrics tab updated. Model UMAP computing...",
+                            ),
+                        ),
+                    )
+                else:
+                    # ── Tiny CNN format (arch == 'tinyclassifier' or arch absent) ─
+                    ckpt_names = ckpt.get("class_names")
+                    db_names = None
+                    if self.db_path:
+                        try:
+                            from ..store.db import ClassKitDB as _CKDb
+
+                            for _entry in _CKDb(self.db_path).list_model_caches():
+                                if str(path) in _entry.get("artifact_paths", []):
+                                    db_names = _entry.get("class_names")
+                                    break
+                        except Exception:
+                            pass
+                    resolved = ckpt_names or db_names or list(self.classes)
+                    self._active_model_mode = "tiny"
+                    self.status.showMessage(f"Loading tiny CNN: {path.name}...")
+                    self._run_tiny_inference(
+                        path,
+                        class_names=resolved,
+                        on_success=lambda r: (
+                            self._evaluate_model_on_labeled(),
+                            QTimer.singleShot(100, self._replot_umap_model_space),
+                            QMessageBox.information(
+                                self,
+                                "Tiny CNN Loaded",
+                                f"Loaded: {path.name}\n"
+                                f"Inference on {len(self.image_paths):,} images complete.\n"
+                                "Metrics tab updated. Model UMAP computing...",
+                            ),
+                        ),
+                    )
             else:
                 # ── YOLO model format ──────────────────────────────────
                 self._yolo_model_path = path
@@ -4790,6 +4886,65 @@ class MainWindow(QMainWindow):
         )
         worker.signals.progress.connect(
             lambda p, m: self.status.showMessage(f"[Tiny CNN] {m}") if m else None
+        )
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        worker.signals.finished.connect(lambda: self.progress_bar.setVisible(False))
+        self._threadpool_start(worker)
+
+    def _run_torchvision_inference(
+        self,
+        model_path: Path,
+        class_names: list,
+        input_size: int = 224,
+        on_success=None,
+    ):
+        """Launch TorchvisionInferenceWorker and wire signals to the standard post-inference path."""
+        if not self.image_paths:
+            return
+
+        from ..jobs.task_workers import TorchvisionInferenceWorker
+
+        rt = (self._last_training_settings or {}).get("compute_runtime", "cpu")
+        worker = TorchvisionInferenceWorker(
+            model_path=model_path,
+            image_paths=self.image_paths,
+            class_names=class_names,
+            input_size=input_size,
+            compute_runtime=rt,
+        )
+
+        def _torchvision_success(result):
+            self._model_probs = result["probs"]
+            self._model_class_names = result["class_names"]
+            self.umap_model_coords = None
+            self.pca_model_coords = None
+            self._show_model_umap = False
+            self._show_model_pca = False
+            self.btn_umap_embedding.setChecked(True)
+            self.btn_umap_model.setChecked(False)
+            if hasattr(self, "btn_pca_model"):
+                self.btn_pca_model.setChecked(False)
+            self.image_confidences = list(self._model_probs.max(axis=1).astype(float))
+            self._set_model_projection_buttons_enabled(True)
+            self._update_al_status()
+            self.update_explorer_plot()
+            self.status.showMessage(
+                f"Custom CNN done: {len(self.image_paths):,} images, "
+                f"{len(self._model_class_names)} classes"
+            )
+            self._persist_prediction_cache(
+                self._model_probs, self._model_class_names, "tiny"
+            )
+            if on_success:
+                on_success(result)
+
+        worker.signals.success.connect(_torchvision_success)
+        worker.signals.error.connect(
+            lambda e: self.status.showMessage(f"Custom CNN error: {e}")
+        )
+        worker.signals.progress.connect(
+            lambda p, m: self.status.showMessage(f"[Custom CNN] {m}") if m else None
         )
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(True)
