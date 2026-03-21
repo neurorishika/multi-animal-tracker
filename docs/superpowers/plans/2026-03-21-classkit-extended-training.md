@@ -754,7 +754,8 @@ def _train_custom_classify(
         val_ds, batch_size=params.batch, shuffle=False, num_workers=2, pin_memory=True
     )
 
-    device = spec.device if spec.device not in ("auto", "") else "cpu"
+    # _pick_torch_device is defined in runner.py and handles "auto", MPS, CUDA fallback
+    device = _pick_torch_device(spec.device)
     model = build_torchvision_classifier(params.backbone, len(class_names), params.trainable_layers)
     model.to(device)
 
@@ -1362,7 +1363,47 @@ Add two new entries:
 
 Also add `TrainingRole.CLASSIFY_FLAT_CUSTOM` and `TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM` to the existing import of contracts inside `_do_train()` at line 3679.
 
-### Step 5.3 — Verify import
+### Step 5.3 — Fix post-training inference dispatch in `mainwindow.py`
+
+- [ ] In `mainwindow.py`, find the `_on_success` callback inside `train_classifier()`. It currently contains an `else` branch that calls `_run_tiny_inference` for any non-YOLO artifact (approximately lines 3878–3888). This branch must be updated to distinguish torchvision checkpoints from TinyClassifier checkpoints by reading the `arch` field — otherwise a torchvision model trained via `flat_custom` would silently be inferred through the wrong worker.
+
+Find the block that looks like:
+```python
+                else:
+                    # Tiny CNN: run inference immediately
+                    self._run_tiny_inference(
+                        artifact_path,
+                        class_names=...
+                        ...
+                    )
+```
+
+Replace it with:
+```python
+                else:
+                    # Custom CNN: dispatch to correct inference worker based on arch field
+                    import torch as _torch
+                    _ckpt = _torch.load(str(artifact_path), map_location="cpu", weights_only=False)
+                    _arch = _ckpt.get("arch", "tinyclassifier") if isinstance(_ckpt, dict) else "tinyclassifier"
+                    _class_names = _ckpt.get("class_names") or list(self.classes)
+                    if _arch != "tinyclassifier":
+                        _sz = _ckpt.get("input_size", (224, 224))
+                        _sz = _sz[0] if isinstance(_sz, (list, tuple)) else int(_sz)
+                        self._run_torchvision_inference(
+                            artifact_path,
+                            class_names=_class_names,
+                            input_size=_sz,
+                        )
+                    else:
+                        self._run_tiny_inference(
+                            artifact_path,
+                            class_names=_class_names,
+                        )
+```
+
+Note: `_run_torchvision_inference` is added in Step 5.2 — this step depends on that being in place first.
+
+### Step 5.4 — Verify import
 
 - [ ] Run:
 ```bash
@@ -1371,7 +1412,7 @@ conda run -n multi-animal-tracker-mps python -c "from multi_tracker.classkit.app
 ```
 Expected: both print OK without errors.
 
-### Step 5.4 — Commit
+### Step 5.5 — Commit
 
 - [ ] Run:
 ```bash
