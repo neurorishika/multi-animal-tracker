@@ -324,6 +324,17 @@ def test_backbone_display_names_covers_all_backbones():
         assert b in BACKBONE_DISPLAY_NAMES
 
 
+def test_build_torchvision_classifier_raises_for_unknown_backbone():
+    import pytest
+
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+
+    with pytest.raises(ValueError, match="Unknown backbone"):
+        build_torchvision_classifier(
+            "not_a_real_backbone", num_classes=2, trainable_layers=0
+        )
+
+
 def test_build_torchvision_classifier_tinyclassifier():
     from multi_tracker.training.contracts import CustomCNNParams
     from multi_tracker.training.torchvision_model import build_torchvision_classifier
