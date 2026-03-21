@@ -2,6 +2,7 @@
 
 from .contracts import (
     AugmentationProfile,
+    CustomCNNParams,
     DatasetBuildResult,
     PublishPolicy,
     SourceDataset,
@@ -17,6 +18,7 @@ from .service import RoleRunConfig, TrainingOrchestrator, TrainingSessionResult
 
 __all__ = [
     "AugmentationProfile",
+    "CustomCNNParams",
     "DatasetBuildResult",
     "PublishPolicy",
     "RoleRunConfig",
