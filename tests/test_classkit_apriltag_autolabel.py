@@ -35,7 +35,7 @@ def test_apriltag_preset_name():
 
 def test_apriltag_preset_flat_training_modes_only():
     scheme = apriltag_preset("tag36h11", max_tag_id=9)
-    assert scheme.training_modes == ["flat_tiny", "flat_yolo"]
+    assert scheme.training_modes == ["flat_tiny", "flat_yolo", "flat_custom"]
 
 
 def test_apriltag_preset_max_tag_id_zero():

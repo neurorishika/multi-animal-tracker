@@ -1882,6 +1882,139 @@ class ClassKitTrainingDialog(QDialog):
         tiny_layout.addStretch()
         self._tiny_tab_idx = self.tabs.addTab(self.tiny_tab, "Tiny Architecture")
 
+        # Tab: Custom CNN
+        self.custom_tab = QWidget()
+        custom_form = QFormLayout(self.custom_tab)
+        custom_form.setSpacing(8)
+
+        from ...training.torchvision_model import (
+            BACKBONE_DISPLAY_NAMES,
+            TORCHVISION_BACKBONES,
+        )
+
+        self._custom_backbone_combo = QComboBox()
+        # Populate from the canonical TORCHVISION_BACKBONES list
+        # (tinyclassifier is first; torchvision backbones follow)
+        for key in TORCHVISION_BACKBONES:
+            if key == "tinyclassifier":
+                self._custom_backbone_combo.addItem("TinyClassifier (scratch)", key)
+                self._custom_backbone_combo.insertSeparator(
+                    self._custom_backbone_combo.count()
+                )
+            else:
+                self._custom_backbone_combo.addItem(BACKBONE_DISPLAY_NAMES[key], key)
+        custom_form.addRow("Backbone:", self._custom_backbone_combo)
+
+        # TinyClassifier-specific controls (hidden when torchvision backbone selected)
+        self._tiny_in_custom_width_spin = QSpinBox()
+        self._tiny_in_custom_width_spin.setRange(32, 512)
+        self._tiny_in_custom_width_spin.setValue(128)
+        custom_form.addRow("Input width (px):", self._tiny_in_custom_width_spin)
+
+        self._tiny_in_custom_height_spin = QSpinBox()
+        self._tiny_in_custom_height_spin.setRange(32, 512)
+        self._tiny_in_custom_height_spin.setValue(64)
+        custom_form.addRow("Input height (px):", self._tiny_in_custom_height_spin)
+
+        self._tiny_in_custom_layers_spin = QSpinBox()
+        self._tiny_in_custom_layers_spin.setRange(0, 4)
+        self._tiny_in_custom_layers_spin.setValue(1)
+        custom_form.addRow("Hidden layers:", self._tiny_in_custom_layers_spin)
+
+        self._tiny_in_custom_dim_spin = QSpinBox()
+        self._tiny_in_custom_dim_spin.setRange(16, 512)
+        self._tiny_in_custom_dim_spin.setValue(64)
+        custom_form.addRow("Hidden dim:", self._tiny_in_custom_dim_spin)
+
+        self._tiny_in_custom_dropout_spin = QDoubleSpinBox()
+        self._tiny_in_custom_dropout_spin.setRange(0.0, 0.9)
+        self._tiny_in_custom_dropout_spin.setSingleStep(0.05)
+        self._tiny_in_custom_dropout_spin.setValue(0.2)
+        custom_form.addRow("Dropout:", self._tiny_in_custom_dropout_spin)
+
+        # Torchvision-specific controls (hidden when TinyClassifier selected)
+        self._custom_trainable_layers_label = QLabel(
+            "Trainable layers (0=frozen, -1=all):"
+        )
+        self._custom_trainable_layers_spin = QSpinBox()
+        self._custom_trainable_layers_spin.setRange(-1, 8)
+        self._custom_trainable_layers_spin.setValue(0)
+        self._custom_trainable_layers_spin.setToolTip(
+            "0=frozen backbone, -1=all layers, N=last N layer groups unfrozen"
+        )
+        custom_form.addRow(
+            self._custom_trainable_layers_label, self._custom_trainable_layers_spin
+        )
+
+        self._custom_backbone_lr_label = QLabel("Backbone LR scale:")
+        self._custom_backbone_lr_spin = QDoubleSpinBox()
+        self._custom_backbone_lr_spin.setRange(0.001, 1.0)
+        self._custom_backbone_lr_spin.setSingleStep(0.01)
+        self._custom_backbone_lr_spin.setDecimals(3)
+        self._custom_backbone_lr_spin.setValue(0.1)
+        self._custom_backbone_lr_spin.setToolTip(
+            "LR multiplier applied to unfrozen backbone layers (head LR is full LR)."
+        )
+        custom_form.addRow(
+            self._custom_backbone_lr_label, self._custom_backbone_lr_spin
+        )
+
+        self._custom_input_size_label = QLabel("Input size (px, square):")
+        self._custom_input_size_spin = QSpinBox()
+        self._custom_input_size_spin.setRange(32, 512)
+        self._custom_input_size_spin.setSingleStep(32)
+        self._custom_input_size_spin.setValue(224)
+        self._custom_input_size_spin.setToolTip(
+            "Resize crops to this square size before passing to torchvision backbone."
+        )
+        custom_form.addRow(self._custom_input_size_label, self._custom_input_size_spin)
+
+        # Common controls (shared between TinyClassifier and torchvision paths)
+        self._custom_epochs_spin = QSpinBox()
+        self._custom_epochs_spin.setRange(1, 500)
+        self._custom_epochs_spin.setValue(50)
+        custom_form.addRow("Epochs:", self._custom_epochs_spin)
+
+        self._custom_batch_spin = QSpinBox()
+        self._custom_batch_spin.setRange(1, 256)
+        self._custom_batch_spin.setValue(32)
+        custom_form.addRow("Batch size:", self._custom_batch_spin)
+
+        self._custom_lr_spin = QDoubleSpinBox()
+        self._custom_lr_spin.setRange(1e-5, 0.1)
+        self._custom_lr_spin.setSingleStep(0.0001)
+        self._custom_lr_spin.setDecimals(5)
+        self._custom_lr_spin.setValue(1e-3)
+        custom_form.addRow("Learning rate:", self._custom_lr_spin)
+
+        self._custom_patience_spin = QSpinBox()
+        self._custom_patience_spin.setRange(1, 100)
+        self._custom_patience_spin.setValue(10)
+        custom_form.addRow("Patience:", self._custom_patience_spin)
+
+        self._custom_rebalance_combo = QComboBox()
+        self._custom_rebalance_combo.addItems(
+            ["none", "weighted_loss", "weighted_sampler", "both"]
+        )
+        custom_form.addRow("Class rebalance:", self._custom_rebalance_combo)
+
+        self._custom_label_smoothing_spin = QDoubleSpinBox()
+        self._custom_label_smoothing_spin.setRange(0.0, 0.5)
+        self._custom_label_smoothing_spin.setSingleStep(0.01)
+        self._custom_label_smoothing_spin.setValue(0.0)
+        custom_form.addRow("Label smoothing:", self._custom_label_smoothing_spin)
+
+        self._custom_tab_idx = self.tabs.addTab(self.custom_tab, "Custom CNN")
+
+        # Connect backbone change to show/hide conditional controls
+        self._custom_backbone_combo.currentIndexChanged.connect(
+            self._on_custom_backbone_changed
+        )
+        self._custom_trainable_layers_spin.valueChanged.connect(
+            self._on_custom_backbone_changed
+        )
+        self._on_custom_backbone_changed()  # initialize visibility on dialog open
+
         # Tab 3: Space & Augmentations
         self.aug_tab = QWidget()
         aug_tab_layout = QVBoxLayout(self.aug_tab)
@@ -2160,14 +2293,24 @@ class ClassKitTrainingDialog(QDialog):
         if self._scheme is None:
             self.mode_combo.addItem("Flat - Tiny CNN", "flat_tiny")
             self.mode_combo.addItem("Flat - YOLO-classify", "flat_yolo")
+            self.mode_combo.addItem("Flat - Custom CNN", "flat_custom")
             return
         labels = {
             "flat_tiny": "Flat - Tiny CNN",
             "flat_yolo": "Flat - YOLO-classify",
+            "flat_custom": "Flat - Custom CNN",
             "multihead_tiny": "Multi-head - Tiny CNN (one model per factor)",
             "multihead_yolo": "Multi-head - YOLO-classify (one model per factor)",
+            "multihead_custom": "Multi-head - Custom CNN (one model per factor)",
         }
-        for key in ["flat_tiny", "flat_yolo", "multihead_tiny", "multihead_yolo"]:
+        for key in [
+            "flat_tiny",
+            "flat_yolo",
+            "flat_custom",
+            "multihead_tiny",
+            "multihead_yolo",
+            "multihead_custom",
+        ]:
             if key in self._scheme.training_modes:
                 self.mode_combo.addItem(labels[key], key)
 
@@ -2175,6 +2318,7 @@ class ClassKitTrainingDialog(QDialog):
         mode = self.mode_combo.currentData() or ""
         is_yolo = "yolo" in mode
         is_tiny = "tiny" in mode
+        is_custom = "custom" in mode
 
         # Show/hide YOLO base-model form row
         self.base_model_combo.setVisible(is_yolo)
@@ -2186,6 +2330,12 @@ class ClassKitTrainingDialog(QDialog):
             self.tabs.setTabVisible(self._tiny_tab_idx, is_tiny)
             # If tiny tab was active and is now hidden, fall back to General
             if not is_tiny and self.tabs.currentIndex() == self._tiny_tab_idx:
+                self.tabs.setCurrentIndex(0)
+
+        # Show/hide Custom CNN tab
+        if hasattr(self, "_custom_tab_idx"):
+            self.tabs.setTabVisible(self._custom_tab_idx, is_custom)
+            if not is_custom and self.tabs.currentIndex() == self._custom_tab_idx:
                 self.tabs.setCurrentIndex(0)
 
         # Update mode description
@@ -2206,9 +2356,47 @@ class ClassKitTrainingDialog(QDialog):
                 "Multi-head YOLO Classify — one fine-tuned backbone per factor. "
                 "Highest accuracy; GPU required."
             ),
+            "flat_custom": (
+                "Custom CNN — TinyClassifier or pretrained torchvision backbone "
+                "(ConvNeXt, EfficientNet, ResNet, ViT). Configurable layer freezing "
+                "for linear-probe or full fine-tuning."
+            ),
+            "multihead_custom": (
+                "Multi-head Custom CNN — one backbone per factor, with configurable "
+                "layer freezing. GPU recommended for torchvision backbones."
+            ),
         }
         if hasattr(self, "_mode_desc_label"):
             self._mode_desc_label.setText(_desc.get(mode, ""))
+
+    def _on_custom_backbone_changed(self) -> None:
+        """Show/hide controls based on selected backbone."""
+        backbone = self._custom_backbone_combo.currentData()
+        is_tiny = backbone == "tinyclassifier"
+
+        # TinyClassifier-specific controls
+        for w in (
+            self._tiny_in_custom_width_spin,
+            self._tiny_in_custom_height_spin,
+            self._tiny_in_custom_layers_spin,
+            self._tiny_in_custom_dim_spin,
+            self._tiny_in_custom_dropout_spin,
+        ):
+            w.setVisible(is_tiny)
+
+        # Torchvision-specific controls
+        for w in (
+            self._custom_trainable_layers_spin,
+            self._custom_trainable_layers_label,
+            self._custom_input_size_spin,
+            self._custom_input_size_label,
+        ):
+            w.setVisible(not is_tiny)
+
+        # Backbone LR scale only relevant when trainable_layers != 0
+        show_lr = not is_tiny and self._custom_trainable_layers_spin.value() != 0
+        self._custom_backbone_lr_spin.setVisible(show_lr)
+        self._custom_backbone_lr_label.setVisible(show_lr)
 
     def _on_cancel(self):
         if self._worker is not None:
@@ -2298,16 +2486,33 @@ class ClassKitTrainingDialog(QDialog):
             # PyTorch ROCm uses the CUDA device namespace.
             _train_device = "cuda"
 
+        _mode = self.mode_combo.currentData() or ""
+        _is_custom = _mode in ("flat_custom", "multihead_custom")
+
         return {
             "mode": self.mode_combo.currentData(),
             "compute_runtime": _rt,
             "device": _train_device,
             "base_model": self.base_model_combo.currentData(),
-            "epochs": self.epochs_spin.value(),
-            "batch": self.batch_spin.value(),
-            "lr": self.lr_spin.value(),
+            "epochs": (
+                self._custom_epochs_spin.value()
+                if _is_custom
+                else self.epochs_spin.value()
+            ),
+            "batch": (
+                self._custom_batch_spin.value()
+                if _is_custom
+                else self.batch_spin.value()
+            ),
+            "lr": (
+                self._custom_lr_spin.value() if _is_custom else self.lr_spin.value()
+            ),
             "val_fraction": self.val_fraction_spin.value(),
-            "patience": self.patience_spin.value(),
+            "patience": (
+                self._custom_patience_spin.value()
+                if _is_custom
+                else self.patience_spin.value()
+            ),
             # Tiny Architecture
             "tiny_layers": self.tiny_layers_spin.value(),
             "tiny_dim": self.tiny_dim_spin.value(),
@@ -2317,6 +2522,11 @@ class ClassKitTrainingDialog(QDialog):
             "tiny_rebalance_mode": self.tiny_rebalance_combo.currentData(),
             "tiny_rebalance_power": self.tiny_rebalance_power_spin.value(),
             "tiny_label_smoothing": self.tiny_label_smoothing_spin.value(),
+            # Custom CNN
+            "custom_backbone": self._custom_backbone_combo.currentData(),
+            "custom_trainable_layers": self._custom_trainable_layers_spin.value(),
+            "custom_backbone_lr_scale": self._custom_backbone_lr_spin.value(),
+            "custom_input_size": self._custom_input_size_spin.value(),
             # Space & Augmentations
             "training_space": training_space,
             "flipud": flipud_value,
