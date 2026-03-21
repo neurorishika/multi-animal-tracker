@@ -59,3 +59,247 @@ def test_training_run_spec_has_custom_params():
         custom_params=CustomCNNParams(backbone="convnext_tiny"),
     )
     assert spec2.custom_params.backbone == "convnext_tiny"
+
+
+import numpy as np
+import torch
+
+# ---------------------------------------------------------------------------
+# torchvision_model tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_torchvision_classifier_convnext():
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+
+    model = build_torchvision_classifier(
+        "convnext_tiny", num_classes=5, trainable_layers=0
+    )
+    model.eval()
+    with torch.no_grad():
+        out = model(torch.zeros(1, 3, 224, 224))
+    assert out.shape == (1, 5)
+
+
+def test_build_torchvision_classifier_efficientnet():
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+
+    model = build_torchvision_classifier(
+        "efficientnet_b0", num_classes=3, trainable_layers=0
+    )
+    model.eval()
+    with torch.no_grad():
+        out = model(torch.zeros(1, 3, 224, 224))
+    assert out.shape == (1, 3)
+
+
+def test_build_torchvision_classifier_resnet():
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+
+    model = build_torchvision_classifier("resnet18", num_classes=4, trainable_layers=0)
+    model.eval()
+    with torch.no_grad():
+        out = model(torch.zeros(1, 3, 224, 224))
+    assert out.shape == (1, 4)
+
+
+def test_build_torchvision_classifier_vit():
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+
+    model = build_torchvision_classifier("vit_b_16", num_classes=6, trainable_layers=0)
+    model.eval()
+    with torch.no_grad():
+        out = model(torch.zeros(1, 3, 224, 224))
+    assert out.shape == (1, 6)
+
+
+def test_get_layer_groups_convnext_count():
+    from multi_tracker.training.torchvision_model import (
+        build_torchvision_classifier,
+        get_layer_groups,
+    )
+
+    model = build_torchvision_classifier(
+        "convnext_tiny", num_classes=2, trainable_layers=0
+    )
+    groups = get_layer_groups(model, "convnext_tiny")
+    assert len(groups) == 4
+
+
+def test_get_layer_groups_resnet_count():
+    from multi_tracker.training.torchvision_model import (
+        build_torchvision_classifier,
+        get_layer_groups,
+    )
+
+    model = build_torchvision_classifier("resnet18", num_classes=2, trainable_layers=0)
+    groups = get_layer_groups(model, "resnet18")
+    assert len(groups) == 4
+
+
+def test_get_layer_groups_efficientnet_count():
+    from multi_tracker.training.torchvision_model import (
+        build_torchvision_classifier,
+        get_layer_groups,
+    )
+
+    model = build_torchvision_classifier(
+        "efficientnet_b0", num_classes=2, trainable_layers=0
+    )
+    groups = get_layer_groups(model, "efficientnet_b0")
+    # EfficientNet-B0 features Sequential has 9 blocks (indices 0–8)
+    assert len(groups) == 9
+
+
+def test_get_layer_groups_vit_count():
+    from multi_tracker.training.torchvision_model import (
+        build_torchvision_classifier,
+        get_layer_groups,
+    )
+
+    model = build_torchvision_classifier("vit_b_16", num_classes=2, trainable_layers=0)
+    groups = get_layer_groups(model, "vit_b_16")
+    # ViT-B/16 encoder has 12 transformer layers
+    assert len(groups) == 12
+
+
+def test_freeze_backbone_frozen():
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+
+    model = build_torchvision_classifier("resnet18", num_classes=2, trainable_layers=0)
+    # Head (fc) must be unfrozen
+    assert model.fc.weight.requires_grad is True
+    # At least some backbone parameters must be frozen
+    backbone_frozen = any(
+        not p.requires_grad for name, p in model.named_parameters() if "fc" not in name
+    )
+    assert backbone_frozen
+
+
+def test_freeze_backbone_all():
+    from multi_tracker.training.torchvision_model import build_torchvision_classifier
+
+    model = build_torchvision_classifier("resnet18", num_classes=2, trainable_layers=-1)
+    # All parameters must be trainable
+    assert all(p.requires_grad for p in model.parameters())
+
+
+def test_freeze_backbone_partial():
+    from multi_tracker.training.torchvision_model import (
+        build_torchvision_classifier,
+        get_layer_groups,
+    )
+
+    model = build_torchvision_classifier("resnet18", num_classes=2, trainable_layers=1)
+    groups = get_layer_groups(model, "resnet18")
+    # Last group (layer4) must be unfrozen
+    assert any(p.requires_grad for p in groups[-1].parameters())
+    # First group (layer1) must be frozen
+    assert all(not p.requires_grad for p in groups[0].parameters())
+
+
+def test_checkpoint_format_required_keys(tmp_path):
+    from multi_tracker.training.torchvision_model import (
+        build_torchvision_classifier,
+        save_torchvision_checkpoint,
+    )
+
+    model = build_torchvision_classifier("resnet18", num_classes=2, trainable_layers=0)
+    ckpt_path = tmp_path / "test.pth"
+    save_torchvision_checkpoint(
+        model=model,
+        arch="resnet18",
+        class_names=["a", "b"],
+        factor_names=[],
+        input_size=(224, 224),
+        best_val_acc=0.95,
+        history={"train_loss": [], "val_acc": []},
+        trainable_layers=0,
+        backbone_lr_scale=0.1,
+        path=ckpt_path,
+    )
+    import torch
+
+    ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    required = {
+        "arch",
+        "class_names",
+        "factor_names",
+        "input_size",
+        "num_classes",
+        "model_state_dict",
+        "best_val_acc",
+        "history",
+        "trainable_layers",
+        "backbone_lr_scale",
+    }
+    assert required.issubset(set(ckpt.keys()))
+
+
+def test_load_torchvision_classifier_roundtrip(tmp_path):
+    from multi_tracker.training.torchvision_model import (
+        build_torchvision_classifier,
+        load_torchvision_classifier,
+        save_torchvision_checkpoint,
+    )
+
+    model = build_torchvision_classifier("resnet18", num_classes=3, trainable_layers=0)
+    model.eval()
+    ckpt_path = tmp_path / "model.pth"
+    save_torchvision_checkpoint(
+        model=model,
+        arch="resnet18",
+        class_names=["x", "y", "z"],
+        factor_names=[],
+        input_size=(224, 224),
+        best_val_acc=0.9,
+        history={},
+        trainable_layers=0,
+        backbone_lr_scale=0.1,
+        path=ckpt_path,
+    )
+    loaded_model, ckpt = load_torchvision_classifier(str(ckpt_path), device="cpu")
+    loaded_model.eval()
+    x = torch.zeros(1, 3, 224, 224)
+    with torch.no_grad():
+        orig_out = model(x)
+        loaded_out = loaded_model(x)
+    assert torch.allclose(orig_out, loaded_out, atol=1e-5)
+    assert ckpt["arch"] == "resnet18"
+    assert ckpt["class_names"] == ["x", "y", "z"]
+
+
+def test_export_torchvision_to_onnx_smoke(tmp_path):
+    from multi_tracker.training.torchvision_model import (
+        build_torchvision_classifier,
+        export_torchvision_to_onnx,
+        save_torchvision_checkpoint,
+    )
+
+    model = build_torchvision_classifier("resnet18", num_classes=2, trainable_layers=0)
+    ckpt_path = tmp_path / "model.pth"
+    save_torchvision_checkpoint(
+        model=model,
+        arch="resnet18",
+        class_names=["a", "b"],
+        factor_names=[],
+        input_size=(224, 224),
+        best_val_acc=0.8,
+        history={},
+        trainable_layers=0,
+        backbone_lr_scale=0.1,
+        path=ckpt_path,
+    )
+    import torch
+
+    ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    onnx_path = tmp_path / "model.onnx"
+    export_torchvision_to_onnx(model, ckpt, onnx_path)
+    assert onnx_path.exists()
+    import onnxruntime as ort
+
+    sess = ort.InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    out = sess.run(
+        None, {sess.get_inputs()[0].name: np.zeros((1, 3, 224, 224), dtype=np.float32)}
+    )
+    assert out[0].shape == (1, 2)
