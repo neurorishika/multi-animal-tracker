@@ -6035,11 +6035,11 @@ class MainWindow(QMainWindow):
         # Identity Method
         self.combo_identity_method = QComboBox()
         self.combo_identity_method.addItems(
-            ["None (Disabled)", "Color Tags (YOLO)", "AprilTags"]
+            ["None (Disabled)", "CNN Classifier", "AprilTags"]
         )
         self.combo_identity_method.setToolTip(
             "Select method for identifying individual animals:\n"
-            "• Color Tags: Detect color markers using YOLO model\n"
+            "• CNN Classifier: Classify individual identity using a CNN model\n"
             "• AprilTags: Detect fiducial markers"
         )
         self.combo_identity_method.currentIndexChanged.connect(
@@ -6060,7 +6060,7 @@ class MainWindow(QMainWindow):
         )
         self.identity_config_stack.addWidget(none_widget)
 
-        # Page 1: Color Tags (YOLO)
+        # Page 1: CNN Classifier
         color_widget = QWidget()
         color_layout = QFormLayout(color_widget)
         self.line_color_tag_model = QLineEdit()
@@ -14054,7 +14054,7 @@ class MainWindow(QMainWindow):
             compute_runtime, backend_family=pose_backend_family
         )
 
-        return {
+        p = {
             "ADVANCED_CONFIG": advanced_config,  # Include advanced config for batch optimization
             "DETECTION_METHOD": det_method,
             "FPS": fps,  # Acquisition frame rate
@@ -14233,6 +14233,28 @@ class MainWindow(QMainWindow):
             "IDENTITY_METHOD": identity_method,
             "COLOR_TAG_MODEL_PATH": self.line_color_tag_model.text(),
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
+            "CNN_CLASSIFIER_MODEL_PATH": "",  # wired in Task 5
+            "CNN_CLASSIFIER_CONFIDENCE": float(
+                self.advanced_config.get("cnn_classifier_confidence", 0.5)
+            ),
+            "CNN_CLASSIFIER_LABEL": str(
+                self.advanced_config.get("cnn_classifier_label", "")
+            ),
+            "CNN_CLASSIFIER_BATCH_SIZE": int(
+                self.advanced_config.get("cnn_classifier_batch_size", 64)
+            ),
+            "CNN_CLASSIFIER_CROP_PADDING": float(
+                self.advanced_config.get("cnn_classifier_crop_padding", 0.1)
+            ),
+            "CNN_CLASSIFIER_MATCH_BONUS": float(
+                self.advanced_config.get("cnn_classifier_match_bonus", 20.0)
+            ),
+            "CNN_CLASSIFIER_MISMATCH_PENALTY": float(
+                self.advanced_config.get("cnn_classifier_mismatch_penalty", 50.0)
+            ),
+            "CNN_CLASSIFIER_WINDOW": int(
+                self.advanced_config.get("cnn_classifier_window", 10)
+            ),
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
             "TAG_MATCH_BONUS": self.spin_tag_match_bonus.value(),
@@ -14295,6 +14317,14 @@ class MainWindow(QMainWindow):
             "DENSITY_MIN_AREA_BODIES": self.spin_density_min_area_bodies.value(),
             "DENSITY_DOWNSAMPLE_FACTOR": self.spin_density_downsample_factor.value(),
         }
+
+        # Backward compat: map old color_tag keys to new cnn_classifier keys
+        if not p.get("CNN_CLASSIFIER_MODEL_PATH"):
+            p["CNN_CLASSIFIER_MODEL_PATH"] = p.get("COLOR_TAG_MODEL_PATH", "")
+        if not p.get("CNN_CLASSIFIER_CONFIDENCE"):
+            p["CNN_CLASSIFIER_CONFIDENCE"] = float(p.get("COLOR_TAG_CONFIDENCE", 0.5))
+
+        return p
 
     def load_config(self: object) -> object:
         """Manually load config from file dialog."""
@@ -15054,7 +15084,8 @@ class MainWindow(QMainWindow):
             self.chk_enable_individual_analysis.setChecked(bool(pipeline_enabled))
             method_map = {
                 "none_disabled": 0,
-                "color_tags_yolo": 1,
+                "color_tags_yolo": 1,  # backward compat for old saved configs
+                "cnn_classifier": 1,  # new canonical key
                 "apriltags": 2,
                 "custom": 0,
             }
@@ -15065,6 +15096,9 @@ class MainWindow(QMainWindow):
                 .replace("(", "")
                 .replace(")", "")
             )
+            # Backward compat: rename color_tags_yolo -> cnn_classifier on load
+            if identity_method == "color_tags_yolo":
+                identity_method = "cnn_classifier"
             self.combo_identity_method.setCurrentIndex(
                 method_map.get(identity_method, 0)
             )
