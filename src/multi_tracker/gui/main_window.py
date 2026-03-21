@@ -7155,8 +7155,6 @@ class MainWindow(QMainWindow):
 
     def _refresh_cnn_identity_model_combo(self) -> None:
         """Populate the CNN identity model combo from model_registry.json."""
-        import json
-
         registry_path = get_yolo_model_registry_path()
         try:
             with open(registry_path) as f:
@@ -7200,8 +7198,6 @@ class MainWindow(QMainWindow):
 
     def _update_cnn_identity_verification_panel(self, rel_path: str) -> None:
         """Populate the read-only verification labels from the registry entry."""
-        import json
-
         registry_path = get_yolo_model_registry_path()
         try:
             with open(registry_path) as f:
@@ -7222,11 +7218,6 @@ class MainWindow(QMainWindow):
 
     def _handle_add_new_cnn_identity_model(self) -> None:
         """Import a ClassKit-trained .pth or YOLO .pt model for CNN identity."""
-        import json
-        import shutil
-        from datetime import datetime
-        from pathlib import Path
-
         prev_data = self.combo_cnn_identity_model.currentData()
 
         src_path, _ = QFileDialog.getOpenFileName(
@@ -7267,6 +7258,7 @@ class MainWindow(QMainWindow):
                 meta["factor_names"] = []
                 meta["input_size"] = [224, 224]
                 meta["num_classes"] = len(meta["class_names"])
+                del yolo  # explicitly release; YOLO may hold GPU tensors
         except Exception as exc:
             QMessageBox.critical(
                 self,
