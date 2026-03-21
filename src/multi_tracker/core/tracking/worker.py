@@ -98,31 +98,34 @@ def get_density_region_flags(
 def _cnn_build_association_entries(
     cnn_identity_cache, cnn_track_history, frame_idx, n_det, N
 ):
-    """Return (det_classes, track_identities) for CNN identity assigner fields.
+    """Return (det_classes, track_identities, frame_preds) for CNN identity assigner fields.
 
-    Returns two lists ready to insert into *association_data*.  Either
-    argument may be None; in that case empty/None lists are returned and the
-    caller should skip the update.
+    Returns three values ready for use by the caller.  Either cache argument
+    may be None; in that case (None, None, None) is returned and the caller
+    should skip the update.  The returned *frame_preds* list can be passed
+    directly to _cnn_update_track_history to avoid a second cache.load() call.
     """
     if cnn_identity_cache is None or cnn_track_history is None:
-        return None, None
+        return None, None, None
     frame_preds = cnn_identity_cache.load(frame_idx)
     det_classes = [None] * n_det
     for pred in frame_preds:
         if pred.det_index < n_det:
             det_classes[pred.det_index] = pred.class_name
     track_identities = cnn_track_history.build_track_identity_list(N)
-    return det_classes, track_identities
+    return det_classes, track_identities, frame_preds
 
 
-def _cnn_update_track_history(
-    cnn_track_history, cnn_identity_cache, frame_idx, N, rows, cols
-):
-    """Record CNN predictions for the matched (track, detection) pairs."""
-    if cnn_track_history is None or cnn_identity_cache is None:
+def _cnn_update_track_history(cnn_track_history, frame_preds, frame_idx, N, rows, cols):
+    """Record CNN predictions for the matched (track, detection) pairs.
+
+    *frame_preds* should be the list already loaded by
+    _cnn_build_association_entries so that the cache is not read twice per
+    frame.
+    """
+    if cnn_track_history is None or frame_preds is None:
         return
     cnn_track_history.resize(N)
-    frame_preds = cnn_identity_cache.load(frame_idx)
     pred_by_det = {pred.det_index: pred for pred in frame_preds}
     for r, c in zip(rows, cols):
         pred = pred_by_det.get(c)
@@ -699,9 +702,7 @@ class TrackingWorker(QThread):
         """Derive the CNN identity cache path from the detection cache path."""
         if not self.detection_cache_path:
             return None
-        from pathlib import Path as _P
-
-        base = _P(self.detection_cache_path)
+        base = Path(self.detection_cache_path)
         return str(
             base.with_name(base.stem + f"_cnn_identity_{start_frame}_{end_frame}.npz")
         )
@@ -718,8 +719,6 @@ class TrackingWorker(QThread):
         - Emits progress_signal per frame
         - Returns cache path or None on failure
         """
-        import os
-
         from multi_tracker.core.identity.cnn_identity import (
             CNNIdentityBackend,
             CNNIdentityCache,
@@ -751,8 +750,6 @@ class TrackingWorker(QThread):
 
         total_frames = end_frame - start_frame
         self.progress_signal.emit(0, "CNN identity precompute: starting...")
-
-        import cv2
 
         resize_f = float(params.get("RESIZE_FACTOR", 1.0))
         scale = 1.0 / resize_f if resize_f > 0 else 1.0
@@ -2460,12 +2457,14 @@ class TrackingWorker(QThread):
                 }
 
                 # CNN identity data for assigner
-                _det_cnn_classes, _track_cnn_ids = _cnn_build_association_entries(
-                    cnn_identity_cache,
-                    cnn_track_history,
-                    actual_frame_index,
-                    len(meas),
-                    N,
+                _det_cnn_classes, _track_cnn_ids, _cnn_frame_preds = (
+                    _cnn_build_association_entries(
+                        cnn_identity_cache,
+                        cnn_track_history,
+                        actual_frame_index,
+                        len(meas),
+                        N,
+                    )
                 )
                 if _det_cnn_classes is not None:
                     association_data["detection_cnn_classes"] = _det_cnn_classes
@@ -2630,10 +2629,14 @@ class TrackingWorker(QThread):
                     for r, c in zip(rows, cols):
                         track_tag_history.record(r, actual_frame_index, _det_tag_ids[c])
 
+                if cnn_track_history is not None:
+                    for r in respawned_matches:
+                        cnn_track_history.clear_track(r)
+
                 # Update CNN track history after assignment
                 _cnn_update_track_history(
                     cnn_track_history,
-                    cnn_identity_cache,
+                    _cnn_frame_preds,
                     actual_frame_index,
                     N,
                     rows,
