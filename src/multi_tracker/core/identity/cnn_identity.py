@@ -54,23 +54,23 @@ _SENTINEL_NONE = "__NONE__"  # stored in npz when class_name is None
 class CNNIdentityCache:
     """Persistent .npz cache of per-frame CNN identity predictions.
 
-    Data is written lazily — call ``save()`` for each frame during precompute,
-    then ``load()`` during the tracking loop.
+    Data is accumulated in memory via ``save()`` and written to disk in a
+    single compressed write via ``flush()``.  Call ``load()`` during the
+    tracking loop to retrieve per-frame predictions.
     """
 
     def __init__(self, cache_path: str | Path) -> None:
         self._path = Path(cache_path)
-        # In-memory dict, flushed to disk on every save()
         self._data: dict[str, Any] = {}
         if self._path.exists():
             raw = np.load(str(self._path), allow_pickle=True)
             self._data = dict(raw)
 
     def exists(self) -> bool:
-        return self._path.exists()
+        return self._path.exists() or bool(self._data)
 
     def save(self, frame_idx: int, predictions: list[ClassPrediction]) -> None:
-        """Persist predictions for *frame_idx*. Overwrites existing data."""
+        """Update in-memory cache for *frame_idx*. Call flush() when done."""
         if not predictions:
             self._data[f"f{frame_idx}_det"] = np.array([], dtype=np.int32)
             self._data[f"f{frame_idx}_cls"] = np.array([], dtype=object)
@@ -88,8 +88,13 @@ class CNNIdentityCache:
             self._data[f"f{frame_idx}_det"] = det_arr
             self._data[f"f{frame_idx}_cls"] = cls_arr
             self._data[f"f{frame_idx}_conf"] = conf_arr
+
+    def flush(self) -> None:
+        """Write all in-memory predictions to disk."""
+        if not self._data:
+            return
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(str(self._path), **self._data)
+        np.savez_compressed(str(self._path), **self._data)
 
     def load(self, frame_idx: int) -> list[ClassPrediction]:
         """Return saved predictions for *frame_idx*, or [] if not found."""
@@ -282,11 +287,10 @@ class CNNIdentityBackend:
         input_name = self._model.get_inputs()[0].name
         return self._model.run(None, {input_name: batch_np.astype(np.float32)})[0]
 
-    def _infer_yolo(self, batch_np: np.ndarray) -> np.ndarray:
-        # YOLO classify expects list of numpy arrays or paths; use batch inference
-        results = self._model(list(batch_np), verbose=False)
+    def _infer_yolo(self, crops: list[np.ndarray]) -> np.ndarray:
+        # YOLO classify expects list of numpy arrays in HWC uint8 format
+        results = self._model(crops, verbose=False)
         probs = np.array([r.probs.data.cpu().numpy() for r in results])
-        # Return as logits (log of probs to be consistent with softmax path below)
         return np.log(np.clip(probs, 1e-9, 1.0))
 
     def _preprocess(self, crops: list[np.ndarray]) -> np.ndarray:
@@ -320,8 +324,17 @@ class CNNIdentityBackend:
         if not crops:
             return []
         self._ensure_loaded()
-        batch_np = self._preprocess(crops)
-        logits = self._infer_fn(batch_np)
+        # YOLO native inference does its own preprocessing — pass raw crops
+        if self._is_yolo and self._compute_runtime not in (
+            "onnx_cpu",
+            "onnx_cuda",
+            "onnx_rocm",
+            "tensorrt",
+        ):
+            logits = self._infer_fn(crops)
+        else:
+            batch_np = self._preprocess(crops)
+            logits = self._infer_fn(batch_np)
         exp = np.exp(logits - logits.max(axis=1, keepdims=True))
         probs = exp / exp.sum(axis=1, keepdims=True)
         results = []
@@ -343,4 +356,5 @@ class CNNIdentityBackend:
 
     def close(self) -> None:
         self._model = None
+        self._infer_fn = None
         self._loaded = False

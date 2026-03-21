@@ -71,7 +71,9 @@ def test_cnn_identity_cache_roundtrip(tmp_path):
         ClassPrediction(class_name=None, confidence=0.3, det_index=1),
     ]
     cache.save(5, preds)
-    loaded = cache.load(5)
+    cache.flush()  # required before loading from a fresh instance
+    loaded_cache = CNNIdentityCache(str(cache_path))
+    loaded = loaded_cache.load(5)
     assert len(loaded) == 2
     assert loaded[0].class_name == "tag_0"
     assert loaded[0].confidence == pytest.approx(0.9)
