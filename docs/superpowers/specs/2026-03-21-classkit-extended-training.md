@@ -100,6 +100,16 @@ class CustomCNNParams:
     input_height: int = 64           # used only when backbone="tinyclassifier"
 ```
 
+### `TrainingRunSpec` Field Addition
+
+Also in `training/contracts.py`, `TrainingRunSpec` must gain the following field alongside the existing `tiny_params: TinyHeadTailParams` field:
+
+```python
+custom_params: CustomCNNParams | None = None
+```
+
+This field is populated by the caller (`ClassKitTrainingWorker`) for any role that uses `_train_custom_classify()`.
+
 ### New `TrainingRole` Values
 
 Also in `training/contracts.py`:
@@ -189,12 +199,16 @@ param_groups = [
 
 When `trainable_layers == 0`, only the head group is passed (backbone parameters are frozen and excluded from the optimizer).
 
+### Multihead Architecture
+
+`_train_custom_classify()` handles multihead by being **called once per factor** by the caller (`ClassKitTrainingWorker`), consistent with the existing multihead pattern used by `_train_tiny_classify()`. Each call receives the per-factor dataset directory and produces one model per factor. The runner function itself does not loop over factors internally.
+
 ### `run_training()` Dispatch Updates
 
 | Role string | Action |
 |---|---|
 | `CLASSIFY_FLAT_CUSTOM` | Call `_train_custom_classify()` |
-| `CLASSIFY_MULTIHEAD_CUSTOM` | Call `_train_custom_classify()` (multihead variant) |
+| `CLASSIFY_MULTIHEAD_CUSTOM` | Call `_train_custom_classify()` (called once per factor by the worker) |
 | `CLASSIFY_FLAT_TINY` (alias) | Call `_train_custom_classify()` with `backbone="tinyclassifier"` |
 | `CLASSIFY_MULTIHEAD_TINY` (alias) | Call `_train_custom_classify()` with `backbone="tinyclassifier"` |
 
@@ -208,6 +222,13 @@ Add `_repo_dir_for_role()` entries for the new roles:
 |---|---|
 | `CLASSIFY_FLAT_CUSTOM` | `models/custom-classify/{scheme_name}/` |
 | `CLASSIFY_MULTIHEAD_CUSTOM` | `models/custom-classify/multihead/{scheme_name}/{factor_name}/` |
+
+`_task_usage_for_role()` also switches on `TrainingRole` and will raise `RuntimeError` for any unhandled role. It must be updated to handle the two new roles:
+
+| Role | Task usage string |
+|---|---|
+| `CLASSIFY_FLAT_CUSTOM` | `"classify"` |
+| `CLASSIFY_MULTIHEAD_CUSTOM` | `"classify"` |
 
 ---
 
@@ -275,6 +296,16 @@ When backbone is a torchvision model:
 
 - Wire `flat_custom` and `multihead_custom` into the `train_classifier()` role map.
 - Add inference dispatch for Custom CNN torchvision models: route `.pth` files with a torchvision `arch` field to the new `TorchvisionInferenceWorker`.
+
+**Checkpoint detection heuristic in `_load_checkpoint_from_path`:**
+
+The existing heuristic detects a TinyClassifier checkpoint by the presence of `model_state_dict`. Because torchvision `.pth` checkpoints also contain `model_state_dict`, this causes misrouting. The dispatch must check the `arch` field **first**:
+
+1. If `arch` is present in the checkpoint **and** `arch != "tinyclassifier"` → route to `TorchvisionInferenceWorker`.
+2. If `arch` is present **and** `arch == "tinyclassifier"` → route to the existing `TinyCNNInferenceWorker`.
+3. If `arch` is **absent** (legacy TinyClassifier checkpoint saved before this field was added) → fall back to the old `model_state_dict` heuristic to select `TinyCNNInferenceWorker`.
+
+This ordering ensures new torchvision checkpoints are never misrouted to the TinyClassifier loader.
 
 ---
 
