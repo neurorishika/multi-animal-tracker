@@ -85,8 +85,8 @@ New keys added to MAT config (`configs/default.json`):
 | `CNN_CLASSIFIER_LABEL` | str | `""` | Free-text label (display only, from registry) |
 | `CNN_CLASSIFIER_BATCH_SIZE` | int | `64` | Inference batch size |
 | `CNN_CLASSIFIER_CROP_PADDING` | float | `0.1` | OBB crop expansion factor |
-| `CNN_CLASSIFIER_MATCH_BONUS` | float | `0.15` | Assignment cost reduction on class match (fraction of max cost) |
-| `CNN_CLASSIFIER_MISMATCH_PENALTY` | float | `0.25` | Assignment cost increase on class conflict (fraction of max cost) |
+| `CNN_CLASSIFIER_MATCH_BONUS` | float | `20.0` | Assignment cost reduction on class match (absolute, same as `TAG_MATCH_BONUS`) |
+| `CNN_CLASSIFIER_MISMATCH_PENALTY` | float | `50.0` | Assignment cost increase on class conflict (absolute, same as `TAG_MISMATCH_PENALTY`) |
 | `CNN_CLASSIFIER_WINDOW` | int | `10` | Sliding window size for majority-vote identity accumulation |
 
 `COLOR_TAG_MODEL_PATH` is kept as a backward-compatibility alias for `CNN_CLASSIFIER_MODEL_PATH`.
@@ -110,6 +110,8 @@ The user controls runtime via MAT's global `compute_runtime` setting. No separat
 
 Triggered when identity method = "CNN Classifier" and an OBB detection cache exists. Runs before tracking, same lifecycle as AprilTag precompute.
 
+**Backward mode gate:** CNN identity precompute is **skipped in backward mode** (same condition as AprilTag: `not self.backward_mode`). In backward mode the forward-pass CNN identity cache (if present) is reused as-is. The planner must apply this gate explicitly in `worker.py`.
+
 ### New File: `core/identity/cnn_identity.py`
 
 Pure Python, no Qt dependency, fully testable in isolation.
@@ -126,8 +128,8 @@ class CNNIdentityConfig:
     label: str = ""
     batch_size: int = 64
     crop_padding: float = 0.1
-    match_bonus: float = 0.15
-    mismatch_penalty: float = 0.25
+    match_bonus: float = 20.0
+    mismatch_penalty: float = 50.0
     window: int = 10
 ```
 
@@ -193,11 +195,11 @@ Each track maintains a sliding window of `CNN_CLASSIFIER_WINDOW` recent confiden
 
 Applied in `core/assigners/hungarian.py` (or equivalent assigner). When both the track has an assigned identity AND the detection has a confident CNN prediction:
 
-- `predicted_class == track_identity` → subtract `CNN_CLASSIFIER_MATCH_BONUS × max_cost` from assignment cost (lower cost = preferred).
-- `predicted_class != track_identity` → add `CNN_CLASSIFIER_MISMATCH_PENALTY × max_cost` to assignment cost (higher cost = discouraged).
+- `predicted_class == track_identity` → `cost -= CNN_CLASSIFIER_MATCH_BONUS` (direct subtraction; lower cost = preferred).
+- `predicted_class != track_identity` → `cost += CNN_CLASSIFIER_MISMATCH_PENALTY` (direct addition; higher cost = discouraged).
 - Either side uncertain (track identity unassigned, or detection confidence below threshold) → no adjustment.
 
-This mirrors the AprilTag bonus/penalty mechanism exactly.
+This mirrors the AprilTag bonus/penalty mechanism exactly: absolute cost deltas, no `max_cost` multiplication.
 
 ---
 
@@ -205,9 +207,11 @@ This mirrors the AprilTag bonus/penalty mechanism exactly.
 
 ### Identity Method Dropdown
 
-Add "CNN Classifier" option alongside existing "None" and "AprilTags":
+**"Color Tags (YOLO)" is renamed to "CNN Classifier"** — it is not kept as a separate entry alongside the new option. The existing `color_tags_yolo` method key in `method_map` is updated to `cnn_classifier`. The `line_color_tag_model` UI widget is reused or replaced by the new CNN classifier model combo. Existing configs that store `color_tags_yolo` as the selected identity method are automatically migrated to `cnn_classifier` on load. `COLOR_TAG_MODEL_PATH` is retained as a backward-compatibility alias for `CNN_CLASSIFIER_MODEL_PATH` during config loading (already noted in the Config Parameters section).
 
-- When selected: show CNN classifier settings panel (model combo, confidence, match bonus, mismatch penalty, window size, crop padding).
+The dropdown therefore contains: "None", "AprilTags", "CNN Classifier" — the last entry covering all CNN-based classification workflows regardless of what visual feature was trained on.
+
+- When "CNN Classifier" is selected: show CNN classifier settings panel (model combo, confidence, match bonus, mismatch penalty, window size, crop padding).
 - When not selected: panel hidden.
 
 ### Settings Panel Layout
@@ -217,8 +221,8 @@ Add "CNN Classifier" option alongside existing "None" and "AprilTags":
 | Model combo | QComboBox | Existing models from registry + `"＋ Add New Model…"` sentinel |
 | Verification block | Read-only labels | Arch, num_classes, class names preview (truncated if >12), input_size |
 | Confidence threshold | QDoubleSpinBox | Range 0.0–1.0 |
-| Match bonus | QDoubleSpinBox | Range 0.0–1.0 |
-| Mismatch penalty | QDoubleSpinBox | Range 0.0–1.0 |
+| Match bonus | QDoubleSpinBox | Range 0.0–200.0, absolute cost units |
+| Mismatch penalty | QDoubleSpinBox | Range 0.0–200.0, absolute cost units |
 | Window size | QSpinBox | Range 1–100 |
 | Crop padding | QDoubleSpinBox | Range 0.0–1.0 |
 
@@ -251,8 +255,8 @@ Tracking starts with identity method = "CNN Classifier"
         → confident predictions appended to track sliding windows
         → majority vote → track identity assigned
         → Hungarian cost matrix adjusted:
-            match  → cost -= match_bonus × max_cost
-            clash  → cost += mismatch_penalty × max_cost
+            match  → cost -= match_bonus  (absolute, no max_cost multiplication)
+            clash  → cost += mismatch_penalty  (absolute, no max_cost multiplication)
             uncertain → no change
         → assignment proceeds as normal
 ```
