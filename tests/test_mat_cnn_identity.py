@@ -101,7 +101,9 @@ def test_cnn_identity_cache_empty_frame(tmp_path):
     cache_path = tmp_path / "cnn_identity.npz"
     cache = CNNIdentityCache(str(cache_path))
     cache.save(10, [])
-    loaded = cache.load(10)
+    cache.flush()
+    loaded_cache = CNNIdentityCache(str(cache_path))
+    loaded = loaded_cache.load(10)
     assert loaded == []
 
 
