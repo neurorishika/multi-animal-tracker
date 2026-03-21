@@ -841,7 +841,7 @@ def _train_custom_classify(
             patience_count = 0
             save_torchvision_checkpoint(
                 model=model,
-                arch=params.backbone,
+                backbone=params.backbone,
                 class_names=class_names,
                 factor_names=[],
                 input_size=(sz, sz),
