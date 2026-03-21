@@ -982,24 +982,65 @@ No unit tests for the worker precompute phase (consistent with the AprilTag prec
         total_frames = end_frame - start_frame
         self.progress_signal.emit(0, "CNN identity precompute: starting...")
 
+        # Mirrors the AprilTag precompute loop in _run_apriltag_precompute (lines ~700-815)
+        import cv2
+        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
+        scale = 1.0 / resize_f if resize_f > 0 else 1.0
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
         for frame_offset in range(total_frames):
             frame_idx = start_frame + frame_offset
 
-            # Extract OBB crops for this frame from detection cache
+            if self._stop_requested:
+                logger.info("CNN identity precompute cancelled.")
+                backend.close()
+                return None
+
+            # Read video frame
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                cache.save(frame_idx, [])
+                continue
+
+            # Get cached detections
             try:
-                frame_detections = detection_cache.get_frame(frame_idx)
-                crops = self._extract_obb_crops_for_precompute(
-                    frame_detections, cap, frame_idx, cfg.crop_padding
+                (_meas, _sizes, _shapes, _confs, obb_corners,
+                 detection_ids, _hh, _dm) = detection_cache.get_frame(frame_idx)
+            except Exception:
+                cache.save(frame_idx, [])
+                continue
+
+            if not obb_corners:
+                cache.save(frame_idx, [])
+                continue
+
+            # Scale OBB corners from detection resolution to original frame resolution
+            scaled_corners = [
+                np.asarray(c, dtype=np.float32) * scale for c in obb_corners
+            ]
+            det_idx_list = (
+                list(range(len(obb_corners)))
+                if not detection_ids
+                else [int(d) for d in detection_ids]
+            )
+
+            # Extract crops using the same infrastructure as the AprilTag precompute
+            crops = []
+            crop_det_indices = []
+            for _di, _corners in enumerate(scaled_corners):
+                _crop, _offset = self._extract_expanded_obb_crop(
+                    frame, _corners, cfg.crop_padding
                 )
-            except Exception as exc:
-                logger.debug("CNN precompute frame %d: crop extraction error: %s", frame_idx, exc)
-                crops = []
+                if _crop is None:
+                    continue
+                crops.append(_crop)
+                crop_det_indices.append(det_idx_list[_di])
 
             if crops:
                 predictions = backend.predict_batch(crops)
-                # Re-index det_index to match slot in frame_detections
-                for i, pred in enumerate(predictions):
-                    pred.det_index = i
+                # Re-assign det_index to match the detection slot
+                for pred, det_idx in zip(predictions, crop_det_indices):
+                    pred.det_index = det_idx
             else:
                 predictions = []
 
@@ -1149,13 +1190,17 @@ if p.get("IDENTITY_METHOD", "").lower() == "color_tags_yolo":
     p["IDENTITY_METHOD"] = "cnn_classifier"
 ```
 
-Also add the `COLOR_TAG_MODEL_PATH` → `CNN_CLASSIFIER_MODEL_PATH` alias in the same loading path:
+Also add both backward compat aliases in the same loading path:
 
 ```python
 # Backward compat: map old color_tag keys to new cnn_classifier keys
 if "COLOR_TAG_MODEL_PATH" in p and "CNN_CLASSIFIER_MODEL_PATH" not in p:
     p["CNN_CLASSIFIER_MODEL_PATH"] = p["COLOR_TAG_MODEL_PATH"]
+if "COLOR_TAG_CONFIDENCE" in p and "CNN_CLASSIFIER_CONFIDENCE" not in p:
+    p["CNN_CLASSIFIER_CONFIDENCE"] = p["COLOR_TAG_CONFIDENCE"]
 ```
+
+This prevents silent data loss when loading an old config that has `color_tag_confidence` saved but no `cnn_classifier_confidence` key.
 
 ### Step 4.3 — Show/hide CNN settings panel
 
@@ -1513,7 +1558,9 @@ Expected: all tests PASS.
 
 - [ ] Run:
 ```bash
-git add src/multi_tracker/gui/main_window.py src/multi_tracker/gui/dialogs.py
+git add src/multi_tracker/gui/main_window.py \
+        src/multi_tracker/gui/dialogs/cnn_identity_import_dialog.py \
+        src/multi_tracker/gui/dialogs/__init__.py
 git commit -m "$(cat <<'EOF'
 feat(mat): add CNN Classifier settings panel, import handler, registry integration
 
