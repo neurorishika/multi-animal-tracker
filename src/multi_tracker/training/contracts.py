@@ -19,6 +19,8 @@ class TrainingRole(str, Enum):
     CLASSIFY_FLAT_TINY = "classify_flat_tiny"
     CLASSIFY_MULTIHEAD_YOLO = "classify_multihead_yolo"
     CLASSIFY_MULTIHEAD_TINY = "classify_multihead_tiny"
+    CLASSIFY_FLAT_CUSTOM = "classify_flat_custom"
+    CLASSIFY_MULTIHEAD_CUSTOM = "classify_multihead_custom"
 
 
 @dataclass(slots=True)
@@ -77,6 +79,36 @@ class TinyHeadTailParams:
 
 
 @dataclass(slots=True)
+class CustomCNNParams:
+    """Hyperparameters for the unified Custom CNN training mode.
+
+    Covers both TinyClassifier (backbone='tinyclassifier') and pretrained
+    torchvision backbones (ConvNeXt, EfficientNet, ResNet, ViT).
+    TinyClassifier-specific fields (hidden_layers, hidden_dim, dropout,
+    input_width, input_height) are ignored when backbone != 'tinyclassifier'.
+    """
+
+    backbone: str = "tinyclassifier"
+    trainable_layers: int = 0  # 0=frozen, -1=all, N=last N layer groups
+    backbone_lr_scale: float = 0.1  # LR multiplier for unfrozen backbone layers
+    input_size: int = 224  # Resize target (square) for torchvision backbones
+    epochs: int = 50
+    batch: int = 32
+    lr: float = 1e-3
+    weight_decay: float = 1e-2
+    patience: int = 10
+    label_smoothing: float = 0.0
+    class_rebalance_mode: str = "none"  # none, weighted_loss, weighted_sampler, both
+    class_rebalance_power: float = 1.0
+    # TinyClassifier-specific (ignored for torchvision backbones)
+    hidden_layers: int = 1
+    hidden_dim: int = 64
+    dropout: float = 0.2
+    input_width: int = 128
+    input_height: int = 64
+
+
+@dataclass(slots=True)
 class AugmentationProfile:
     """Augmentation settings for training."""
 
@@ -122,6 +154,7 @@ class TrainingRunSpec:
     )
     publish_policy: PublishPolicy = field(default_factory=PublishPolicy)
     tiny_params: TinyHeadTailParams = field(default_factory=TinyHeadTailParams)
+    custom_params: CustomCNNParams | None = None
 
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
