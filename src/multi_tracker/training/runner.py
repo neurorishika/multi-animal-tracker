@@ -482,6 +482,200 @@ def _train_tiny_classify(
     }
 
 
+def _train_custom_classify(
+    spec: "TrainingRunSpec",
+    run_dir: Path,
+    log_cb=None,
+    progress_cb=None,
+    should_cancel=None,
+) -> dict:
+    """Train a Custom CNN classifier (TinyClassifier or torchvision backbone).
+
+    If backbone == 'tinyclassifier', delegates entirely to _train_tiny_classify().
+    Otherwise trains a pretrained torchvision model with discriminative LR.
+    """
+    from .contracts import CustomCNNParams
+    from .torchvision_model import (
+        build_torchvision_classifier,
+        export_torchvision_to_onnx,
+        save_torchvision_checkpoint,
+    )
+
+    params: CustomCNNParams = spec.custom_params or CustomCNNParams()
+
+    if params.backbone == "tinyclassifier":
+        return _train_tiny_classify(spec, run_dir, log_cb, progress_cb, should_cancel)
+
+    # --- Torchvision training path ---
+    import json
+
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader
+    from torchvision import datasets, transforms
+
+    run_dir = Path(run_dir)
+    weights_dir = run_dir / "weights"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+
+    def _log(msg: str) -> None:
+        if log_cb:
+            log_cb(msg)
+
+    # Build dataset
+    dataset_dir = Path(spec.derived_dataset_dir)
+    train_dir = dataset_dir / "train"
+    val_dir = dataset_dir / "val"
+
+    mean = [0.485, 0.456, 0.406]
+    std = [0.229, 0.224, 0.225]
+    sz = params.input_size
+
+    train_tf = transforms.Compose(
+        [
+            transforms.Resize((sz, sz)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std),
+        ]
+    )
+    val_tf = transforms.Compose(
+        [
+            transforms.Resize((sz, sz)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean, std),
+        ]
+    )
+
+    train_ds = datasets.ImageFolder(str(train_dir), transform=train_tf)
+    val_ds = datasets.ImageFolder(str(val_dir), transform=val_tf)
+    class_names = train_ds.classes
+
+    train_loader = DataLoader(
+        train_ds, batch_size=params.batch, shuffle=True, num_workers=2, pin_memory=True
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=params.batch, shuffle=False, num_workers=2, pin_memory=True
+    )
+
+    # _pick_torch_device is defined in runner.py and handles "auto", MPS, CUDA fallback
+    device = _pick_torch_device(spec.device)
+    model = build_torchvision_classifier(
+        params.backbone, len(class_names), params.trainable_layers
+    )
+    model.to(device)
+
+    # Discriminative LR: backbone params at reduced LR, head at full LR
+    head_params, backbone_params = [], []
+    head_names = {"classifier", "fc", "heads"}
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if any(name.startswith(h) for h in head_names):
+            head_params.append(p)
+        else:
+            backbone_params.append(p)
+
+    param_groups = [{"params": head_params, "lr": params.lr}]
+    if backbone_params:
+        param_groups.append(
+            {"params": backbone_params, "lr": params.lr * params.backbone_lr_scale}
+        )
+
+    optimizer = torch.optim.AdamW(param_groups, weight_decay=params.weight_decay)
+    criterion = nn.CrossEntropyLoss(label_smoothing=params.label_smoothing)
+
+    best_val_acc = 0.0
+    patience_count = 0
+    history: dict = {"train_loss": [], "val_acc": []}
+    best_ckpt_path = (
+        weights_dir / f"classkit_custom_{params.backbone}_{len(class_names)}cls.pth"
+    )
+
+    for epoch in range(params.epochs):
+        if should_cancel and should_cancel():
+            _log("Training canceled.")
+            break
+
+        # Training
+        model.train()
+        total_loss = 0.0
+        for batch_x, batch_y in train_loader:
+            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            optimizer.zero_grad()
+            loss = criterion(model(batch_x), batch_y)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        avg_loss = total_loss / max(len(train_loader), 1)
+        history["train_loss"].append(avg_loss)
+
+        # Validation
+        model.eval()
+        correct = total = 0
+        with torch.no_grad():
+            for batch_x, batch_y in val_loader:
+                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+                preds = model(batch_x).argmax(dim=1)
+                correct += (preds == batch_y).sum().item()
+                total += len(batch_y)
+        val_acc = correct / max(total, 1)
+        history["val_acc"].append(val_acc)
+
+        _log(
+            f"Epoch {epoch + 1}/{params.epochs}  loss={avg_loss:.4f}  val_acc={val_acc:.4f}"
+        )
+        if progress_cb:
+            progress_cb(epoch + 1, params.epochs)
+
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            patience_count = 0
+            save_torchvision_checkpoint(
+                model=model,
+                backbone=params.backbone,
+                class_names=class_names,
+                factor_names=[],
+                input_size=(sz, sz),
+                best_val_acc=best_val_acc,
+                history=history,
+                trainable_layers=params.trainable_layers,
+                backbone_lr_scale=params.backbone_lr_scale,
+                path=best_ckpt_path,
+            )
+        else:
+            patience_count += 1
+            if patience_count >= params.patience:
+                _log(f"Early stopping at epoch {epoch + 1}.")
+                break
+
+    # ONNX export
+    from .torchvision_model import load_torchvision_classifier
+
+    best_model, best_ckpt = load_torchvision_classifier(
+        str(best_ckpt_path), device="cpu"
+    )
+    onnx_path = best_ckpt_path.with_suffix(".onnx")
+    export_torchvision_to_onnx(best_model, best_ckpt, onnx_path)
+
+    # Metrics
+    metrics_path = run_dir / "custom_metrics.json"
+    metrics_path.write_text(
+        json.dumps({"best_val_acc": best_val_acc, "history": history}, indent=2)
+    )
+    _log(f"Training complete. Best val acc: {best_val_acc:.4f}")
+
+    return {
+        "success": True,
+        "artifact_path": str(best_ckpt_path),
+        "onnx_path": str(onnx_path),
+        "metrics_path": str(metrics_path),
+        "best_val_acc": best_val_acc,
+        "command": ["custom_classify_inprocess"],
+        "task": "custom_classify",
+    }
+
+
 def run_training(
     spec: TrainingRunSpec,
     run_dir: str | Path,
@@ -496,10 +690,22 @@ def run_training(
     run_dir.mkdir(parents=True, exist_ok=True)
 
     if spec.role in (
+        TrainingRole.CLASSIFY_FLAT_CUSTOM,
+        TrainingRole.CLASSIFY_MULTIHEAD_CUSTOM,
         TrainingRole.CLASSIFY_FLAT_TINY,
         TrainingRole.CLASSIFY_MULTIHEAD_TINY,
     ):
-        return _train_tiny_classify(
+        # Ensure custom_params is populated; alias roles (flat_tiny, multihead_tiny)
+        # inject tinyclassifier default so _train_custom_classify can dispatch correctly.
+        import dataclasses as _dc
+
+        from .contracts import CustomCNNParams
+
+        if spec.custom_params is None:
+            spec = _dc.replace(
+                spec, custom_params=CustomCNNParams(backbone="tinyclassifier")
+            )
+        return _train_custom_classify(
             spec,
             run_dir,
             log_cb=log_cb,

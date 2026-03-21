@@ -356,3 +356,59 @@ def test_build_torchvision_classifier_tinyclassifier():
     x = torch.randn(2, 3, params.input_height, params.input_width)
     out = model(x)
     assert out.shape == (2, 3)
+
+
+# ---------------------------------------------------------------------------
+# Task 3: runner dispatch tests
+# ---------------------------------------------------------------------------
+from unittest.mock import patch
+
+
+def test_runner_flat_tiny_alias_dispatches_to_custom_classify():
+    """flat_tiny role should call _train_custom_classify with backbone='tinyclassifier'."""
+    from multi_tracker.training import runner
+    from multi_tracker.training.contracts import (
+        CustomCNNParams,
+        TrainingRole,
+        TrainingRunSpec,
+    )
+
+    spec = TrainingRunSpec(
+        role=TrainingRole.CLASSIFY_FLAT_TINY,
+        source_datasets=[],
+        derived_dataset_dir="/tmp/ds",
+        base_model="",
+        hyperparams=None,
+        custom_params=CustomCNNParams(backbone="tinyclassifier"),
+    )
+    with patch.object(
+        runner, "_train_custom_classify", return_value={"success": True}
+    ) as mock_fn:
+        runner.run_training(spec, "/tmp/run")
+        mock_fn.assert_called_once()
+        call_spec = mock_fn.call_args[0][0]
+        assert call_spec.custom_params.backbone == "tinyclassifier"
+
+
+def test_runner_flat_custom_dispatches_to_custom_classify():
+    """flat_custom role should call _train_custom_classify."""
+    from multi_tracker.training import runner
+    from multi_tracker.training.contracts import (
+        CustomCNNParams,
+        TrainingRole,
+        TrainingRunSpec,
+    )
+
+    spec = TrainingRunSpec(
+        role=TrainingRole.CLASSIFY_FLAT_CUSTOM,
+        source_datasets=[],
+        derived_dataset_dir="/tmp/ds",
+        base_model="",
+        hyperparams=None,
+        custom_params=CustomCNNParams(backbone="resnet18"),
+    )
+    with patch.object(
+        runner, "_train_custom_classify", return_value={"success": True}
+    ) as mock_fn:
+        runner.run_training(spec, "/tmp/run")
+        mock_fn.assert_called_once()
