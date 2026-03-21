@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import numpy as np
+import torch
+
 
 def test_custom_cnn_params_defaults():
     from multi_tracker.training.contracts import CustomCNNParams
@@ -60,9 +63,6 @@ def test_training_run_spec_has_custom_params():
     )
     assert spec2.custom_params.backbone == "convnext_tiny"
 
-
-import numpy as np
-import torch
 
 # ---------------------------------------------------------------------------
 # torchvision_model tests
@@ -218,8 +218,6 @@ def test_checkpoint_format_required_keys(tmp_path):
         backbone_lr_scale=0.1,
         path=ckpt_path,
     )
-    import torch
-
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
     required = {
         "arch",
@@ -290,8 +288,6 @@ def test_export_torchvision_to_onnx_smoke(tmp_path):
         backbone_lr_scale=0.1,
         path=ckpt_path,
     )
-    import torch
-
     ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
     onnx_path = tmp_path / "model.onnx"
     export_torchvision_to_onnx(model, ckpt, onnx_path)

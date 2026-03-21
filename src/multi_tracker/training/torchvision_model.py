@@ -45,10 +45,7 @@ def _load_pretrained(backbone: str) -> nn.Module:
     weights_map = {
         "convnext_tiny": tvm.ConvNeXt_Tiny_Weights.IMAGENET1K_V1,
         "convnext_small": tvm.ConvNeXt_Small_Weights.IMAGENET1K_V1,
-        "convnext_base": tvm.ConvNeXt_Base_Weights.IMAGENET1K_V1,
         "efficientnet_b0": tvm.EfficientNet_B0_Weights.IMAGENET1K_V1,
-        "efficientnet_b3": tvm.EfficientNet_B3_Weights.IMAGENET1K_V1,
-        "efficientnet_b7": tvm.EfficientNet_B7_Weights.IMAGENET1K_V1,
         "resnet18": tvm.ResNet18_Weights.IMAGENET1K_V1,
         "resnet50": tvm.ResNet50_Weights.IMAGENET1K_V1,
         "vit_b_16": tvm.ViT_B_16_Weights.IMAGENET1K_V1,
@@ -152,7 +149,8 @@ def build_torchvision_classifier(
     Args:
         backbone: One of the keys in TORCHVISION_BACKBONES, or "tinyclassifier".
         num_classes: Number of output classes.
-        trainable_layers: 0=frozen, -1=all, N=last N groups unfrozen.
+        trainable_layers: Backbone freezing mode: 0=frozen, -1=all trainable, N=last N groups.
+            Ignored when backbone='tinyclassifier' (always fully trainable).
         hidden_layers: Number of hidden MLP layers (TinyClassifier only).
         hidden_dim: Hidden MLP dimension (TinyClassifier only).
         dropout: Dropout rate for the MLP head (TinyClassifier only).
@@ -162,6 +160,10 @@ def build_torchvision_classifier(
     Returns:
         nn.Module in train mode with head replaced and freezing applied.
     """
+    if backbone != "tinyclassifier" and backbone not in TORCHVISION_BACKBONES:
+        raise ValueError(
+            f"Unknown backbone {backbone!r}. Must be one of {TORCHVISION_BACKBONES}"
+        )
     if backbone == "tinyclassifier":
         from multi_tracker.training.tiny_model import _build_tiny_classifier_class
 
@@ -218,6 +220,9 @@ def load_torchvision_classifier(
     Returns:
         (model_in_eval_mode_on_device, full_ckpt_dict)
     """
+    # weights_only=False required because checkpoint contains non-tensor Python objects
+    # (class_names list, history dict). Safe here since checkpoints are produced by
+    # this codebase. Migrate to weights_only=True + SafeTensors when PyTorch enforces it.
     ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
     arch = ckpt["arch"]
     num_classes = ckpt["num_classes"]
