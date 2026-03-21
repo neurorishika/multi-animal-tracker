@@ -7227,9 +7227,7 @@ class MainWindow(QMainWindow):
         from datetime import datetime
         from pathlib import Path
 
-        self.combo_cnn_identity_model.blockSignals(True)
         prev_data = self.combo_cnn_identity_model.currentData()
-        self.combo_cnn_identity_model.blockSignals(False)
 
         src_path, _ = QFileDialog.getOpenFileName(
             self,
@@ -7296,7 +7294,8 @@ class MainWindow(QMainWindow):
         os.makedirs(dest_dir, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         ext = Path(src_path).suffix
-        filename = f"{timestamp}_{meta['arch']}_{species}_{classification_label}{ext}"
+        label_part = f"_{classification_label}" if classification_label else ""
+        filename = f"{timestamp}_{meta['arch']}_{species}{label_part}{ext}"
         dest_path = os.path.join(dest_dir, filename)
         shutil.copy2(src_path, dest_path)
 
