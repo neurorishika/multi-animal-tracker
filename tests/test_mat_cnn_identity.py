@@ -92,6 +92,7 @@ def test_cnn_identity_cache_exists(tmp_path):
     cache = CNNIdentityCache(str(cache_path))
     assert not cache.exists()
     cache.save(0, [ClassPrediction(class_name="tag_0", confidence=0.9, det_index=0)])
+    cache.flush()
     assert cache.exists()
 
 

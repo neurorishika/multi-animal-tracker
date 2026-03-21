@@ -68,7 +68,7 @@ class CNNIdentityCache:
             self._data = dict(raw)
 
     def exists(self) -> bool:
-        return self._path.exists() or bool(self._data)
+        return self._path.exists()
 
     def save(self, frame_idx: int, predictions: list[ClassPrediction]) -> None:
         """Update in-memory cache for *frame_idx*. Call flush() when done."""
@@ -396,7 +396,7 @@ class TrackCNNHistory:
         # Trim entries older than window
         cutoff = frame_idx - self._window
         hist = self._history[track_idx]
-        while hist and hist[0][0] < cutoff:
+        while hist and hist[0][0] <= cutoff:
             hist.pop(0)
 
     def majority_class(self, track_idx: int) -> str | None:
