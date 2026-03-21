@@ -1069,15 +1069,24 @@ No unit tests for the worker precompute phase (consistent with the AprilTag prec
 After the entire AprilTag precompute block (lines 1651–1671), add the CNN identity precompute:
 
 ```python
-        # CNN Identity precompute
+        # CNN Identity precompute — mirrors AprilTag precompute pattern (lines 1651-1671)
         cnn_identity_cache_path = None
         cnn_identity_precompute_enabled = self._should_precompute_cnn_identity_data(
             p, detection_method
         )
         if cnn_identity_precompute_enabled and detection_cache is not None and use_cached_detections:
-            cnn_identity_cache_path = self._run_cnn_identity_precompute(
-                detection_cache, p, cap, start_frame, end_frame
-            )
+            try:
+                cnn_identity_cache_path = self._run_cnn_identity_precompute(
+                    detection_cache, p, cap, start_frame, end_frame
+                )
+            except Exception as _cnn_pre_exc:
+                logger.warning(
+                    "CNN identity precompute failed (tracking continues without it): %s",
+                    _cnn_pre_exc,
+                )
+                self.warning_signal.emit(
+                    f"CNN identity precompute failed: {_cnn_pre_exc}"
+                )
 ```
 
 - [ ] After the tag observation cache loading block (line ~1685), open the CNN identity cache for reading:
