@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ...training.torchvision_model import BACKBONE_DISPLAY_NAMES, TORCHVISION_BACKBONES
 from ..cluster.metalfaiss_backend import probe_ann_backend
 
 
@@ -1887,11 +1888,6 @@ class ClassKitTrainingDialog(QDialog):
         custom_form = QFormLayout(self.custom_tab)
         custom_form.setSpacing(8)
 
-        from ...training.torchvision_model import (
-            BACKBONE_DISPLAY_NAMES,
-            TORCHVISION_BACKBONES,
-        )
-
         self._custom_backbone_combo = QComboBox()
         # Populate from the canonical TORCHVISION_BACKBONES list
         # (tinyclassifier is first; torchvision backbones follow)
@@ -1992,24 +1988,10 @@ class ClassKitTrainingDialog(QDialog):
         self._custom_patience_spin.setValue(10)
         custom_form.addRow("Patience:", self._custom_patience_spin)
 
-        self._custom_rebalance_combo = QComboBox()
-        self._custom_rebalance_combo.addItems(
-            ["none", "weighted_loss", "weighted_sampler", "both"]
-        )
-        custom_form.addRow("Class rebalance:", self._custom_rebalance_combo)
-
-        self._custom_label_smoothing_spin = QDoubleSpinBox()
-        self._custom_label_smoothing_spin.setRange(0.0, 0.5)
-        self._custom_label_smoothing_spin.setSingleStep(0.01)
-        self._custom_label_smoothing_spin.setValue(0.0)
-        custom_form.addRow("Label smoothing:", self._custom_label_smoothing_spin)
-
         self._custom_tab_idx = self.tabs.addTab(self.custom_tab, "Custom CNN")
 
         # Connect backbone change to show/hide conditional controls
-        self._custom_backbone_combo.currentIndexChanged.connect(
-            self._on_custom_backbone_changed
-        )
+        self._custom_backbone_combo.activated.connect(self._on_custom_backbone_changed)
         self._custom_trainable_layers_spin.valueChanged.connect(
             self._on_custom_backbone_changed
         )
