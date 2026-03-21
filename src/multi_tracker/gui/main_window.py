@@ -14233,7 +14233,7 @@ class MainWindow(QMainWindow):
             "IDENTITY_METHOD": identity_method,
             "COLOR_TAG_MODEL_PATH": self.line_color_tag_model.text(),
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
-            "CNN_CLASSIFIER_MODEL_PATH": "",  # wired in Task 5
+            "CNN_CLASSIFIER_MODEL_PATH": "",  # TODO(Task 5): replace "" with combo widget value; backward compat copy below fires in the meantime
             "CNN_CLASSIFIER_CONFIDENCE": float(
                 self.advanced_config.get("cnn_classifier_confidence", 0.5)
             ),
@@ -14321,7 +14321,7 @@ class MainWindow(QMainWindow):
         # Backward compat: map old color_tag keys to new cnn_classifier keys
         if not p.get("CNN_CLASSIFIER_MODEL_PATH"):
             p["CNN_CLASSIFIER_MODEL_PATH"] = p.get("COLOR_TAG_MODEL_PATH", "")
-        if not p.get("CNN_CLASSIFIER_CONFIDENCE"):
+        if p.get("CNN_CLASSIFIER_CONFIDENCE") is None:
             p["CNN_CLASSIFIER_CONFIDENCE"] = float(p.get("COLOR_TAG_CONFIDENCE", 0.5))
 
         return p
