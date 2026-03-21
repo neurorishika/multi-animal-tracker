@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import dataclasses
 import random
 import re
 import shutil
@@ -11,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from .contracts import TrainingRole, TrainingRunSpec
+from .contracts import CustomCNNParams, TrainingRole, TrainingRunSpec
 
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[int, int], None]
@@ -494,10 +495,10 @@ def _train_custom_classify(
     If backbone == 'tinyclassifier', delegates entirely to _train_tiny_classify().
     Otherwise trains a pretrained torchvision model with discriminative LR.
     """
-    from .contracts import CustomCNNParams
     from .torchvision_model import (
         build_torchvision_classifier,
         export_torchvision_to_onnx,
+        load_torchvision_classifier,
         save_torchvision_checkpoint,
     )
 
@@ -649,9 +650,23 @@ def _train_custom_classify(
                 _log(f"Early stopping at epoch {epoch + 1}.")
                 break
 
-    # ONNX export
-    from .torchvision_model import load_torchvision_classifier
+    if not best_ckpt_path.exists():
+        _log("No checkpoint saved (training canceled or val acc never improved).")
+        metrics_path = run_dir / "custom_metrics.json"
+        metrics_path.write_text(
+            json.dumps({"best_val_acc": best_val_acc, "history": history}, indent=2)
+        )
+        return {
+            "success": False,
+            "artifact_path": "",
+            "onnx_path": "",
+            "metrics_path": str(metrics_path),
+            "best_val_acc": best_val_acc,
+            "command": ["custom_classify_inprocess"],
+            "task": "custom_classify",
+        }
 
+    # ONNX export
     best_model, best_ckpt = load_torchvision_classifier(
         str(best_ckpt_path), device="cpu"
     )
@@ -697,12 +712,8 @@ def run_training(
     ):
         # Ensure custom_params is populated; alias roles (flat_tiny, multihead_tiny)
         # inject tinyclassifier default so _train_custom_classify can dispatch correctly.
-        import dataclasses as _dc
-
-        from .contracts import CustomCNNParams
-
         if spec.custom_params is None:
-            spec = _dc.replace(
+            spec = dataclasses.replace(
                 spec, custom_params=CustomCNNParams(backbone="tinyclassifier")
             )
         return _train_custom_classify(
