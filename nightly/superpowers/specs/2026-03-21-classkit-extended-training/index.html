@@ -1,0 +1,2490 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="User and developer documentation for Multi-Animal-Tracker and PoseKit">
+      
+      
+      
+        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/nightly/superpowers/specs/2026-03-21-classkit-extended-training/">
+      
+      
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.43">
+    
+    
+      
+        <title>ClassKit Extended Training — Custom CNN Models - Multi-Animal-Tracker Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.0253249f.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#classkit-extended-training-custom-cnn-models" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Multi-Animal-Tracker Docs" class="md-header__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Multi-Animal-Tracker Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              ClassKit Extended Training — Custom CNN Models
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../.." class="md-tabs__link">
+        
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../user-guide/overview/" class="md-tabs__link">
+          
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../developer-guide/architecture/" class="md-tabs__link">
+          
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../reference/api-index/" class="md-tabs__link">
+          
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Multi-Animal-Tracker Docs" class="md-nav__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Multi-Animal-Tracker Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/environments/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Environments and Makefile
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/integrations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Integrations
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quickstart-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quickstart-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/platforms/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Platform Notes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    User Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            User Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/overview/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Overview
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/workflow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    End-to-End Workflow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/detection-modes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Detection Modes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/tracking-and-merging/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking and Merging
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/post-processing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Post-processing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/configuration-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/compute-runtimes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Compute Runtimes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/outputs-and-csv-schema/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Outputs and CSV Schema
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/dataset-generation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Dataset Generation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/individual-analysis/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Individual Analysis
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/posekit-labeler/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    PoseKit Labeler
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/troubleshooting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Developer Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Developer Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/architecture/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Architecture
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/module-map/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Module Map
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/data-flow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Flow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Algorithm Deep Dive
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/gpu-backends/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    GPU Backends
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/runtime-integration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Runtime Integration
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CUDA Dependency Updates
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/performance-tuning/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Tuning
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/confidence-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Confidence Metrics
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/extending-detection/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Detection
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/extending-identity/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Identity
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/code-health/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Code Health & Auditing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Reference
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-index/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API Index
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/ui-components-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/ui-components-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-app/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (App)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-core/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Core)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-data/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Data)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-gui/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (GUI)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-utils/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Utils)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/cli-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CLI Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/technical-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Technical Reference (LaTeX)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/changelog/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Changelog
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/faq/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FAQ
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Non-Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#supported-backbones" class="md-nav__link">
+    <span class="md-ellipsis">
+      Supported Backbones
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parameter-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parameter Design
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Parameter Design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#trainable_layers-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      trainable_layers Semantics
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backbone_lr_scale" class="md-nav__link">
+    <span class="md-ellipsis">
+      backbone_lr_scale
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#new-dataclass-customcnnparams" class="md-nav__link">
+    <span class="md-ellipsis">
+      New Dataclass: CustomCNNParams
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="New Dataclass: CustomCNNParams">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#trainingrunspec-field-addition" class="md-nav__link">
+    <span class="md-ellipsis">
+      TrainingRunSpec Field Addition
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#new-trainingrole-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      New TrainingRole Values
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#new-file-trainingtorchvision_modelpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      New File: training/torchvision_model.py
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="New File: training/torchvision_model.py">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#public-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      Public API
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#freezing-logic-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      Freezing Logic Details
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#unified-checkpoint-format-pth" class="md-nav__link">
+    <span class="md-ellipsis">
+      Unified Checkpoint Format (.pth)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#trainingrunnerpy-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      training/runner.py Changes
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="training/runner.py Changes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new-function-_train_custom_classify" class="md-nav__link">
+    <span class="md-ellipsis">
+      New Function: _train_custom_classify()
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#discriminative-lr-group-construction" class="md-nav__link">
+    <span class="md-ellipsis">
+      Discriminative LR Group Construction
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multihead-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Multihead Architecture
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run_training-dispatch-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      run_training() Dispatch Updates
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#trainingmodel_publishpy-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      training/model_publish.py Changes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#classkitpresetspy-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      classkit/presets.py Changes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#classkit-gui-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      ClassKit GUI Changes
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="ClassKit GUI Changes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#classkitguidialogspy-classkittrainingdialog" class="md-nav__link">
+    <span class="md-ellipsis">
+      classkit/gui/dialogs.py — ClassKitTrainingDialog
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#classkitguimainwindowpy-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      classkit/gui/mainwindow.py Changes
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#classkitjobstask_workerspy-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      classkit/jobs/task_workers.py Changes
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="classkit/jobs/task_workers.py Changes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new-torchvisioninferenceworkerqrunnable" class="md-nav__link">
+    <span class="md-ellipsis">
+      New: TorchvisionInferenceWorker(QRunnable)
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Testing">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#new-test-file-teststest_classkit_extended_trainingpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      New Test File: tests/test_classkit_extended_training.py
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#files-changed-created" class="md-nav__link">
+    <span class="md-ellipsis">
+      Files Changed / Created
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#backward-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Backward Compatibility
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-questions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Open Questions
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/superpowers/specs/2026-03-21-classkit-extended-training.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="classkit-extended-training-custom-cnn-models">ClassKit Extended Training — Custom CNN Models<a class="headerlink" href="#classkit-extended-training-custom-cnn-models" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-03-21
+<strong>Status:</strong> Draft
+<strong>Area:</strong> ClassKit / Training</p>
+<hr />
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>This specification describes adding a unified "Custom CNN" training mode to ClassKit that encompasses both the existing TinyClassifier and new pretrained torchvision backbones (ConvNeXt, EfficientNet, ResNet, ViT). Users gain control over freezing and unfreezing backbone layers to support linear-probe and full fine-tuning workflows, all through a single UI surface.</p>
+<p>Two new training mode strings are introduced: <code>flat_custom</code> and <code>multihead_custom</code>. The existing <code>flat_tiny</code> / <code>multihead_tiny</code> mode strings remain valid and are treated as aliases for <code>flat_custom</code> / <code>multihead_custom</code> with <code>backbone="tinyclassifier"</code> to preserve backward compatibility.</p>
+<hr />
+<h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Allow users to train ConvNeXt, EfficientNet, ResNet, ViT, or TinyClassifier from ClassKit with a single unified UI surface.</li>
+<li>Support frozen backbone (linear probe) and full fine-tuning via a <code>trainable_layers</code> parameter.</li>
+<li>Produce a unified <code>.pth</code> checkpoint format that MAT can load for any supported backbone.</li>
+<li>Provide ONNX export for all backbone types for runtime flexibility.</li>
+<li>Fit into the existing training mode / preset / worker / dialog pattern without new standalone apps.</li>
+</ul>
+<h2 id="non-goals">Non-Goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li>No <code>timm</code> dependency — torchvision only.</li>
+<li>No new standalone application entry point.</li>
+<li>No changes to YOLO-classify training modes.</li>
+</ul>
+<hr />
+<h2 id="supported-backbones">Supported Backbones<a class="headerlink" href="#supported-backbones" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Architecture</th>
+<th>Pretrained</th>
+<th>Approx. Params</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tinyclassifier</code></td>
+<td>4-conv scratch CNN</td>
+<td>No</td>
+<td>2–5M</td>
+</tr>
+<tr>
+<td><code>convnext_tiny</code></td>
+<td>ConvNeXt-T</td>
+<td>ImageNet</td>
+<td>28M</td>
+</tr>
+<tr>
+<td><code>convnext_small</code></td>
+<td>ConvNeXt-S</td>
+<td>ImageNet</td>
+<td>50M</td>
+</tr>
+<tr>
+<td><code>convnext_base</code></td>
+<td>ConvNeXt-B</td>
+<td>ImageNet</td>
+<td>89M</td>
+</tr>
+<tr>
+<td><code>efficientnet_b0</code></td>
+<td>EfficientNet-B0</td>
+<td>ImageNet</td>
+<td>5M</td>
+</tr>
+<tr>
+<td><code>efficientnet_b3</code></td>
+<td>EfficientNet-B3</td>
+<td>ImageNet</td>
+<td>12M</td>
+</tr>
+<tr>
+<td><code>efficientnet_b7</code></td>
+<td>EfficientNet-B7</td>
+<td>ImageNet</td>
+<td>66M</td>
+</tr>
+<tr>
+<td><code>resnet18</code></td>
+<td>ResNet-18</td>
+<td>ImageNet</td>
+<td>11M</td>
+</tr>
+<tr>
+<td><code>resnet50</code></td>
+<td>ResNet-50</td>
+<td>ImageNet</td>
+<td>25M</td>
+</tr>
+<tr>
+<td><code>vit_b_16</code></td>
+<td>ViT-B/16</td>
+<td>ImageNet</td>
+<td>86M</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="parameter-design">Parameter Design<a class="headerlink" href="#parameter-design" title="Permanent link">&para;</a></h2>
+<h3 id="trainable_layers-semantics"><code>trainable_layers</code> Semantics<a class="headerlink" href="#trainable_layers-semantics" title="Permanent link">&para;</a></h3>
+<p>The <code>trainable_layers</code> integer controls how much of the backbone is unfrozen during training:</p>
+<ul>
+<li><code>0</code> — Frozen backbone; only the new classifier head is trained (linear probe).</li>
+<li><code>-1</code> — All parameters are trainable (full fine-tune).</li>
+<li><code>N &gt; 0</code> — Freeze all backbone parameters, then unfreeze the last <code>N</code> layer groups plus the classifier head.</li>
+</ul>
+<p>"Layer groups" are architecture-specific:</p>
+<table>
+<thead>
+<tr>
+<th>Architecture</th>
+<th>Layer Group Definition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ConvNeXt</td>
+<td>Stages (4 stages total)</td>
+</tr>
+<tr>
+<td>ResNet</td>
+<td>Layer blocks (<code>layer1</code> – <code>layer4</code>)</td>
+</tr>
+<tr>
+<td>EfficientNet</td>
+<td>MBConv block groups</td>
+</tr>
+<tr>
+<td>ViT</td>
+<td>Transformer encoder blocks</td>
+</tr>
+<tr>
+<td>TinyClassifier</td>
+<td>Always fully trainable; <code>trainable_layers</code> is ignored</td>
+</tr>
+</tbody>
+</table>
+<h3 id="backbone_lr_scale"><code>backbone_lr_scale</code><a class="headerlink" href="#backbone_lr_scale" title="Permanent link">&para;</a></h3>
+<p>When <code>trainable_layers != 0</code>, unfrozen backbone parameters use a learning rate of <code>lr × backbone_lr_scale</code> (default <code>0.1</code>). The classifier head always uses the full <code>lr</code>. This discriminative learning rate schedule prevents catastrophic forgetting of pretrained representations.</p>
+<hr />
+<h2 id="new-dataclass-customcnnparams">New Dataclass: <code>CustomCNNParams</code><a class="headerlink" href="#new-dataclass-customcnnparams" title="Permanent link">&para;</a></h2>
+<p>Location: <code>training/contracts.py</code></p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nd">@dataclass</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">CustomCNNParams</span><span class="p">:</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">backbone</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;tinyclassifier&quot;</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">trainable_layers</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>        <span class="c1"># 0=frozen, -1=all, N=last N groups</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">backbone_lr_scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span>   <span class="c1"># LR multiplier for unfrozen backbone layers</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">input_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">224</span>            <span class="c1"># Resize target (square); TinyClassifier uses its own (H, W)</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">epochs</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">50</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">batch</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">32</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">lr</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-3</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">weight_decay</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-2</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">patience</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">label_smoothing</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">class_rebalance_mode</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;none&quot;</span>   <span class="c1"># none, weighted_loss, weighted_sampler, both</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="n">class_rebalance_power</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="c1"># TinyClassifier-specific (ignored for torchvision backbones)</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">hidden_layers</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="n">hidden_dim</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">64</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    <span class="n">dropout</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.2</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>    <span class="n">input_width</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">128</span>           <span class="c1"># used only when backbone=&quot;tinyclassifier&quot;</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    <span class="n">input_height</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">64</span>           <span class="c1"># used only when backbone=&quot;tinyclassifier&quot;</span>
+</span></code></pre></div>
+<h3 id="trainingrunspec-field-addition"><code>TrainingRunSpec</code> Field Addition<a class="headerlink" href="#trainingrunspec-field-addition" title="Permanent link">&para;</a></h3>
+<p>Also in <code>training/contracts.py</code>, <code>TrainingRunSpec</code> must gain the following field alongside the existing <code>tiny_params: TinyHeadTailParams</code> field:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">custom_params</span><span class="p">:</span> <span class="n">CustomCNNParams</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</span></code></pre></div>
+<p>This field is populated by the caller (<code>ClassKitTrainingWorker</code>) for any role that uses <code>_train_custom_classify()</code>.</p>
+<h3 id="new-trainingrole-values">New <code>TrainingRole</code> Values<a class="headerlink" href="#new-trainingrole-values" title="Permanent link">&para;</a></h3>
+<p>Also in <code>training/contracts.py</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">CLASSIFY_FLAT_CUSTOM</span> <span class="o">=</span> <span class="s2">&quot;classify_flat_custom&quot;</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">CLASSIFY_MULTIHEAD_CUSTOM</span> <span class="o">=</span> <span class="s2">&quot;classify_multihead_custom&quot;</span>
+</span></code></pre></div>
+<p><code>CLASSIFY_FLAT_TINY</code> and <code>CLASSIFY_MULTIHEAD_TINY</code> remain defined and are dispatched as aliases in the runner.</p>
+<hr />
+<h2 id="new-file-trainingtorchvision_modelpy">New File: <code>training/torchvision_model.py</code><a class="headerlink" href="#new-file-trainingtorchvision_modelpy" title="Permanent link">&para;</a></h2>
+<p>Pure Python, no Qt. This module is the sole owner of all torchvision model construction, layer freezing, ONNX export, and checkpoint loading logic.</p>
+<h3 id="public-api">Public API<a class="headerlink" href="#public-api" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Symbol</th>
+<th>Signature</th>
+<th>Responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TORCHVISION_BACKBONES</code></td>
+<td><code>dict[str, callable]</code></td>
+<td>Maps backbone key to torchvision factory function</td>
+</tr>
+<tr>
+<td><code>build_torchvision_classifier</code></td>
+<td><code>(backbone, num_classes, trainable_layers) -&gt; nn.Module</code></td>
+<td>Loads pretrained model, replaces classifier head, applies freezing</td>
+</tr>
+<tr>
+<td><code>get_layer_groups</code></td>
+<td><code>(model, backbone) -&gt; list[nn.Module]</code></td>
+<td>Returns backbone layer groups for progressive unfreezing</td>
+</tr>
+<tr>
+<td><code>freeze_backbone</code></td>
+<td><code>(model, backbone, trainable_layers)</code></td>
+<td>Applies freezing logic according to <code>trainable_layers</code> semantics</td>
+</tr>
+<tr>
+<td><code>export_torchvision_to_onnx</code></td>
+<td><code>(model, ckpt, onnx_path)</code></td>
+<td>Exports via <code>torch.onnx.export()</code> with opset 17</td>
+</tr>
+<tr>
+<td><code>load_torchvision_classifier</code></td>
+<td><code>(path, device) -&gt; tuple[nn.Module, dict]</code></td>
+<td>Loads <code>.pth</code> checkpoint, reconstructs model from <code>arch</code> field</td>
+</tr>
+</tbody>
+</table>
+<h3 id="freezing-logic-details">Freezing Logic Details<a class="headerlink" href="#freezing-logic-details" title="Permanent link">&para;</a></h3>
+<p><code>build_torchvision_classifier()</code> calls <code>freeze_backbone()</code> immediately after head replacement:</p>
+<ol>
+<li>Freeze all backbone parameters (<code>requires_grad = False</code>).</li>
+<li>If <code>trainable_layers == -1</code>: unfreeze everything.</li>
+<li>If <code>trainable_layers &gt; 0</code>: call <code>get_layer_groups()</code> and unfreeze the last <code>trainable_layers</code> groups.</li>
+<li>Always leave the new classifier head unfrozen.</li>
+</ol>
+<p><code>get_layer_groups()</code> must handle architectures that expose their stages/layers as named children vs. sequential blocks. It returns a flat list of <code>nn.Module</code> objects in backbone-traversal order (shallow to deep), so callers can index from the end.</p>
+<hr />
+<h2 id="unified-checkpoint-format-pth">Unified Checkpoint Format (<code>.pth</code>)<a class="headerlink" href="#unified-checkpoint-format-pth" title="Permanent link">&para;</a></h2>
+<p>All Custom CNN models share the following checkpoint schema. MAT reads this format to reconstruct and run any Custom CNN model.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="s2">&quot;arch&quot;</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>                    <span class="c1"># &quot;tinyclassifier&quot; | &quot;convnext_tiny&quot; | ...</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="s2">&quot;class_names&quot;</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>       <span class="c1"># flat list of all output classes</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="s2">&quot;factor_names&quot;</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">],</span>      <span class="c1"># one entry per factor (multihead only, else [])</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="s2">&quot;input_size&quot;</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">,</span>            <span class="c1"># (H, W) for tinyclassifier, (224, 224) for torchvision</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="s2">&quot;num_classes&quot;</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="s2">&quot;model_state_dict&quot;</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="s2">&quot;best_val_acc&quot;</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="s2">&quot;history&quot;</span><span class="p">:</span> <span class="nb">dict</span><span class="p">,</span>                <span class="c1"># {&quot;train_loss&quot;: [...], &quot;val_acc&quot;: [...]}</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="s2">&quot;trainable_layers&quot;</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>        <span class="c1"># stored for provenance</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    <span class="s2">&quot;backbone_lr_scale&quot;</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>The <code>arch</code> field is required so <code>load_torchvision_classifier()</code> can reconstruct the correct model architecture before loading state.</p>
+<hr />
+<h2 id="trainingrunnerpy-changes"><code>training/runner.py</code> Changes<a class="headerlink" href="#trainingrunnerpy-changes" title="Permanent link">&para;</a></h2>
+<h3 id="new-function-_train_custom_classify">New Function: <code>_train_custom_classify()</code><a class="headerlink" href="#new-function-_train_custom_classify" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>_train_custom_classify(spec, run_dir, log_cb, progress_cb, should_cancel) -&gt; dict
+</span></code></pre></div>
+<p>Dispatch logic:
+- If <code>spec.custom_params.backbone == "tinyclassifier"</code>: delegate entirely to the existing <code>_train_tiny_classify()</code>. No duplication of the training loop.
+- Otherwise: use <code>build_torchvision_classifier()</code> with discriminative LR groups (head uses <code>lr</code>, unfrozen backbone uses <code>lr × backbone_lr_scale</code>), then run the same AdamW + cosine/flat LR schedule + early stopping loop already used by TinyClassifier.</p>
+<h3 id="discriminative-lr-group-construction">Discriminative LR Group Construction<a class="headerlink" href="#discriminative-lr-group-construction" title="Permanent link">&para;</a></h3>
+<p>When <code>trainable_layers != 0</code>, the optimizer receives two parameter groups:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">param_groups</span> <span class="o">=</span> <span class="p">[</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="p">{</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="n">backbone_params</span><span class="p">,</span> <span class="s2">&quot;lr&quot;</span><span class="p">:</span> <span class="n">lr</span> <span class="o">*</span> <span class="n">backbone_lr_scale</span><span class="p">},</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="p">{</span><span class="s2">&quot;params&quot;</span><span class="p">:</span> <span class="n">head_params</span><span class="p">,</span>     <span class="s2">&quot;lr&quot;</span><span class="p">:</span> <span class="n">lr</span><span class="p">},</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="p">]</span>
+</span></code></pre></div>
+<p>When <code>trainable_layers == 0</code>, only the head group is passed (backbone parameters are frozen and excluded from the optimizer).</p>
+<h3 id="multihead-architecture">Multihead Architecture<a class="headerlink" href="#multihead-architecture" title="Permanent link">&para;</a></h3>
+<p><code>_train_custom_classify()</code> handles multihead by being <strong>called once per factor</strong> by the caller (<code>ClassKitTrainingWorker</code>), consistent with the existing multihead pattern used by <code>_train_tiny_classify()</code>. Each call receives the per-factor dataset directory and produces one model per factor. The runner function itself does not loop over factors internally.</p>
+<h3 id="run_training-dispatch-updates"><code>run_training()</code> Dispatch Updates<a class="headerlink" href="#run_training-dispatch-updates" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Role string</th>
+<th>Action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CLASSIFY_FLAT_CUSTOM</code></td>
+<td>Call <code>_train_custom_classify()</code></td>
+</tr>
+<tr>
+<td><code>CLASSIFY_MULTIHEAD_CUSTOM</code></td>
+<td>Call <code>_train_custom_classify()</code> (called once per factor by the worker)</td>
+</tr>
+<tr>
+<td><code>CLASSIFY_FLAT_TINY</code> (alias)</td>
+<td>Call <code>_train_custom_classify()</code> with <code>backbone="tinyclassifier"</code></td>
+</tr>
+<tr>
+<td><code>CLASSIFY_MULTIHEAD_TINY</code> (alias)</td>
+<td>Call <code>_train_custom_classify()</code> with <code>backbone="tinyclassifier"</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="trainingmodel_publishpy-changes"><code>training/model_publish.py</code> Changes<a class="headerlink" href="#trainingmodel_publishpy-changes" title="Permanent link">&para;</a></h2>
+<p>Add <code>_repo_dir_for_role()</code> entries for the new roles:</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Output directory</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CLASSIFY_FLAT_CUSTOM</code></td>
+<td><code>models/custom-classify/{scheme_name}/</code></td>
+</tr>
+<tr>
+<td><code>CLASSIFY_MULTIHEAD_CUSTOM</code></td>
+<td><code>models/custom-classify/multihead/{scheme_name}/{factor_name}/</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>_task_usage_for_role()</code> also switches on <code>TrainingRole</code> and will raise <code>RuntimeError</code> for any unhandled role. It must be updated to handle the two new roles:</p>
+<table>
+<thead>
+<tr>
+<th>Role</th>
+<th>Task usage string</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CLASSIFY_FLAT_CUSTOM</code></td>
+<td><code>"classify"</code></td>
+</tr>
+<tr>
+<td><code>CLASSIFY_MULTIHEAD_CUSTOM</code></td>
+<td><code>"classify"</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="classkitpresetspy-changes"><code>classkit/presets.py</code> Changes<a class="headerlink" href="#classkitpresetspy-changes" title="Permanent link">&para;</a></h2>
+<p>All preset functions add <code>"flat_custom"</code> and <code>"multihead_custom"</code> to their <code>training_modes</code> lists. Single-factor presets omit multihead variants, following the existing convention.</p>
+<p>Example:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">apriltag_preset</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n">ClassKitPreset</span><span class="p">:</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="k">return</span> <span class="n">ClassKitPreset</span><span class="p">(</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>        <span class="o">...</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>        <span class="n">training_modes</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;flat_tiny&quot;</span><span class="p">,</span> <span class="s2">&quot;flat_custom&quot;</span><span class="p">,</span> <span class="s2">&quot;flat_yolo&quot;</span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="p">)</span>
+</span></code></pre></div>
+<hr />
+<h2 id="classkit-gui-changes">ClassKit GUI Changes<a class="headerlink" href="#classkit-gui-changes" title="Permanent link">&para;</a></h2>
+<h3 id="classkitguidialogspy-classkittrainingdialog"><code>classkit/gui/dialogs.py</code> — <code>ClassKitTrainingDialog</code><a class="headerlink" href="#classkitguidialogspy-classkittrainingdialog" title="Permanent link">&para;</a></h3>
+<p>A new "Custom CNN" tab is added to the training dialog. This tab is shown when the selected training mode is <code>flat_custom</code> or <code>multihead_custom</code>; it is hidden for all other modes.</p>
+<p><strong>Controls in the Custom CNN tab:</strong></p>
+<p>A backbone dropdown groups options by family:</p>
+<ul>
+<li>TinyClassifier</li>
+<li>TinyClassifier (scratch)</li>
+<li>ConvNeXt</li>
+<li>ConvNeXt-T (<code>convnext_tiny</code>)</li>
+<li>ConvNeXt-S (<code>convnext_small</code>)</li>
+<li>ConvNeXt-B (<code>convnext_base</code>)</li>
+<li>EfficientNet</li>
+<li>EfficientNet-B0 (<code>efficientnet_b0</code>)</li>
+<li>EfficientNet-B3 (<code>efficientnet_b3</code>)</li>
+<li>EfficientNet-B7 (<code>efficientnet_b7</code>)</li>
+<li>ResNet</li>
+<li>ResNet-18 (<code>resnet18</code>)</li>
+<li>ResNet-50 (<code>resnet50</code>)</li>
+<li>ViT</li>
+<li>ViT-B/16 (<code>vit_b_16</code>)</li>
+</ul>
+<p><strong>Conditional control visibility:</strong></p>
+<p>When backbone is <code>tinyclassifier</code>:
+- Show: input width, input height, hidden layers, hidden dim, dropout (existing Tiny controls)
+- Hide: trainable layers spinbox, backbone LR scale, torchvision input size</p>
+<p>When backbone is a torchvision model:
+- Show: trainable layers spinbox (range -1 to 8, default 0, label "0=frozen, -1=all, N=last N groups")
+- Show: backbone LR scale spinbox (default 0.1, visible only when trainable_layers ≠ 0)
+- Show: input size spinbox (default 224)
+- Hide: TinyClassifier-specific controls</p>
+<p><strong>Common controls (all backbones):</strong>
+- Epochs, batch size, learning rate, patience, weight decay
+- Class rebalance mode (none / weighted_loss / weighted_sampler / both)
+- Class rebalance power
+- Label smoothing</p>
+<h3 id="classkitguimainwindowpy-changes"><code>classkit/gui/mainwindow.py</code> Changes<a class="headerlink" href="#classkitguimainwindowpy-changes" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Wire <code>flat_custom</code> and <code>multihead_custom</code> into the <code>train_classifier()</code> role map.</li>
+<li>Add inference dispatch for Custom CNN torchvision models: route <code>.pth</code> files with a torchvision <code>arch</code> field to the new <code>TorchvisionInferenceWorker</code>.</li>
+</ul>
+<p><strong>Checkpoint detection heuristic in <code>_load_checkpoint_from_path</code>:</strong></p>
+<p>The existing heuristic detects a TinyClassifier checkpoint by the presence of <code>model_state_dict</code>. Because torchvision <code>.pth</code> checkpoints also contain <code>model_state_dict</code>, this causes misrouting. The dispatch must check the <code>arch</code> field <strong>first</strong>:</p>
+<ol>
+<li>If <code>arch</code> is present in the checkpoint <strong>and</strong> <code>arch != "tinyclassifier"</code> → route to <code>TorchvisionInferenceWorker</code>.</li>
+<li>If <code>arch</code> is present <strong>and</strong> <code>arch == "tinyclassifier"</code> → route to the existing <code>TinyCNNInferenceWorker</code>.</li>
+<li>If <code>arch</code> is <strong>absent</strong> (legacy TinyClassifier checkpoint saved before this field was added) → fall back to the old <code>model_state_dict</code> heuristic to select <code>TinyCNNInferenceWorker</code>.</li>
+</ol>
+<p>This ordering ensures new torchvision checkpoints are never misrouted to the TinyClassifier loader.</p>
+<hr />
+<h2 id="classkitjobstask_workerspy-changes"><code>classkit/jobs/task_workers.py</code> Changes<a class="headerlink" href="#classkitjobstask_workerspy-changes" title="Permanent link">&para;</a></h2>
+<h3 id="new-torchvisioninferenceworkerqrunnable">New: <code>TorchvisionInferenceWorker(QRunnable)</code><a class="headerlink" href="#new-torchvisioninferenceworkerqrunnable" title="Permanent link">&para;</a></h3>
+<p>Same signal contract as the existing <code>TinyCNNInferenceWorker</code>:</p>
+<ul>
+<li>Signal: <code>result_ready(dict)</code> emitting <code>{"probs": ndarray(N, C), "class_names": list}</code></li>
+<li>Signal: <code>error_occurred(str)</code></li>
+</ul>
+<p>Behavior:
+- For PyTorch runtimes: load <code>.pth</code> → reconstruct model via <code>load_torchvision_classifier()</code> → run inference.
+- For <code>onnx_*</code> runtimes: load <code>.onnx</code> via <code>onnxruntime.InferenceSession</code> → run inference.</p>
+<p>The worker applies the same image preprocessing pipeline as the training loader (resize to <code>input_size</code>, ImageNet normalize for torchvision backbones).</p>
+<hr />
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<h3 id="new-test-file-teststest_classkit_extended_trainingpy">New Test File: <code>tests/test_classkit_extended_training.py</code><a class="headerlink" href="#new-test-file-teststest_classkit_extended_trainingpy" title="Permanent link">&para;</a></h3>
+<p>All tests are unit tests. Expensive torch operations are mocked where needed to keep the suite fast.</p>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>What it verifies</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>test_custom_cnn_params_defaults</code></td>
+<td><code>CustomCNNParams</code> instantiates with correct default field values</td>
+</tr>
+<tr>
+<td><code>test_custom_cnn_params_field_types</code></td>
+<td>All fields have correct types; no unexpected fields</td>
+</tr>
+<tr>
+<td><code>test_build_torchvision_classifier_convnext</code></td>
+<td>Output logits shape matches <code>num_classes</code></td>
+</tr>
+<tr>
+<td><code>test_build_torchvision_classifier_efficientnet</code></td>
+<td>Output logits shape matches <code>num_classes</code></td>
+</tr>
+<tr>
+<td><code>test_build_torchvision_classifier_resnet</code></td>
+<td>Output logits shape matches <code>num_classes</code></td>
+</tr>
+<tr>
+<td><code>test_build_torchvision_classifier_vit</code></td>
+<td>Output logits shape matches <code>num_classes</code></td>
+</tr>
+<tr>
+<td><code>test_get_layer_groups_convnext_count</code></td>
+<td>Returns exactly 4 groups for ConvNeXt</td>
+</tr>
+<tr>
+<td><code>test_get_layer_groups_resnet_count</code></td>
+<td>Returns exactly 4 groups for ResNet</td>
+</tr>
+<tr>
+<td><code>test_get_layer_groups_efficientnet_count</code></td>
+<td>Returns correct group count for EfficientNet</td>
+</tr>
+<tr>
+<td><code>test_get_layer_groups_vit_count</code></td>
+<td>Returns correct group count for ViT</td>
+</tr>
+<tr>
+<td><code>test_freeze_backbone_frozen</code></td>
+<td><code>trainable_layers=0</code> freezes all backbone params; head remains unfrozen</td>
+</tr>
+<tr>
+<td><code>test_freeze_backbone_all</code></td>
+<td><code>trainable_layers=-1</code> leaves all params unfrozen</td>
+</tr>
+<tr>
+<td><code>test_freeze_backbone_partial</code></td>
+<td><code>trainable_layers=1</code> freezes all but last group + head</td>
+</tr>
+<tr>
+<td><code>test_export_torchvision_to_onnx_smoke</code></td>
+<td>ONNX file is created and loadable (tiny input, mocked where slow)</td>
+</tr>
+<tr>
+<td><code>test_load_torchvision_classifier_roundtrip</code></td>
+<td>Save then load produces identical logits for a fixed input</td>
+</tr>
+<tr>
+<td><code>test_checkpoint_format_required_keys</code></td>
+<td>Saved checkpoint contains all keys defined in the schema</td>
+</tr>
+<tr>
+<td><code>test_runner_flat_tiny_alias</code></td>
+<td><code>flat_tiny</code> role causes <code>_train_custom_classify</code> to be called with <code>backbone="tinyclassifier"</code></td>
+</tr>
+<tr>
+<td><code>test_runner_flat_custom_dispatch</code></td>
+<td><code>flat_custom</code> role dispatches to <code>_train_custom_classify</code> with torchvision backbone</td>
+</tr>
+<tr>
+<td><code>test_apriltag_preset_includes_flat_custom</code></td>
+<td><code>apriltag_preset()</code> includes <code>"flat_custom"</code> in <code>training_modes</code></td>
+</tr>
+<tr>
+<td><code>test_all_presets_include_flat_custom</code></td>
+<td>Every preset function includes <code>"flat_custom"</code> in <code>training_modes</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="files-changed-created">Files Changed / Created<a class="headerlink" href="#files-changed-created" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Change Type</th>
+<th>Summary</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>training/contracts.py</code></td>
+<td>Modified</td>
+<td>Add <code>CustomCNNParams</code> dataclass; add <code>CLASSIFY_FLAT_CUSTOM</code> and <code>CLASSIFY_MULTIHEAD_CUSTOM</code> role constants</td>
+</tr>
+<tr>
+<td><code>training/torchvision_model.py</code></td>
+<td>New</td>
+<td>Model factory, layer-group enumeration, freezing logic, ONNX export, checkpoint load/save</td>
+</tr>
+<tr>
+<td><code>training/runner.py</code></td>
+<td>Modified</td>
+<td>Add <code>_train_custom_classify()</code>; update <code>run_training()</code> dispatch table with new roles and backward-compat aliases</td>
+</tr>
+<tr>
+<td><code>training/model_publish.py</code></td>
+<td>Modified</td>
+<td>Add <code>_repo_dir_for_role()</code> entries for <code>CLASSIFY_FLAT_CUSTOM</code> and <code>CLASSIFY_MULTIHEAD_CUSTOM</code></td>
+</tr>
+<tr>
+<td><code>classkit/presets.py</code></td>
+<td>Modified</td>
+<td>Add <code>flat_custom</code> / <code>multihead_custom</code> to <code>training_modes</code> in all preset functions</td>
+</tr>
+<tr>
+<td><code>classkit/gui/dialogs.py</code></td>
+<td>Modified</td>
+<td>Add Custom CNN tab to <code>ClassKitTrainingDialog</code>; implement conditional control visibility</td>
+</tr>
+<tr>
+<td><code>classkit/gui/mainwindow.py</code></td>
+<td>Modified</td>
+<td>Wire new modes into <code>train_classifier()</code> role map; add inference dispatch for torchvision models</td>
+</tr>
+<tr>
+<td><code>classkit/jobs/task_workers.py</code></td>
+<td>Modified</td>
+<td>Add <code>TorchvisionInferenceWorker</code> with same signal contract as <code>TinyCNNInferenceWorker</code></td>
+</tr>
+<tr>
+<td><code>tests/test_classkit_extended_training.py</code></td>
+<td>New</td>
+<td>Unit test file covering all new logic (20 tests)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="backward-compatibility">Backward Compatibility<a class="headerlink" href="#backward-compatibility" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>flat_tiny</code> and <code>multihead_tiny</code> mode strings continue to work. The runner dispatch maps them to <code>_train_custom_classify</code> with <code>backbone="tinyclassifier"</code>, which in turn delegates to the existing <code>_train_tiny_classify()</code> with no behavioral change.</li>
+<li>Existing <code>.pth</code> files saved by TinyClassifier training do not need migration. <code>load_torchvision_classifier()</code> detects the <code>arch</code> field; files lacking this field are handled by the existing TinyClassifier loader path.</li>
+<li>No changes to YOLO-classify modes.</li>
+</ul>
+<hr />
+<h2 id="open-questions">Open Questions<a class="headerlink" href="#open-questions" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Should <code>vit_b_16</code> require a minimum input size warning in the UI (ViT expects 224×224 or larger)?</li>
+<li>Should the backbone LR scale spinbox use a logarithmic step (0.001 / 0.01 / 0.1) rather than a linear one?</li>
+<li>For multihead training with torchvision backbones, should a single shared backbone be used with multiple heads, or should a separate model be trained per factor? (This spec assumes the existing multihead architecture is extended rather than redesigned.)</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.83f73b43.min.js"></script>
+      
+    
+  </body>
+</html>
