@@ -645,3 +645,76 @@ def test_cnn_phase_close_is_idempotent(tmp_path):
         )
         phase.close()
         phase.close()  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# PosePipeline as PrecomputePhase
+# ---------------------------------------------------------------------------
+
+
+def test_pose_pipeline_has_cache_hit_false_when_not_set():
+    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+
+    pipeline = PosePipeline(
+        pose_backend=None,
+        cache_writer=None,
+        cache_hit=False,
+        cache_path="/some/path.hdf5",
+        finalize_metadata={},
+    )
+    assert pipeline.has_cache_hit() is False
+
+
+def test_pose_pipeline_has_cache_hit_true_when_set():
+    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+
+    pipeline = PosePipeline(
+        pose_backend=None,
+        cache_writer=None,
+        cache_hit=True,
+        cache_path="/some/path.hdf5",
+        finalize_metadata={},
+    )
+    assert pipeline.has_cache_hit() is True
+
+
+def test_pose_pipeline_finalize_returns_cache_path_on_hit():
+    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+
+    pipeline = PosePipeline(
+        pose_backend=None,
+        cache_writer=None,
+        cache_hit=True,
+        cache_path="/cached/path.hdf5",
+        finalize_metadata={},
+    )
+    result = pipeline.finalize()
+    assert result == "/cached/path.hdf5"
+
+
+def test_pose_pipeline_process_frame_noop_on_hit():
+    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+
+    pipeline = PosePipeline(
+        pose_backend=None,
+        cache_writer=None,
+        cache_hit=True,
+        cache_path="/hit.hdf5",
+        finalize_metadata={},
+    )
+    # Should not raise even with no backend
+    pipeline.process_frame(0, [], [], [], [])
+
+
+def test_pose_pipeline_close_idempotent():
+    from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+
+    pipeline = PosePipeline(
+        pose_backend=None,
+        cache_writer=None,
+        cache_hit=True,
+        cache_path="/hit.hdf5",
+        finalize_metadata={},
+    )
+    pipeline.close()
+    pipeline.close()  # must not raise

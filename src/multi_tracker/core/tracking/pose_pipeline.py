@@ -254,6 +254,10 @@ class PosePipeline:
         bg_color: Tuple[int, int, int] = (0, 0, 0),
         suppress_foreign_obb: bool = True,
         padding_fraction: float = 0.1,
+        # PrecomputePhase protocol support:
+        cache_hit: bool = False,
+        cache_path: Optional[str] = None,
+        finalize_metadata: Optional[dict] = None,
     ):
         self._backend = pose_backend
         self._batch_size = max(1, cross_frame_batch)
@@ -275,6 +279,13 @@ class PosePipeline:
         self._pending: List[FrameCropResult] = []
         self._flat_crops: List[np.ndarray] = []
         self._inflight: Optional[Future] = None
+
+        # PrecomputePhase protocol state
+        self._cache_hit = cache_hit
+        self._cache_path = cache_path
+        self._finalize_metadata = finalize_metadata or {}
+        self._closed = False
+        self._async_cache_closed = False
 
     # ------------------------------------------------------------------ #
     # Public API                                                          #
@@ -389,13 +400,96 @@ class PosePipeline:
         self._wait_inflight()
         return True
 
-    def close(self) -> None:
-        """Shut down thread pools and flush the async cache writer."""
+    # ------------------------------------------------------------------ #
+    # PrecomputePhase protocol                                            #
+    # ------------------------------------------------------------------ #
+
+    name = "pose"
+    is_fatal = True
+
+    def has_cache_hit(self) -> bool:
+        """Return True if the cache was pre-built and the loop can be skipped."""
+        return self._cache_hit
+
+    def process_frame(
+        self,
+        frame_idx: int,
+        crops: List[np.ndarray],
+        det_ids: List[int],
+        all_obb: List[np.ndarray],
+        crop_offsets: List[Tuple[int, int]],
+    ) -> None:
+        """Accept pre-extracted crops and feed them into the inference pipeline.
+
+        Letterboxing is applied here if pre_resize_target > 0 (backend detail).
+        If crops is empty, this is a no-op (sparse cache — frames with no
+        detections are absent from the pose cache).
+        """
+        if self._cache_hit:
+            return
+        if not crops:
+            return  # sparse cache — no detections, nothing to infer
+
+        fcr = FrameCropResult(
+            frame_idx=frame_idx,
+            det_ids=list(det_ids),
+            n_dets=len(all_obb),
+            crops=[],
+            crop_to_det=[],
+            crop_offsets={},
+            all_obb_corners=list(all_obb),
+            crop_transforms={},
+        )
+
+        for crop, offset, det_id in zip(crops, crop_offsets, det_ids):
+            processed = crop
+            if self._pre_resize > 0:
+                processed, transform = letterbox_crop(
+                    processed, self._pre_resize, self._bg_color
+                )
+                fcr.crop_transforms[det_id] = transform
+            fcr.crops.append(processed)
+            fcr.crop_to_det.append(det_id)
+            fcr.crop_offsets[det_id] = offset
+
+        self._pending.append(fcr)
+        self._flat_crops.extend(fcr.crops)
+
+        if len(self._flat_crops) >= self._batch_size:
+            self._flush()
+
+    def _close_async_cache(self) -> None:
+        """Flush and close the async cache writer (idempotent)."""
+        if self._async_cache is not None and not self._async_cache_closed:
+            self._async_cache_closed = True
+            try:
+                self._async_cache.flush_and_close()
+            except Exception:
+                pass
+
+    def finalize(self) -> Optional[str]:
+        """Flush in-flight inference, write cache, return path."""
+        if self._cache_hit:
+            return self._cache_path
         self._wait_inflight()
-        if self._async_cache:
-            self._async_cache.flush_and_close()
+        self._close_async_cache()
+        logger.info("Pose properties cache saved: %s", self._cache_path)
+        return self._cache_path
+
+    def close(self) -> None:
+        """Shut down thread pools and release backend. Idempotent."""
+        if self._closed:
+            return
+        self._closed = True
+        self._wait_inflight()
+        self._close_async_cache()
         self._crop_pool.shutdown(wait=False)
         self._infer_pool.shutdown(wait=False)
+        if self._backend is not None:
+            try:
+                self._backend.close()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     # Crop extraction                                                      #
