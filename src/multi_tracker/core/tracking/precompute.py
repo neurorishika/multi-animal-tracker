@@ -153,10 +153,6 @@ class UnifiedPrecompute:
         for rel_idx in range(total):
             frame_idx = start_frame + rel_idx
 
-            if stop_check and stop_check():
-                cancelled = True
-                break
-
             # read + optional resize
             ret, frame = cap.read()
             if ret and resize_factor < 1.0:
@@ -230,13 +226,18 @@ class UnifiedPrecompute:
                         crop_det_ids.append(
                             det_ids[di] if det_ids and di < len(det_ids) else di
                         )
-                        crop_offsets.append(offset)
+                        crop_offsets.append((int(offset[0]), int(offset[1])))
 
             # fan-out to all phases
             for phase in self._phases:
                 phase.process_frame(
                     frame_idx, crops, crop_det_ids, all_obb, crop_offsets
                 )
+
+            # cancellation check — AFTER processing the frame
+            if stop_check and stop_check():
+                cancelled = True
+                break
 
             # progress
             if progress_cb and (rel_idx % 50 == 0 or rel_idx == total - 1):

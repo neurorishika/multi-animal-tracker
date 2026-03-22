@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
@@ -147,6 +147,9 @@ def test_partial_cache_hit_video_runs_miss_phase_gets_frames():
     result = up.run(_make_cap(), _make_det_cache(), _make_detector(), 0, 1, 1.0, None)
 
     assert miss.process_frame.call_count == 2  # both frames processed
+    assert (
+        hit.process_frame.call_count == 2
+    )  # hit phase is still called (it's a no-op internally)
     assert result == {"hit": "/old", "miss": "/new"}
 
 
@@ -238,3 +241,53 @@ def test_close_called_on_all_phases_when_one_finalize_raises():
 
     p1.close.assert_called_once()
     p2.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# crop_offsets int-cast and passed through to process_frame
+# ---------------------------------------------------------------------------
+
+
+def test_crop_offsets_passed_to_process_frame():
+    """crop_offsets from extract_one_crop are passed to process_frame correctly."""
+    p = _make_phase("x", finalize_return=None)
+
+    corners = np.array([[0, 0], [10, 0], [10, 10], [0, 10]], dtype=np.float32)
+    fake_crop = np.zeros((10, 10, 3), dtype=np.uint8)
+    fake_offset = (5, 7)
+
+    # Provide one detection via the detection cache/detector mocks
+    det_cache = _make_det_cache()
+    det_cache.get_frame.return_value = (
+        [[5.0, 5.0, 0.0]],
+        [[10, 10]],
+        [["rect"]],
+        [[0.9]],
+        [corners.tolist()],
+        [0],
+        [0.0],
+        [False],
+    )
+    detector = _make_detector()
+    detector.filter_raw_detections.return_value = (
+        [[5.0, 5.0, 0.0]],
+        [[10, 10]],
+        [["rect"]],
+        [[0.9]],
+        [corners],
+        [0],
+        [0.0],
+        [False],
+    )
+
+    with patch(
+        "multi_tracker.core.tracking.precompute.extract_one_crop",
+        return_value=(fake_crop, fake_offset, None),
+    ):
+        up = UnifiedPrecompute([p], CropConfig())
+        up.run(_make_cap(), det_cache, detector, 0, 0, 1.0, None)
+
+    args = p.process_frame.call_args[0]
+    frame_idx, crops, det_ids, all_obb, crop_offsets = args
+    assert len(crop_offsets) == 1
+    assert crop_offsets[0] == (5, 7)  # int tuple
