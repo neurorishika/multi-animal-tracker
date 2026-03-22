@@ -38,6 +38,12 @@ from multi_tracker.core.tracking.pose_features import (
 from multi_tracker.core.tracking.pose_features import (
     resolve_pose_group_indices as _pf_resolve_indices,
 )
+from multi_tracker.core.tracking.precompute import (
+    AprilTagPrecomputePhase,
+    CNNPrecomputePhase,
+    CropConfig,
+    UnifiedPrecompute,
+)
 from multi_tracker.core.tracking.tag_features import (
     NO_TAG,
     TrackTagHistory,
@@ -376,16 +382,6 @@ class TrackingWorker(QThread):
         ref = max(1.0, float(reference_body_size) * 0.75)
         return float(np.clip(minor / ref, 0.0, 1.0))
 
-    def _should_precompute_individual_data(self, params, detection_method):
-        """Run pose precompute when the pose extractor is enabled."""
-        pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
-        return bool(
-            not self.backward_mode
-            and not self.preview_mode
-            and detection_method == "yolo_obb"
-            and pose_enabled
-        )
-
     def _resolve_tracking_theta(
         self,
         track_idx,
@@ -412,41 +408,48 @@ class TrackingWorker(QThread):
 
         return self._collapse_obb_axis_theta(measured_theta, reference_theta)
 
-    def _precompute_pose_data(
+    def _build_cnn_identity_cache_path(self, start_frame, end_frame):
+        """Derive the CNN identity cache path from the detection cache path."""
+        if not self.detection_cache_path:
+            return None
+        base = Path(self.detection_cache_path)
+        return str(
+            base.with_name(base.stem + f"_cnn_identity_{start_frame}_{end_frame}.npz")
+        )
+
+    def _build_tag_cache_path(self, start_frame, end_frame):
+        """Derive the tag observation cache path from the detection cache path."""
+        if not self.detection_cache_path:
+            return None
+        from pathlib import Path as _P
+
+        base = _P(self.detection_cache_path)
+        return base.with_name(base.stem + f"_tags_{start_frame}_{end_frame}.npz")
+
+    def _build_precompute_phases(
         self,
-        detector,
-        params,
+        params: dict,
+        detection_method: str,
         detection_cache,
-        start_frame,
-        end_frame,
-    ):
+        start_frame: int,
+        end_frame: int,
+    ) -> list:
+        """Build the list of enabled precompute phases for a tracking run.
+
+        Returns [] when precompute should be skipped entirely (backward mode,
+        preview mode, wrong detection method, or no detection cache).
         """
-        Precompute pose keypoints in a single video pass.
-
-        Returns:
-            (pose_cache_path, pose_cache_hit)
-        """
-
-        pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
-        detection_method = params.get("DETECTION_METHOD", "background_subtraction")
-
         if detection_method != "yolo_obb":
-            if pose_enabled:
-                logger.warning("Pose precompute requires YOLO OBB detection mode.")
-            return None, True
+            return []
+        if self.backward_mode or self.preview_mode:
+            return []
+        if detection_cache is None:
+            return []
 
-        if not pose_enabled:
-            return None, True
+        phases = []
 
-        pose_cache_path = None
-        pose_cache_hit = True
-        pose_backend = None
-        pose_cache_writer = None
-        properties_id = None
-        detection_hash = None
-        filter_hash = None
-        extractor_hash = None
-
+        # --- Pose ---
+        pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
         if pose_enabled:
             from multi_tracker.core.identity.properties_cache import (
                 IndividualPropertiesCache,
@@ -456,6 +459,7 @@ class TrackingWorker(QThread):
                 compute_individual_properties_id,
             )
             from multi_tracker.core.identity.runtime_api import (
+                build_runtime_config,
                 create_pose_backend_from_config,
             )
 
@@ -478,577 +482,145 @@ class TrackingWorker(QThread):
             params["INDIVIDUAL_PROPERTIES_ID"] = properties_id
             params["INDIVIDUAL_PROPERTIES_CACHE_PATH"] = str(pose_cache_path)
 
-            # Check for existing pose cache
+            # Check cache hit
+            pose_cache_hit = False
             if pose_cache_path.exists():
                 existing = IndividualPropertiesCache(str(pose_cache_path), mode="r")
                 try:
-                    if existing.is_compatible():
-                        logger.info(
-                            "Pose properties cache hit: %s", str(pose_cache_path)
-                        )
-                    else:
-                        pose_cache_hit = False
+                    pose_cache_hit = existing.is_compatible()
                 finally:
                     existing.close()
-            else:
-                pose_cache_hit = False
 
-        if pose_cache_hit:
-            self.progress_signal.emit(
-                100,
-                "Precompute: using existing pose cache.",
-            )
-            return str(pose_cache_path) if pose_cache_path else None, True
+            pose_backend = None
+            pose_cache_writer = None
+            finalize_metadata = {}
 
-        logger.info("=" * 80)
-        logger.info("POSE PRECOMPUTE: single video pass")
-        logger.info("=" * 80)
+            if not pose_cache_hit:
+                pose_out_root = str(
+                    params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")
+                ).strip()
+                if not pose_out_root:
+                    pose_out_root = str(pose_cache_path.parent)
 
-        if pose_enabled and not pose_cache_hit:
-            logger.info("Initializing pose backend...")
-            self.progress_signal.emit(0, "Precompute: loading pose backend...")
-            from multi_tracker.core.identity.runtime_api import (
-                build_runtime_config,
-                create_pose_backend_from_config,
-            )
+                pose_config = build_runtime_config(params, out_root=pose_out_root)
+                pose_backend = create_pose_backend_from_config(pose_config)
+                pose_backend.warmup()
 
-            pose_out_root = str(params.get("INDIVIDUAL_DATASET_OUTPUT_DIR", "")).strip()
-            if not pose_out_root:
-                pose_out_root = str(pose_cache_path.parent) if pose_cache_path else "."
+                runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "")).lower()
+                if runtime_flavor.startswith("onnx") or runtime_flavor.startswith(
+                    "tensorrt"
+                ):
+                    try:
+                        resolved = str(
+                            getattr(pose_backend, "exported_model_path", "")
+                            or getattr(pose_backend, "model_path", "")
+                        ).strip()
+                    except Exception:
+                        resolved = ""
+                    if resolved:
+                        params["POSE_EXPORTED_MODEL_PATH"] = resolved
+                        self.pose_exported_model_resolved_signal.emit(resolved)
 
-            pose_config = build_runtime_config(params, out_root=pose_out_root)
-            pose_backend = create_pose_backend_from_config(pose_config)
-            pose_backend.warmup()
-            logger.info("Pose backend ready.")
-
-            # Store resolved artifact path if applicable
-            runtime_flavor = str(params.get("POSE_RUNTIME_FLAVOR", "")).lower()
-            if runtime_flavor.startswith("onnx") or runtime_flavor.startswith(
-                "tensorrt"
-            ):
-                try:
-                    resolved_artifact = str(
-                        getattr(pose_backend, "exported_model_path", "")
-                        or getattr(pose_backend, "model_path", "")
-                    ).strip()
-                except Exception:
-                    resolved_artifact = ""
-                if resolved_artifact:
-                    params["POSE_EXPORTED_MODEL_PATH"] = resolved_artifact
-                    self.pose_exported_model_resolved_signal.emit(resolved_artifact)
-
-        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
-        padding_fraction = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
-
-        roi_mask = params.get("ROI_MASK", None)
-        if roi_mask is not None:
-            dims_cap = cv2.VideoCapture(self.video_path)
-            base_h = int(dims_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            base_w = int(dims_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            dims_cap.release()
-            target_w = max(1, int(base_w * resize_f))
-            target_h = max(1, int(base_h * resize_f))
-            if roi_mask.shape[1] != target_w or roi_mask.shape[0] != target_h:
-                roi_mask = cv2.resize(roi_mask, (target_w, target_h), cv2.INTER_NEAREST)
-
-        # Open video once
-        video_cap = cv2.VideoCapture(self.video_path)
-        if not video_cap.isOpened():
-            raise RuntimeError(
-                f"Failed to open video for unified precompute: {self.video_path}"
-            )
-        if start_frame > 0:
-            video_cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-        # Open cache writers
-        if pose_enabled and not pose_cache_hit:
-            from multi_tracker.core.identity.properties_cache import (
-                IndividualPropertiesCache,
-            )
-
-            pose_cache_writer = IndividualPropertiesCache(
-                str(pose_cache_path), mode="w"
-            )
-
-        # Pipeline configuration
-        _POSE_CROSS_FRAME_BATCH = int(params.get("POSE_PRECOMPUTE_BATCH_SIZE", 64))
-        _bg_raw = params.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
-        _pose_bg_color = (
-            tuple(int(c) for c in _bg_raw)
-            if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
-            else (0, 0, 0)
-        )
-        _suppress_foreign_obb = bool(params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True))
-        _crop_workers = int(params.get("POSE_PIPELINE_CROP_WORKERS", 4))
-
-        # Pre-resize: auto-detect from backend or explicit config
-        _pre_resize = int(params.get("POSE_PIPELINE_PRE_RESIZE", 0))
-        if _pre_resize <= 0 and pose_backend is not None:
-            _pre_resize = int(getattr(pose_backend, "preferred_input_size", 0) or 0)
-
-        total_frames = max(1, end_frame - start_frame + 1)
-
-        self.progress_signal.emit(
-            1,
-            f"Pose precompute: processing {total_frames} frame(s)...",
-        )
-
-        from multi_tracker.core.tracking.pose_pipeline import PosePipeline
-
-        pipeline = PosePipeline(
-            pose_backend,
-            pose_cache_writer,
-            cross_frame_batch=_POSE_CROSS_FRAME_BATCH,
-            crop_workers=_crop_workers,
-            pre_resize_target=_pre_resize,
-            bg_color=_pose_bg_color,
-            suppress_foreign_obb=_suppress_foreign_obb,
-            padding_fraction=padding_fraction,
-        )
-
-        try:
-
-            def _progress_cb(pct, msg):
-                self.progress_signal.emit(pct, msg)
-
-            def _stats_cb(stats):
-                self.stats_signal.emit(stats)
-
-            completed = pipeline.run(
-                video_cap,
-                detection_cache,
-                detector,
-                start_frame,
-                end_frame,
-                resize_f,
-                roi_mask,
-                progress_cb=_progress_cb,
-                stats_cb=_stats_cb,
-                stop_check=lambda: self._stop_requested,
-            )
-            pipeline.close()
-
-            if not completed or self._stop_requested:
-                logger.info("Unified precompute cancelled.")
-                self.progress_signal.emit(0, "Precompute cancelled.")
-                return None, False
-
-            # Save caches
-            if pose_cache_writer:
-                pose_cache_writer.save(
-                    metadata={
-                        "individual_properties_id": properties_id,
-                        "detection_hash": detection_hash,
-                        "filter_settings_hash": filter_hash,
-                        "extractor_hash": extractor_hash,
-                        "pose_keypoint_names": list(
-                            getattr(pose_backend, "output_keypoint_names", []) or []
-                        ),
-                        "start_frame": int(start_frame),
-                        "end_frame": int(end_frame),
-                        "video_path": str(Path(self.video_path).expanduser().resolve()),
-                    }
+                pose_cache_writer = IndividualPropertiesCache(
+                    str(pose_cache_path), mode="w"
                 )
-                logger.info("Pose properties cache saved: %s", str(pose_cache_path))
+                keypoint_names = list(
+                    getattr(pose_backend, "output_keypoint_names", []) or []
+                )
+                finalize_metadata = {
+                    "individual_properties_id": properties_id,
+                    "detection_hash": detection_hash,
+                    "filter_settings_hash": filter_hash,
+                    "extractor_hash": extractor_hash,
+                    "pose_keypoint_names": keypoint_names,
+                    "start_frame": int(start_frame),
+                    "end_frame": int(end_frame),
+                    "video_path": str(Path(self.video_path).expanduser().resolve()),
+                }
 
-            self.progress_signal.emit(
-                100,
-                "Pose precompute complete: pose cache saved.",
+            _POSE_CROSS_FRAME_BATCH = int(params.get("POSE_PRECOMPUTE_BATCH_SIZE", 64))
+            _bg_raw = params.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
+            _pose_bg_color = (
+                tuple(int(c) for c in _bg_raw)
+                if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
+                else (0, 0, 0)
             )
+            _suppress_foreign_obb = bool(
+                params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True)
+            )
+            _crop_workers = int(params.get("POSE_PIPELINE_CROP_WORKERS", 4))
+            _pre_resize = int(params.get("POSE_PIPELINE_PRE_RESIZE", 0))
+            if _pre_resize <= 0 and pose_backend is not None:
+                _pre_resize = int(getattr(pose_backend, "preferred_input_size", 0) or 0)
 
-        finally:
-            if pose_cache_writer:
-                pose_cache_writer.close()
-            video_cap.release()
-            if pose_backend:
-                try:
-                    pose_backend.close()
-                except Exception:
-                    pass
+            from multi_tracker.core.tracking.pose_pipeline import PosePipeline
 
-        return (
-            str(pose_cache_path) if pose_cache_path else None
-        ), not pose_enabled or pose_cache_hit
+            pipeline = PosePipeline(
+                pose_backend,
+                pose_cache_writer,
+                cross_frame_batch=_POSE_CROSS_FRAME_BATCH,
+                crop_workers=_crop_workers,
+                pre_resize_target=_pre_resize,
+                bg_color=_pose_bg_color,
+                suppress_foreign_obb=_suppress_foreign_obb,
+                padding_fraction=float(params.get("INDIVIDUAL_CROP_PADDING", 0.1)),
+                cache_hit=pose_cache_hit,
+                cache_path=str(pose_cache_path),
+                finalize_metadata=finalize_metadata,
+            )
+            phases.append(pipeline)
 
-    # ------------------------------------------------------------------
-    # AprilTag precompute
-    # ------------------------------------------------------------------
-
-    def _should_precompute_apriltag_data(self, params, detection_method):
-        """Return True when the apriltag precompute phase should run."""
+        # --- AprilTag ---
         identity_method = str(params.get("IDENTITY_METHOD", "none_disabled")).lower()
-        return bool(
-            not self.backward_mode
-            and not self.preview_mode
-            and detection_method == "yolo_obb"
-            and identity_method == "apriltags"
-        )
+        if identity_method == "apriltags":
+            from multi_tracker.core.identity.apriltag_detector import AprilTagConfig
 
-    # ------------------------------------------------------------------
-    # CNN Identity precompute
-    # ------------------------------------------------------------------
-
-    def _should_precompute_cnn_identity_data(self, params, detection_method):
-        """Return True when the CNN identity precompute phase should run."""
-        identity_method = str(params.get("IDENTITY_METHOD", "none_disabled")).lower()
-        return bool(
-            not self.backward_mode
-            and not self.preview_mode
-            and detection_method == "yolo_obb"
-            and identity_method == "cnn_classifier"
-        )
-
-    def _build_cnn_identity_cache_path(self, start_frame, end_frame):
-        """Derive the CNN identity cache path from the detection cache path."""
-        if not self.detection_cache_path:
-            return None
-        base = Path(self.detection_cache_path)
-        return str(
-            base.with_name(base.stem + f"_cnn_identity_{start_frame}_{end_frame}.npz")
-        )
-
-    def _run_cnn_identity_precompute(
-        self, detection_cache, params, cap, start_frame, end_frame
-    ):
-        """Run CNN identity classification on all frames and cache predictions.
-
-        Follows the same lifecycle as _run_apriltag_precompute():
-        - Reads OBB crops from detection_cache frame by frame
-        - Calls CNNIdentityBackend.predict_batch() in batches
-        - Writes predictions to CNNIdentityCache (flush() at end)
-        - Emits progress_signal per frame
-        - Returns cache path or None on failure
-        """
-        from multi_tracker.core.identity.cnn_identity import (
-            CNNIdentityBackend,
-            CNNIdentityCache,
-            CNNIdentityConfig,
-        )
-
-        model_path = str(params.get("CNN_CLASSIFIER_MODEL_PATH", ""))
-        if not model_path or not os.path.exists(model_path):
-            logger.warning(
-                "CNN identity precompute: model_path not found: %s", model_path
-            )
-            return None
-
-        cache_path = self._build_cnn_identity_cache_path(start_frame, end_frame)
-        if cache_path is None:
-            return None
-
-        cfg = CNNIdentityConfig(
-            model_path=model_path,
-            confidence=float(params.get("CNN_CLASSIFIER_CONFIDENCE", 0.5)),
-            batch_size=int(params.get("CNN_CLASSIFIER_BATCH_SIZE", 64)),
-            crop_padding=float(params.get("CNN_CLASSIFIER_CROP_PADDING", 0.1)),
-        )
-        compute_runtime = str(params.get("COMPUTE_RUNTIME", "cpu"))
-        backend = CNNIdentityBackend(
-            cfg, model_path=model_path, compute_runtime=compute_runtime
-        )
-        cache = CNNIdentityCache(cache_path)
-
-        total_frames = end_frame - start_frame
-        self.progress_signal.emit(0, "CNN identity precompute: starting...")
-
-        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
-        scale = 1.0 / resize_f if resize_f > 0 else 1.0
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-        for frame_offset in range(total_frames):
-            frame_idx = start_frame + frame_offset
-
-            if self._stop_requested:
-                logger.info("CNN identity precompute cancelled.")
-                backend.close()
-                return None
-
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                cache.save(frame_idx, [])
-                continue
-
-            try:
-                (
-                    _meas,
-                    _sizes,
-                    _shapes,
-                    _confs,
-                    obb_corners,
-                    detection_ids,
-                    _hh,
-                    _dm,
-                ) = detection_cache.get_frame(frame_idx)
-            except Exception:
-                cache.save(frame_idx, [])
-                continue
-
-            if not obb_corners:
-                cache.save(frame_idx, [])
-                continue
-
-            scaled_corners = [
-                np.asarray(c, dtype=np.float32) * scale for c in obb_corners
-            ]
-            det_idx_list = (
-                list(range(len(obb_corners)))
-                if not detection_ids
-                else [int(d) for d in detection_ids]
-            )
-
-            crops = []
-            crop_det_indices = []
-            for _di, _corners in enumerate(scaled_corners):
-                _crop, _offset = self._extract_expanded_obb_crop(
-                    frame, _corners, cfg.crop_padding
-                )
-                if _crop is None:
-                    continue
-                crops.append(_crop)
-                crop_det_indices.append(det_idx_list[_di])
-
-            if crops:
-                predictions = backend.predict_batch(crops)
-                for pred, det_idx in zip(predictions, crop_det_indices):
-                    pred.det_index = det_idx
-            else:
-                predictions = []
-
-            cache.save(frame_idx, predictions)
-
-            pct = int((frame_offset + 1) * 100 / max(total_frames, 1))
-            if frame_offset % 50 == 0 or frame_offset == total_frames - 1:
-                self.progress_signal.emit(
-                    pct,
-                    f"CNN identity precompute: frame {frame_offset + 1}/{total_frames}",
-                )
-
-        backend.close()
-        cache.flush()  # write all in-memory predictions to disk at once
-        self.progress_signal.emit(100, "CNN identity precompute: complete.")
-        logger.info("CNN identity cache written: %s", cache_path)
-        return cache_path
-
-    def _build_tag_cache_path(self, start_frame, end_frame):
-        """Derive the tag observation cache path from the detection cache path."""
-        if not self.detection_cache_path:
-            return None
-        from pathlib import Path as _P
-
-        base = _P(self.detection_cache_path)
-        return base.with_name(base.stem + f"_tags_{start_frame}_{end_frame}.npz")
-
-    def _run_apriltag_precompute(
-        self, detection_cache, params, cap, start_frame, end_frame
-    ):
-        """Run AprilTag detection on cached OBB crops and write TagObservationCache.
-
-        Returns the path to the tag observation cache (str), or *None* on failure.
-        """
-        from multi_tracker.core.identity.apriltag_detector import (
-            AprilTagConfig,
-            AprilTagDetector,
-        )
-
-        tag_cache_path = self._build_tag_cache_path(start_frame, end_frame)
-        if tag_cache_path is None:
-            return None
-
-        # Check for existing, valid cache
-        if tag_cache_path.exists():
-            probe = TagObservationCache(str(tag_cache_path), mode="r")
-            if probe.is_compatible() and probe.covers_frame_range(
-                start_frame, end_frame
-            ):
-                logger.info(
-                    "Reusing existing tag observation cache: %s", tag_cache_path
-                )
-                probe.close()
-                return str(tag_cache_path)
-            probe.close()
-            tag_cache_path.unlink(missing_ok=True)
-
-        logger.info("=" * 80)
-        logger.info("APRILTAG PRECOMPUTE: scanning OBB crops for tags")
-        logger.info("=" * 80)
-
-        cfg = AprilTagConfig.from_params(params)
-        try:
-            at_detector = AprilTagDetector(cfg)
-        except ImportError as exc:
-            logger.warning("AprilTag precompute skipped: %s", exc)
-            self.warning_signal.emit(
-                "AprilTag Unavailable",
-                str(exc),
-            )
-            return None
-
-        tag_cache = TagObservationCache(
-            str(tag_cache_path), mode="w", start_frame=start_frame, end_frame=end_frame
-        )
-
-        resize_f = float(params.get("RESIZE_FACTOR", 1.0))
-        total = max(1, end_frame - start_frame + 1)
-        tags_detected = 0
-        frames_with_tags = 0
-
-        # Reuse the shared crop-quality settings from Individual Analysis Pipeline
-        _at_padding = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
-        _at_suppress = bool(params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True))
-        _bg_raw = params.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
-        _at_bg_color = (
-            tuple(int(c) for c in _bg_raw)
-            if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
-            else (0, 0, 0)
-        )
-
-        self.progress_signal.emit(0, "AprilTag precompute: starting...")
-
-        # We need actual video frames to crop from
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-        for fid in range(start_frame, end_frame + 1):
-            if self._stop_requested:
-                logger.info("AprilTag precompute cancelled by user.")
-                tag_cache.close()
-                at_detector.close()
-                return None
-
-            # Read frame
-            ret, frame = cap.read()
-            if not ret or frame is None:
-                tag_cache.add_frame(fid, [], [], [], [])
-                continue
-
-            # Get cached detections for this frame
-            try:
-                (
-                    meas,
-                    _sizes,
-                    _shapes,
-                    _confs,
-                    obb_corners,
-                    detection_ids,
-                    _hh,
-                    _dm,
-                ) = detection_cache.get_frame(fid)
-            except Exception:
-                tag_cache.add_frame(fid, [], [], [], [])
-                continue
-
-            if not obb_corners:
-                tag_cache.add_frame(fid, [], [], [], [])
-                continue
-
-            # Scale OBB corners from detection resolution to original frame resolution
-            scale = 1.0 / resize_f if resize_f > 0 else 1.0
-            scaled_corners = [
-                np.asarray(c, dtype=np.float32) * scale for c in obb_corners
-            ]
-
-            det_idx_list = (
-                list(range(len(obb_corners)))
-                if not detection_ids
-                else [int(d) for d in detection_ids]
-            )
-
-            # Extract crops using the shared pipeline infrastructure so we get
-            # the same padding, background fill, and foreign-OBB suppression as
-            # the pose / dataset pipelines.
-            at_crops: list = []
-            at_offsets: list = []
-            at_det_indices: list = []
-            for _di, _corners in enumerate(scaled_corners):
-                _crop, _offset = self._extract_expanded_obb_crop(
-                    frame, _corners, _at_padding
-                )
-                if _crop is None or _offset is None:
-                    continue
-                if _at_suppress and len(scaled_corners) > 1:
-                    from multi_tracker.core.tracking.pose_features import (
-                        apply_foreign_obb_mask,
+            cfg = AprilTagConfig.from_params(params)
+            tag_cache_path = self._build_tag_cache_path(start_frame, end_frame)
+            if tag_cache_path is not None:
+                try:
+                    phase = AprilTagPrecomputePhase(
+                        detector_config=cfg,
+                        cache_path=tag_cache_path,
+                        start_frame=start_frame,
+                        end_frame=end_frame,
+                        video_path=str(Path(self.video_path).expanduser().resolve()),
                     )
+                    phases.append(phase)
+                except ImportError as exc:
+                    logger.warning("AprilTag precompute skipped: %s", exc)
+                    self.warning_signal.emit("AprilTag Unavailable", str(exc))
 
-                    _other = [
-                        scaled_corners[_j]
-                        for _j in range(len(scaled_corners))
-                        if _j != _di
-                    ]
-                    _crop = apply_foreign_obb_mask(
-                        _crop,
-                        _offset[0],
-                        _offset[1],
-                        _other,
-                        background_color=_at_bg_color,
+        # --- CNN Identity ---
+        if identity_method == "cnn_classifier":
+            model_path = str(params.get("CNN_CLASSIFIER_MODEL_PATH", ""))
+            if model_path and os.path.exists(model_path):
+                from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+
+                cnn_cfg = CNNIdentityConfig(
+                    model_path=model_path,
+                    confidence=float(params.get("CNN_CLASSIFIER_CONFIDENCE", 0.5)),
+                    batch_size=int(params.get("CNN_CLASSIFIER_BATCH_SIZE", 64)),
+                )
+                cnn_cache_path = self._build_cnn_identity_cache_path(
+                    start_frame, end_frame
+                )
+                if cnn_cache_path:
+                    phase = CNNPrecomputePhase(
+                        config=cnn_cfg,
+                        model_path=model_path,
+                        cache_path=cnn_cache_path,
+                        compute_runtime=str(params.get("COMPUTE_RUNTIME", "cpu")),
+                        name="cnn_identity",
                     )
-                at_crops.append(_crop)
-                at_offsets.append(_offset)
-                at_det_indices.append(det_idx_list[_di])
-
-            observations = at_detector.detect_in_crops(
-                at_crops, at_offsets, det_indices=at_det_indices
-            )
-
-            if observations:
-                tag_cache.add_frame(
-                    fid,
-                    tag_ids=[o.tag_id for o in observations],
-                    centers_xy=[o.center_xy for o in observations],
-                    corners=[o.corners for o in observations],
-                    det_indices=[o.det_index for o in observations],
-                    hammings=[o.hamming for o in observations],
-                )
-                tags_detected += len(observations)
-                frames_with_tags += 1
+                    phases.append(phase)
             else:
-                tag_cache.add_frame(fid, [], [], [], [])
-
-            # Progress update every 50 frames
-            done = fid - start_frame + 1
-            if done % 50 == 0 or fid == end_frame:
-                pct = int(100 * done / total)
-                self.progress_signal.emit(
-                    pct,
-                    f"AprilTag precompute: {done}/{total} frames, "
-                    f"{tags_detected} tags in {frames_with_tags} frames",
+                logger.warning(
+                    "CNN identity precompute skipped: model_path not found: %s",
+                    model_path,
                 )
 
-        # Save
-        from multi_tracker.data.tag_observation_cache import detection_cache_hash
-
-        det_hash = ""
-        try:
-            det_hash = detection_cache_hash(self.detection_cache_path)
-        except Exception:
-            pass
-
-        tag_cache.save(
-            metadata={
-                "family": cfg.family,
-                "detection_cache_hash": det_hash,
-                "video_path": str(Path(self.video_path).expanduser().resolve()),
-                "start_frame": start_frame,
-                "end_frame": end_frame,
-            }
-        )
-        tag_cache.close()
-        at_detector.close()
-
-        # Reset video position for subsequent phases
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-        logger.info(
-            "AprilTag precompute complete: %d tags in %d/%d frames → %s",
-            tags_detected,
-            frames_with_tags,
-            total,
-            tag_cache_path,
-        )
-        self.progress_signal.emit(
-            100,
-            f"AprilTag precompute done: {tags_detected} tags in {frames_with_tags} frames.",
-        )
-        return str(tag_cache_path)
+        return phases
 
     def _run_batched_detection_phase(
         self, cap, detection_cache, detector, params, start_frame, end_frame
@@ -1387,8 +959,17 @@ class TrackingWorker(QThread):
             individual_pipeline_enabled = False
             individual_image_save_enabled = False
 
-        individual_data_precompute_enabled = self._should_precompute_individual_data(
-            p, detection_method
+        # Whether any precompute phase will be needed (pose, AprilTag, CNN identity).
+        # Used to gate detection-cache requirements and force two-phase YOLO detection.
+        _identity_method = str(p.get("IDENTITY_METHOD", "none_disabled")).lower()
+        individual_data_precompute_enabled = bool(
+            not self.backward_mode
+            and not self.preview_mode
+            and detection_method == "yolo_obb"
+            and (
+                bool(p.get("ENABLE_POSE_EXTRACTOR", False))
+                or _identity_method in ("apriltags", "cnn_classifier")
+            )
         )
         if individual_data_precompute_enabled and not self.detection_cache_path:
             logger.error(
@@ -1402,7 +983,7 @@ class TrackingWorker(QThread):
         # Force two-phase detection in YOLO mode so precompute can run on cached detections.
         if individual_data_precompute_enabled and not use_batched_detection:
             use_batched_detection = True
-            logger.info("Enabling batched YOLO prepass for pose precompute.")
+            logger.info("Enabling batched YOLO prepass for precompute.")
 
         # Initialize individual dataset generator for image persistence only.
         individual_generator = None
@@ -1794,87 +1375,59 @@ class TrackingWorker(QThread):
                     # Ensure video is reset even on failure.
                     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-        if individual_data_precompute_enabled:
-            if detection_cache is None or not use_cached_detections:
-                logger.error(
-                    "Individual properties precompute requires cached raw detections."
-                )
-                if detection_cache:
-                    detection_cache.close()
-                cap.release()
-                if self.video_writer:
-                    self.video_writer.release()
-                self.finished_signal.emit(False, [], [])
-                return
-
-            try:
-                props_path, props_cache_hit = self._precompute_pose_data(
-                    detector, p, detection_cache, start_frame, end_frame
-                )
-
-                if props_path:
-                    state = "hit" if props_cache_hit else "miss"
-                    logger.info("Individual properties cache %s: %s", state, props_path)
-
-            except Exception as exc:
-                logger.exception("Individual data precompute failed.")
-                self.warning_signal.emit(
-                    "Individual Precompute Failed",
-                    f"Aborting tracking run because individual precompute failed:\n{exc}",
-                )
-                if detection_cache:
-                    detection_cache.close()
-                cap.release()
-                if self.video_writer:
-                    self.video_writer.release()
-                self.finished_signal.emit(False, [], [])
-                return
-
-        # === APRILTAG PRECOMPUTE ===
-        apriltag_precompute_enabled = self._should_precompute_apriltag_data(
-            p, detection_method
-        )
+        # === UNIFIED PRECOMPUTE ===
+        props_path = None
         tag_observation_cache_path = None
-        if (
-            apriltag_precompute_enabled
-            and detection_cache is not None
-            and use_cached_detections
-        ):
-            try:
-                tag_observation_cache_path = self._run_apriltag_precompute(
-                    detection_cache, p, cap, start_frame, end_frame
-                )
-            except Exception:
-                logger.exception("AprilTag precompute failed (non-fatal).")
-                self.warning_signal.emit(
-                    "AprilTag Precompute Failed",
-                    "AprilTag detection could not be completed. "
-                    "Tracking will proceed without tag identity signals.",
-                )
-
-        # CNN Identity precompute — mirrors AprilTag precompute pattern
         cnn_identity_cache_path = None
-        cnn_identity_precompute_enabled = self._should_precompute_cnn_identity_data(
-            p, detection_method
+
+        phases = self._build_precompute_phases(
+            p, detection_method, detection_cache, start_frame, end_frame
         )
-        if (
-            cnn_identity_precompute_enabled
-            and detection_cache is not None
-            and use_cached_detections
-        ):
+        if phases:
+            _bg_raw = p.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
+            crop_config = CropConfig(
+                padding_fraction=float(p.get("INDIVIDUAL_CROP_PADDING", 0.1)),
+                suppress_foreign=bool(p.get("SUPPRESS_FOREIGN_OBB_REGIONS", True)),
+                bg_color=(
+                    tuple(int(c) for c in _bg_raw)
+                    if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
+                    else (0, 0, 0)
+                ),
+            )
+            precompute = UnifiedPrecompute(phases, crop_config)
             try:
-                cnn_identity_cache_path = self._run_cnn_identity_precompute(
-                    detection_cache, p, cap, start_frame, end_frame
+                results = precompute.run(
+                    cap,
+                    detection_cache,
+                    detector,
+                    start_frame,
+                    end_frame,
+                    float(p.get("RESIZE_FACTOR", 1.0)),
+                    p.get("ROI_MASK", None),
+                    progress_cb=lambda pct, msg: self.progress_signal.emit(pct, msg),
+                    stop_check=lambda: self._stop_requested,
+                    warning_cb=lambda title, msg: self.warning_signal.emit(title, msg),
                 )
-            except Exception as _cnn_pre_exc:
-                logger.warning(
-                    "CNN identity precompute failed (tracking continues without it): %s",
-                    _cnn_pre_exc,
-                )
+            except Exception as exc:
+                logger.exception("Unified precompute failed (fatal phase).")
                 self.warning_signal.emit(
-                    "CNN Identity Precompute Failed",
-                    f"CNN identity precompute failed: {_cnn_pre_exc}",
+                    "Precompute Failed",
+                    f"Tracking aborted because precompute failed:\n{exc}",
                 )
+                if detection_cache:
+                    detection_cache.close()
+                cap.release()
+                if self.video_writer:
+                    self.video_writer.release()
+                self.finished_signal.emit(False, [], [])
+                return
+
+            props_path = results.get("pose")
+            tag_observation_cache_path = results.get("apriltag")
+            cnn_identity_cache_path = results.get("cnn_identity")
+
+            if props_path:
+                logger.info("Individual properties cache: %s", props_path)
 
         # Open tag observation cache for reading during tracking loop.
         tag_obs_cache = None
