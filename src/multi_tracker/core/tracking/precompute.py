@@ -54,6 +54,10 @@ class PrecomputePhase:
 
         Called with empty lists when no detections exist for the frame.
         Must be a no-op when has_cache_hit() returned True.
+
+        Note: len(crops) <= len(all_obb). Not every OBB produces a crop (zero-size
+        or invalid bounding boxes yield None from extract_one_crop and are skipped).
+        crop_det_ids[i] gives the detection index into all_obb for crops[i].
         """
         raise NotImplementedError
 
@@ -136,7 +140,19 @@ class UnifiedPrecompute:
             results: Dict[str, Optional[str]] = {}
             try:
                 for p in self._phases:
-                    results[p.name] = p.finalize()
+                    try:
+                        results[p.name] = p.finalize()
+                    except Exception as exc:
+                        if p.is_fatal:
+                            raise
+                        logger.warning(
+                            "Precompute phase '%s' finalize failed (cache-hit path): %s",
+                            p.name,
+                            exc,
+                        )
+                        if warning_cb:
+                            warning_cb(f"Precompute Warning ({p.name})", str(exc))
+                        results[p.name] = None
             finally:
                 for p in self._phases:
                     try:
@@ -155,7 +171,15 @@ class UnifiedPrecompute:
 
             # read + optional resize
             ret, frame = cap.read()
-            if ret and resize_factor < 1.0:
+            if not ret:
+                logger.warning(
+                    "cap.read() failed at frame %d (frame %d/%d) — stopping precompute early",
+                    frame_idx,
+                    rel_idx + 1,
+                    total,
+                )
+                break
+            if resize_factor < 1.0:
                 frame = cv2.resize(
                     frame,
                     (0, 0),
@@ -209,7 +233,7 @@ class UnifiedPrecompute:
             crop_det_ids: List[int] = []
             crop_offsets: List[Tuple[int, int]] = []
 
-            if ret and frame is not None and all_obb:
+            if all_obb:
                 for di, corners in enumerate(all_obb):
                     result = extract_one_crop(
                         frame,

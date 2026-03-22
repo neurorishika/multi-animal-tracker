@@ -291,3 +291,49 @@ def test_crop_offsets_passed_to_process_frame():
     frame_idx, crops, det_ids, all_obb, crop_offsets = args
     assert len(crop_offsets) == 1
     assert crop_offsets[0] == (5, 7)  # int tuple
+
+
+# ---------------------------------------------------------------------------
+# cap.read() failure mid-sequence → stops early
+# ---------------------------------------------------------------------------
+
+
+def test_cap_read_failure_mid_sequence_stops_early():
+    p = _make_phase("x", finalize_return="/x")
+    cap = Mock()
+    cap.read.side_effect = [
+        (True, np.zeros((10, 10, 3), dtype=np.uint8)),
+        (True, np.zeros((10, 10, 3), dtype=np.uint8)),
+        (False, None),
+    ]
+    up = UnifiedPrecompute([p], CropConfig())
+    result = up.run(cap, _make_det_cache(), _make_detector(), 0, 4, 1.0, None)
+    # stopped at frame 2, frames 3-4 not read
+    assert cap.read.call_count == 3
+    assert result == {"x": "/x"}
+
+
+# ---------------------------------------------------------------------------
+# All-cache-hit path: non-fatal finalize raises → None in result; warning_cb called
+# ---------------------------------------------------------------------------
+
+
+def test_all_cache_hit_nonfatal_finalize_raises_returns_none_and_warns():
+    p = _make_phase("x", cache_hit=True, is_fatal=False)
+    p.finalize.side_effect = RuntimeError("cache corrupt")
+    warnings = []
+
+    up = UnifiedPrecompute([p], CropConfig())
+    result = up.run(
+        _make_cap(),
+        _make_det_cache(),
+        _make_detector(),
+        0,
+        5,
+        1.0,
+        None,
+        warning_cb=lambda t, m: warnings.append((t, m)),
+    )
+    assert result == {"x": None}
+    assert len(warnings) == 1
+    p.close.assert_called_once()
