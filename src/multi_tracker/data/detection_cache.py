@@ -14,6 +14,39 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _normalize_detection_ids(detection_ids):
+    """Return integer detection IDs from persisted cache values.
+
+    Legacy caches stored IDs as float64. Accept those values when they are
+    finite whole numbers so existing caches remain readable.
+    """
+    if detection_ids is None:
+        return []
+
+    arr = np.asarray(detection_ids)
+    if arr.size == 0:
+        return []
+
+    normalized = []
+    for raw_value in arr.reshape(-1).tolist():
+        if isinstance(raw_value, (np.integer, int)):
+            normalized.append(int(raw_value))
+            continue
+
+        try:
+            float_value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid detection ID value: {raw_value!r}") from exc
+
+        if not np.isfinite(float_value) or not float_value.is_integer():
+            raise ValueError(
+                f"Detection ID must be a finite whole number, got {raw_value!r}"
+            )
+        normalized.append(int(float_value))
+
+    return normalized
+
+
 class DetectionCache:
     """
     Efficient frame-by-frame detection cache using NPZ format.
@@ -130,9 +163,11 @@ class DetectionCache:
 
             # Store detection IDs if provided
             if detection_ids and len(detection_ids) > 0:
-                detection_ids_arr = np.array(detection_ids, dtype=np.float64)
+                detection_ids_arr = np.array(
+                    _normalize_detection_ids(detection_ids), dtype=np.int64
+                )
             else:
-                detection_ids_arr = np.array([], dtype=np.float64)
+                detection_ids_arr = np.array([], dtype=np.int64)
 
             # Store OBB corners if provided (YOLO detection)
             if obb_corners and len(obb_corners) > 0:
@@ -155,7 +190,7 @@ class DetectionCache:
             sizes_arr = np.array([], dtype=np.float32)
             shapes_arr = np.array([], dtype=np.float32).reshape(0, 2)
             confidences_arr = np.array([], dtype=np.float32)
-            detection_ids_arr = np.array([], dtype=np.float64)
+            detection_ids_arr = np.array([], dtype=np.int64)
             obb_arr = np.array([], dtype=np.float32)
             heading_hints_arr = np.array([], dtype=np.float32)
             directed_mask_arr = np.array([], dtype=np.uint8)
@@ -247,7 +282,7 @@ class DetectionCache:
             f"{frame_key}_confidences", np.array([], dtype=np.float32)
         )
         detection_ids_arr = self._loaded_data.get(
-            f"{frame_key}_detection_ids", np.array([], dtype=np.float64)
+            f"{frame_key}_detection_ids", np.array([], dtype=np.int64)
         )
         obb_arr = self._loaded_data.get(
             f"{frame_key}_obb", np.array([], dtype=np.float32)
@@ -269,7 +304,7 @@ class DetectionCache:
             else []
         )
         confidences = confidences_arr.tolist()
-        detection_ids = detection_ids_arr.tolist()
+        detection_ids = _normalize_detection_ids(detection_ids_arr)
 
         # OBB corners (list of arrays)
         if len(obb_arr) > 0 and obb_arr.ndim > 1:
@@ -316,6 +351,10 @@ class DetectionCache:
             frame_idx in self._cached_frames
             for frame_idx in range(start_frame, end_frame + 1)
         )
+
+    def matches_frame_range(self, start_frame, end_frame):
+        """Return whether the cache metadata exactly matches the requested range."""
+        return self._start_frame == start_frame and self._end_frame == end_frame
 
     def get_missing_frames(
         self: object, start_frame: object, end_frame: object, max_report: object = 10

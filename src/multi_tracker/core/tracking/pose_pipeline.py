@@ -47,13 +47,27 @@ class FrameCropResult:
     """Aggregated crop-extraction output for a single video frame."""
 
     frame_idx: int
-    det_ids: List[float]
+    det_ids: List[int]
     n_dets: int
     crops: List[np.ndarray]
     crop_to_det: List[int]
     crop_offsets: Dict[int, Tuple[int, int]]
     all_obb_corners: List[np.ndarray]
     crop_transforms: Dict[int, CropTransform] = field(default_factory=dict)
+
+
+def _require_detection_index(det_idx: int, n_dets: int) -> int:
+    """Return a validated detection-slot index for per-frame lists."""
+    if not isinstance(det_idx, (int, np.integer)):
+        raise TypeError(
+            f"Detection slot index must be an integer, got {type(det_idx).__name__}"
+        )
+    normalized = int(det_idx)
+    if normalized < 0 or normalized >= int(n_dets):
+        raise IndexError(
+            f"Detection slot index {normalized} out of range for {int(n_dets)} detections"
+        )
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +214,7 @@ class AsyncCacheWriter:
     def submit(
         self,
         frame_idx: int,
-        det_ids: List[float],
+        det_ids: List[int],
         kp_list: List[Optional[np.ndarray]],
     ) -> None:
         """Enqueue a frame of pose results for background writing."""
@@ -415,7 +429,8 @@ class PosePipeline:
         self,
         frame_idx: int,
         crops: List[np.ndarray],
-        det_ids: List[int],
+        detection_ids: List[int],
+        crop_det_indices: List[int],
         all_obb: List[np.ndarray],
         crop_offsets: List[Tuple[int, int]],
     ) -> None:
@@ -432,7 +447,7 @@ class PosePipeline:
 
         fcr = FrameCropResult(
             frame_idx=frame_idx,
-            det_ids=list(det_ids),
+            det_ids=[int(det_id) for det_id in detection_ids],
             n_dets=len(all_obb),
             crops=[],
             crop_to_det=[],
@@ -441,16 +456,17 @@ class PosePipeline:
             crop_transforms={},
         )
 
-        for crop, offset, det_id in zip(crops, crop_offsets, det_ids):
+        for crop, offset, det_idx in zip(crops, crop_offsets, crop_det_indices):
+            slot_idx = _require_detection_index(det_idx, fcr.n_dets)
             processed = crop
             if self._pre_resize > 0:
                 processed, transform = letterbox_crop(
                     processed, self._pre_resize, self._bg_color
                 )
-                fcr.crop_transforms[det_id] = transform
+                fcr.crop_transforms[slot_idx] = transform
             fcr.crops.append(processed)
-            fcr.crop_to_det.append(det_id)
-            fcr.crop_offsets[det_id] = offset
+            fcr.crop_to_det.append(slot_idx)
+            fcr.crop_offsets[slot_idx] = offset
 
         self._pending.append(fcr)
         self._flat_crops.extend(fcr.crops)
@@ -471,6 +487,8 @@ class PosePipeline:
         """Flush in-flight inference, write cache, return path."""
         if self._cache_hit:
             return self._cache_path
+        if self._pending or self._flat_crops:
+            self._flush()
         self._wait_inflight()
         self._close_async_cache()
         logger.info("Pose properties cache saved: %s", self._cache_path)
@@ -507,7 +525,7 @@ class PosePipeline:
         """Extract crops for every detection in one frame using the thread pool."""
         fcr = FrameCropResult(
             frame_idx=frame_idx,
-            det_ids=det_ids,
+            det_ids=[int(det_id) for det_id in det_ids],
             n_dets=len(meas),
             crops=[],
             crop_to_det=[],
@@ -540,14 +558,15 @@ class PosePipeline:
             if result is None:
                 continue
             crop, offset, det_idx = result
+            slot_idx = _require_detection_index(det_idx, fcr.n_dets)
 
             if self._pre_resize > 0:
                 crop, transform = letterbox_crop(crop, self._pre_resize, self._bg_color)
-                fcr.crop_transforms[det_idx] = transform
+                fcr.crop_transforms[slot_idx] = transform
 
             fcr.crops.append(crop)
-            fcr.crop_to_det.append(det_idx)
-            fcr.crop_offsets[det_idx] = offset
+            fcr.crop_to_det.append(slot_idx)
+            fcr.crop_offsets[slot_idx] = offset
 
         return fcr
 
@@ -598,13 +617,14 @@ class PosePipeline:
             for ci, det_idx in enumerate(pf.crop_to_det):
                 if ci >= len(batch_slice):
                     break
+                slot_idx = _require_detection_index(det_idx, pf.n_dets)
                 out = batch_slice[ci]
                 kpts = out.keypoints
-                crop_offset = pf.crop_offsets.get(det_idx)
+                crop_offset = pf.crop_offsets.get(slot_idx)
                 if kpts is not None and crop_offset is not None and len(kpts) > 0:
                     gkpts = np.asarray(kpts, dtype=np.float32).copy()
                     # Undo letterbox if pre-resized
-                    transform = pf.crop_transforms.get(det_idx)
+                    transform = pf.crop_transforms.get(slot_idx)
                     if transform is not None:
                         gkpts = invert_letterbox_keypoints(gkpts, transform)
                     # Map crop-local → frame-global coordinates
@@ -618,11 +638,11 @@ class PosePipeline:
                         )
 
                         gkpts = filter_keypoints_by_foreign_obbs(
-                            gkpts, pf.all_obb_corners, target_idx=det_idx
+                            gkpts, pf.all_obb_corners, target_idx=slot_idx
                         )
-                    pose_outputs[det_idx] = gkpts
+                    pose_outputs[slot_idx] = gkpts
                 elif kpts is not None:
-                    pose_outputs[det_idx] = kpts
+                    pose_outputs[slot_idx] = kpts
 
             if self._async_cache:
                 self._async_cache.submit(pf.frame_idx, pf.det_ids, pose_outputs)

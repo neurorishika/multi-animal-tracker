@@ -322,11 +322,34 @@ class TrackAssigner:
         _tag_mismatch_penalty = float(p.get("TAG_MISMATCH_PENALTY", 50.0))
         _NO_TAG = -1
 
-        # --- CNN Classifier identity cost config ---
-        _det_cnn_classes = association_data.get("detection_cnn_classes", [])
-        _track_cnn_identities = association_data.get("track_cnn_identities", [])
-        _cnn_match_bonus = float(p.get("CNN_CLASSIFIER_MATCH_BONUS", 20.0))
-        _cnn_mismatch_penalty = float(p.get("CNN_CLASSIFIER_MISMATCH_PENALTY", 50.0))
+        # --- CNN Classifier identity cost config (multi-phase) ---
+        _cnn_phases = association_data.get("cnn_phases", None)
+        # Backward compat: old flat keys
+        if _cnn_phases is None:
+            _old_det = association_data.get("detection_cnn_classes")
+            _old_trk = association_data.get("track_cnn_identities")
+            if _old_det is not None and _old_trk is not None:
+                _cnn_phases = [
+                    {
+                        "label": "cnn_identity",
+                        "match_bonus": float(p.get("CNN_CLASSIFIER_MATCH_BONUS", 20.0)),
+                        "mismatch_penalty": float(
+                            p.get("CNN_CLASSIFIER_MISMATCH_PENALTY", 50.0)
+                        ),
+                        "detection_classes": _old_det,
+                        "track_identities": _old_trk,
+                    }
+                ]
+            else:
+                _cnn_phases = []
+
+        # Identity-scale normalization:
+        # N_total = AprilTags (1 if any det has a tag) + number of CNN phases
+        # Each factor contributes 1/N_total of its bonus/penalty.
+        # Full bonus/penalty only when ALL factors agree.
+        # When N_total==1, scale==1.0 (no change from current single-method behavior).
+        _n_identity_factors = (1 if _det_tag_ids else 0) + len(_cnn_phases)
+        _identity_scale = 1.0 / _n_identity_factors if _n_identity_factors > 1 else 1.0
 
         for track_idx, det_indices in candidates.items():
             inv_S = S_inv_batch[track_idx, :2, :2]
@@ -401,28 +424,23 @@ class TrackAssigner:
                 )
                 if _dt != _NO_TAG and _tt != _NO_TAG:
                     if _dt == _tt:
-                        motion_core_cost -= _tag_match_bonus
+                        motion_core_cost -= _tag_match_bonus * _identity_scale
                     else:
-                        motion_core_cost += _tag_mismatch_penalty
+                        motion_core_cost += _tag_mismatch_penalty * _identity_scale
 
-                # --- CNN identity bonus / penalty ---
-                _det_cls = (
-                    _det_cnn_classes[det_idx]
-                    if det_idx < len(_det_cnn_classes)
-                    else None
-                )
-                _track_cls = (
-                    _track_cnn_identities[track_idx]
-                    if track_idx < len(_track_cnn_identities)
-                    else None
-                )
-                motion_core_cost = _apply_cnn_identity_cost(
-                    motion_core_cost,
-                    _det_cls,
-                    _track_cls,
-                    _cnn_match_bonus,
-                    _cnn_mismatch_penalty,
-                )
+                # --- CNN identity bonus / penalty (multi-phase) ---
+                for _phase in _cnn_phases:
+                    _dc = _phase["detection_classes"]
+                    _ti = _phase["track_identities"]
+                    _det_cls = _dc[det_idx] if det_idx < len(_dc) else None
+                    _trk_cls = _ti[track_idx] if track_idx < len(_ti) else None
+                    motion_core_cost = _apply_cnn_identity_cost(
+                        motion_core_cost,
+                        _det_cls,
+                        _trk_cls,
+                        _phase["match_bonus"] * _identity_scale,
+                        _phase["mismatch_penalty"] * _identity_scale,
+                    )
 
                 cost[track_idx, det_idx] = motion_core_cost
 

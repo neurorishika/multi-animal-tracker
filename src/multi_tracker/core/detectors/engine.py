@@ -16,6 +16,40 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_detection_ids(detection_ids):
+    """Normalize detection IDs to runtime integers.
+
+    Cached raw detections may come back as float-backed arrays from older NPZ
+    files. Accept finite whole-number values to preserve compatibility.
+    """
+    if detection_ids is None:
+        return None
+
+    arr = np.asarray(detection_ids)
+    if arr.size == 0:
+        return []
+
+    normalized = []
+    for raw_value in arr.reshape(-1).tolist():
+        if isinstance(raw_value, (np.integer, int)):
+            normalized.append(int(raw_value))
+            continue
+
+        try:
+            float_value = float(raw_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid detection ID value: {raw_value!r}") from exc
+
+        if not np.isfinite(float_value) or not float_value.is_integer():
+            raise ValueError(
+                f"Detection ID must be a finite whole number, got {raw_value!r}"
+            )
+        normalized.append(int(float_value))
+
+    return normalized
+
+
 _HEADTAIL_DIRECTIONAL_CLASS_SET = frozenset({"left", "right"})
 _HEADTAIL_FIVE_CLASS_SET = frozenset({"up", "down", "left", "right", "unknown"})
 
@@ -1994,9 +2028,11 @@ class YOLOOBBDetector:
         conf_arr = np.ascontiguousarray(np.asarray(confidences, dtype=np.float32))
 
         if detection_ids is None:
-            ids_arr = np.arange(len(meas_arr), dtype=np.float64)
+            ids_arr = np.arange(len(meas_arr), dtype=np.int64)
         else:
-            ids_arr = np.ascontiguousarray(np.asarray(detection_ids, dtype=np.float64))
+            ids_arr = np.ascontiguousarray(
+                np.asarray(_normalize_detection_ids(detection_ids), dtype=np.int64)
+            )
 
         n = min(
             len(meas_arr), len(sizes_arr), len(shapes_arr), len(conf_arr), len(ids_arr)
@@ -2076,7 +2112,7 @@ class YOLOOBBDetector:
         sizes_list = sizes_arr.tolist()
         shapes_list = [tuple(shapes_arr[i]) for i in range(len(shapes_arr))]
         conf_list = conf_arr.tolist()
-        ids_list = ids_arr.tolist()
+        ids_list = [int(v) for v in ids_arr.tolist()]
         obb_list = [obb_arr[i] for i in range(len(obb_arr))]
         heading_list = heading_arr.tolist() if heading_arr is not None else None
         directed_list = directed_arr.tolist() if directed_arr is not None else None

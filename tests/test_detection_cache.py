@@ -72,7 +72,7 @@ def test_detection_cache_roundtrip_and_range_checks(tmp_path: Path) -> None:
         assert shapes == [(10.0, 1.2)]
         assert confidences == [0.949999988079071] or confidences == [0.95]
         assert len(obb) == 1
-        assert det_ids == [100001.0]
+        assert det_ids == [100001]
         assert np.allclose(heading_hints, [0.1], rtol=1e-6, atol=1e-6)
         assert directed_mask == [1]
 

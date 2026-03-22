@@ -311,7 +311,7 @@ def test_filter_raw_detections_applies_conf_size_and_target_limit() -> None:
     assert len(out_meas) == 2
     assert out_sizes == [120.0, 80.0]
     assert np.allclose(out_conf, [0.95, 0.8], rtol=1e-6, atol=1e-6)
-    assert out_ids == [101.0, 102.0]
+    assert out_ids == [101, 102]
 
 
 def test_filter_raw_detections_applies_roi_mask() -> None:
@@ -346,7 +346,7 @@ def test_filter_raw_detections_applies_roi_mask() -> None:
     _, out_sizes, _, out_conf, _, out_ids = out
     assert out_sizes == [50.0]
     assert np.allclose(out_conf, [0.6], rtol=1e-6, atol=1e-6)
-    assert out_ids == [1.0]
+    assert out_ids == [1]
 
 
 def test_filter_raw_detections_filters_heading_hints_consistently() -> None:
@@ -388,7 +388,7 @@ def test_filter_raw_detections_filters_heading_hints_consistently() -> None:
     _, out_sizes, _, out_conf, _, out_ids, out_heading, out_directed = out
     assert out_sizes == [50.0]
     assert np.allclose(out_conf, [0.6], rtol=1e-6, atol=1e-6)
-    assert out_ids == [1.0]
+    assert out_ids == [1]
     assert np.allclose(out_heading, [0.25], rtol=1e-6, atol=1e-6)
     assert out_directed == [1]
 

@@ -117,6 +117,8 @@
   "metric_high_uncertainty": true,
   "enable_identity_analysis": false,
   "identity_method": "none_disabled",
+  "use_apriltags": false,
+  "cnn_classifiers": [],
   "identity_crop_size_multiplier": 3.0,
   "identity_crop_min_size": 64,
   "identity_crop_max_size": 256,

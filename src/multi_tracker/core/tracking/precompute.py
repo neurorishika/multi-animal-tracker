@@ -55,7 +55,8 @@ class PrecomputePhase:
         self,
         frame_idx: int,
         crops: List[np.ndarray],
-        det_ids: List[int],
+        detection_ids: List[int],
+        crop_det_indices: List[int],
         all_obb: List[np.ndarray],
         crop_offsets: List[Tuple[int, int]],
     ) -> None:
@@ -66,7 +67,9 @@ class PrecomputePhase:
 
         Note: len(crops) <= len(all_obb). Not every OBB produces a crop (zero-size
         or invalid bounding boxes yield None from extract_one_crop and are skipped).
-        crop_det_ids[i] gives the detection index into all_obb for crops[i].
+        detection_ids gives the full detection-ID list for the frame, aligned to
+        all_obb. crop_det_indices[i] gives the detection-slot index into all_obb
+        for crops[i].
         """
         raise NotImplementedError
 
@@ -239,7 +242,7 @@ class UnifiedPrecompute:
 
             # extract crops ONCE — shared across all phases
             crops: List[np.ndarray] = []
-            crop_det_ids: List[int] = []
+            crop_det_indices: List[int] = []
             crop_offsets: List[Tuple[int, int]] = []
 
             if all_obb:
@@ -256,15 +259,23 @@ class UnifiedPrecompute:
                     if result is not None:
                         crop, offset, _ = result
                         crops.append(crop)
-                        crop_det_ids.append(
-                            det_ids[di] if det_ids and di < len(det_ids) else di
-                        )
+                        crop_det_indices.append(di)
                         crop_offsets.append((int(offset[0]), int(offset[1])))
+
+            frame_detection_ids = [
+                int(det_ids[i]) if det_ids and i < len(det_ids) else i
+                for i in range(len(all_obb))
+            ]
 
             # fan-out to all phases
             for phase in self._phases:
                 phase.process_frame(
-                    frame_idx, crops, crop_det_ids, all_obb, crop_offsets
+                    frame_idx,
+                    crops,
+                    frame_detection_ids,
+                    crop_det_indices,
+                    all_obb,
+                    crop_offsets,
                 )
 
             # cancellation check — AFTER processing the frame
@@ -388,7 +399,8 @@ class AprilTagPrecomputePhase(PrecomputePhase):
         self,
         frame_idx: int,
         crops: List[np.ndarray],
-        det_ids: List[int],
+        detection_ids: List[int],
+        crop_det_indices: List[int],
         all_obb: List[np.ndarray],
         crop_offsets: List[Tuple[int, int]],
     ) -> None:
@@ -409,7 +421,7 @@ class AprilTagPrecomputePhase(PrecomputePhase):
             return
 
         observations = self._detector.detect_in_crops(
-            crops, crop_offsets, det_indices=det_ids
+            crops, crop_offsets, det_indices=crop_det_indices
         )
 
         if not observations:
@@ -512,7 +524,8 @@ class CNNPrecomputePhase(PrecomputePhase):
         self,
         frame_idx: int,
         crops: List[np.ndarray],
-        det_ids: List[int],
+        detection_ids: List[int],
+        crop_det_indices: List[int],
         all_obb: List[np.ndarray],
         crop_offsets: List[Tuple[int, int]],
     ) -> None:
@@ -521,10 +534,10 @@ class CNNPrecomputePhase(PrecomputePhase):
         if not crops:
             self._cache.save(frame_idx, [])
             return
-        for crop, det_id in zip(crops, det_ids):
+        for crop, det_idx in zip(crops, crop_det_indices):
             self._pending_crops.append(crop)
             self._pending_frame_idx.append(frame_idx)
-            self._pending_det_ids.append(det_id)
+            self._pending_det_ids.append(det_idx)
 
         if len(self._pending_crops) >= self._cfg.batch_size:
             self._flush_batch()

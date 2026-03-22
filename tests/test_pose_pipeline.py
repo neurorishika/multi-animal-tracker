@@ -374,6 +374,45 @@ class TestPosePipeline:
             assert len(ids) == n_dets
             assert len(kps) == n_dets
 
+    def test_precompute_phase_keeps_detection_ids_and_indexes_by_slot(self):
+        cache_writer = _FakeCacheWriter()
+        backend = _FakeBackend()
+
+        pipeline = PosePipeline(
+            backend,
+            cache_writer,
+            cross_frame_batch=4,
+            crop_workers=1,
+            suppress_foreign_obb=False,
+        )
+
+        crops = [np.zeros((32, 32, 3), dtype=np.uint8) for _ in range(2)]
+        detection_ids = [100001.0, 100002.0]
+        crop_det_indices = [0, 1]
+        all_obb = [
+            _square_corners(20, 20, 10),
+            _square_corners(60, 20, 10),
+        ]
+        crop_offsets = [(5, 7), (15, 17)]
+
+        pipeline.process_frame(
+            0,
+            crops,
+            detection_ids,
+            crop_det_indices,
+            all_obb,
+            crop_offsets,
+        )
+        pipeline.finalize()
+        pipeline.close()
+
+        assert len(cache_writer.frames) == 1
+        frame_idx, ids, kps = cache_writer.frames[0]
+        assert frame_idx == 0
+        assert ids == [100001, 100002]
+        assert len(kps) == 2
+        assert all(kp is not None for kp in kps)
+
     def test_with_pre_resize(self):
         n_frames, n_dets = 3, 1
         frame_h, frame_w = 200, 200

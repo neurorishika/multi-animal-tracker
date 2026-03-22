@@ -408,13 +408,20 @@ class TrackingWorker(QThread):
 
         return self._collapse_obb_axis_theta(measured_theta, reference_theta)
 
-    def _build_cnn_identity_cache_path(self, start_frame, end_frame):
+    def _build_cnn_identity_cache_path(
+        self, label: str, start_frame: int, end_frame: int
+    ):
         """Derive the CNN identity cache path from the detection cache path."""
         if not self.detection_cache_path:
             return None
+        import re as _re
+
         base = Path(self.detection_cache_path)
+        safe_label = _re.sub(r"[^\w-]", "_", label)
         return str(
-            base.with_name(base.stem + f"_cnn_identity_{start_frame}_{end_frame}.npz")
+            base.with_name(
+                base.stem + f"_cnn_{safe_label}_{start_frame}_{end_frame}.npz"
+            )
         )
 
     def _build_tag_cache_path(self, start_frame, end_frame):
@@ -571,8 +578,7 @@ class TrackingWorker(QThread):
             phases.append(pipeline)
 
         # --- AprilTag ---
-        identity_method = str(params.get("IDENTITY_METHOD", "none_disabled")).lower()
-        if identity_method == "apriltags":
+        if bool(params.get("USE_APRILTAGS", False)):
             from multi_tracker.core.identity.apriltag_detector import AprilTagConfig
 
             cfg = AprilTagConfig.from_params(params)
@@ -591,34 +597,36 @@ class TrackingWorker(QThread):
                     logger.warning("AprilTag precompute skipped: %s", exc)
                     self.warning_signal.emit("AprilTag Unavailable", str(exc))
 
-        # --- CNN Identity ---
-        if identity_method == "cnn_classifier":
-            model_path = str(params.get("CNN_CLASSIFIER_MODEL_PATH", ""))
-            if model_path and os.path.exists(model_path):
-                from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
-
-                cnn_cfg = CNNIdentityConfig(
-                    model_path=model_path,
-                    confidence=float(params.get("CNN_CLASSIFIER_CONFIDENCE", 0.5)),
-                    batch_size=int(params.get("CNN_CLASSIFIER_BATCH_SIZE", 64)),
-                )
-                cnn_cache_path = self._build_cnn_identity_cache_path(
-                    start_frame, end_frame
-                )
-                if cnn_cache_path:
-                    phase = CNNPrecomputePhase(
-                        config=cnn_cfg,
-                        model_path=model_path,
-                        cache_path=cnn_cache_path,
-                        compute_runtime=str(params.get("COMPUTE_RUNTIME", "cpu")),
-                        name="cnn_identity",
-                    )
-                    phases.append(phase)
-            else:
+        # --- CNN Identity (multi-phase) ---
+        for cnn_cfg_dict in params.get("CNN_CLASSIFIERS", []):
+            label = str(cnn_cfg_dict.get("label", "cnn_identity"))
+            model_path = str(cnn_cfg_dict.get("model_path", ""))
+            if not model_path or not os.path.exists(model_path):
                 logger.warning(
-                    "CNN identity precompute skipped: model_path not found: %s",
+                    "CNN identity precompute skipped (%s): model not found: %s",
+                    label,
                     model_path,
                 )
+                continue
+            from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+
+            cnn_cfg = CNNIdentityConfig(
+                model_path=model_path,
+                confidence=float(cnn_cfg_dict.get("confidence", 0.5)),
+                batch_size=int(cnn_cfg_dict.get("batch_size", 64)),
+            )
+            cnn_cache_path = self._build_cnn_identity_cache_path(
+                label, start_frame, end_frame
+            )
+            if cnn_cache_path:
+                phase = CNNPrecomputePhase(
+                    config=cnn_cfg,
+                    model_path=model_path,
+                    cache_path=cnn_cache_path,
+                    compute_runtime=str(params.get("COMPUTE_RUNTIME", "cpu")),
+                    name=label,
+                )
+                phases.append(phase)
 
         return phases
 
@@ -961,14 +969,14 @@ class TrackingWorker(QThread):
 
         # Whether any precompute phase will be needed (pose, AprilTag, CNN identity).
         # Used to gate detection-cache requirements and force two-phase YOLO detection.
-        _identity_method = str(p.get("IDENTITY_METHOD", "none_disabled")).lower()
         individual_data_precompute_enabled = bool(
             not self.backward_mode
             and not self.preview_mode
             and detection_method == "yolo_obb"
             and (
                 bool(p.get("ENABLE_POSE_EXTRACTOR", False))
-                or _identity_method in ("apriltags", "cnn_classifier")
+                or bool(p.get("USE_APRILTAGS", False))
+                or bool(p.get("CNN_CLASSIFIERS", []))
             )
         )
         if individual_data_precompute_enabled and not self.detection_cache_path:
@@ -1447,20 +1455,31 @@ class TrackingWorker(QThread):
                     tag_observation_cache_path,
                 )
 
-        # Open CNN identity cache for reading during tracking loop.
-        cnn_identity_cache = None
-        cnn_track_history = None
-        if cnn_identity_cache_path and os.path.exists(cnn_identity_cache_path):
-            from multi_tracker.core.identity.cnn_identity import (
-                CNNIdentityCache,
-                TrackCNNHistory,
-            )
+        # Open CNN identity caches for reading during tracking loop (multi-phase).
+        _cnn_phase_states = (
+            []
+        )  # list of (label, cache, history, match_bonus, mismatch_penalty)
+        for cnn_cfg_dict in p.get("CNN_CLASSIFIERS", []):
+            label = str(cnn_cfg_dict.get("label", "cnn_identity"))
+            _path = self._build_cnn_identity_cache_path(label, start_frame, end_frame)
+            if _path and os.path.exists(_path):
+                from multi_tracker.core.identity.cnn_identity import (
+                    CNNIdentityCache,
+                    TrackCNNHistory,
+                )
 
-            cnn_identity_cache = CNNIdentityCache(cnn_identity_cache_path)
-            cnn_track_history = TrackCNNHistory(
-                N, window=int(p.get("CNN_CLASSIFIER_WINDOW", 10))
-            )
-            logger.info("CNN identity cache loaded: %s", cnn_identity_cache_path)
+                _cache = CNNIdentityCache(_path)
+                _hist = TrackCNNHistory(N, window=int(cnn_cfg_dict.get("window", 10)))
+                _cnn_phase_states.append(
+                    (
+                        label,
+                        _cache,
+                        _hist,
+                        float(cnn_cfg_dict.get("match_bonus", 20.0)),
+                        float(cnn_cfg_dict.get("mismatch_penalty", 50.0)),
+                    )
+                )
+                logger.info("CNN identity cache loaded (%s): %s", label, _path)
 
         # Optional pose-properties reader for directional orientation override.
         pose_props_cache = None
@@ -2009,19 +2028,30 @@ class TrackingWorker(QThread):
                     "track_last_tag_ids": _track_tag_ids,
                 }
 
-                # CNN identity data for assigner
-                _det_cnn_classes, _track_cnn_ids, _cnn_frame_preds = (
-                    _cnn_build_association_entries(
-                        cnn_identity_cache,
-                        cnn_track_history,
+                # CNN identity data for assigner (multi-phase)
+                _cnn_phases_assoc = []
+                _cnn_frame_preds_all = []
+                for label, _cache, _history, _bonus, _penalty in _cnn_phase_states:
+                    _det_cls, _trk_ids, _frame_preds = _cnn_build_association_entries(
+                        _cache,
+                        _history,
                         actual_frame_index,
                         len(meas),
                         N,
                     )
-                )
-                if _det_cnn_classes is not None:
-                    association_data["detection_cnn_classes"] = _det_cnn_classes
-                    association_data["track_cnn_identities"] = _track_cnn_ids
+                    _cnn_frame_preds_all.append(_frame_preds)
+                    if _det_cls is not None:
+                        _cnn_phases_assoc.append(
+                            {
+                                "label": label,
+                                "match_bonus": _bonus,
+                                "mismatch_penalty": _penalty,
+                                "detection_classes": _det_cls,
+                                "track_identities": _trk_ids,
+                            }
+                        )
+                if _cnn_phases_assoc:
+                    association_data["cnn_phases"] = _cnn_phases_assoc
 
                 # --- Density-aware pre-gate ---
                 # For detections inside a high-density region, apply a tighter
@@ -2182,19 +2212,20 @@ class TrackingWorker(QThread):
                     for r, c in zip(rows, cols):
                         track_tag_history.record(r, actual_frame_index, _det_tag_ids[c])
 
-                if cnn_track_history is not None:
+                # Update CNN track histories after assignment (multi-phase)
+                for (label, _cache, _history, _, _), _frame_preds in zip(
+                    _cnn_phase_states, _cnn_frame_preds_all
+                ):
                     for r in respawned_matches:
-                        cnn_track_history.clear_track(r)
-
-                # Update CNN track history after assignment
-                _cnn_update_track_history(
-                    cnn_track_history,
-                    _cnn_frame_preds,
-                    actual_frame_index,
-                    N,
-                    rows,
-                    cols,
-                )
+                        _history.clear_track(r)
+                    _cnn_update_track_history(
+                        _history,
+                        _frame_preds,
+                        actual_frame_index,
+                        N,
+                        rows,
+                        cols,
+                    )
 
                 # --- KF Update & State Update ---
                 total_cost = 0.0

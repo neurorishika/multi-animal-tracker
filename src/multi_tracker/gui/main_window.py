@@ -6057,57 +6057,7 @@ class MainWindow(QMainWindow):
         )
         identity_content_layout.addWidget(self.lbl_identity_help)
 
-        fl_identity = QFormLayout(None)
-        fl_identity.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        self.form_identity = fl_identity
-
-        # Identity Method
-        self.combo_identity_method = QComboBox()
-        self.combo_identity_method.addItem("CNN Classifier", "cnn_classifier")
-        self.combo_identity_method.addItem("AprilTags", "apriltags")
-        self.combo_identity_method.setToolTip(
-            "Select method for identifying individual animals:\n"
-            "• CNN Classifier: Classify individual identity using a CNN model\n"
-            "• AprilTags: Detect fiducial markers"
-        )
-        self.combo_identity_method.currentIndexChanged.connect(
-            self._on_identity_method_changed
-        )
-        fl_identity.addRow("Identity method", self.combo_identity_method)
-        self.spin_identity_match_bonus = QDoubleSpinBox()
-        self.spin_identity_match_bonus.setRange(0.0, 200.0)
-        self.spin_identity_match_bonus.setSingleStep(5.0)
-        self.spin_identity_match_bonus.setValue(20.0)
-        self.spin_identity_match_bonus.setToolTip(
-            "Cost bonus (subtracted) when an identity observation matches the track identity."
-        )
-        fl_identity.addRow(
-            "Identity match bonus (lower cost)", self.spin_identity_match_bonus
-        )
-
-        self.spin_identity_mismatch_penalty = QDoubleSpinBox()
-        self.spin_identity_mismatch_penalty.setRange(0.0, 500.0)
-        self.spin_identity_mismatch_penalty.setSingleStep(5.0)
-        self.spin_identity_mismatch_penalty.setValue(50.0)
-        self.spin_identity_mismatch_penalty.setToolTip(
-            "Cost penalty (added) when an identity observation conflicts with the track identity."
-        )
-        fl_identity.addRow(
-            "Identity mismatch penalty (higher cost)",
-            self.spin_identity_mismatch_penalty,
-        )
-        identity_content_layout.addLayout(fl_identity)
-
-        # Model/Config for identity (stacked widget for different methods)
-        self.identity_config_stack = CurrentPageStackedWidget()
-        self.identity_config_stack.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Maximum
-        )
-
-        # Page 0: CNN Classifier
-        color_widget = QWidget()
-        color_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        color_layout = QFormLayout(color_widget)
+        # Hidden legacy widgets (referenced by model-import dialog)
         self.line_color_tag_model = QLineEdit()
         self.line_color_tag_model.setPlaceholderText("path/to/color_tag_model.pt")
         self.line_color_tag_model.setVisible(False)
@@ -6120,55 +6070,49 @@ class MainWindow(QMainWindow):
         )
         self.spin_color_tag_conf.setVisible(False)
 
-        # CNN Identity model selector combo
-        self.combo_cnn_identity_model = QComboBox()
-        self.combo_cnn_identity_model.addItem("— select model —", "")
-        self.combo_cnn_identity_model.addItem("＋ Add New Model…", "__add_new__")
-        self.combo_cnn_identity_model.activated.connect(
-            self._on_cnn_identity_model_selected
+        # --- Shared identity cost controls ---
+        fl_identity_cost = QFormLayout()
+        fl_identity_cost.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.spin_identity_match_bonus = QDoubleSpinBox()
+        self.spin_identity_match_bonus.setRange(0.0, 200.0)
+        self.spin_identity_match_bonus.setSingleStep(5.0)
+        self.spin_identity_match_bonus.setValue(20.0)
+        self.spin_identity_match_bonus.setToolTip(
+            "Cost bonus (subtracted) when an identity observation matches the track.\n"
+            "Divided equally across all active identity sources (AprilTags + each CNN)."
         )
-        self._refresh_cnn_identity_model_combo()
-        color_layout.addRow("CNN identity model", self.combo_cnn_identity_model)
+        fl_identity_cost.addRow("Identity match bonus", self.spin_identity_match_bonus)
+        self.spin_identity_mismatch_penalty = QDoubleSpinBox()
+        self.spin_identity_mismatch_penalty.setRange(0.0, 500.0)
+        self.spin_identity_mismatch_penalty.setSingleStep(5.0)
+        self.spin_identity_mismatch_penalty.setValue(50.0)
+        self.spin_identity_mismatch_penalty.setToolTip(
+            "Cost penalty (added) when an identity observation conflicts with the track.\n"
+            "Divided equally across all active identity sources (AprilTags + each CNN)."
+        )
+        fl_identity_cost.addRow(
+            "Identity mismatch penalty", self.spin_identity_mismatch_penalty
+        )
+        identity_content_layout.addLayout(fl_identity_cost)
 
-        # Verification block (read-only)
-        self.lbl_cnn_arch = QLabel("—")
-        self.lbl_cnn_num_classes = QLabel("—")
-        self.lbl_cnn_class_names = QLabel("—")
-        self.lbl_cnn_input_size = QLabel("—")
-        self.lbl_cnn_label = QLabel("—")
-        color_layout.addRow("Architecture", self.lbl_cnn_arch)
-        color_layout.addRow("Num classes", self.lbl_cnn_num_classes)
-        color_layout.addRow("Class names", self.lbl_cnn_class_names)
-        color_layout.addRow("Input size", self.lbl_cnn_input_size)
-        color_layout.addRow("Classification label", self.lbl_cnn_label)
-
-        # Inference settings spinboxes
-        self.spin_cnn_confidence = QDoubleSpinBox()
-        self.spin_cnn_confidence.setRange(0.0, 1.0)
-        self.spin_cnn_confidence.setSingleStep(0.05)
-        self.spin_cnn_confidence.setValue(0.5)
-        color_layout.addRow("CNN confidence threshold", self.spin_cnn_confidence)
-
-        self.spin_cnn_window = QSpinBox()
-        self.spin_cnn_window.setRange(1, 100)
-        self.spin_cnn_window.setValue(10)
-        color_layout.addRow("CNN history window", self.spin_cnn_window)
-
-        self.identity_config_stack.addWidget(color_widget)
-
-        # Page 1: AprilTags
-        apriltag_widget = QWidget()
-        apriltag_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        apriltag_layout = QFormLayout(apriltag_widget)
+        # --- AprilTags group ---
+        self.g_apriltags = QGroupBox("AprilTags")
+        self.g_apriltags.setCheckable(True)
+        self.g_apriltags.setChecked(False)
+        self.g_apriltags.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        vl_apriltags_outer = QVBoxLayout(self.g_apriltags)
+        vl_apriltags_outer.setContentsMargins(0, 0, 0, 0)
+        self.apriltag_settings_widget = QWidget()
+        self.apriltag_settings_widget.setVisible(False)
+        fl_apriltags = QFormLayout(self.apriltag_settings_widget)
+        fl_apriltags.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.combo_apriltag_family = QComboBox()
         self.combo_apriltag_family.addItems(self._get_apriltag_families())
         self.combo_apriltag_family.setToolTip(
             "AprilTag family to detect.\n"
             "The list is populated from your installed apriltag library."
         )
-        apriltag_layout.addRow(
-            "Which AprilTag family should be used?", self.combo_apriltag_family
-        )
+        fl_apriltags.addRow("AprilTag family", self.combo_apriltag_family)
         self.spin_apriltag_decimate = QDoubleSpinBox()
         self.spin_apriltag_decimate.setRange(1.0, 4.0)
         self.spin_apriltag_decimate.setValue(1.0)
@@ -6176,13 +6120,54 @@ class MainWindow(QMainWindow):
         self.spin_apriltag_decimate.setToolTip(
             "Decimation factor for faster detection (higher = faster but less accurate)"
         )
-        apriltag_layout.addRow(
-            "How much AprilTag downsampling should be used?",
-            self.spin_apriltag_decimate,
-        )
-        self.identity_config_stack.addWidget(apriltag_widget)
+        fl_apriltags.addRow("AprilTag downsampling", self.spin_apriltag_decimate)
+        vl_apriltags_outer.addWidget(self.apriltag_settings_widget)
+        self.g_apriltags.toggled.connect(self.apriltag_settings_widget.setVisible)
+        identity_content_layout.addWidget(self.g_apriltags)
 
-        identity_content_layout.addWidget(self.identity_config_stack)
+        # --- CNN Classifiers group ---
+        self.g_cnn_classifiers = QGroupBox("CNN Classifiers")
+        self.g_cnn_classifiers.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred
+        )
+        vl_cnn = QVBoxLayout(self.g_cnn_classifiers)
+        vl_cnn.setSpacing(4)
+        self.btn_add_cnn_classifier = QPushButton("\uff0b Add CNN Classifier")
+        self.btn_add_cnn_classifier.clicked.connect(self._add_cnn_classifier_row)
+        vl_cnn.addWidget(self.btn_add_cnn_classifier)
+        self.cnn_scroll_area = QScrollArea()
+        self.cnn_scroll_area.setWidgetResizable(True)
+        self.cnn_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.cnn_scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.cnn_scroll_area.setMinimumHeight(300)
+        self.cnn_scroll_area.setVisible(False)
+        cnn_scroll_widget = QWidget()
+        cnn_scroll_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.cnn_rows_layout = QVBoxLayout(cnn_scroll_widget)
+        self.cnn_rows_layout.setSpacing(6)
+        self.cnn_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.cnn_rows_layout.addStretch(1)
+        self.cnn_scroll_area.setWidget(cnn_scroll_widget)
+        vl_cnn.addWidget(self.cnn_scroll_area)
+        identity_content_layout.addWidget(self.g_cnn_classifiers)
+
+        # Hidden sentinel combo for model import dialog (reused by CNNClassifierRow)
+        self.combo_cnn_identity_model = QComboBox()
+        self.combo_cnn_identity_model.setVisible(False)
+        self._refresh_cnn_identity_model_combo()
+        # Hidden verification labels (may be queried by model import dialog)
+        self.lbl_cnn_arch = QLabel("—")
+        self.lbl_cnn_num_classes = QLabel("—")
+        self.lbl_cnn_class_names = QLabel("—")
+        self.lbl_cnn_input_size = QLabel("—")
+        self.lbl_cnn_label = QLabel("—")
+        self.spin_cnn_confidence = QDoubleSpinBox()
+        self.spin_cnn_confidence.setRange(0.0, 1.0)
+        self.spin_cnn_confidence.setSingleStep(0.05)
+        self.spin_cnn_confidence.setValue(0.5)
+        self.spin_cnn_window = QSpinBox()
+        self.spin_cnn_window.setRange(1, 100)
+        self.spin_cnn_window.setValue(10)
         vl_identity.addWidget(self.identity_content)
 
         self.g_individual_pipeline_common = QGroupBox(
@@ -7165,6 +7150,199 @@ class MainWindow(QMainWindow):
                         )
 
             self.line_color_tag_model.setText(filepath)
+
+    class CNNClassifierRow(QWidget):
+        """Self-contained widget for one CNN classifier configuration row."""
+
+        remove_requested = Signal(object)
+
+        def __init__(self, main_window, parent=None):
+            super().__init__(parent)
+            self._main_window = main_window
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+            outer = QVBoxLayout(self)
+            outer.setContentsMargins(4, 4, 4, 4)
+            outer.setSpacing(4)
+
+            # Header row: model combo + remove button
+            header_row = QHBoxLayout()
+            self.combo_model = QComboBox()
+            self.combo_model.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self._populate_model_combo()
+            self.combo_model.activated.connect(self._on_model_selected)
+            header_row.addWidget(self.combo_model)
+            self.btn_remove = QPushButton("\u2715")
+            self.btn_remove.setMaximumWidth(28)
+            self.btn_remove.setToolTip("Remove this CNN classifier")
+            self.btn_remove.clicked.connect(lambda: self.remove_requested.emit(self))
+            header_row.addWidget(self.btn_remove)
+            outer.addLayout(header_row)
+
+            # Verification labels
+            form = QFormLayout()
+            form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+            self.lbl_arch = QLabel("\u2014")
+            self.lbl_num_classes = QLabel("\u2014")
+            self.lbl_class_names = QLabel("\u2014")
+            self.lbl_input_size = QLabel("\u2014")
+            self.lbl_label = QLabel("\u2014")
+            form.addRow("Architecture", self.lbl_arch)
+            form.addRow("Num classes", self.lbl_num_classes)
+            form.addRow("Class names", self.lbl_class_names)
+            form.addRow("Input size", self.lbl_input_size)
+            form.addRow("Classification label", self.lbl_label)
+
+            # Inference settings
+            self.spin_confidence = QDoubleSpinBox()
+            self.spin_confidence.setRange(0.0, 1.0)
+            self.spin_confidence.setSingleStep(0.05)
+            self.spin_confidence.setValue(0.5)
+            form.addRow("Confidence threshold", self.spin_confidence)
+
+            self.spin_window = QSpinBox()
+            self.spin_window.setRange(1, 100)
+            self.spin_window.setValue(10)
+            form.addRow("History window", self.spin_window)
+
+            outer.addLayout(form)
+
+            # Separator line
+            line = QFrame()
+            line.setFrameShape(QFrame.HLine)
+            line.setFrameShadow(QFrame.Sunken)
+            outer.addWidget(line)
+
+        def _populate_model_combo(self):
+            """Populate combo from model_registry.json (usage_role == 'cnn_identity')."""
+            registry_path = get_yolo_model_registry_path()
+            try:
+                with open(registry_path) as f:
+                    registry = json.load(f)
+            except (FileNotFoundError, ValueError):
+                registry = {}
+            self.combo_model.blockSignals(True)
+            current = self.combo_model.currentData()
+            self.combo_model.clear()
+            self.combo_model.addItem("\u2014 select model \u2014", "")
+            for rel_path, meta in registry.items():
+                if meta.get("usage_role") != "cnn_identity":
+                    continue
+                arch = meta.get("arch", "?")
+                label = meta.get("classification_label", "")
+                n_cls = meta.get("num_classes", "?")
+                display = f"{arch} | {n_cls} cls"
+                if label:
+                    display += f" | {label}"
+                self.combo_model.addItem(display, rel_path)
+            self.combo_model.addItem("\uff0b Add New Model\u2026", "__add_new__")
+            idx = self.combo_model.findData(current)
+            if idx >= 0:
+                self.combo_model.setCurrentIndex(idx)
+            self.combo_model.blockSignals(False)
+
+        def _on_model_selected(self, index: int):
+            rel_path = self.combo_model.itemData(index)
+            if rel_path == "__add_new__":
+                self._main_window._handle_add_new_cnn_identity_model()
+                self._populate_model_combo()
+                return
+            self._update_verification_labels(rel_path)
+
+        def _update_verification_labels(self, rel_path: str):
+            try:
+                with open(get_yolo_model_registry_path()) as f:
+                    registry = json.load(f)
+            except Exception:
+                return
+            meta = registry.get(rel_path or "", {})
+            self.lbl_arch.setText(str(meta.get("arch", "\u2014")))
+            self.lbl_num_classes.setText(str(meta.get("num_classes", "\u2014")))
+            class_names = meta.get("class_names", [])
+            preview = ", ".join(class_names[:12])
+            if len(class_names) > 12:
+                preview += f", \u2026 ({len(class_names)} total)"
+            self.lbl_class_names.setText(preview or "\u2014")
+            self.lbl_input_size.setText(str(meta.get("input_size", "\u2014")))
+            self.lbl_label.setText(str(meta.get("classification_label", "\u2014")))
+
+        def to_config(self):
+            """Return config dict or None if no model selected."""
+            rel_path = self.combo_model.currentData()
+            if not rel_path or rel_path == "__add_new__":
+                return None
+            registry_path = get_yolo_model_registry_path()
+            try:
+                with open(registry_path) as f:
+                    registry = json.load(f)
+            except Exception:
+                registry = {}
+            meta = registry.get(rel_path, {})
+            models_root = get_models_root_directory()
+            abs_path = os.path.join(models_root, rel_path)
+            label = str(meta.get("classification_label", "") or "cnn_identity")
+            return {
+                "model_path": abs_path,
+                "label": label,
+                "confidence": self.spin_confidence.value(),
+                "window": self.spin_window.value(),
+                "batch_size": 64,
+                "rel_path": rel_path,  # for config save/load roundtrip
+            }
+
+        def load_from_config(self, cfg: dict):
+            """Populate from a config dict entry."""
+            rel_path = cfg.get("rel_path", "")
+            if not rel_path:
+                # Try to find by abs model_path
+                abs_path = cfg.get("model_path", "")
+                models_root = get_models_root_directory()
+                try:
+                    with open(get_yolo_model_registry_path()) as f:
+                        registry = json.load(f)
+                    for rp, meta in registry.items():
+                        if os.path.normpath(
+                            os.path.join(models_root, rp)
+                        ) == os.path.normpath(abs_path):
+                            rel_path = rp
+                            break
+                except Exception:
+                    pass
+            if rel_path:
+                self._populate_model_combo()
+                idx = self.combo_model.findData(rel_path)
+                if idx >= 0:
+                    self.combo_model.setCurrentIndex(idx)
+                    self._update_verification_labels(rel_path)
+            if "confidence" in cfg:
+                self.spin_confidence.setValue(float(cfg["confidence"]))
+            if "window" in cfg:
+                self.spin_window.setValue(int(cfg["window"]))
+
+    def _add_cnn_classifier_row(self) -> "CNNClassifierRow":
+        """Add a new CNN classifier row and return it."""
+        row = self.CNNClassifierRow(self)
+        row.remove_requested.connect(self._remove_cnn_classifier_row)
+        # Insert before the stretch at the end
+        count = self.cnn_rows_layout.count()
+        self.cnn_rows_layout.insertWidget(count - 1, row)
+        self.cnn_scroll_area.setVisible(True)
+        return row
+
+    def _remove_cnn_classifier_row(self, row: "CNNClassifierRow"):
+        """Remove a CNN classifier row."""
+        self.cnn_rows_layout.removeWidget(row)
+        row.setParent(None)
+        row.deleteLater()
+        self.cnn_scroll_area.setVisible(bool(self._cnn_classifier_rows()))
+
+    def _cnn_classifier_rows(self) -> list:
+        """Return list of all CNNClassifierRow instances."""
+        rows = []
+        for i in range(self.cnn_rows_layout.count()):
+            item = self.cnn_rows_layout.itemAt(i)
+            if item and isinstance(item.widget(), self.CNNClassifierRow):
+                rows.append(item.widget())
+        return rows
 
     def _refresh_cnn_identity_model_combo(self) -> None:
         """Populate the CNN identity model combo from model_registry.json."""
@@ -8192,41 +8370,65 @@ class MainWindow(QMainWindow):
         )
 
     def _selected_identity_method(self) -> str:
-        """Return canonical identity-method key for runtime/config usage."""
+        """Return canonical identity-method key for runtime/config usage.
+
+        Preserved for backward compat. Returns 'apriltags' if AprilTags is the
+        only active method, 'cnn_classifier' if only CNNs are active, or
+        'none_disabled' if nothing is active.
+        """
         if not self._is_identity_analysis_enabled():
             return "none_disabled"
-        if not hasattr(self, "combo_identity_method"):
-            return "none_disabled"
-        method = self.combo_identity_method.currentData()
-        if not method:
-            method = (
-                self.combo_identity_method.currentText()
-                .lower()
-                .replace(" ", "_")
-                .replace("(", "")
-                .replace(")", "")
-            )
-        return str(method)
+        cfg = self._identity_config()
+        has_apriltags = cfg.get("use_apriltags", False)
+        has_cnn = bool(cfg.get("cnn_classifiers", []))
+        if has_apriltags and not has_cnn:
+            return "apriltags"
+        if has_cnn and not has_apriltags:
+            return "cnn_classifier"
+        if has_apriltags or has_cnn:
+            return "cnn_classifier"  # multi-method: report as cnn_classifier for compat
+        return "none_disabled"
+
+    def _identity_config(self) -> dict:
+        """Return use_apriltags + cnn_classifiers config dict (replaces _selected_identity_method).
+
+        match_bonus and mismatch_penalty are shared across all identity sources and injected
+        into each CNN phase here so the worker/hungarian receive per-phase values already set.
+        """
+        if not self._is_identity_analysis_enabled():
+            return {"use_apriltags": False, "cnn_classifiers": []}
+        use_apriltags = hasattr(self, "g_apriltags") and self.g_apriltags.isChecked()
+        match_bonus = float(
+            self.spin_identity_match_bonus.value()
+            if hasattr(self, "spin_identity_match_bonus")
+            else 20.0
+        )
+        mismatch_penalty = float(
+            self.spin_identity_mismatch_penalty.value()
+            if hasattr(self, "spin_identity_mismatch_penalty")
+            else 50.0
+        )
+        cnn_classifiers = []
+        if hasattr(self, "_cnn_classifier_rows"):
+            for row in self._cnn_classifier_rows():
+                cfg = row.to_config()
+                if cfg is not None:
+                    cfg["match_bonus"] = match_bonus
+                    cfg["mismatch_penalty"] = mismatch_penalty
+                    cnn_classifiers.append(cfg)
+        return {
+            "use_apriltags": use_apriltags,
+            "cnn_classifiers": cnn_classifiers,
+            "match_bonus": match_bonus,
+            "mismatch_penalty": mismatch_penalty,
+        }
 
     def _sync_identity_method_ui(self):
-        """Show the active identity-method configuration only when enabled."""
+        """Show the active identity configuration only when enabled."""
         identity_enabled = self._is_identity_analysis_enabled()
         if hasattr(self, "identity_content"):
             self.identity_content.setVisible(identity_enabled)
             self.identity_content.setEnabled(identity_enabled)
-        if hasattr(self, "combo_identity_method"):
-            if hasattr(self, "form_identity"):
-                self._set_form_row_visible(
-                    self.form_identity, self.combo_identity_method, identity_enabled
-                )
-            self.combo_identity_method.setEnabled(identity_enabled)
-        if hasattr(self, "identity_config_stack"):
-            self.identity_config_stack.setVisible(identity_enabled)
-            self.identity_config_stack.setEnabled(identity_enabled)
-            if hasattr(self, "combo_identity_method"):
-                self.identity_config_stack.setCurrentIndex(
-                    max(0, self.combo_identity_method.currentIndex())
-                )
 
     def _sync_pose_analysis_ui(self):
         """Show pose controls only when pose extraction is enabled."""
@@ -11926,7 +12128,10 @@ class MainWindow(QMainWindow):
         # Create and start merge worker thread
         # Discover tag observation cache for AprilTag identity resolution
         _tag_cache_path = None
-        if str(current_params.get("IDENTITY_METHOD", "")).lower() == "apriltags":
+        if (
+            bool(current_params.get("USE_APRILTAGS", False))
+            or str(current_params.get("IDENTITY_METHOD", "")).lower() == "apriltags"
+        ):
             _det_cache = getattr(self, "current_detection_cache_path", None)
             if _det_cache and os.path.exists(str(_det_cache)):
                 import glob as _glob
@@ -14330,7 +14535,8 @@ class MainWindow(QMainWindow):
         individual_pipeline_enabled = self._is_individual_pipeline_enabled()
         individual_image_save_enabled = self._is_individual_image_save_enabled()
         pose_extractor_enabled = self._is_pose_inference_enabled()
-        identity_method = self._selected_identity_method()
+        identity_cfg = self._identity_config()
+        identity_method = self._selected_identity_method()  # kept for backward compat
         compute_runtime = self._selected_compute_runtime()
         runtime_detection = derive_detection_runtime_settings(compute_runtime)
         trt_batch_size = (
@@ -14520,29 +14726,19 @@ class MainWindow(QMainWindow):
             "ENABLE_IDENTITY_ANALYSIS": individual_pipeline_enabled,
             "ENABLE_INDIVIDUAL_PIPELINE": individual_pipeline_enabled,
             "IDENTITY_METHOD": identity_method,
+            "USE_APRILTAGS": identity_cfg.get("use_apriltags", False),
+            "CNN_CLASSIFIERS": identity_cfg.get("cnn_classifiers", []),
             "COLOR_TAG_MODEL_PATH": self.line_color_tag_model.text(),
             "COLOR_TAG_CONFIDENCE": self.spin_color_tag_conf.value(),
-            "CNN_CLASSIFIER_MODEL_PATH": (
-                os.path.join(
-                    get_models_root_directory(),
-                    self.combo_cnn_identity_model.currentData() or "",
-                )
-                if self.combo_cnn_identity_model.currentData()
-                not in (None, "", "__add_new__")
-                else ""
-            ),
-            "CNN_CLASSIFIER_CONFIDENCE": self.spin_cnn_confidence.value(),
-            "CNN_CLASSIFIER_LABEL": str(
-                self.advanced_config.get("cnn_classifier_label", "")
-            ),
-            "CNN_CLASSIFIER_BATCH_SIZE": int(
-                self.advanced_config.get("cnn_classifier_batch_size", 64)
-            ),
+            "CNN_CLASSIFIER_MODEL_PATH": "",
+            "CNN_CLASSIFIER_CONFIDENCE": 0.5,
+            "CNN_CLASSIFIER_LABEL": "",
+            "CNN_CLASSIFIER_BATCH_SIZE": 64,
             "IDENTITY_MATCH_BONUS": self.spin_identity_match_bonus.value(),
             "IDENTITY_MISMATCH_PENALTY": self.spin_identity_mismatch_penalty.value(),
             "CNN_CLASSIFIER_MATCH_BONUS": self.spin_identity_match_bonus.value(),
             "CNN_CLASSIFIER_MISMATCH_PENALTY": self.spin_identity_mismatch_penalty.value(),
-            "CNN_CLASSIFIER_WINDOW": self.spin_cnn_window.value(),
+            "CNN_CLASSIFIER_WINDOW": 10,
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
             "TAG_MATCH_BONUS": self.spin_identity_match_bonus.value(),
@@ -15368,35 +15564,68 @@ class MainWindow(QMainWindow):
                 default=False,
             )
             self.chk_enable_individual_analysis.setChecked(bool(pipeline_enabled))
-            method_map = {
-                "color_tags_yolo": 0,  # backward compat for old saved configs
-                "cnn_classifier": 0,
-                "apriltags": 1,
-            }
-            identity_method = (
-                str(get_cfg("identity_method", default="none_disabled"))
-                .lower()
-                .replace(" ", "_")
-                .replace("(", "")
-                .replace(")", "")
-            )
+            old_method = str(
+                get_cfg("identity_method", default="none_disabled")
+            ).lower()
             # Backward compat: rename color_tags_yolo -> cnn_classifier on load
-            if identity_method == "color_tags_yolo":
-                identity_method = "cnn_classifier"
-            self.g_identity.setChecked(identity_method != "none_disabled")
-            self.combo_identity_method.setCurrentIndex(
-                method_map.get(identity_method, 0)
-            )
-            # CNN Classifier spinboxes
-            self.spin_cnn_confidence.setValue(
-                float(get_cfg("cnn_classifier_confidence", default=0.5))
-            )
+            if old_method == "color_tags_yolo":
+                old_method = "cnn_classifier"
+            self.g_identity.setChecked(old_method != "none_disabled")
+
+            # --- New format or migrate from old format ---
+            _new_cnn_classifiers = get_cfg("cnn_classifiers", default=None)
+            if _new_cnn_classifiers is not None:
+                # New format: load use_apriltags + cnn_classifiers list
+                self.g_apriltags.setChecked(
+                    bool(get_cfg("use_apriltags", default=False))
+                )
+                for entry in _new_cnn_classifiers or []:
+                    row = self._add_cnn_classifier_row()
+                    row.load_from_config(entry)
+            else:
+                # Old single-method config: migrate
+                if old_method == "apriltags":
+                    self.g_apriltags.setChecked(True)
+                elif old_method in ("cnn_classifier",):
+                    cnn_model_rel = get_cfg("cnn_classifier_model_path", default="")
+                    if cnn_model_rel:
+                        row = self._add_cnn_classifier_row()
+                        row.load_from_config(
+                            {
+                                "rel_path": cnn_model_rel,
+                                "label": get_cfg(
+                                    "cnn_classifier_label", default="identity"
+                                ),
+                                "confidence": float(
+                                    get_cfg("cnn_classifier_confidence", default=0.5)
+                                ),
+                                "window": int(
+                                    get_cfg("cnn_classifier_window", default=10)
+                                ),
+                                "match_bonus": float(
+                                    get_cfg(
+                                        "cnn_classifier_match_bonus",
+                                        "identity_match_bonus",
+                                        default=20.0,
+                                    )
+                                ),
+                                "mismatch_penalty": float(
+                                    get_cfg(
+                                        "cnn_classifier_mismatch_penalty",
+                                        "identity_mismatch_penalty",
+                                        default=50.0,
+                                    )
+                                ),
+                            }
+                        )
+
+            # Shared identity cost settings
             self.spin_identity_match_bonus.setValue(
                 float(
                     get_cfg(
                         "identity_match_bonus",
-                        "cnn_classifier_match_bonus",
                         "tag_match_bonus",
+                        "cnn_classifier_match_bonus",
                         default=20.0,
                     )
                 )
@@ -15405,15 +15634,19 @@ class MainWindow(QMainWindow):
                 float(
                     get_cfg(
                         "identity_mismatch_penalty",
-                        "cnn_classifier_mismatch_penalty",
                         "tag_mismatch_penalty",
+                        "cnn_classifier_mismatch_penalty",
                         default=50.0,
                     )
                 )
             )
-            self.spin_cnn_window.setValue(
-                int(get_cfg("cnn_classifier_window", default=10))
+            apriltag_family = get_cfg("apriltag_family", default="tag36h11")
+            idx = self.combo_apriltag_family.findText(apriltag_family)
+            self.combo_apriltag_family.setCurrentIndex(max(0, idx))
+            self.spin_apriltag_decimate.setValue(
+                float(get_cfg("apriltag_decimate", default=1.0))
             )
+
             # Warn users who had a non-default cnn_classifier_crop_padding in their config
             _legacy_crop_padding = get_cfg("cnn_classifier_crop_padding", default=None)
             if _legacy_crop_padding is not None and float(_legacy_crop_padding) != 0.1:
@@ -15423,19 +15656,6 @@ class MainWindow(QMainWindow):
                     "Update your crop padding setting in the Individual Analysis panel.",
                     float(_legacy_crop_padding),
                 )
-            # CNN identity model path from config
-            cnn_model_rel = get_cfg("cnn_classifier_model_path", default="")
-            if cnn_model_rel:
-                idx = self.combo_cnn_identity_model.findData(cnn_model_rel)
-                if idx >= 0:
-                    self.combo_cnn_identity_model.setCurrentIndex(idx)
-                    self._update_cnn_identity_verification_panel(cnn_model_rel)
-            apriltag_family = get_cfg("apriltag_family", default="tag36h11")
-            idx = self.combo_apriltag_family.findText(apriltag_family)
-            self.combo_apriltag_family.setCurrentIndex(max(0, idx))
-            self.spin_apriltag_decimate.setValue(
-                get_cfg("apriltag_decimate", default=1.0)
-            )
 
             self.chk_enable_pose_extractor.setChecked(
                 get_cfg("enable_pose_extractor", default=False)
@@ -15915,7 +16135,9 @@ class MainWindow(QMainWindow):
                 "enable_identity_analysis": self._is_individual_pipeline_enabled(),
                 "enable_individual_pipeline": self._is_individual_pipeline_enabled(),
                 "identity_method": self._selected_identity_method(),
-                # CNN Classifier settings
+                "use_apriltags": self._identity_config().get("use_apriltags", False),
+                "cnn_classifiers": self._identity_config().get("cnn_classifiers", []),
+                # Legacy CNN Classifier settings (for backward compat on load)
                 "cnn_classifier_confidence": self.spin_cnn_confidence.value(),
                 "identity_match_bonus": self.spin_identity_match_bonus.value(),
                 "identity_mismatch_penalty": self.spin_identity_mismatch_penalty.value(),
@@ -15924,11 +16146,6 @@ class MainWindow(QMainWindow):
                 "cnn_classifier_window": self.spin_cnn_window.value(),
             }
         )
-        # CNN identity model path via combo rel_path
-        if self.combo_cnn_identity_model.currentData() not in (None, "", "__add_new__"):
-            cfg["cnn_classifier_model_path"] = (
-                self.combo_cnn_identity_model.currentData()
-            )
 
         cfg.update(
             {
