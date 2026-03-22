@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 
+from multi_tracker.core.identity.apriltag_detector import AprilTagDetector
 from multi_tracker.core.tracking.pose_pipeline import extract_one_crop
+from multi_tracker.data.tag_observation_cache import TagObservationCache
 
 logger = logging.getLogger(__name__)
 
@@ -303,3 +306,150 @@ class UnifiedPrecompute:
                     pass
 
         return results
+
+
+# ---------------------------------------------------------------------------
+# AprilTagPrecomputePhase
+# ---------------------------------------------------------------------------
+
+
+class AprilTagPrecomputePhase(PrecomputePhase):
+    """Precompute phase that runs AprilTag detection on per-frame crops.
+
+    Non-fatal: a detection failure will not abort the tracking run.
+    If a compatible cache already exists for the requested frame range, the
+    detector is never created and the video read is skipped.
+    """
+
+    name = "apriltag"
+    is_fatal = False
+
+    def __init__(
+        self,
+        detector_config,
+        cache_path,
+        start_frame: int,
+        end_frame: int,
+        video_path: str = "",
+    ) -> None:
+        self._cache_path = Path(cache_path)
+        self._start_frame = start_frame
+        self._end_frame = end_frame
+        self._video_path = video_path
+        self._hit = False
+        self._detector: Optional[AprilTagDetector] = None
+        self._tag_cache: Optional[TagObservationCache] = None
+
+        # Check for a compatible existing cache.
+        if self._cache_path.exists():
+            probe = TagObservationCache(
+                self._cache_path, mode="r", start_frame=start_frame, end_frame=end_frame
+            )
+            if probe.is_compatible() and probe.covers_frame_range(
+                start_frame, end_frame
+            ):
+                self._hit = True
+                probe.close()
+                logger.info(
+                    "AprilTag cache hit: %s covers frames %d-%d",
+                    self._cache_path,
+                    start_frame,
+                    end_frame,
+                )
+                return
+            probe.close()
+            logger.info(
+                "AprilTag cache miss or incompatible at %s — will regenerate",
+                self._cache_path,
+            )
+
+        # Cache miss: create detector and write-mode cache.
+        self._detector = AprilTagDetector(detector_config)
+        self._tag_cache = TagObservationCache(
+            self._cache_path, mode="w", start_frame=start_frame, end_frame=end_frame
+        )
+
+    # ------------------------------------------------------------------
+    # PrecomputePhase interface
+    # ------------------------------------------------------------------
+
+    def has_cache_hit(self) -> bool:
+        return self._hit
+
+    def process_frame(
+        self,
+        frame_idx: int,
+        crops: List[np.ndarray],
+        det_ids: List[int],
+        all_obb: List[np.ndarray],
+        crop_offsets: List[Tuple[int, int]],
+    ) -> None:
+        if self._hit:
+            return
+        if self._tag_cache is None:
+            return
+
+        if not crops:
+            self._tag_cache.add_frame(
+                frame_idx,
+                tag_ids=[],
+                centers_xy=[],
+                corners=[],
+                det_indices=[],
+                hammings=[],
+            )
+            return
+
+        observations = self._detector.detect_in_crops(
+            crops, crop_offsets, det_indices=det_ids
+        )
+
+        if not observations:
+            self._tag_cache.add_frame(
+                frame_idx,
+                tag_ids=[],
+                centers_xy=[],
+                corners=[],
+                det_indices=[],
+                hammings=[],
+            )
+        else:
+            self._tag_cache.add_frame(
+                frame_idx,
+                tag_ids=[obs.tag_id for obs in observations],
+                centers_xy=[obs.center_xy for obs in observations],
+                corners=[obs.corners for obs in observations],
+                det_indices=[obs.det_index for obs in observations],
+                hammings=[obs.hamming for obs in observations],
+            )
+
+    def finalize(self) -> Optional[str]:
+        if self._hit:
+            return str(self._cache_path)
+        if self._tag_cache is None:
+            return None
+        try:
+            self._tag_cache.save(
+                metadata={
+                    "start_frame": self._start_frame,
+                    "end_frame": self._end_frame,
+                    "video_path": self._video_path,
+                }
+            )
+            self._tag_cache.close()
+            self._tag_cache = None
+            return str(self._cache_path)
+        except Exception:
+            logger.exception("AprilTagPrecomputePhase.finalize() failed")
+            return None
+
+    def close(self) -> None:
+        if self._detector is not None:
+            self._detector.close()
+            self._detector = None
+        if self._tag_cache is not None:
+            try:
+                self._tag_cache.close()
+            except Exception:
+                pass
+            self._tag_cache = None

@@ -337,3 +337,69 @@ def test_all_cache_hit_nonfatal_finalize_raises_returns_none_and_warns():
     assert result == {"x": None}
     assert len(warnings) == 1
     p.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# AprilTagPrecomputePhase
+# ---------------------------------------------------------------------------
+
+
+def test_apriltag_phase_cache_miss_creates_detector(tmp_path):
+    cache_path = tmp_path / "tags_0_9.npz"  # does not exist
+    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
+        from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
+
+        phase = AprilTagPrecomputePhase(
+            detector_config=Mock(),
+            cache_path=cache_path,
+            start_frame=0,
+            end_frame=9,
+            video_path="",
+        )
+        assert phase.has_cache_hit() is False
+        MockDet.assert_called_once()
+
+
+def test_apriltag_phase_process_frame_empty_crops_adds_empty_frame(tmp_path):
+    cache_path = tmp_path / "tags_0_9.npz"
+    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
+        mock_detector = MockDet.return_value
+        mock_detector.detect_in_crops.return_value = []
+
+        from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
+
+        phase = AprilTagPrecomputePhase(
+            detector_config=Mock(),
+            cache_path=cache_path,
+            start_frame=0,
+            end_frame=0,
+            video_path="",
+        )
+        phase.process_frame(0, [], [], [], [])
+        mock_detector.detect_in_crops.assert_not_called()
+        # finalize should still succeed (empty frame was recorded)
+        path = phase.finalize()
+        assert path == str(cache_path)
+
+
+def test_apriltag_phase_process_frame_calls_detect_in_crops(tmp_path):
+    cache_path = tmp_path / "tags_0_0.npz"
+    crop = np.zeros((20, 20, 3), dtype=np.uint8)
+    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
+        mock_detector = MockDet.return_value
+        mock_detector.detect_in_crops.return_value = []
+
+        from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
+
+        phase = AprilTagPrecomputePhase(
+            detector_config=Mock(),
+            cache_path=cache_path,
+            start_frame=0,
+            end_frame=0,
+            video_path="",
+        )
+        phase.process_frame(0, [crop], [0], [], [(5, 10)])
+        mock_detector.detect_in_crops.assert_called_once_with(
+            [crop], [(5, 10)], det_indices=[0]
+        )
+        phase.finalize()
