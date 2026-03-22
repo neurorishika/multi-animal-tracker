@@ -17,6 +17,12 @@ import cv2
 import numpy as np
 
 from multi_tracker.core.identity.apriltag_detector import AprilTagDetector
+from multi_tracker.core.identity.cnn_identity import (
+    ClassPrediction,
+    CNNIdentityBackend,
+    CNNIdentityCache,
+    CNNIdentityConfig,
+)
 from multi_tracker.core.tracking.pose_pipeline import extract_one_crop
 from multi_tracker.data.tag_observation_cache import TagObservationCache
 
@@ -455,3 +461,108 @@ class AprilTagPrecomputePhase(PrecomputePhase):
             except Exception:
                 pass
             self._tag_cache = None
+
+
+# ---------------------------------------------------------------------------
+# CNNPrecomputePhase
+# ---------------------------------------------------------------------------
+
+
+class CNNPrecomputePhase:
+    """Precompute phase that runs CNN identity classification on OBB crops.
+
+    Supports multiple instances with different model configs and names (e.g.
+    one for individual identity, another for age classification).
+    """
+
+    is_fatal = False
+
+    def __init__(
+        self,
+        config: CNNIdentityConfig,
+        model_path: str,
+        cache_path,
+        compute_runtime: str = "cpu",
+        name: str = "cnn_identity",
+    ) -> None:
+        self.name = name
+        self._cache_path = Path(cache_path)
+        self._cfg = config
+        self._hit = self._cache_path.exists()
+        self._closed = False
+
+        # accumulator for batching
+        self._pending_crops: List[np.ndarray] = []
+        self._pending_frame_idx: List[int] = []
+        self._pending_det_ids: List[int] = []
+
+        if not self._hit:
+            self._backend = CNNIdentityBackend(
+                config, model_path=model_path, compute_runtime=compute_runtime
+            )
+            self._cache = CNNIdentityCache(str(self._cache_path))
+        else:
+            self._backend = None
+            self._cache = None
+
+    def has_cache_hit(self) -> bool:
+        return self._hit
+
+    def process_frame(
+        self,
+        frame_idx: int,
+        crops: List[np.ndarray],
+        det_ids: List[int],
+        all_obb: List[np.ndarray],
+        crop_offsets: List[Tuple[int, int]],
+    ) -> None:
+        if self._hit or self._cache is None:
+            return
+        if not crops:
+            self._cache.save(frame_idx, [])
+            return
+        for crop, det_id in zip(crops, det_ids):
+            self._pending_crops.append(crop)
+            self._pending_frame_idx.append(frame_idx)
+            self._pending_det_ids.append(det_id)
+
+        if len(self._pending_crops) >= self._cfg.batch_size:
+            self._flush_batch()
+
+    def _flush_batch(self) -> None:
+        if not self._pending_crops or self._backend is None or self._cache is None:
+            return
+        preds = self._backend.predict_batch(self._pending_crops)
+        # group by frame
+        frame_preds: Dict[int, List[ClassPrediction]] = {}
+        for pred, frame_idx, det_id in zip(
+            preds, self._pending_frame_idx, self._pending_det_ids
+        ):
+            pred.det_index = det_id
+            frame_preds.setdefault(frame_idx, []).append(pred)
+        for fid, fps in frame_preds.items():
+            self._cache.save(fid, fps)
+        self._pending_crops.clear()
+        self._pending_frame_idx.clear()
+        self._pending_det_ids.clear()
+
+    def finalize(self) -> Optional[str]:
+        if self._hit:
+            return str(self._cache_path)
+        if self._backend is None or self._cache is None:
+            return None
+        self._flush_batch()  # flush any remaining partial batch
+        self._cache.flush()  # single np.savez_compressed write
+        logger.info("CNN identity cache written: %s", self._cache_path)
+        return str(self._cache_path)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._backend is not None:
+            try:
+                self._backend.close()
+            except Exception:
+                pass
+            self._backend = None

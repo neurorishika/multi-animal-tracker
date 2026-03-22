@@ -503,3 +503,129 @@ def test_apriltag_phase_finalize_returns_path_on_hit(tmp_path):
         assert phase.has_cache_hit() is True
         result = phase.finalize()
         assert result == str(cache_path)
+
+
+# ---------------------------------------------------------------------------
+# CNNPrecomputePhase
+# ---------------------------------------------------------------------------
+
+
+def test_cnn_phase_has_cache_hit_false_when_no_file(tmp_path):
+    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+
+    cache_path = tmp_path / "cnn_0_9.npz"
+    with patch("multi_tracker.core.tracking.precompute.CNNIdentityBackend"):
+        phase = CNNPrecomputePhase(
+            config=CNNIdentityConfig(model_path="/fake/model.pth"),
+            model_path="/fake/model.pth",
+            cache_path=cache_path,
+            name="cnn_identity",
+        )
+        assert phase.has_cache_hit() is False
+
+
+def test_cnn_phase_has_cache_hit_true_when_file_exists(tmp_path):
+    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+
+    cache_path = tmp_path / "cnn.npz"
+    cache_path.touch()  # create the file
+    phase = CNNPrecomputePhase(
+        config=CNNIdentityConfig(model_path="/fake/model.pth"),
+        model_path="/fake/model.pth",
+        cache_path=cache_path,
+        name="cnn_identity",
+    )
+    assert phase.has_cache_hit() is True
+
+
+def test_cnn_phase_process_frame_batches_crops(tmp_path):
+    from multi_tracker.core.identity.cnn_identity import (
+        ClassPrediction,
+        CNNIdentityConfig,
+    )
+    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+
+    cache_path = tmp_path / "cnn.npz"
+    with patch(
+        "multi_tracker.core.tracking.precompute.CNNIdentityBackend"
+    ) as MockBackend:
+        mock_backend = MockBackend.return_value
+        mock_backend.predict_batch.return_value = [
+            ClassPrediction(class_name="tag_0", confidence=0.9, det_index=0)
+        ]
+
+        phase = CNNPrecomputePhase(
+            config=CNNIdentityConfig(model_path="/fake.pth", batch_size=2),
+            model_path="/fake.pth",
+            cache_path=cache_path,
+            name="cnn_identity",
+        )
+
+        crop = np.zeros((20, 20, 3), dtype=np.uint8)
+        # Two frames each with one crop — batch_size=2, so flush happens after frame 1
+        phase.process_frame(0, [crop], [0], [], [(0, 0)])
+        phase.process_frame(1, [crop], [0], [], [(0, 0)])
+        # One batch of 2 should have been flushed
+        assert mock_backend.predict_batch.call_count == 1
+
+        phase.finalize()
+        assert cache_path.exists()
+
+
+def test_cnn_phase_finalize_flushes_partial_batch(tmp_path):
+    from multi_tracker.core.identity.cnn_identity import (
+        ClassPrediction,
+        CNNIdentityConfig,
+    )
+    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+
+    cache_path = tmp_path / "cnn_partial.npz"
+    with patch(
+        "multi_tracker.core.tracking.precompute.CNNIdentityBackend"
+    ) as MockBackend:
+        mock_backend = MockBackend.return_value
+        mock_backend.predict_batch.return_value = [
+            ClassPrediction(class_name="tag_1", confidence=0.8, det_index=0)
+        ]
+
+        phase = CNNPrecomputePhase(
+            config=CNNIdentityConfig(model_path="/fake.pth", batch_size=10),
+            model_path="/fake.pth",
+            cache_path=cache_path,
+            name="cnn_identity",
+        )
+
+        crop = np.zeros((20, 20, 3), dtype=np.uint8)
+        phase.process_frame(
+            0, [crop], [0], [], [(0, 0)]
+        )  # 1 crop, batch=10 → not flushed yet
+        assert mock_backend.predict_batch.call_count == 0
+
+        phase.finalize()
+        assert mock_backend.predict_batch.call_count == 1  # flushed in finalize
+        assert cache_path.exists()
+
+
+def test_cnn_phase_process_frame_empty_crops_does_not_add_to_batch(tmp_path):
+    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+
+    cache_path = tmp_path / "cnn_empty.npz"
+    with patch(
+        "multi_tracker.core.tracking.precompute.CNNIdentityBackend"
+    ) as MockBackend:
+        mock_backend = MockBackend.return_value
+
+        phase = CNNPrecomputePhase(
+            config=CNNIdentityConfig(model_path="/fake.pth", batch_size=2),
+            model_path="/fake.pth",
+            cache_path=cache_path,
+            name="cnn_identity",
+        )
+        phase.process_frame(0, [], [], [], [])
+        mock_backend.predict_batch.assert_not_called()
+        phase.finalize()
+        # cache still flushed (empty frame recorded)
+        assert cache_path.exists()
