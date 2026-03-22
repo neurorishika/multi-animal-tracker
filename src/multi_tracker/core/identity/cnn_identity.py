@@ -30,7 +30,6 @@ class CNNIdentityConfig:
     confidence: float = 0.5
     label: str = ""
     batch_size: int = 64
-    crop_padding: float = 0.1
     match_bonus: float = 20.0
     mismatch_penalty: float = 50.0
     window: int = 10

@@ -17,7 +17,6 @@ def test_cnn_identity_config_defaults():
     assert cfg.confidence == 0.5
     assert cfg.label == ""
     assert cfg.batch_size == 64
-    assert cfg.crop_padding == 0.1
     assert cfg.match_bonus == 20.0
     assert cfg.mismatch_penalty == 50.0
     assert cfg.window == 10
