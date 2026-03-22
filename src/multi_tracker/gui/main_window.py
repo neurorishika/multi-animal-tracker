@@ -22,7 +22,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -124,6 +124,30 @@ except ImportError:
 
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
+
+
+class CurrentPageStackedWidget(QStackedWidget):
+    """A stacked widget whose size hint tracks the active page."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.currentChanged.connect(lambda _index: self.updateGeometry())
+
+    def sizeHint(self) -> QSize:
+        current = self.currentWidget()
+        if current is not None:
+            hint = current.sizeHint()
+            if hint.isValid():
+                return hint
+        return super().sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        current = self.currentWidget()
+        if current is not None:
+            hint = current.minimumSizeHint()
+            if hint.isValid():
+                return hint
+        return super().minimumSizeHint()
 
 
 class MergeWorker(QThread):
@@ -2543,6 +2567,7 @@ class MainWindow(QMainWindow):
         self.tab_individual = QWidget()
         self.setup_individual_analysis_ui()
         self.tabs.addTab(self.tab_individual, "Analyze Individuals")
+        self._sync_individual_analysis_mode_ui()
 
         # Tab 4: Tracking (Kalman, Logic, Lifecycle)
         self.tab_tracking = QWidget()
@@ -5989,26 +6014,22 @@ class MainWindow(QMainWindow):
         content = QWidget()
         form = QVBoxLayout(content)
 
-        # Info box
-        info_box = QGroupBox("How should individuals be processed?")
-        info_layout = QVBoxLayout(info_box)
-        info_layout.addWidget(
-            self._create_help_label(
-                "Run the individual-analysis pipeline during tracking.\n\n"
-                "• Computes per-detection individual properties for filtered detections\n"
-                "• Supports pose extraction (YOLO/SLEAP) with reusable caches\n"
-                "• Individual analysis is available only in YOLO OBB mode\n"
-                "• Background-subtraction mode is intended for YOLO bootstrap dataset creation"
-            )
-        )
-        form.addWidget(info_box)
-
-        # Main Enable Checkbox
-        self.chk_enable_individual_analysis = QCheckBox(
-            "Enable Individual Analysis Pipeline (YOLO OBB only)"
-        )
+        # Pipeline enable + overview
+        self.chk_enable_individual_analysis = QGroupBox("Enable Individual Analysis")
+        self.chk_enable_individual_analysis.setCheckable(True)
+        self.chk_enable_individual_analysis.setChecked(False)
         self.chk_enable_individual_analysis.toggled.connect(
             self._on_individual_analysis_toggled
+        )
+        info_layout = QVBoxLayout(self.chk_enable_individual_analysis)
+        info_layout.addWidget(
+            self._create_help_label(
+                "Available tools in the individual-analysis pipeline:\n\n"
+                "• Identity classification with CNN Classifier or AprilTags\n"
+                "• Pose extraction with YOLO, SLEAP, or ViTPose backends\n"
+                "• Occlusion interpolation, crop export, and oriented track videos\n"
+                "• Pose contamination suppression and reusable per-animal caches"
+            )
         )
         form.addWidget(self.chk_enable_individual_analysis)
 
@@ -6020,23 +6041,30 @@ class MainWindow(QMainWindow):
         form.addWidget(self.lbl_individual_yolo_only_notice)
 
         # Identity Classification Section
-        self.g_identity = QGroupBox("Should identity classification run in real time?")
+        self.g_identity = QGroupBox("Enable Identity Classification")
+        self.g_identity.setCheckable(True)
+        self.g_identity.setChecked(False)
+        self.g_identity.toggled.connect(self._on_identity_analysis_toggled)
         vl_identity = QVBoxLayout(self.g_identity)
-        vl_identity.addWidget(
-            self._create_help_label(
-                "Classify individual identity during tracking. Extracts crops around each detection "
-                "and processes them with the selected method."
-            )
+        self.identity_content = QWidget()
+        self.identity_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        identity_content_layout = QVBoxLayout(self.identity_content)
+        identity_content_layout.setContentsMargins(0, 0, 0, 0)
+        identity_content_layout.setSpacing(8)
+        self.lbl_identity_help = self._create_help_label(
+            "Classify individual identity during tracking. Extracts crops around each detection "
+            "and processes them with the selected method."
         )
+        identity_content_layout.addWidget(self.lbl_identity_help)
 
         fl_identity = QFormLayout(None)
         fl_identity.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        self.form_identity = fl_identity
 
         # Identity Method
         self.combo_identity_method = QComboBox()
-        self.combo_identity_method.addItems(
-            ["None (Disabled)", "CNN Classifier", "AprilTags"]
-        )
+        self.combo_identity_method.addItem("CNN Classifier", "cnn_classifier")
+        self.combo_identity_method.addItem("AprilTags", "apriltags")
         self.combo_identity_method.setToolTip(
             "Select method for identifying individual animals:\n"
             "• CNN Classifier: Classify individual identity using a CNN model\n"
@@ -6045,34 +6073,44 @@ class MainWindow(QMainWindow):
         self.combo_identity_method.currentIndexChanged.connect(
             self._on_identity_method_changed
         )
-        fl_identity.addRow(
-            "Which identity method should be used?", self.combo_identity_method
+        fl_identity.addRow("Identity method", self.combo_identity_method)
+        self.spin_identity_match_bonus = QDoubleSpinBox()
+        self.spin_identity_match_bonus.setRange(0.0, 200.0)
+        self.spin_identity_match_bonus.setSingleStep(5.0)
+        self.spin_identity_match_bonus.setValue(20.0)
+        self.spin_identity_match_bonus.setToolTip(
+            "Cost bonus (subtracted) when an identity observation matches the track identity."
         )
+        fl_identity.addRow(
+            "Identity match bonus (lower cost)", self.spin_identity_match_bonus
+        )
+
+        self.spin_identity_mismatch_penalty = QDoubleSpinBox()
+        self.spin_identity_mismatch_penalty.setRange(0.0, 500.0)
+        self.spin_identity_mismatch_penalty.setSingleStep(5.0)
+        self.spin_identity_mismatch_penalty.setValue(50.0)
+        self.spin_identity_mismatch_penalty.setToolTip(
+            "Cost penalty (added) when an identity observation conflicts with the track identity."
+        )
+        fl_identity.addRow(
+            "Identity mismatch penalty (higher cost)",
+            self.spin_identity_mismatch_penalty,
+        )
+        identity_content_layout.addLayout(fl_identity)
 
         # Model/Config for identity (stacked widget for different methods)
-        self.identity_config_stack = QStackedWidget()
-
-        # Page 0: None
-        none_widget = QWidget()
-        none_layout = QVBoxLayout(none_widget)
-        none_layout.addWidget(
-            self._create_help_label("Identity classification is disabled.")
+        self.identity_config_stack = CurrentPageStackedWidget()
+        self.identity_config_stack.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Maximum
         )
-        self.identity_config_stack.addWidget(none_widget)
 
-        # Page 1: CNN Classifier
+        # Page 0: CNN Classifier
         color_widget = QWidget()
+        color_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         color_layout = QFormLayout(color_widget)
         self.line_color_tag_model = QLineEdit()
         self.line_color_tag_model.setPlaceholderText("path/to/color_tag_model.pt")
-        btn_select_color_model = QPushButton("Browse...")
-        btn_select_color_model.clicked.connect(self._select_color_tag_model)
-        color_model_layout = QHBoxLayout()
-        color_model_layout.addWidget(self.line_color_tag_model)
-        color_model_layout.addWidget(btn_select_color_model)
-        color_layout.addRow(
-            "Which identity model file should be used?", color_model_layout
-        )
+        self.line_color_tag_model.setVisible(False)
         self.spin_color_tag_conf = QDoubleSpinBox()
         self.spin_color_tag_conf.setRange(0.01, 1.0)
         self.spin_color_tag_conf.setValue(0.5)
@@ -6080,9 +6118,7 @@ class MainWindow(QMainWindow):
         self.spin_color_tag_conf.setToolTip(
             "Minimum confidence for color tag detection"
         )
-        color_layout.addRow(
-            "What confidence threshold should identity use?", self.spin_color_tag_conf
-        )
+        self.spin_color_tag_conf.setVisible(False)
 
         # CNN Identity model selector combo
         self.combo_cnn_identity_model = QComboBox()
@@ -6113,35 +6149,16 @@ class MainWindow(QMainWindow):
         self.spin_cnn_confidence.setValue(0.5)
         color_layout.addRow("CNN confidence threshold", self.spin_cnn_confidence)
 
-        self.spin_cnn_match_bonus = QDoubleSpinBox()
-        self.spin_cnn_match_bonus.setRange(0.0, 200.0)
-        self.spin_cnn_match_bonus.setSingleStep(5.0)
-        self.spin_cnn_match_bonus.setValue(20.0)
-        color_layout.addRow("CNN match bonus (lower cost)", self.spin_cnn_match_bonus)
-
-        self.spin_cnn_mismatch_penalty = QDoubleSpinBox()
-        self.spin_cnn_mismatch_penalty.setRange(0.0, 200.0)
-        self.spin_cnn_mismatch_penalty.setSingleStep(5.0)
-        self.spin_cnn_mismatch_penalty.setValue(50.0)
-        color_layout.addRow(
-            "CNN mismatch penalty (higher cost)", self.spin_cnn_mismatch_penalty
-        )
-
         self.spin_cnn_window = QSpinBox()
         self.spin_cnn_window.setRange(1, 100)
         self.spin_cnn_window.setValue(10)
         color_layout.addRow("CNN history window", self.spin_cnn_window)
 
-        self.spin_cnn_crop_padding = QDoubleSpinBox()
-        self.spin_cnn_crop_padding.setRange(0.0, 1.0)
-        self.spin_cnn_crop_padding.setSingleStep(0.05)
-        self.spin_cnn_crop_padding.setValue(0.1)
-        color_layout.addRow("CNN crop padding fraction", self.spin_cnn_crop_padding)
-
         self.identity_config_stack.addWidget(color_widget)
 
-        # Page 2: AprilTags
+        # Page 1: AprilTags
         apriltag_widget = QWidget()
+        apriltag_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         apriltag_layout = QFormLayout(apriltag_widget)
         self.combo_apriltag_family = QComboBox()
         self.combo_apriltag_family.addItems(self._get_apriltag_families())
@@ -6163,30 +6180,10 @@ class MainWindow(QMainWindow):
             "How much AprilTag downsampling should be used?",
             self.spin_apriltag_decimate,
         )
-        self.spin_tag_match_bonus = QDoubleSpinBox()
-        self.spin_tag_match_bonus.setRange(0.0, 200.0)
-        self.spin_tag_match_bonus.setValue(20.0)
-        self.spin_tag_match_bonus.setSingleStep(5.0)
-        self.spin_tag_match_bonus.setToolTip(
-            "Cost bonus (subtracted) when a detection's tag matches the track's tag"
-        )
-        apriltag_layout.addRow(
-            "Tag match bonus (lower cost)?", self.spin_tag_match_bonus
-        )
-        self.spin_tag_mismatch_penalty = QDoubleSpinBox()
-        self.spin_tag_mismatch_penalty.setRange(0.0, 500.0)
-        self.spin_tag_mismatch_penalty.setValue(50.0)
-        self.spin_tag_mismatch_penalty.setSingleStep(10.0)
-        self.spin_tag_mismatch_penalty.setToolTip(
-            "Cost penalty (added) when a detection's tag differs from the track's tag"
-        )
-        apriltag_layout.addRow(
-            "Tag mismatch penalty (higher cost)?", self.spin_tag_mismatch_penalty
-        )
         self.identity_config_stack.addWidget(apriltag_widget)
 
-        vl_identity.addLayout(fl_identity)
-        vl_identity.addWidget(self.identity_config_stack)
+        identity_content_layout.addWidget(self.identity_config_stack)
+        vl_identity.addWidget(self.identity_content)
 
         self.g_individual_pipeline_common = QGroupBox(
             "Individual Analysis Pipeline Settings"
@@ -6210,9 +6207,12 @@ class MainWindow(QMainWindow):
         self.spin_individual_padding.setDecimals(2)
         self.spin_individual_padding.setToolTip(
             "Padding around OBB bounding box as fraction of size.\n"
-            "0.1 = 10% padding on each side."
+            "0.1 = 10% padding on each side.\n"
+            "Applies to all precompute phases: pose, AprilTag, and CNN identity."
         )
-        fl_common.addRow("Crop padding fraction", self.spin_individual_padding)
+        fl_common.addRow(
+            "Crop padding fraction (all phases)", self.spin_individual_padding
+        )
 
         bg_color_layout = QHBoxLayout()
         self.btn_background_color = QPushButton()
@@ -6256,25 +6256,29 @@ class MainWindow(QMainWindow):
         form.addWidget(self.g_individual_pipeline_common)
         form.addWidget(self.g_identity)
 
-        self.g_pose_runtime = QGroupBox("Pose Extraction Settings")
+        self.g_pose_runtime = QGroupBox("Enable Pose Extraction")
+        self.g_pose_runtime.setCheckable(True)
+        self.g_pose_runtime.setChecked(False)
+        self.g_pose_runtime.toggled.connect(self._on_pose_analysis_toggled)
+        self.g_pose_runtime.toggled.connect(self._sync_video_pose_overlay_controls)
+        self.g_pose_runtime.toggled.connect(self._on_runtime_context_changed)
+        self.g_pose_runtime.toggled.connect(self._on_cleaning_toggled)
+        self.chk_enable_pose_extractor = self.g_pose_runtime
         vl_pose = QVBoxLayout(self.g_pose_runtime)
-        vl_pose.addWidget(
-            self._create_help_label(
-                "Minimum runtime pose settings used by the individual-analysis pipeline."
-            )
+        self.pose_runtime_content = QWidget()
+        self.pose_runtime_content.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Maximum
         )
+        pose_runtime_content_layout = QVBoxLayout(self.pose_runtime_content)
+        pose_runtime_content_layout.setContentsMargins(0, 0, 0, 0)
+        pose_runtime_content_layout.setSpacing(8)
+        self.lbl_pose_runtime_help = self._create_help_label(
+            "Minimum runtime pose settings used by the individual-analysis pipeline."
+        )
+        pose_runtime_content_layout.addWidget(self.lbl_pose_runtime_help)
         fl_pose = QFormLayout(None)
         fl_pose.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         self.form_pose_runtime = fl_pose
-
-        self.chk_enable_pose_extractor = QCheckBox("Enable Pose Extraction")
-        self.chk_enable_pose_extractor.setChecked(False)
-        self.chk_enable_pose_extractor.toggled.connect(
-            self._sync_video_pose_overlay_controls
-        )
-        self.chk_enable_pose_extractor.toggled.connect(self._on_runtime_context_changed)
-        self.chk_enable_pose_extractor.toggled.connect(self._on_cleaning_toggled)
-        fl_pose.addRow(self.chk_enable_pose_extractor)
 
         self.combo_pose_model_type = QComboBox()
         self.combo_pose_model_type.addItems(["YOLO", "SLEAP", "ViTPose"])
@@ -6455,7 +6459,8 @@ class MainWindow(QMainWindow):
         self.pose_sleap_experimental_row_widget.setLayout(sleap_exp_layout)
         fl_pose.addRow("", self.pose_sleap_experimental_row_widget)
 
-        vl_pose.addLayout(fl_pose)
+        pose_runtime_content_layout.addLayout(fl_pose)
+        vl_pose.addWidget(self.pose_runtime_content)
         form.addWidget(self.g_pose_runtime)
 
         self._refresh_pose_sleap_envs()
@@ -7051,7 +7056,15 @@ class MainWindow(QMainWindow):
 
     def _on_identity_method_changed(self, index):
         """Update identity configuration stack when method changes."""
-        self.identity_config_stack.setCurrentIndex(index)
+        self._sync_identity_method_ui()
+
+    def _on_identity_analysis_toggled(self, state):
+        """Enable/disable identity-method controls inside individual analysis."""
+        self._sync_identity_method_ui()
+
+    def _on_pose_analysis_toggled(self, state):
+        """Enable/disable pose-extraction controls inside individual analysis."""
+        self._sync_pose_analysis_ui()
 
     @staticmethod
     def _get_apriltag_families() -> list:
@@ -8170,6 +8183,58 @@ class MainWindow(QMainWindow):
             and self._is_yolo_detection_mode()
         )
 
+    def _is_identity_analysis_enabled(self) -> bool:
+        """Return effective runtime state for identity classification."""
+        if not hasattr(self, "g_identity"):
+            return False
+        return bool(
+            self.g_identity.isChecked() and self._is_individual_pipeline_enabled()
+        )
+
+    def _selected_identity_method(self) -> str:
+        """Return canonical identity-method key for runtime/config usage."""
+        if not self._is_identity_analysis_enabled():
+            return "none_disabled"
+        if not hasattr(self, "combo_identity_method"):
+            return "none_disabled"
+        method = self.combo_identity_method.currentData()
+        if not method:
+            method = (
+                self.combo_identity_method.currentText()
+                .lower()
+                .replace(" ", "_")
+                .replace("(", "")
+                .replace(")", "")
+            )
+        return str(method)
+
+    def _sync_identity_method_ui(self):
+        """Show the active identity-method configuration only when enabled."""
+        identity_enabled = self._is_identity_analysis_enabled()
+        if hasattr(self, "identity_content"):
+            self.identity_content.setVisible(identity_enabled)
+            self.identity_content.setEnabled(identity_enabled)
+        if hasattr(self, "combo_identity_method"):
+            if hasattr(self, "form_identity"):
+                self._set_form_row_visible(
+                    self.form_identity, self.combo_identity_method, identity_enabled
+                )
+            self.combo_identity_method.setEnabled(identity_enabled)
+        if hasattr(self, "identity_config_stack"):
+            self.identity_config_stack.setVisible(identity_enabled)
+            self.identity_config_stack.setEnabled(identity_enabled)
+            if hasattr(self, "combo_identity_method"):
+                self.identity_config_stack.setCurrentIndex(
+                    max(0, self.combo_identity_method.currentIndex())
+                )
+
+    def _sync_pose_analysis_ui(self):
+        """Show pose controls only when pose extraction is enabled."""
+        pose_enabled = self._is_pose_inference_enabled()
+        if hasattr(self, "pose_runtime_content"):
+            self.pose_runtime_content.setVisible(pose_enabled)
+            self.pose_runtime_content.setEnabled(pose_enabled)
+
     def _is_individual_image_save_enabled(self) -> bool:
         """Return effective runtime state for saving individual crops."""
         if not hasattr(self, "chk_enable_individual_dataset"):
@@ -8215,12 +8280,24 @@ class MainWindow(QMainWindow):
         has_save_toggle = hasattr(self, "chk_enable_individual_dataset")
         is_yolo = self._is_yolo_detection_mode()
 
+        if hasattr(self, "tabs") and hasattr(self, "tab_individual"):
+            tab_index = self.tabs.indexOf(self.tab_individual)
+            if tab_index >= 0:
+                if not is_yolo and self.tabs.currentWidget() is self.tab_individual:
+                    fallback_index = self.tabs.indexOf(
+                        getattr(self, "tab_detection", self.tab_setup)
+                    )
+                    if fallback_index >= 0:
+                        self.tabs.setCurrentIndex(fallback_index)
+                if hasattr(self.tabs, "setTabVisible"):
+                    self.tabs.setTabVisible(tab_index, is_yolo)
+                elif hasattr(self.tabs, "tabBar") and hasattr(
+                    self.tabs.tabBar(), "setTabVisible"
+                ):
+                    self.tabs.tabBar().setTabVisible(tab_index, is_yolo)
+                self.tabs.setTabEnabled(tab_index, is_yolo)
+
         if has_analyze_toggle:
-            # Pipeline can only be enabled in YOLO mode.
-            if not is_yolo and self.chk_enable_individual_analysis.isChecked():
-                self.chk_enable_individual_analysis.blockSignals(True)
-                self.chk_enable_individual_analysis.setChecked(False)
-                self.chk_enable_individual_analysis.blockSignals(False)
             self.chk_enable_individual_analysis.setEnabled(is_yolo)
 
         pipeline_enabled = self._is_individual_pipeline_enabled()
@@ -8240,13 +8317,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "g_individual_dataset"):
             self.g_individual_dataset.setVisible(pipeline_enabled)
             self.g_individual_dataset.setEnabled(pipeline_enabled)
+        self._sync_identity_method_ui()
+        self._sync_pose_analysis_ui()
         self._sync_pose_backend_ui()
 
         if has_save_toggle:
-            if not pipeline_enabled and self.chk_enable_individual_dataset.isChecked():
-                self.chk_enable_individual_dataset.blockSignals(True)
-                self.chk_enable_individual_dataset.setChecked(False)
-                self.chk_enable_individual_dataset.blockSignals(False)
             self.chk_enable_individual_dataset.setEnabled(pipeline_enabled)
 
         save_enabled = self._is_individual_image_save_enabled()
@@ -11851,7 +11926,7 @@ class MainWindow(QMainWindow):
         # Create and start merge worker thread
         # Discover tag observation cache for AprilTag identity resolution
         _tag_cache_path = None
-        if current_params.get("IDENTITY_METHOD") == "AprilTags":
+        if str(current_params.get("IDENTITY_METHOD", "")).lower() == "apriltags":
             _det_cache = getattr(self, "current_detection_cache_path", None)
             if _det_cache and os.path.exists(str(_det_cache)):
                 import glob as _glob
@@ -13863,7 +13938,7 @@ class MainWindow(QMainWindow):
                     "DetectionID",
                 ]
             # Append TagID column when AprilTag identity is active
-            if self.combo_identity_method.currentText() == "AprilTags":
+            if self._selected_identity_method() == "apriltags":
                 hdr.append("TagID")
             csv_path = self.csv_line.text()
             base, ext = os.path.splitext(csv_path)
@@ -14255,15 +14330,7 @@ class MainWindow(QMainWindow):
         individual_pipeline_enabled = self._is_individual_pipeline_enabled()
         individual_image_save_enabled = self._is_individual_image_save_enabled()
         pose_extractor_enabled = self._is_pose_inference_enabled()
-        identity_method = (
-            self.combo_identity_method.currentText()
-            .lower()
-            .replace(" ", "_")
-            .replace("(", "")
-            .replace(")", "")
-            if individual_pipeline_enabled
-            else "none_disabled"
-        )
+        identity_method = self._selected_identity_method()
         compute_runtime = self._selected_compute_runtime()
         runtime_detection = derive_detection_runtime_settings(compute_runtime)
         trt_batch_size = (
@@ -14471,14 +14538,15 @@ class MainWindow(QMainWindow):
             "CNN_CLASSIFIER_BATCH_SIZE": int(
                 self.advanced_config.get("cnn_classifier_batch_size", 64)
             ),
-            "CNN_CLASSIFIER_CROP_PADDING": self.spin_cnn_crop_padding.value(),
-            "CNN_CLASSIFIER_MATCH_BONUS": self.spin_cnn_match_bonus.value(),
-            "CNN_CLASSIFIER_MISMATCH_PENALTY": self.spin_cnn_mismatch_penalty.value(),
+            "IDENTITY_MATCH_BONUS": self.spin_identity_match_bonus.value(),
+            "IDENTITY_MISMATCH_PENALTY": self.spin_identity_mismatch_penalty.value(),
+            "CNN_CLASSIFIER_MATCH_BONUS": self.spin_identity_match_bonus.value(),
+            "CNN_CLASSIFIER_MISMATCH_PENALTY": self.spin_identity_mismatch_penalty.value(),
             "CNN_CLASSIFIER_WINDOW": self.spin_cnn_window.value(),
             "APRILTAG_FAMILY": self.combo_apriltag_family.currentText(),
             "APRILTAG_DECIMATE": self.spin_apriltag_decimate.value(),
-            "TAG_MATCH_BONUS": self.spin_tag_match_bonus.value(),
-            "TAG_MISMATCH_PENALTY": self.spin_tag_mismatch_penalty.value(),
+            "TAG_MATCH_BONUS": self.spin_identity_match_bonus.value(),
+            "TAG_MISMATCH_PENALTY": self.spin_identity_mismatch_penalty.value(),
             "ENABLE_POSE_EXTRACTOR": pose_extractor_enabled,
             "POSE_MODEL_TYPE": self.combo_pose_model_type.currentText().strip().lower(),
             "POSE_MODEL_DIR": resolve_pose_model_path(
@@ -15301,11 +15369,9 @@ class MainWindow(QMainWindow):
             )
             self.chk_enable_individual_analysis.setChecked(bool(pipeline_enabled))
             method_map = {
-                "none_disabled": 0,
-                "color_tags_yolo": 1,  # backward compat for old saved configs
-                "cnn_classifier": 1,  # new canonical key
-                "apriltags": 2,
-                "custom": 0,
+                "color_tags_yolo": 0,  # backward compat for old saved configs
+                "cnn_classifier": 0,
+                "apriltags": 1,
             }
             identity_method = (
                 str(get_cfg("identity_method", default="none_disabled"))
@@ -15317,53 +15383,46 @@ class MainWindow(QMainWindow):
             # Backward compat: rename color_tags_yolo -> cnn_classifier on load
             if identity_method == "color_tags_yolo":
                 identity_method = "cnn_classifier"
+            self.g_identity.setChecked(identity_method != "none_disabled")
             self.combo_identity_method.setCurrentIndex(
                 method_map.get(identity_method, 0)
-            )
-            # Skip model path in preset mode
-            if not preset_mode and not self.line_color_tag_model.text().strip():
-                color_tag_model = get_cfg("color_tag_model_path", default="")
-                if color_tag_model:
-                    # Resolve model path
-                    resolved_path = resolve_model_path(color_tag_model)
-                    self.line_color_tag_model.setText(resolved_path)
-            elif preset_mode:
-                # For presets, resolve but also validate
-                color_tag_model = get_cfg("color_tag_model_path", default="")
-                if color_tag_model:
-                    resolved_path = resolve_model_path(color_tag_model)
-
-                    # Validate if it's a relative path
-                    if not os.path.isabs(color_tag_model) and not os.path.exists(
-                        resolved_path
-                    ):
-                        logger.warning(
-                            f"Preset references non-existent color tag model: {color_tag_model}\n"
-                            f"Expected location: {resolved_path}"
-                        )
-                        # Don't show dialog for color tag model since it's optional
-                        # Just log the warning
-                    elif not self.line_color_tag_model.text().strip():
-                        self.line_color_tag_model.setText(resolved_path)
-            self.spin_color_tag_conf.setValue(
-                get_cfg("color_tag_confidence", default=0.5)
             )
             # CNN Classifier spinboxes
             self.spin_cnn_confidence.setValue(
                 float(get_cfg("cnn_classifier_confidence", default=0.5))
             )
-            self.spin_cnn_match_bonus.setValue(
-                float(get_cfg("cnn_classifier_match_bonus", default=20.0))
+            self.spin_identity_match_bonus.setValue(
+                float(
+                    get_cfg(
+                        "identity_match_bonus",
+                        "cnn_classifier_match_bonus",
+                        "tag_match_bonus",
+                        default=20.0,
+                    )
+                )
             )
-            self.spin_cnn_mismatch_penalty.setValue(
-                float(get_cfg("cnn_classifier_mismatch_penalty", default=50.0))
+            self.spin_identity_mismatch_penalty.setValue(
+                float(
+                    get_cfg(
+                        "identity_mismatch_penalty",
+                        "cnn_classifier_mismatch_penalty",
+                        "tag_mismatch_penalty",
+                        default=50.0,
+                    )
+                )
             )
             self.spin_cnn_window.setValue(
                 int(get_cfg("cnn_classifier_window", default=10))
             )
-            self.spin_cnn_crop_padding.setValue(
-                float(get_cfg("cnn_classifier_crop_padding", default=0.1))
-            )
+            # Warn users who had a non-default cnn_classifier_crop_padding in their config
+            _legacy_crop_padding = get_cfg("cnn_classifier_crop_padding", default=None)
+            if _legacy_crop_padding is not None and float(_legacy_crop_padding) != 0.1:
+                logger.warning(
+                    "Config key 'cnn_classifier_crop_padding' (value=%.2f) is no longer used. "
+                    "All precompute phases now use 'individual_crop_padding'. "
+                    "Update your crop padding setting in the Individual Analysis panel.",
+                    float(_legacy_crop_padding),
+                )
             # CNN identity model path from config
             cnn_model_rel = get_cfg("cnn_classifier_model_path", default="")
             if cnn_model_rel:
@@ -15376,10 +15435,6 @@ class MainWindow(QMainWindow):
             self.combo_apriltag_family.setCurrentIndex(max(0, idx))
             self.spin_apriltag_decimate.setValue(
                 get_cfg("apriltag_decimate", default=1.0)
-            )
-            self.spin_tag_match_bonus.setValue(get_cfg("tag_match_bonus", default=20.0))
-            self.spin_tag_mismatch_penalty.setValue(
-                get_cfg("tag_mismatch_penalty", default=50.0)
             )
 
             self.chk_enable_pose_extractor.setChecked(
@@ -15859,18 +15914,14 @@ class MainWindow(QMainWindow):
                 # === INDIVIDUAL ANALYSIS ===
                 "enable_identity_analysis": self._is_individual_pipeline_enabled(),
                 "enable_individual_pipeline": self._is_individual_pipeline_enabled(),
-                "identity_method": self.combo_identity_method.currentText()
-                .lower()
-                .replace(" ", "_")
-                .replace("(", "")
-                .replace(")", ""),
-                "color_tag_confidence": self.spin_color_tag_conf.value(),
+                "identity_method": self._selected_identity_method(),
                 # CNN Classifier settings
                 "cnn_classifier_confidence": self.spin_cnn_confidence.value(),
-                "cnn_classifier_match_bonus": self.spin_cnn_match_bonus.value(),
-                "cnn_classifier_mismatch_penalty": self.spin_cnn_mismatch_penalty.value(),
+                "identity_match_bonus": self.spin_identity_match_bonus.value(),
+                "identity_mismatch_penalty": self.spin_identity_mismatch_penalty.value(),
+                "cnn_classifier_match_bonus": self.spin_identity_match_bonus.value(),
+                "cnn_classifier_mismatch_penalty": self.spin_identity_mismatch_penalty.value(),
                 "cnn_classifier_window": self.spin_cnn_window.value(),
-                "cnn_classifier_crop_padding": self.spin_cnn_crop_padding.value(),
             }
         )
         # CNN identity model path via combo rel_path
@@ -15879,25 +15930,12 @@ class MainWindow(QMainWindow):
                 self.combo_cnn_identity_model.currentData()
             )
 
-        # Model paths - save differently for configs vs presets
-        color_tag_path = self.line_color_tag_model.text()
-        if preset_mode:
-            # For presets: always try to make relative if in archive
-            cfg["color_tag_model_path"] = (
-                make_model_path_relative(color_tag_path) if color_tag_path else ""
-            )
-        else:
-            # For configs: store relative if in archive, absolute otherwise
-            cfg["color_tag_model_path"] = (
-                make_model_path_relative(color_tag_path) if color_tag_path else ""
-            )
-
         cfg.update(
             {
                 "apriltag_family": self.combo_apriltag_family.currentText(),
                 "apriltag_decimate": self.spin_apriltag_decimate.value(),
-                "tag_match_bonus": self.spin_tag_match_bonus.value(),
-                "tag_mismatch_penalty": self.spin_tag_mismatch_penalty.value(),
+                "tag_match_bonus": self.spin_identity_match_bonus.value(),
+                "tag_mismatch_penalty": self.spin_identity_mismatch_penalty.value(),
                 "enable_pose_extractor": self.chk_enable_pose_extractor.isChecked(),
                 "pose_model_type": self.combo_pose_model_type.currentText()
                 .strip()
