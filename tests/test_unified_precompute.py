@@ -403,3 +403,103 @@ def test_apriltag_phase_process_frame_calls_detect_in_crops(tmp_path):
             [crop], [(5, 10)], det_indices=[0]
         )
         phase.finalize()
+
+
+def test_apriltag_phase_process_frame_noop_on_cache_hit(tmp_path):
+    """process_frame does not call detect_in_crops when the cache was hit."""
+    from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
+    from multi_tracker.data.tag_observation_cache import TagObservationCache as TOC
+
+    cache_path = tmp_path / "tags_0_2.npz"
+    # Write a valid compatible cache covering frames 0-2
+    writer = TOC(str(cache_path), mode="w", start_frame=0, end_frame=2)
+    for fid in range(3):
+        writer.add_frame(fid, [], [], [], [])
+    writer.save(
+        metadata={
+            "family": "tag36h11",
+            "start_frame": 0,
+            "end_frame": 2,
+            "video_path": "",
+            "detection_cache_hash": "",
+        }
+    )
+    writer.close()
+
+    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
+        phase = AprilTagPrecomputePhase(
+            detector_config=Mock(),
+            cache_path=cache_path,
+            start_frame=0,
+            end_frame=2,
+            video_path="",
+        )
+        assert phase.has_cache_hit() is True
+        crop = np.zeros((20, 20, 3), dtype=np.uint8)
+        phase.process_frame(0, [crop], [0], [], [(0, 0)])
+        # Detector was never created (cache hit) and detect_in_crops never called
+        MockDet.assert_not_called()
+
+
+def test_apriltag_phase_stale_cache_triggers_miss(tmp_path):
+    """Cache exists for frames 0-2 but request is for 0-9 → cache miss."""
+    from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
+    from multi_tracker.data.tag_observation_cache import TagObservationCache as TOC
+
+    cache_path = tmp_path / "tags_0_2.npz"
+    # Write a valid cache covering only frames 0-2
+    writer = TOC(str(cache_path), mode="w", start_frame=0, end_frame=2)
+    for fid in range(3):
+        writer.add_frame(fid, [], [], [], [])
+    writer.save(
+        metadata={
+            "family": "tag36h11",
+            "start_frame": 0,
+            "end_frame": 2,
+            "video_path": "",
+            "detection_cache_hash": "",
+        }
+    )
+    writer.close()
+
+    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector") as MockDet:
+        phase = AprilTagPrecomputePhase(
+            detector_config=Mock(),
+            cache_path=cache_path,
+            start_frame=0,
+            end_frame=9,  # larger range than the cached 0-2
+            video_path="",
+        )
+        assert phase.has_cache_hit() is False
+        MockDet.assert_called_once()  # detector created for the miss
+
+
+def test_apriltag_phase_finalize_returns_path_on_hit(tmp_path):
+    from multi_tracker.core.tracking.precompute import AprilTagPrecomputePhase
+    from multi_tracker.data.tag_observation_cache import TagObservationCache as TOC
+
+    cache_path = tmp_path / "tags_0_0.npz"
+    writer = TOC(str(cache_path), mode="w", start_frame=0, end_frame=0)
+    writer.add_frame(0, [], [], [], [])
+    writer.save(
+        metadata={
+            "family": "tag36h11",
+            "start_frame": 0,
+            "end_frame": 0,
+            "video_path": "",
+            "detection_cache_hash": "",
+        }
+    )
+    writer.close()
+
+    with patch("multi_tracker.core.tracking.precompute.AprilTagDetector"):
+        phase = AprilTagPrecomputePhase(
+            detector_config=Mock(),
+            cache_path=cache_path,
+            start_frame=0,
+            end_frame=0,
+            video_path="",
+        )
+        assert phase.has_cache_hit() is True
+        result = phase.finalize()
+        assert result == str(cache_path)

@@ -345,23 +345,25 @@ class AprilTagPrecomputePhase(PrecomputePhase):
             probe = TagObservationCache(
                 self._cache_path, mode="r", start_frame=start_frame, end_frame=end_frame
             )
-            if probe.is_compatible() and probe.covers_frame_range(
-                start_frame, end_frame
-            ):
-                self._hit = True
-                probe.close()
+            try:
+                if probe.is_compatible() and probe.covers_frame_range(
+                    start_frame, end_frame
+                ):
+                    self._hit = True
+                    logger.info(
+                        "AprilTag cache hit: %s covers frames %d-%d",
+                        self._cache_path,
+                        start_frame,
+                        end_frame,
+                    )
+                    return
+                # fall through to create detector + write-mode cache
                 logger.info(
-                    "AprilTag cache hit: %s covers frames %d-%d",
+                    "AprilTag cache miss or incompatible at %s — will regenerate",
                     self._cache_path,
-                    start_frame,
-                    end_frame,
                 )
-                return
-            probe.close()
-            logger.info(
-                "AprilTag cache miss or incompatible at %s — will regenerate",
-                self._cache_path,
-            )
+            finally:
+                probe.close()
 
         # Cache miss: create detector and write-mode cache.
         self._detector = AprilTagDetector(detector_config)
