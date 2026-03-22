@@ -553,7 +553,8 @@ def test_cnn_phase_process_frame_batches_crops(tmp_path):
     ) as MockBackend:
         mock_backend = MockBackend.return_value
         mock_backend.predict_batch.return_value = [
-            ClassPrediction(class_name="tag_0", confidence=0.9, det_index=0)
+            ClassPrediction(class_name="tag_0", confidence=0.9, det_index=0),
+            ClassPrediction(class_name="tag_0", confidence=0.85, det_index=1),
         ]
 
         phase = CNNPrecomputePhase(
@@ -629,3 +630,18 @@ def test_cnn_phase_process_frame_empty_crops_does_not_add_to_batch(tmp_path):
         phase.finalize()
         # cache still flushed (empty frame recorded)
         assert cache_path.exists()
+
+
+def test_cnn_phase_close_is_idempotent(tmp_path):
+    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+    from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
+
+    cache_path = tmp_path / "cnn.npz"
+    with patch("multi_tracker.core.tracking.precompute.CNNIdentityBackend"):
+        phase = CNNPrecomputePhase(
+            config=CNNIdentityConfig(model_path="/fake.pth"),
+            model_path="/fake.pth",
+            cache_path=cache_path,
+        )
+        phase.close()
+        phase.close()  # must not raise

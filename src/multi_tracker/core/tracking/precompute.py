@@ -468,7 +468,7 @@ class AprilTagPrecomputePhase(PrecomputePhase):
 # ---------------------------------------------------------------------------
 
 
-class CNNPrecomputePhase:
+class CNNPrecomputePhase(PrecomputePhase):
     """Precompute phase that runs CNN identity classification on OBB crops.
 
     Supports multiple instances with different model configs and names (e.g.
