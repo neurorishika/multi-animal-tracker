@@ -1,0 +1,240 @@
+"""Tests for the unified precompute pipeline."""
+
+from __future__ import annotations
+
+from unittest.mock import Mock
+
+import numpy as np
+import pytest
+
+from multi_tracker.core.tracking.precompute import CropConfig, UnifiedPrecompute
+
+# ---------------------------------------------------------------------------
+# CropConfig
+# ---------------------------------------------------------------------------
+
+
+def test_crop_config_defaults():
+    cfg = CropConfig()
+    assert cfg.padding_fraction == 0.1
+    assert cfg.suppress_foreign is True
+    assert cfg.bg_color == (0, 0, 0)
+
+
+def test_crop_config_custom():
+    cfg = CropConfig(padding_fraction=0.2, suppress_foreign=False, bg_color=(255, 0, 0))
+    assert cfg.padding_fraction == 0.2
+    assert cfg.suppress_foreign is False
+    assert cfg.bg_color == (255, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# UnifiedPrecompute helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_phase(name, is_fatal=False, cache_hit=False, finalize_return=None):
+    """Build a mock PrecomputePhase."""
+    p = Mock()
+    p.name = name
+    p.is_fatal = is_fatal
+    p.has_cache_hit.return_value = cache_hit
+    p.finalize.return_value = finalize_return
+    return p
+
+
+def _make_cap(frame=None):
+    cap = Mock()
+    if frame is None:
+        frame = np.zeros((10, 10, 3), dtype=np.uint8)
+    cap.read.return_value = (True, frame)
+    return cap
+
+
+def _make_det_cache():
+    dc = Mock()
+    dc.get_frame.return_value = ([], [], [], [], [], [], [], [])
+    return dc
+
+
+def _make_detector():
+    det = Mock()
+    det.filter_raw_detections.return_value = ([], [], [], [], [], [], [], [])
+    return det
+
+
+# ---------------------------------------------------------------------------
+# Empty phase list
+# ---------------------------------------------------------------------------
+
+
+def test_empty_phases_returns_empty_dict_without_reading_cap():
+    cap = _make_cap()
+    up = UnifiedPrecompute([], CropConfig())
+    result = up.run(
+        cap=cap,
+        detection_cache=_make_det_cache(),
+        detector=_make_detector(),
+        start_frame=0,
+        end_frame=5,
+        resize_factor=1.0,
+        roi_mask=None,
+    )
+    assert result == {}
+    cap.read.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Dispatch — process_frame called once per frame per phase
+# ---------------------------------------------------------------------------
+
+
+def test_process_frame_called_once_per_frame_per_phase():
+    p1 = _make_phase("a", finalize_return="/a")
+    p2 = _make_phase("b", finalize_return="/b")
+
+    up = UnifiedPrecompute([p1, p2], CropConfig())
+    up.run(_make_cap(), _make_det_cache(), _make_detector(), 0, 2, 1.0, None)
+
+    assert p1.process_frame.call_count == 3  # frames 0, 1, 2
+    assert p2.process_frame.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Empty detections → process_frame called with empty lists
+# ---------------------------------------------------------------------------
+
+
+def test_process_frame_called_with_empty_crops_when_no_detections():
+    p = _make_phase("x", finalize_return=None)
+    up = UnifiedPrecompute([p], CropConfig())
+    up.run(_make_cap(), _make_det_cache(), _make_detector(), 0, 0, 1.0, None)
+
+    args = p.process_frame.call_args[0]  # positional args
+    # args: (frame_idx, crops, det_ids, all_obb, crop_offsets)
+    frame_idx, crops, det_ids, all_obb, crop_offsets = args
+    assert frame_idx == 0
+    assert crops == []
+    assert det_ids == []
+    assert all_obb == []
+    assert crop_offsets == []
+
+
+# ---------------------------------------------------------------------------
+# All-cache-hit: video read skipped
+# ---------------------------------------------------------------------------
+
+
+def test_all_cache_hit_skips_video_read():
+    p = _make_phase("x", cache_hit=True, finalize_return="/cached")
+    cap = _make_cap()
+    up = UnifiedPrecompute([p], CropConfig())
+    result = up.run(cap, _make_det_cache(), _make_detector(), 0, 5, 1.0, None)
+    cap.read.assert_not_called()
+    assert result == {"x": "/cached"}
+
+
+# ---------------------------------------------------------------------------
+# Partial cache hit: video runs; hit phase process_frame no-op, miss phase runs
+# ---------------------------------------------------------------------------
+
+
+def test_partial_cache_hit_video_runs_miss_phase_gets_frames():
+    hit = _make_phase("hit", cache_hit=True, finalize_return="/old")
+    miss = _make_phase("miss", cache_hit=False, finalize_return="/new")
+
+    up = UnifiedPrecompute([hit, miss], CropConfig())
+    result = up.run(_make_cap(), _make_det_cache(), _make_detector(), 0, 1, 1.0, None)
+
+    assert miss.process_frame.call_count == 2  # both frames processed
+    assert result == {"hit": "/old", "miss": "/new"}
+
+
+# ---------------------------------------------------------------------------
+# Cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_stop_check_exits_loop_calls_close_not_finalize():
+    p = _make_phase("y")
+    cap = _make_cap()
+
+    call_count = [0]
+
+    def stop_after_first():
+        call_count[0] += 1
+        return call_count[0] > 1
+
+    up = UnifiedPrecompute([p], CropConfig())
+    result = up.run(
+        cap,
+        _make_det_cache(),
+        _make_detector(),
+        0,
+        10,
+        1.0,
+        None,
+        stop_check=stop_after_first,
+    )
+    p.finalize.assert_not_called()
+    p.close.assert_called_once()
+    assert result == {"y": None}
+
+
+# ---------------------------------------------------------------------------
+# Fatal phase raises in finalize → propagates; close still called
+# ---------------------------------------------------------------------------
+
+
+def test_fatal_phase_finalize_raises_propagates_and_close_called():
+    p = _make_phase("pose", is_fatal=True)
+    p.finalize.side_effect = RuntimeError("inference failed")
+
+    up = UnifiedPrecompute([p], CropConfig())
+    with pytest.raises(RuntimeError, match="inference failed"):
+        up.run(_make_cap(), _make_det_cache(), _make_detector(), 0, 0, 1.0, None)
+
+    p.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Non-fatal phase raises in finalize → None in result; warning_cb called; close called
+# ---------------------------------------------------------------------------
+
+
+def test_nonfatal_phase_finalize_raises_returns_none_and_warns():
+    p = _make_phase("apriltag", is_fatal=False)
+    p.finalize.side_effect = RuntimeError("at failed")
+    warnings = []
+
+    up = UnifiedPrecompute([p], CropConfig())
+    result = up.run(
+        _make_cap(),
+        _make_det_cache(),
+        _make_detector(),
+        0,
+        0,
+        1.0,
+        None,
+        warning_cb=lambda t, m: warnings.append((t, m)),
+    )
+    assert result == {"apriltag": None}
+    assert len(warnings) == 1
+    p.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# finalize + close called on ALL phases even when one raises
+# ---------------------------------------------------------------------------
+
+
+def test_close_called_on_all_phases_when_one_finalize_raises():
+    p1 = _make_phase("ok", finalize_return="/ok")
+    p2 = _make_phase("bad", is_fatal=False)
+    p2.finalize.side_effect = RuntimeError("oops")
+
+    up = UnifiedPrecompute([p1, p2], CropConfig())
+    up.run(_make_cap(), _make_det_cache(), _make_detector(), 0, 0, 1.0, None)
+
+    p1.close.assert_called_once()
+    p2.close.assert_called_once()
