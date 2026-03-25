@@ -17,6 +17,9 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+_CONSERVATIVE_SPLIT_MIN_ANIMALS = 1.6
+
+
 def _normalize_detection_ids(detection_ids):
     """Normalize detection IDs to runtime integers.
 
@@ -62,29 +65,139 @@ class ObjectDetector:
     def __init__(self, params):
         self.params = params
 
-    def _local_conservative_split(self, sub):
-        """Applies conservative morphological operations to split merged objects."""
-        k = self.params["CONSERVATIVE_KERNEL_SIZE"]
-        it = self.params["CONSERVATIVE_ERODE_ITER"]
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-        out = cv2.erode(sub, kernel, iterations=it)
-        return cv2.morphologyEx(out, cv2.MORPH_OPEN, kernel)
+    def _local_threshold_map(self, sub_diff):
+        """Build a spatially varying threshold map for a suspicious contour.
 
-    def apply_conservative_split(self: object, fg_mask: object) -> object:
-        """Attempts to split merged objects in the foreground mask."""
+        The boost should act locally, not as one contour-wide cutoff. We do
+        that by pulling the threshold upward toward nearby strong foreground
+        support, which trims weak bridges while keeping moderately weak body
+        regions whose local support remains low.
+        """
+        diff_f = sub_diff.astype(np.float32)
+        blur_kernel = int(self.params.get("CONSERVATIVE_KERNEL_SIZE", 3) or 1)
+        blur_kernel = max(1, blur_kernel | 1)
+        if blur_kernel > 1:
+            diff_f = cv2.GaussianBlur(diff_f, (blur_kernel, blur_kernel), 0)
+
+        expected_body_area = self._expected_body_area()
+        support_kernel_size = max(3, 2 * blur_kernel + 1)
+        if expected_body_area and expected_body_area > 0:
+            body_radius = math.sqrt(expected_body_area / math.pi)
+            support_kernel_size = max(support_kernel_size, int(round(body_radius)) | 1)
+        support_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (support_kernel_size, support_kernel_size)
+        )
+        local_support = cv2.dilate(diff_f, support_kernel)
+
+        base_thresh = float(self.params.get("THRESHOLD_VALUE", 20) or 20)
+        boost_steps = max(
+            0.0, float(self.params.get("CONSERVATIVE_ERODE_ITER", 1) or 0.0)
+        )
+        boost_fraction = min(0.85, 0.25 * boost_steps)
+        threshold_map = base_thresh + boost_fraction * np.maximum(
+            local_support - base_thresh, 0.0
+        )
+        return diff_f, threshold_map
+
+    def _local_rethreshold(self, sub_diff, sub_mask):
+        """Re-threshold a diff sub-region using a local threshold map.
+
+        Only tightens — never expands beyond the existing foreground mask.
+        """
+        diff_f, threshold_map = self._local_threshold_map(sub_diff)
+        tighter = np.where(diff_f > threshold_map, 255, 0).astype(np.uint8)
+        tighter = cv2.bitwise_and(sub_mask, tighter)
+
+        min_area = max(1, int(self.params.get("MIN_CONTOUR_AREA", 1) or 1))
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(tighter)
+        if num_labels <= 1:
+            return tighter
+
+        filtered = np.zeros_like(tighter)
+        for label in range(1, num_labels):
+            area = stats[label, cv2.CC_STAT_AREA]
+            if area >= min_area:
+                filtered[labels == label] = 255
+        return filtered
+
+    def _expected_body_area(self):
+        """Estimate one-animal area in resized pixels from reference size or filters.
+
+        Prefers MIN_OBJECT_SIZE (user-calibrated minimum pixel area for a
+        single animal) over the circular approximation from
+        REFERENCE_BODY_SIZE, which dramatically overestimates area for
+        elongated animals and prevents the split from triggering.
+        """
+        min_size = float(self.params.get("MIN_OBJECT_SIZE", 0.0) or 0.0)
+        if min_size > 0:
+            return min_size
+
+        max_size = float(self.params.get("MAX_OBJECT_SIZE", 0.0) or 0.0)
+        if max_size > 0 and np.isfinite(max_size):
+            return 0.5 * max_size
+
+        # Fallback: circular estimate from reference body size
+        reference_body_size = float(self.params.get("REFERENCE_BODY_SIZE", 0.0) or 0.0)
+        resize_factor = float(self.params.get("RESIZE_FACTOR", 1.0) or 1.0)
+        if reference_body_size > 0:
+            scaled_body_size = reference_body_size * resize_factor
+            radius = scaled_body_size / 2.0
+            return math.pi * radius * radius
+        return None
+
+    def _should_split_contour(self, contour_area):
+        """Split only contours whose area suggests multiple nearby animals."""
+        expected_body_area = self._expected_body_area()
+        if not expected_body_area or expected_body_area <= 0:
+            return False
+
+        estimated_animals = contour_area / expected_body_area
+        return estimated_animals >= _CONSERVATIVE_SPLIT_MIN_ANIMALS
+
+    def apply_conservative_split(self, fg_mask, gray=None, background=None):
+        """Split merged blobs by locally raising the threshold.
+
+        If *gray* and *background* are provided the split uses a tighter
+        threshold on the raw difference image inside suspicious regions,
+        which preserves animal shape better than erosion.  Falls back to
+        simple erosion when the raw images are unavailable (e.g. cached
+        detection replays).
+        """
         cnts, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        N = self.params["MAX_TARGETS"]
-
         suspicious = [
             cv2.boundingRect(c)
             for c in cnts
-            if cv2.contourArea(c) > self.params["MERGE_AREA_THRESHOLD"]
-            or sum(1 for cc in cnts if cv2.contourArea(cc) > 0) < N
+            if self._should_split_contour(cv2.contourArea(c))
         ]
+        if not suspicious:
+            return fg_mask
 
-        for bx, by, bw, bh in suspicious:
-            sub = fg_mask[by : by + bh, bx : bx + bw]
-            fg_mask[by : by + bh, bx : bx + bw] = self._local_conservative_split(sub)
+        p = self.params
+        boost = p.get("CONSERVATIVE_ERODE_ITER", 1)
+
+        if gray is not None and background is not None:
+            # Compute raw difference for re-thresholding
+            dark_on_light = p.get("DARK_ON_LIGHT_BACKGROUND", True)
+            if dark_on_light:
+                diff = cv2.subtract(background, gray)
+            else:
+                diff = cv2.subtract(gray, background)
+
+            for bx, by, bw, bh in suspicious:
+                sub_diff = diff[by : by + bh, bx : bx + bw]
+                sub_mask = fg_mask[by : by + bh, bx : bx + bw]
+                fg_mask[by : by + bh, bx : bx + bw] = self._local_rethreshold(
+                    sub_diff, sub_mask
+                )
+        else:
+            # Fallback: simple erosion when raw images are unavailable
+            k = p.get("CONSERVATIVE_KERNEL_SIZE", 3)
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            for bx, by, bw, bh in suspicious:
+                sub = fg_mask[by : by + bh, bx : bx + bw]
+                fg_mask[by : by + bh, bx : bx + bw] = cv2.erode(
+                    sub, kernel, iterations=boost
+                )
 
         return fg_mask
 
@@ -161,6 +274,7 @@ class ObjectDetector:
         if len(meas) > N:
             idxs = np.argsort(sizes)[::-1][:N]
             meas = [meas[i] for i in idxs]
+            sizes = [sizes[i] for i in idxs]
             shapes = [shapes[i] for i in idxs]
             confidences = [confidences[i] for i in idxs]
 
@@ -2593,7 +2707,7 @@ class YOLOOBBDetector:
 
         return batch_detections
 
-    def apply_conservative_split(self: object, fg_mask: object) -> object:
+    def apply_conservative_split(self, fg_mask, gray=None, background=None):
         """
         Placeholder method for compatibility with ObjectDetector interface.
         YOLO doesn't use foreground masks, so this is a no-op.

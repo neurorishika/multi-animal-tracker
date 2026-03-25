@@ -14,15 +14,16 @@ import math
 import os
 import re
 import shutil
+import threading
 import time
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from datetime import datetime
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
+from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
@@ -36,9 +37,11 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -52,8 +55,11 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStackedWidget,
+    QStyle,
+    QStyleOptionGroupBox,
     QTabWidget,
     QToolButton,
+    QToolTip,
     QVBoxLayout,
     QWidget,
 )
@@ -111,6 +117,7 @@ from ..utils.video_artifacts import (
     find_existing_detection_cache_path,
     iter_detection_cache_candidates,
 )
+from .dialogs.bg_parameter_helper import BgParameterHelperDialog
 from .dialogs.parameter_helper import ParameterHelperDialog
 from .dialogs.train_yolo_dialog import TrainYoloDialog
 
@@ -124,6 +131,149 @@ except ImportError:
 
 # Configuration file for saving/loading tracking parameters
 CONFIG_FILENAME = "tracking_config.json"  # Fallback for manual load/save
+
+
+_PREVIEW_BACKGROUND_CACHE_MAX_ENTRIES = 4
+_PREVIEW_BACKGROUND_CACHE = OrderedDict()
+_PREVIEW_BACKGROUND_CACHE_LOCK = threading.Lock()
+
+
+def _clear_preview_background_cache() -> None:
+    """Clear preview-only cached background models."""
+    with _PREVIEW_BACKGROUND_CACHE_LOCK:
+        _PREVIEW_BACKGROUND_CACHE.clear()
+
+
+def _hash_preview_roi_mask(roi_mask) -> str | None:
+    """Build a stable hash for the preview ROI mask."""
+    if roi_mask is None:
+        return None
+
+    mask = np.ascontiguousarray(roi_mask)
+    digest = hashlib.sha1()
+    digest.update(str(mask.shape).encode("ascii"))
+    digest.update(str(mask.dtype).encode("ascii"))
+    digest.update(memoryview(mask))
+    return digest.hexdigest()
+
+
+def _preview_background_cache_key(context: dict) -> tuple:
+    """Return the cache key for preview background priming inputs."""
+    return (
+        "preview-background-v1",
+        os.path.abspath(os.path.expanduser(str(context.get("video_path", "")))),
+        int(context.get("bg_prime_frames", 30)),
+        int(context.get("brightness", 0)),
+        round(float(context.get("contrast", 1.0)), 6),
+        round(float(context.get("gamma", 1.0)), 6),
+        round(float(context.get("resize_factor", 1.0)), 6),
+        _hash_preview_roi_mask(context.get("roi_mask")),
+    )
+
+
+def _preview_object_size_pixels(context: dict, key: str, default: float) -> int:
+    """Convert a size-filter multiplier from the context to pixel area."""
+    ref = float(context.get("reference_body_size", 20.0))
+    rf = float(context.get("resize_factor", 1.0))
+    body_area = math.pi * (ref / 2.0) ** 2 * rf**2
+    return int(float(context.get(key, default)) * body_area)
+
+
+def _build_preview_background_params(context: dict) -> dict:
+    """Build preview background-subtraction parameters from the frozen context."""
+    return {
+        "BACKGROUND_PRIME_FRAMES": int(context.get("bg_prime_frames", 30)),
+        "BRIGHTNESS": int(context.get("brightness", 0)),
+        "CONTRAST": float(context.get("contrast", 1.0)),
+        "GAMMA": float(context.get("gamma", 1.0)),
+        "ROI_MASK": context.get("roi_mask"),
+        "RESIZE_FACTOR": float(context.get("resize_factor", 1.0)),
+        "DARK_ON_LIGHT_BACKGROUND": bool(context.get("dark_on_light", False)),
+        "THRESHOLD_VALUE": int(context.get("threshold_value", 20)),
+        "MORPH_KERNEL_SIZE": int(context.get("morph_kernel_size", 3)),
+        "ENABLE_ADDITIONAL_DILATION": bool(
+            context.get("enable_additional_dilation", False)
+        ),
+        "DILATION_KERNEL_SIZE": int(context.get("dilation_kernel_size", 3)),
+        "DILATION_ITERATIONS": int(context.get("dilation_iterations", 1)),
+        "ENABLE_CONSERVATIVE_SPLIT": bool(
+            context.get("enable_conservative_split", True)
+        ),
+        "CONSERVATIVE_KERNEL_SIZE": int(context.get("conservative_kernel_size", 3)),
+        "CONSERVATIVE_ERODE_ITER": int(context.get("conservative_erode_iterations", 1)),
+        "MAX_TARGETS": int(context.get("max_targets", 5)),
+        "MIN_CONTOUR_AREA": int(context.get("min_contour", 50)),
+        "MAX_CONTOUR_MULTIPLIER": int(context.get("max_contour_multiplier", 20)),
+        "REFERENCE_BODY_SIZE": float(context.get("reference_body_size", 20.0)),
+        "MIN_OBJECT_SIZE": _preview_object_size_pixels(context, "min_object_size", 0.3),
+        "MAX_OBJECT_SIZE": _preview_object_size_pixels(context, "max_object_size", 3.0),
+    }
+
+
+def _get_cached_preview_background_state(context: dict) -> dict | None:
+    """Return a copy of cached preview background state if available."""
+    cache_key = _preview_background_cache_key(context)
+    with _PREVIEW_BACKGROUND_CACHE_LOCK:
+        cached_state = _PREVIEW_BACKGROUND_CACHE.get(cache_key)
+        if cached_state is None:
+            return None
+        _PREVIEW_BACKGROUND_CACHE.move_to_end(cache_key)
+        return {
+            "lightest_background": cached_state["lightest_background"].copy(),
+            "adaptive_background": cached_state["adaptive_background"].copy(),
+            "reference_intensity": cached_state["reference_intensity"],
+        }
+
+
+def _store_preview_background_state(context: dict, bg_model) -> None:
+    """Store a copy of preview background state for reuse across previews."""
+    if bg_model.lightest_background is None or bg_model.adaptive_background is None:
+        return
+
+    cache_key = _preview_background_cache_key(context)
+    cache_entry = {
+        "lightest_background": bg_model.lightest_background.copy(),
+        "adaptive_background": bg_model.adaptive_background.copy(),
+        "reference_intensity": bg_model.reference_intensity,
+    }
+
+    with _PREVIEW_BACKGROUND_CACHE_LOCK:
+        _PREVIEW_BACKGROUND_CACHE[cache_key] = cache_entry
+        _PREVIEW_BACKGROUND_CACHE.move_to_end(cache_key)
+        while len(_PREVIEW_BACKGROUND_CACHE) > _PREVIEW_BACKGROUND_CACHE_MAX_ENTRIES:
+            _PREVIEW_BACKGROUND_CACHE.popitem(last=False)
+
+
+def _build_preview_background_model(context: dict):
+    """Build or restore a preview-only primed background model."""
+    from ..core.background.model import BackgroundModel
+
+    bg_params = _build_preview_background_params(context)
+    bg_model = BackgroundModel(bg_params)
+
+    cached_state = _get_cached_preview_background_state(context)
+    if cached_state is not None:
+        bg_model.lightest_background = cached_state["lightest_background"]
+        bg_model.adaptive_background = cached_state["adaptive_background"]
+        bg_model.reference_intensity = cached_state["reference_intensity"]
+        logger.info("Reusing cached background model for test detection")
+        return bg_model, bg_params
+
+    logger.info("Building background model for test detection...")
+    cap = cv2.VideoCapture(str(context.get("video_path", "")))
+    if not cap.isOpened():
+        raise RuntimeError("Cannot open video for background priming")
+
+    try:
+        bg_model.prime_background(cap)
+    finally:
+        cap.release()
+
+    if bg_model.lightest_background is None:
+        raise RuntimeError("Failed to build background model")
+
+    _store_preview_background_state(context, bg_model)
+    return bg_model, bg_params
 
 
 class CurrentPageStackedWidget(QStackedWidget):
@@ -1240,8 +1390,7 @@ def _run_preview_detection_job(
     frame_rgb, context: dict, use_size_filtering: bool
 ) -> dict:
     """Run preview detection using a frozen parameter snapshot."""
-    from ..core.background.model import BackgroundModel
-    from ..core.detectors.engine import YOLOOBBDetector
+    from ..core.detectors.engine import ObjectDetector, YOLOOBBDetector
     from ..utils.image_processing import apply_image_adjustments
 
     frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
@@ -1253,131 +1402,117 @@ def _run_preview_detection_job(
     detected_dimensions = []
 
     if is_background_subtraction:
-        logger.info("Building background model for test detection...")
-        cap = cv2.VideoCapture(str(context.get("video_path", "")))
-        if not cap.isOpened():
-            raise RuntimeError("Cannot open video for background priming")
+        bg_model, bg_params = _build_preview_background_model(context)
 
-        try:
-            bg_params = {
-                "BACKGROUND_PRIME_FRAMES": int(context.get("bg_prime_frames", 30)),
-                "BRIGHTNESS": int(context.get("brightness", 0)),
-                "CONTRAST": float(context.get("contrast", 1.0)),
-                "GAMMA": float(context.get("gamma", 1.0)),
-                "ROI_MASK": context.get("roi_mask"),
-                "RESIZE_FACTOR": resize_f,
-                "DARK_ON_LIGHT_BACKGROUND": bool(context.get("dark_on_light", False)),
-                "THRESHOLD_VALUE": int(context.get("threshold_value", 20)),
-                "MORPH_KERNEL_SIZE": int(context.get("morph_kernel_size", 3)),
-                "ENABLE_ADDITIONAL_DILATION": bool(
-                    context.get("enable_additional_dilation", False)
-                ),
-                "DILATION_KERNEL_SIZE": int(context.get("dilation_kernel_size", 3)),
-                "DILATION_ITERATIONS": int(context.get("dilation_iterations", 1)),
-            }
-
-            bg_model = BackgroundModel(bg_params)
-            bg_model.prime_background(cap)
-
-            if bg_model.lightest_background is None:
-                raise RuntimeError("Failed to build background model")
-
-            frame_to_process = frame_bgr.copy()
-            if resize_f < 1.0:
-                frame_to_process = cv2.resize(
-                    frame_to_process,
-                    (0, 0),
-                    fx=resize_f,
-                    fy=resize_f,
-                    interpolation=cv2.INTER_AREA,
-                )
-                test_frame = cv2.resize(
-                    test_frame,
-                    (0, 0),
-                    fx=resize_f,
-                    fy=resize_f,
-                    interpolation=cv2.INTER_AREA,
-                )
-
-            gray = cv2.cvtColor(frame_to_process, cv2.COLOR_BGR2GRAY)
-            gray = apply_image_adjustments(
-                gray,
-                bg_params["BRIGHTNESS"],
-                bg_params["CONTRAST"],
-                bg_params["GAMMA"],
-                use_gpu=False,
+        frame_to_process = frame_bgr.copy()
+        if resize_f < 1.0:
+            frame_to_process = cv2.resize(
+                frame_to_process,
+                (0, 0),
+                fx=resize_f,
+                fy=resize_f,
+                interpolation=cv2.INTER_AREA,
             )
-
-            roi_for_test = bg_params["ROI_MASK"]
-            if roi_for_test is not None:
-                if resize_f < 1.0:
-                    roi_for_test = cv2.resize(
-                        roi_for_test,
-                        (gray.shape[1], gray.shape[0]),
-                        interpolation=cv2.INTER_NEAREST,
-                    )
-                gray = cv2.bitwise_and(gray, gray, mask=roi_for_test)
-
-            bg_u8 = bg_model.lightest_background.astype(np.uint8)
-            fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
-            cnts, _ = cv2.findContours(
-                fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-
-            min_contour = float(context.get("min_contour", 50.0))
-            detections = []
-            reference_body_size = float(context.get("reference_body_size", 50.0))
-            reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
-            scaled_body_area = reference_body_area * (resize_f**2)
-
-            if use_size_filtering:
-                min_size_multiplier = float(context.get("min_object_size", 0.0))
-                max_size_multiplier = float(context.get("max_object_size", 999.0))
-                min_size_px2 = min_size_multiplier * scaled_body_area
-                max_size_px2 = max_size_multiplier * scaled_body_area
-            else:
-                min_size_px2 = 0.0
-                max_size_px2 = float("inf")
-
-            for c in cnts:
-                area = cv2.contourArea(c)
-                if area < min_contour or len(c) < 5:
-                    continue
-                if use_size_filtering and not (min_size_px2 <= area <= max_size_px2):
-                    continue
-                (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
-                detections.append(((cx, cy), (ax1, ax2), ang, area))
-                major_axis = max(ax1, ax2)
-                minor_axis = min(ax1, ax2)
-                detected_dimensions.append((major_axis, minor_axis))
-                cv2.ellipse(
-                    test_frame,
-                    ((int(cx), int(cy)), (int(ax1), int(ax2)), ang),
-                    (0, 255, 0),
-                    2,
-                )
-                cv2.circle(test_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
-
-            small_fg = cv2.resize(fg_mask, (0, 0), fx=0.3, fy=0.3)
-            test_frame[0 : small_fg.shape[0], 0 : small_fg.shape[1]] = cv2.cvtColor(
-                small_fg, cv2.COLOR_GRAY2BGR
-            )
-
-            small_bg = cv2.resize(bg_u8, (0, 0), fx=0.3, fy=0.3)
-            bg_bgr = cv2.cvtColor(small_bg, cv2.COLOR_GRAY2BGR)
-            test_frame[0 : bg_bgr.shape[0], -bg_bgr.shape[1] :] = bg_bgr
-
-            cv2.putText(
+            test_frame = cv2.resize(
                 test_frame,
-                f"Detections: {len(detections)} (BG from {bg_params['BACKGROUND_PRIME_FRAMES']} frames)",
-                (10, test_frame.shape[0] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 255),
+                (0, 0),
+                fx=resize_f,
+                fy=resize_f,
+                interpolation=cv2.INTER_AREA,
+            )
+
+        gray = cv2.cvtColor(frame_to_process, cv2.COLOR_BGR2GRAY)
+        gray = apply_image_adjustments(
+            gray,
+            bg_params["BRIGHTNESS"],
+            bg_params["CONTRAST"],
+            bg_params["GAMMA"],
+            use_gpu=False,
+        )
+
+        roi_for_test = bg_params["ROI_MASK"]
+        if roi_for_test is not None and resize_f < 1.0:
+            roi_for_test = cv2.resize(
+                roi_for_test,
+                (gray.shape[1], gray.shape[0]),
+                interpolation=cv2.INTER_NEAREST,
+            )
+
+        # Use update_and_get_background to match the production tracking
+        # pipeline. tracking_stabilized=False returns the lightest
+        # background, which is correct for a single preview frame.
+        bg_u8 = bg_model.update_and_get_background(
+            gray, roi_mask=None, tracking_stabilized=False
+        )
+        if bg_u8 is None:
+            bg_u8 = cv2.convertScaleAbs(bg_model.lightest_background)
+        fg_mask = bg_model.generate_foreground_mask(gray, bg_u8)
+
+        # Apply ROI mask to foreground mask (not to gray) to match the
+        # production tracking pipeline in worker.py.
+        if roi_for_test is not None:
+            fg_mask = cv2.bitwise_and(fg_mask, fg_mask, mask=roi_for_test)
+
+        # Apply conservative split to separate merged blobs, matching the
+        # production pipeline in worker.py.
+        if bg_params.get("ENABLE_CONSERVATIVE_SPLIT", True):
+            det = ObjectDetector(bg_params)
+            fg_mask = det.apply_conservative_split(fg_mask, gray, bg_u8)
+
+        cnts, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        min_contour = float(context.get("min_contour", 50.0))
+        detections = []
+        reference_body_size = float(context.get("reference_body_size", 50.0))
+        reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
+        scaled_body_area = reference_body_area * (resize_f**2)
+
+        if use_size_filtering:
+            min_size_multiplier = float(context.get("min_object_size", 0.0))
+            max_size_multiplier = float(context.get("max_object_size", 999.0))
+            min_size_px2 = min_size_multiplier * scaled_body_area
+            max_size_px2 = max_size_multiplier * scaled_body_area
+        else:
+            min_size_px2 = 0.0
+            max_size_px2 = float("inf")
+
+        for c in cnts:
+            area = cv2.contourArea(c)
+            if area < min_contour or len(c) < 5:
+                continue
+            if use_size_filtering and not (min_size_px2 <= area <= max_size_px2):
+                continue
+            (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
+            detections.append(((cx, cy), (ax1, ax2), ang, area))
+            major_axis = max(ax1, ax2)
+            minor_axis = min(ax1, ax2)
+            detected_dimensions.append((major_axis, minor_axis))
+            cv2.ellipse(
+                test_frame,
+                ((int(cx), int(cy)), (int(ax1), int(ax2)), ang),
+                (0, 255, 0),
                 2,
             )
-        finally:
-            cap.release()
+            cv2.circle(test_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
+
+        small_fg = cv2.resize(fg_mask, (0, 0), fx=0.3, fy=0.3)
+        test_frame[0 : small_fg.shape[0], 0 : small_fg.shape[1]] = cv2.cvtColor(
+            small_fg, cv2.COLOR_GRAY2BGR
+        )
+
+        small_bg = cv2.resize(bg_u8, (0, 0), fx=0.3, fy=0.3)
+        bg_bgr = cv2.cvtColor(small_bg, cv2.COLOR_GRAY2BGR)
+        test_frame[0 : bg_bgr.shape[0], -bg_bgr.shape[1] :] = bg_bgr
+
+        cv2.putText(
+            test_frame,
+            f"Detections: {len(detections)} (BG from {bg_params['BACKGROUND_PRIME_FRAMES']} frames)",
+            (10, test_frame.shape[0] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+        )
     else:
         frame_to_process = frame_bgr.copy()
         if resize_f < 1.0:
@@ -1891,6 +2026,33 @@ def register_yolo_model(model_path: object, metadata: object) -> object:
 logger = logging.getLogger(__name__)
 
 
+class ImmediateTooltipButton(QToolButton):
+    """Tool button that shows its tooltip immediately on hover, focus, or click."""
+
+    def _show_tooltip_now(self) -> None:
+        tooltip = self.toolTip().strip()
+        if not tooltip:
+            return
+        anchor = self.mapToGlobal(QPoint(self.width() + 6, self.height() // 2))
+        QToolTip.showText(anchor, tooltip, self, self.rect(), 30000)
+
+    def enterEvent(self, event):
+        super().enterEvent(event)
+        self._show_tooltip_now()
+
+    def focusInEvent(self, event):
+        super().focusInEvent(event)
+        self._show_tooltip_now()
+
+    def mousePressEvent(self, event):
+        self._show_tooltip_now()
+        super().mousePressEvent(event)
+
+    def leaveEvent(self, event):
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+
 class CollapsibleGroupBox(QWidget):
     """
     A collapsible group box widget that can expand/collapse its content.
@@ -1904,6 +2066,8 @@ class CollapsibleGroupBox(QWidget):
         self._is_expanded = initially_expanded
         self._title = title
         self._accordion_group = None  # Reference to accordion container
+        self._help_tooltip = ""
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
 
         # Main layout
         self._main_layout = QVBoxLayout(self)
@@ -1943,6 +2107,21 @@ class CollapsibleGroupBox(QWidget):
         self._header_button.clicked.connect(self._on_header_clicked)
 
         self._main_layout.addWidget(self._header_button)
+
+        self._help_button = ImmediateTooltipButton(self)
+        self._help_button.setText("?")
+        self._help_button.setAutoRaise(True)
+        self._help_button.setCursor(Qt.PointingHandCursor)
+        self._help_button.setFixedSize(16, 16)
+        self._help_button.setStyleSheet(
+            "QToolButton {"
+            " background-color: #1f3b53; color: #8fd3ff;"
+            " border: 1px solid #325978; border-radius: 8px;"
+            " font-size: 10px; font-weight: 700; padding: 0px;"
+            "}"
+            "QToolButton:hover { background-color: #255174; border-color: #4fc1ff; }"
+        )
+        self._help_button.hide()
 
         # Content container
         self._content_container = QWidget()
@@ -2001,6 +2180,33 @@ class CollapsibleGroupBox(QWidget):
         """Get the title of the collapsible."""
         return self._title
 
+    def setHelpToolTip(self, text: str) -> None:
+        """Attach a compact help button to the collapsible header."""
+        self._help_tooltip = text or ""
+        self._help_button.setToolTip(self._help_tooltip)
+        self._help_button.setVisible(bool(self._help_tooltip))
+        self._position_help_button()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_help_button()
+
+    def _position_help_button(self) -> None:
+        if not self._help_button.isVisible():
+            return
+        metrics = self._header_button.fontMetrics()
+        title_width = metrics.horizontalAdvance(self._title)
+        x = min(
+            self._header_button.width() - self._help_button.width() - 10,
+            34 + title_width,
+        )
+        x = max(30, x)
+        y = (
+            self._header_button.y()
+            + (self._header_button.height() - self._help_button.height()) // 2
+        )
+        self._help_button.move(x, y)
+
 
 class AccordionContainer:
     """
@@ -2020,6 +2226,146 @@ class AccordionContainer:
         for collapsible in self._collapsibles:
             if collapsible is not keep_expanded and collapsible.isExpanded():
                 collapsible.setExpanded(False)
+
+
+class CompactHelpLabel(QWidget):
+    """Compact inline help affordance that keeps full guidance in an explicit icon."""
+
+    def __init__(self, text: str = "", parent=None, attach_to_title: bool = True):
+        super().__init__(parent)
+        self._text = ""
+        self._attach_to_title = attach_to_title
+        self._attached_host = None
+        self._title_button = None
+        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._icon_button = ImmediateTooltipButton()
+        self._icon_button.setText("?")
+        self._icon_button.setCursor(Qt.PointingHandCursor)
+        self._icon_button.setAutoRaise(True)
+        self._icon_button.setFixedSize(16, 16)
+        self._icon_button.setStyleSheet(
+            "QToolButton {"
+            " background-color: #1f3b53; color: #8fd3ff;"
+            " border: 1px solid #325978; border-radius: 8px;"
+            " font-size: 10px; font-weight: 700; padding: 0px;"
+            "}"
+            "QToolButton:hover { background-color: #255174; border-color: #4fc1ff; }"
+        )
+        layout.addWidget(self._icon_button, 0, Qt.AlignLeft | Qt.AlignTop)
+
+        self.setText(text)
+
+    def setText(self, text: str) -> None:
+        self._text = text or ""
+        for widget in (self, self._icon_button):
+            widget.setToolTip(self._text)
+        if isinstance(self._attached_host, CollapsibleGroupBox):
+            self._attached_host.setHelpToolTip(self._text)
+        elif self._title_button is not None:
+            self._title_button.setToolTip(self._text)
+
+    def text(self) -> str:
+        return self._text
+
+    def setWordWrap(self, enabled: bool) -> None:
+        return None
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._attach_to_title and self._attached_host is None:
+            QTimer.singleShot(0, self._maybe_attach_to_title)
+
+    def eventFilter(self, watched, event):
+        if watched is self._attached_host and self._title_button is not None:
+            self._position_groupbox_help_button()
+        return super().eventFilter(watched, event)
+
+    def _maybe_attach_to_title(self) -> None:
+        if not self._attach_to_title or self._attached_host is not None:
+            return
+        host = self._find_title_host()
+        if host is None:
+            return
+
+        self._attached_host = host
+        if isinstance(host, CollapsibleGroupBox):
+            host.setHelpToolTip(self._text)
+        else:
+            button = getattr(host, "_title_help_button", None)
+            if button is None:
+                button = ImmediateTooltipButton(host)
+                button.setText("?")
+                button.setAutoRaise(True)
+                button.setCursor(Qt.PointingHandCursor)
+                button.setFixedSize(16, 16)
+                button.setStyleSheet(
+                    "QToolButton {"
+                    " background-color: #1f3b53; color: #8fd3ff;"
+                    " border: 1px solid #325978; border-radius: 8px;"
+                    " font-size: 10px; font-weight: 700; padding: 0px;"
+                    "}"
+                    "QToolButton:hover { background-color: #255174; border-color: #4fc1ff; }"
+                )
+                host._title_help_button = button
+                host.installEventFilter(self)
+            self._title_button = button
+            self._title_button.setToolTip(self._text)
+            self._title_button.show()
+            self._position_groupbox_help_button()
+
+        self.hide()
+        self.setFixedSize(0, 0)
+
+    def _find_title_host(self):
+        if not self._is_first_widget_in_parent_layout():
+            return None
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, (QGroupBox, CollapsibleGroupBox)):
+                return parent
+            parent = parent.parentWidget()
+        return None
+
+    def _is_first_widget_in_parent_layout(self) -> bool:
+        parent = self.parentWidget()
+        layout = parent.layout() if parent is not None else None
+        if layout is None:
+            return False
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                return widget is self
+        return False
+
+    def _position_groupbox_help_button(self) -> None:
+        if self._title_button is None or self._attached_host is None:
+            return
+        host = self._attached_host
+        option = QStyleOptionGroupBox()
+        host.initStyleOption(option)
+        label_rect = host.style().subControlRect(
+            QStyle.CC_GroupBox,
+            option,
+            QStyle.SC_GroupBoxLabel,
+            host,
+        )
+        check_rect = host.style().subControlRect(
+            QStyle.CC_GroupBox,
+            option,
+            QStyle.SC_GroupBoxCheckBox,
+            host,
+        )
+        title_right = max(label_rect.right(), check_rect.right())
+        x = min(host.width() - self._title_button.width() - 10, title_right + 6)
+        x = max(18, x)
+        y = max(2, label_rect.center().y() - (self._title_button.height() // 2))
+        self._title_button.move(x, y)
 
 
 class MainWindow(QMainWindow):
@@ -2047,7 +2393,7 @@ class MainWindow(QMainWindow):
             /* Tabs */
             QTabWidget::pane { border: 1px solid #3e3e42; top: -1px; background-color: #1e1e1e; }
             QTabBar::tab {
-                background: #2d2d30; color: #cccccc; padding: 8px 14px; margin-right: 2px;
+                background: #2d2d30; color: #cccccc; padding: 6px 10px; margin-right: 2px;
                 border-top-left-radius: 4px; border-top-right-radius: 4px;
                 border: 1px solid #3e3e42; border-bottom: none;
             }
@@ -2057,19 +2403,19 @@ class MainWindow(QMainWindow):
             /* Group boxes */
             QGroupBox {
                 font-weight: 600; border: 1px solid #3e3e42; border-radius: 6px;
-                margin-top: 10px; padding: 8px; background-color: #252526;
+                margin-top: 8px; padding: 6px; background-color: #252526;
                 color: #cccccc;
             }
             QGroupBox::title {
                 subcontrol-origin: margin; subcontrol-position: top left;
-                left: 10px; padding: 2px 8px;
+                left: 8px; padding: 1px 6px;
                 background-color: #1e1e1e; color: #9cdcfe; border-radius: 3px;
             }
 
             /* Buttons */
             QPushButton {
                 background-color: #0e639c; border: none; color: #ffffff;
-                padding: 6px 14px; border-radius: 4px; min-height: 24px; font-weight: 500;
+                padding: 5px 12px; border-radius: 4px; min-height: 22px; font-weight: 500;
             }
             QPushButton:hover { background-color: #1177bb; }
             QPushButton:pressed { background-color: #0d5a8f; }
@@ -2083,6 +2429,12 @@ class MainWindow(QMainWindow):
             QPushButton#ActionBtn:hover { background-color: #1177bb; }
             QPushButton#StopBtn { background-color: #d9534f; font-weight: bold; }
             QPushButton#StopBtn:hover { background-color: #c9302c; }
+            QPushButton#SecondaryBtn {
+                background-color: #3a3a3a; color: #d6d6d6;
+                font-size: 10px; font-weight: 500; min-height: 20px;
+                padding: 4px 10px;
+            }
+            QPushButton#SecondaryBtn:hover { background-color: #4a4a4a; }
 
             /* Inputs */
             QSpinBox, QDoubleSpinBox, QLineEdit, QComboBox {
@@ -2302,6 +2654,12 @@ class MainWindow(QMainWindow):
         self._session_final_csv_path = None
         self._session_fps_list = []
         self._session_frames_processed = 0
+        self._ui_settings = self._load_ui_settings()
+        self._ui_state_save_timer = QTimer(self)
+        self._ui_state_save_timer.setSingleShot(True)
+        self._ui_state_save_timer.setInterval(250)
+        self._ui_state_save_timer.timeout.connect(self._save_ui_settings)
+        self._collapsible_state_widgets = {}
 
         # Advanced configuration (for power users)
         self.advanced_config = self._load_advanced_config()
@@ -2330,8 +2688,114 @@ class MainWindow(QMainWindow):
         # Cache preview-related controls for UI state transitions
         self._preview_controls = self._collect_preview_controls()
 
+        # Restore persisted layout preferences after widgets are fully built.
+        QTimer.singleShot(0, self._restore_ui_state)
+
         # Default to "no video loaded" state
         self._apply_ui_state("no_video")
+
+    def _get_ui_settings_path(self) -> Path:
+        """Return the MAT UI settings path used for persistent layout preferences."""
+        config_dir = Path.home() / ".multi-animal-tracker"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        return config_dir / "ui_settings.json"
+
+    def _load_ui_settings(self) -> dict:
+        """Load persistent MAT UI settings."""
+        path = self._get_ui_settings_path()
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _queue_ui_state_save(self) -> None:
+        """Debounce MAT UI settings writes while the user resizes or switches tabs."""
+        if hasattr(self, "_ui_state_save_timer"):
+            self._ui_state_save_timer.start()
+
+    def _remember_collapsible_state(
+        self, key: str, collapsible: CollapsibleGroupBox
+    ) -> None:
+        """Restore and track expanded state for a collapsible section."""
+        self._collapsible_state_widgets[key] = collapsible
+        saved = self._ui_settings.get("collapsed_sections", {}).get(key)
+        if isinstance(saved, bool):
+            collapsible.setExpanded(saved)
+        collapsible.toggled.connect(
+            lambda _expanded, _key=key: self._queue_ui_state_save()
+        )
+
+    def _restore_ui_state(self) -> None:
+        """Apply persisted MAT UI layout preferences after construction."""
+        settings = self._ui_settings or {}
+
+        detection_index = settings.get("detection_method_index")
+        if isinstance(detection_index, int) and hasattr(self, "combo_detection_method"):
+            self.combo_detection_method.setCurrentIndex(
+                max(0, min(detection_index, self.combo_detection_method.count() - 1))
+            )
+
+        tab_index = settings.get("active_tab_index")
+        if isinstance(tab_index, int) and hasattr(self, "tabs"):
+            tab_index = max(0, min(tab_index, self.tabs.count() - 1))
+            if self.tabs.isTabEnabled(tab_index):
+                self.tabs.setCurrentIndex(tab_index)
+
+        splitter_sizes = settings.get("splitter_sizes")
+        if (
+            isinstance(splitter_sizes, list)
+            and len(splitter_sizes) == 2
+            and all(isinstance(size, int) and size > 0 for size in splitter_sizes)
+            and hasattr(self, "splitter")
+        ):
+            self.splitter.setSizes(splitter_sizes)
+
+    def _save_ui_settings(self) -> None:
+        """Persist MAT UI layout preferences without touching tracking configs."""
+        if not hasattr(self, "tabs") or not hasattr(self, "splitter"):
+            return
+
+        collapsed_sections = {
+            key: widget.isExpanded()
+            for key, widget in self._collapsible_state_widgets.items()
+        }
+        settings = {
+            "active_tab_index": int(self.tabs.currentIndex()),
+            "splitter_sizes": [int(size) for size in self.splitter.sizes()],
+            "detection_method_index": (
+                int(self.combo_detection_method.currentIndex())
+                if hasattr(self, "combo_detection_method")
+                else 0
+            ),
+            "collapsed_sections": collapsed_sections,
+        }
+
+        path = self._get_ui_settings_path()
+        try:
+            path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+            self._ui_settings = settings
+        except Exception:
+            logger.debug("Failed to save MAT UI settings", exc_info=True)
+
+    def _set_compact_scroll_layout(self, layout: QLayout) -> None:
+        """Prevent scroll-area content layouts from stretching sparse sections vertically."""
+        layout.setSizeConstraint(QLayout.SetMinAndMaxSize)
+
+    def _set_compact_section_widget(self, widget: QWidget) -> None:
+        """Make top-level section widgets hug their content vertically."""
+        widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+
+    def _make_setup_divider(self) -> QFrame:
+        """Create a subtle divider line used inside the Get Started tab."""
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setFrameShadow(QFrame.Plain)
+        divider.setStyleSheet("color: #343434; background-color: #343434;")
+        divider.setFixedHeight(1)
+        return divider
 
     def init_ui(self: object) -> object:
         """Build the structured UI using Splitter and Tabs."""
@@ -2357,11 +2821,13 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(0)
 
         self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setHandleWidth(6)
 
         # --- LEFT PANEL: Video & ROI ---
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(10, 10, 10, 10)
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(6)
 
         # Video Area
         self.scroll = QScrollArea()
@@ -2392,7 +2858,8 @@ class MainWindow(QMainWindow):
         roi_frame = QFrame()
         roi_frame.setStyleSheet("background-color: #252526; border-radius: 6px;")
         roi_main_layout = QVBoxLayout(roi_frame)
-        roi_main_layout.setContentsMargins(10, 5, 10, 5)
+        roi_main_layout.setContentsMargins(8, 4, 8, 4)
+        roi_main_layout.setSpacing(4)
 
         # Top row: mode selection and controls
         roi_layout = QHBoxLayout()
@@ -2501,7 +2968,7 @@ class MainWindow(QMainWindow):
         zoom_frame = QFrame()
         zoom_frame.setStyleSheet("background-color: #252526; border-radius: 6px;")
         zoom_layout = QHBoxLayout(zoom_frame)
-        zoom_layout.setContentsMargins(10, 5, 10, 5)
+        zoom_layout.setContentsMargins(8, 4, 8, 4)
 
         zoom_label = QLabel("Zoom")
         zoom_label.setStyleSheet("font-weight: bold; color: #cccccc;")
@@ -2528,7 +2995,7 @@ class MainWindow(QMainWindow):
         preview_frame = QFrame()
         preview_frame.setStyleSheet("background-color: #252526; border-radius: 6px;")
         preview_layout = QHBoxLayout(preview_frame)
-        preview_layout.setContentsMargins(10, 5, 10, 5)
+        preview_layout.setContentsMargins(8, 4, 8, 4)
 
         self.btn_test_detection = QPushButton("Test Detection on Preview")
         self.btn_test_detection.clicked.connect(self._test_detection_on_preview)
@@ -2543,7 +3010,8 @@ class MainWindow(QMainWindow):
         # --- RIGHT PANEL: Configuration Tabs & Actions ---
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(10, 10, 10, 10)
+        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_layout.setSpacing(6)
 
         # Tab Widget
         self.tabs = QTabWidget()
@@ -2592,6 +3060,8 @@ class MainWindow(QMainWindow):
             "background-color: #1e1e1e; border-top: 1px solid #3e3e42; border-radius: 0px;"
         )
         action_layout = QVBoxLayout(action_frame)
+        action_layout.setContentsMargins(6, 6, 6, 6)
+        action_layout.setSpacing(4)
 
         # Progress Info
         prog_layout = QHBoxLayout()
@@ -2604,7 +3074,7 @@ class MainWindow(QMainWindow):
 
         # Real-time stats display
         stats_layout = QHBoxLayout()
-        stats_layout.setContentsMargins(5, 5, 5, 5)
+        stats_layout.setContentsMargins(2, 2, 2, 2)
 
         self.label_current_fps = QLabel("FPS: --")
         self.label_current_fps.setStyleSheet(
@@ -2631,13 +3101,13 @@ class MainWindow(QMainWindow):
         self.btn_preview = QPushButton("Preview Mode")
         self.btn_preview.setCheckable(True)
         self.btn_preview.clicked.connect(lambda ch: self.toggle_preview(ch))
-        self.btn_preview.setMinimumHeight(40)
+        self.btn_preview.setMinimumHeight(34)
 
         self.btn_start = QPushButton("Start Full Tracking")
         self.btn_start.setObjectName("ActionBtn")
         self.btn_start.setCheckable(True)
         self.btn_start.clicked.connect(lambda ch: self.toggle_tracking(ch))
-        self.btn_start.setMinimumHeight(40)
+        self.btn_start.setMinimumHeight(34)
 
         btn_layout.addWidget(self.btn_preview)
         btn_layout.addWidget(self.btn_start)
@@ -2654,11 +3124,13 @@ class MainWindow(QMainWindow):
 
         # Set initial splitter ratio (60% Video, 40% Controls) and minimum sizes
         total_width = 1360  # Default window width
-        self.splitter.setSizes([int(total_width * 0.6), int(total_width * 0.4)])
+        self.splitter.setSizes([int(total_width * 0.63), int(total_width * 0.37)])
         self.splitter.setStretchFactor(0, 3)
         self.splitter.setStretchFactor(1, 2)
         self.splitter.setCollapsible(0, False)
         self.splitter.setCollapsible(1, False)
+        self.splitter.splitterMoved.connect(lambda *_args: self._queue_ui_state_save())
+        self.tabs.currentChanged.connect(lambda _index: self._queue_ui_state_save())
 
         main_layout.addWidget(self.splitter)
 
@@ -2733,19 +3205,19 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(logo_label, alignment=Qt.AlignHCenter)
         layout.addWidget(subtitle, alignment=Qt.AlignHCenter)
-        layout.addSpacing(40)
+        layout.addSpacing(24)
 
         row_one = QHBoxLayout()
         row_one.setAlignment(Qt.AlignCenter)
         row_one.setSpacing(16)
 
         btn_load_video = QPushButton("Load Video...")
-        btn_load_video.setFixedWidth(190)
+        btn_load_video.setFixedWidth(176)
         btn_load_video.clicked.connect(self.select_file)
         row_one.addWidget(btn_load_video)
 
         btn_load_list = QPushButton("Load Video List...")
-        btn_load_list.setFixedWidth(190)
+        btn_load_list.setFixedWidth(176)
         btn_load_list.clicked.connect(self._import_batch_list)
         row_one.addWidget(btn_load_list)
 
@@ -2754,12 +3226,12 @@ class MainWindow(QMainWindow):
         row_two.setSpacing(16)
 
         btn_load_config = QPushButton("Load Config...")
-        btn_load_config.setFixedWidth(190)
+        btn_load_config.setFixedWidth(176)
         btn_load_config.clicked.connect(self.load_config)
         row_two.addWidget(btn_load_config)
 
         btn_quit = QPushButton("Quit")
-        btn_quit.setFixedWidth(190)
+        btn_quit.setFixedWidth(176)
         btn_quit.clicked.connect(self.close)
         row_two.addWidget(btn_quit)
 
@@ -2773,7 +3245,7 @@ class MainWindow(QMainWindow):
         button_container = QWidget()
         button_layout = QVBoxLayout(button_container)
         button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(10)
+        button_layout.setSpacing(8)
         button_layout.addLayout(row_one)
         button_layout.addLayout(row_two)
 
@@ -2801,12 +3273,17 @@ class MainWindow(QMainWindow):
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         form = QVBoxLayout(content)
+        form.setContentsMargins(6, 6, 6, 6)
+        form.setSpacing(8)
+        self._set_compact_scroll_layout(form)
 
         # ============================================================
         # Preset Selector
         # ============================================================
-        g_presets = QGroupBox("How do you want to start?")
+        g_presets = QGroupBox("Presets")
+        self._set_compact_section_widget(g_presets)
         vl_presets = QVBoxLayout(g_presets)
+        vl_presets.setSpacing(6)
         vl_presets.addWidget(
             self._create_help_label(
                 "Load optimized default values for different model organisms. Video-specific configs override presets."
@@ -2836,14 +3313,15 @@ class MainWindow(QMainWindow):
         self.preset_status_label.setStyleSheet(
             "color: #6a6a6a; font-style: italic; font-size: 10px;"
         )
+        self.preset_status_label.setVisible(False)
 
         preset_layout.addWidget(preset_label)
         preset_layout.addWidget(self.combo_presets, stretch=1)
         preset_layout.addWidget(self.btn_load_preset)
         preset_layout.addWidget(self.btn_save_custom)
-        preset_layout.addWidget(self.preset_status_label, stretch=1)
 
         vl_presets.addLayout(preset_layout)
+        vl_presets.addWidget(self.preset_status_label)
 
         # Description display
         self.preset_description_label = QLabel("")
@@ -2865,8 +3343,10 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Video Setup (File Management + Frame Rate)
         # ============================================================
-        g_files = QGroupBox("What video are you analyzing?")
+        g_files = QGroupBox("Video")
+        self._set_compact_section_widget(g_files)
         vl_files = QVBoxLayout(g_files)
+        vl_files.setSpacing(6)
         vl_files.addWidget(
             self._create_help_label(
                 "Select your input video and output locations. Configuration is auto-saved per video - "
@@ -2875,22 +3355,38 @@ class MainWindow(QMainWindow):
         )
         fl = QFormLayout(None)
         fl.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fl.setHorizontalSpacing(10)
+        fl.setVerticalSpacing(8)
 
-        self.btn_file = QPushButton("Select Input Video...")
+        self.btn_file = QPushButton("Browse...")
         self.btn_file.clicked.connect(self.select_file)
+        self.btn_file.setObjectName("SecondaryBtn")
+        self.btn_file.setFixedHeight(30)
         self.file_line = QLineEdit()
         self.file_line.setPlaceholderText("path/to/video.mp4")
         self.file_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        fl.addRow(self.btn_file, self.file_line)
+        self.file_line.setFixedHeight(30)
+        file_row = QHBoxLayout()
+        file_row.setSpacing(8)
+        file_row.addWidget(self.file_line, 1)
+        file_row.addWidget(self.btn_file)
+        fl.addRow("Input video", file_row)
 
-        # FPS with detect button (moved here from Reference Parameters)
-        fps_layout = QHBoxLayout()
+        # Acquisition controls on one compact row
+        acquisition_row = QHBoxLayout()
+        acquisition_row.setSpacing(8)
+        fps_caption = QLabel("FPS")
+        fps_caption.setStyleSheet("font-size: 10px; font-weight: 600; color: #bdbdbd;")
+        acquisition_row.addWidget(fps_caption)
+
         self.spin_fps = QDoubleSpinBox()
         self.spin_fps.setRange(1.0, 240.0)
         self.spin_fps.setSingleStep(1.0)
         self.spin_fps.setValue(30.0)
         self.spin_fps.setDecimals(2)
         self.spin_fps.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.spin_fps.setFixedHeight(30)
+        self.spin_fps.setMinimumWidth(92)
         self.spin_fps.setToolTip(
             "Acquisition frame rate (frames per second) at which the video was recorded.\n"
             "NOTE: This may differ from the video file's playback framerate.\n"
@@ -2899,16 +3395,37 @@ class MainWindow(QMainWindow):
             "Affects: motion prediction, track lifecycle, velocity thresholds."
         )
         self.spin_fps.valueChanged.connect(self._update_fps_info)
-        fps_layout.addWidget(self.spin_fps)
+        acquisition_row.addWidget(self.spin_fps)
 
-        self.btn_detect_fps = QPushButton("Detect from Video")
+        self.btn_detect_fps = QPushButton("Detect")
         self.btn_detect_fps.clicked.connect(self._detect_fps_from_current_video)
         self.btn_detect_fps.setEnabled(False)
+        self.btn_detect_fps.setObjectName("SecondaryBtn")
+        self.btn_detect_fps.setFixedHeight(30)
         self.btn_detect_fps.setToolTip(
             "Auto-detect frame rate from video metadata (may differ from actual acquisition rate)"
         )
-        fps_layout.addWidget(self.btn_detect_fps)
-        fl.addRow("What frame rate was the video acquired at (FPS)?", fps_layout)
+        acquisition_row.addWidget(self.btn_detect_fps)
+
+        animal_caption = QLabel("Animals")
+        animal_caption.setStyleSheet(
+            "font-size: 10px; font-weight: 600; color: #bdbdbd; margin-left: 6px;"
+        )
+        acquisition_row.addWidget(animal_caption)
+
+        self.spin_max_targets = QSpinBox()
+        self.spin_max_targets.setRange(1, 200)
+        self.spin_max_targets.setValue(4)
+        self.spin_max_targets.setFixedHeight(30)
+        self.spin_max_targets.setMinimumWidth(84)
+        self.spin_max_targets.setToolTip(
+            "Maximum number of animals to track simultaneously (1-200).\n"
+            "Set this to the expected number of animals in your video.\n"
+            "Higher values use more memory and may slow down processing."
+        )
+        acquisition_row.addWidget(self.spin_max_targets)
+        acquisition_row.addStretch(1)
+        fl.addRow("Acquisition", acquisition_row)
 
         # FPS info label
         self.label_fps_info = QLabel()
@@ -2917,26 +3434,18 @@ class MainWindow(QMainWindow):
         )
         fl.addRow("", self.label_fps_info)
 
-        self.spin_max_targets = QSpinBox()
-        self.spin_max_targets.setRange(1, 200)
-        self.spin_max_targets.setValue(4)
-        self.spin_max_targets.setToolTip(
-            "Maximum number of animals to track simultaneously (1-200).\n"
-            "Set this to the expected number of animals in your video.\n"
-            "Higher values use more memory and may slow down processing."
-        )
-        fl.addRow("How many animals are in the video?", self.spin_max_targets)
-
         vl_files.addLayout(fl)
 
         # Batch Mode Section
-        self.g_batch = QGroupBox("Batch Mode (Multiple Videos)")
+        self.g_batch = QGroupBox("Batch")
         self.g_batch.setCheckable(True)
         self.g_batch.setChecked(False)
         self.g_batch.toggled.connect(self._on_batch_mode_toggled)
+        self._set_compact_section_widget(self.g_batch)
         vl_batch = QVBoxLayout(self.g_batch)
+        vl_batch.setSpacing(6)
 
-        # Warning label (always visible when group is open)
+        # Warning label (visible only while batch mode is active)
         self.lbl_batch_warning = QLabel(
             "⚠️ All videos in this batch will use the parameters currently selected for the Keystone video."
         )
@@ -2944,6 +3453,7 @@ class MainWindow(QMainWindow):
         self.lbl_batch_warning.setStyleSheet(
             "color: #f39c12; font-weight: bold; font-size: 11px; margin-bottom: 5px;"
         )
+        self.lbl_batch_warning.setVisible(False)
         vl_batch.addWidget(self.lbl_batch_warning)
 
         # Container for the rest of the batch UI
@@ -2958,23 +3468,26 @@ class MainWindow(QMainWindow):
         v_container.addWidget(batch_help)
 
         self.list_batch_videos = QListWidget()
-        self.list_batch_videos.setMaximumHeight(150)
+        self.list_batch_videos.setMaximumHeight(120)
         self.list_batch_videos.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.list_batch_videos.itemClicked.connect(self._on_batch_video_selected)
         self.list_batch_videos.itemDoubleClicked.connect(self._on_batch_video_selected)
         v_container.addWidget(self.list_batch_videos)
 
         batch_btns = QHBoxLayout()
-        self.btn_add_batch = QPushButton("Add Additional Videos...")
+        self.btn_add_batch = QPushButton("Add Videos...")
         self.btn_add_batch.clicked.connect(self._add_videos_to_batch)
+        self.btn_add_batch.setObjectName("SecondaryBtn")
         batch_btns.addWidget(self.btn_add_batch)
 
         self.btn_remove_batch = QPushButton("Remove Selected")
         self.btn_remove_batch.clicked.connect(self._remove_from_batch)
+        self.btn_remove_batch.setObjectName("SecondaryBtn")
         batch_btns.addWidget(self.btn_remove_batch)
 
         self.btn_clear_batch = QPushButton("Clear Additional")
         self.btn_clear_batch.clicked.connect(self._clear_batch)
+        self.btn_clear_batch.setObjectName("SecondaryBtn")
         batch_btns.addWidget(self.btn_clear_batch)
         v_container.addLayout(batch_btns)
 
@@ -2985,6 +3498,7 @@ class MainWindow(QMainWindow):
             "The first line will be the Keystone video path."
         )
         self.btn_export_batch.clicked.connect(self._export_batch_list)
+        self.btn_export_batch.setObjectName("SecondaryBtn")
         batch_io_btns.addWidget(self.btn_export_batch)
 
         self.btn_import_batch = QPushButton("Import List...")
@@ -2994,6 +3508,7 @@ class MainWindow(QMainWindow):
             "Missing files will be reported before proceeding."
         )
         self.btn_import_batch.clicked.connect(self._import_batch_list)
+        self.btn_import_batch.setObjectName("SecondaryBtn")
         batch_io_btns.addWidget(self.btn_import_batch)
         v_container.addLayout(batch_io_btns)
 
@@ -3006,8 +3521,10 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Video Player & Frame Range
         # ============================================================
-        self.g_video_player = QGroupBox("Which part of the video should be used?")
+        self.g_video_player = QGroupBox("Preview")
+        self._set_compact_section_widget(self.g_video_player)
         vl_player = QVBoxLayout(self.g_video_player)
+        vl_player.setSpacing(6)
         vl_player.addWidget(
             self._create_help_label(
                 "Preview video and select frame range for tracking. Use the slider to seek through the video."
@@ -3039,17 +3556,22 @@ class MainWindow(QMainWindow):
 
         # Playback controls
         controls_layout = QHBoxLayout()
+        controls_layout.setSpacing(6)
 
-        self.btn_first_frame = QPushButton("⏮ First")
+        self.btn_first_frame = QPushButton("⏮")
         self.btn_first_frame.setEnabled(False)
         self.btn_first_frame.clicked.connect(self._goto_first_frame)
         self.btn_first_frame.setToolTip("Go to first frame")
+        self.btn_first_frame.setObjectName("SecondaryBtn")
+        self.btn_first_frame.setFixedWidth(44)
         controls_layout.addWidget(self.btn_first_frame)
 
-        self.btn_prev_frame = QPushButton("◀ Prev")
+        self.btn_prev_frame = QPushButton("◀")
         self.btn_prev_frame.setEnabled(False)
         self.btn_prev_frame.clicked.connect(self._goto_prev_frame)
         self.btn_prev_frame.setToolTip("Previous frame")
+        self.btn_prev_frame.setObjectName("SecondaryBtn")
+        self.btn_prev_frame.setFixedWidth(44)
         controls_layout.addWidget(self.btn_prev_frame)
 
         self.btn_play_pause = QPushButton("▶ Play")
@@ -3058,44 +3580,58 @@ class MainWindow(QMainWindow):
         self.btn_play_pause.setToolTip("Play/pause video")
         controls_layout.addWidget(self.btn_play_pause)
 
-        self.btn_next_frame = QPushButton("Next ▶")
+        self.btn_next_frame = QPushButton("▶")
         self.btn_next_frame.setEnabled(False)
         self.btn_next_frame.clicked.connect(self._goto_next_frame)
         self.btn_next_frame.setToolTip("Next frame")
+        self.btn_next_frame.setObjectName("SecondaryBtn")
+        self.btn_next_frame.setFixedWidth(44)
         controls_layout.addWidget(self.btn_next_frame)
 
-        self.btn_last_frame = QPushButton("Last ⏭")
+        self.btn_last_frame = QPushButton("⏭")
         self.btn_last_frame.setEnabled(False)
         self.btn_last_frame.clicked.connect(self._goto_last_frame)
         self.btn_last_frame.setToolTip("Go to last frame")
+        self.btn_last_frame.setObjectName("SecondaryBtn")
+        self.btn_last_frame.setFixedWidth(44)
         controls_layout.addWidget(self.btn_last_frame)
+
+        controls_layout.addSpacing(4)
 
         self.btn_random_seek = QPushButton("🎲 Random")
         self.btn_random_seek.setEnabled(False)
         self.btn_random_seek.clicked.connect(self._goto_random_frame)
         self.btn_random_seek.setToolTip("Jump to a random frame")
+        self.btn_random_seek.setObjectName("SecondaryBtn")
         controls_layout.addWidget(self.btn_random_seek)
 
-        controls_layout.addStretch()
+        controls_layout.addSpacing(8)
 
         # Playback speed control
-        controls_layout.addWidget(QLabel("Playback speed"))
+        speed_label = QLabel("Speed")
+        speed_label.setStyleSheet("color: #8a8a8a;")
+        controls_layout.addWidget(speed_label)
         self.combo_playback_speed = QComboBox()
         self.combo_playback_speed.addItems(["0.25x", "0.5x", "1x", "2x", "4x"])
         self.combo_playback_speed.setCurrentText("1x")
         self.combo_playback_speed.setEnabled(False)
         self.combo_playback_speed.setToolTip("Playback speed")
+        self.combo_playback_speed.setMaximumWidth(84)
         controls_layout.addWidget(self.combo_playback_speed)
+        controls_layout.addStretch(1)
 
         vl_player.addLayout(controls_layout)
 
+        vl_player.addWidget(self._make_setup_divider())
+
         # Frame range selection
-        range_group = QGroupBox("Frame Range")
-        range_layout = QFormLayout(range_group)
-        range_layout.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        range_label = QLabel("Frame range")
+        range_label.setStyleSheet("font-weight: 600; color: #d0d0d0;")
+        vl_player.addWidget(range_label)
 
         # Compact single row: Start [spinbox] [↕] · End [spinbox] [↕] [Reset]
         _range_row = QHBoxLayout()
+        _range_row.setSpacing(6)
         _range_row.addWidget(QLabel("Start:"))
         self.spin_start_frame = QSpinBox()
         self.spin_start_frame.setMinimum(0)
@@ -3132,17 +3668,16 @@ class MainWindow(QMainWindow):
         self.btn_reset_range.setEnabled(False)
         self.btn_reset_range.clicked.connect(self._reset_frame_range)
         self.btn_reset_range.setToolTip("Reset to track entire video")
+        self.btn_reset_range.setObjectName("SecondaryBtn")
         _range_row.addWidget(self.btn_reset_range)
-        range_layout.addRow("", _range_row)
+        vl_player.addLayout(_range_row)
 
         # Range info
         self.lbl_range_info = QLabel()
         self.lbl_range_info.setStyleSheet(
             "color: #6a6a6a; font-size: 10px; font-style: italic; padding: 5px;"
         )
-        range_layout.addRow("", self.lbl_range_info)
-
-        vl_player.addWidget(range_group)
+        vl_player.addWidget(self.lbl_range_info)
         form.addWidget(self.g_video_player)
 
         # Initially hide video player (shown when video is loaded)
@@ -3151,28 +3686,44 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Output Files
         # ============================================================
-        g_output = QGroupBox("Where should results be saved?")
+        g_output = QGroupBox("Outputs")
+        self._set_compact_section_widget(g_output)
         vl_output = QVBoxLayout(g_output)
+        vl_output.setSpacing(6)
         fl_output = QFormLayout(None)
         fl_output.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fl_output.setHorizontalSpacing(10)
+        fl_output.setVerticalSpacing(8)
 
-        self.btn_csv = QPushButton("Select CSV Output...")
+        self.btn_csv = QPushButton("Browse...")
         self.btn_csv.clicked.connect(self.select_csv)
+        self.btn_csv.setObjectName("SecondaryBtn")
+        self.btn_csv.setFixedHeight(30)
         self.csv_line = QLineEdit()
         self.csv_line.setPlaceholderText("path/to/output.csv")
         self.csv_line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        fl_output.addRow(self.btn_csv, self.csv_line)
+        self.csv_line.setFixedHeight(30)
+        csv_row = QHBoxLayout()
+        csv_row.setSpacing(8)
+        csv_row.addWidget(self.csv_line, 1)
+        csv_row.addWidget(self.btn_csv)
+        fl_output.addRow("Tracking CSV", csv_row)
 
         # Config Management
         config_layout = QHBoxLayout()
+        config_layout.setSpacing(6)
         self.btn_load_config = QPushButton("Load Config...")
         self.btn_load_config.clicked.connect(self.load_config)
         self.btn_load_config.setToolTip("Manually load configuration from a JSON file")
+        self.btn_load_config.setObjectName("SecondaryBtn")
+        self.btn_load_config.setFixedHeight(28)
         config_layout.addWidget(self.btn_load_config)
 
         self.btn_save_config = QPushButton("Save Config...")
         self.btn_save_config.clicked.connect(self.save_config)
         self.btn_save_config.setToolTip("Save current settings to a JSON file")
+        self.btn_save_config.setObjectName("SecondaryBtn")
+        self.btn_save_config.setFixedHeight(28)
         config_layout.addWidget(self.btn_save_config)
 
         self.btn_show_gpu_info = QPushButton("GPU Info")
@@ -3180,10 +3731,12 @@ class MainWindow(QMainWindow):
         self.btn_show_gpu_info.setToolTip(
             "Show available GPU and acceleration information"
         )
+        self.btn_show_gpu_info.setObjectName("SecondaryBtn")
+        self.btn_show_gpu_info.setFixedHeight(28)
         config_layout.addWidget(self.btn_show_gpu_info)
+        config_layout.addStretch(1)
 
-        config_layout.addStretch()
-        fl_output.addRow("Save configuration snapshot?", config_layout)
+        fl_output.addRow("Config tools", config_layout)
 
         # Config status label
         self.config_status_label = QLabel("No config loaded (using defaults)")
@@ -3198,8 +3751,10 @@ class MainWindow(QMainWindow):
         # ============================================================
         # System Performance
         # ============================================================
-        g_sys = QGroupBox("How should performance be balanced?")
+        g_sys = QGroupBox("Performance")
+        self._set_compact_section_widget(g_sys)
         vl_sys = QVBoxLayout(g_sys)
+        vl_sys.setSpacing(6)
         vl_sys.addWidget(
             self._create_help_label(
                 "Resize factor reduces computational cost by downscaling frames. "
@@ -3214,12 +3769,14 @@ class MainWindow(QMainWindow):
         self.spin_resize.setSingleStep(0.1)
         self.spin_resize.setValue(1.0)
         self.spin_resize.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.spin_resize.setFixedHeight(30)
         self.spin_resize.setToolTip(
             "Downscale video frames for faster processing.\n"
             "1.0 = full resolution, 0.5 = half resolution (4× faster).\n"
             "All body-size-based parameters auto-scale with this value."
         )
         self.combo_compute_runtime = QComboBox()
+        self.combo_compute_runtime.setFixedHeight(30)
         self.combo_compute_runtime.setToolTip(
             "Global compute runtime for detection and pose.\n"
             "Only runtimes compatible with all enabled pipelines are shown."
@@ -3228,14 +3785,23 @@ class MainWindow(QMainWindow):
             self._on_runtime_context_changed
         )
         _perf_row = QHBoxLayout()
-        _perf_row.addWidget(QLabel("Downscale:"))
+        _perf_row.setSpacing(6)
+        _perf_scale_label = QLabel("Scale")
+        _perf_scale_label.setStyleSheet(
+            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
+        )
+        _perf_row.addWidget(_perf_scale_label)
         _perf_row.addWidget(self.spin_resize, 1)
-        _perf_row.addSpacing(8)
-        _perf_row.addWidget(QLabel("Runtime:"))
+        _perf_row.addSpacing(4)
+        _perf_runtime_label = QLabel("Runtime")
+        _perf_runtime_label.setStyleSheet(
+            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
+        )
+        _perf_row.addWidget(_perf_runtime_label)
         _perf_row.addWidget(self.combo_compute_runtime, 2)
         fl_sys.addRow(_perf_row)
 
-        self.check_save_confidence = QCheckBox("Save confidence metrics (slower)")
+        self.check_save_confidence = QCheckBox("Save metrics")
         self.check_save_confidence.setChecked(True)
         self.check_save_confidence.setToolTip(
             "Save detection, assignment, and position uncertainty metrics to CSV.\n"
@@ -3244,9 +3810,7 @@ class MainWindow(QMainWindow):
         )
 
         # Use Cached Detections
-        self.chk_use_cached_detections = QCheckBox(
-            "Reuse Cached Detections When Available"
-        )
+        self.chk_use_cached_detections = QCheckBox("Reuse cache")
         self.chk_use_cached_detections.setChecked(True)
         self.chk_use_cached_detections.setToolTip(
             "Automatically reuse detections from previous runs if available.\n"
@@ -3254,15 +3818,9 @@ class MainWindow(QMainWindow):
             "Massive speedup for re-processing with different tracking parameters.\n"
             "Disable to force fresh detection on every run."
         )
-        _perf_chk_row = QHBoxLayout()
-        _perf_chk_row.addWidget(self.check_save_confidence)
-        _perf_chk_row.addWidget(self.chk_use_cached_detections)
-        fl_sys.addRow("", _perf_chk_row)
 
         # Visualization-Free Mode
-        self.chk_visualization_free = QCheckBox(
-            "Enable Visualization-Free Mode (Maximum Speed)"
-        )
+        self.chk_visualization_free = QCheckBox("Headless preview")
         self.chk_visualization_free.setChecked(False)
         self.chk_visualization_free.setToolTip(
             "Skip all frame visualization and rendering.\n"
@@ -3273,7 +3831,27 @@ class MainWindow(QMainWindow):
         self.chk_visualization_free.stateChanged.connect(
             self._on_visualization_mode_changed
         )
-        fl_sys.addRow("", self.chk_visualization_free)
+
+        for perf_checkbox in (
+            self.check_save_confidence,
+            self.chk_use_cached_detections,
+            self.chk_visualization_free,
+        ):
+            perf_checkbox.setStyleSheet("font-size: 10px; spacing: 6px;")
+            perf_checkbox.setMinimumHeight(26)
+            perf_checkbox.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        perf_toggle_grid = QGridLayout()
+        perf_toggle_grid.setHorizontalSpacing(12)
+        perf_toggle_grid.setVerticalSpacing(6)
+        perf_toggle_grid.setContentsMargins(0, 0, 0, 0)
+        perf_toggle_grid.addWidget(self.check_save_confidence, 0, 0)
+        perf_toggle_grid.addWidget(self.chk_use_cached_detections, 0, 1)
+        perf_toggle_grid.addWidget(self.chk_visualization_free, 0, 2)
+        perf_toggle_grid.setColumnStretch(0, 1)
+        perf_toggle_grid.setColumnStretch(1, 1)
+        perf_toggle_grid.setColumnStretch(2, 1)
+        fl_sys.addRow("", perf_toggle_grid)
 
         vl_sys.addLayout(fl_sys)
         form.addWidget(g_sys)
@@ -3281,7 +3859,8 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Display Settings (moved from Visuals tab)
         # ============================================================
-        self.g_display = QGroupBox("How should the preview look?")
+        self.g_display = QGroupBox("Preview Overlays")
+        self._set_compact_section_widget(self.g_display)
         vl_display = QVBoxLayout(self.g_display)
         vl_display.addWidget(
             self._create_help_label(
@@ -3354,8 +3933,10 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Advanced / Debug (moved from Visuals tab)
         # ============================================================
-        g_debug = QGroupBox("Need advanced troubleshooting options?")
+        g_debug = QGroupBox("Debug")
+        self._set_compact_section_widget(g_debug)
         v_dbg = QVBoxLayout(g_debug)
+        v_dbg.setSpacing(6)
         v_dbg.addWidget(
             self._create_help_label(
                 "Enable verbose logging to see detailed tracking decisions. Useful for troubleshooting "
@@ -3367,7 +3948,6 @@ class MainWindow(QMainWindow):
         v_dbg.addWidget(self.chk_debug_logging)
         form.addWidget(g_debug)
 
-        form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
         self._populate_compute_runtime_options(preferred="cpu")
@@ -3383,25 +3963,36 @@ class MainWindow(QMainWindow):
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         vbox = QVBoxLayout(content)
+        vbox.setContentsMargins(6, 6, 6, 6)
+        vbox.setSpacing(8)
+        self._set_compact_scroll_layout(vbox)
 
         # ============================================================
         # 1. Detection Method Selector
         # ============================================================
-        g_method = QGroupBox("How should animals be detected?")
+        g_method = QGroupBox("Detection")
+        self._set_compact_section_widget(g_method)
         l_method_outer = QVBoxLayout(g_method)
-        l_method_outer.addWidget(
-            self._create_help_label(
-                "Choose how to detect animals in each frame. Background Subtraction works by modeling "
-                "the static background and finding moving objects. YOLO uses deep learning to detect animals directly."
-            )
-        )
+        l_method_outer.setSpacing(6)
         f_method = QFormLayout(None)
+        f_method.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        f_method.setHorizontalSpacing(10)
+        f_method.setVerticalSpacing(8)
+        method_help = self._create_help_label(
+            "Choose how to detect animals in each frame. Background subtraction models the static background and finds moving objects. YOLO uses deep learning to detect animals directly.",
+            attach_to_title=False,
+        )
         self.combo_detection_method = QComboBox()
         self.combo_detection_method.addItems(["Background Subtraction", "YOLO OBB"])
+        self.combo_detection_method.setFixedHeight(30)
         self.combo_detection_method.currentIndexChanged.connect(
             self._on_detection_method_changed_ui
         )
-        f_method.addRow("Detection method", self.combo_detection_method)
+        method_row = QHBoxLayout()
+        method_row.setSpacing(6)
+        method_row.addWidget(self.combo_detection_method, 1)
+        method_row.addWidget(method_help, 0, Qt.AlignVCenter)
+        f_method.addRow("Method", method_row)
 
         # Legacy device selection (hidden; derived from canonical runtime).
         self.combo_device = QComboBox()
@@ -3441,23 +4032,20 @@ class MainWindow(QMainWindow):
 
         # Stacked Widget for Method Specific Params
         self.stack_detection = QStackedWidget()
+        self.stack_detection.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
 
         # --- Page 0: Background Subtraction Params ---
         page_bg = QWidget()
+        page_bg.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         l_bg = QVBoxLayout(page_bg)
         l_bg.setContentsMargins(0, 0, 0, 0)
-        l_bg.addWidget(
-            self._create_help_label(
-                "Background subtraction identifies moving animals by comparing each frame to a learned background model. "
-                "Start with defaults and increase threshold if you see too much noise, decrease if animals are missed."
-            )
-        )
+        l_bg.setSpacing(6)
 
         # Create accordion for BG subtraction settings
         self.bg_accordion = AccordionContainer()
 
         # Image Enhancement (Pre-processing)
-        self.g_img = CollapsibleGroupBox("Brightness / Contrast / Gamma")
+        self.g_img = CollapsibleGroupBox("Image")
         self.bg_accordion.addCollapsible(self.g_img)
         vl_img = QVBoxLayout()
         vl_img.addWidget(
@@ -3474,7 +4062,7 @@ class MainWindow(QMainWindow):
         self.label_brightness_val = QLabel("0")
         self.label_brightness_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
         bright_label_row.addWidget(self.label_brightness_val)
-        bright_label_row.addStretch()
+        bright_label_row.addSpacing(6)
         bright_layout.addLayout(bright_label_row)
 
         self.slider_brightness = QSlider(Qt.Horizontal)
@@ -3498,7 +4086,7 @@ class MainWindow(QMainWindow):
         self.label_contrast_val = QLabel("1.0")
         self.label_contrast_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
         contrast_label_row.addWidget(self.label_contrast_val)
-        contrast_label_row.addStretch()
+        contrast_label_row.addSpacing(6)
         contrast_layout.addLayout(contrast_label_row)
 
         self.slider_contrast = QSlider(Qt.Horizontal)
@@ -3522,7 +4110,7 @@ class MainWindow(QMainWindow):
         self.label_gamma_val = QLabel("1.0")
         self.label_gamma_val.setStyleSheet("color: #4fc1ff; font-weight: bold;")
         gamma_label_row.addWidget(self.label_gamma_val)
-        gamma_label_row.addStretch()
+        gamma_label_row.addSpacing(6)
         gamma_layout.addLayout(gamma_label_row)
 
         self.slider_gamma = QSlider(Qt.Horizontal)
@@ -3550,9 +4138,12 @@ class MainWindow(QMainWindow):
         vl_img.addWidget(self.chk_dark_on_light)
         self.g_img.setContentLayout(vl_img)
         l_bg.addWidget(self.g_img)
+        self._remember_collapsible_state(
+            "detection.brightness_contrast_gamma", self.g_img
+        )
 
         # Background Model
-        g_bg_model = CollapsibleGroupBox("Background Estimation")
+        g_bg_model = CollapsibleGroupBox("Background")
         self.bg_accordion.addCollapsible(g_bg_model)
         vl_bg_model = QVBoxLayout()
         vl_bg_model.addWidget(
@@ -3563,9 +4154,12 @@ class MainWindow(QMainWindow):
         )
         f_bg = QFormLayout(None)
         f_bg.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        f_bg.setHorizontalSpacing(10)
+        f_bg.setVerticalSpacing(8)
         self.spin_bg_prime = QSpinBox()
         self.spin_bg_prime.setRange(0, 5000)
         self.spin_bg_prime.setValue(10)
+        self.spin_bg_prime.setFixedHeight(30)
         self.spin_bg_prime.setToolTip(
             "Number of initial frames to build background model.\n"
             "Recommended: 10-100 frames.\n"
@@ -3586,6 +4180,7 @@ class MainWindow(QMainWindow):
         self.spin_bg_learning.setRange(0.0001, 0.1)
         self.spin_bg_learning.setDecimals(4)
         self.spin_bg_learning.setValue(0.001)
+        self.spin_bg_learning.setFixedHeight(30)
         self.spin_bg_learning.setToolTip(
             "How quickly background adapts to changes (0.0001-0.1).\n"
             "Lower = slower adaptation (stable, good for mostly static background).\n"
@@ -3594,6 +4189,7 @@ class MainWindow(QMainWindow):
         self.spin_threshold = QSpinBox()
         self.spin_threshold.setRange(0, 255)
         self.spin_threshold.setValue(50)
+        self.spin_threshold.setFixedHeight(30)
         self.spin_threshold.setToolTip(
             "Pixel intensity difference to detect foreground (0-255).\n"
             "Lower = more sensitive (detects subtle animals, more noise).\n"
@@ -3610,9 +4206,10 @@ class MainWindow(QMainWindow):
         vl_bg_model.addLayout(f_bg)
         g_bg_model.setContentLayout(vl_bg_model)
         l_bg.addWidget(g_bg_model)
+        self._remember_collapsible_state("detection.background_estimation", g_bg_model)
 
         # Lighting Stab
-        g_light = CollapsibleGroupBox("Scene Lighting Stabilization")
+        g_light = CollapsibleGroupBox("Lighting")
         self.bg_accordion.addCollapsible(g_light)
         vl_light = QVBoxLayout()
         vl_light.addWidget(
@@ -3623,6 +4220,8 @@ class MainWindow(QMainWindow):
         )
         f_light = QFormLayout(None)
         f_light.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        f_light.setHorizontalSpacing(10)
+        f_light.setVerticalSpacing(8)
         self.chk_lighting_stab = QCheckBox("Enable Stabilization")
         self.chk_lighting_stab.setChecked(True)
         self.chk_lighting_stab.setToolTip(
@@ -3635,6 +4234,7 @@ class MainWindow(QMainWindow):
         self.spin_lighting_smooth = QDoubleSpinBox()
         self.spin_lighting_smooth.setRange(0.8, 0.999)
         self.spin_lighting_smooth.setValue(0.95)
+        self.spin_lighting_smooth.setFixedHeight(30)
         self.spin_lighting_smooth.setToolTip(
             "Temporal smoothing factor for lighting correction (0.8-0.999).\n"
             "Higher = smoother, slower adaptation to lighting changes.\n"
@@ -3645,6 +4245,7 @@ class MainWindow(QMainWindow):
         self.spin_lighting_median.setRange(3, 15)
         self.spin_lighting_median.setSingleStep(2)
         self.spin_lighting_median.setValue(5)
+        self.spin_lighting_median.setFixedHeight(30)
         self.spin_lighting_median.setToolTip(
             "Median filter window size (odd number, 3-15).\n"
             "Larger window = smoother lighting estimate, slower response.\n"
@@ -3661,9 +4262,10 @@ class MainWindow(QMainWindow):
         vl_light.addLayout(f_light)
         g_light.setContentLayout(vl_light)
         l_bg.addWidget(g_light)
+        self._remember_collapsible_state("detection.scene_lighting", g_light)
 
         # Morphology (Standard)
-        g_morph = CollapsibleGroupBox("Noise Removal and Morphology")
+        g_morph = CollapsibleGroupBox("Morphology")
         self.bg_accordion.addCollapsible(g_morph)
         vl_morph = QVBoxLayout()
         vl_morph.addWidget(
@@ -3674,10 +4276,13 @@ class MainWindow(QMainWindow):
         )
         f_morph = QFormLayout(None)
         f_morph.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        f_morph.setHorizontalSpacing(10)
+        f_morph.setVerticalSpacing(8)
         self.spin_morph_size = QSpinBox()
         self.spin_morph_size.setRange(1, 25)
         self.spin_morph_size.setSingleStep(2)
         self.spin_morph_size.setValue(5)
+        self.spin_morph_size.setFixedHeight(30)
         self.spin_morph_size.setToolTip(
             "Morphological operation kernel size (odd number, 1-25).\n"
             "Larger = more aggressive noise removal, may merge nearby animals.\n"
@@ -3689,6 +4294,7 @@ class MainWindow(QMainWindow):
         self.spin_min_contour = QSpinBox()
         self.spin_min_contour.setRange(0, 100000)
         self.spin_min_contour.setValue(50)
+        self.spin_min_contour.setFixedHeight(30)
         self.spin_min_contour.setToolTip(
             "Minimum contour area in pixels² to keep.\n"
             "Filters out small noise blobs after morphology.\n"
@@ -3698,6 +4304,7 @@ class MainWindow(QMainWindow):
         self.spin_max_contour_multiplier = QSpinBox()
         self.spin_max_contour_multiplier.setRange(5, 100)
         self.spin_max_contour_multiplier.setValue(20)
+        self.spin_max_contour_multiplier.setFixedHeight(30)
         self.spin_max_contour_multiplier.setToolTip(
             "Maximum contour area as multiplier of minimum (5-100).\n"
             "Max area = min_contour × this multiplier.\n"
@@ -3714,24 +4321,27 @@ class MainWindow(QMainWindow):
         vl_morph.addLayout(f_morph)
         g_morph.setContentLayout(vl_morph)
         l_bg.addWidget(g_morph)
+        self._remember_collapsible_state("detection.noise_removal", g_morph)
 
         # Morphology (Advanced/Splitting)
-        g_split = CollapsibleGroupBox("Split Touching Animals")
+        g_split = CollapsibleGroupBox("Split Touching")
         self.bg_accordion.addCollapsible(g_split)
         vl_split = QVBoxLayout()
         vl_split.addWidget(
             self._create_help_label(
-                "Split touching animals using erosion/dilation. Conservative split uses watershed, aggressive uses "
-                "multi-stage erosion/dilation. Enable only if animals frequently touch."
+                "Split touching animals using body-size-aware erosion only in locally crowded regions. "
+                "Enable only if animals frequently touch."
             )
         )
         f_split = QFormLayout(None)
-        self.chk_conservative_split = QCheckBox("Use conservative split (erosion)")
+        f_split.setHorizontalSpacing(10)
+        f_split.setVerticalSpacing(8)
+        self.chk_conservative_split = QCheckBox("Use conservative split")
         self.chk_conservative_split.setChecked(True)
         self.chk_conservative_split.setToolTip(
-            "Use erosion to separate touching animals more conservatively.\n"
-            "Recommended: Enable to avoid over-splitting single animals.\n"
-            "Disable for aggressive separation of tightly clustered animals."
+            "Locally raise the detection threshold inside suspected merged\n"
+            "blobs to separate touching animals at their weakest connection\n"
+            "point while preserving body shape."
         )
         f_split.addRow(self.chk_conservative_split)
 
@@ -3740,35 +4350,29 @@ class MainWindow(QMainWindow):
         self.spin_conservative_kernel.setRange(1, 15)
         self.spin_conservative_kernel.setSingleStep(2)
         self.spin_conservative_kernel.setValue(3)
+        self.spin_conservative_kernel.setFixedHeight(30)
         self.spin_conservative_kernel.setToolTip(
-            "Erosion kernel size (odd number, 1-15).\n"
-            "Larger = more aggressive separation.\n"
-            "Recommended: 3-5"
+            "Gaussian blur kernel applied to the local difference\n"
+            "image before re-thresholding (odd number, 1-15).\n"
+            "Larger = smoother split boundaries.\n"
+            "1 = no smoothing. Recommended: 3-5"
         )
         self.spin_conservative_erode = QSpinBox()
         self.spin_conservative_erode.setRange(1, 10)
         self.spin_conservative_erode.setValue(1)
+        self.spin_conservative_erode.setFixedHeight(30)
         self.spin_conservative_erode.setToolTip(
-            "Number of erosion iterations (1-10).\n"
-            "More iterations = stronger separation effect.\n"
-            "Recommended: 1-2"
+            "Threshold boost steps (1-10).\n"
+            "Each step pulls the split threshold 25%% closer to\n"
+            "nearby local peaks inside suspected merged blobs.\n"
+            "Higher = more aggressive local separation.\n"
+            "Recommended: 1-3"
         )
-        h_split.addWidget(QLabel("Kernel size"))
+        h_split.addWidget(QLabel("Blur kernel"))
         h_split.addWidget(self.spin_conservative_kernel)
-        h_split.addWidget(QLabel("Iterations"))
+        h_split.addWidget(QLabel("Boost steps"))
         h_split.addWidget(self.spin_conservative_erode)
         f_split.addRow(h_split)
-
-        self.spin_merge_threshold = QSpinBox()
-        self.spin_merge_threshold.setRange(100, 10000)
-        self.spin_merge_threshold.setValue(1000)
-        self.spin_merge_threshold.setToolTip(
-            "Maximum area (px²) of small blobs to merge with nearby animals.\n"
-            "Helps reconnect fragmented detections.\n"
-            "Lower = merge more aggressively, Higher = keep fragments separate.\n"
-            "Recommended: 500-2000"
-        )
-        f_split.addRow("Merge area (px\u00b2)", self.spin_merge_threshold)
 
         self.chk_additional_dilation = QCheckBox("Reconnect thin parts (dilation)")
         self.chk_additional_dilation.setToolTip(
@@ -3783,6 +4387,7 @@ class MainWindow(QMainWindow):
         self.spin_dilation_kernel_size.setRange(1, 15)
         self.spin_dilation_kernel_size.setSingleStep(2)
         self.spin_dilation_kernel_size.setValue(3)
+        self.spin_dilation_kernel_size.setFixedHeight(30)
         self.spin_dilation_kernel_size.setToolTip(
             "Dilation kernel size (odd number, 1-15).\n"
             "Larger = thicker reconnection.\n"
@@ -3791,6 +4396,7 @@ class MainWindow(QMainWindow):
         self.spin_dilation_iterations = QSpinBox()
         self.spin_dilation_iterations.setRange(1, 10)
         self.spin_dilation_iterations.setValue(2)
+        self.spin_dilation_iterations.setFixedHeight(30)
         self.spin_dilation_iterations.setToolTip(
             "Number of dilation iterations (1-10).\n"
             "More iterations = thicker result.\n"
@@ -3805,24 +4411,41 @@ class MainWindow(QMainWindow):
         g_split.setContentLayout(vl_split)
 
         l_bg.addWidget(g_split)
+        self._remember_collapsible_state("detection.split_touching", g_split)
+
+        # --- Auto-Tune Detection Parameters button ---
+        self.btn_bg_autotune = QPushButton("Auto-Tune Detection Parameters…")
+        self.btn_bg_autotune.setToolTip(
+            "Use Optuna to search for the best threshold, morphology,\n"
+            "and conservative-split settings for your video."
+        )
+        self.btn_bg_autotune.clicked.connect(self._open_bg_parameter_helper)
+        l_bg.addWidget(self.btn_bg_autotune)
 
         # --- Page 1: YOLO Params ---
         page_yolo = QWidget()
+        page_yolo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         l_yolo = QVBoxLayout(page_yolo)
         l_yolo.setContentsMargins(0, 0, 0, 0)
-        l_yolo.addWidget(
+        l_yolo.setSpacing(6)
+
+        self.yolo_group = QGroupBox("YOLO")
+        self._set_compact_section_widget(self.yolo_group)
+        f_yolo = QFormLayout(self.yolo_group)
+        f_yolo.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        f_yolo.setHorizontalSpacing(10)
+        f_yolo.setVerticalSpacing(8)
+        self.yolo_group.layout().setContentsMargins(9, 10, 9, 9)
+        self.yolo_group.layout().setSpacing(8)
+        self.yolo_group.layout().addWidget(
             self._create_help_label(
-                "YOLO uses a trained neural network to detect animals. Choose your model file and adjust confidence "
-                "threshold to balance detection sensitivity vs false positives. Higher confidence = fewer false detections."
+                "YOLO uses a trained neural network to detect animals. Choose your model file and adjust thresholds to balance recall and false positives."
             )
         )
 
-        self.yolo_group = QGroupBox("How should YOLO detection be configured?")
-        self.yolo_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        f_yolo = QFormLayout(self.yolo_group)
-
         self.combo_yolo_obb_mode = QComboBox()
         self.combo_yolo_obb_mode.addItems(["Direct", "Sequential (Faster)"])
+        self.combo_yolo_obb_mode.setFixedHeight(30)
         self.combo_yolo_obb_mode.currentIndexChanged.connect(self._on_yolo_mode_changed)
         self.combo_yolo_obb_mode.setToolTip(
             "Direct: run OBB on full frame.\n"
@@ -3841,6 +4464,7 @@ class MainWindow(QMainWindow):
         self.combo_yolo_model = QComboBox()
         self._refresh_yolo_model_combo()
         self.combo_yolo_model.activated.connect(self.on_yolo_model_changed)
+        self.combo_yolo_model.setFixedHeight(30)
         self.combo_yolo_model.setToolTip("Direct-mode YOLO OBB model.")
         f_yolo.addRow("Direct OBB model", self.combo_yolo_model)
 
@@ -3849,6 +4473,7 @@ class MainWindow(QMainWindow):
         self.combo_yolo_detect_model.activated.connect(
             self.on_yolo_detect_model_changed
         )
+        self.combo_yolo_detect_model.setFixedHeight(30)
         self.combo_yolo_detect_model.setToolTip(
             "Sequential stage-1 model (axis-aligned detect)."
         )
@@ -3859,6 +4484,7 @@ class MainWindow(QMainWindow):
         self.combo_yolo_crop_obb_model.activated.connect(
             self.on_yolo_crop_obb_model_changed
         )
+        self.combo_yolo_crop_obb_model.setFixedHeight(30)
         self.combo_yolo_crop_obb_model.setToolTip(
             "Sequential stage-2 OBB model trained on cropped detections."
         )
@@ -3867,6 +4493,7 @@ class MainWindow(QMainWindow):
         # Head-tail classifier — type selects subdirectory (YOLO vs tiny)
         self.combo_yolo_headtail_model_type = QComboBox()
         self.combo_yolo_headtail_model_type.addItems(["YOLO", "tiny"])
+        self.combo_yolo_headtail_model_type.setFixedHeight(30)
         self.combo_yolo_headtail_model_type.setToolTip(
             "Architecture family of the head-tail classifier.\n"
             "YOLO → models/classification/orientation/YOLO/\n"
@@ -3881,6 +4508,7 @@ class MainWindow(QMainWindow):
         self.combo_yolo_headtail_model.activated.connect(
             self.on_yolo_headtail_model_changed
         )
+        self.combo_yolo_headtail_model.setFixedHeight(30)
         self.combo_yolo_headtail_model.setToolTip(
             "Optional head-tail classifier used to direct orientation along OBB major axis."
         )
@@ -3911,10 +4539,12 @@ class MainWindow(QMainWindow):
         self.spin_yolo_seq_crop_pad.setRange(0.0, 1.0)
         self.spin_yolo_seq_crop_pad.setSingleStep(0.01)
         self.spin_yolo_seq_crop_pad.setValue(0.15)
+        self.spin_yolo_seq_crop_pad.setFixedHeight(30)
         f_seq_adv.addRow("Crop pad ratio", self.spin_yolo_seq_crop_pad)
         self.spin_yolo_seq_min_crop_px = QSpinBox()
         self.spin_yolo_seq_min_crop_px.setRange(8, 1024)
         self.spin_yolo_seq_min_crop_px.setValue(64)
+        self.spin_yolo_seq_min_crop_px.setFixedHeight(30)
         f_seq_adv.addRow("Min crop size (px)", self.spin_yolo_seq_min_crop_px)
         self.chk_yolo_seq_square_crop = QCheckBox("Enforce square crop")
         self.chk_yolo_seq_square_crop.setChecked(True)
@@ -3923,6 +4553,7 @@ class MainWindow(QMainWindow):
         self.spin_yolo_seq_detect_conf.setRange(0.01, 1.0)
         self.spin_yolo_seq_detect_conf.setSingleStep(0.01)
         self.spin_yolo_seq_detect_conf.setValue(0.25)
+        self.spin_yolo_seq_detect_conf.setFixedHeight(30)
         self.spin_yolo_seq_detect_conf.setToolTip(
             "Minimum confidence for the stage-1 detection model (sequential mode only).\n"
             "Lower = more crops sent to stage-2 (higher recall, slower).\n"
@@ -3934,10 +4565,12 @@ class MainWindow(QMainWindow):
         self.spin_yolo_headtail_conf.setRange(0.0, 1.0)
         self.spin_yolo_headtail_conf.setSingleStep(0.01)
         self.spin_yolo_headtail_conf.setValue(0.50)
+        self.spin_yolo_headtail_conf.setFixedHeight(30)
         f_seq_adv.addRow("Head-tail min confidence", self.spin_yolo_headtail_conf)
         self.spin_yolo_seq_stage2_imgsz = QSpinBox()
         self.spin_yolo_seq_stage2_imgsz.setRange(0, 2048)
         self.spin_yolo_seq_stage2_imgsz.setValue(160)
+        self.spin_yolo_seq_stage2_imgsz.setFixedHeight(30)
         self.spin_yolo_seq_stage2_imgsz.setToolTip(
             "Crop OBB stage input size in pixels. Set 0 to disable pre-resize."
         )
@@ -3956,6 +4589,7 @@ class MainWindow(QMainWindow):
         self.spin_yolo_confidence = QDoubleSpinBox()
         self.spin_yolo_confidence.setRange(0.01, 1.0)
         self.spin_yolo_confidence.setValue(0.25)
+        self.spin_yolo_confidence.setFixedHeight(30)
         self.spin_yolo_confidence.setToolTip(
             "Minimum confidence score for YOLO detections (0.01-1.0).\n"
             "Lower = more detections (more false positives).\n"
@@ -3965,6 +4599,7 @@ class MainWindow(QMainWindow):
         self.spin_yolo_iou = QDoubleSpinBox()
         self.spin_yolo_iou.setRange(0.01, 1.0)
         self.spin_yolo_iou.setValue(0.7)
+        self.spin_yolo_iou.setFixedHeight(30)
         self.spin_yolo_iou.setToolTip(
             "Intersection-over-Union threshold for non-max suppression (0.01-1.0).\n"
             "Lower = more aggressive duplicate removal.\n"
@@ -3989,6 +4624,7 @@ class MainWindow(QMainWindow):
         self.chk_use_custom_obb_iou.setVisible(False)
 
         self.line_yolo_classes = QLineEdit()
+        self.line_yolo_classes.setFixedHeight(30)
         self.line_yolo_classes.setPlaceholderText("e.g. 15, 16 (Empty for all)")
         self.line_yolo_classes.setToolTip(
             "Comma-separated class IDs to detect (leave empty for all classes).\n"
@@ -4001,21 +4637,20 @@ class MainWindow(QMainWindow):
         l_yolo.addWidget(self.yolo_group)
 
         # ============================================================
-        # GPU Acceleration Settings (TensorRT + Batching)
+        # YOLO Inference Acceleration (TensorRT + Batching)
         # ============================================================
-        self.g_gpu_accel = QGroupBox("Which hardware should be used?")
+        self.g_gpu_accel = QGroupBox("Inference Acceleration")
+        self._set_compact_section_widget(self.g_gpu_accel)
         vl_gpu = QVBoxLayout(self.g_gpu_accel)
+        vl_gpu.setSpacing(6)
         vl_gpu.addWidget(
             self._create_help_label(
-                "Optimize YOLO inference speed using GPU acceleration. Only applies to YOLO detection on GPU devices."
+                "Control YOLO throughput features. Use batching for faster full-run detection, and TensorRT when NVIDIA export/runtime support is available."
             )
         )
 
-        f_gpu = QFormLayout(None)
-        f_gpu.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-
         # TensorRT Optimization
-        self.chk_enable_tensorrt = QCheckBox("Enable TensorRT (NVIDIA Only)")
+        self.chk_enable_tensorrt = QCheckBox("TensorRT engine")
         self.chk_enable_tensorrt.setChecked(False)
         self.chk_enable_tensorrt.setEnabled(TENSORRT_AVAILABLE)
 
@@ -4034,28 +4669,25 @@ class MainWindow(QMainWindow):
 
         self.chk_enable_tensorrt.setToolTip(tensorrt_tooltip)
         self.chk_enable_tensorrt.stateChanged.connect(self._on_tensorrt_toggled)
-        f_gpu.addRow("", self.chk_enable_tensorrt)
 
         self.spin_tensorrt_batch = QSpinBox()
         self.spin_tensorrt_batch.setRange(1, 64)
         self.spin_tensorrt_batch.setValue(
             self.advanced_config.get("tensorrt_max_batch_size", 16)
         )
+        self.spin_tensorrt_batch.setFixedHeight(30)
         self.spin_tensorrt_batch.setToolTip(
             "Maximum batch size for TensorRT engine.\n"
             "Higher = potentially faster, Lower = more stable.\n"
             "Reduce if build fails (try 8, 4, or 1).\n"
             "Typical: 16-32 (high-end), 8-16 (mid-range), 1-8 (low VRAM)"
         )
-        self.lbl_tensorrt_batch = QLabel("Maximum batch size")
-        f_gpu.addRow(self.lbl_tensorrt_batch, self.spin_tensorrt_batch)
-
-        # GPU Batching
-        f_gpu.addRow(QLabel(""))  # Spacer
-
-        self.chk_enable_yolo_batching = QCheckBox(
-            "Enable Batched Detection (Full Tracking Only)"
+        self.lbl_tensorrt_batch = QLabel("TensorRT max batch")
+        self.lbl_tensorrt_batch.setStyleSheet(
+            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
         )
+
+        self.chk_enable_yolo_batching = QCheckBox("GPU batching")
         self.chk_enable_yolo_batching.setChecked(
             self.advanced_config.get("enable_yolo_batching", True)
         )
@@ -4066,10 +4698,10 @@ class MainWindow(QMainWindow):
         self.chk_enable_yolo_batching.stateChanged.connect(
             self._on_yolo_batching_toggled
         )
-        f_gpu.addRow("", self.chk_enable_yolo_batching)
 
         self.combo_yolo_batch_mode = QComboBox()
         self.combo_yolo_batch_mode.addItems(["Auto", "Manual"])
+        self.combo_yolo_batch_mode.setFixedHeight(30)
         self.combo_yolo_batch_mode.setToolTip(
             "Auto: Automatically estimate batch size based on GPU memory.\n"
             "Manual: Specify a fixed batch size."
@@ -4077,14 +4709,17 @@ class MainWindow(QMainWindow):
         self.combo_yolo_batch_mode.currentIndexChanged.connect(
             self._on_yolo_batch_mode_changed
         )
-        self.lbl_yolo_batch_mode = QLabel("Batch size mode")
-        f_gpu.addRow(self.lbl_yolo_batch_mode, self.combo_yolo_batch_mode)
+        self.lbl_yolo_batch_mode = QLabel("Batch mode")
+        self.lbl_yolo_batch_mode.setStyleSheet(
+            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
+        )
 
         self.spin_yolo_batch_size = QSpinBox()
         self.spin_yolo_batch_size.setRange(1, 64)
         self.spin_yolo_batch_size.setValue(
             self.advanced_config.get("yolo_manual_batch_size", 16)
         )
+        self.spin_yolo_batch_size.setFixedHeight(30)
         self.spin_yolo_batch_size.setToolTip(
             "Manual batch size (only used when mode is Manual).\n"
             "Larger = faster but uses more GPU memory.\n"
@@ -4093,10 +4728,35 @@ class MainWindow(QMainWindow):
         self.spin_yolo_batch_size.valueChanged.connect(
             self._on_yolo_manual_batch_size_changed
         )
-        self.lbl_yolo_batch_size = QLabel("Manual batch size")
-        f_gpu.addRow(self.lbl_yolo_batch_size, self.spin_yolo_batch_size)
+        self.lbl_yolo_batch_size = QLabel("Manual batch")
+        self.lbl_yolo_batch_size.setStyleSheet(
+            "font-size: 10px; font-weight: 600; color: #bdbdbd;"
+        )
 
-        vl_gpu.addLayout(f_gpu)
+        accel_toggle_grid = QGridLayout()
+        accel_toggle_grid.setContentsMargins(0, 0, 0, 0)
+        accel_toggle_grid.setHorizontalSpacing(12)
+        accel_toggle_grid.setVerticalSpacing(6)
+        accel_toggle_grid.addWidget(self.chk_enable_yolo_batching, 0, 0)
+        accel_toggle_grid.addWidget(self.chk_enable_tensorrt, 0, 1)
+        accel_toggle_grid.setColumnStretch(0, 1)
+        accel_toggle_grid.setColumnStretch(1, 1)
+        vl_gpu.addLayout(accel_toggle_grid)
+
+        accel_controls_grid = QGridLayout()
+        accel_controls_grid.setContentsMargins(0, 0, 0, 0)
+        accel_controls_grid.setHorizontalSpacing(12)
+        accel_controls_grid.setVerticalSpacing(4)
+        accel_controls_grid.addWidget(self.lbl_yolo_batch_mode, 0, 0)
+        accel_controls_grid.addWidget(self.lbl_yolo_batch_size, 0, 1)
+        accel_controls_grid.addWidget(self.lbl_tensorrt_batch, 0, 2)
+        accel_controls_grid.addWidget(self.combo_yolo_batch_mode, 1, 0)
+        accel_controls_grid.addWidget(self.spin_yolo_batch_size, 1, 1)
+        accel_controls_grid.addWidget(self.spin_tensorrt_batch, 1, 2)
+        accel_controls_grid.setColumnStretch(0, 1)
+        accel_controls_grid.setColumnStretch(1, 1)
+        accel_controls_grid.setColumnStretch(2, 1)
+        vl_gpu.addLayout(accel_controls_grid)
         l_yolo.addWidget(self.g_gpu_accel)
 
         # Set initial visibility for TensorRT widgets
@@ -4112,8 +4772,6 @@ class MainWindow(QMainWindow):
         self.lbl_yolo_batch_size.setVisible(initial_batching_enabled)
         self.combo_yolo_batch_mode.setEnabled(initial_batching_enabled)
         self.spin_yolo_batch_size.setEnabled(False)  # Auto mode by default
-        l_yolo.addStretch()  # Push YOLO config to top
-
         # Add pages to stack
         self.stack_detection.addWidget(page_bg)
         self.stack_detection.addWidget(page_yolo)
@@ -4124,7 +4782,8 @@ class MainWindow(QMainWindow):
         # Detection Overlays (moved from Visuals tab)
         # ============================================================
         # Background Subtraction specific overlays
-        self.g_overlays_bg = QGroupBox("Which background diagnostics should be shown?")
+        self.g_overlays_bg = QGroupBox("Background Diagnostics")
+        self._set_compact_section_widget(self.g_overlays_bg)
         v_ov_bg = QVBoxLayout(self.g_overlays_bg)
         v_ov_bg.addWidget(
             self._create_help_label(
@@ -4145,7 +4804,8 @@ class MainWindow(QMainWindow):
         vbox.addWidget(self.g_overlays_bg)
 
         # YOLO specific overlays
-        self.g_overlays_yolo = QGroupBox("Which YOLO diagnostics should be shown?")
+        self.g_overlays_yolo = QGroupBox("YOLO Diagnostics")
+        self._set_compact_section_widget(self.g_overlays_yolo)
         v_ov_yolo = QVBoxLayout(self.g_overlays_yolo)
         v_ov_yolo.addWidget(
             self._create_help_label(
@@ -4167,7 +4827,8 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Reference Body Size (Spatial Scale)
         # ============================================================
-        g_body_size = QGroupBox("What is the expected animal size?")
+        g_body_size = QGroupBox("Reference Size")
+        self._set_compact_section_widget(g_body_size)
         vl_body_size = QVBoxLayout(g_body_size)
         vl_body_size.addWidget(
             self._create_help_label(
@@ -4177,6 +4838,8 @@ class MainWindow(QMainWindow):
         )
         fl_body = QFormLayout(None)
         fl_body.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fl_body.setHorizontalSpacing(10)
+        fl_body.setVerticalSpacing(8)
 
         self.spin_reference_body_size = QDoubleSpinBox()
         self.spin_reference_body_size.setRange(1.0, 500.0)
@@ -4186,6 +4849,7 @@ class MainWindow(QMainWindow):
         self.spin_reference_body_size.setSizePolicy(
             QSizePolicy.Expanding, QSizePolicy.Fixed
         )
+        self.spin_reference_body_size.setFixedHeight(30)
         self.spin_reference_body_size.setToolTip(
             "Reference animal body diameter in pixels (at resize=1.0).\n"
             "All distance/size parameters are scaled relative to this value."
@@ -4205,7 +4869,8 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Detection size statistics panel
         # ============================================================
-        g_detect_stats = QGroupBox("Should size be estimated from detections?")
+        g_detect_stats = QGroupBox("Estimate Size")
+        self._set_compact_section_widget(g_detect_stats)
         vl_stats = QVBoxLayout(g_detect_stats)
         vl_stats.addWidget(
             self._create_help_label(
@@ -4239,7 +4904,6 @@ class MainWindow(QMainWindow):
             "Automatically set reference body size to the median detected diameter"
         )
         btn_layout.addWidget(self.btn_auto_set_body_size)
-        btn_layout.addStretch()
         vl_stats.addLayout(btn_layout)
 
         vbox.addWidget(g_detect_stats)
@@ -4247,7 +4911,8 @@ class MainWindow(QMainWindow):
         # ============================================================
         # Size Filtering
         # ============================================================
-        g_size = QGroupBox("Which detections should be kept by size?")
+        g_size = QGroupBox("Size Filter")
+        self._set_compact_section_widget(g_size)
         vl_size = QVBoxLayout(g_size)
         vl_size.addWidget(
             self._create_help_label(
@@ -4256,6 +4921,8 @@ class MainWindow(QMainWindow):
             )
         )
         f_size = QFormLayout(None)
+        f_size.setHorizontalSpacing(10)
+        f_size.setVerticalSpacing(8)
         self.chk_size_filtering = QCheckBox("Filter detections by size")
         self.chk_size_filtering.setToolTip(
             "Filter detected objects by area to remove noise and artifacts.\n"
@@ -4269,6 +4936,7 @@ class MainWindow(QMainWindow):
         self.spin_min_object_size.setSingleStep(0.1)
         self.spin_min_object_size.setDecimals(2)
         self.spin_min_object_size.setValue(0.3)
+        self.spin_min_object_size.setFixedHeight(30)
         self.spin_min_object_size.setToolTip(
             "Minimum object area as multiple of reference body area.\n"
             "Filters out small noise/artifacts.\n"
@@ -4279,6 +4947,7 @@ class MainWindow(QMainWindow):
         self.spin_max_object_size.setSingleStep(0.1)
         self.spin_max_object_size.setDecimals(2)
         self.spin_max_object_size.setValue(3.0)
+        self.spin_max_object_size.setFixedHeight(30)
         self.spin_max_object_size.setToolTip(
             "Maximum object area as multiple of reference body area.\n"
             "Filters out large clusters or artifacts.\n"
@@ -4292,7 +4961,6 @@ class MainWindow(QMainWindow):
         vl_size.addLayout(f_size)
         vbox.addWidget(g_size)
 
-        vbox.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
@@ -4306,9 +4974,13 @@ class MainWindow(QMainWindow):
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         vbox = QVBoxLayout(content)
+        vbox.setContentsMargins(6, 6, 6, 6)
+        vbox.setSpacing(8)
+        self._set_compact_scroll_layout(vbox)
 
         # Core Params
         g_core = QGroupBox("How should track continuity be handled?")
+        self._set_compact_section_widget(g_core)
         vl_core = QVBoxLayout(g_core)
         vl_core.addWidget(
             self._create_help_label(
@@ -4539,6 +5211,7 @@ class MainWindow(QMainWindow):
         vl_kf.addLayout(f_kf)
         g_kf.setContentLayout(vl_kf)
         vbox.addWidget(g_kf)
+        self._remember_collapsible_state("tracking.motion_prediction", g_kf)
 
         # Matching cost
         g_weights = CollapsibleGroupBox("How should match scoring work?")
@@ -4637,6 +5310,7 @@ class MainWindow(QMainWindow):
         l_weights.addLayout(f_w2)
         g_weights.setContentLayout(l_weights)
         vbox.addWidget(g_weights)
+        self._remember_collapsible_state("tracking.match_scoring", g_weights)
 
         # Candidate gating and pose safeguards
         g_assign = CollapsibleGroupBox("How should candidate matches be filtered?")
@@ -4714,6 +5388,7 @@ class MainWindow(QMainWindow):
         vl_assign.addLayout(f_assign)
         g_assign.setContentLayout(vl_assign)
         vbox.addWidget(g_assign)
+        self._remember_collapsible_state("tracking.candidate_filtering", g_assign)
 
         # Assignment algorithm
         g_solver = CollapsibleGroupBox("Which assignment algorithm should be used?")
@@ -4749,6 +5424,7 @@ class MainWindow(QMainWindow):
         vl_solver.addLayout(f_solver)
         g_solver.setContentLayout(vl_solver)
         vbox.addWidget(g_solver)
+        self._remember_collapsible_state("tracking.assignment_solver", g_solver)
 
         # Orientation & Lifecycle
         g_misc = CollapsibleGroupBox("How should track direction be updated?")
@@ -4829,6 +5505,7 @@ class MainWindow(QMainWindow):
         vl_misc.addLayout(f_misc)
         g_misc.setContentLayout(vl_misc)
         vbox.addWidget(g_misc)
+        self._remember_collapsible_state("tracking.direction_updates", g_misc)
 
         # Track Lifecycle
         g_lifecycle = CollapsibleGroupBox("When should tracks be created or dropped?")
@@ -4872,6 +5549,7 @@ class MainWindow(QMainWindow):
         vl_lifecycle.addLayout(f_lifecycle)
         g_lifecycle.setContentLayout(vl_lifecycle)
         vbox.addWidget(g_lifecycle)
+        self._remember_collapsible_state("tracking.track_lifecycle", g_lifecycle)
 
         # Stability
         g_stab = CollapsibleGroupBox("How strict should track validation be?")
@@ -4923,6 +5601,7 @@ class MainWindow(QMainWindow):
         vl_stab.addLayout(f_stab)
         g_stab.setContentLayout(vl_stab)
         vbox.addWidget(g_stab)
+        self._remember_collapsible_state("tracking.validation", g_stab)
 
         # Confidence Density Map
         self.g_density = CollapsibleGroupBox(
@@ -5040,6 +5719,7 @@ class MainWindow(QMainWindow):
         vl_density.addLayout(f_density)
         self.g_density.setContentLayout(vl_density)
         vbox.addWidget(self.g_density)
+        self._remember_collapsible_state("tracking.confidence_density", self.g_density)
 
         self.chk_enable_confidence_density_map.stateChanged.connect(
             self._on_confidence_density_map_toggled
@@ -5048,7 +5728,6 @@ class MainWindow(QMainWindow):
             self.chk_enable_confidence_density_map.checkState()
         )
 
-        vbox.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
@@ -5062,9 +5741,13 @@ class MainWindow(QMainWindow):
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         vbox = QVBoxLayout(content)
+        vbox.setContentsMargins(6, 6, 6, 6)
+        vbox.setSpacing(8)
+        self._set_compact_scroll_layout(vbox)
 
         # Post-Processing
         g_pp = QGroupBox("How should tracks be cleaned after tracking?")
+        self._set_compact_section_widget(g_pp)
         vl_pp = QVBoxLayout(g_pp)
         vl_pp.addWidget(
             self._create_help_label(
@@ -5358,6 +6041,7 @@ class MainWindow(QMainWindow):
 
         # Video Export (from post-processed trajectories)
         g_video = QGroupBox("What export video should be created?")
+        self._set_compact_section_widget(g_video)
         vl_video = QVBoxLayout(g_video)
         vl_video.addWidget(
             self._create_help_label(
@@ -5507,7 +6191,6 @@ class MainWindow(QMainWindow):
         self.lbl_video_pose_color = QLabel("")
         pose_color_row.addWidget(self.btn_video_pose_color)
         pose_color_row.addWidget(self.lbl_video_pose_color)
-        pose_color_row.addStretch()
         pose_color_cfg = self.advanced_config.get("video_pose_color", [255, 255, 255])
         if isinstance(pose_color_cfg, (list, tuple)) and len(pose_color_cfg) == 3:
             self._video_pose_color = tuple(
@@ -5559,7 +6242,8 @@ class MainWindow(QMainWindow):
         )
 
         self.lbl_video_pose_disabled_hint = self._create_help_label(
-            "Enable Pose Extraction in Analyze Individuals to edit pose overlay settings."
+            "Enable Pose Extraction in Analyze Individuals to edit pose overlay settings.",
+            attach_to_title=False,
         )
         f_video.addRow("", self.lbl_video_pose_disabled_hint)
 
@@ -5599,6 +6283,7 @@ class MainWindow(QMainWindow):
 
         # MAT-afterhours launch button
         g_afterhours = QGroupBox("Interactive Proofreading")
+        self._set_compact_section_widget(g_afterhours)
         vl_afterhours = QVBoxLayout(g_afterhours)
         vl_afterhours.addWidget(
             self._create_help_label(
@@ -5616,7 +6301,6 @@ class MainWindow(QMainWindow):
         vl_afterhours.addWidget(self._btn_open_afterhours)
         vbox.addWidget(g_afterhours)
 
-        vbox.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
@@ -5632,7 +6316,9 @@ class MainWindow(QMainWindow):
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         form = QVBoxLayout(content)
-        form.setContentsMargins(10, 10, 10, 10)
+        form.setContentsMargins(6, 6, 6, 6)
+        form.setSpacing(8)
+        self._set_compact_scroll_layout(form)
 
         # ============================================================
         # Active Learning Dataset Section
@@ -5640,6 +6326,7 @@ class MainWindow(QMainWindow):
         self.g_active_learning = QGroupBox(
             "Do you want to generate a detection dataset?"
         )
+        self._set_compact_section_widget(self.g_active_learning)
         vl_active = QVBoxLayout(self.g_active_learning)
         vl_active.addWidget(
             self._create_help_label(
@@ -5662,6 +6349,7 @@ class MainWindow(QMainWindow):
 
         # Dataset configuration
         self.g_dataset_config = QGroupBox("How should the dataset be configured?")
+        self._set_compact_section_widget(self.g_dataset_config)
         f_config = QFormLayout(self.g_dataset_config)
         f_config.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
@@ -5680,6 +6368,7 @@ class MainWindow(QMainWindow):
 
         # Frame selection parameters
         self.g_frame_selection = QGroupBox("How should frames be selected?")
+        self._set_compact_section_widget(self.g_frame_selection)
         f_selection = QFormLayout(self.g_frame_selection)
         f_selection.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
@@ -5714,7 +6403,8 @@ class MainWindow(QMainWindow):
         advanced_help = self._create_help_label(
             "Note: YOLO detection sensitivity for export (confidence=0.05, IOU=0.5) can be "
             "customized in advanced_config.json. These are separate from tracking parameters and "
-            "optimized for annotation (detect everything, manual review corrects errors)."
+            "optimized for annotation (detect everything, manual review corrects errors).",
+            attach_to_title=False,
         )
         f_selection.addRow(advanced_help)
 
@@ -5760,6 +6450,7 @@ class MainWindow(QMainWindow):
 
         # Quality metrics
         self.g_quality_metrics = QGroupBox("Which quality checks should be applied?")
+        self._set_compact_section_widget(self.g_quality_metrics)
         v_metrics = QVBoxLayout(self.g_quality_metrics)
 
         self.chk_metric_low_confidence = QCheckBox("Flag low detection confidence")
@@ -5803,6 +6494,7 @@ class MainWindow(QMainWindow):
 
         # X-AnyLabeling Integration
         self.g_xanylabeling = QGroupBox("How should X-AnyLabeling be integrated?")
+        self._set_compact_section_widget(self.g_xanylabeling)
         vl_xany = QVBoxLayout(self.g_xanylabeling)
 
         # Conda environment selection
@@ -5853,6 +6545,7 @@ class MainWindow(QMainWindow):
         # YOLO Training Center (separate section)
         # ============================================================
         self.g_yolo_training = QGroupBox("Do you want to train YOLO models?")
+        self._set_compact_section_widget(self.g_yolo_training)
         vl_yolo_train = QVBoxLayout(self.g_yolo_training)
         self.btn_open_training_dialog = QPushButton("Open Training Center...")
         self.btn_open_training_dialog.setToolTip(
@@ -5874,6 +6567,7 @@ class MainWindow(QMainWindow):
         self.g_individual_dataset = QGroupBox(
             "Should individual crops be collected in real time?"
         )
+        self._set_compact_section_widget(self.g_individual_dataset)
         vl_ind_dataset = QVBoxLayout(self.g_individual_dataset)
         vl_ind_dataset.addWidget(
             self._create_help_label(
@@ -5960,7 +6654,8 @@ class MainWindow(QMainWindow):
         # Info label about filtering
         self.lbl_individual_info = self._create_help_label(
             "Note: Crops use detections already filtered by ROI and size settings.\n"
-            "No additional filtering parameters needed."
+            "No additional filtering parameters needed.",
+            attach_to_title=False,
         )
         vl_ind_dataset.addWidget(self.lbl_individual_info)
 
@@ -5970,6 +6665,7 @@ class MainWindow(QMainWindow):
         # Pose Label UI Integration (Top-level section)
         # ============================================================
         self.g_pose_label = QGroupBox("Do you want to launch PoseKit labeler?")
+        self._set_compact_section_widget(self.g_pose_label)
         vl_pose = QVBoxLayout(self.g_pose_label)
         vl_pose.addWidget(
             self._create_help_label(
@@ -5999,7 +6695,6 @@ class MainWindow(QMainWindow):
         self.lbl_individual_info.setVisible(False)
         self.chk_generate_individual_track_videos.setVisible(False)
 
-        form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
@@ -6013,6 +6708,9 @@ class MainWindow(QMainWindow):
         scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         content = QWidget()
         form = QVBoxLayout(content)
+        form.setContentsMargins(6, 6, 6, 6)
+        form.setSpacing(8)
+        self._set_compact_scroll_layout(form)
 
         # Pipeline enable + overview
         self.chk_enable_individual_analysis = QGroupBox("Enable Individual Analysis")
@@ -6021,6 +6719,7 @@ class MainWindow(QMainWindow):
         self.chk_enable_individual_analysis.toggled.connect(
             self._on_individual_analysis_toggled
         )
+        self._set_compact_section_widget(self.chk_enable_individual_analysis)
         info_layout = QVBoxLayout(self.chk_enable_individual_analysis)
         info_layout.addWidget(
             self._create_help_label(
@@ -6035,7 +6734,8 @@ class MainWindow(QMainWindow):
 
         self.lbl_individual_yolo_only_notice = self._create_help_label(
             "Individual analysis requires YOLO OBB mode.\n"
-            "Switch detection method to YOLO OBB to enable this pipeline."
+            "Switch detection method to YOLO OBB to enable this pipeline.",
+            attach_to_title=False,
         )
         self.lbl_individual_yolo_only_notice.setVisible(False)
         form.addWidget(self.lbl_individual_yolo_only_notice)
@@ -6045,6 +6745,7 @@ class MainWindow(QMainWindow):
         self.g_identity.setCheckable(True)
         self.g_identity.setChecked(False)
         self.g_identity.toggled.connect(self._on_identity_analysis_toggled)
+        self._set_compact_section_widget(self.g_identity)
         vl_identity = QVBoxLayout(self.g_identity)
         self.identity_content = QWidget()
         self.identity_content.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
@@ -6127,9 +6828,7 @@ class MainWindow(QMainWindow):
 
         # --- CNN Classifiers group ---
         self.g_cnn_classifiers = QGroupBox("CNN Classifiers")
-        self.g_cnn_classifiers.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Preferred
-        )
+        self._set_compact_section_widget(self.g_cnn_classifiers)
         vl_cnn = QVBoxLayout(self.g_cnn_classifiers)
         vl_cnn.setSpacing(4)
         self.btn_add_cnn_classifier = QPushButton("\uff0b Add CNN Classifier")
@@ -6138,15 +6837,15 @@ class MainWindow(QMainWindow):
         self.cnn_scroll_area = QScrollArea()
         self.cnn_scroll_area.setWidgetResizable(True)
         self.cnn_scroll_area.setFrameShape(QFrame.NoFrame)
-        self.cnn_scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.cnn_scroll_area.setMinimumHeight(300)
+        self.cnn_scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self.cnn_scroll_area.setMinimumHeight(0)
+        self.cnn_scroll_area.setMaximumHeight(200)
         self.cnn_scroll_area.setVisible(False)
         cnn_scroll_widget = QWidget()
         cnn_scroll_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self.cnn_rows_layout = QVBoxLayout(cnn_scroll_widget)
         self.cnn_rows_layout.setSpacing(6)
         self.cnn_rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.cnn_rows_layout.addStretch(1)
         self.cnn_scroll_area.setWidget(cnn_scroll_widget)
         vl_cnn.addWidget(self.cnn_scroll_area)
         identity_content_layout.addWidget(self.g_cnn_classifiers)
@@ -6173,6 +6872,7 @@ class MainWindow(QMainWindow):
         self.g_individual_pipeline_common = QGroupBox(
             "Individual Analysis Pipeline Settings"
         )
+        self._set_compact_section_widget(self.g_individual_pipeline_common)
         fl_common = QFormLayout(self.g_individual_pipeline_common)
 
         self.chk_individual_interpolate = QCheckBox(
@@ -6216,7 +6916,6 @@ class MainWindow(QMainWindow):
         )
         self.btn_median_color.clicked.connect(self._compute_median_background_color)
         bg_color_layout.addWidget(self.btn_median_color)
-        bg_color_layout.addStretch()
 
         self.lbl_background_color = QLabel("(0, 0, 0)")
         self.lbl_background_color.setToolTip("Current background color in BGR format")
@@ -6249,6 +6948,7 @@ class MainWindow(QMainWindow):
         self.g_pose_runtime.toggled.connect(self._on_runtime_context_changed)
         self.g_pose_runtime.toggled.connect(self._on_cleaning_toggled)
         self.chk_enable_pose_extractor = self.g_pose_runtime
+        self._set_compact_section_widget(self.g_pose_runtime)
         vl_pose = QVBoxLayout(self.g_pose_runtime)
         self.pose_runtime_content = QWidget()
         self.pose_runtime_content.setSizePolicy(
@@ -6349,8 +7049,8 @@ class MainWindow(QMainWindow):
         self.list_pose_ignore_keypoints.setSelectionMode(
             QListWidget.SelectionMode.MultiSelection
         )
-        self.list_pose_ignore_keypoints.setMinimumHeight(110)
-        self.list_pose_ignore_keypoints.setMaximumHeight(140)
+        self.list_pose_ignore_keypoints.setMinimumHeight(96)
+        self.list_pose_ignore_keypoints.setMaximumHeight(120)
         self.list_pose_ignore_keypoints.setToolTip(
             "Select keypoints to ignore in pose export and orientation logic."
         )
@@ -6359,8 +7059,8 @@ class MainWindow(QMainWindow):
         self.list_pose_direction_anterior.setSelectionMode(
             QListWidget.SelectionMode.MultiSelection
         )
-        self.list_pose_direction_anterior.setMinimumHeight(110)
-        self.list_pose_direction_anterior.setMaximumHeight(140)
+        self.list_pose_direction_anterior.setMinimumHeight(96)
+        self.list_pose_direction_anterior.setMaximumHeight(120)
         self.list_pose_direction_anterior.setToolTip(
             "Select anterior keypoints from skeleton keypoint list."
         )
@@ -6369,8 +7069,8 @@ class MainWindow(QMainWindow):
         self.list_pose_direction_posterior.setSelectionMode(
             QListWidget.SelectionMode.MultiSelection
         )
-        self.list_pose_direction_posterior.setMinimumHeight(110)
-        self.list_pose_direction_posterior.setMaximumHeight(140)
+        self.list_pose_direction_posterior.setMinimumHeight(96)
+        self.list_pose_direction_posterior.setMaximumHeight(120)
         self.list_pose_direction_posterior.setToolTip(
             "Select posterior keypoints from skeleton keypoint list."
         )
@@ -6440,7 +7140,6 @@ class MainWindow(QMainWindow):
         sleap_exp_layout = QHBoxLayout()
         sleap_exp_layout.setContentsMargins(0, 0, 0, 0)
         sleap_exp_layout.addWidget(self.chk_sleap_experimental_features)
-        sleap_exp_layout.addStretch()
         self.pose_sleap_experimental_row_widget.setLayout(sleap_exp_layout)
         fl_pose.addRow("", self.pose_sleap_experimental_row_widget)
 
@@ -6453,7 +7152,6 @@ class MainWindow(QMainWindow):
             fl_pose, self.pose_sleap_experimental_row_widget, False
         )
 
-        form.addStretch()
         scroll.setWidget(content)
         layout.addWidget(scroll)
 
@@ -6488,13 +7186,38 @@ class MainWindow(QMainWindow):
 
         Search order:
           1. current_detection_cache_path (set by the last tracking run in this session)
-             2. Any compatible detection cache in the video's dedicated cache directory,
-                 with legacy flat files still considered as a fallback
-             3. A freshly-computed optimizer-specific path in the dedicated cache directory
+             — only if it was produced by the *same* detection method.
+          2. Any compatible detection cache in the video's dedicated cache directory
+             whose filename matches the current detection method, with legacy flat
+             files still considered as a fallback.
+          3. A freshly-computed optimizer-specific path in the dedicated cache directory
+             (name encodes the detection method so different methods never collide).
         """
         import re
 
         from multi_tracker.data.detection_cache import DetectionCache
+
+        detection_method = params.get("DETECTION_METHOD", "background_subtraction")
+        method_tag = "yolo" if detection_method == "yolo_obb" else "bgsub"
+
+        def _cache_matches_method(path_str: str) -> bool:
+            """Return True when *path_str*'s filename was produced by *method_tag*."""
+            if not path_str:
+                return False
+            basename = os.path.basename(path_str)
+            # Production tracking caches: ..._detection_cache_{method_tag}_...
+            if "_detection_cache_" in basename:
+                after = basename.split("_detection_cache_", 1)[1]
+                return after.startswith(f"{method_tag}_") or after.startswith(
+                    f"{method_tag}."
+                )
+            # Optimizer caches (new naming): ..._opt_cache.npz with method_tag
+            if "_opt_cache" in basename:
+                before_opt = basename.split("_opt_cache")[0]
+                # Accept if the method tag appears as a delimited segment
+                segments = before_opt.split("_")
+                return method_tag in segments
+            return False
 
         def _is_valid(path: str) -> bool:
             """Return True if *path* is a compatible cache covering the frame range."""
@@ -6510,8 +7233,10 @@ class MainWindow(QMainWindow):
             except Exception:
                 return False
 
-        # 1. Production cache from current session
-        if _is_valid(self.current_detection_cache_path):
+        # 1. Production cache from current session — only if method-compatible
+        if _cache_matches_method(self.current_detection_cache_path) and _is_valid(
+            self.current_detection_cache_path
+        ):
             return self.current_detection_cache_path, True
 
         csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
@@ -6520,20 +7245,25 @@ class MainWindow(QMainWindow):
             preferred_base_dirs=[csv_dir],
         )
 
-        # 2. Scan known cache directories plus legacy flat directories.
+        # 2. Scan known cache directories — accept only method-compatible caches.
         for candidate in iter_detection_cache_candidates(
             video_path,
             artifact_base_dirs=artifact_base_dirs,
         ):
             candidate_str = str(candidate)
-            if _is_valid(candidate_str):
+            if _cache_matches_method(candidate_str) and _is_valid(candidate_str):
                 return candidate_str, True
 
-        # 3. Fallback: compute a write-target path for a new detection-only build
-        model_raw = os.path.splitext(
-            os.path.basename(params.get("YOLO_MODEL_PATH", "model"))
-        )[0]
-        model = re.sub(r"[^A-Za-z0-9_-]", "_", model_raw)
+        # 3. Fallback: compute a write-target path for a new detection-only build.
+        #    Include the detection method so different methods never share a cache.
+        if detection_method == "yolo_obb":
+            model_raw = os.path.splitext(
+                os.path.basename(params.get("YOLO_MODEL_PATH", "model"))
+            )[0]
+            model = re.sub(r"[^A-Za-z0-9_-]", "_", model_raw)
+            opt_model_name = f"yolo_{model}"
+        else:
+            opt_model_name = "bgsub"
         resize = int(params.get("RESIZE_FACTOR", 1.0) * 100)
         artifact_base_dir = choose_writable_artifact_base_dir(
             video_path,
@@ -6541,7 +7271,7 @@ class MainWindow(QMainWindow):
         )
         new_path = build_optimizer_detection_cache_path(
             video_path,
-            model,
+            opt_model_name,
             resize,
             artifact_base_dir=artifact_base_dir,
         )
@@ -6714,6 +7444,54 @@ class MainWindow(QMainWindow):
                     "Parameters Applied",
                     "The optimized parameters have been applied to the UI.",
                 )
+
+    # ── BG-subtraction auto-tuner ─────────────────────────────────────────
+
+    def _open_bg_parameter_helper(self):
+        """Open the BG-subtraction parameter auto-tuner dialog."""
+        video_path = self.file_line.text().strip()
+        if not video_path or not os.path.exists(video_path):
+            QMessageBox.warning(self, "No Video", "Please load a video first.")
+            return
+
+        params = self.get_parameters_dict()
+
+        dialog = BgParameterHelperDialog(video_path, params, self)
+        if dialog.exec() == QDialog.Accepted:
+            new_p = dialog.get_selected_params()
+            if not new_p:
+                return
+            # Apply optimised values back to the UI widgets
+            if "THRESHOLD_VALUE" in new_p:
+                self.spin_threshold.setValue(new_p["THRESHOLD_VALUE"])
+            if "MORPH_KERNEL_SIZE" in new_p:
+                self.spin_morph_size.setValue(new_p["MORPH_KERNEL_SIZE"])
+            if "MIN_CONTOUR_AREA" in new_p:
+                self.spin_min_contour.setValue(new_p["MIN_CONTOUR_AREA"])
+            if "ENABLE_ADDITIONAL_DILATION" in new_p:
+                self.chk_additional_dilation.setChecked(
+                    new_p["ENABLE_ADDITIONAL_DILATION"]
+                )
+            if "DILATION_KERNEL_SIZE" in new_p:
+                self.spin_dilation_kernel_size.setValue(new_p["DILATION_KERNEL_SIZE"])
+            if "DILATION_ITERATIONS" in new_p:
+                self.spin_dilation_iterations.setValue(new_p["DILATION_ITERATIONS"])
+            if "ENABLE_CONSERVATIVE_SPLIT" in new_p:
+                self.chk_conservative_split.setChecked(
+                    new_p["ENABLE_CONSERVATIVE_SPLIT"]
+                )
+            if "CONSERVATIVE_KERNEL_SIZE" in new_p:
+                self.spin_conservative_kernel.setValue(
+                    new_p["CONSERVATIVE_KERNEL_SIZE"]
+                )
+            if "CONSERVATIVE_ERODE_ITER" in new_p:
+                self.spin_conservative_erode.setValue(new_p["CONSERVATIVE_ERODE_ITER"])
+            QMessageBox.information(
+                self,
+                "Parameters Applied",
+                "Detection parameters have been applied to the UI.\n"
+                "Use 'Preview Detection' to verify the results.",
+            )
 
     def _refresh_xanylabeling_envs(self):
         """Scan for conda environments starting with 'x-anylabeling-'."""
@@ -7322,9 +8100,7 @@ class MainWindow(QMainWindow):
         """Add a new CNN classifier row and return it."""
         row = self.CNNClassifierRow(self)
         row.remove_requested.connect(self._remove_cnn_classifier_row)
-        # Insert before the stretch at the end
-        count = self.cnn_rows_layout.count()
-        self.cnn_rows_layout.insertWidget(count - 1, row)
+        self.cnn_rows_layout.addWidget(row)
         self.cnn_scroll_area.setVisible(True)
         return row
 
@@ -8791,6 +9567,12 @@ class MainWindow(QMainWindow):
         self._update_preview_display()
         self.on_detection_method_changed(index)
         self._on_runtime_context_changed()
+        self._queue_ui_state_save()
+
+    def closeEvent(self, event):
+        """Persist MAT-specific UI layout state on close."""
+        self._save_ui_settings()
+        super().closeEvent(event)
 
     def select_file(self: object) -> object:
         """Select video file via file dialog."""
@@ -8877,6 +9659,7 @@ class MainWindow(QMainWindow):
 
     def _on_batch_mode_toggled(self, checked):
         """Handle showing/hiding batch controls and syncing keystone video."""
+        self.lbl_batch_warning.setVisible(checked)
         self.container_batch.setVisible(checked)
         if checked:
             self._sync_keystone_to_batch()
@@ -9833,6 +10616,9 @@ class MainWindow(QMainWindow):
             "tensorrt_max_batch_size": trt_batch_size,
             "max_targets": self.spin_max_targets.value(),
             "max_contour_multiplier": self.spin_max_contour_multiplier.value(),
+            "enable_conservative_split": self.chk_conservative_split.isChecked(),
+            "conservative_kernel_size": self.spin_conservative_kernel.value(),
+            "conservative_erode_iterations": self.spin_conservative_erode.value(),
         }
 
     def _validate_yolo_model_requirements(self, params: dict, mode_label: str) -> bool:
@@ -14346,7 +15132,6 @@ class MainWindow(QMainWindow):
                 "LIGHTING_SMOOTH_FACTOR",
                 "LIGHTING_MEDIAN_WINDOW",
                 "ENABLE_CONSERVATIVE_SPLIT",
-                "MERGE_AREA_THRESHOLD",
                 "CONSERVATIVE_KERNEL_SIZE",
                 "CONSERVATIVE_ERODE_ITER",
                 "MIN_CONTOUR_AREA",
@@ -14636,7 +15421,6 @@ class MainWindow(QMainWindow):
             ),
             "RESIZE_FACTOR": self.spin_resize.value(),
             "ENABLE_CONSERVATIVE_SPLIT": self.chk_conservative_split.isChecked(),
-            "MERGE_AREA_THRESHOLD": self.spin_merge_threshold.value(),
             "CONSERVATIVE_KERNEL_SIZE": self.spin_conservative_kernel.value(),
             "CONSERVATIVE_ERODE_ITER": self.spin_conservative_erode.value(),
             "ENABLE_ADDITIONAL_DILATION": self.chk_additional_dilation.isChecked(),
@@ -14980,9 +15764,6 @@ class MainWindow(QMainWindow):
                     "conservative_erode_iter",
                     default=1,
                 )
-            )
-            self.spin_merge_threshold.setValue(
-                get_cfg("merge_area_threshold", default=1000)
             )
             self.chk_additional_dilation.setChecked(
                 get_cfg("enable_additional_dilation", default=False)
@@ -15907,7 +16688,6 @@ class MainWindow(QMainWindow):
                 "enable_conservative_split": self.chk_conservative_split.isChecked(),
                 "conservative_kernel_size": self.spin_conservative_kernel.value(),
                 "conservative_erode_iterations": self.spin_conservative_erode.value(),
-                "merge_area_threshold": self.spin_merge_threshold.value(),
                 "enable_additional_dilation": self.chk_additional_dilation.isChecked(),
                 "dilation_kernel_size": self.spin_dilation_kernel_size.value(),
                 "dilation_iterations": self.spin_dilation_iterations.value(),
@@ -16785,14 +17565,9 @@ class MainWindow(QMainWindow):
         params = self.get_parameters_dict()
         self.parameters_changed.emit(params)
 
-    def _create_help_label(self, text):
+    def _create_help_label(self, text, attach_to_title=True):
         """Create a styled help label for section guidance."""
-        label = QLabel(text)
-        label.setWordWrap(True)
-        label.setStyleSheet(
-            "color: #9a9a9a; font-size: 11px; font-weight: normal; "
-            "font-style: italic; padding: 4px 2px; margin: 2px 0px;"
-        )
+        label = CompactHelpLabel(text, attach_to_title=attach_to_title)
         return label
 
     def _invalidate_roi_cache(self):
@@ -16905,6 +17680,7 @@ class MainWindow(QMainWindow):
             self.preset_status_label.setStyleSheet(
                 "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
+            self.preset_status_label.setVisible(True)
             logger.info(f"Loaded preset: {preset_name} from {filepath}")
 
     def _save_custom_preset(self):
@@ -16997,6 +17773,7 @@ class MainWindow(QMainWindow):
             self.preset_status_label.setStyleSheet(
                 "color: #4fc1ff; font-style: italic; font-size: 10px;"
             )
+            self.preset_status_label.setVisible(True)
 
             filename = os.path.basename(custom_path)
             is_custom = filename == "custom.json"

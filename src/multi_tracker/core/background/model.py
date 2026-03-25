@@ -14,7 +14,6 @@ from multi_tracker.utils.gpu_utils import (
     CUDA_AVAILABLE,
     MPS_AVAILABLE,
     NUMBA_AVAILABLE,
-    F,
     cp,
     cupy_ndimage,
     njit,
@@ -91,9 +90,9 @@ def _generate_foreground_mask_gpu(gray_gpu, background_gpu, params):
     # Thresholding on GPU
     fg_mask = (diff > params["THRESHOLD_VALUE"]).astype(cp.uint8) * 255
 
-    # Morphological operations on GPU
+    # Morphological operations on GPU using elliptical kernels to match CPU path
     ksz = params["MORPH_KERNEL_SIZE"]
-    kernel = cp.ones((ksz, ksz), dtype=cp.uint8)
+    kernel = cp.asarray(cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz)))
 
     # Open (erode then dilate) - removes noise
     fg_mask = cupy_ndimage.grey_erosion(fg_mask, footprint=kernel)
@@ -107,7 +106,9 @@ def _generate_foreground_mask_gpu(gray_gpu, background_gpu, params):
     if params.get("ENABLE_ADDITIONAL_DILATION", False):
         dil_ksz = params.get("DILATION_KERNEL_SIZE", 3)
         dil_iter = params.get("DILATION_ITERATIONS", 2)
-        dil_kernel = cp.ones((dil_ksz, dil_ksz), dtype=cp.uint8)
+        dil_kernel = cp.asarray(
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil_ksz, dil_ksz))
+        )
         for _ in range(dil_iter):
             fg_mask = cupy_ndimage.grey_dilation(fg_mask, footprint=dil_kernel)
 
@@ -147,41 +148,25 @@ def _generate_foreground_mask_mps(gray_torch, background_torch, params, device):
     else:
         diff = torch.clamp(gray_torch - background_torch, min=0)
 
-    # Thresholding
+    # Thresholding on GPU, then transfer to CPU for morphological ops.
+    # Morphology uses OpenCV's elliptical kernels for consistency with the
+    # CPU and CUDA paths.  The threshold step is the expensive part;
+    # morphology on a small binary mask is fast on CPU.
     threshold = params["THRESHOLD_VALUE"]
-    fg_mask = (diff > threshold).to(torch.uint8) * 255
+    fg_mask = ((diff > threshold).to(torch.uint8) * 255).cpu().numpy()
 
-    # Morphological operations using max_pool2d and -max_pool2d for erosion/dilation
     ksz = params["MORPH_KERNEL_SIZE"]
-    padding = ksz // 2
+    ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ksz, ksz))
+    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, ker)
+    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, ker)
 
-    # Add batch and channel dimensions for conv operations
-    fg_mask_4d = fg_mask.unsqueeze(0).unsqueeze(0).float()
-
-    # Open operation (erosion then dilation) - removes noise
-    # Erosion = -max_pool2d(-x)
-    fg_mask_4d = -F.max_pool2d(-fg_mask_4d, kernel_size=ksz, stride=1, padding=padding)
-    # Dilation = max_pool2d(x)
-    fg_mask_4d = F.max_pool2d(fg_mask_4d, kernel_size=ksz, stride=1, padding=padding)
-
-    # Close operation (dilation then erosion) - fills gaps
-    fg_mask_4d = F.max_pool2d(fg_mask_4d, kernel_size=ksz, stride=1, padding=padding)
-    fg_mask_4d = -F.max_pool2d(-fg_mask_4d, kernel_size=ksz, stride=1, padding=padding)
-
-    # Additional dilation if enabled
     if params.get("ENABLE_ADDITIONAL_DILATION", False):
         dil_ksz = params.get("DILATION_KERNEL_SIZE", 3)
         dil_iter = params.get("DILATION_ITERATIONS", 2)
-        dil_padding = dil_ksz // 2
-        for _ in range(dil_iter):
-            fg_mask_4d = F.max_pool2d(
-                fg_mask_4d, kernel_size=dil_ksz, stride=1, padding=dil_padding
-            )
+        dil_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dil_ksz, dil_ksz))
+        fg_mask = cv2.dilate(fg_mask, dil_kernel, iterations=dil_iter)
 
-    # Remove batch and channel dimensions and convert to uint8
-    fg_mask = fg_mask_4d.squeeze(0).squeeze(0).to(torch.uint8)
-
-    return fg_mask.cpu().numpy()
+    return fg_mask
 
 
 class BackgroundModel:

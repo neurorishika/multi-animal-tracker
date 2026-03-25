@@ -50,7 +50,8 @@ class TestObjectDetector:
             "MIN_CONTOUR_AREA": 100,
             "CONSERVATIVE_KERNEL_SIZE": 3,
             "CONSERVATIVE_ERODE_ITER": 1,
-            "MERGE_AREA_THRESHOLD": 1000,
+            "REFERENCE_BODY_SIZE": 30.0,
+            "RESIZE_FACTOR": 1.0,
         }
 
         detector = ObjectDetector(params)
@@ -305,7 +306,8 @@ class TestObjectDetector:
             "MIN_CONTOUR_AREA": 100,
             "CONSERVATIVE_KERNEL_SIZE": 3,
             "CONSERVATIVE_ERODE_ITER": 1,
-            "MERGE_AREA_THRESHOLD": 2000,  # High threshold
+            "REFERENCE_BODY_SIZE": 40.0,
+            "RESIZE_FACTOR": 1.0,
         }
 
         detector = ObjectDetector(params)
@@ -319,6 +321,130 @@ class TestObjectDetector:
 
         # Should preserve most pixels for small objects below threshold
         assert result_white_pixels >= original_white_pixels * 0.5
+
+    def test_conservative_split_skips_isolated_blobs_when_targets_missing(self):
+        """Missing targets alone should not trigger erosion of single-animal blobs."""
+        params = {
+            "MAX_TARGETS": 4,
+            "MIN_CONTOUR_AREA": 100,
+            "CONSERVATIVE_KERNEL_SIZE": 3,
+            "CONSERVATIVE_ERODE_ITER": 1,
+            "REFERENCE_BODY_SIZE": 40.0,
+            "RESIZE_FACTOR": 1.0,
+        }
+
+        detector = ObjectDetector(params)
+
+        mask = create_test_foreground_mask(num_objects=2, object_size=20)
+        result_mask = detector.apply_conservative_split(mask.copy())
+
+        assert np.array_equal(result_mask, mask)
+
+    def test_conservative_split_uses_reference_body_size_for_clusters(self):
+        """Large merged clusters should still be split based on body-size crowding."""
+        params = {
+            "MAX_TARGETS": 4,
+            "MIN_CONTOUR_AREA": 100,
+            "CONSERVATIVE_KERNEL_SIZE": 3,
+            "CONSERVATIVE_ERODE_ITER": 1,
+            "REFERENCE_BODY_SIZE": 30.0,
+            "RESIZE_FACTOR": 1.0,
+        }
+
+        detector = ObjectDetector(params)
+
+        mask = np.zeros((240, 320), dtype=np.uint8)
+        cv2.circle(mask, (145, 120), 24, 255, -1)
+        cv2.circle(mask, (175, 120), 24, 255, -1)
+        original_white_pixels = np.sum(mask > 0)
+
+        result_mask = detector.apply_conservative_split(mask.copy())
+        result_white_pixels = np.sum(result_mask > 0)
+
+        assert result_white_pixels < original_white_pixels
+
+    def test_conservative_split_rethreshold_separates_weak_bridge(self):
+        """Local re-thresholding should split blobs at the weak connection."""
+        params = {
+            "MAX_TARGETS": 4,
+            "MIN_CONTOUR_AREA": 100,
+            "CONSERVATIVE_KERNEL_SIZE": 1,  # no smoothing
+            "CONSERVATIVE_ERODE_ITER": 2,  # boost = 2 → local_thresh = 20 * 1.5 = 30
+            "THRESHOLD_VALUE": 20,
+            "DARK_ON_LIGHT_BACKGROUND": True,
+            "REFERENCE_BODY_SIZE": 30.0,
+            "RESIZE_FACTOR": 1.0,
+        }
+        detector = ObjectDetector(params)
+
+        # Build a background (white) and a gray frame with two dark circles
+        # connected by a faint bridge.
+        background = np.full((240, 320), 200, dtype=np.uint8)
+        gray = background.copy()
+        # Two strong blobs (diff = 200-100 = 100, well above any threshold)
+        cv2.circle(gray, (130, 120), 20, 100, -1)
+        cv2.circle(gray, (180, 120), 20, 100, -1)
+        # Faint bridge between them (diff = 200-175 = 25, above base 20, below boosted 30)
+        cv2.rectangle(gray, (148, 115), (162, 125), 175, -1)
+
+        # Build the fg_mask at base threshold (bridge is included)
+        diff = cv2.subtract(background, gray)
+        _, fg_mask = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
+
+        # Confirm bridge creates a single merged contour
+        cnts_before, _ = cv2.findContours(
+            fg_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        assert len(cnts_before) == 1, "bridge should merge the two blobs"
+
+        result = detector.apply_conservative_split(fg_mask, gray, background)
+
+        # After split the bridge should be removed → two contours
+        cnts_after, _ = cv2.findContours(
+            result.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        assert (
+            len(cnts_after) == 2
+        ), f"expected 2 blobs after split, got {len(cnts_after)}"
+
+    def test_conservative_split_boost_stays_local_within_cluster(self):
+        """Weak local body regions should survive while the bridge is removed."""
+        params = {
+            "MAX_TARGETS": 4,
+            "MIN_CONTOUR_AREA": 100,
+            "CONSERVATIVE_KERNEL_SIZE": 3,
+            "CONSERVATIVE_ERODE_ITER": 2,
+            "THRESHOLD_VALUE": 20,
+            "DARK_ON_LIGHT_BACKGROUND": True,
+            "REFERENCE_BODY_SIZE": 30.0,
+            "RESIZE_FACTOR": 1.0,
+        }
+        detector = ObjectDetector(params)
+
+        background = np.full((240, 320), 200, dtype=np.uint8)
+        gray = background.copy()
+        cv2.circle(gray, (130, 120), 20, 172, -1)  # weaker animal, diff = 28
+        cv2.circle(gray, (180, 120), 20, 100, -1)  # stronger animal, diff = 100
+        cv2.rectangle(gray, (148, 115), (162, 125), 176, -1)  # weak bridge, diff = 24
+
+        diff = cv2.subtract(background, gray)
+        _, fg_mask = cv2.threshold(diff, 20, 255, cv2.THRESH_BINARY)
+
+        cnts_before, _ = cv2.findContours(
+            fg_mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        assert len(cnts_before) == 1, "bridge should merge the two blobs"
+
+        result = detector.apply_conservative_split(fg_mask, gray, background)
+
+        cnts_after, _ = cv2.findContours(
+            result.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        assert (
+            len(cnts_after) == 2
+        ), f"expected 2 blobs after split, got {len(cnts_after)}"
+        assert result[120, 130] == 255, "weak local body core should remain foreground"
+        assert result[120, 155] == 0, "weak bridge should be removed"
 
     def test_measurement_coordinates(self):
         """Test that measurements contain valid coordinates."""

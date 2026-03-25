@@ -19,6 +19,13 @@ def _patched_modules(stubs: Dict[str, Any] | None):
 
     sentinel = object()
     original = {}
+    # Snapshot the full set of loaded modules so we can detect (and evict)
+    # any *project* modules that were transitively imported while the stubs
+    # were active.  Without this, modules like
+    # ``multi_tracker.utils.image_processing`` would permanently bind the
+    # stub ``cv2`` into their module-level attribute, poisoning later tests
+    # that import the real package.
+    modules_before = set(sys.modules.keys())
     try:
         for name, stub in stubs.items():
             original[name] = sys.modules.get(name, sentinel)
@@ -30,6 +37,15 @@ def _patched_modules(stubs: Dict[str, Any] | None):
                 sys.modules.pop(name, None)
             else:
                 sys.modules[name] = old
+        # Evict project modules that were loaded during the stub window so they
+        # don't retain references to the now-removed stubs.  Only evict modules
+        # from our own source tree — third-party and stdlib modules must not be
+        # disturbed (e.g. torch cannot survive an import-evict-reimport cycle).
+        _PROJECT_PREFIXES = ("multi_tracker.",)
+        newly_loaded = set(sys.modules.keys()) - modules_before - set(original.keys())
+        for name in newly_loaded:
+            if any(name.startswith(pfx) for pfx in _PROJECT_PREFIXES):
+                sys.modules.pop(name, None)
 
 
 def load_src_module(

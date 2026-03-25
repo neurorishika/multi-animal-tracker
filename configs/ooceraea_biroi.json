@@ -26,7 +26,6 @@
   "enable_conservative_split": true,
   "conservative_kernel_size": 3,
   "conservative_erode_iterations": 1,
-  "merge_area_threshold": 1000,
   "enable_additional_dilation": false,
   "dilation_kernel_size": 3,
   "dilation_iterations": 2,
