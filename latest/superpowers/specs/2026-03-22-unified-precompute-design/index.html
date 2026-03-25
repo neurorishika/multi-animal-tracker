@@ -1,0 +1,2217 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="User and developer documentation for Multi-Animal-Tracker and PoseKit">
+      
+      
+      
+        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/latest/superpowers/specs/2026-03-22-unified-precompute-design/">
+      
+      
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.43">
+    
+    
+      
+        <title>MAT Unified Precompute Pipeline — Design Spec - Multi-Animal-Tracker Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.0253249f.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#mat-unified-precompute-pipeline-design-spec" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Multi-Animal-Tracker Docs" class="md-header__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Multi-Animal-Tracker Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              MAT Unified Precompute Pipeline — Design Spec
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../.." class="md-tabs__link">
+        
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../user-guide/overview/" class="md-tabs__link">
+          
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../developer-guide/architecture/" class="md-tabs__link">
+          
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../reference/api-index/" class="md-tabs__link">
+          
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Multi-Animal-Tracker Docs" class="md-nav__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Multi-Animal-Tracker Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/environments/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Environments and Makefile
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/integrations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Integrations
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quickstart-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quickstart-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/platforms/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Platform Notes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    User Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            User Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/overview/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Overview
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/workflow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    End-to-End Workflow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/detection-modes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Detection Modes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/tracking-and-merging/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking and Merging
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/post-processing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Post-processing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/configuration-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/compute-runtimes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Compute Runtimes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/outputs-and-csv-schema/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Outputs and CSV Schema
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/dataset-generation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Dataset Generation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/individual-analysis/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Individual Analysis
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/posekit-labeler/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    PoseKit Labeler
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../user-guide/troubleshooting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Developer Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Developer Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/architecture/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Architecture
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/module-map/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Module Map
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/data-flow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Flow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Algorithm Deep Dive
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/gpu-backends/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    GPU Backends
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/runtime-integration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Runtime Integration
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CUDA Dependency Updates
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/performance-tuning/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Tuning
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/confidence-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Confidence Metrics
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/extending-detection/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Detection
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/extending-identity/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Identity
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/code-health/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Code Health & Auditing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../developer-guide/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Reference
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-index/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API Index
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/ui-components-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/ui-components-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-app/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (App)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-core/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Core)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-data/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Data)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-gui/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (GUI)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/api-utils/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Utils)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/cli-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CLI Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/technical-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Technical Reference (LaTeX)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/changelog/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Changelog
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../reference/faq/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FAQ
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Non-Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Architecture
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#precomputephase-protocol" class="md-nav__link">
+    <span class="md-ellipsis">
+      PrecomputePhase Protocol
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cropconfig-dataclass" class="md-nav__link">
+    <span class="md-ellipsis">
+      CropConfig Dataclass
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#unifiedprecompute" class="md-nav__link">
+    <span class="md-ellipsis">
+      UnifiedPrecompute
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#phase-implementations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase Implementations
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Phase Implementations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#apriltagprecomputephase" class="md-nav__link">
+    <span class="md-ellipsis">
+      AprilTagPrecomputePhase
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cnnprecomputephase" class="md-nav__link">
+    <span class="md-ellipsis">
+      CNNPrecomputePhase
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#posepipeline-as-a-precomputephase" class="md-nav__link">
+    <span class="md-ellipsis">
+      PosePipeline as a PrecomputePhase
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workerpy-orchestration" class="md-nav__link">
+    <span class="md-ellipsis">
+      worker.py Orchestration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#crop-extraction-policy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Crop Extraction Policy
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#config-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Config Changes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gui-changes-guimain_windowpy" class="md-nav__link">
+    <span class="md-ellipsis">
+      GUI Changes (gui/main_window.py)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cnnidentityconfig-changes-coreidentitycnn_identitypy" class="md-nav__link">
+    <span class="md-ellipsis">
+      CNNIdentityConfig Changes (core/identity/cnn_identity.py)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#future-extension-points" class="md-nav__link">
+    <span class="md-ellipsis">
+      Future Extension Points
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-teststest_unified_precomputepy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing (tests/test_unified_precompute.py)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#files-changed-created" class="md-nav__link">
+    <span class="md-ellipsis">
+      Files Changed / Created
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/superpowers/specs/2026-03-22-unified-precompute-design.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="mat-unified-precompute-pipeline-design-spec">MAT Unified Precompute Pipeline — Design Spec<a class="headerlink" href="#mat-unified-precompute-pipeline-design-spec" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-03-22
+<strong>Status:</strong> Approved</p>
+<hr />
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>Replace the three sequential precompute phases (pose, AprilTag, CNN identity) with a single video pass that reads each frame once, extracts crops once, and fans out to all enabled phases simultaneously. Introduces a <code>PrecomputePhase</code> protocol so new phases (additional CNN classifiers, future identity methods) can be added without touching the core loop.</p>
+<hr />
+<h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Single video read per tracking run, regardless of how many precompute phases are enabled.</li>
+<li>Identical crop extraction for all phases: same padding, same foreign-OBB suppression, same filtered detection set.</li>
+<li>Protocol-based phase registry: adding a new phase requires implementing the protocol, not modifying <code>worker.py</code>.</li>
+<li>Extensible to future simultaneous phases (e.g. AprilTag + CNN identity + CNN age classifier running together).</li>
+<li>Designed so real-time per-frame inference (no pre-pass) is a future drop-in: phases implement the same <code>process_frame()</code> interface whether called in a pre-pass or inline during tracking.</li>
+</ul>
+<hr />
+<h2 id="non-goals">Non-Goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li>No changes to AprilTag detection logic, CNN inference logic, or pose inference logic.</li>
+<li>No ONNX/TensorRT integration for pose (separate spec).</li>
+<li>No real-time tracking mode (future work; protocol is designed to support it without structural changes).</li>
+<li>No changes to cache file formats — existing pose, AprilTag, and CNN caches remain valid.</li>
+</ul>
+<hr />
+<h2 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h2>
+<h3 id="precomputephase-protocol"><code>PrecomputePhase</code> Protocol<a class="headerlink" href="#precomputephase-protocol" title="Permanent link">&para;</a></h3>
+<p>Defined in <code>core/tracking/precompute.py</code>. Any object implementing this protocol can participate in the unified precompute loop.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">PrecomputePhase</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>        <span class="c1"># e.g. &quot;pose&quot;, &quot;apriltag&quot;, &quot;cnn_identity&quot;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">is_fatal</span><span class="p">:</span> <span class="nb">bool</span>   <span class="c1"># True → failure in finalize() aborts tracking; False → non-fatal warning</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">has_cache_hit</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Return True if a valid existing cache covers this run.</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="sd">        Called before the frame loop. If all phases return True, the video</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="sd">        read is skipped entirely.&quot;&quot;&quot;</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>        <span class="o">...</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">process_frame</span><span class="p">(</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        <span class="bp">self</span><span class="p">,</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        <span class="n">frame_idx</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        <span class="n">crops</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span>              <span class="c1"># pre-extracted, one per detection</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        <span class="n">det_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span>                   <span class="c1"># detection index per crop</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        <span class="n">all_obb</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span>            <span class="c1"># all filtered OBB corners this frame (informational)</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        <span class="n">crop_offsets</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]],</span>  <span class="c1"># (x0, y0) per crop for coord remapping</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Process one frame. Called with empty lists when no detections exist.</span>
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a><span class="sd">        Must be a no-op when has_cache_hit() returned True.&quot;&quot;&quot;</span>
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>        <span class="o">...</span>
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">finalize</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Flush caches, return artifact path or None on failure.</span>
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a><span class="sd">        Runs to completion — stop_check is not called inside finalize().</span>
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a><span class="sd">        Non-fatal phases catch their own exceptions and return None.</span>
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a><span class="sd">        Fatal phases re-raise; UnifiedPrecompute.run() propagates the exception.&quot;&quot;&quot;</span>
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>        <span class="o">...</span>
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Release backend/model resources. Called after finalize(), or after</span>
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a><span class="sd">        cancellation (in which case finalize() is NOT called).&quot;&quot;&quot;</span>
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>        <span class="o">...</span>
+</span></code></pre></div>
+<p><strong><code>all_obb</code> in <code>process_frame()</code>:</strong> Foreign suppression is already applied during crop extraction, so phases do not need <code>all_obb</code> for suppression. It is provided for phases that require spatial context beyond the pre-extracted crops (e.g. a future phase computing inter-animal distances). Current phases (AprilTag, CNN, Pose) treat it as informational only.</p>
+<p><strong><code>crop_offsets</code> in <code>process_frame()</code>:</strong> Each element is the <code>(x0, y0)</code> origin of the corresponding crop in frame-space, produced by the AABB crop extraction step. AprilTag uses these to remap tag corner coordinates from crop-relative to frame-relative space before storing them in <code>TagObservationCache</code>. Pose uses them for keypoint coordinate remapping. CNN identity ignores them.</p>
+<p>All phases receive <strong>identical</strong> crops — the only difference between phases is what they do with those crops internally.</p>
+<h3 id="cropconfig-dataclass"><code>CropConfig</code> Dataclass<a class="headerlink" href="#cropconfig-dataclass" title="Permanent link">&para;</a></h3>
+<p>Controls the shared crop extraction step. All phases use this config.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nd">@dataclass</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">CropConfig</span><span class="p">:</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">padding_fraction</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span>           <span class="c1"># maps to INDIVIDUAL_CROP_PADDING</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">suppress_foreign</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>           <span class="c1"># maps to SUPPRESS_FOREIGN_OBB_REGIONS</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">bg_color</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>  <span class="c1"># maps to INDIVIDUAL_BACKGROUND_COLOR</span>
+</span></code></pre></div>
+<p><code>CNN_CLASSIFIER_CROP_PADDING</code> is removed. <code>INDIVIDUAL_CROP_PADDING</code> now governs all phases.</p>
+<h3 id="unifiedprecompute"><code>UnifiedPrecompute</code><a class="headerlink" href="#unifiedprecompute" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">UnifiedPrecompute</span><span class="p">:</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">phases</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">PrecomputePhase</span><span class="p">],</span> <span class="n">crop_config</span><span class="p">:</span> <span class="n">CropConfig</span><span class="p">):</span> <span class="o">...</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">run</span><span class="p">(</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>        <span class="bp">self</span><span class="p">,</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        <span class="n">cap</span><span class="p">:</span> <span class="n">cv2</span><span class="o">.</span><span class="n">VideoCapture</span><span class="p">,</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>        <span class="n">detection_cache</span><span class="p">,</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>        <span class="n">detector</span><span class="p">,</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>        <span class="n">start_frame</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        <span class="n">end_frame</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>        <span class="n">resize_factor</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>        <span class="n">roi_mask</span><span class="p">,</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>        <span class="n">progress_cb</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="kc">None</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>        <span class="n">stop_check</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[],</span> <span class="nb">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>        <span class="n">warning_cb</span><span class="p">:</span> <span class="n">Callable</span><span class="p">[[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="kc">None</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]:</span>
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>        <span class="o">...</span>
+</span></code></pre></div>
+<p><strong>Empty phase list:</strong> If <code>phases</code> is empty, <code>run()</code> returns an empty dict immediately without reading from <code>cap</code>.</p>
+<p><strong>Cache-hit short-circuit:</strong>
+- Before the frame loop, call <code>phase.has_cache_hit()</code> on each phase.
+- If <strong>all</strong> phases return <code>True</code> → return existing paths immediately, no video read.
+- If <strong>some</strong> phases hit and others miss → the video read proceeds. Cache-hit phases have <code>process_frame()</code> as a no-op and <code>finalize()</code> returns the existing path. Cache-miss phases run normally.</p>
+<p><strong>Per-frame loop:</strong></p>
+<ol>
+<li><code>cap.read()</code> + optional resize — one read, shared across all phases.</li>
+<li><code>detection_cache.get_frame(frame_idx)</code> → raw detections.</li>
+<li><code>detector.filter_raw_detections(...)</code> with <code>roi_mask</code> → filtered OBBs and det IDs.</li>
+<li><code>extract_one_crop()</code> per detection → <code>(crop, (x0, y0))</code> pairs — once per frame, shared.</li>
+<li><code>phase.process_frame(frame_idx, crops, det_ids, all_obb, crop_offsets)</code> for every phase.</li>
+<li>Step 5 is called even when <code>crops</code> is empty (zero detections in this frame). Each phase must handle empty lists gracefully.</li>
+<li>After each frame, check <code>stop_check()</code>. If <code>True</code>: call <code>phase.close()</code> on all phases (no <code>finalize()</code>), return <code>{phase.name: None for phase in phases}</code>.</li>
+</ol>
+<p><strong>Precondition:</strong> <code>_build_precompute_phases()</code> returns <code>[]</code> if <code>detection_cache is None</code> (see below), so <code>UnifiedPrecompute.run()</code> is never called without a valid cache.</p>
+<p><strong>After loop:</strong></p>
+<p>Steps 7 and 8 are wrapped in a <code>try/finally</code> block so that <code>phase.close()</code> on all phases is guaranteed even when a fatal phase re-raises.</p>
+<ol>
+<li>For each phase: call <code>phase.finalize()</code> inside a try/except.</li>
+<li>If <code>phase.is_fatal</code> and <code>finalize()</code> raises → re-raise (caught by the outer <code>try/finally</code> which still runs step 8).</li>
+<li>If <code>not phase.is_fatal</code> and <code>finalize()</code> raises → call <code>warning_cb(title, message)</code> if provided, log warning, record <code>None</code> for that phase. The phase does not emit Qt signals directly — <code>UnifiedPrecompute</code> is a plain Python object and surfaces warnings through <code>warning_cb</code>.</li>
+<li>Call <code>phase.close()</code> on all phases (guaranteed via <code>finally</code>, regardless of <code>finalize()</code> outcome).</li>
+<li>Return <code>{phase.name: path_or_none}</code>.</li>
+</ol>
+<p><strong><code>stop_check</code> during finalization:</strong> <code>stop_check()</code> is not called inside <code>finalize()</code>. Each <code>finalize()</code> runs to completion. For <code>PosePipeline</code>, this means waiting for in-flight inference and async cache writes — bounded time, not indefinite.</p>
+<p><strong>Progress reporting:</strong> <code>UnifiedPrecompute</code> emits a single unified progress percentage based on frames completed. Progress messages include the frame count and any active phase status string.</p>
+<hr />
+<h2 id="phase-implementations">Phase Implementations<a class="headerlink" href="#phase-implementations" title="Permanent link">&para;</a></h2>
+<h3 id="apriltagprecomputephase"><code>AprilTagPrecomputePhase</code><a class="headerlink" href="#apriltagprecomputephase" title="Permanent link">&para;</a></h3>
+<p>Thin wrapper around the existing <code>AprilTagDetector</code> and <code>TagObservationCache</code>.</p>
+<ul>
+<li><code>name = "apriltag"</code>, <code>is_fatal = False</code>.</li>
+<li>Constructor: checks for existing compatible cache with <code>probe.is_compatible() and probe.covers_frame_range(...)</code> → sets <code>_hit = True</code>. If hit, <code>process_frame()</code> is a no-op.</li>
+<li><code>has_cache_hit()</code> → <code>self._hit</code>.</li>
+<li><code>process_frame()</code>: if <code>crops</code> is empty, records an empty frame in the cache. Otherwise calls <code>at_detector.detect_in_crops(crops, crop_offsets, det_indices=det_ids)</code> using the passed <code>crop_offsets</code> for frame-relative coordinate remapping. Accumulates <code>TagObservation</code> results into <code>TagObservationCache</code> per frame.</li>
+<li><code>finalize()</code>: saves <code>TagObservationCache</code> with metadata, returns path. Returns existing path if cache hit.</li>
+<li><code>close()</code>: calls <code>at_detector.close()</code> if not already closed.</li>
+</ul>
+<h3 id="cnnprecomputephase"><code>CNNPrecomputePhase</code><a class="headerlink" href="#cnnprecomputephase" title="Permanent link">&para;</a></h3>
+<p>Wraps <code>CNNIdentityBackend</code> and <code>CNNIdentityCache</code>.</p>
+<ul>
+<li><code>name = "cnn_identity"</code> (or a user-supplied name for multi-classifier future use), <code>is_fatal = False</code>.</li>
+<li>Constructor: builds <code>CNNIdentityConfig</code> (without <code>crop_padding</code> — removed), checks for existing cache → sets <code>_hit = True</code>.</li>
+<li><code>has_cache_hit()</code> → <code>self._hit</code>.</li>
+<li><code>process_frame()</code>: if <code>crops</code> is empty, records an empty prediction list in memory. Otherwise accumulates crops into an internal buffer. When buffer reaches <code>batch_size</code>, calls <code>backend.predict_batch()</code> and records results in <code>CNNIdentityCache</code> in memory via <code>cache.save()</code> (in-memory accumulation — no disk write yet).</li>
+<li><code>finalize()</code>: flushes any remaining partial batch through <code>backend.predict_batch()</code>, calls <code>cache.flush()</code> (single <code>np.savez_compressed</code> write to disk), returns path.</li>
+<li><code>close()</code>: calls <code>backend.close()</code>.</li>
+</ul>
+<p><strong><code>CNNIdentityCache</code> two-phase semantics (already implemented):</strong> <code>cache.save(frame_idx, predictions)</code> accumulates data in <code>self._data</code> dict in memory. <code>cache.flush()</code> writes the full <code>self._data</code> dict to disk via <code>np.savez_compressed</code> in a single call. <code>cache.exists()</code> checks disk only. This is the existing behavior — no changes to <code>CNNIdentityCache</code> are needed.</p>
+<p><strong><code>crop_padding</code> removed:</strong> <code>CNNIdentityConfig.crop_padding</code> is removed. Crop extraction is fully delegated to <code>UnifiedPrecompute</code>. The <code>CNNPrecomputePhase</code> constructor takes <code>CNNIdentityConfig</code> (minus <code>crop_padding</code>) and a <code>cache_path</code>.</p>
+<h3 id="posepipeline-as-a-precomputephase"><code>PosePipeline</code> as a <code>PrecomputePhase</code><a class="headerlink" href="#posepipeline-as-a-precomputephase" title="Permanent link">&para;</a></h3>
+<p><code>PosePipeline</code> (in <code>pose_pipeline.py</code>) gains four new methods to implement the protocol:</p>
+<ul>
+<li><code>name = "pose"</code>, <code>is_fatal = True</code>.</li>
+</ul>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">has_cache_hit</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Return True if an existing compatible IndividualPropertiesCache exists.&quot;&quot;&quot;</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="o">...</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">def</span><span class="w"> </span><span class="nf">process_frame</span><span class="p">(</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="bp">self</span><span class="p">,</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="n">frame_idx</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="n">crops</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span>      <span class="c1"># pre-extracted base crops (no letterboxing yet)</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="n">det_ids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">int</span><span class="p">],</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="n">all_obb</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span>    <span class="c1"># informational only</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    <span class="n">crop_offsets</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]],</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>    <span class="c1"># if crops is empty: record empty frame in async cache writer, return</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>    <span class="c1"># apply letterboxing to each crop if pre_resize_target &gt; 0</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>    <span class="c1"># accumulate into self._pending / self._flat_crops</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>    <span class="c1"># flush inference batch if full (same logic as current run() loop)</span>
+</span></code></pre></div>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">finalize</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="c1"># wait for in-flight inference (self._wait_inflight())</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="c1"># flush async cache writer (self._async_cache.flush_and_close())</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="c1"># save IndividualPropertiesCache with metadata</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="c1"># return cache path</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="c1"># raises on failure (is_fatal = True)</span>
+</span></code></pre></div>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">close</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="c1"># shut down crop_pool and infer_pool thread pools</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="c1"># release pose backend</span>
+</span></code></pre></div>
+<p><strong>Letterboxing is a backend detail:</strong> Lives inside <code>process_frame()</code>, invisible to <code>UnifiedPrecompute</code>. All phases receive identical raw crops; pose applies letterboxing as its own backend-specific preprocessing before inference.</p>
+<p><strong>Standalone <code>PosePipeline.run()</code> is kept unchanged:</strong> The existing <code>run(video_cap, detection_cache, detector, ...)</code> method remains as a convenience wrapper for standalone pose-only usage. It calls <code>detector.filter_raw_detections()</code> and crop extraction internally per frame, then calls <code>process_frame()</code>. The standalone path has independent test coverage so the two code paths remain consistent.</p>
+<p><strong>Duplication note:</strong> <code>PosePipeline.run()</code> calls <code>detector.filter_raw_detections()</code> internally. When called via <code>UnifiedPrecompute</code>, filtering is done externally before <code>process_frame()</code>. These two paths must remain consistent — if filter logic changes, both must be updated. This is flagged here as an intentional duplication to preserve backward compatibility of the standalone <code>run()</code> API.</p>
+<hr />
+<h2 id="workerpy-orchestration"><code>worker.py</code> Orchestration<a class="headerlink" href="#workerpy-orchestration" title="Permanent link">&para;</a></h2>
+<p>The three separate precompute blocks and six <code>_should_precompute_*</code> / <code>_run_*_precompute</code> helper methods are deleted and replaced with:</p>
+<p><strong><code>_build_precompute_phases()</code></strong> — new private helper:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="k">def</span><span class="w"> </span><span class="nf">_build_precompute_phases</span><span class="p">(</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="bp">self</span><span class="p">,</span> <span class="n">params</span><span class="p">,</span> <span class="n">detection_method</span><span class="p">,</span> <span class="n">detection_cache</span><span class="p">,</span> <span class="n">start_frame</span><span class="p">,</span> <span class="n">end_frame</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="n">PrecomputePhase</span><span class="p">]:</span>
+</span></code></pre></div>
+<p>Returns <code>[]</code> (no precompute) if any of:
+- <code>detection_method != "yolo_obb"</code>
+- <code>self.backward_mode</code> is True
+- <code>self.preview_mode</code> is True
+- <code>detection_cache is None</code> (precondition: cache must exist for precompute)</p>
+<p>Otherwise appends phases in this order:
+1. If <code>ENABLE_POSE_EXTRACTOR</code> is True → add <code>PosePipeline</code> instance (constructed with backend, cache writer, etc.)
+2. If <code>IDENTITY_METHOD == "apriltags"</code> → add <code>AprilTagPrecomputePhase</code>
+3. If <code>IDENTITY_METHOD == "cnn_classifier"</code> → add <code>CNNPrecomputePhase</code></p>
+<p>Future phases (second CNN classifier, etc.) are added here without changing any other code.</p>
+<p><strong>Unified precompute block in <code>run()</code>:</strong></p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">phases</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_build_precompute_phases</span><span class="p">(</span><span class="n">p</span><span class="p">,</span> <span class="n">detection_method</span><span class="p">,</span> <span class="n">detection_cache</span><span class="p">,</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>                                       <span class="n">start_frame</span><span class="p">,</span> <span class="n">end_frame</span><span class="p">)</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="k">if</span> <span class="n">phases</span><span class="p">:</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>    <span class="n">crop_config</span> <span class="o">=</span> <span class="n">CropConfig</span><span class="p">(</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>        <span class="n">padding_fraction</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;INDIVIDUAL_CROP_PADDING&quot;</span><span class="p">,</span> <span class="mf">0.1</span><span class="p">)),</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>        <span class="n">suppress_foreign</span><span class="o">=</span><span class="nb">bool</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;SUPPRESS_FOREIGN_OBB_REGIONS&quot;</span><span class="p">,</span> <span class="kc">True</span><span class="p">)),</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a>        <span class="n">bg_color</span><span class="o">=</span><span class="nb">tuple</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;INDIVIDUAL_BACKGROUND_COLOR&quot;</span><span class="p">,</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">])),</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>    <span class="p">)</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    <span class="n">precompute</span> <span class="o">=</span> <span class="n">UnifiedPrecompute</span><span class="p">(</span><span class="n">phases</span><span class="p">,</span> <span class="n">crop_config</span><span class="p">)</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>    <span class="k">try</span><span class="p">:</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>        <span class="n">results</span> <span class="o">=</span> <span class="n">precompute</span><span class="o">.</span><span class="n">run</span><span class="p">(</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a>            <span class="n">cap</span><span class="p">,</span> <span class="n">detection_cache</span><span class="p">,</span> <span class="n">detector</span><span class="p">,</span> <span class="n">start_frame</span><span class="p">,</span> <span class="n">end_frame</span><span class="p">,</span>
+</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a>            <span class="n">resize_factor</span><span class="p">,</span> <span class="n">roi_mask</span><span class="p">,</span>
+</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a>            <span class="n">progress_cb</span><span class="o">=</span><span class="k">lambda</span> <span class="n">pct</span><span class="p">,</span> <span class="n">msg</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">progress_signal</span><span class="o">.</span><span class="n">emit</span><span class="p">(</span><span class="n">pct</span><span class="p">,</span> <span class="n">msg</span><span class="p">),</span>
+</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a>            <span class="n">stop_check</span><span class="o">=</span><span class="k">lambda</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_stop_requested</span><span class="p">,</span>
+</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>            <span class="n">warning_cb</span><span class="o">=</span><span class="k">lambda</span> <span class="n">title</span><span class="p">,</span> <span class="n">msg</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">warning_signal</span><span class="o">.</span><span class="n">emit</span><span class="p">(</span><span class="n">title</span><span class="p">,</span> <span class="n">msg</span><span class="p">),</span>
+</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a>        <span class="p">)</span>
+</span><span id="__span-7-18"><a id="__codelineno-7-18" name="__codelineno-7-18" href="#__codelineno-7-18"></a>    <span class="k">except</span> <span class="ne">Exception</span> <span class="k">as</span> <span class="n">exc</span><span class="p">:</span>
+</span><span id="__span-7-19"><a id="__codelineno-7-19" name="__codelineno-7-19" href="#__codelineno-7-19"></a>        <span class="c1"># A fatal phase (pose) raised — abort tracking</span>
+</span><span id="__span-7-20"><a id="__codelineno-7-20" name="__codelineno-7-20" href="#__codelineno-7-20"></a>        <span class="n">logger</span><span class="o">.</span><span class="n">exception</span><span class="p">(</span><span class="s2">&quot;Unified precompute failed (fatal phase).&quot;</span><span class="p">)</span>
+</span><span id="__span-7-21"><a id="__codelineno-7-21" name="__codelineno-7-21" href="#__codelineno-7-21"></a>        <span class="bp">self</span><span class="o">.</span><span class="n">warning_signal</span><span class="o">.</span><span class="n">emit</span><span class="p">(</span><span class="s2">&quot;Precompute Failed&quot;</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">exc</span><span class="p">))</span>
+</span><span id="__span-7-22"><a id="__codelineno-7-22" name="__codelineno-7-22" href="#__codelineno-7-22"></a>        <span class="n">cap</span><span class="o">.</span><span class="n">release</span><span class="p">();</span> <span class="n">detection_cache</span><span class="o">.</span><span class="n">close</span><span class="p">();</span> <span class="bp">self</span><span class="o">.</span><span class="n">finished_signal</span><span class="o">.</span><span class="n">emit</span><span class="p">(</span><span class="kc">False</span><span class="p">,</span> <span class="p">[],</span> <span class="p">[])</span>
+</span><span id="__span-7-23"><a id="__codelineno-7-23" name="__codelineno-7-23" href="#__codelineno-7-23"></a>        <span class="k">return</span>
+</span><span id="__span-7-24"><a id="__codelineno-7-24" name="__codelineno-7-24" href="#__codelineno-7-24"></a>    <span class="n">props_path</span>             <span class="o">=</span> <span class="n">results</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;pose&quot;</span><span class="p">)</span>
+</span><span id="__span-7-25"><a id="__codelineno-7-25" name="__codelineno-7-25" href="#__codelineno-7-25"></a>    <span class="n">tag_observation_path</span>   <span class="o">=</span> <span class="n">results</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;apriltag&quot;</span><span class="p">)</span>
+</span><span id="__span-7-26"><a id="__codelineno-7-26" name="__codelineno-7-26" href="#__codelineno-7-26"></a>    <span class="n">cnn_identity_path</span>      <span class="o">=</span> <span class="n">results</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;cnn_identity&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<p>Non-fatal phase failures (AprilTag, CNN) are recorded as <code>None</code> in <code>results</code> by <code>UnifiedPrecompute.run()</code>. Warnings are surfaced via <code>warning_cb</code> — <code>UnifiedPrecompute</code> calls it after catching a non-fatal exception from <code>finalize()</code>. Phases themselves do not emit Qt signals.</p>
+<hr />
+<h2 id="crop-extraction-policy">Crop Extraction Policy<a class="headerlink" href="#crop-extraction-policy" title="Permanent link">&para;</a></h2>
+<p>The unified loop applies <code>extract_one_crop()</code> (from <code>pose_pipeline.py</code>) with:</p>
+<ul>
+<li>Padding: <code>INDIVIDUAL_CROP_PADDING</code> (same for all phases).</li>
+<li>Foreign suppression: <code>SUPPRESS_FOREIGN_OBB_REGIONS</code> (same for all phases).</li>
+<li>Background fill: <code>INDIVIDUAL_BACKGROUND_COLOR</code> (same for all phases).</li>
+<li>Detection set: filtered OBBs after <code>detector.filter_raw_detections()</code> with <code>roi_mask</code> applied.</li>
+</ul>
+<p><strong>Behavioral changes vs. current:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Phase</th>
+<th>Before</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pose</td>
+<td>filtered OBBs, foreign suppressed, <code>INDIVIDUAL_CROP_PADDING</code></td>
+<td>unchanged</td>
+</tr>
+<tr>
+<td>AprilTag</td>
+<td>raw OBBs, optional foreign suppression, <code>INDIVIDUAL_CROP_PADDING</code></td>
+<td>filtered OBBs (ROI mask applied), always foreign suppressed</td>
+</tr>
+<tr>
+<td>CNN</td>
+<td>raw OBBs, no foreign suppression, <code>CNN_CLASSIFIER_CROP_PADDING</code></td>
+<td>filtered OBBs, foreign suppressed, <code>INDIVIDUAL_CROP_PADDING</code></td>
+</tr>
+</tbody>
+</table>
+<p>AprilTag and CNN both receive strictly more correct crops (ROI mask respected, neighboring animals masked out).</p>
+<hr />
+<h2 id="config-changes">Config Changes<a class="headerlink" href="#config-changes" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cnn_classifier_crop_padding</code></td>
+<td><strong>Removed</strong> from <code>configs/default.json</code></td>
+</tr>
+<tr>
+<td><code>INDIVIDUAL_CROP_PADDING</code></td>
+<td>Now governs all phases — UI label updated to "Crop Padding (all phases)"</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Backward compatibility:</strong> Existing saved configs containing <code>cnn_classifier_crop_padding</code> are silently ignored on load (unknown keys already dropped during config parsing). If the saved value differed from the default (i.e. the user had tuned it), a one-time <code>logger.warning()</code> is emitted on config load noting that <code>cnn_classifier_crop_padding</code> is no longer used and <code>INDIVIDUAL_CROP_PADDING</code> governs all phases.</p>
+<hr />
+<h2 id="gui-changes-guimain_windowpy">GUI Changes (<code>gui/main_window.py</code>)<a class="headerlink" href="#gui-changes-guimain_windowpy" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Remove <code>spin_cnn_crop_padding</code> widget, its label, its tooltip, and its wiring in config save/load.</li>
+<li>Update <code>INDIVIDUAL_CROP_PADDING</code> spinbox label to "Crop Padding (all phases)" and update its tooltip to reflect that pose, AprilTag, and CNN identity all use this value.</li>
+</ul>
+<hr />
+<h2 id="cnnidentityconfig-changes-coreidentitycnn_identitypy"><code>CNNIdentityConfig</code> Changes (<code>core/identity/cnn_identity.py</code>)<a class="headerlink" href="#cnnidentityconfig-changes-coreidentitycnn_identitypy" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Remove <code>crop_padding: float</code> field from <code>CNNIdentityConfig</code>.</li>
+<li>Any reference to <code>crop_padding</code> in <code>CNNIdentityBackend</code> or the precompute helpers is deleted.</li>
+</ul>
+<hr />
+<h2 id="future-extension-points">Future Extension Points<a class="headerlink" href="#future-extension-points" title="Permanent link">&para;</a></h2>
+<p><strong>Adding a new phase</strong> (e.g. CNN age classifier):</p>
+<ol>
+<li>Implement <code>PrecomputePhase</code> (e.g. <code>CNNAgePrecomputePhase</code> in <code>precompute.py</code>).</li>
+<li>Add one <code>if</code> block in <code>_build_precompute_phases()</code>.</li>
+<li>No changes to <code>UnifiedPrecompute</code>, <code>PosePipeline</code>, or the tracking loop.</li>
+<li>The phase's <code>name</code> becomes its key in the results dict; wire the returned path into whatever downstream consumer needs it.</li>
+</ol>
+<p><strong>Real-time mode</strong> (future):</p>
+<ul>
+<li>The tracking loop calls <code>precompute.process_one_frame(frame_idx, frame)</code> per frame instead of running a full pre-pass.</li>
+<li>Each phase's <code>process_frame()</code> is called inline; phases with batch accumulation use batch size 1 or return buffered results.</li>
+<li>No protocol changes needed — <code>process_frame()</code> already operates frame-by-frame.</li>
+</ul>
+<hr />
+<h2 id="testing-teststest_unified_precomputepy">Testing (<code>tests/test_unified_precompute.py</code>)<a class="headerlink" href="#testing-teststest_unified_precomputepy" title="Permanent link">&para;</a></h2>
+<p>Unit tests — all phases mocked, no real video or GPU required.</p>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>What it covers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CropConfig</code> defaults and field types</td>
+<td>Dataclass correctness</td>
+</tr>
+<tr>
+<td><code>UnifiedPrecompute</code> with empty phase list returns empty dict, no video read</td>
+<td>No-op path</td>
+</tr>
+<tr>
+<td><code>process_frame</code> called once per frame per phase</td>
+<td>Dispatch correctness</td>
+</tr>
+<tr>
+<td><code>process_frame</code> called with empty crop list when frame has no detections</td>
+<td>Empty-detection handling</td>
+</tr>
+<tr>
+<td><code>finalize</code> and <code>close</code> called on all phases after loop</td>
+<td>Lifecycle correctness</td>
+</tr>
+<tr>
+<td><code>stop_check</code> returning True exits loop early, calls <code>close</code> not <code>finalize</code></td>
+<td>Cancellation path</td>
+</tr>
+<tr>
+<td>All phases <code>has_cache_hit() = True</code> → video read skipped, existing paths returned</td>
+<td>All-hit short-circuit</td>
+</tr>
+<tr>
+<td>Mixed cache hits: hit phase is no-op, miss phase runs normally</td>
+<td>Partial-hit path</td>
+</tr>
+<tr>
+<td>Fatal phase raises in <code>finalize</code> → exception propagates from <code>run()</code></td>
+<td>Fatal error path</td>
+</tr>
+<tr>
+<td>Non-fatal phase raises in <code>finalize</code> → <code>None</code> returned, other phases unaffected</td>
+<td>Non-fatal error isolation</td>
+</tr>
+<tr>
+<td><code>close</code> called on all phases even when <code>finalize</code> raises</td>
+<td>Cleanup correctness</td>
+</tr>
+<tr>
+<td><code>AprilTagPrecomputePhase.has_cache_hit()</code> returns True for existing compatible cache</td>
+<td>AT cache hit</td>
+</tr>
+<tr>
+<td><code>CNNPrecomputePhase.process_frame</code> batches crops and flushes at batch boundary</td>
+<td>Batch accumulation</td>
+</tr>
+<tr>
+<td><code>CNNPrecomputePhase.finalize</code> flushes remaining partial batch</td>
+<td>Partial batch at end</td>
+</tr>
+<tr>
+<td><code>CNNPrecomputePhase.process_frame</code> with empty crops list does not add to batch</td>
+<td>Empty frame no-op</td>
+</tr>
+</tbody>
+</table>
+<p><code>tests/test_mat_cnn_identity.py</code> updated to remove <code>crop_padding</code> from <code>CNNIdentityConfig</code> test fixtures.</p>
+<hr />
+<h2 id="files-changed-created">Files Changed / Created<a class="headerlink" href="#files-changed-created" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>src/multi_tracker/core/tracking/precompute.py</code></td>
+<td><strong>New</strong> — <code>PrecomputePhase</code> protocol, <code>CropConfig</code>, <code>UnifiedPrecompute</code>, <code>AprilTagPrecomputePhase</code>, <code>CNNPrecomputePhase</code></td>
+</tr>
+<tr>
+<td><code>src/multi_tracker/core/tracking/pose_pipeline.py</code></td>
+<td>Add <code>has_cache_hit()</code>, <code>process_frame()</code>, <code>finalize()</code>, <code>close()</code> — <code>PosePipeline</code> implements <code>PrecomputePhase</code></td>
+</tr>
+<tr>
+<td><code>src/multi_tracker/core/tracking/worker.py</code></td>
+<td>Delete 3 precompute blocks + 6 helpers; add <code>_build_precompute_phases()</code> + <code>UnifiedPrecompute</code> wiring</td>
+</tr>
+<tr>
+<td><code>src/multi_tracker/core/identity/cnn_identity.py</code></td>
+<td>Remove <code>crop_padding</code> from <code>CNNIdentityConfig</code></td>
+</tr>
+<tr>
+<td><code>configs/default.json</code></td>
+<td>Remove <code>cnn_classifier_crop_padding</code></td>
+</tr>
+<tr>
+<td><code>src/multi_tracker/gui/main_window.py</code></td>
+<td>Remove <code>spin_cnn_crop_padding</code>; update <code>INDIVIDUAL_CROP_PADDING</code> label and tooltip</td>
+</tr>
+<tr>
+<td><code>tests/test_unified_precompute.py</code></td>
+<td><strong>New</strong> — unified precompute unit tests</td>
+</tr>
+<tr>
+<td><code>tests/test_mat_cnn_identity.py</code></td>
+<td>Remove <code>crop_padding</code> from <code>CNNIdentityConfig</code> fixtures</td>
+</tr>
+<tr>
+<td><code>vulture_whitelist.py</code></td>
+<td>Add entries for <code>has_cache_hit</code>, <code>process_frame</code>, <code>finalize</code>, <code>close</code> on <code>PosePipeline</code> (protocol methods, not called by name)</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.83f73b43.min.js"></script>
+      
+    
+  </body>
+</html>
