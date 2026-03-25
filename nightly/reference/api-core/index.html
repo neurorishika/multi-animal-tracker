@@ -3759,14 +3759,19 @@ Falls back to CPU if GPU operations fail (e.g., CuPy compilation errors).</p>
 
 
 <h4 id="multi_tracker.core.ObjectDetector.apply_conservative_split" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">apply_conservative_split</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">apply_conservative_split</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">,</span> <span class="n">gray</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">background</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.ObjectDetector.apply_conservative_split" class="headerlink" title="Permanent link">&para;</a></h4>
 
 
     <div class="doc doc-contents ">
 
-        <p>Attempts to split merged objects in the foreground mask.</p>
+        <p>Split merged blobs by locally raising the threshold.</p>
+<p>If <em>gray</em> and <em>background</em> are provided the split uses a tighter
+threshold on the raw difference image inside suspicious regions,
+which preserves animal shape better than erosion.  Falls back to
+simple erosion when the raw images are unavailable (e.g. cached
+detection replays).</p>
 
     </div>
 
@@ -4703,14 +4708,19 @@ Supports both background subtraction and YOLO OBB detection methods.</p>
 
 
 <h4 id="multi_tracker.core.detectors.engine.ObjectDetector.apply_conservative_split" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">apply_conservative_split</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">apply_conservative_split</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">,</span> <span class="n">gray</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">background</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.detectors.engine.ObjectDetector.apply_conservative_split" class="headerlink" title="Permanent link">&para;</a></h4>
 
 
     <div class="doc doc-contents ">
 
-        <p>Attempts to split merged objects in the foreground mask.</p>
+        <p>Split merged blobs by locally raising the threshold.</p>
+<p>If <em>gray</em> and <em>background</em> are provided the split uses a tighter
+threshold on the raw difference image inside suspicious regions,
+which preserves animal shape better than erosion.  Falls back to
+simple erosion when the raw images are unavailable (e.g. cached
+detection replays).</p>
 
     </div>
 
@@ -4858,7 +4868,7 @@ This is shared by live detection and cached-raw detection paths.</p>
 
 
 <h4 id="multi_tracker.core.detectors.engine.YOLOOBBDetector.apply_conservative_split" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">apply_conservative_split</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">apply_conservative_split</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">,</span> <span class="n">gray</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">background</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.apply_conservative_split" class="headerlink" title="Permanent link">&para;</a></h4>
 
