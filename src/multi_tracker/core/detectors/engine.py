@@ -379,11 +379,81 @@ class YOLOOBBDetector:
         imgsz = max(64, min(4096, int(imgsz)))
         return imgsz
 
+    def _advanced_config_value(self, key: str, default=None):
+        """Read a power-user override from ADVANCED_CONFIG when present."""
+        advanced_config = self.params.get("ADVANCED_CONFIG", {})
+        if isinstance(advanced_config, dict) and key in advanced_config:
+            return advanced_config.get(key)
+        return default
+
+    def _resolve_tensorrt_build_batch_size(
+        self, requested_batch_size: int | None = None
+    ) -> int:
+        """Resolve the fixed TensorRT engine batch size."""
+        default_batch = requested_batch_size
+        if default_batch is None:
+            default_batch = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
+        try:
+            default_batch = max(1, int(default_batch or 1))
+        except (TypeError, ValueError):
+            default_batch = 1
+
+        raw_override = self.params.get("TENSORRT_BUILD_BATCH_SIZE", None)
+        if raw_override in (None, ""):
+            raw_override = self._advanced_config_value(
+                "tensorrt_build_batch_size", None
+            )
+        if raw_override in (None, "", 0, "0"):
+            return default_batch
+        try:
+            return max(1, int(raw_override))
+        except (TypeError, ValueError):
+            return default_batch
+
+    def _resolve_tensorrt_workspace_gb(self) -> float:
+        """Resolve TensorRT builder workspace limit in GB."""
+        raw_value = self.params.get("TENSORRT_BUILD_WORKSPACE_GB", None)
+        if raw_value in (None, ""):
+            raw_value = self._advanced_config_value("tensorrt_build_workspace_gb", 4.0)
+        try:
+            return max(0.5, float(raw_value))
+        except (TypeError, ValueError):
+            return 4.0
+
+    def _get_tensorrt_build_context(self) -> dict[str, str]:
+        """Summarize device/runtime details for TensorRT build logging."""
+        from multi_tracker.utils.gpu_utils import get_device_info
+
+        gpu_name = str(self.device)
+        cuda_version = "unknown"
+        try:
+            info = get_device_info()
+        except Exception:
+            info = {}
+        if isinstance(info, dict):
+            gpu_name = str(
+                info.get("torch_cuda_device_name")
+                or info.get("cuda_device_name")
+                or gpu_name
+            )
+        try:
+            import torch
+
+            cuda_version = str(
+                getattr(getattr(torch, "version", None), "cuda", None) or "unknown"
+            )
+        except Exception:
+            cuda_version = "unknown"
+        return {"gpu_name": gpu_name, "cuda_version": cuda_version}
+
     def _artifact_signature(
         self, runtime: str, batch_size: int = 1, onnx_imgsz: int | None = None
     ) -> str:
+        engine_model_id = self.params.get("ENGINE_MODEL_ID")
         inference_model_id = self.params.get("INFERENCE_MODEL_ID")
-        if inference_model_id:
+        if str(runtime) == "tensorrt" and engine_model_id:
+            token = str(engine_model_id)
+        elif inference_model_id:
             token = str(inference_model_id)
         else:
             token = str(
@@ -537,8 +607,12 @@ class YOLOOBBDetector:
         try:
             from ultralytics import YOLO
 
-            # Get max batch size from UI parameter
-            max_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
+            requested_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
+            build_batch_size = self._resolve_tensorrt_build_batch_size(
+                requested_batch_size
+            )
+            build_workspace_gb = self._resolve_tensorrt_workspace_gb()
+            build_context = self._get_tensorrt_build_context()
 
             resolved_model = Path(model_path_str).expanduser().resolve()
             if resolved_model.suffix.lower() in {".engine", ".trt"}:
@@ -549,45 +623,75 @@ class YOLOOBBDetector:
                 except Exception:
                     meta_batch = 0
                 if meta_batch > 0:
-                    max_batch_size = meta_batch
-                else:
-                    max_batch_size = 1
+                    build_batch_size = meta_batch
             else:
                 engine_path = resolved_model.with_name(
-                    f"{resolved_model.stem}_b{int(max_batch_size)}.engine"
+                    f"{resolved_model.stem}_b{int(build_batch_size)}.engine"
                 )
             signature = self._artifact_signature(
-                runtime="tensorrt", batch_size=int(max_batch_size)
+                runtime="tensorrt", batch_size=int(build_batch_size)
+            )
+
+            logger.info(
+                "TensorRT engine cache check: path=%s | signature=%s | build_batch=%d | workspace=%.1f GB | gpu=%s | cuda=%s",
+                engine_path,
+                signature,
+                int(build_batch_size),
+                float(build_workspace_gb),
+                build_context["gpu_name"],
+                build_context["cuda_version"],
             )
 
             # Check if TensorRT engine already exists and matches current inference signature
             if self._artifact_is_fresh(engine_path, signature):
-                logger.info(f"Loading cached TensorRT engine: {engine_path}")
+                logger.info("TensorRT engine cache hit: reusing cached engine.")
                 try:
                     self.model = YOLO(str(engine_path), task="obb")
                     self.use_tensorrt = True
                     self.tensorrt_batch_size = (
-                        max_batch_size  # Store batch size for chunking
+                        build_batch_size  # Store batch size for chunking
                     )
                     logger.info(
-                        f"TensorRT model loaded successfully (max batch={max_batch_size}, 2-5x faster inference expected)"
+                        "TensorRT engine reused successfully: path=%s | build_batch=%d",
+                        engine_path,
+                        int(build_batch_size),
                     )
                     return
                 except Exception as e:
-                    logger.warning(f"Failed to load cached TensorRT engine: {e}")
+                    logger.warning(
+                        "Failed to load cached TensorRT engine %s: %s",
+                        engine_path,
+                        e,
+                    )
                     engine_path.unlink(missing_ok=True)
+
+            logger.info(
+                "TensorRT engine cache miss or stale metadata detected; rebuilding."
+            )
 
             # Export to TensorRT
             logger.info("=" * 60)
             logger.info("BUILDING TENSORRT ENGINE - This is a one-time optimization")
             logger.info("This may take 1-5 minutes. Please wait...")
-            logger.info("The engine will be stored next to the source model.")
+            logger.info("Engine path: %s", engine_path)
+            logger.info("Engine signature: %s", signature)
+            logger.info(
+                "Build settings: batch=%d | workspace=%.1f GB | gpu=%s | cuda=%s",
+                int(build_batch_size),
+                float(build_workspace_gb),
+                build_context["gpu_name"],
+                build_context["cuda_version"],
+            )
             logger.info("=" * 60)
             base_model = YOLO(model_path_str)
             base_model.to(self.device)
 
             # Try dynamic batching first, fall back to static if it fails
-            logger.info(f"Building TensorRT engine (batch size: {max_batch_size})...")
+            logger.info(
+                "Building TensorRT engine (batch size: %d, workspace: %.1f GB)...",
+                int(build_batch_size),
+                float(build_workspace_gb),
+            )
 
             # Export to TensorRT engine format
             # Note: dynamic=False uses fixed batch size which is more compatible
@@ -596,9 +700,9 @@ class YOLOOBBDetector:
                 format="engine",
                 device=self.device,
                 half=True,  # Use FP16 for faster inference
-                workspace=4,  # 4GB workspace
+                workspace=float(build_workspace_gb),
                 dynamic=False,  # Static shapes (more compatible)
-                batch=max_batch_size,  # Fixed batch size
+                batch=int(build_batch_size),  # Fixed batch size
                 verbose=False,
             )
 
@@ -608,16 +712,29 @@ class YOLOOBBDetector:
                 if exported_path != engine_path:
                     shutil.copy2(str(exported_path), str(engine_path))
                 self._write_artifact_meta(
-                    engine_path, signature, batch_size=int(max_batch_size)
+                    engine_path,
+                    signature,
+                    batch_size=int(build_batch_size),
+                    workspace_gb=float(build_workspace_gb),
+                    gpu_name=build_context["gpu_name"],
+                    cuda_version=build_context["cuda_version"],
                 )
-                logger.info(f"TensorRT engine exported and cached: {engine_path}")
+                logger.info(
+                    "TensorRT engine rebuilt and cached: path=%s | signature=%s",
+                    engine_path,
+                    signature,
+                )
 
                 # Load the TensorRT model
                 self.model = YOLO(str(engine_path), task="obb")
                 self.use_tensorrt = True
-                self.tensorrt_batch_size = max_batch_size  # Store for batching logic
+                self.tensorrt_batch_size = build_batch_size  # Store for batching logic
                 logger.info("=" * 60)
-                logger.info(f"TENSORRT OPTIMIZATION COMPLETE (batch={max_batch_size})")
+                logger.info(
+                    "TENSORRT OPTIMIZATION COMPLETE (batch=%d, workspace=%.1f GB)",
+                    int(build_batch_size),
+                    float(build_workspace_gb),
+                )
                 logger.info("=" * 60)
             else:
                 logger.warning("TensorRT export failed - exported file not found")
@@ -627,21 +744,23 @@ class YOLOOBBDetector:
             logger.warning(f"TensorRT optimization failed: {error_msg}")
 
             # Provide helpful suggestions based on error type
-            max_batch_size = self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
+            build_batch_size = self._resolve_tensorrt_build_batch_size(
+                self.params.get("TENSORRT_MAX_BATCH_SIZE", 16)
+            )
             if "memory" in error_msg.lower() or "allocate" in error_msg.lower():
                 logger.warning("=" * 60)
                 logger.warning(
-                    f"TensorRT build ran out of GPU memory (max batch = {max_batch_size})."
+                    f"TensorRT build ran out of GPU memory (build batch = {build_batch_size})."
                 )
                 logger.warning(
                     "FIX: Reduce 'TensorRT Max Batch Size' in YOLO settings."
                 )
-                logger.warning(f"Try: 8, 4, or 1 instead of {max_batch_size}")
+                logger.warning(f"Try: 8, 4, or 1 instead of {build_batch_size}")
                 logger.warning("=" * 60)
             elif "engine build failed" in error_msg.lower():
                 logger.warning("=" * 60)
                 logger.warning(
-                    f"TensorRT engine build failed (max batch = {max_batch_size})."
+                    f"TensorRT engine build failed (build batch = {build_batch_size})."
                 )
                 logger.warning(
                     "FIX: Reduce 'TensorRT Max Batch Size' in YOLO settings."
@@ -773,8 +892,11 @@ class YOLOOBBDetector:
                     engine_path.stat().st_mtime_ns < model_path.stat().st_mtime_ns
                 )
                 if needs_build:
+                    build_workspace_gb = self._resolve_tensorrt_workspace_gb()
                     logger.info(
-                        "Building TensorRT runtime artifact for %s model...", task
+                        "Building TensorRT runtime artifact for %s model (workspace=%.1f GB)...",
+                        task,
+                        float(build_workspace_gb),
                     )
                     base_model = YOLO(str(model_path), task=task)
                     base_model.to(self.device)
@@ -782,7 +904,7 @@ class YOLOOBBDetector:
                         format="engine",
                         device=self.device,
                         half=True,
-                        workspace=4,
+                        workspace=float(build_workspace_gb),
                         dynamic=False,
                         batch=1,
                         verbose=False,

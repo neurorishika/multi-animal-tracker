@@ -47,6 +47,8 @@
   "yolo_target_classes": null,
   "enable_tensorrt": false,
   "tensorrt_max_batch_size": 16,
+  "tensorrt_build_workspace_gb": 4.0,
+  "tensorrt_build_batch_size": null,
   "enable_yolo_batching": true,
   "yolo_batch_size_mode": "auto",
   "yolo_manual_batch_size": 16,

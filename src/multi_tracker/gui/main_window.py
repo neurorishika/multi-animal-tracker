@@ -14960,8 +14960,8 @@ class MainWindow(QMainWindow):
             return
 
         # Generate model-specific cache name
-        def get_inference_model_id() -> object:
-            """Generate an inference identity key shared by raw detection and TensorRT cache."""
+        def get_cache_model_ids() -> object:
+            """Generate raw-detection and TensorRT-engine cache identity keys."""
             # Include resize factor in cache ID since detections are scale-dependent
             resize_factor = params.get("RESIZE_FACTOR", 1.0)
             resize_str = f"r{int(resize_factor * 100)}"
@@ -14999,6 +14999,16 @@ class MainWindow(QMainWindow):
 
             def extract_hash_params(keys: object) -> object:
                 return {k: normalize_for_hash(params.get(k)) for k in keys}
+
+            def build_cache_id(
+                prefix: str, cache_params: object, model_stem: str = ""
+            ) -> str:
+                digest = hashlib.md5(
+                    json.dumps(cache_params, sort_keys=True).encode("utf-8")
+                ).hexdigest()[:12]
+                if model_stem:
+                    return f"{prefix}_{model_stem}_{resize_str}_{digest}"
+                return f"{prefix}_{resize_str}_{digest}"
 
             def get_model_fingerprint(model_path: object) -> object:
                 configured = str(model_path or "")
@@ -15103,10 +15113,45 @@ class MainWindow(QMainWindow):
                             str(c) for c in raw_classes
                         )
 
-                h = hashlib.md5(
-                    json.dumps(cache_params, sort_keys=True).encode("utf-8")
-                ).hexdigest()[:12]
-                return f"yolo_{safe_model_stem}_{resize_str}_{h}"
+                build_batch_size = params.get(
+                    "TENSORRT_BUILD_BATCH_SIZE",
+                    params.get("TENSORRT_MAX_BATCH_SIZE", 1),
+                )
+                try:
+                    build_batch_size = max(1, int(build_batch_size or 1))
+                except (TypeError, ValueError):
+                    build_batch_size = max(
+                        1, int(params.get("TENSORRT_MAX_BATCH_SIZE", 1) or 1)
+                    )
+                try:
+                    build_workspace_gb = float(
+                        params.get("TENSORRT_BUILD_WORKSPACE_GB", 4.0)
+                    )
+                except (TypeError, ValueError):
+                    build_workspace_gb = 4.0
+
+                engine_cache_params = {
+                    "engine": {
+                        "runtime": "tensorrt",
+                        "device": normalize_for_hash(params.get("YOLO_DEVICE")),
+                        "build_batch_size": build_batch_size,
+                        "workspace_gb": round(max(0.5, build_workspace_gb), 3),
+                        "active_obb": model_fingerprint,
+                        "export_profile": "trt_fp16_static_v1",
+                    },
+                    "engine_cache_version": 1,
+                }
+
+                return {
+                    "inference": build_cache_id(
+                        "yolo", cache_params, model_stem=safe_model_stem
+                    ),
+                    "engine": build_cache_id(
+                        "yolo_engine",
+                        engine_cache_params,
+                        model_stem=safe_model_stem,
+                    ),
+                }
 
             bg_detection_keys = (
                 "MAX_CONTOUR_MULTIPLIER",
@@ -15142,15 +15187,16 @@ class MainWindow(QMainWindow):
                 "common": extract_hash_params(common_detection_keys),
                 "background_subtraction": extract_hash_params(bg_detection_keys),
             }
-            h = hashlib.md5(
-                json.dumps(cache_params, sort_keys=True).encode("utf-8")
-            ).hexdigest()[:12]
-            return f"bgsub_{resize_str}_{h}"
+            return {
+                "inference": build_cache_id("bgsub", cache_params),
+                "engine": None,
+            }
 
-        model_id = get_inference_model_id()
-        # Share the exact inference hash with downstream detector code so
-        # TensorRT engine cache and raw detection cache are invalidated together.
+        cache_ids = get_cache_model_ids()
+        model_id = cache_ids["inference"]
         params["INFERENCE_MODEL_ID"] = model_id
+        if cache_ids.get("engine"):
+            params["ENGINE_MODEL_ID"] = cache_ids["engine"]
         csv_dir = os.path.dirname(self.csv_line.text()) if self.csv_line.text() else ""
         artifact_base_dirs = candidate_artifact_base_dirs(
             video_path,
@@ -15329,6 +15375,16 @@ class MainWindow(QMainWindow):
             if self._runtime_requires_fixed_yolo_batch(compute_runtime)
             else self.spin_tensorrt_batch.value()
         )
+        trt_build_batch_size_raw = advanced_config.get(
+            "tensorrt_build_batch_size", None
+        )
+        if trt_build_batch_size_raw in (None, "", 0, "0"):
+            trt_build_batch_size = None
+        else:
+            try:
+                trt_build_batch_size = max(1, int(trt_build_batch_size_raw))
+            except (TypeError, ValueError):
+                trt_build_batch_size = None
         pose_backend_family = self.combo_pose_model_type.currentText().strip().lower()
         runtime_pose = derive_pose_runtime_settings(
             compute_runtime, backend_family=pose_backend_family
@@ -15366,6 +15422,10 @@ class MainWindow(QMainWindow):
             "ENABLE_TENSORRT": runtime_detection["enable_tensorrt"],
             "ENABLE_ONNX_RUNTIME": runtime_detection["enable_onnx_runtime"],
             "TENSORRT_MAX_BATCH_SIZE": trt_batch_size,
+            "TENSORRT_BUILD_WORKSPACE_GB": float(
+                advanced_config.get("tensorrt_build_workspace_gb", 4.0)
+            ),
+            "TENSORRT_BUILD_BATCH_SIZE": trt_build_batch_size,
             "MAX_TARGETS": N,
             "THRESHOLD_VALUE": self.spin_threshold.value(),
             "MORPH_KERNEL_SIZE": self.spin_morph_size.value(),
@@ -17832,6 +17892,8 @@ class MainWindow(QMainWindow):
             # YOLO Batching - Memory Fractions (device-specific optimization)
             "mps_memory_fraction": 0.3,  # Conservative 30% of unified memory for MPS (Apple Silicon)
             "cuda_memory_fraction": 0.7,  # 70% of VRAM for CUDA (NVIDIA GPUs)
+            "tensorrt_build_workspace_gb": 4.0,  # TensorRT builder workspace limit in GB
+            "tensorrt_build_batch_size": None,  # Optional fixed TensorRT build batch override
             # Dataset Generation - YOLO Detection Parameters (separate from tracking)
             "dataset_yolo_confidence_threshold": 0.05,  # Very low - detect all animals including uncertain ones for annotation
             "dataset_yolo_iou_threshold": 0.5,  # Moderate - remove obvious duplicates but keep borderline cases for manual review
