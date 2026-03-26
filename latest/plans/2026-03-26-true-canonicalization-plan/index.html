@@ -1,0 +1,2997 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="User and developer documentation for Multi-Animal-Tracker and PoseKit">
+      
+      
+      
+        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/latest/plans/2026-03-26-true-canonicalization-plan/">
+      
+      
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.43">
+    
+    
+      
+        <title>True Canonicalization Plan - Multi-Animal-Tracker Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.0253249f.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#true-canonicalization-plan" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-header__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Multi-Animal-Tracker Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              True Canonicalization Plan
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m17.75 4.09-2.53 1.94.91 3.06-2.63-1.81-2.63 1.81.91-3.06-2.53-1.94L12.44 4l1.06-3 1.06 3zm3.5 6.91-1.64 1.25.59 1.98-1.7-1.17-1.7 1.17.59-1.98L15.75 11l2.06-.05L18.5 9l.69 1.95zm-2.28 4.95c.83-.08 1.72 1.1 1.19 1.85-.32.45-.66.87-1.08 1.27C15.17 23 8.84 23 4.94 19.07c-3.91-3.9-3.91-10.24 0-14.14.4-.4.82-.76 1.27-1.08.75-.53 1.93.36 1.85 1.19-.27 2.86.69 5.83 2.89 8.02a9.96 9.96 0 0 0 8.02 2.89m-1.64 2.02a12.08 12.08 0 0 1-7.8-3.47c-2.17-2.19-3.33-5-3.49-7.82-2.81 3.14-2.7 7.96.31 10.98 3.02 3.01 7.84 3.12 10.98.31"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="light-blue"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5m0 2a3 3 0 0 0-3 3 3 3 0 0 0 3 3 3 3 0 0 0 3-3 3 3 0 0 0-3-3m0-7 2.39 3.42C13.65 5.15 12.84 5 12 5s-1.65.15-2.39.42zM3.34 7l4.16-.35A7.2 7.2 0 0 0 5.94 8.5c-.44.74-.69 1.5-.83 2.29zm.02 10 1.76-3.77a7.131 7.131 0 0 0 2.38 4.14zM20.65 7l-1.77 3.79a7.02 7.02 0 0 0-2.38-4.15zm-.01 10-4.14.36c.59-.51 1.12-1.14 1.54-1.86.42-.73.69-1.5.83-2.29zM12 22l-2.41-3.44c.74.27 1.55.44 2.41.44.82 0 1.63-.17 2.37-.44z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/installation/" class="md-tabs__link">
+          
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../user-guide/overview/" class="md-tabs__link">
+          
+  
+  User Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../developer-guide/architecture/" class="md-tabs__link">
+          
+  
+  Developer Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/api-index/" class="md-tabs__link">
+          
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-nav__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Multi-Animal-Tracker Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    neurorishika/multi-animal-tracker
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/environments/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Environments and Makefile
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/integrations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Integrations
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quickstart (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/platforms/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Platform Notes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    User Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            User Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/overview/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Overview
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/workflow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    End-to-End Workflow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/detection-modes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Detection Modes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/tracking-and-merging/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking and Merging
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/post-processing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Post-processing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/configuration-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/compute-runtimes/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Compute Runtimes
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/outputs-and-csv-schema/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Outputs and CSV Schema
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/dataset-generation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Dataset Generation
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/individual-analysis/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Individual Analysis
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/posekit-labeler/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    PoseKit Labeler
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../user-guide/troubleshooting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Troubleshooting
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Developer Guide
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Developer Guide
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/architecture/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Architecture
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/module-map/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Module Map
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/data-flow/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Flow
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Tracking Algorithm Deep Dive
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/gpu-backends/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    GPU Backends
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/runtime-integration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Runtime Integration
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CUDA Dependency Updates
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/performance-tuning/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Tuning
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/confidence-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Confidence Metrics
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/extending-detection/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Detection
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/extending-identity/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Extending Identity
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/code-health/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Code Health & Auditing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../developer-guide/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Reference
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-index/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API Index
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ui-components-mat/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (MAT)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/ui-components-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    UI Components (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-app/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (App)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-core/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Core)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-data/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Data)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-gui/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (GUI)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-posekit/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (PoseKit)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/api-utils/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API (Utils)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    CLI Reference
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/technical-reference/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Technical Reference (LaTeX)
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/changelog/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Changelog
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/faq/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    FAQ
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#goal" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goal
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#definitions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Definitions
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-current-code-does" class="md-nav__link">
+    <span class="md-ellipsis">
+      What the Current Code Does
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="What the Current Code Does">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-head-tail-canonical-crop-enginepy-phase-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Head-tail canonical crop (engine.py — Phase 1)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-precompute-aabb-crop-precomputepy-pose_pipelinepy" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Precompute AABB crop (precompute.py + pose_pipeline.py)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-individual-dataset-crop-analysispy-phase-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Individual dataset crop (analysis.py — Phase 2)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#problems" class="md-nav__link">
+    <span class="md-ellipsis">
+      Problems
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#proposed-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Proposed Architecture
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Proposed Architecture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-canonical-crop" class="md-nav__link">
+    <span class="md-ellipsis">
+      The Canonical Crop
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#the-affine-chain" class="md-nav__link">
+    <span class="md-ellipsis">
+      The Affine Chain
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#inverse-mapping-canonical-frame" class="md-nav__link">
+    <span class="md-ellipsis">
+      Inverse Mapping (Canonical → Frame)
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pipeline-redesign" class="md-nav__link">
+    <span class="md-ellipsis">
+      Pipeline Redesign
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Pipeline Redesign">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#batch-offline-mode-two-phase" class="md-nav__link">
+    <span class="md-ellipsis">
+      Batch / Offline Mode (Two-Phase)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#real-time-preview-mode-single-frame" class="md-nav__link">
+    <span class="md-ellipsis">
+      Real-Time / Preview Mode (Single-Frame)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#parallel-processing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parallel Processing Strategy
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Parallel Processing Strategy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-cross-frame-batching-existing-improved" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Cross-frame batching (existing, improved)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-inter-model-pipeline-parallelism-new-opportunity" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Inter-model pipeline parallelism (new opportunity)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-cpugpu-overlap-existing-improved" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. CPU/GPU overlap (existing, improved)
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cache-schema-changes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Cache Schema Changes
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Cache Schema Changes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#detection-cache-version-21-22" class="md-nav__link">
+    <span class="md-ellipsis">
+      Detection Cache (version 2.1 → 2.2)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#individual-properties-cache-unchanged-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      Individual Properties Cache (unchanged schema)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#individual-dataset-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      Individual Dataset Metadata
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#new-module-canonical_croppy" class="md-nav__link">
+    <span class="md-ellipsis">
+      New Module: canonical_crop.py
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="New Module: canonical_crop.py">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#public-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      Public API
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#key-implementation-details" class="md-nav__link">
+    <span class="md-ellipsis">
+      Key Implementation Details
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migration-what-changes-in-each-module" class="md-nav__link">
+    <span class="md-ellipsis">
+      Migration: What Changes in Each Module
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Migration: What Changes in Each Module">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#enginepy-yoloobbdetector" class="md-nav__link">
+    <span class="md-ellipsis">
+      engine.py (YOLOOBBDetector)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#detection_cachepy" class="md-nav__link">
+    <span class="md-ellipsis">
+      detection_cache.py
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#precomputepy-unifiedprecompute" class="md-nav__link">
+    <span class="md-ellipsis">
+      precompute.py (UnifiedPrecompute)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pose_pipelinepy" class="md-nav__link">
+    <span class="md-ellipsis">
+      pose_pipeline.py
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#analysispy-individualdatasetgenerator" class="md-nav__link">
+    <span class="md-ellipsis">
+      analysis.py (IndividualDatasetGenerator)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cnn_identitypy-cnnprecomputephase" class="md-nav__link">
+    <span class="md-ellipsis">
+      cnn_identity.py (CNNPrecomputePhase)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apriltag-phase" class="md-nav__link">
+    <span class="md-ellipsis">
+      AprilTag Phase
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#real-time-tracking-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Real-Time Tracking Compatibility
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Real-Time Tracking Compatibility">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#current-real-time-path-preview-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      Current real-time path (preview mode)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#proposed-real-time-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      Proposed real-time path
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#future-real-time-classification-in-tracking-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      Future: Real-Time Classification in Tracking Loop
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#implementation-phases" class="md-nav__link">
+    <span class="md-ellipsis">
+      Implementation Phases
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Implementation Phases">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-a-core-module-detection-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase A: Core Module + Detection Integration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-b-precompute-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase B: Precompute Migration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-c-individual-dataset-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase C: Individual Dataset Migration
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-d-real-time-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      Phase D: Real-Time Path
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing Strategy
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#risks-and-mitigations" class="md-nav__link">
+    <span class="md-ellipsis">
+      Risks and Mitigations
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/plans/2026-03-26-true-canonicalization-plan.md" title="Edit this page" class="md-content__button md-icon">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="true-canonicalization-plan">True Canonicalization Plan<a class="headerlink" href="#true-canonicalization-plan" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-03-26<br />
+<strong>Status:</strong> Proposed — ready for phased implementation</p>
+<hr />
+<h2 id="goal">Goal<a class="headerlink" href="#goal" title="Permanent link">&para;</a></h2>
+<p>Unify all per-detection crop extraction into a single <strong>canonical crop</strong> that:</p>
+<ol>
+<li>Is <strong>affine-warped</strong> so the animal's major axis is horizontal.</li>
+<li>Has <strong>head-tail orientation applied as a rotation</strong> (not a flip) so the
+   head always faces <strong>right</strong> in the output image — preserving chirality.</li>
+<li>Applies <strong>individual-analysis settings</strong>: configurable padding, background
+   colour, and foreign-OBB suppression — once, at extraction time.</li>
+<li>Serves <strong>every downstream model</strong> (head-tail classifier, pose estimator,
+   CNN identity, dataset export) from a single crop.</li>
+<li>Carries a stored <strong>affine matrix</strong> <code>M_canonical</code> that can be inverted to
+   map any prediction (keypoints, bounding-box corners) back to original
+   frame coordinates.</li>
+<li>Works in both <strong>batch/precompute mode</strong> (offline, multi-frame) and
+   <strong>real-time / preview mode</strong> (frame-by-frame, no cache).</li>
+</ol>
+<hr />
+<h2 id="definitions">Definitions<a class="headerlink" href="#definitions" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Term</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OBB</strong></td>
+<td>Oriented bounding box from YOLO, 4 corners in frame coordinates</td>
+</tr>
+<tr>
+<td><strong>M_align</strong></td>
+<td>2 × 3 affine matrix: frame → rotation-normalised (major axis horizontal, centroid centred)</td>
+</tr>
+<tr>
+<td><strong>M_orient</strong></td>
+<td>2 × 3 rotation matrix applied after head-tail prediction (0 °/ 90 °/ 180 °/ 270 °)</td>
+</tr>
+<tr>
+<td><strong>M_canonical</strong></td>
+<td>Composite affine <code>M_orient ∘ M_align</code>: frame → final head-right canonical space</td>
+</tr>
+<tr>
+<td><strong>M_inverse</strong></td>
+<td>Pseudo-inverse of <code>M_canonical</code>: canonical → frame</td>
+</tr>
+<tr>
+<td><strong>Canonical crop</strong></td>
+<td>The image produced by <code>cv2.warpAffine(frame, M_canonical, (W, H))</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="what-the-current-code-does">What the Current Code Does<a class="headerlink" href="#what-the-current-code-does" title="Permanent link">&para;</a></h2>
+<p>There are <strong>three independent crop-extraction paths</strong>, each with its own
+geometry, settings, and call site:</p>
+<h3 id="1-head-tail-canonical-crop-enginepy-phase-1">1. Head-tail canonical crop (engine.py — Phase 1)<a class="headerlink" href="#1-head-tail-canonical-crop-enginepy-phase-1" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>_canonicalize_obb_for_headtail(frame, corners)</code></li>
+<li>Affine warp, major-axis horizontal, fixed 128 × 64, margin 1.3×.</li>
+<li>No padding, no foreign-OBB suppression, no configurable background.</li>
+<li>Fed to <code>_predict_headtail_results()</code> → left/right/up/down/unknown label.</li>
+<li>Runs during <strong>detection</strong> (Phase 1 or live per-frame).</li>
+</ul>
+<h3 id="2-precompute-aabb-crop-precomputepy-pose_pipelinepy">2. Precompute AABB crop (precompute.py + pose_pipeline.py)<a class="headerlink" href="#2-precompute-aabb-crop-precomputepy-pose_pipelinepy" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>extract_one_crop(frame, corners, ...)</code> → axis-aligned bounding box.</li>
+<li>Expands OBB corners outward by <code>padding_fraction</code>, clips to frame.</li>
+<li>Foreign OBB suppression via <code>apply_foreign_obb_mask</code>.</li>
+<li>Variable output size (depends on animal size and padding).</li>
+<li>Letterboxed to square for pose models; raw for CNN identity.</li>
+<li>Runs during <strong>unified precompute</strong> (between Phase 1 and Phase 2).</li>
+</ul>
+<h3 id="3-individual-dataset-crop-analysispy-phase-2">3. Individual dataset crop (analysis.py — Phase 2)<a class="headerlink" href="#3-individual-dataset-crop-analysispy-phase-2" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>_extract_obb_masked_crop(frame, corners, ...)</code></li>
+<li>AABB of expanded corners, but also applies OBB polygon mask
+  (background outside the expanded OBB, not just outside the AABB).</li>
+<li>Foreign OBB suppression.</li>
+<li>Saved to disk with <code>canonicalization</code> metadata block.</li>
+<li>Runs during <strong>tracking loop</strong> (Phase 2), needs track IDs.</li>
+</ul>
+<h3 id="problems">Problems<a class="headerlink" href="#problems" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Issue</th>
+<th>Impact</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Crops are extracted <strong>3 separate times</strong> from the same frame data</td>
+<td>Wasted CPU cycles (affine warp / copy / mask per extraction)</td>
+</tr>
+<tr>
+<td>Head-tail crop has <strong>no foreign suppression</strong></td>
+<td>Other animals bleed into the classification crop</td>
+</tr>
+<tr>
+<td>Precompute crops are <strong>axis-aligned</strong> (not rotation-normalised)</td>
+<td>Pose and CNN models must learn rotational equivariance</td>
+</tr>
+<tr>
+<td>Dataset crops use a <strong>different geometry</strong> (OBB polygon mask) from precompute crops</td>
+<td>Downstream tools (DataSieve, PoseKit, ClassKit) operate on a different crop style than what models were trained on</td>
+</tr>
+<tr>
+<td>Orientation normalisation happens <strong>inconsistently</strong></td>
+<td>Head-tail resolves to heading angle stored as a scalar; individual dataset stores metadata but doesn't rotate the crop; pose model never sees a rotation-normalised input</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="proposed-architecture">Proposed Architecture<a class="headerlink" href="#proposed-architecture" title="Permanent link">&para;</a></h2>
+<h3 id="the-canonical-crop">The Canonical Crop<a class="headerlink" href="#the-canonical-crop" title="Permanent link">&para;</a></h3>
+<p>Every detection produces <strong>one</strong> canonical crop with the following properties:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>┌───────────────────────────────────┐
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>│                                   │
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>│   HEAD →                     ←    │  Fixed size: W_CANON × H_CANON
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>│   (right)    Animal body          │  (default: 256 × 128)
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>│                                   │
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>│   Background: config colour       │  Foreign OBBs masked
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>│   Padding: config fraction        │
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>└───────────────────────────────────┘
+</span></code></pre></div>
+<ul>
+<li><strong>Major axis horizontal, head facing right</strong> (after head-tail rotation).</li>
+<li><strong>Aspect ratio preserved</strong> within the fixed canvas via letterbox-style
+  scaling: the expanded OBB region (with padding) is uniformly scaled so
+  the longest dimension fits, and the shorter dimension is centred with
+  background fill.</li>
+<li><strong>Foreign OBB regions filled</strong> with background colour (transformed into
+  canonical space via <code>M_align</code>).</li>
+<li>Configurable: <code>CANONICAL_CROP_WIDTH</code>, <code>CANONICAL_CROP_HEIGHT</code>,
+  <code>INDIVIDUAL_CROP_PADDING</code>, <code>INDIVIDUAL_BACKGROUND_COLOR</code>,
+  <code>SUPPRESS_FOREIGN_OBB_REGIONS</code>.</li>
+</ul>
+<h3 id="the-affine-chain">The Affine Chain<a class="headerlink" href="#the-affine-chain" title="Permanent link">&para;</a></h3>
+<p>For a detection with OBB corners $c_0 \ldots c_3$:</p>
+<ol>
+<li><strong>Compute OBB geometry:</strong></li>
+<li>Centroid: $(c_x, c_y) = \operatorname{mean}(c_i)$</li>
+<li>Major axis vector: longer edge → angle $\theta$</li>
+<li>Major / minor lengths: $a$, $b$</li>
+<li>
+<p>Expanded dimensions: $a' = a \cdot (1 + 2 \cdot \text{padding})$,
+     $b' = b \cdot (1 + 2 \cdot \text{padding})$</p>
+</li>
+<li>
+<p><strong>Build M_align</strong> (frame → rotation-normalised, centred, scaled):</p>
+</li>
+<li>Source: 3 corners of the expanded OBB rectangle in frame coords</li>
+<li>Destination: 3 corners of the output canvas</li>
+<li>Uniform scale so that the expanded OBB fills the canvas with
+     letterbox padding on the short axis</li>
+<li>
+<p>One <code>cv2.getAffineTransform</code> call</p>
+</li>
+<li>
+<p><strong>Apply M_align:</strong></p>
+</li>
+<li><code>cv2.warpAffine(frame, M_align, (W, H), borderMode=BORDER_REPLICATE)</code></li>
+<li>
+<p>Result: rotation-normalised crop with major axis horizontal</p>
+</li>
+<li>
+<p><strong>Foreign OBB suppression</strong> (in canonical space):</p>
+</li>
+<li>Transform each foreign OBB's 4 corners via M_align (matrix multiply)</li>
+<li>
+<p><code>cv2.fillPoly</code> with background colour</p>
+</li>
+<li>
+<p><strong>Head-tail classification</strong> on the rotation-normalised crop:</p>
+</li>
+<li>The existing model expects 128 × 64: <code>cv2.resize</code> the canonical crop
+     down for inference (or retrain on the new canonical size)</li>
+<li>
+<p>Prediction: <code>left</code> / <code>right</code> / <code>up</code> / <code>down</code> / <code>unknown</code></p>
+</li>
+<li>
+<p><strong>Compute M_orient</strong> — a simple rotation about the canvas centre:</p>
+</li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Head-tail label</th>
+<th>Rotation angle</th>
+<th>cv2 constant</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>right</code></td>
+<td>0°</td>
+<td>— (identity)</td>
+</tr>
+<tr>
+<td><code>left</code></td>
+<td>180°</td>
+<td><code>ROTATE_180</code></td>
+</tr>
+<tr>
+<td><code>up</code></td>
+<td>90° CW</td>
+<td><code>ROTATE_90_CLOCKWISE</code></td>
+</tr>
+<tr>
+<td><code>down</code></td>
+<td>90° CCW</td>
+<td><code>ROTATE_90_COUNTERCLOCKWISE</code></td>
+</tr>
+<tr>
+<td><code>unknown</code></td>
+<td>0° (keep axis-aligned)</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Note:</strong> Rotation, NOT flip.  Flipping would mirror the animal,
+   swapping left/right antenna.  A 180° rotation preserves chirality.</p>
+<p><strong>Aspect ratio note:</strong> For left/right (the common case for elongated
+   animals), the output stays W × H.  For up/down (rare — perpendicular
+   head), the output becomes H × W.  Downstream models should handle
+   both via letterboxing.  Alternatively, <code>up</code>/<code>down</code> can be treated as
+   <code>unknown</code> for practical purposes.</p>
+<ol>
+<li><strong>Composite M_canonical = M_orient ∘ M_align:</strong></li>
+<li>Stored as 2 × 3 float32 (6 values per detection)</li>
+<li>Inverse: <code>cv2.invertAffineTransform(M_canonical)</code> → <code>M_inverse</code></li>
+</ol>
+<h3 id="inverse-mapping-canonical-frame">Inverse Mapping (Canonical → Frame)<a class="headerlink" href="#inverse-mapping-canonical-frame" title="Permanent link">&para;</a></h3>
+<p>To map predictions back to frame coordinates:</p>
+<p>$$
+\begin{bmatrix} x_{\text{frame}} \ y_{\text{frame}} \end{bmatrix}
+= M_{\text{inverse}} \cdot
+\begin{bmatrix} x_{\text{canon}} \ y_{\text{canon}} \ 1 \end{bmatrix}
+$$</p>
+<p>For <strong>pose keypoints</strong>: apply $M_{\text{inverse}}$ to each $(x, y)$ pair.
+Confidence values pass through unchanged.</p>
+<hr />
+<h2 id="pipeline-redesign">Pipeline Redesign<a class="headerlink" href="#pipeline-redesign" title="Permanent link">&para;</a></h2>
+<h3 id="batch-offline-mode-two-phase">Batch / Offline Mode (Two-Phase)<a class="headerlink" href="#batch-offline-mode-two-phase" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>Phase 1: Detection + Canonicalization
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>├── Read frames sequentially
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>├── OBB inference (cross-frame batched)
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>├── Per detection: compute M_align, apply warpAffine, apply foreign mask
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>├── Head-tail classification (cross-frame batched on canonical crops)
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>├── Per detection: compute M_orient, apply rotation → final canonical crop
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>│   (stored only transiently — M_canonical is what gets cached)
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>├── Cache: corners, M_canonical (2×3), heading, directed_mask
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>│
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>│ [Video seek to start_frame]
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>│
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>Density Map (optional, unchanged)
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>│
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>│ [Video seek to start_frame]
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>│
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>Unified Precompute (replaces current AABB cropping)
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a>├── Read frames sequentially
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a>├── Per frame: read cached M_canonical per detection
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a>├── Apply warpAffine(frame, M_canonical, (W, H)) → canonical crop
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a>│   (this replaces extract_one_crop entirely)
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>├── Foreign OBB suppression in canonical space
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>│   (transform foreign corners via M_align, fillPoly)
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>├── Fan out canonical crops to all phases:
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>│   ├── Pose: letterbox to model input → predict → undo letterbox
+</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>│   │         → apply M_inverse → frame-coordinate keypoints
+</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>│   ├── CNN Identity: resize to model input → predict → class + conf
+</span><span id="__span-1-27"><a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>│   ├── AprilTag: optionally use AABB crop instead (configurable)
+</span><span id="__span-1-28"><a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>│   └── Individual Dataset: save canonical crop + metadata to disk
+</span><span id="__span-1-29"><a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>│       (this replaces _extract_obb_masked_crop during Phase 2)
+</span><span id="__span-1-30"><a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a>│
+</span><span id="__span-1-31"><a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a>│ [Video seek to start_frame]
+</span><span id="__span-1-32"><a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a>│
+</span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a>Phase 2: Tracking + Visualization
+</span><span id="__span-1-34"><a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a>├── Read frames sequentially
+</span><span id="__span-1-35"><a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a>├── Cached detections + cached heading/pose → assignment → KF update
+</span><span id="__span-1-36"><a id="__codelineno-1-36" name="__codelineno-1-36" href="#__codelineno-1-36"></a>├── Individual dataset: crops already saved by precompute
+</span><span id="__span-1-37"><a id="__codelineno-1-37" name="__codelineno-1-37" href="#__codelineno-1-37"></a>│   (only need to write track/trajectory ID mapping, not re-extract)
+</span><span id="__span-1-38"><a id="__codelineno-1-38" name="__codelineno-1-38" href="#__codelineno-1-38"></a>├── Visualization, video output
+</span></code></pre></div>
+<p><strong>Key changes vs current:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>Current</th>
+<th>Proposed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Crop extraction in Phase 1</td>
+<td>128 × 64 affine for head-tail only</td>
+<td>Full canonical crop (configurable size) for head-tail + cache M</td>
+</tr>
+<tr>
+<td>Crop extraction in precompute</td>
+<td>AABB via <code>extract_one_crop</code></td>
+<td><code>warpAffine(frame, M_canonical)</code> — rotation-normalised</td>
+</tr>
+<tr>
+<td>Crop extraction in Phase 2</td>
+<td><code>_extract_obb_masked_crop</code> per detection</td>
+<td>None — crops saved during precompute</td>
+</tr>
+<tr>
+<td>Foreign suppression</td>
+<td>AABB-space polygon fill</td>
+<td>Canonical-space polygon fill (foreign corners transformed via M)</td>
+</tr>
+<tr>
+<td>Pose keypoint mapping</td>
+<td>crop_offset (x, y) addition</td>
+<td><code>M_inverse</code> matrix multiplication</td>
+</tr>
+<tr>
+<td>Head-tail as rotation</td>
+<td>Not applied (stored as angle scalar)</td>
+<td>Applied to image via <code>cv2.rotate</code></td>
+</tr>
+<tr>
+<td>Dataset crops vs model crops</td>
+<td>Different extraction methods</td>
+<td>Identical — same canonical crop</td>
+</tr>
+</tbody>
+</table>
+<h3 id="real-time-preview-mode-single-frame">Real-Time / Preview Mode (Single-Frame)<a class="headerlink" href="#real-time-preview-mode-single-frame" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Per frame:
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>├── OBB detection (single frame)
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>├── Per detection: compute M_align → warpAffine → canonical crop
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>├── Foreign OBB suppression in canonical space
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>├── Head-tail classification (on canonical crops, single-frame batch)
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>├── M_orient rotation → final canonical crop, M_canonical
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>├── Feed to enabled real-time models:
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>│   ├── Pose → M_inverse → frame keypoints
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>│   ├── CNN identity → class label
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>│   └── (no dataset save in preview mode)
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>├── Tracking: assignment + KF update (as today)
+</span></code></pre></div>
+<p>No cache needed.  The canonical crop is computed once and passed to
+all consumers within the same frame iteration.  This is a strict
+superset of the current single-frame path.</p>
+<h3 id="parallel-processing-strategy">Parallel Processing Strategy<a class="headerlink" href="#parallel-processing-strategy" title="Permanent link">&para;</a></h3>
+<p>The canonical crop architecture enables three levels of parallelism:</p>
+<h4 id="1-cross-frame-batching-existing-improved">1. Cross-frame batching (existing, improved)<a class="headerlink" href="#1-cross-frame-batching-existing-improved" title="Permanent link">&para;</a></h4>
+<p>Collect canonical crops from N frames → single GPU call per model.
+Already implemented for head-tail; now extends to pose and CNN identity
+in precompute.</p>
+<p>Batch dimensions for 16 frames × ~20 detections:</p>
+<table>
+<thead>
+<tr>
+<th>Model</th>
+<th>Batch size</th>
+<th>Current</th>
+<th>Proposed</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Head-tail</td>
+<td>~320 crops</td>
+<td>1 GPU call (already batched)</td>
+<td>Same</td>
+</tr>
+<tr>
+<td>Pose</td>
+<td>~320 crops</td>
+<td>1 GPU call per flush</td>
+<td>Same, but on canonical crops</td>
+</tr>
+<tr>
+<td>CNN Identity</td>
+<td>~320 crops</td>
+<td>1 GPU call per flush</td>
+<td>Same, but on canonical crops</td>
+</tr>
+</tbody>
+</table>
+<h4 id="2-inter-model-pipeline-parallelism-new-opportunity">2. Inter-model pipeline parallelism (new opportunity)<a class="headerlink" href="#2-inter-model-pipeline-parallelism-new-opportunity" title="Permanent link">&para;</a></h4>
+<p>Once canonical crops are extracted, pose and CNN identity have <strong>no data
+dependency</strong> on each other.  They can run concurrently:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Thread/Stream 1: Pose model (GPU)      ─────────►
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>Thread/Stream 2: CNN Identity (GPU)    ─────────►
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>Main thread:     Crop extraction (CPU) ─────────► (next batch)
+</span></code></pre></div>
+<p>This requires separate CUDA streams per model.  Not a first-phase
+priority, but the architecture enables it cleanly.</p>
+<h4 id="3-cpugpu-overlap-existing-improved">3. CPU/GPU overlap (existing, improved)<a class="headerlink" href="#3-cpugpu-overlap-existing-improved" title="Permanent link">&para;</a></h4>
+<p>Crop extraction (warpAffine) is CPU-bound.  While the GPU processes
+batch N, the CPU can extract crops for batch N+1.  The precompute
+orchestrator already reads ahead in the frame loop; with canonical
+crops this pattern continues naturally.</p>
+<hr />
+<h2 id="cache-schema-changes">Cache Schema Changes<a class="headerlink" href="#cache-schema-changes" title="Permanent link">&para;</a></h2>
+<h3 id="detection-cache-version-21-22">Detection Cache (version 2.1 → 2.2)<a class="headerlink" href="#detection-cache-version-21-22" title="Permanent link">&para;</a></h3>
+<p>New per-frame arrays:</p>
+<table>
+<thead>
+<tr>
+<th>Key suffix</th>
+<th>dtype</th>
+<th>Shape</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_canonical_affine</code></td>
+<td>float32</td>
+<td><code>(N, 2, 3)</code></td>
+<td><code>M_canonical</code> per detection</td>
+</tr>
+<tr>
+<td><code>_canonical_crop_size</code></td>
+<td>int32</td>
+<td><code>(2,)</code></td>
+<td><code>(W, H)</code> of canonical crop (frame-level, same for all detections)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Backward compatibility:</strong> Version 2.1 caches lacking
+<code>_canonical_affine</code> trigger re-detection (same as any schema mismatch).
+The <code>canonical_crop_size</code> is frame-level metadata (all detections in a
+frame share the same canvas size).</p>
+<p><strong>Storage overhead:</strong> 6 floats × N detections × 4 bytes = 24N bytes/frame.
+For 20 detections × 50,000 frames = 24 MB.  Negligible.</p>
+<h3 id="individual-properties-cache-unchanged-schema">Individual Properties Cache (unchanged schema)<a class="headerlink" href="#individual-properties-cache-unchanged-schema" title="Permanent link">&para;</a></h3>
+<p>Pose keypoints continue to be stored in <strong>frame coordinates</strong> (after
+<code>M_inverse</code> mapping).  This ensures backward compatibility with
+downstream consumers that expect frame-space keypoints.</p>
+<h3 id="individual-dataset-metadata">Individual Dataset Metadata<a class="headerlink" href="#individual-dataset-metadata" title="Permanent link">&para;</a></h3>
+<p>The <code>canonicalization</code> block in each crop's metadata gains:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;canonicalization&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">    </span><span class="nt">&quot;M_canonical&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[[</span><span class="err">m</span><span class="mi">00</span><span class="p">,</span><span class="w"> </span><span class="err">m</span><span class="mi">01</span><span class="p">,</span><span class="w"> </span><span class="err">m</span><span class="mi">02</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="err">m</span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="err">m</span><span class="mi">11</span><span class="p">,</span><span class="w"> </span><span class="err">m</span><span class="mi">12</span><span class="p">]],</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">    </span><span class="nt">&quot;M_inverse&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[[</span><span class="err">m</span><span class="mi">00</span><span class="p">,</span><span class="w"> </span><span class="err">m</span><span class="mi">01</span><span class="p">,</span><span class="w"> </span><span class="err">m</span><span class="mi">02</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="err">m</span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="err">m</span><span class="mi">11</span><span class="p">,</span><span class="w"> </span><span class="err">m</span><span class="mi">12</span><span class="p">]],</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="nt">&quot;crop_size_px&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">256</span><span class="p">,</span><span class="w"> </span><span class="mi">128</span><span class="p">],</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">&quot;heading_angle_rad&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">1.57</span><span class="p">,</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="nt">&quot;headtail_label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;right&quot;</span><span class="p">,</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">    </span><span class="nt">&quot;headtail_confidence&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.93</span><span class="p">,</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="nt">&quot;directed&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">&quot;orientation_source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;head_tail_model&quot;</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>This replaces the current <code>center_px</code>, <code>size_px</code>, <code>angle_rad</code>,
+<code>major_axis_theta_rad</code>, <code>minor_axis_theta_rad</code> fields.  The affine
+matrices are strictly more informative and can reconstruct all prior
+fields.</p>
+<hr />
+<h2 id="new-module-canonical_croppy">New Module: <code>canonical_crop.py</code><a class="headerlink" href="#new-module-canonical_croppy" title="Permanent link">&para;</a></h2>
+<p>A single module owns all crop geometry.  Proposed location:
+<code>src/multi_tracker/core/tracking/canonical_crop.py</code></p>
+<h3 id="public-api">Public API<a class="headerlink" href="#public-api" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nd">@dataclass</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">CanonicalCropResult</span><span class="p">:</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Result of canonical crop extraction for one detection.&quot;&quot;&quot;</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">crop</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span>              <span class="c1"># (H, W, 3) uint8 BGR — final head-right crop</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">M_canonical</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span>       <span class="c1"># (2, 3) float32 — frame → canonical</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">M_inverse</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span>         <span class="c1"># (2, 3) float32 — canonical → frame</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="n">aligned_crop</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span>      <span class="c1"># (H, W, 3) uint8 BGR — pre-rotation (for head-tail)</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>    <span class="n">headtail_label</span><span class="p">:</span> <span class="nb">str</span>           <span class="c1"># &quot;left&quot;/&quot;right&quot;/&quot;up&quot;/&quot;down&quot;/&quot;unknown&quot;</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>    <span class="n">headtail_confidence</span><span class="p">:</span> <span class="nb">float</span>    <span class="c1"># classifier confidence</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="n">heading_angle</span><span class="p">:</span> <span class="nb">float</span>          <span class="c1"># resolved heading in frame coords (radians)</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    <span class="n">directed</span><span class="p">:</span> <span class="nb">bool</span>                <span class="c1"># True if heading is reliable</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="k">def</span><span class="w"> </span><span class="nf">compute_alignment_affine</span><span class="p">(</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>    <span class="n">corners</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>    <span class="n">crop_width</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>    <span class="n">crop_height</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>    <span class="n">padding_fraction</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Compute M_align from OBB corners.</span>
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="sd">    Returns (M_align, major_axis_theta).</span>
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="sd">    Letterbox-scales the expanded OBB into (crop_width, crop_height).</span>
+</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>
+</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a><span class="k">def</span><span class="w"> </span><span class="nf">extract_canonical_crop</span><span class="p">(</span>
+</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a>    <span class="n">frame</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a>    <span class="n">corners</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+</span><span id="__span-5-28"><a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a>    <span class="n">M_align</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+</span><span id="__span-5-29"><a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>    <span class="n">crop_size</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
+</span><span id="__span-5-30"><a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a>    <span class="n">bg_color</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
+</span><span id="__span-5-31"><a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a>    <span class="n">foreign_corners</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-5-32"><a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">:</span>
+</span><span id="__span-5-33"><a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Apply M_align to extract a rotation-normalised crop.</span>
+</span><span id="__span-5-34"><a id="__codelineno-5-34" name="__codelineno-5-34" href="#__codelineno-5-34"></a>
+</span><span id="__span-5-35"><a id="__codelineno-5-35" name="__codelineno-5-35" href="#__codelineno-5-35"></a><span class="sd">    Applies foreign OBB suppression in canonical space.</span>
+</span><span id="__span-5-36"><a id="__codelineno-5-36" name="__codelineno-5-36" href="#__codelineno-5-36"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-5-37"><a id="__codelineno-5-37" name="__codelineno-5-37" href="#__codelineno-5-37"></a>
+</span><span id="__span-5-38"><a id="__codelineno-5-38" name="__codelineno-5-38" href="#__codelineno-5-38"></a><span class="k">def</span><span class="w"> </span><span class="nf">apply_headtail_rotation</span><span class="p">(</span>
+</span><span id="__span-5-39"><a id="__codelineno-5-39" name="__codelineno-5-39" href="#__codelineno-5-39"></a>    <span class="n">crop</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+</span><span id="__span-5-40"><a id="__codelineno-5-40" name="__codelineno-5-40" href="#__codelineno-5-40"></a>    <span class="n">M_align</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+</span><span id="__span-5-41"><a id="__codelineno-5-41" name="__codelineno-5-41" href="#__codelineno-5-41"></a>    <span class="n">label</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-5-42"><a id="__codelineno-5-42" name="__codelineno-5-42" href="#__codelineno-5-42"></a>    <span class="n">major_axis_theta</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+</span><span id="__span-5-43"><a id="__codelineno-5-43" name="__codelineno-5-43" href="#__codelineno-5-43"></a>    <span class="n">crop_size</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
+</span><span id="__span-5-44"><a id="__codelineno-5-44" name="__codelineno-5-44" href="#__codelineno-5-44"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Tuple</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+</span><span id="__span-5-45"><a id="__codelineno-5-45" name="__codelineno-5-45" href="#__codelineno-5-45"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Rotate crop so head faces right.</span>
+</span><span id="__span-5-46"><a id="__codelineno-5-46" name="__codelineno-5-46" href="#__codelineno-5-46"></a>
+</span><span id="__span-5-47"><a id="__codelineno-5-47" name="__codelineno-5-47" href="#__codelineno-5-47"></a><span class="sd">    Returns (rotated_crop, M_canonical, M_inverse, heading_angle_frame).</span>
+</span><span id="__span-5-48"><a id="__codelineno-5-48" name="__codelineno-5-48" href="#__codelineno-5-48"></a><span class="sd">    For left → 180° rotation.</span>
+</span><span id="__span-5-49"><a id="__codelineno-5-49" name="__codelineno-5-49" href="#__codelineno-5-49"></a><span class="sd">    For up   → 90° CW rotation.</span>
+</span><span id="__span-5-50"><a id="__codelineno-5-50" name="__codelineno-5-50" href="#__codelineno-5-50"></a><span class="sd">    For down → 90° CCW rotation.</span>
+</span><span id="__span-5-51"><a id="__codelineno-5-51" name="__codelineno-5-51" href="#__codelineno-5-51"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-5-52"><a id="__codelineno-5-52" name="__codelineno-5-52" href="#__codelineno-5-52"></a>
+</span><span id="__span-5-53"><a id="__codelineno-5-53" name="__codelineno-5-53" href="#__codelineno-5-53"></a><span class="k">def</span><span class="w"> </span><span class="nf">invert_keypoints</span><span class="p">(</span>
+</span><span id="__span-5-54"><a id="__codelineno-5-54" name="__codelineno-5-54" href="#__codelineno-5-54"></a>    <span class="n">keypoints</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+</span><span id="__span-5-55"><a id="__codelineno-5-55" name="__codelineno-5-55" href="#__codelineno-5-55"></a>    <span class="n">M_inverse</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">,</span>
+</span><span id="__span-5-56"><a id="__codelineno-5-56" name="__codelineno-5-56" href="#__codelineno-5-56"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">:</span>
+</span><span id="__span-5-57"><a id="__codelineno-5-57" name="__codelineno-5-57" href="#__codelineno-5-57"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Map (K, 2) or (K, 3) keypoints from canonical to frame coordinates.</span>
+</span><span id="__span-5-58"><a id="__codelineno-5-58" name="__codelineno-5-58" href="#__codelineno-5-58"></a>
+</span><span id="__span-5-59"><a id="__codelineno-5-59" name="__codelineno-5-59" href="#__codelineno-5-59"></a><span class="sd">    Confidence column (if present) passes through unchanged.</span>
+</span><span id="__span-5-60"><a id="__codelineno-5-60" name="__codelineno-5-60" href="#__codelineno-5-60"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-5-61"><a id="__codelineno-5-61" name="__codelineno-5-61" href="#__codelineno-5-61"></a>
+</span><span id="__span-5-62"><a id="__codelineno-5-62" name="__codelineno-5-62" href="#__codelineno-5-62"></a><span class="k">def</span><span class="w"> </span><span class="nf">extract_and_classify_batch</span><span class="p">(</span>
+</span><span id="__span-5-63"><a id="__codelineno-5-63" name="__codelineno-5-63" href="#__codelineno-5-63"></a>    <span class="n">frames</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">],</span>
+</span><span id="__span-5-64"><a id="__codelineno-5-64" name="__codelineno-5-64" href="#__codelineno-5-64"></a>    <span class="n">per_frame_corners</span><span class="p">:</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]],</span>
+</span><span id="__span-5-65"><a id="__codelineno-5-65" name="__codelineno-5-65" href="#__codelineno-5-65"></a>    <span class="n">headtail_model</span><span class="p">,</span>
+</span><span id="__span-5-66"><a id="__codelineno-5-66" name="__codelineno-5-66" href="#__codelineno-5-66"></a>    <span class="n">headtail_backend</span><span class="p">:</span> <span class="nb">str</span><span class="p">,</span>
+</span><span id="__span-5-67"><a id="__codelineno-5-67" name="__codelineno-5-67" href="#__codelineno-5-67"></a>    <span class="n">crop_width</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-5-68"><a id="__codelineno-5-68" name="__codelineno-5-68" href="#__codelineno-5-68"></a>    <span class="n">crop_height</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+</span><span id="__span-5-69"><a id="__codelineno-5-69" name="__codelineno-5-69" href="#__codelineno-5-69"></a>    <span class="n">padding_fraction</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+</span><span id="__span-5-70"><a id="__codelineno-5-70" name="__codelineno-5-70" href="#__codelineno-5-70"></a>    <span class="n">bg_color</span><span class="p">:</span> <span class="n">Tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
+</span><span id="__span-5-71"><a id="__codelineno-5-71" name="__codelineno-5-71" href="#__codelineno-5-71"></a>    <span class="n">suppress_foreign</span><span class="p">:</span> <span class="nb">bool</span><span class="p">,</span>
+</span><span id="__span-5-72"><a id="__codelineno-5-72" name="__codelineno-5-72" href="#__codelineno-5-72"></a>    <span class="n">headtail_conf_threshold</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
+</span><span id="__span-5-73"><a id="__codelineno-5-73" name="__codelineno-5-73" href="#__codelineno-5-73"></a>    <span class="n">per_frame_all_corners</span><span class="p">:</span> <span class="n">Optional</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">ndarray</span><span class="p">]]]</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-5-74"><a id="__codelineno-5-74" name="__codelineno-5-74" href="#__codelineno-5-74"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">List</span><span class="p">[</span><span class="n">List</span><span class="p">[</span><span class="n">CanonicalCropResult</span><span class="p">]]:</span>
+</span><span id="__span-5-75"><a id="__codelineno-5-75" name="__codelineno-5-75" href="#__codelineno-5-75"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Full canonical pipeline for a batch of frames.</span>
+</span><span id="__span-5-76"><a id="__codelineno-5-76" name="__codelineno-5-76" href="#__codelineno-5-76"></a>
+</span><span id="__span-5-77"><a id="__codelineno-5-77" name="__codelineno-5-77" href="#__codelineno-5-77"></a><span class="sd">    1. Compute M_align per detection</span>
+</span><span id="__span-5-78"><a id="__codelineno-5-78" name="__codelineno-5-78" href="#__codelineno-5-78"></a><span class="sd">    2. Extract aligned crops (CPU, parallelisable)</span>
+</span><span id="__span-5-79"><a id="__codelineno-5-79" name="__codelineno-5-79" href="#__codelineno-5-79"></a><span class="sd">    3. Head-tail classify all crops in one GPU call</span>
+</span><span id="__span-5-80"><a id="__codelineno-5-80" name="__codelineno-5-80" href="#__codelineno-5-80"></a><span class="sd">    4. Apply orientation rotation → M_canonical</span>
+</span><span id="__span-5-81"><a id="__codelineno-5-81" name="__codelineno-5-81" href="#__codelineno-5-81"></a><span class="sd">    5. Return per-frame lists of CanonicalCropResult</span>
+</span><span id="__span-5-82"><a id="__codelineno-5-82" name="__codelineno-5-82" href="#__codelineno-5-82"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span></code></pre></div>
+<h3 id="key-implementation-details">Key Implementation Details<a class="headerlink" href="#key-implementation-details" title="Permanent link">&para;</a></h3>
+<p><strong>Letterbox scaling within the affine:</strong>  Rather than warp to one size
+and then letterbox, we bake the letterbox into <code>M_align</code> itself.  The
+uniform scale factor is:</p>
+<p>$$s = \min!\left(\frac{W_{\text{out}}}{a'}, \frac{H_{\text{out}}}{b'}\right)$$</p>
+<p>where $a' = a \cdot (1 + 2p)$ and $b' = b \cdot (1 + 2p)$ are the
+padded major/minor lengths.  The translation centres the scaled animal
+on the canvas.  This gives us a single <code>warpAffine</code> that does rotation +
+scale + translate + letterbox in one pass.</p>
+<p><strong>Foreign OBB suppression in canonical space:</strong>  Transform each foreign
+OBB's corners via <code>M_align</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">foreign_canon</span> <span class="o">=</span> <span class="p">(</span><span class="n">M_align</span><span class="p">[:,</span> <span class="p">:</span><span class="mi">2</span><span class="p">]</span> <span class="o">@</span> <span class="n">foreign_corners</span><span class="o">.</span><span class="n">T</span> <span class="o">+</span> <span class="n">M_align</span><span class="p">[:,</span> <span class="mi">2</span><span class="p">:</span><span class="mi">3</span><span class="p">])</span><span class="o">.</span><span class="n">T</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">cv2</span><span class="o">.</span><span class="n">fillPoly</span><span class="p">(</span><span class="n">crop</span><span class="p">,</span> <span class="p">[</span><span class="n">foreign_canon</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">int32</span><span class="p">)],</span> <span class="n">bg_color</span><span class="p">)</span>
+</span></code></pre></div>
+<p>This correctly handles the rotation — foreign regions are masked in the
+correct location even though the image is rotated.</p>
+<p><strong>90° rotations for up/down:</strong>  The output canvas flips from (W, H) to
+(H, W).  The composite <code>M_canonical</code> accounts for this by including the
+90° rotation matrix.  Downstream consumers that expect (W, H) should
+letterbox the (H, W) result — or, pragmatically, up/down predictions
+can be treated as <code>unknown</code> (no rotation) since they're rare for
+elongated animals.</p>
+<hr />
+<h2 id="migration-what-changes-in-each-module">Migration: What Changes in Each Module<a class="headerlink" href="#migration-what-changes-in-each-module" title="Permanent link">&para;</a></h2>
+<h3 id="enginepy-yoloobbdetector">engine.py (YOLOOBBDetector)<a class="headerlink" href="#enginepy-yoloobbdetector" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_canonicalize_obb_for_headtail</code></td>
+<td>Replace with call to <code>compute_alignment_affine</code> + <code>extract_canonical_crop</code> (resize to 128 × 64 for inference)</td>
+</tr>
+<tr>
+<td><code>_compute_headtail_hints</code></td>
+<td>Refactor: use <code>canonical_crop.extract_and_classify_batch</code> for the full pipeline.  Returns heading hints + stores <code>M_canonical</code> per detection.</td>
+</tr>
+<tr>
+<td><code>_compute_headtail_hints_cross_frame</code></td>
+<td>Replace with <code>extract_and_classify_batch</code>.</td>
+</tr>
+<tr>
+<td><code>detect_objects</code> (single-frame)</td>
+<td>Now also computes and returns <code>M_canonical</code> per detection.  New return element in the raw tuple.</td>
+</tr>
+<tr>
+<td><code>detect_objects_batched</code></td>
+<td>Post-processing stores <code>M_canonical</code> arrays per frame.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="detection_cachepy">detection_cache.py<a class="headerlink" href="#detection_cachepy" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Schema version</td>
+<td><code>"2.1"</code> → <code>"2.2"</code></td>
+</tr>
+<tr>
+<td><code>add_frame</code></td>
+<td>New parameter: <code>canonical_affines</code> (N, 2, 3)</td>
+</tr>
+<tr>
+<td><code>get_frame</code></td>
+<td>Returns additional <code>canonical_affines</code> array</td>
+</tr>
+<tr>
+<td>Backward compat</td>
+<td>Missing <code>_canonical_affine</code> key → returns <code>None</code>; caller falls back to re-computing from corners</td>
+</tr>
+</tbody>
+</table>
+<h3 id="precomputepy-unifiedprecompute">precompute.py (UnifiedPrecompute)<a class="headerlink" href="#precomputepy-unifiedprecompute" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Crop extraction</td>
+<td>Replace <code>extract_one_crop</code> call with <code>extract_canonical_crop(frame, corners, M_canonical, ...)</code> using cached <code>M_canonical</code> from detection cache</td>
+</tr>
+<tr>
+<td><code>CropConfig</code></td>
+<td>Add <code>canonical_crop_width</code>, <code>canonical_crop_height</code> fields</td>
+</tr>
+<tr>
+<td>Phase dispatch</td>
+<td>Phases receive canonical crops (rotation-normalised, head-right) instead of AABB crops</td>
+</tr>
+<tr>
+<td>Crop offsets</td>
+<td><strong>Removed.</strong> Phases receive <code>M_inverse</code> instead of <code>(x0, y0)</code> integer offsets</td>
+</tr>
+</tbody>
+</table>
+<h3 id="pose_pipelinepy">pose_pipeline.py<a class="headerlink" href="#pose_pipelinepy" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>extract_one_crop</code></td>
+<td>Still available as legacy fallback; not called from precompute</td>
+</tr>
+<tr>
+<td><code>letterbox_crop</code></td>
+<td>Unchanged — still used for pose model input</td>
+</tr>
+<tr>
+<td><code>invert_letterbox_keypoints</code></td>
+<td>Unchanged — still used for undo letterbox</td>
+</tr>
+<tr>
+<td>Keypoint back-mapping</td>
+<td>After undo-letterbox: <code>canonical_crop.invert_keypoints(kpts, M_inverse)</code> replaces the current <code>kpts[:, 0] += x0; kpts[:, 1] += y0</code> offset addition</td>
+</tr>
+<tr>
+<td><code>filter_keypoints_by_foreign_obbs</code></td>
+<td>Unchanged — operates on frame-global keypoints</td>
+</tr>
+</tbody>
+</table>
+<h3 id="analysispy-individualdatasetgenerator">analysis.py (IndividualDatasetGenerator)<a class="headerlink" href="#analysispy-individualdatasetgenerator" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_extract_obb_masked_crop</code></td>
+<td><strong>Deprecated.</strong> Replaced by reading the canonical crop directly.</td>
+</tr>
+<tr>
+<td><code>process_frame</code></td>
+<td>Receives canonical crops (or <code>M_canonical</code> + frame) instead of extracting its own crops.  If precompute already saved crops to disk, just writes track-ID mapping.</td>
+</tr>
+<tr>
+<td>Metadata block</td>
+<td>Uses new <code>canonicalization</code> schema with <code>M_canonical</code> / <code>M_inverse</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="cnn_identitypy-cnnprecomputephase">cnn_identity.py (CNNPrecomputePhase)<a class="headerlink" href="#cnn_identitypy-cnnprecomputephase" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Crop input</td>
+<td>Receives canonical crops (head-right, rotation-normalised) instead of AABB crops.  The <code>resize → normalize → forward</code> pipeline is unchanged.</td>
+</tr>
+<tr>
+<td>Training implication</td>
+<td>New ClassKit models trained on canonical crops generalise better (no rotational variance in training data). Existing models work but may need fine-tuning on the new crop style.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="apriltag-phase">AprilTag Phase<a class="headerlink" href="#apriltag-phase" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Change</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default</td>
+<td><strong>Keep AABB crops</strong> for AprilTag detection (configurable).  Tag detection relies on precise edge geometry; affine interpolation may degrade marginal tags.</td>
+</tr>
+<tr>
+<td>Optional</td>
+<td>Add config flag <code>APRILTAG_USE_CANONICAL_CROP</code> (default <code>false</code>) for users who want to try it.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="real-time-tracking-compatibility">Real-Time Tracking Compatibility<a class="headerlink" href="#real-time-tracking-compatibility" title="Permanent link">&para;</a></h2>
+<h3 id="current-real-time-path-preview-mode">Current real-time path (preview mode)<a class="headerlink" href="#current-real-time-path-preview-mode" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Per frame:</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">detect_objects</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_count</span><span class="p">)</span>  <span class="err">→</span>  <span class="p">(</span><span class="n">meas</span><span class="p">,</span> <span class="n">sizes</span><span class="p">,</span> <span class="n">shapes</span><span class="p">,</span> <span class="o">...</span><span class="p">)</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="c1"># Head-tail runs inside detect_objects via _compute_headtail_hints</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># No precompute, no pose, no CNN identity</span>
+</span></code></pre></div>
+<h3 id="proposed-real-time-path">Proposed real-time path<a class="headerlink" href="#proposed-real-time-path" title="Permanent link">&para;</a></h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Per frame:</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="n">detect_objects</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_count</span><span class="p">,</span> <span class="n">return_canonical</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="err">→</span>  <span class="p">(</span><span class="n">meas</span><span class="p">,</span> <span class="n">sizes</span><span class="p">,</span> <span class="n">shapes</span><span class="p">,</span> <span class="o">...</span><span class="p">,</span> <span class="n">canonical_results</span><span class="p">)</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="c1"># canonical_results: List[CanonicalCropResult] per detection</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="c1"># If real-time pose is enabled:</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="k">for</span> <span class="n">cr</span> <span class="ow">in</span> <span class="n">canonical_results</span><span class="p">:</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">letterboxed</span><span class="p">,</span> <span class="n">transform</span> <span class="o">=</span> <span class="n">letterbox_crop</span><span class="p">(</span><span class="n">cr</span><span class="o">.</span><span class="n">crop</span><span class="p">,</span> <span class="n">pose_input_size</span><span class="p">)</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="n">kpts_canon</span> <span class="o">=</span> <span class="n">pose_model</span><span class="o">.</span><span class="n">predict</span><span class="p">(</span><span class="n">letterboxed</span><span class="p">)</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="n">kpts_canon</span> <span class="o">=</span> <span class="n">invert_letterbox_keypoints</span><span class="p">(</span><span class="n">kpts_canon</span><span class="p">,</span> <span class="n">transform</span><span class="p">)</span>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="n">kpts_frame</span> <span class="o">=</span> <span class="n">invert_keypoints</span><span class="p">(</span><span class="n">kpts_canon</span><span class="p">,</span> <span class="n">cr</span><span class="o">.</span><span class="n">M_inverse</span><span class="p">)</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="c1"># If real-time CNN identity is enabled:</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="n">crops</span> <span class="o">=</span> <span class="p">[</span><span class="n">cr</span><span class="o">.</span><span class="n">crop</span> <span class="k">for</span> <span class="n">cr</span> <span class="ow">in</span> <span class="n">canonical_results</span><span class="p">]</span>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a><span class="n">labels</span> <span class="o">=</span> <span class="n">cnn_model</span><span class="o">.</span><span class="n">predict_batch</span><span class="p">(</span><span class="n">crops</span><span class="p">)</span>
+</span></code></pre></div>
+<p><strong>No architectural change needed</strong> — the canonical crop is computed
+as part of detection, and downstream models consume it immediately.
+The only difference from offline mode is that crops are not cached
+to disk.</p>
+<h3 id="future-real-time-classification-in-tracking-loop">Future: Real-Time Classification in Tracking Loop<a class="headerlink" href="#future-real-time-classification-in-tracking-loop" title="Permanent link">&para;</a></h3>
+<p>The canonical crop architecture enables real-time CNN identity during
+Phase 2 tracking (not just precompute):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># In tracking loop, after detection:</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="k">for</span> <span class="n">det_idx</span><span class="p">,</span> <span class="n">cr</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">canonical_results</span><span class="p">):</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">label</span><span class="p">,</span> <span class="n">conf</span> <span class="o">=</span> <span class="n">cnn_classifier</span><span class="o">.</span><span class="n">predict_single</span><span class="p">(</span><span class="n">cr</span><span class="o">.</span><span class="n">crop</span><span class="p">)</span>
+</span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="c1"># Use label in Hungarian assignment cost matrix</span>
+</span></code></pre></div>
+<p>This is currently not possible because precompute crops are not
+available during Phase 2.  With canonical crops computed at detection
+time, the crops are immediately available.</p>
+<hr />
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<p>New parameters (in <code>ADVANCED_CONFIG</code> or top-level):</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="p">{</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">&quot;canonical_crop_width&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">256</span><span class="p">,</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">&quot;canonical_crop_height&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">128</span><span class="p">,</span>
+</span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="w">  </span><span class="nt">&quot;canonical_headtail_inference_width&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">128</span><span class="p">,</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span><span class="nt">&quot;canonical_headtail_inference_height&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">64</span><span class="p">,</span>
+</span><span id="__span-10-6"><a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="w">  </span><span class="nt">&quot;canonical_treat_updown_as_unknown&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-10-7"><a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="w">  </span><span class="nt">&quot;apriltag_use_canonical_crop&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+</span><span id="__span-10-8"><a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Existing parameters that now apply to canonical crops (semantics
+unchanged):</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="p">{</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span><span class="nt">&quot;individual_crop_padding&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span><span class="nt">&quot;individual_background_color&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">233</span><span class="p">,</span><span class="w"> </span><span class="mi">232</span><span class="p">,</span><span class="w"> </span><span class="mi">231</span><span class="p">],</span>
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="w">  </span><span class="nt">&quot;suppress_foreign_obb_regions&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span>
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a><span class="p">}</span>
+</span></code></pre></div>
+<hr />
+<h2 id="implementation-phases">Implementation Phases<a class="headerlink" href="#implementation-phases" title="Permanent link">&para;</a></h2>
+<h3 id="phase-a-core-module-detection-integration">Phase A: Core Module + Detection Integration<a class="headerlink" href="#phase-a-core-module-detection-integration" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong> New <code>canonical_crop.py</code>, modified <code>engine.py</code>, modified
+<code>detection_cache.py</code>.</p>
+<ol>
+<li>Implement <code>canonical_crop.py</code> with full API.</li>
+<li>Refactor <code>_canonicalize_obb_for_headtail</code> → use <code>compute_alignment_affine</code> + <code>extract_canonical_crop</code> + resize for inference.</li>
+<li>Refactor <code>_compute_headtail_hints_cross_frame</code> → use <code>extract_and_classify_batch</code>.</li>
+<li>Store <code>M_canonical</code> in detection cache (version 2.2).</li>
+<li>Single-frame <code>detect_objects</code> returns <code>CanonicalCropResult</code> list.</li>
+<li>All existing head-tail tests pass.</li>
+</ol>
+<h3 id="phase-b-precompute-migration">Phase B: Precompute Migration<a class="headerlink" href="#phase-b-precompute-migration" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong> Modified <code>precompute.py</code>, modified <code>pose_pipeline.py</code>.</p>
+<ol>
+<li><code>UnifiedPrecompute.run()</code> uses <code>M_canonical</code> from cache + <code>extract_canonical_crop</code> instead of <code>extract_one_crop</code>.</li>
+<li>Pose phase receives canonical crops; keypoint back-mapping uses <code>M_inverse</code> instead of offset addition.</li>
+<li>CNN identity phase receives canonical crops.</li>
+<li>AprilTag phase: keep AABB by default, add canonical option.</li>
+<li>All precompute + pose tests pass.</li>
+</ol>
+<h3 id="phase-c-individual-dataset-migration">Phase C: Individual Dataset Migration<a class="headerlink" href="#phase-c-individual-dataset-migration" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong> Modified <code>analysis.py</code>, modified <code>worker.py</code>.</p>
+<ol>
+<li>Individual dataset crops saved during precompute (not Phase 2).</li>
+<li>Phase 2 <code>process_frame</code> writes track/trajectory ID mappings
+   referencing precompute-saved crops (or re-extracts via <code>M_canonical</code>
+   from frame if precompute didn't save images).</li>
+<li>Metadata block updated to new schema.</li>
+<li>DataSieve / PoseKit / ClassKit consume head-right canonical crops
+   without needing their own orientation logic.</li>
+</ol>
+<h3 id="phase-d-real-time-path">Phase D: Real-Time Path<a class="headerlink" href="#phase-d-real-time-path" title="Permanent link">&para;</a></h3>
+<p><strong>Files:</strong> Modified <code>worker.py</code> (preview mode), potentially new
+real-time pose/CNN hooks.</p>
+<ol>
+<li>Preview mode computes canonical crops at detection time.</li>
+<li>Optional real-time pose: canonical crop → pose model → <code>M_inverse</code>.</li>
+<li>Optional real-time CNN identity: canonical crop → classifier.</li>
+<li>All preview-mode tests pass.</li>
+</ol>
+<hr />
+<h2 id="testing-strategy">Testing Strategy<a class="headerlink" href="#testing-strategy" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Test</th>
+<th>Validates</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unit: <code>M_canonical</code> round-trip</td>
+<td><code>invert_keypoints(M_inverse, point) ≈ original</code> for random OBBs</td>
+</tr>
+<tr>
+<td>Unit: 180° rotation correctness</td>
+<td>Crop rotated 180° has same pixels as re-extraction with θ + π</td>
+</tr>
+<tr>
+<td>Unit: foreign OBB suppression in canonical space</td>
+<td>Transformed foreign polygon covers correct pixels</td>
+</tr>
+<tr>
+<td>Integration: detection cache v2.2</td>
+<td>Write/read <code>M_canonical</code> arrays; backward compat with v2.1</td>
+</tr>
+<tr>
+<td>Integration: precompute with canonical crops</td>
+<td>Pose keypoints in frame coords match baseline (within 2 px)</td>
+</tr>
+<tr>
+<td>Integration: individual dataset metadata</td>
+<td><code>M_canonical</code> in metadata reconstructs frame-coordinate crops</td>
+</tr>
+<tr>
+<td>End-to-end: full pipeline</td>
+<td>Tracking results (trajectories, IDs) unchanged within tolerance</td>
+</tr>
+<tr>
+<td>Benchmark: crop extraction speed</td>
+<td>Canonical warpAffine vs current AABB extraction (expect similar)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="risks-and-mitigations">Risks and Mitigations<a class="headerlink" href="#risks-and-mitigations" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Risk</th>
+<th>Likelihood</th>
+<th>Mitigation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Existing head-tail model degrades on larger canonical crop (resized down to 128 × 64 for inference)</td>
+<td>Low — bilinear downscale from 256 × 128 is equivalent to current warp at 128 × 64</td>
+<td>Monitor accuracy; retrain if needed</td>
+</tr>
+<tr>
+<td>Pose model accuracy changes on rotation-normalised input vs AABB</td>
+<td>Medium — model was trained on AABB crops</td>
+<td>Retrain pose model on canonical crops (Phase B follow-up)</td>
+</tr>
+<tr>
+<td>CNN identity accuracy changes</td>
+<td>Low — rotation normalisation should help, not hurt</td>
+<td>Validate on held-out set; retrain via ClassKit if needed</td>
+</tr>
+<tr>
+<td>AprilTag detection degrades on canonical crops</td>
+<td>Medium — affine interpolation blurs edges</td>
+<td>Keep AABB as default for AprilTags</td>
+</tr>
+<tr>
+<td>90° rotation (up/down head-tail) produces portrait aspect ratio</td>
+<td>Low — rare for elongated animals</td>
+<td><code>canonical_treat_updown_as_unknown: true</code> by default</td>
+</tr>
+<tr>
+<td>Detection cache v2.1 → v2.2 migration</td>
+<td>Low — schema mismatch triggers re-detection</td>
+<td>Ensure clear version check and user messaging</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.83f73b43.min.js"></script>
+      
+    
+  </body>
+</html>
