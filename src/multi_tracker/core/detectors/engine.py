@@ -1390,52 +1390,90 @@ class YOLOOBBDetector:
         return warped, angle
 
     def _compute_headtail_hints(self, frame, obb_corners_list):
-        """Infer directed heading hints from optional head-tail classifier."""
-        n = len(obb_corners_list)
-        heading_hints = [float("nan")] * n
-        directed_mask = [0] * n
-        if self.headtail_model is None or n == 0:
-            return heading_hints, directed_mask
+        """Infer directed heading hints from optional head-tail classifier.
+
+        Delegates to the cross-frame batched implementation so both the
+        single-frame and multi-frame paths share the same logic.
+        """
+        results = self._compute_headtail_hints_cross_frame([frame], [obb_corners_list])
+        return results[0]
+
+    def _compute_headtail_hints_cross_frame(self, frames, per_frame_obb_corners):
+        """Batch head-tail classification across multiple frames in one GPU call.
+
+        Instead of calling ``_predict_headtail_results`` once per frame,
+        canonical crops from **all** frames are collected first, classified
+        in a single forward pass, and then scattered back to per-frame
+        heading-hint / directed-mask arrays.
+
+        Args:
+            frames: list of *N* video frames (BGR ndarray).
+            per_frame_obb_corners: list of *N* lists, where each inner list
+                contains the OBB corners for detections in the corresponding
+                frame.
+
+        Returns:
+            list of *N* tuples ``(heading_hints, directed_mask)``.
+        """
+        n_frames = len(frames)
+        # Pre-allocate per-frame result arrays (default: no orientation).
+        results_per_frame = []
+        for corners in per_frame_obb_corners:
+            n = len(corners)
+            results_per_frame.append(([float("nan")] * n, [0] * n))
+
+        if self.headtail_model is None:
+            return results_per_frame
 
         conf_threshold = float(self.params.get("YOLO_HEADTAIL_CONF_THRESHOLD", 0.50))
-        canonical_crops = []
-        canonical_meta = []
-        for i, corners in enumerate(obb_corners_list):
-            try:
-                canonical, axis_theta = self._canonicalize_obb_for_headtail(
-                    frame, corners
-                )
-                if canonical is None or axis_theta is None:
+
+        # ----- Phase 1: collect canonical crops across ALL frames (CPU) ----
+        all_crops = []
+        # Each entry: (frame_idx, detection_idx_within_frame, axis_theta)
+        all_meta = []
+        for fi in range(n_frames):
+            frame = frames[fi]
+            for di, corners in enumerate(per_frame_obb_corners[fi]):
+                try:
+                    canonical, axis_theta = self._canonicalize_obb_for_headtail(
+                        frame, corners
+                    )
+                    if canonical is None or axis_theta is None:
+                        continue
+                    all_crops.append(canonical)
+                    all_meta.append((fi, di, float(axis_theta)))
+                except Exception:
                     continue
-                canonical_crops.append(canonical)
-                canonical_meta.append((i, float(axis_theta)))
-            except Exception:
-                continue
 
-        if not canonical_crops:
-            return heading_hints, directed_mask
+        if not all_crops:
+            return results_per_frame
 
-        cls_results = self._predict_headtail_results(canonical_crops)
+        # ----- Phase 2: ONE GPU inference call for all crops ---------------
+        cls_results = self._predict_headtail_results(all_crops)
         if cls_results is None or len(cls_results) == 0:
-            return heading_hints, directed_mask
+            return results_per_frame
 
+        # ----- Phase 3: scatter results back to per-frame arrays -----------
         backend = getattr(self, "headtail_backend", "yolo")
+        TWO_PI = 2.0 * np.pi
+
         if backend == "tiny":
             probs = np.asarray(cls_results, dtype=np.float32).reshape(-1)
-            n_eval = min(len(canonical_meta), len(probs))
+            n_eval = min(len(all_meta), len(probs))
             for j in range(n_eval):
-                i, axis_theta = canonical_meta[j]
+                fi, di, axis_theta = all_meta[j]
                 p_right = float(probs[j])
                 conf = max(p_right, 1.0 - p_right)
                 if conf < conf_threshold:
                     continue
                 theta = axis_theta if p_right >= 0.5 else (axis_theta + np.pi)
-                heading_hints[i] = float(theta % (2.0 * np.pi))
-                directed_mask[i] = 1
+                results_per_frame[fi][0][di] = float(theta % TWO_PI)
+                results_per_frame[fi][1][di] = 1
+
         elif backend == "classkit_tiny":
-            n_eval = min(len(canonical_meta), len(cls_results))
+            n_eval = min(len(all_meta), len(cls_results))
             for j in range(n_eval):
-                i, axis_theta = canonical_meta[j]
+                fi, di, axis_theta = all_meta[j]
                 try:
                     direction, conf = cls_results[j]
                 except Exception:
@@ -1445,12 +1483,13 @@ class YOLOOBBDetector:
                 if float(conf) < conf_threshold:
                     continue
                 theta = axis_theta if direction == "right" else (axis_theta + np.pi)
-                heading_hints[i] = float(theta % (2.0 * np.pi))
-                directed_mask[i] = 1
+                results_per_frame[fi][0][di] = float(theta % TWO_PI)
+                results_per_frame[fi][1][di] = 1
+
         else:
-            n_eval = min(len(canonical_meta), len(cls_results))
+            n_eval = min(len(all_meta), len(cls_results))
             for j in range(n_eval):
-                i, axis_theta = canonical_meta[j]
+                fi, di, axis_theta = all_meta[j]
                 try:
                     result = cls_results[j]
                     if result is None:
@@ -1472,12 +1511,12 @@ class YOLOOBBDetector:
                     if direction is None:
                         continue
                     theta = axis_theta if direction == "right" else (axis_theta + np.pi)
-                    heading_hints[i] = float(theta % (2.0 * np.pi))
-                    directed_mask[i] = 1
+                    results_per_frame[fi][0][di] = float(theta % TWO_PI)
+                    results_per_frame[fi][1][di] = 1
                 except Exception:
                     continue
 
-        return heading_hints, directed_mask
+        return results_per_frame
 
     def _run_direct_raw_detection(self, frame, target_classes, raw_conf_floor, max_det):
         results = self._predict_obb_results(
@@ -2455,9 +2494,9 @@ class YOLOOBBDetector:
         raw_conf_floor = max(1e-4, float(p.get("RAW_YOLO_CONFIDENCE_FLOOR", 1e-3)))
         max_det = self._raw_detection_cap()
 
-        # Sequential mode and head-tail orientation require per-frame processing
-        # because each frame has variable crop counts and optional classification.
-        if self.obb_mode == "sequential" or self.headtail_model is not None:
+        # Sequential mode requires per-frame OBB processing because each frame
+        # generates variable crop counts for the stage-2 OBB model.
+        if self.obb_mode == "sequential":
             batch_detections = []
             for idx, frame in enumerate(frames):
                 frame_count = int(start_frame_idx) + int(idx)
@@ -2517,6 +2556,13 @@ class YOLOOBBDetector:
                     )
 
             return batch_detections
+
+        # -------------------------------------------------------------------
+        # Direct OBB mode: batch the OBB inference, then run head-tail
+        # classification per-frame afterwards.  This avoids the critical
+        # performance pitfall where TensorRT/ONNX with fixed batch dims would
+        # pad every single-frame call (e.g. 1 frame → 16 copies).
+        # -------------------------------------------------------------------
 
         # Handle fixed-batch runtimes (TensorRT and static-batch ONNX).
         # These require exact batch size, so we:
@@ -2640,26 +2686,46 @@ class YOLOOBBDetector:
                         )
                         results_batch.append(None)
 
-        # Process each result
-        batch_detections = []
+        # ===================================================================
+        # Post-process: extract raw detections, cross-frame head-tail, assemble
+        # ===================================================================
+
+        # Phase 1 — extract raw detections from each frame's OBB result
+        per_frame_raw = []  # None or (meas, sizes, shapes, confs, obb_corners)
         for idx in range(actual_frame_count):
             results = results_batch[idx]
-            # frame_count = start_frame_idx + idx
+            if results is None or results.obb is None or len(results.obb) == 0:
+                per_frame_raw.append(None)
+            else:
+                per_frame_raw.append(self._extract_raw_detections(results.obb))
 
-            # Handle failed inference (None result from error)
-            if results is None:
-                batch_detections.append(([], [], [], [], []))
-                continue
-
-            if results.obb is None or len(results.obb) == 0:
-                batch_detections.append(([], [], [], [], []))
-                continue
-
-            raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = (
-                self._extract_raw_detections(results.obb)
+        # Phase 2 — cross-frame head-tail classification (single GPU call
+        # batching canonical crops from ALL frames together).
+        if self.headtail_model is not None:
+            per_frame_corners = [
+                raw[4] if raw is not None else [] for raw in per_frame_raw
+            ]
+            headtail_per_frame = self._compute_headtail_hints_cross_frame(
+                frames[:actual_frame_count], per_frame_corners
             )
-            raw_heading_hints = [float("nan")] * len(raw_meas)
-            raw_directed_mask = [0] * len(raw_meas)
+        else:
+            headtail_per_frame = None
+
+        # Phase 3 — assemble final batch detections
+        batch_detections = []
+        for idx in range(actual_frame_count):
+            raw = per_frame_raw[idx]
+            if raw is None:
+                batch_detections.append(([], [], [], [], []))
+                continue
+
+            raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = raw
+
+            if headtail_per_frame is not None:
+                raw_heading_hints, raw_directed_mask = headtail_per_frame[idx]
+            else:
+                raw_heading_hints = [float("nan")] * len(raw_meas)
+                raw_directed_mask = [0] * len(raw_meas)
 
             if return_raw:
                 batch_detections.append(

@@ -1613,6 +1613,9 @@ class TrackingWorker(QThread):
         else:
             logger.info("Frame prefetching disabled")
 
+        # Pre-compute ROI contours once (the mask is static for the entire run).
+        _roi_contours_cache = None
+
         for frame, _ in frame_iterator:
             loop_start = time.time()
 
@@ -1829,7 +1832,8 @@ class TrackingWorker(QThread):
             ):  # YOLO OBB detection
                 # YOLO uses the original BGR frame directly without masking
                 # This preserves natural image context for better confidence estimates
-                yolo_frame = frame.copy()
+                # Note: no frame.copy() needed — Ultralytics letterboxing already
+                # copies/transforms the input internally.
 
                 (
                     raw_meas,
@@ -1841,7 +1845,7 @@ class TrackingWorker(QThread):
                     raw_heading_hints,
                     raw_directed_mask,
                 ) = detector.detect_objects(
-                    yolo_frame,
+                    frame,
                     self.frame_count,
                     return_raw=True,
                 )
@@ -1989,13 +1993,16 @@ class TrackingWorker(QThread):
                 # Apply ROI visualization - draw cyan boundary for all detection methods
                 # The actual masking for background subtraction happens earlier in the pipeline
                 if ROI_mask_current is not None:
-                    # Draw cyan dashed boundary around ROI using contours from the mask
-                    contours, _ = cv2.findContours(
-                        ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                    )
-                    if contours:
+                    # Compute ROI contours once and cache (mask is static).
+                    if _roi_contours_cache is None:
+                        _roi_contours_cache, _ = cv2.findContours(
+                            ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                        )
+                    if _roi_contours_cache:
                         # Draw cyan boundary (BGR: 255, 255, 0)
-                        cv2.drawContours(overlay, contours, -1, (255, 255, 0), 2)
+                        cv2.drawContours(
+                            overlay, _roi_contours_cache, -1, (255, 255, 0), 2
+                        )
             else:
                 overlay = None
 
@@ -2758,15 +2765,13 @@ class TrackingWorker(QThread):
 
             if not viz_free_mode and overlay is not None:
                 viz_start = time.time()
-                trajectories_pruned = [
-                    [
-                        pt
-                        for pt in tr
-                        if self.frame_count - pt[3]
-                        <= params["TRAJECTORY_HISTORY_SECONDS"]
-                    ]
-                    for tr in self.trajectories_full
-                ]
+                # Incrementally prune old trajectory points instead of
+                # rebuilding from trajectories_full every frame.
+                _traj_horizon = params["TRAJECTORY_HISTORY_SECONDS"]
+                _cutoff = self.frame_count - _traj_horizon
+                for _tp_list in trajectories_pruned:
+                    while _tp_list and _tp_list[0][3] < _cutoff:
+                        _tp_list.pop(0)
 
                 self._draw_overlays(
                     overlay,
@@ -2793,12 +2798,16 @@ class TrackingWorker(QThread):
                     detection_method != "background_subtraction"
                     and ROI_mask_current is not None
                 ):
-                    # Find contours of ROI mask
-                    contours, _ = cv2.findContours(
-                        ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                    )
-                    # Draw cyan boundary
-                    cv2.drawContours(overlay, contours, -1, (0, 255, 255), 2)
+                    # Reuse cached ROI contours (computed once above).
+                    if _roi_contours_cache is None:
+                        _roi_contours_cache, _ = cv2.findContours(
+                            ROI_mask_current, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                        )
+                    if _roi_contours_cache:
+                        # Draw cyan boundary
+                        cv2.drawContours(
+                            overlay, _roi_contours_cache, -1, (0, 255, 255), 2
+                        )
 
                 self.emit_frame(overlay)
                 profile_times["gui_emit"] += time.time() - emit_start

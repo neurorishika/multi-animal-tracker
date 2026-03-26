@@ -265,40 +265,43 @@ class KalmanFilterManager:
             _diag = np.arange(self.dim_s)
             np.clip(self.P[:, _diag, _diag], 0.1, _p_max, out=self.P[:, _diag, _diag])
 
-        # Apply age-dependent velocity damping AFTER prediction
-        # Young tracks have their velocity heavily damped toward zero
-        for i in range(self.num_targets):
-            age = self.track_ages[i]
-            if age < self.age_threshold:
-                # Calculate age-dependent damping factor
-                # age=0: use initial_velocity_retention (default 0.2 = keep 20% of velocity)
-                # age=threshold: use 1.0 (keep 100% of velocity)
-                age_ratio = age / self.age_threshold
-                velocity_retention = (
-                    self.initial_velocity_retention
-                    + (1.0 - self.initial_velocity_retention) * age_ratio
-                )
+        # Apply age-dependent velocity damping AFTER prediction (vectorized).
+        # Young tracks have their velocity heavily damped toward zero.
+        ages = self.track_ages[: self.num_targets].astype(np.float32)
+        young_mask = ages < self.age_threshold
+        if np.any(young_mask):
+            age_ratio = ages[young_mask] / float(self.age_threshold)
+            vr = (
+                np.float32(self.initial_velocity_retention)
+                + (np.float32(1.0) - np.float32(self.initial_velocity_retention))
+                * age_ratio
+            )  # shape (n_young,)
+            # Damp velocity state
+            self.X[young_mask, 3] *= vr
+            self.X[young_mask, 4] *= vr
+            # Propagate through covariance: rows/cols 3,4
+            vr2d = vr[:, None]  # (n_young, 1) for broadcasting
+            self.P[young_mask, 3, :] *= vr2d
+            self.P[young_mask, 4, :] *= vr2d
+            self.P[young_mask, :, 3] *= vr2d
+            self.P[young_mask, :, 4] *= vr2d
 
-                # Damp velocity estimates; propagate through P: D P D.T where D=diag(1,1,1,vr,vr)
-                vr = velocity_retention
-                self.X[i, 3] *= vr  # vx
-                self.X[i, 4] *= vr  # vy
-                self.P[i, 3, :] *= vr
-                self.P[i, 4, :] *= vr
-                self.P[i, :, 3] *= vr
-                self.P[i, :, 4] *= vr
-
-            # Apply maximum velocity constraint; propagate through P.
-            vx, vy = self.X[i, 3], self.X[i, 4]
-            speed = np.sqrt(vx**2 + vy**2)
-            if speed > self.max_velocity:
-                scale = self.max_velocity / speed
-                self.X[i, 3] *= scale
-                self.X[i, 4] *= scale
-                self.P[i, 3, :] *= scale
-                self.P[i, 4, :] *= scale
-                self.P[i, :, 3] *= scale
-                self.P[i, :, 4] *= scale
+        # Vectorized maximum velocity constraint.
+        vx = self.X[: self.num_targets, 3]
+        vy = self.X[: self.num_targets, 4]
+        speed = np.sqrt(vx**2 + vy**2)
+        over_mask = speed > self.max_velocity
+        if np.any(over_mask):
+            scale = np.where(
+                over_mask, self.max_velocity / np.maximum(speed, 1e-9), 1.0
+            ).astype(np.float32)
+            self.X[: self.num_targets, 3] *= scale
+            self.X[: self.num_targets, 4] *= scale
+            scale2d = scale[:, None]
+            self.P[: self.num_targets, 3, :] *= scale2d
+            self.P[: self.num_targets, 4, :] *= scale2d
+            self.P[: self.num_targets, :, 3] *= scale2d
+            self.P[: self.num_targets, :, 4] *= scale2d
 
         return self.X[:, :3].copy()
 

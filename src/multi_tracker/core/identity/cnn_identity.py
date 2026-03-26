@@ -205,7 +205,7 @@ class CNNIdentityBackend:
             if self._arch == "tinyclassifier":
                 from multi_tracker.training.tiny_model import load_tiny_classifier
 
-                self._model = load_tiny_classifier(self._model_path, device=device)
+                self._model, _ = load_tiny_classifier(self._model_path, device=device)
             else:
                 # Requires Spec A (ClassKit Extended Training) to be implemented first
                 from multi_tracker.training.torchvision_model import (
@@ -251,7 +251,7 @@ class CNNIdentityBackend:
 
             from multi_tracker.training.tiny_model import load_tiny_classifier
 
-            model = load_tiny_classifier(self._model_path, device="cpu")
+            model, _ = load_tiny_classifier(self._model_path, device="cpu")
             h, w = self._input_size
             dummy = torch.zeros(1, 3, h, w)
             torch.onnx.export(

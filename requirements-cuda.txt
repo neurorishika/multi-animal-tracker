@@ -24,6 +24,7 @@ tensorrt
 # ONNX runtime with GPU support for model export and optimization
 onnx
 onnxslim
+onnxscript
 # IMPORTANT (CUDA 13 systems): onnxruntime-gpu currently links against CUDA 12
 # user-space libraries (e.g., libcublasLt.so.12). Do not co-install CPU
 # onnxruntime here, and keep GPU runtime explicit.
