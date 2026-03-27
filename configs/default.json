@@ -42,6 +42,7 @@
   "yolo_seq_stage2_pow2_pad": false,
   "yolo_seq_detect_conf_threshold": 0.25,
   "yolo_headtail_conf_threshold": 0.5,
+  "canonical_crop_long_edge": 256,
   "canonical_headtail_long_edge": 128,
   "reference_aspect_ratio": 2.0,
   "enable_aspect_ratio_filtering": false,

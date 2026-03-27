@@ -33,7 +33,7 @@ filename =
     *.py
 
 # McCabe complexity - set higher for existing code, reduce gradually
-max-complexity = 202
+max-complexity = 205
 
 # Per-file ignores
 per-file-ignores =

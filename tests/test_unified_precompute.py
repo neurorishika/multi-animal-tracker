@@ -53,7 +53,7 @@ def _make_cap(frame=None):
 
 def _make_det_cache():
     dc = Mock()
-    dc.get_frame.return_value = ([], [], [], [], [], [], [], [])
+    dc.get_frame.return_value = ([], [], [], [], [], [], [], [], None)
     return dc
 
 
@@ -111,8 +111,8 @@ def test_process_frame_called_with_empty_crops_when_no_detections():
     up.run(_make_cap(), _make_det_cache(), _make_detector(), 0, 0, 1.0, None)
 
     args = p.process_frame.call_args[0]  # positional args
-    # args: (frame_idx, crops, det_ids, all_obb, crop_offsets)
-    frame_idx, crops, det_ids, all_obb, crop_offsets = args
+    # args: (frame_idx, crops, det_ids, crop_det_indices, all_obb, crop_offsets)
+    frame_idx, crops, det_ids, crop_det_indices, all_obb, crop_offsets = args
     assert frame_idx == 0
     assert crops == []
     assert det_ids == []
@@ -267,6 +267,7 @@ def test_crop_offsets_passed_to_process_frame():
         [0],
         [0.0],
         [False],
+        None,
     )
     detector = _make_detector()
     detector.filter_raw_detections.return_value = (
@@ -288,7 +289,7 @@ def test_crop_offsets_passed_to_process_frame():
         up.run(_make_cap(), det_cache, detector, 0, 0, 1.0, None)
 
     args = p.process_frame.call_args[0]
-    frame_idx, crops, det_ids, all_obb, crop_offsets = args
+    frame_idx, crops, det_ids, crop_det_indices, all_obb, crop_offsets = args
     assert len(crop_offsets) == 1
     assert crop_offsets[0] == (5, 7)  # int tuple
 
@@ -375,7 +376,7 @@ def test_apriltag_phase_process_frame_empty_crops_adds_empty_frame(tmp_path):
             end_frame=0,
             video_path="",
         )
-        phase.process_frame(0, [], [], [], [])
+        phase.process_frame(0, [], [], [], [], [])
         mock_detector.detect_in_crops.assert_not_called()
         # finalize should still succeed (empty frame was recorded)
         path = phase.finalize()
@@ -398,7 +399,7 @@ def test_apriltag_phase_process_frame_calls_detect_in_crops(tmp_path):
             end_frame=0,
             video_path="",
         )
-        phase.process_frame(0, [crop], [0], [], [(5, 10)])
+        phase.process_frame(0, [crop], [0], [0], [], [(5, 10)])
         mock_detector.detect_in_crops.assert_called_once_with(
             [crop], [(5, 10)], det_indices=[0]
         )
@@ -436,7 +437,7 @@ def test_apriltag_phase_process_frame_noop_on_cache_hit(tmp_path):
         )
         assert phase.has_cache_hit() is True
         crop = np.zeros((20, 20, 3), dtype=np.uint8)
-        phase.process_frame(0, [crop], [0], [], [(0, 0)])
+        phase.process_frame(0, [crop], [0], [0], [], [(0, 0)])
         # Detector was never created (cache hit) and detect_in_crops never called
         MockDet.assert_not_called()
 
@@ -566,8 +567,8 @@ def test_cnn_phase_process_frame_batches_crops(tmp_path):
 
         crop = np.zeros((20, 20, 3), dtype=np.uint8)
         # Two frames each with one crop — batch_size=2, so flush happens after frame 1
-        phase.process_frame(0, [crop], [0], [], [(0, 0)])
-        phase.process_frame(1, [crop], [0], [], [(0, 0)])
+        phase.process_frame(0, [crop], [0], [0], [], [(0, 0)])
+        phase.process_frame(1, [crop], [0], [0], [], [(0, 0)])
         # One batch of 2 should have been flushed
         assert mock_backend.predict_batch.call_count == 1
 
@@ -600,7 +601,7 @@ def test_cnn_phase_finalize_flushes_partial_batch(tmp_path):
 
         crop = np.zeros((20, 20, 3), dtype=np.uint8)
         phase.process_frame(
-            0, [crop], [0], [], [(0, 0)]
+            0, [crop], [0], [0], [], [(0, 0)]
         )  # 1 crop, batch=10 → not flushed yet
         assert mock_backend.predict_batch.call_count == 0
 
@@ -625,7 +626,7 @@ def test_cnn_phase_process_frame_empty_crops_does_not_add_to_batch(tmp_path):
             cache_path=cache_path,
             name="cnn_identity",
         )
-        phase.process_frame(0, [], [], [], [])
+        phase.process_frame(0, [], [], [], [], [])
         mock_backend.predict_batch.assert_not_called()
         phase.finalize()
         # cache still flushed (empty frame recorded)
@@ -703,7 +704,7 @@ def test_pose_pipeline_process_frame_noop_on_hit():
         finalize_metadata={},
     )
     # Should not raise even with no backend
-    pipeline.process_frame(0, [], [], [], [])
+    pipeline.process_frame(0, [], [], [], [], [])
 
 
 def test_pose_pipeline_close_idempotent():

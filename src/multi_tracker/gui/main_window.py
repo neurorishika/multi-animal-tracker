@@ -4985,6 +4985,18 @@ class MainWindow(QMainWindow):
         h_ar_mult.addWidget(self.spin_max_ar_multiplier)
         f_ar.addRow(h_ar_mult)
 
+        self.spin_canonical_crop_long_edge = QSpinBox()
+        self.spin_canonical_crop_long_edge.setRange(64, 1024)
+        self.spin_canonical_crop_long_edge.setSingleStep(32)
+        self.spin_canonical_crop_long_edge.setValue(256)
+        self.spin_canonical_crop_long_edge.setFixedHeight(30)
+        self.spin_canonical_crop_long_edge.setToolTip(
+            "Long-edge size (px) of canonical crops used for pose estimation\n"
+            "and identity classification. The short edge is derived from the\n"
+            "reference aspect ratio. Default 256."
+        )
+        f_ar.addRow("Canonical crop long edge (px)", self.spin_canonical_crop_long_edge)
+
         self.spin_canonical_headtail_long_edge = QSpinBox()
         self.spin_canonical_headtail_long_edge.setRange(32, 512)
         self.spin_canonical_headtail_long_edge.setSingleStep(16)
@@ -15474,6 +15486,9 @@ class MainWindow(QMainWindow):
             int(self._video_pose_color[2]),
         ]
         # Canonical crop / aspect ratio params (from UI widgets)
+        advanced_config["canonical_crop_long_edge"] = (
+            self.spin_canonical_crop_long_edge.value()
+        )
         advanced_config["canonical_headtail_long_edge"] = (
             self.spin_canonical_headtail_long_edge.value()
         )
@@ -16063,6 +16078,9 @@ class MainWindow(QMainWindow):
             )
             self.spin_yolo_headtail_conf.setValue(
                 float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
+            )
+            self.spin_canonical_crop_long_edge.setValue(
+                int(get_cfg("canonical_crop_long_edge", default=256))
             )
             self.spin_canonical_headtail_long_edge.setValue(
                 int(get_cfg("canonical_headtail_long_edge", default=128))
@@ -16916,6 +16934,7 @@ class MainWindow(QMainWindow):
                 "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
                 "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
                 "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
+                "canonical_crop_long_edge": self.spin_canonical_crop_long_edge.value(),
                 "canonical_headtail_long_edge": self.spin_canonical_headtail_long_edge.value(),
                 "reference_aspect_ratio": self.spin_reference_aspect_ratio.value(),
                 "enable_aspect_ratio_filtering": self.chk_enable_aspect_ratio_filtering.isChecked(),

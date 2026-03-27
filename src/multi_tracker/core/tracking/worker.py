@@ -1397,6 +1397,14 @@ class TrackingWorker(QThread):
         )
         if phases:
             _bg_raw = p.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
+            _adv = p.get("ADVANCED_CONFIG", {})
+            _canon_long = int(_adv.get("canonical_crop_long_edge", 256))
+            _ref_ar = float(_adv.get("reference_aspect_ratio", 2.0))
+            from multi_tracker.core.tracking.canonical_crop import (
+                compute_crop_dimensions,
+            )
+
+            _canon_w, _canon_h = compute_crop_dimensions(_canon_long, _ref_ar)
             crop_config = CropConfig(
                 padding_fraction=float(p.get("INDIVIDUAL_CROP_PADDING", 0.1)),
                 suppress_foreign=bool(p.get("SUPPRESS_FOREIGN_OBB_REGIONS", True)),
@@ -1405,6 +1413,8 @@ class TrackingWorker(QThread):
                     if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
                     else (0, 0, 0)
                 ),
+                canonical_crop_width=_canon_w,
+                canonical_crop_height=_canon_h,
             )
             precompute = UnifiedPrecompute(phases, crop_config)
             try:
@@ -2686,6 +2696,28 @@ class TrackingWorker(QThread):
                 # Use original-frame coordinates for crop extraction.
                 coord_scale_factor = 1.0 / resize_f
 
+                # Filter canonical affines to match filtered detections.
+                _canon_for_dataset = None
+                if (
+                    raw_canonical_affines is not None
+                    and raw_detection_ids
+                    and detection_ids
+                ):
+                    _raw_id_map = {}
+                    for _ri, _rid in enumerate(raw_detection_ids):
+                        _raw_id_map[int(_rid)] = _ri
+                    _canon_for_dataset = []
+                    for _did in detection_ids:
+                        _ri2 = _raw_id_map.get(int(_did))
+                        if (
+                            _ri2 is not None
+                            and _ri2 < len(raw_canonical_affines)
+                            and raw_canonical_affines[_ri2] is not None
+                        ):
+                            _canon_for_dataset.append(raw_canonical_affines[_ri2])
+                        else:
+                            _canon_for_dataset.append(None)
+
                 if filtered_obb_corners:
                     # YOLO OBB detection - use filtered OBB corners directly
                     individual_generator.process_frame(
@@ -2702,6 +2734,7 @@ class TrackingWorker(QThread):
                         heading_hints=_ht_hints,
                         directed_mask=_ht_directed,
                         velocities=_velocities_for_dataset,
+                        canonical_affines=_canon_for_dataset,
                     )
                 elif shapes:
                     # Background subtraction - compute ellipse params from filtered shapes
@@ -2732,6 +2765,7 @@ class TrackingWorker(QThread):
                         heading_hints=_ht_hints,
                         directed_mask=_ht_directed,
                         velocities=_velocities_for_dataset,
+                        canonical_affines=_canon_for_dataset,
                     )
 
             # --- Tracking State Updates ---

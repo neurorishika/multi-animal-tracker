@@ -59,6 +59,8 @@ class PrecomputePhase:
         crop_det_indices: List[int],
         all_obb: List[np.ndarray],
         crop_offsets: List[Tuple[int, int]],
+        *,
+        canonical_affines: Optional[List[Optional[np.ndarray]]] = None,
     ) -> None:
         """Process one frame.
 
@@ -70,6 +72,11 @@ class PrecomputePhase:
         detection_ids gives the full detection-ID list for the frame, aligned to
         all_obb. crop_det_indices[i] gives the detection-slot index into all_obb
         for crops[i].
+
+        canonical_affines: When canonical crops are enabled, parallel list of
+        M_inverse (2x3 float32) arrays for each crop, or None per entry if
+        unavailable.  Phases should use ``invert_keypoints(kpts, M_inverse)``
+        instead of offset addition when an affine is present.
         """
         raise NotImplementedError
 
@@ -103,6 +110,8 @@ class CropConfig:
     padding_fraction: float = 0.1  # maps to INDIVIDUAL_CROP_PADDING
     suppress_foreign: bool = True  # maps to SUPPRESS_FOREIGN_OBB_REGIONS
     bg_color: Tuple[int, int, int] = (0, 0, 0)  # maps to INDIVIDUAL_BACKGROUND_COLOR
+    canonical_crop_width: int = 0  # 0 = disabled (legacy AABB path)
+    canonical_crop_height: int = 0  # derived from reference_aspect_ratio
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +225,7 @@ class UnifiedPrecompute:
             except Exception:
                 raw_meas = raw_sizes = raw_shapes = raw_confs = []
                 raw_obb = raw_ids = raw_headings = raw_directed = []
-                raw_canonical_affines = None  # noqa: F841
+                raw_canonical_affines = None
 
             # filter detections (ROI mask, size/confidence gates)
             (
@@ -242,14 +251,42 @@ class UnifiedPrecompute:
 
             all_obb = [np.asarray(c, dtype=np.float32) for c in (filt_obb or [])]
 
-            # extract crops ONCE — shared across all phases
-            crops: List[np.ndarray] = []
+            # --- Determine canonical extraction availability ---
+            use_canonical = (
+                cfg.canonical_crop_width > 0
+                and cfg.canonical_crop_height > 0
+                and raw_canonical_affines is not None
+            )
+
+            # Map raw detection IDs → raw indices so we can filter affines
+            filtered_affines: Optional[List[Optional[np.ndarray]]] = None
+            if use_canonical and raw_ids:
+                raw_id_to_idx: Dict[int, int] = {}
+                for idx, rid in enumerate(raw_ids):
+                    raw_id_to_idx[int(rid)] = idx
+                filtered_affines = []
+                for did in det_ids:
+                    raw_idx = raw_id_to_idx.get(int(did))
+                    if (
+                        raw_idx is not None
+                        and raw_idx < len(raw_canonical_affines)
+                        and raw_canonical_affines[raw_idx] is not None
+                    ):
+                        filtered_affines.append(raw_canonical_affines[raw_idx])
+                    else:
+                        filtered_affines.append(None)
+
+            # --- Extract crops ---
+            aabb_crops: List[np.ndarray] = []
+            aabb_offsets: List[Tuple[int, int]] = []
+            canonical_crops: List[np.ndarray] = []
+            canonical_M_inv: List[Optional[np.ndarray]] = []
             crop_det_indices: List[int] = []
-            crop_offsets: List[Tuple[int, int]] = []
 
             if all_obb:
                 for di, corners in enumerate(all_obb):
-                    result = extract_one_crop(
+                    # Always extract AABB crop (for AprilTag + fallback)
+                    aabb_result = extract_one_crop(
                         frame,
                         corners,
                         di,
@@ -258,27 +295,70 @@ class UnifiedPrecompute:
                         cfg.suppress_foreign,
                         cfg.bg_color,
                     )
-                    if result is not None:
-                        crop, offset, _ = result
-                        crops.append(crop)
-                        crop_det_indices.append(di)
-                        crop_offsets.append((int(offset[0]), int(offset[1])))
+                    if aabb_result is None:
+                        continue
+
+                    aabb_crop, offset, _ = aabb_result
+                    aabb_crops.append(aabb_crop)
+                    aabb_offsets.append((int(offset[0]), int(offset[1])))
+                    crop_det_indices.append(di)
+
+                    # Extract canonical crop when affine is available
+                    M_can = (
+                        filtered_affines[di]
+                        if (filtered_affines and di < len(filtered_affines))
+                        else None
+                    )
+                    if use_canonical and M_can is not None:
+                        from multi_tracker.core.tracking.canonical_crop import (
+                            extract_canonical_crop,
+                        )
+
+                        c_crop = extract_canonical_crop(
+                            frame,
+                            M_can,
+                            cfg.canonical_crop_width,
+                            cfg.canonical_crop_height,
+                            bg_color=cfg.bg_color,
+                        )
+                        M_inv = cv2.invertAffineTransform(
+                            np.asarray(M_can, dtype=np.float64)
+                        )
+                        canonical_crops.append(c_crop)
+                        canonical_M_inv.append(M_inv.astype(np.float32))
+                    else:
+                        # Fallback: use AABB crop, no affine
+                        canonical_crops.append(aabb_crop)
+                        canonical_M_inv.append(None)
 
             frame_detection_ids = [
                 int(det_ids[i]) if det_ids and i < len(det_ids) else i
                 for i in range(len(all_obb))
             ]
 
-            # fan-out to all phases
+            # --- Fan-out to all phases ---
+            # Phases that prefer AABB crops (e.g. AprilTag) get aabb_crops + offsets.
+            # Other phases get canonical crops + M_inverse affines.
             for phase in self._phases:
-                phase.process_frame(
-                    frame_idx,
-                    crops,
-                    frame_detection_ids,
-                    crop_det_indices,
-                    all_obb,
-                    crop_offsets,
-                )
+                if getattr(phase, "_prefer_aabb_crops", False):
+                    phase.process_frame(
+                        frame_idx,
+                        aabb_crops,
+                        frame_detection_ids,
+                        crop_det_indices,
+                        all_obb,
+                        aabb_offsets,
+                    )
+                else:
+                    phase.process_frame(
+                        frame_idx,
+                        canonical_crops if use_canonical else aabb_crops,
+                        frame_detection_ids,
+                        crop_det_indices,
+                        all_obb,
+                        aabb_offsets,
+                        canonical_affines=(canonical_M_inv if use_canonical else None),
+                    )
 
             # cancellation check — AFTER processing the frame
             if stop_check and stop_check():
@@ -342,6 +422,7 @@ class AprilTagPrecomputePhase(PrecomputePhase):
 
     name = "apriltag"
     is_fatal = False
+    _prefer_aabb_crops = True  # AprilTag needs AABB crops for precise edge detection
 
     def __init__(
         self,
@@ -405,6 +486,8 @@ class AprilTagPrecomputePhase(PrecomputePhase):
         crop_det_indices: List[int],
         all_obb: List[np.ndarray],
         crop_offsets: List[Tuple[int, int]],
+        *,
+        canonical_affines: Optional[List[Optional[np.ndarray]]] = None,
     ) -> None:
         if self._hit:
             return
@@ -530,6 +613,8 @@ class CNNPrecomputePhase(PrecomputePhase):
         crop_det_indices: List[int],
         all_obb: List[np.ndarray],
         crop_offsets: List[Tuple[int, int]],
+        *,
+        canonical_affines: Optional[List[Optional[np.ndarray]]] = None,
     ) -> None:
         if self._hit or self._cache is None:
             return

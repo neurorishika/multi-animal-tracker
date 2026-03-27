@@ -119,6 +119,23 @@ class IndividualDatasetGenerator:
             params.get("SUPPRESS_FOREIGN_OBB_DATASET", False)
         )
 
+        # Canonical crop dimensions (from ADVANCED_CONFIG).  When > 0,
+        # process_frame will prefer canonical crops over AABB extraction.
+        _adv = params.get("ADVANCED_CONFIG", {})
+        _canon_long = int(_adv.get("canonical_crop_long_edge", 256))
+        _ref_ar = float(_adv.get("reference_aspect_ratio", 2.0))
+        if _canon_long > 0 and _ref_ar > 0:
+            from multi_tracker.core.tracking.canonical_crop import (
+                compute_crop_dimensions,
+            )
+
+            self._canonical_crop_width, self._canonical_crop_height = (
+                compute_crop_dimensions(_canon_long, _ref_ar)
+            )
+        else:
+            self._canonical_crop_width = 0
+            self._canonical_crop_height = 0
+
         # Save interval (use detections as-is, just control frequency)
         self.save_every_n_frames = params.get("INDIVIDUAL_SAVE_INTERVAL", 1)
 
@@ -285,6 +302,7 @@ class IndividualDatasetGenerator:
         heading_hints: Optional[Sequence[float]] = None,
         directed_mask: Optional[Sequence[int]] = None,
         velocities: Optional[Sequence[Optional[Tuple[float, float]]]] = None,
+        canonical_affines: Optional[Sequence[Optional[np.ndarray]]] = None,
     ) -> int:
         """
         Process a frame and save masked crops for each detection.
@@ -311,6 +329,10 @@ class IndividualDatasetGenerator:
             heading_hints: Optional directed heading angles (radians) per detection from head-tail model.
             directed_mask: Optional boolean mask (0/1) per detection indicating whether heading_hints is valid.
             velocities: Optional (vx, vy) tuples per detection for motion-based fallback orientation.
+            canonical_affines: Optional M_canonical (2x3) affine matrices per detection.
+                When provided and canonical crop dimensions > 0, extract rotation-normalised
+                canonical crops instead of AABB-masked crops.  Falls back to legacy AABB
+                extraction when None or when a specific detection has no affine.
 
         Returns:
             num_saved: Number of crops saved from this frame
@@ -377,10 +399,80 @@ class IndividualDatasetGenerator:
                 ]
                 other_corners = scaled_all if scaled_all else None
 
-            # Extract and save masked crop
-            crop, crop_info = self._extract_obb_masked_crop(
-                frame, corners, h, w, other_corners_list=other_corners
+            # --- Extract crop: prefer canonical when available ---
+            M_canonical_i = (
+                canonical_affines[i]
+                if (canonical_affines is not None and i < len(canonical_affines))
+                else None
             )
+            use_canonical_crop = (
+                M_canonical_i is not None
+                and self._canonical_crop_width > 0
+                and self._canonical_crop_height > 0
+            )
+
+            crop = None
+            crop_info = None
+            M_inverse_i = None
+
+            if use_canonical_crop:
+                from multi_tracker.core.tracking.canonical_crop import (
+                    extract_canonical_crop,
+                )
+
+                M_can = np.asarray(M_canonical_i, dtype=np.float64)
+                crop = extract_canonical_crop(
+                    frame,
+                    M_can,
+                    self._canonical_crop_width,
+                    self._canonical_crop_height,
+                    bg_color=self.background_color,
+                )
+                M_inverse_i = cv2.invertAffineTransform(M_can).astype(np.float32)
+
+                # Foreign OBB suppression in canonical space
+                if other_corners and self.suppress_foreign_obb:
+                    _mask = (
+                        np.ones(
+                            (self._canonical_crop_height, self._canonical_crop_width),
+                            dtype=np.uint8,
+                        )
+                        * 255
+                    )
+                    for oc in other_corners:
+                        # Transform foreign corners into canonical crop space
+                        oc_h = np.hstack([oc, np.ones((4, 1))]).T  # 3 x 4
+                        oc_canon = (M_can @ oc_h).T.astype(np.int32)  # 4 x 2
+                        cv2.fillPoly(_mask, [oc_canon], 0)
+                    _mask_3ch = cv2.cvtColor(_mask, cv2.COLOR_GRAY2BGR)
+                    _bg = np.full_like(crop, self.background_color, dtype=np.uint8)
+                    crop = cv2.bitwise_and(crop, _mask_3ch) + cv2.bitwise_and(
+                        _bg, cv2.bitwise_not(_mask_3ch)
+                    )
+
+                crop_info = {
+                    "crop_size": (
+                        self._canonical_crop_width,
+                        self._canonical_crop_height,
+                    ),
+                    "crop_bbox": None,  # not applicable for canonical crops
+                    "obb_corners_local": None,
+                    "obb_corners_expanded_local": None,
+                    "canonical_center_px": [
+                        self._canonical_crop_width / 2.0,
+                        self._canonical_crop_height / 2.0,
+                    ],
+                    "canonical_size_px": [
+                        float(self._canonical_crop_width),
+                        float(self._canonical_crop_height),
+                    ],
+                    "expansion_factor": None,
+                }
+            else:
+                # Legacy AABB path
+                crop, crop_info = self._extract_obb_masked_crop(
+                    frame, corners, h, w, other_corners_list=other_corners
+                )
 
             if crop is not None:
                 # Build metadata for this crop
@@ -418,6 +510,22 @@ class IndividualDatasetGenerator:
                     theta, _hint, _is_directed, _vx, _vy
                 )
 
+                _canon_block = {
+                    "center_px": crop_info["canonical_center_px"],
+                    "size_px": crop_info["canonical_size_px"],
+                    "angle_rad": float(canon_angle),
+                    "major_axis_theta_rad": float(theta),
+                    "minor_axis_theta_rad": float(theta + (np.pi / 2.0)),
+                    "directed": bool(canon_directed),
+                    "orientation_source": canon_source,
+                }
+                if M_inverse_i is not None:
+                    _canon_block["M_canonical"] = M_canonical_i.tolist()
+                    _canon_block["M_inverse"] = M_inverse_i.tolist()
+                    _canon_block["crop_type"] = "canonical"
+                else:
+                    _canon_block["crop_type"] = "aabb"
+
                 crop_metadata = {
                     "frame_id": int(frame_id),
                     "detection_idx": i,
@@ -433,15 +541,7 @@ class IndividualDatasetGenerator:
                     "obb_corners_expanded_local": crop_info[
                         "obb_corners_expanded_local"
                     ],
-                    "canonicalization": {
-                        "center_px": crop_info["canonical_center_px"],
-                        "size_px": crop_info["canonical_size_px"],
-                        "angle_rad": float(canon_angle),
-                        "major_axis_theta_rad": float(theta),
-                        "minor_axis_theta_rad": float(theta + (np.pi / 2.0)),
-                        "directed": bool(canon_directed),
-                        "orientation_source": canon_source,
-                    },
+                    "canonicalization": _canon_block,
                     "source_type": source_type,
                 }
 
@@ -469,15 +569,51 @@ class IndividualDatasetGenerator:
         interp_total: int,
         heading_angle: Optional[float] = None,
         heading_directed: bool = False,
+        canonical_affine: Optional[np.ndarray] = None,
     ) -> Optional[str]:
         """Save one interpolated crop for trajectory gap-filling supervision."""
         if not self.enabled or self.crops_dir is None:
             return None
 
         corners = self.ellipse_to_obb_corners(cx, cy, w, h, theta)
-        crop, crop_info = self._extract_obb_masked_crop(
-            frame, corners, frame.shape[0], frame.shape[1]
-        )
+
+        # Prefer canonical crop when affine is provided
+        M_inv = None
+        if (
+            canonical_affine is not None
+            and self._canonical_crop_width > 0
+            and self._canonical_crop_height > 0
+        ):
+            from multi_tracker.core.tracking.canonical_crop import (
+                extract_canonical_crop,
+            )
+
+            M_can = np.asarray(canonical_affine, dtype=np.float64)
+            crop = extract_canonical_crop(
+                frame,
+                M_can,
+                self._canonical_crop_width,
+                self._canonical_crop_height,
+                bg_color=self.background_color,
+            )
+            M_inv = cv2.invertAffineTransform(M_can).astype(np.float32)
+            crop_info = {
+                "crop_size": (self._canonical_crop_width, self._canonical_crop_height),
+                "obb_corners_local": None,
+                "obb_corners_expanded_local": None,
+                "canonical_center_px": [
+                    self._canonical_crop_width / 2.0,
+                    self._canonical_crop_height / 2.0,
+                ],
+                "canonical_size_px": [
+                    float(self._canonical_crop_width),
+                    float(self._canonical_crop_height),
+                ],
+            }
+        else:
+            crop, crop_info = self._extract_obb_masked_crop(
+                frame, corners, frame.shape[0], frame.shape[1]
+            )
         if crop is None:
             return None
 
@@ -491,6 +627,22 @@ class IndividualDatasetGenerator:
         interp_canon_angle, interp_canon_directed, interp_canon_source = (
             _resolve_directed_angle(theta, heading_angle, heading_directed)
         )
+        _interp_canon_block = {
+            "center_px": crop_info["canonical_center_px"],
+            "size_px": crop_info["canonical_size_px"],
+            "angle_rad": float(interp_canon_angle),
+            "major_axis_theta_rad": float(theta),
+            "minor_axis_theta_rad": float(theta + (np.pi / 2.0)),
+            "directed": bool(interp_canon_directed),
+            "orientation_source": interp_canon_source,
+        }
+        if M_inv is not None:
+            _interp_canon_block["M_canonical"] = canonical_affine.tolist()
+            _interp_canon_block["M_inverse"] = M_inv.tolist()
+            _interp_canon_block["crop_type"] = "canonical"
+        else:
+            _interp_canon_block["crop_type"] = "aabb"
+
         metadata = {
             "frame_id": int(frame_id),
             "detection_idx": -1,
@@ -504,15 +656,7 @@ class IndividualDatasetGenerator:
             "obb_corners": corners.tolist(),
             "obb_corners_local": crop_info["obb_corners_local"],
             "obb_corners_expanded_local": crop_info["obb_corners_expanded_local"],
-            "canonicalization": {
-                "center_px": crop_info["canonical_center_px"],
-                "size_px": crop_info["canonical_size_px"],
-                "angle_rad": float(interp_canon_angle),
-                "major_axis_theta_rad": float(theta),
-                "minor_axis_theta_rad": float(theta + (np.pi / 2.0)),
-                "directed": bool(interp_canon_directed),
-                "orientation_source": interp_canon_source,
-            },
+            "canonicalization": _interp_canon_block,
             "source_type": "interpolated",
             "interpolated": True,
             "interp_from_frames": [int(interp_from[0]), int(interp_from[1])],

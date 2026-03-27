@@ -54,6 +54,7 @@ class FrameCropResult:
     crop_offsets: Dict[int, Tuple[int, int]]
     all_obb_corners: List[np.ndarray]
     crop_transforms: Dict[int, CropTransform] = field(default_factory=dict)
+    crop_M_inverses: Dict[int, np.ndarray] = field(default_factory=dict)
 
 
 def _require_detection_index(det_idx: int, n_dets: int) -> int:
@@ -376,10 +377,32 @@ class PosePipeline:
 
             all_obb = [np.asarray(c, dtype=np.float32) for c in (filt_obb or [])]
 
+            # --- filter canonical affines to match filtered detections ---
+            filtered_M_inv: Optional[Dict[int, np.ndarray]] = None
+            if raw_canonical_affines is not None and raw_ids:
+                raw_id_map: Dict[int, int] = {}
+                for idx, rid in enumerate(raw_ids):
+                    raw_id_map[int(rid)] = idx
+                filtered_M_inv = {}
+                for di, did in enumerate(det_ids):
+                    raw_idx = raw_id_map.get(int(did))
+                    if (
+                        raw_idx is not None
+                        and raw_idx < len(raw_canonical_affines)
+                        and raw_canonical_affines[raw_idx] is not None
+                    ):
+                        M_inv = cv2.invertAffineTransform(
+                            np.asarray(raw_canonical_affines[raw_idx], dtype=np.float64)
+                        )
+                        filtered_M_inv[di] = M_inv.astype(np.float32)
+
             # --- extract crops (parallel across detections) ---
             fcr = self._extract_frame_crops(
                 frame if ret else None, meas, det_ids, filt_obb, all_obb, frame_idx
             )
+            # Attach canonical M_inverse to FrameCropResult
+            if filtered_M_inv:
+                fcr.crop_M_inverses = filtered_M_inv
             self._pending.append(fcr)
             self._flat_crops.extend(fcr.crops)
 
@@ -434,12 +457,18 @@ class PosePipeline:
         crop_det_indices: List[int],
         all_obb: List[np.ndarray],
         crop_offsets: List[Tuple[int, int]],
+        *,
+        canonical_affines: Optional[List[Optional[np.ndarray]]] = None,
     ) -> None:
         """Accept pre-extracted crops and feed them into the inference pipeline.
 
         Letterboxing is applied here if pre_resize_target > 0 (backend detail).
         If crops is empty, this is a no-op (sparse cache — frames with no
         detections are absent from the pose cache).
+
+        canonical_affines: When provided, a parallel list of M_inverse (2x3)
+        arrays for canonical-crop-to-frame coordinate mapping.  Takes priority
+        over offset-based mapping when present.
         """
         if self._cache_hit:
             return
@@ -455,9 +484,12 @@ class PosePipeline:
             crop_offsets={},
             all_obb_corners=list(all_obb),
             crop_transforms={},
+            crop_M_inverses={},
         )
 
-        for crop, offset, det_idx in zip(crops, crop_offsets, crop_det_indices):
+        for ci, (crop, offset, det_idx) in enumerate(
+            zip(crops, crop_offsets, crop_det_indices)
+        ):
             slot_idx = _require_detection_index(det_idx, fcr.n_dets)
             processed = crop
             if self._pre_resize > 0:
@@ -468,6 +500,13 @@ class PosePipeline:
             fcr.crops.append(processed)
             fcr.crop_to_det.append(slot_idx)
             fcr.crop_offsets[slot_idx] = offset
+            # Store M_inverse when canonical affines are available
+            if (
+                canonical_affines
+                and ci < len(canonical_affines)
+                and canonical_affines[ci] is not None
+            ):
+                fcr.crop_M_inverses[slot_idx] = canonical_affines[ci]
 
         self._pending.append(fcr)
         self._flat_crops.extend(fcr.crops)
@@ -622,6 +661,7 @@ class PosePipeline:
                 out = batch_slice[ci]
                 kpts = out.keypoints
                 crop_offset = pf.crop_offsets.get(slot_idx)
+                M_inverse = pf.crop_M_inverses.get(slot_idx)
                 if kpts is not None and crop_offset is not None and len(kpts) > 0:
                     gkpts = np.asarray(kpts, dtype=np.float32).copy()
                     # Undo letterbox if pre-resized
@@ -629,9 +669,18 @@ class PosePipeline:
                     if transform is not None:
                         gkpts = invert_letterbox_keypoints(gkpts, transform)
                     # Map crop-local → frame-global coordinates
-                    x0, y0 = crop_offset
-                    gkpts[:, 0] += float(x0)
-                    gkpts[:, 1] += float(y0)
+                    if M_inverse is not None:
+                        # Canonical crop: use affine inverse for accurate mapping
+                        from multi_tracker.core.tracking.canonical_crop import (
+                            invert_keypoints,
+                        )
+
+                        gkpts = invert_keypoints(gkpts, M_inverse).astype(np.float32)
+                    else:
+                        # Legacy AABB crop: simple offset addition
+                        x0, y0 = crop_offset
+                        gkpts[:, 0] += float(x0)
+                        gkpts[:, 1] += float(y0)
                     # Suppress keypoints landing inside other animals' OBBs
                     if self._suppress_foreign and len(pf.all_obb_corners) > 1:
                         from multi_tracker.core.tracking.pose_features import (
