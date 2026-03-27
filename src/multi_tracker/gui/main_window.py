@@ -4904,9 +4904,103 @@ class MainWindow(QMainWindow):
             "Automatically set reference body size to the median detected diameter"
         )
         btn_layout.addWidget(self.btn_auto_set_body_size)
+
+        self.btn_auto_set_aspect_ratio = QPushButton("Auto-Set Aspect Ratio")
+        self.btn_auto_set_aspect_ratio.clicked.connect(
+            self._auto_set_aspect_ratio_from_detection
+        )
+        self.btn_auto_set_aspect_ratio.setEnabled(False)
+        self.btn_auto_set_aspect_ratio.setToolTip(
+            "Set reference aspect ratio from the median detected major/minor ratio"
+        )
+        btn_layout.addWidget(self.btn_auto_set_aspect_ratio)
         vl_stats.addLayout(btn_layout)
 
         vbox.addWidget(g_detect_stats)
+
+        # ============================================================
+        # Aspect Ratio & Canonical Crop
+        # ============================================================
+        g_ar = QGroupBox("Aspect Ratio & Canonical Crop")
+        self._set_compact_section_widget(g_ar)
+        vl_ar = QVBoxLayout(g_ar)
+        vl_ar.addWidget(
+            self._create_help_label(
+                "Filter detections by aspect ratio and configure the canonical "
+                "crop used for head-tail classification. The reference aspect "
+                "ratio can be auto-detected from the median OBB dimensions."
+            )
+        )
+        f_ar = QFormLayout(None)
+        f_ar.setHorizontalSpacing(10)
+        f_ar.setVerticalSpacing(8)
+
+        self.spin_reference_aspect_ratio = QDoubleSpinBox()
+        self.spin_reference_aspect_ratio.setRange(1.0, 20.0)
+        self.spin_reference_aspect_ratio.setSingleStep(0.1)
+        self.spin_reference_aspect_ratio.setDecimals(2)
+        self.spin_reference_aspect_ratio.setValue(2.0)
+        self.spin_reference_aspect_ratio.setFixedHeight(30)
+        self.spin_reference_aspect_ratio.setToolTip(
+            "Species-typical major/minor axis ratio.\n"
+            "Used for adaptive canonical crop dimensions and aspect ratio filtering.\n"
+            "Click 'Auto-Set Aspect Ratio' to detect from sample frames."
+        )
+        f_ar.addRow("Reference aspect ratio", self.spin_reference_aspect_ratio)
+
+        self.chk_enable_aspect_ratio_filtering = QCheckBox(
+            "Filter detections by aspect ratio"
+        )
+        self.chk_enable_aspect_ratio_filtering.setChecked(False)
+        self.chk_enable_aspect_ratio_filtering.setToolTip(
+            "Reject detections with aspect ratios outside the expected range.\n"
+            "Helps filter scratches, debris, and other non-animal detections."
+        )
+        f_ar.addRow(self.chk_enable_aspect_ratio_filtering)
+
+        h_ar_mult = QHBoxLayout()
+        self.spin_min_ar_multiplier = QDoubleSpinBox()
+        self.spin_min_ar_multiplier.setRange(0.1, 1.0)
+        self.spin_min_ar_multiplier.setSingleStep(0.05)
+        self.spin_min_ar_multiplier.setDecimals(2)
+        self.spin_min_ar_multiplier.setValue(0.5)
+        self.spin_min_ar_multiplier.setFixedHeight(30)
+        self.spin_min_ar_multiplier.setToolTip(
+            "Minimum aspect ratio = reference × this multiplier.\n"
+            "Detections more compact than this are rejected."
+        )
+        self.spin_max_ar_multiplier = QDoubleSpinBox()
+        self.spin_max_ar_multiplier.setRange(1.0, 10.0)
+        self.spin_max_ar_multiplier.setSingleStep(0.1)
+        self.spin_max_ar_multiplier.setDecimals(2)
+        self.spin_max_ar_multiplier.setValue(2.0)
+        self.spin_max_ar_multiplier.setFixedHeight(30)
+        self.spin_max_ar_multiplier.setToolTip(
+            "Maximum aspect ratio = reference × this multiplier.\n"
+            "Detections more elongated than this are rejected."
+        )
+        h_ar_mult.addWidget(QLabel("Min multiplier"))
+        h_ar_mult.addWidget(self.spin_min_ar_multiplier)
+        h_ar_mult.addWidget(QLabel("Max multiplier"))
+        h_ar_mult.addWidget(self.spin_max_ar_multiplier)
+        f_ar.addRow(h_ar_mult)
+
+        self.spin_canonical_headtail_long_edge = QSpinBox()
+        self.spin_canonical_headtail_long_edge.setRange(32, 512)
+        self.spin_canonical_headtail_long_edge.setSingleStep(16)
+        self.spin_canonical_headtail_long_edge.setValue(128)
+        self.spin_canonical_headtail_long_edge.setFixedHeight(30)
+        self.spin_canonical_headtail_long_edge.setToolTip(
+            "Long-edge size (px) of the canonical crop used for head-tail\n"
+            "classification. The short edge is derived from the reference\n"
+            "aspect ratio. Default 128."
+        )
+        f_ar.addRow(
+            "Head-tail crop long edge (px)", self.spin_canonical_headtail_long_edge
+        )
+
+        vl_ar.addLayout(f_ar)
+        vbox.addWidget(g_ar)
 
         # ============================================================
         # Size Filtering
@@ -10314,6 +10408,7 @@ class MainWindow(QMainWindow):
             "recommended_body_size": stats["geometric_mean"][
                 "median"
             ],  # Use geometric mean median
+            "recommended_aspect_ratio": stats["aspect_ratio"]["median"],
         }
 
         # Update label with comprehensive statistics
@@ -10332,6 +10427,7 @@ class MainWindow(QMainWindow):
         )
         self.label_detection_stats.setText(stats_text)
         self.btn_auto_set_body_size.setEnabled(True)
+        self.btn_auto_set_aspect_ratio.setEnabled(True)
 
     def _auto_set_body_size_from_detection(self):
         """Auto-set reference body size from detected geometric mean."""
@@ -10353,6 +10449,21 @@ class MainWindow(QMainWindow):
             f"  • Minor axis: {stats['minor']['median']:.1f} px\n"
             f"  • Aspect ratio: {stats['aspect_ratio']['median']:.2f}\n\n"
             f"All distance/size parameters will now scale relative to this value.",
+        )
+
+    def _auto_set_aspect_ratio_from_detection(self):
+        """Auto-set reference aspect ratio from detected median."""
+        if self.detected_sizes is None:
+            return
+        recommended_ar = self.detected_sizes["recommended_aspect_ratio"]
+        self.spin_reference_aspect_ratio.setValue(recommended_ar)
+        QMessageBox.information(
+            self,
+            "Aspect Ratio Updated",
+            f"Reference aspect ratio set to {recommended_ar:.2f}\n"
+            f"(median of {self.detected_sizes['count']} detections)\n\n"
+            f"Head-tail crop dimensions will adapt to this ratio.\n"
+            f"Aspect ratio filtering (if enabled) will use this as the centre.",
         )
 
     def _on_video_output_toggled(self, checked):
@@ -15362,6 +15473,22 @@ class MainWindow(QMainWindow):
             int(self._video_pose_color[1]),
             int(self._video_pose_color[2]),
         ]
+        # Canonical crop / aspect ratio params (from UI widgets)
+        advanced_config["canonical_headtail_long_edge"] = (
+            self.spin_canonical_headtail_long_edge.value()
+        )
+        advanced_config["reference_aspect_ratio"] = (
+            self.spin_reference_aspect_ratio.value()
+        )
+        advanced_config["enable_aspect_ratio_filtering"] = (
+            self.chk_enable_aspect_ratio_filtering.isChecked()
+        )
+        advanced_config["min_aspect_ratio_multiplier"] = (
+            self.spin_min_ar_multiplier.value()
+        )
+        advanced_config["max_aspect_ratio_multiplier"] = (
+            self.spin_max_ar_multiplier.value()
+        )
 
         individual_pipeline_enabled = self._is_individual_pipeline_enabled()
         individual_image_save_enabled = self._is_individual_image_save_enabled()
@@ -15936,6 +16063,21 @@ class MainWindow(QMainWindow):
             )
             self.spin_yolo_headtail_conf.setValue(
                 float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
+            )
+            self.spin_canonical_headtail_long_edge.setValue(
+                int(get_cfg("canonical_headtail_long_edge", default=128))
+            )
+            self.spin_reference_aspect_ratio.setValue(
+                float(get_cfg("reference_aspect_ratio", default=2.0))
+            )
+            self.chk_enable_aspect_ratio_filtering.setChecked(
+                bool(get_cfg("enable_aspect_ratio_filtering", default=False))
+            )
+            self.spin_min_ar_multiplier.setValue(
+                float(get_cfg("min_aspect_ratio_multiplier", default=0.5))
+            )
+            self.spin_max_ar_multiplier.setValue(
+                float(get_cfg("max_aspect_ratio_multiplier", default=2.0))
             )
             self._on_yolo_mode_changed(self.combo_yolo_obb_mode.currentIndex())
 
@@ -16774,6 +16916,11 @@ class MainWindow(QMainWindow):
                 "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
                 "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
                 "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
+                "canonical_headtail_long_edge": self.spin_canonical_headtail_long_edge.value(),
+                "reference_aspect_ratio": self.spin_reference_aspect_ratio.value(),
+                "enable_aspect_ratio_filtering": self.chk_enable_aspect_ratio_filtering.isChecked(),
+                "min_aspect_ratio_multiplier": self.spin_min_ar_multiplier.value(),
+                "max_aspect_ratio_multiplier": self.spin_max_ar_multiplier.value(),
                 "yolo_confidence_threshold": self.spin_yolo_confidence.value(),
                 "yolo_iou_threshold": self.spin_yolo_iou.value(),
                 "use_custom_obb_iou_filtering": self.chk_use_custom_obb_iou.isChecked(),

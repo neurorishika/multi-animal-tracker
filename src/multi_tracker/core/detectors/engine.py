@@ -2354,7 +2354,7 @@ class YOLOOBBDetector:
             keep_mask &= (ellipse_area_arr >= min_size) & (ellipse_area_arr <= max_size)
 
         if self._advanced_config_value("enable_aspect_ratio_filtering", False):
-            ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 1.0))
+            ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
             min_ar_mult = float(
                 self._advanced_config_value("min_aspect_ratio_multiplier", 0.5)
             )
