@@ -80,6 +80,184 @@ geometry, settings, and call site:
 
 ---
 
+## Bug Fix: Area-Based Size Filter Mismatch
+
+### The Problem
+
+The GUI and the detector use **different area formulas**, so the
+min/max size thresholds are comparing apples to oranges:
+
+| Stage | Formula | Meaning |
+|---|---|---|
+| **GUI** (`_preview_object_size_pixels`) | $\pi \cdot (\text{ref}/2)^2 \cdot \text{rf}^2$ | Circular area — treats `reference_body_size` as a circle diameter |
+| **Detector** (`_extract_raw_detections`) | `major × minor` | OBB rectangular area |
+| **Detector** (`shapes_arr[:, 0]`) | $\pi \cdot (\text{major}/2) \cdot (\text{minor}/2)$ | Ellipse area (already computed, never used for filtering) |
+
+The auto-detected `reference_body_size` = $\sqrt{\text{major} \cdot \text{minor}}$
+(geometric mean).  With this reference:
+
+$$
+\text{GUI area} = \pi \cdot \left(\frac{\sqrt{\text{major} \cdot \text{minor}}}{2}\right)^{\!2}
+= \frac{\pi}{4} \cdot \text{major} \cdot \text{minor}
+\approx 0.785 \cdot \text{OBB rect area}
+$$
+
+So the GUI thinks a 1× multiplier yields $\approx 78.5\%$ of the actual
+OBB area the detector filters on.  For elongated animals (aspect ratio
+3:1), this means the effective minimum is **too permissive** and the
+maximum is **too tight** by a factor of $4/\pi \approx 1.27$.
+
+### The Fix
+
+Make both sides use **ellipse area** consistently:
+
+1. **`filter_raw_detections` (engine.py):** Filter on `shapes_arr[:, 0]`
+   (ellipse area = $\pi \cdot \text{major}/2 \cdot \text{minor}/2$)
+   instead of `sizes_arr` (OBB rect area = `major × minor`).
+
+2. **`_preview_object_size_pixels` (main_window.py):** Already correct —
+   $\pi \cdot (\text{ref}/2)^2 = \pi \cdot \text{ref}^2 / 4$.
+   Since `ref` = $\sqrt{\text{major} \cdot \text{minor}}$, this equals
+   $\pi \cdot \text{major} \cdot \text{minor} / 4$, which IS the ellipse
+   area.  ✓ No change needed.
+
+3. **`_expected_body_area` (engine.py):** The `MIN_OBJECT_SIZE` fallback
+   is now an ellipse area.  The circular estimate from
+   `REFERENCE_BODY_SIZE` is already $\pi \cdot (\text{ref}/2)^2$, which
+   equals the ellipse area for any aspect ratio when `ref` is the
+   geometric mean.  ✓ No change needed.
+
+4. **Background-model `detect_contours` path (engine.py line ~248):**
+   `sizes.append(area)` where `area = ax1 * ax2` (OBB rect area).
+   Change to `area = π * (ax1/2) * (ax2/2)` (ellipse area).
+
+**Net effect:** One-line change in `filter_raw_detections`, one-line
+change in the contour path.  The multiplier sliders in the GUI now
+correctly represent the physical size of the animal (ellipse
+approximation) regardless of aspect ratio.
+
+---
+
+## New Feature: Aspect Ratio Filtering
+
+### Motivation
+
+The OBB detector sometimes returns false positives with aspect ratios
+very different from the target species (e.g., long scratches on the
+arena floor, or compact debris).  The detector already computes
+`aspect_ratio = major / minor` in `shapes_arr[:, 1]` but never
+filters on it.  Adding aspect-ratio filtering alongside size filtering
+gives a second orthogonal dimension for rejecting outliers.
+
+### New Configuration Parameters
+
+```json
+{
+  "reference_aspect_ratio": 3.0,
+  "enable_aspect_ratio_filtering": true,
+  "min_aspect_ratio_multiplier": 0.5,
+  "max_aspect_ratio_multiplier": 2.0
+}
+```
+
+| Parameter | Meaning | Default |
+|---|---|---|
+| `reference_aspect_ratio` | Species-typical `major/minor` ratio.  Auto-detected from median aspect ratio of OBB detections. | 3.0 |
+| `enable_aspect_ratio_filtering` | Whether to filter detections by aspect ratio. | `true` |
+| `min_aspect_ratio_multiplier` | Detections below `reference × multiplier` are rejected. | 0.5 |
+| `max_aspect_ratio_multiplier` | Detections above `reference × multiplier` are rejected. | 2.0 |
+
+With defaults (ref=3.0, min=0.5×, max=2.0×), accepted aspect ratios
+range from **1.5** to **6.0**.
+
+### Implementation in `filter_raw_detections`
+
+```python
+if self.params.get("ENABLE_ASPECT_RATIO_FILTERING", False):
+    ref_ar = float(self.params.get("REFERENCE_ASPECT_RATIO", 1.0))
+    min_ar = ref_ar * float(self.params.get("MIN_ASPECT_RATIO_MULTIPLIER", 0.5))
+    max_ar = ref_ar * float(self.params.get("MAX_ASPECT_RATIO_MULTIPLIER", 2.0))
+    ar_arr = shapes_arr[:, 1]  # aspect ratio column
+    keep_mask &= (ar_arr >= min_ar) & (ar_arr <= max_ar)
+```
+
+### GUI Auto-Detect
+
+The `_update_detection_stats` method already computes `aspect_ratios`
+and displays the median.  Add:
+
+1. **"Auto-Set Aspect Ratio" button** (or combine with existing
+   "Auto-Set Body Size" → "Auto-Calibrate" that sets both).
+2. `recommended_aspect_ratio = stats["aspect_ratio"]["median"]`
+3. Store in `self.detected_sizes["recommended_aspect_ratio"]`.
+
+---
+
+## New Feature: Adaptive Canonical Crop Dimensions
+
+### Motivation
+
+Hardcoded crop dimensions (e.g., 256 × 128 or 128 × 64) assume a
+fixed aspect ratio.  If the species aspect ratio is known via
+`REFERENCE_ASPECT_RATIO`, the canonical crop canvas can be sized to
+**match the species shape exactly**, eliminating letterbox padding
+and maximising the useful pixel area.
+
+### Formula
+
+Given `CANONICAL_CROP_LONG_EDGE` (default 256) and
+`REFERENCE_ASPECT_RATIO` (auto-detected):
+
+$$
+W_{\text{canon}} = \texttt{CANONICAL\_CROP\_LONG\_EDGE}
+$$
+$$
+H_{\text{canon}} = \operatorname{round}\!\left(
+  \frac{W_{\text{canon}}}{\texttt{REFERENCE\_ASPECT\_RATIO}}
+\right)
+$$
+
+For *O. biroi* with aspect ratio ~3.0:
+$W = 256$, $H = \operatorname{round}(256 / 3.0) = 85$.
+
+**Head-tail inference dimensions** follow the same ratio:
+$$
+W_{\text{ht}} = \texttt{CANONICAL\_HEADTAIL\_LONG\_EDGE} \quad (\text{default } 128)
+$$
+$$
+H_{\text{ht}} = \operatorname{round}(W_{\text{ht}} / \texttt{REFERENCE\_ASPECT\_RATIO})
+$$
+
+### Benefits
+
+- **No letterboxing needed** in `compute_alignment_affine` — the affine
+  maps the expanded OBB directly into a canvas that has the correct
+  species aspect ratio.  No wasted border pixels.
+- **Uniform scale factor** simplifies to:
+  $$s = \frac{W_{\text{canon}}}{a'} = \frac{H_{\text{canon}}}{b'}$$
+  (both ratios equal when canvas AR matches species AR).
+- **Models see 100% animal pixels** — higher effective resolution per
+  model parameter.
+- **Species-portable** — changing `REFERENCE_ASPECT_RATIO` and
+  retraining gives optimal crops for any species.
+
+### Updated Configuration
+
+Replaces the old `canonical_crop_width` / `canonical_crop_height`:
+
+```json
+{
+  "canonical_crop_long_edge": 256,
+  "canonical_headtail_long_edge": 128,
+  "reference_aspect_ratio": 3.0
+}
+```
+
+The actual `(W, H)` pixel dimensions are computed at startup from
+these three values and cached for the duration of tracking.
+
+---
+
 ## Proposed Architecture
 
 ### The Canonical Crop
@@ -89,24 +267,25 @@ Every detection produces **one** canonical crop with the following properties:
 ```
 ┌───────────────────────────────────┐
 │                                   │
-│   HEAD →                     ←    │  Fixed size: W_CANON × H_CANON
-│   (right)    Animal body          │  (default: 256 × 128)
+│   HEAD →                     ←    │  Adaptive size: W_CANON × H_CANON
+│   (right)    Animal body          │  (derived from REFERENCE_ASPECT_RATIO)
 │                                   │
 │   Background: config colour       │  Foreign OBBs masked
-│   Padding: config fraction        │
+│   Padding: config fraction        │  No letterbox — canvas matches species AR
 └───────────────────────────────────┘
 ```
 
 - **Major axis horizontal, head facing right** (after head-tail rotation).
-- **Aspect ratio preserved** within the fixed canvas via letterbox-style
-  scaling: the expanded OBB region (with padding) is uniformly scaled so
-  the longest dimension fits, and the shorter dimension is centred with
-  background fill.
+- **Canvas aspect ratio matches the species** — derived from
+  `REFERENCE_ASPECT_RATIO` (auto-detected from median OBB aspect ratio).
+  No letterboxing or wasted border pixels.
+- **Uniform scale** maps the padded OBB directly into the adaptive canvas
+  (both dimensions scale equally when canvas AR ≈ species AR).
 - **Foreign OBB regions filled** with background colour (transformed into
   canonical space via `M_align`).
-- Configurable: `CANONICAL_CROP_WIDTH`, `CANONICAL_CROP_HEIGHT`,
-  `INDIVIDUAL_CROP_PADDING`, `INDIVIDUAL_BACKGROUND_COLOR`,
-  `SUPPRESS_FOREIGN_OBB_REGIONS`.
+- Configurable: `CANONICAL_CROP_LONG_EDGE`, `CANONICAL_HEADTAIL_LONG_EDGE`,
+  `REFERENCE_ASPECT_RATIO`, `INDIVIDUAL_CROP_PADDING`,
+  `INDIVIDUAL_BACKGROUND_COLOR`, `SUPPRESS_FOREIGN_OBB_REGIONS`.
 
 ### The Affine Chain
 
@@ -329,7 +508,7 @@ The `canonicalization` block in each crop's metadata gains:
   "canonicalization": {
     "M_canonical": [[m00, m01, m02], [m10, m11, m12]],
     "M_inverse": [[m00, m01, m02], [m10, m11, m12]],
-    "crop_size_px": [256, 128],
+    "crop_size_px": [256, 85],
     "heading_angle_rad": 1.57,
     "headtail_label": "right",
     "headtail_confidence": 0.93,
@@ -368,14 +547,15 @@ class CanonicalCropResult:
 
 def compute_alignment_affine(
     corners: np.ndarray,
-    crop_width: int,
-    crop_height: int,
+    crop_size: Tuple[int, int],
     padding_fraction: float,
 ) -> Tuple[np.ndarray, float]:
     """Compute M_align from OBB corners.
 
     Returns (M_align, major_axis_theta).
-    Letterbox-scales the expanded OBB into (crop_width, crop_height).
+    Uniform-scales the padded OBB into crop_size = (W, H),
+    which is derived from CANONICAL_CROP_LONG_EDGE and
+    REFERENCE_ASPECT_RATIO.
     """
 
 def extract_canonical_crop(
@@ -415,13 +595,23 @@ def invert_keypoints(
     Confidence column (if present) passes through unchanged.
     """
 
+def compute_crop_dimensions(
+    long_edge: int,
+    reference_aspect_ratio: float,
+) -> Tuple[int, int]:
+    """Derive (W, H) from long edge and species aspect ratio.
+
+    W = long_edge, H = round(long_edge / reference_aspect_ratio).
+    Ensures H >= 1 and is even (for codec compatibility).
+    """
+
 def extract_and_classify_batch(
     frames: List[np.ndarray],
     per_frame_corners: List[List[np.ndarray]],
     headtail_model,
     headtail_backend: str,
-    crop_width: int,
-    crop_height: int,
+    crop_size: Tuple[int, int],
+    headtail_crop_size: Tuple[int, int],
     padding_fraction: float,
     bg_color: Tuple[int, int, int],
     suppress_foreign: bool,
@@ -430,9 +620,13 @@ def extract_and_classify_batch(
 ) -> List[List[CanonicalCropResult]]:
     """Full canonical pipeline for a batch of frames.
 
+    crop_size and headtail_crop_size are pre-computed from
+    CANONICAL_CROP_LONG_EDGE / CANONICAL_HEADTAIL_LONG_EDGE
+    and REFERENCE_ASPECT_RATIO via compute_crop_dimensions().
+
     1. Compute M_align per detection
     2. Extract aligned crops (CPU, parallelisable)
-    3. Head-tail classify all crops in one GPU call
+    3. Resize to headtail_crop_size → head-tail classify (one GPU call)
     4. Apply orientation rotation → M_canonical
     5. Return per-frame lists of CanonicalCropResult
     """
@@ -440,16 +634,24 @@ def extract_and_classify_batch(
 
 ### Key Implementation Details
 
-**Letterbox scaling within the affine:**  Rather than warp to one size
-and then letterbox, we bake the letterbox into `M_align` itself.  The
-uniform scale factor is:
+**Uniform scaling (no letterbox needed):**  Because the canvas
+dimensions `(W, H)` are derived from the same `REFERENCE_ASPECT_RATIO`
+as the species, the padded OBB maps into the canvas with a single
+uniform scale factor:
 
-$$s = \min\!\left(\frac{W_{\text{out}}}{a'}, \frac{H_{\text{out}}}{b'}\right)$$
+$$s = \frac{W_{\text{canon}}}{a'} \approx \frac{H_{\text{canon}}}{b'}$$
 
 where $a' = a \cdot (1 + 2p)$ and $b' = b \cdot (1 + 2p)$ are the
-padded major/minor lengths.  The translation centres the scaled animal
-on the canvas.  This gives us a single `warpAffine` that does rotation +
-scale + translate + letterbox in one pass.
+padded major/minor lengths.  For individual detections whose aspect
+ratio differs slightly from the reference, we use the standard
+$\min$ formulation:
+
+$$s = \min\!\left(\frac{W_{\text{canon}}}{a'}, \frac{H_{\text{canon}}}{b'}\right)$$
+
+But because the canvas AR matches the population median, **most
+detections fill the canvas completely** with zero padding.  The
+translation centres the scaled animal on the canvas.  This gives us a
+single `warpAffine` that does rotation + scale + translate in one pass.
 
 **Foreign OBB suppression in canonical space:**  Transform each foreign
 OBB's corners via `M_align`:
@@ -591,21 +793,42 @@ time, the crops are immediately available.
 
 ## Configuration
 
-New parameters (in `ADVANCED_CONFIG` or top-level):
+### New parameters
 
 ```json
 {
-  "canonical_crop_width": 256,
-  "canonical_crop_height": 128,
-  "canonical_headtail_inference_width": 128,
-  "canonical_headtail_inference_height": 64,
+  "canonical_crop_long_edge": 256,
+  "canonical_headtail_long_edge": 128,
+  "reference_aspect_ratio": 3.0,
+  "enable_aspect_ratio_filtering": true,
+  "min_aspect_ratio_multiplier": 0.5,
+  "max_aspect_ratio_multiplier": 2.0,
   "canonical_treat_updown_as_unknown": true,
   "apriltag_use_canonical_crop": false
 }
 ```
 
-Existing parameters that now apply to canonical crops (semantics
-unchanged):
+| Parameter | Type | Description |
+|---|---|---|
+| `canonical_crop_long_edge` | int | Long-edge pixels for canonical crop canvas.  Short edge is derived from `reference_aspect_ratio`. |
+| `canonical_headtail_long_edge` | int | Long-edge pixels for head-tail inference input.  Short edge derived similarly. |
+| `reference_aspect_ratio` | float | Species-typical `major / minor` ratio.  Auto-detected from median OBB aspect ratio.  Drives both crop dimensions and (optional) aspect-ratio filtering. |
+| `enable_aspect_ratio_filtering` | bool | Reject detections whose aspect ratio deviates too far from `reference_aspect_ratio`. |
+| `min_aspect_ratio_multiplier` | float | Lower bound = `reference × multiplier`.  Default 0.5×. |
+| `max_aspect_ratio_multiplier` | float | Upper bound = `reference × multiplier`.  Default 2.0×. |
+| `canonical_treat_updown_as_unknown` | bool | Treat head-tail `up`/`down` as `unknown` (no rotation). |
+| `apriltag_use_canonical_crop` | bool | Use canonical crops for AprilTag detection (default: keep AABB). |
+
+### Derived (computed at startup, cached)
+
+```python
+W_canon = canonical_crop_long_edge                              # e.g. 256
+H_canon = round(canonical_crop_long_edge / reference_aspect_ratio)  # e.g. 85
+W_ht    = canonical_headtail_long_edge                          # e.g. 128
+H_ht    = round(canonical_headtail_long_edge / reference_aspect_ratio)  # e.g. 43
+```
+
+### Existing parameters (semantics unchanged, now apply to canonical crops)
 
 ```json
 {
@@ -619,27 +842,45 @@ unchanged):
 
 ## Implementation Phases
 
-### Phase A: Core Module + Detection Integration
+### Phase A: Core Module + Detection Integration + Filtering Fixes
 
 **Files:** New `canonical_crop.py`, modified `engine.py`, modified
-`detection_cache.py`.
+`detection_cache.py`, modified `main_window.py`.
 
-1. Implement `canonical_crop.py` with full API.
-2. Refactor `_canonicalize_obb_for_headtail` → use `compute_alignment_affine` + `extract_canonical_crop` + resize for inference.
-3. Refactor `_compute_headtail_hints_cross_frame` → use `extract_and_classify_batch`.
-4. Store `M_canonical` in detection cache (version 2.2).
-5. Single-frame `detect_objects` returns `CanonicalCropResult` list.
-6. All existing head-tail tests pass.
+1. **Fix area-based size filter** (engine.py):
+   - `filter_raw_detections`: filter on `shapes_arr[:, 0]` (ellipse area)
+     instead of `sizes_arr` (OBB rect area).
+   - Background-model `detect_contours` path: compute ellipse area
+     instead of `ax1 * ax2`.
+   - No GUI changes needed (`_preview_object_size_pixels` already uses
+     the mathematically equivalent $\pi \cdot (\text{ref}/2)^2$).
+2. **Add aspect-ratio filtering** (engine.py + main_window.py):
+   - `filter_raw_detections`: add `ENABLE_ASPECT_RATIO_FILTERING` /
+     `REFERENCE_ASPECT_RATIO` / multiplier gates using `shapes_arr[:, 1]`.
+   - GUI: add "Auto-Set Aspect Ratio" button (or combined
+     "Auto-Calibrate") using existing `stats["aspect_ratio"]["median"]`.
+   - Add `spin_reference_aspect_ratio`, `spin_min_ar_multiplier`,
+     `spin_max_ar_multiplier` spinboxes.
+3. Implement `canonical_crop.py` with full API (including
+   `compute_crop_dimensions`).
+4. Refactor `_canonicalize_obb_for_headtail` → use `compute_alignment_affine` + `extract_canonical_crop` + resize for head-tail inference.
+5. Refactor `_compute_headtail_hints_cross_frame` → use `extract_and_classify_batch`.
+6. Store `M_canonical` in detection cache (version 2.2).
+7. Single-frame `detect_objects` returns `CanonicalCropResult` list.
+8. All existing head-tail tests pass + new tests for area/AR filtering.
 
-### Phase B: Precompute Migration
+### Phase B: Precompute Migration + Model Retraining
 
-**Files:** Modified `precompute.py`, modified `pose_pipeline.py`.
+**Files:** Modified `precompute.py`, modified `pose_pipeline.py`,
+model training configs.
 
-1. `UnifiedPrecompute.run()` uses `M_canonical` from cache + `extract_canonical_crop` instead of `extract_one_crop`.
+1. `UnifiedPrecompute.run()` uses `M_canonical` from cache + `extract_canonical_crop` instead of `extract_one_crop`.  Crop size is the species-adaptive `(W_canon, H_canon)` — no letterboxing.
 2. Pose phase receives canonical crops; keypoint back-mapping uses `M_inverse` instead of offset addition.
 3. CNN identity phase receives canonical crops.
 4. AprilTag phase: keep AABB by default, add canonical option.
-5. All precompute + pose tests pass.
+5. **Retrain all canonical-crop models** on the new species-adaptive
+   aspect-ratio crops (see "Model Retraining Strategy" below).
+6. All precompute + pose tests pass.
 
 ### Phase C: Individual Dataset Migration
 
@@ -665,10 +906,75 @@ real-time pose/CNN hooks.
 
 ---
 
+## Model Retraining Strategy
+
+All models that consume canonical crops should be retrained on
+species-adaptive crops to maximise accuracy.  The user has confirmed
+they are happy to retrain.
+
+### Head-Tail Classifier (ClassKit)
+
+- **Current input:** 128 × 64 fixed (hardcoded in `_canonicalize_obb_for_headtail`).
+- **New input:** `(W_ht, H_ht)` derived from `REFERENCE_ASPECT_RATIO`
+  (e.g., 128 × 43 for AR=3.0).
+- **Retraining:** Generate new head-tail dataset via
+  `canonical_crop.extract_and_classify_batch` with `headtail_crop_size`.
+  Re-run ClassKit `stepper` / `tiny_train`.
+- **Fallback:** During transition, resize the species-adaptive crop to
+  the old 128 × 64 for inference with existing model.  This introduces
+  mild distortion for non-2:1 species but works.
+
+### Pose Estimator (YOLO-Pose / custom)
+
+- **Current input:** Letterboxed square AABB crop.
+- **New input:** Species-adaptive canonical crop, letterboxed to square
+  only if the model requires square input.  Since the canonical crop
+  already has the correct AR, the letterbox padding is minimal.
+- **Retraining:** Export new training data with `M_canonical` metadata.
+  Retrain on rotation-normalised, head-right crops → model no longer
+  needs to learn rotational equivariance.
+- **Keypoint mapping:** `M_inverse` back-mapping replaces the current
+  `kpts += (x0, y0)` offset.
+
+### CNN Identity (ClassKit / custom)
+
+- **Current input:** AABB crop resized to model input size.
+- **New input:** Canonical crop resized to model input size.
+- **Retraining:** Via ClassKit pipeline.  Canonical crops with consistent
+  orientation should **improve** identity accuracy (less rotational
+  variance in training data).
+- **Immediate benefit:** Even without retraining, the rotation
+  normalisation provides a more consistent input to existing models.
+
+### Training Data Generation
+
+A new utility in `canonical_crop.py`:
+
+```python
+def export_training_crops(
+    video_path: str,
+    detection_cache_path: str,
+    output_dir: str,
+    crop_size: Tuple[int, int],
+    padding_fraction: float,
+    bg_color: Tuple[int, int, int],
+) -> None:
+    """Export canonical crops for model retraining.
+
+    Reads cached M_canonical, extracts crops from video frames,
+    saves with metadata (M_canonical, M_inverse, heading, etc.).
+    """
+```
+
+---
+
 ## Testing Strategy
 
 | Test | Validates |
 |---|---|
+| Unit: ellipse area filter consistency | `filter_raw_detections` with `ENABLE_SIZE_FILTERING` accepts/rejects based on ellipse area, matching GUI `_preview_object_size_pixels` math |
+| Unit: aspect ratio filter | Detections outside `[ref×min_mult, ref×max_mult]` rejected |
+| Unit: `compute_crop_dimensions` | `(W, H)` correct for various aspect ratios; H even; H ≥ 2 |
 | Unit: `M_canonical` round-trip | `invert_keypoints(M_inverse, point) ≈ original` for random OBBs |
 | Unit: 180° rotation correctness | Crop rotated 180° has same pixels as re-extraction with θ + π |
 | Unit: foreign OBB suppression in canonical space | Transformed foreign polygon covers correct pixels |
@@ -684,9 +990,12 @@ real-time pose/CNN hooks.
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Existing head-tail model degrades on larger canonical crop (resized down to 128 × 64 for inference) | Low — bilinear downscale from 256 × 128 is equivalent to current warp at 128 × 64 | Monitor accuracy; retrain if needed |
-| Pose model accuracy changes on rotation-normalised input vs AABB | Medium — model was trained on AABB crops | Retrain pose model on canonical crops (Phase B follow-up) |
+| **Area filter fix changes existing thresholds** | Medium — ellipse area is $\pi/4 \approx 0.785×$ OBB rect area | User's existing multiplier settings shift by $4/\pi \approx 1.27×$.  On migration, either auto-scale stored `MIN_OBJECT_SIZE`/`MAX_OBJECT_SIZE` by $4/\pi$, or note in release that recalibration is needed. |
+| **Aspect-ratio filter too aggressive** | Low — default range is wide (0.5× to 2.0× reference) | Start with `enable_aspect_ratio_filtering: false` and let user opt-in. |
+| Existing head-tail model degrades on species-adaptive crop dimensions | Low — bilinear downscale preserves features | Retrain on species-adaptive crops (Phase B); fallback: resize to old 128 × 64 |
+| Pose model accuracy changes on rotation-normalised input vs AABB | Medium — model was trained on AABB crops | Retrain pose model on canonical crops (Phase B) |
 | CNN identity accuracy changes | Low — rotation normalisation should help, not hurt | Validate on held-out set; retrain via ClassKit if needed |
 | AprilTag detection degrades on canonical crops | Medium — affine interpolation blurs edges | Keep AABB as default for AprilTags |
 | 90° rotation (up/down head-tail) produces portrait aspect ratio | Low — rare for elongated animals | `canonical_treat_updown_as_unknown: true` by default |
 | Detection cache v2.1 → v2.2 migration | Low — schema mismatch triggers re-detection | Ensure clear version check and user messaging |
+| **Non-standard aspect ratio species** (near-circular, e.g., beetles) | Low — formula still works, H ≈ W | For AR ≈ 1.0, crop is nearly square; all models handle this fine |
