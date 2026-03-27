@@ -104,6 +104,7 @@ class _FakeCache:
             [101],
             [1.25],
             [1],
+            None,
         )
 
 

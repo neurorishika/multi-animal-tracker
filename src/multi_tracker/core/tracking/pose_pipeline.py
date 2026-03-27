@@ -351,6 +351,7 @@ class PosePipeline:
                 raw_ids,
                 raw_headings,
                 raw_directed,
+                raw_canonical_affines,
             ) = detection_cache.get_frame(frame_idx)
             (
                 meas,

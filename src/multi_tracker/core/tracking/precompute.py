@@ -211,10 +211,12 @@ class UnifiedPrecompute:
                     raw_ids,
                     raw_headings,
                     raw_directed,
+                    raw_canonical_affines,
                 ) = detection_cache.get_frame(frame_idx)
             except Exception:
                 raw_meas = raw_sizes = raw_shapes = raw_confs = []
                 raw_obb = raw_ids = raw_headings = raw_directed = []
+                raw_canonical_affines = None  # noqa: F841
 
             # filter detections (ROI mask, size/confidence gates)
             (

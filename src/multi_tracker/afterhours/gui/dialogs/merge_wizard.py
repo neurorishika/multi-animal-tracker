@@ -507,7 +507,7 @@ class _FrameDetections:
         * *obb_corners* — list of ``(4, 2)`` float32 arrays (empty when BG-sub).
         """
         try:
-            meas, _sizes, shapes, _conf, obb, _ids, _hints, _dmask = (
+            meas, _sizes, shapes, _conf, obb, _ids, _hints, _dmask, _affines = (
                 self._cache.get_frame(frame_idx)
             )
         except Exception:

@@ -626,6 +626,7 @@ class TrackingOptimizer(QThread):
                 raw_det_ids,
                 raw_heading_hints,
                 raw_directed_mask,
+                _raw_canonical_affines,
             ) = self.cache.get_frame(f_idx)
             # Pass heading hints when present so directed-OBB data flows through
             # filter/NMS, exactly mirroring the TrackingWorker cached-path.
@@ -1386,6 +1387,7 @@ class TrackingPreviewWorker(QThread):
                     raw_det_ids,
                     raw_heading_hints,
                     raw_directed_mask,
+                    _raw_canonical_affines,
                 ) = cache.get_frame(f_idx)
                 if raw_heading_hints:
                     filtered = det_filter.filter_raw_detections(

@@ -467,6 +467,7 @@ def test_headtail_hint_uses_batched_classify_call() -> None:
     det._canonicalize_obb_for_headtail = lambda _frame, _corners: (
         np.zeros((12, 24, 3), dtype=np.uint8),
         0.5,
+        np.eye(2, 3, dtype=np.float32),
     )
 
     calls = {"count": 0, "source_is_list": False}
@@ -488,7 +489,7 @@ def test_headtail_hint_uses_batched_classify_call() -> None:
         np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=np.float32),
         np.array([[3, 3], [5, 3], [5, 4], [3, 4]], dtype=np.float32),
     ]
-    heading_hints, directed_mask = det._compute_headtail_hints(
+    heading_hints, directed_mask, _affines = det._compute_headtail_hints(
         np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
     )
 
@@ -561,6 +562,7 @@ def test_classkit_headtail_hints_abstain_on_up_down_unknown() -> None:
     det._canonicalize_obb_for_headtail = lambda _frame, _corners: (
         np.zeros((12, 24, 3), dtype=np.uint8),
         0.5,
+        np.eye(2, 3, dtype=np.float32),
     )
     det._predict_headtail_results = lambda _crops: [
         ("up", 0.95),
@@ -576,7 +578,7 @@ def test_classkit_headtail_hints_abstain_on_up_down_unknown() -> None:
         np.array([[9, 9], [11, 9], [11, 10], [9, 10]], dtype=np.float32),
     ]
 
-    heading_hints, directed_mask = det._compute_headtail_hints(
+    heading_hints, directed_mask, _affines = det._compute_headtail_hints(
         np.zeros((64, 64, 3), dtype=np.uint8), obb_corners
     )
 

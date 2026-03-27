@@ -102,8 +102,11 @@ class _FakeDetectionCache:
 
     def get_frame(self, frame_idx):
         if frame_idx in self._frames:
-            return self._frames[frame_idx]
-        empty = ([], [], [], [], [], [], [], [])
+            val = self._frames[frame_idx]
+            if len(val) == 8:
+                return val + (None,)
+            return val
+        empty = ([], [], [], [], [], [], [], [], None)
         return empty
 
 

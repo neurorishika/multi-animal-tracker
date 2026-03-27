@@ -239,9 +239,12 @@ class ObjectDetector:
             # Quality is too context-specific (lighting, camera, species, etc.)
             confidence = np.nan
 
+            # Use ellipse area for size filtering (consistent with YOLO OBB path
+            # and the GUI's circular-area formula).
+            ellipse_area = np.pi * (ax1 / 2.0) * (ax2 / 2.0)
             meas.append(np.array([cx, cy, np.deg2rad(ang)], np.float32))
-            sizes.append(area)
-            shapes.append((np.pi * (ax1 / 2) * (ax2 / 2), ax1 / ax2 if ax2 > 0 else 0))
+            sizes.append(ellipse_area)
+            shapes.append((ellipse_area, ax1 / ax2 if ax2 > 0 else 0))
             confidences.append(confidence)
 
         if meas and p.get("ENABLE_SIZE_FILTERING", False):
@@ -1446,70 +1449,51 @@ class YOLOOBBDetector:
 
     def _canonicalize_obb_for_headtail(self, frame, corners):
         """
-        Notebook-aligned affine canonicalization for head-tail inference.
-        Returns (canonical_crop, major_axis_theta).
+        Affine canonicalization for head-tail inference.
+
+        Uses the unified canonical_crop module for geometry, then resizes
+        to the head-tail model's expected input dimensions.
+
+        Returns (canonical_crop, major_axis_theta, M_align) or (None, None, None).
         """
-        c = np.asarray(corners, dtype=np.float32).reshape(4, 2)
-        e01 = float(np.linalg.norm(c[1] - c[0]))
-        e12 = float(np.linalg.norm(c[2] - c[1]))
-        if e01 < 1e-3 or e12 < 1e-3:
-            return None, None
+        from multi_tracker.core.tracking.canonical_crop import (
+            compute_alignment_affine,
+            compute_crop_dimensions,
+            extract_canonical_crop,
+        )
 
-        if e01 >= e12:
-            major = e01
-            minor = e12
-            major_vec = c[1] - c[0]
-        else:
-            major = e12
-            minor = e01
-            major_vec = c[2] - c[1]
+        # Canonical crop dimensions from config (power-user overrides via advanced_config)
+        ht_long = int(self._advanced_config_value("canonical_headtail_long_edge", 128))
+        ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
+        canon_w, canon_h = compute_crop_dimensions(ht_long, ref_ar)
 
-        cx = float(np.mean(c[:, 0]))
-        cy = float(np.mean(c[:, 1]))
-        angle = float(math.atan2(float(major_vec[1]), float(major_vec[0])))
-
-        margin = float(self.params.get("YOLO_HEADTAIL_CANONICAL_MARGIN", 1.3))
-        out_w = int(self.params.get("YOLO_HEADTAIL_CANONICAL_WIDTH", 128))
-        out_h = int(self.params.get("YOLO_HEADTAIL_CANONICAL_HEIGHT", 64))
+        # Legacy overrides: honour explicit width/height if set
+        out_w = int(
+            self._advanced_config_value("yolo_headtail_canonical_width", canon_w)
+        )
+        out_h = int(
+            self._advanced_config_value("yolo_headtail_canonical_height", canon_h)
+        )
         out_w = max(8, out_w)
         out_h = max(8, out_h)
 
-        w_exp = float(major) * margin
-        h_exp = float(minor) * margin
-        cos_a = float(np.cos(angle))
-        sin_a = float(np.sin(angle))
-        hw = w_exp * 0.5
-        hh = h_exp * 0.5
+        margin = float(
+            self._advanced_config_value("yolo_headtail_canonical_margin", 1.3)
+        )
+        # The canonical module uses padding_fraction (= margin - 1)
+        padding_fraction = max(0.0, margin - 1.0)
 
-        src_pts = np.array(
-            [
-                [
-                    cx - hw * cos_a + hh * sin_a,
-                    cy - hw * sin_a - hh * cos_a,
-                ],  # top-left
-                [
-                    cx + hw * cos_a + hh * sin_a,
-                    cy + hw * sin_a - hh * cos_a,
-                ],  # top-right
-                [
-                    cx - hw * cos_a - hh * sin_a,
-                    cy - hw * sin_a + hh * cos_a,
-                ],  # bottom-left
-            ],
-            dtype=np.float32,
-        )
-        dst_pts = np.array([[0, 0], [out_w, 0], [0, out_h]], dtype=np.float32)
-        M = cv2.getAffineTransform(src_pts, dst_pts)
-        warped = cv2.warpAffine(
-            frame,
-            M,
-            (out_w, out_h),
-            flags=cv2.INTER_LINEAR,
-            borderMode=cv2.BORDER_REPLICATE,
-        )
-        if warped is None or warped.size == 0:
-            return None, None
-        return warped, angle
+        try:
+            M_align, axis_theta = compute_alignment_affine(
+                corners, out_w, out_h, padding_fraction
+            )
+        except ValueError:
+            return None, None, None
+
+        crop = extract_canonical_crop(frame, M_align, out_w, out_h)
+        if crop is None or crop.size == 0:
+            return None, None, None
+        return crop, axis_theta, M_align
 
     def _compute_headtail_hints(self, frame, obb_corners_list):
         """Infer directed heading hints from optional head-tail classifier.
@@ -1535,14 +1519,15 @@ class YOLOOBBDetector:
                 frame.
 
         Returns:
-            list of *N* tuples ``(heading_hints, directed_mask)``.
+            list of *N* tuples ``(heading_hints, directed_mask, canonical_affines)``
+            where ``canonical_affines`` is a list of (2, 3) float32 arrays or None.
         """
         n_frames = len(frames)
         # Pre-allocate per-frame result arrays (default: no orientation).
         results_per_frame = []
         for corners in per_frame_obb_corners:
             n = len(corners)
-            results_per_frame.append(([float("nan")] * n, [0] * n))
+            results_per_frame.append(([float("nan")] * n, [0] * n, [None] * n))
 
         if self.headtail_model is None:
             return results_per_frame
@@ -1551,19 +1536,19 @@ class YOLOOBBDetector:
 
         # ----- Phase 1: collect canonical crops across ALL frames (CPU) ----
         all_crops = []
-        # Each entry: (frame_idx, detection_idx_within_frame, axis_theta)
+        # Each entry: (frame_idx, detection_idx_within_frame, axis_theta, M_align)
         all_meta = []
         for fi in range(n_frames):
             frame = frames[fi]
             for di, corners in enumerate(per_frame_obb_corners[fi]):
                 try:
-                    canonical, axis_theta = self._canonicalize_obb_for_headtail(
-                        frame, corners
+                    canonical, axis_theta, M_align = (
+                        self._canonicalize_obb_for_headtail(frame, corners)
                     )
                     if canonical is None or axis_theta is None:
                         continue
                     all_crops.append(canonical)
-                    all_meta.append((fi, di, float(axis_theta)))
+                    all_meta.append((fi, di, float(axis_theta), M_align))
                 except Exception:
                     continue
 
@@ -1573,6 +1558,9 @@ class YOLOOBBDetector:
         # ----- Phase 2: ONE GPU inference call for all crops ---------------
         cls_results = self._predict_headtail_results(all_crops)
         if cls_results is None or len(cls_results) == 0:
+            # Even without classification, store M_align for canonical affines
+            for fi, di, axis_theta, M_align in all_meta:
+                results_per_frame[fi][2][di] = M_align.astype(np.float32)
             return results_per_frame
 
         # ----- Phase 3: scatter results back to per-frame arrays -----------
@@ -1583,7 +1571,8 @@ class YOLOOBBDetector:
             probs = np.asarray(cls_results, dtype=np.float32).reshape(-1)
             n_eval = min(len(all_meta), len(probs))
             for j in range(n_eval):
-                fi, di, axis_theta = all_meta[j]
+                fi, di, axis_theta, M_align = all_meta[j]
+                results_per_frame[fi][2][di] = M_align.astype(np.float32)
                 p_right = float(probs[j])
                 conf = max(p_right, 1.0 - p_right)
                 if conf < conf_threshold:
@@ -1595,7 +1584,8 @@ class YOLOOBBDetector:
         elif backend == "classkit_tiny":
             n_eval = min(len(all_meta), len(cls_results))
             for j in range(n_eval):
-                fi, di, axis_theta = all_meta[j]
+                fi, di, axis_theta, M_align = all_meta[j]
+                results_per_frame[fi][2][di] = M_align.astype(np.float32)
                 try:
                     direction, conf = cls_results[j]
                 except Exception:
@@ -1611,7 +1601,8 @@ class YOLOOBBDetector:
         else:
             n_eval = min(len(all_meta), len(cls_results))
             for j in range(n_eval):
-                fi, di, axis_theta = all_meta[j]
+                fi, di, axis_theta, M_align = all_meta[j]
+                results_per_frame[fi][2][di] = M_align.astype(np.float32)
                 try:
                     result = cls_results[j]
                     if result is None:
@@ -2356,7 +2347,26 @@ class YOLOOBBDetector:
         if self.params.get("ENABLE_SIZE_FILTERING", False):
             min_size = float(self.params.get("MIN_OBJECT_SIZE", 0))
             max_size = float(self.params.get("MAX_OBJECT_SIZE", float("inf")))
-            keep_mask &= (sizes_arr >= min_size) & (sizes_arr <= max_size)
+            # Use ellipse area (shapes_arr[:, 0]) for size filtering to match
+            # the GUI's circular-area formula.  Previously used sizes_arr
+            # (OBB rect area = major*minor) which was ~27% larger.
+            ellipse_area_arr = shapes_arr[:, 0] if shapes_arr.ndim == 2 else sizes_arr
+            keep_mask &= (ellipse_area_arr >= min_size) & (ellipse_area_arr <= max_size)
+
+        if self._advanced_config_value("enable_aspect_ratio_filtering", False):
+            ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 1.0))
+            min_ar_mult = float(
+                self._advanced_config_value("min_aspect_ratio_multiplier", 0.5)
+            )
+            max_ar_mult = float(
+                self._advanced_config_value("max_aspect_ratio_multiplier", 2.0)
+            )
+            min_ar = ref_ar * min_ar_mult
+            max_ar = ref_ar * max_ar_mult
+            ar_arr = (
+                shapes_arr[:, 1] if shapes_arr.ndim == 2 else np.ones(len(sizes_arr))
+            )
+            keep_mask &= (ar_arr >= min_ar) & (ar_arr <= max_ar)
 
         if roi_mask is not None and len(meas_arr) > 0:
             h, w = roi_mask.shape[:2]
@@ -2472,12 +2482,13 @@ class YOLOOBBDetector:
                 meas, sizes, shapes, yolo_results, confidences
             If return_raw=True:
                 raw_meas, raw_sizes, raw_shapes, yolo_results, raw_confidences,
-                raw_obb_corners, raw_heading_hints, raw_directed_mask
+                raw_obb_corners, raw_heading_hints, raw_directed_mask,
+                raw_canonical_affines
         """
         if self.model is None:
             logger.error("YOLO model not initialized")
             if return_raw:
-                return [], [], [], None, [], [], [], []
+                return [], [], [], None, [], [], [], [], None
             return [], [], [], None, []
 
         p = self.params
@@ -2517,7 +2528,7 @@ class YOLOOBBDetector:
         except Exception as e:
             logger.error(f"YOLO inference failed on frame {frame_count}: {e}")
             if return_raw:
-                return [], [], [], None, [], [], [], []
+                return [], [], [], None, [], [], [], [], None
             return [], [], [], None, []
 
         if not raw_meas:
@@ -2532,11 +2543,12 @@ class YOLOOBBDetector:
                     [],
                     raw_heading_hints,
                     raw_directed_mask,
+                    None,
                 )
             return [], [], [], yolo_results, []
 
-        raw_heading_hints, raw_directed_mask = self._compute_headtail_hints(
-            frame, raw_obb_corners
+        raw_heading_hints, raw_directed_mask, _raw_affines = (
+            self._compute_headtail_hints(frame, raw_obb_corners)
         )
 
         if return_raw:
@@ -2551,6 +2563,7 @@ class YOLOOBBDetector:
                 raw_obb_corners,
                 raw_heading_hints,
                 raw_directed_mask,
+                _raw_affines,
             )
 
         (
@@ -2604,7 +2617,7 @@ class YOLOOBBDetector:
               - return_raw=False: (meas, sizes, shapes, confidences, obb_corners)
               - return_raw=True:  (
                     raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners,
-                    raw_heading_hints, raw_directed_mask
+                    raw_heading_hints, raw_directed_mask, raw_canonical_affines
                 )
         """
         if self.model is None:
@@ -2631,6 +2644,7 @@ class YOLOOBBDetector:
                     raw_obb_corners,
                     raw_heading_hints,
                     raw_directed_mask,
+                    raw_canonical_affines,
                 ) = self.detect_objects(frame, frame_count, return_raw=True)
 
                 if return_raw:
@@ -2643,6 +2657,7 @@ class YOLOOBBDetector:
                             raw_obb_corners,
                             raw_heading_hints,
                             raw_directed_mask,
+                            raw_canonical_affines,
                         )
                     )
                 else:
@@ -2844,10 +2859,13 @@ class YOLOOBBDetector:
             raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners = raw
 
             if headtail_per_frame is not None:
-                raw_heading_hints, raw_directed_mask = headtail_per_frame[idx]
+                raw_heading_hints, raw_directed_mask, _raw_affines = headtail_per_frame[
+                    idx
+                ]
             else:
                 raw_heading_hints = [float("nan")] * len(raw_meas)
                 raw_directed_mask = [0] * len(raw_meas)
+                _raw_affines = None
 
             if return_raw:
                 batch_detections.append(
@@ -2859,6 +2877,7 @@ class YOLOOBBDetector:
                         raw_obb_corners,
                         raw_heading_hints,
                         raw_directed_mask,
+                        _raw_affines,
                     )
                 )
             else:
@@ -2945,6 +2964,7 @@ class DetectionFilter:
     # Assign the pure-logic methods from YOLOOBBDetector by reference.
     # None of them access YOLO-model state; they only read self.params and call
     # each other, so they work identically when bound to DetectionFilter instances.
+    _advanced_config_value = YOLOOBBDetector._advanced_config_value
     _compute_obb_iou = YOLOOBBDetector._compute_obb_iou
     _compute_obb_iou_batch = YOLOOBBDetector._compute_obb_iou_batch
     _filter_overlapping_detections = YOLOOBBDetector._filter_overlapping_detections

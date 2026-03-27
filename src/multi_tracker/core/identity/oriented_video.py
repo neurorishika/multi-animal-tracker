@@ -356,6 +356,7 @@ class OrientedTrackVideoExporter:
             detection_ids,
             _heading_hints,
             _directed_mask,
+            _canonical_affines,
         ) = detection_cache.get_frame(frame_id)
         det_index = {}
         for idx, det_id in enumerate(detection_ids or []):

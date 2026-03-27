@@ -82,10 +82,10 @@ class DetectionCache:
             if "metadata" in self._loaded_data:
                 metadata = self._loaded_data["metadata"].item()
                 cache_version = str(metadata.get("version", ""))
-                if cache_version not in {"2.0", "2.1"}:
+                if cache_version not in {"2.0", "2.1", "2.2"}:
                     logger.warning(
                         f"Incompatible detection cache version '{cache_version}' "
-                        f"(expected '2.0' or '2.1'). Cache will be regenerated."
+                        f"(expected '2.0', '2.1', or '2.2'). Cache will be regenerated."
                     )
                     self._compatible = False
                     self._loaded_data.close()
@@ -136,6 +136,7 @@ class DetectionCache:
         detection_ids: object = None,
         heading_hints: object = None,
         directed_mask: object = None,
+        canonical_affines: object = None,
     ) -> object:
         """
         Add detection data for a single frame (forward pass).
@@ -150,6 +151,7 @@ class DetectionCache:
             detection_ids: Optional list of detection IDs (FrameID * 10000 + detection_index)
             heading_hints: Optional list of directed heading hints (radians).
             directed_mask: Optional list indicating whether heading_hints are directed.
+            canonical_affines: Optional list of (2, 3) affine matrices (M_align per detection).
         """
         if self.mode != "w":
             raise RuntimeError("Cache opened in read mode, cannot write")
@@ -184,6 +186,16 @@ class DetectionCache:
                 directed_mask_arr = np.array(directed_mask, dtype=np.uint8)
             else:
                 directed_mask_arr = np.array([], dtype=np.uint8)
+
+            if canonical_affines and len(canonical_affines) > 0:
+                # Filter None entries — store as (N, 2, 3) float32
+                valid = [a for a in canonical_affines if a is not None]
+                if valid:
+                    canonical_affines_arr = np.array(valid, dtype=np.float32)
+                else:
+                    canonical_affines_arr = np.array([], dtype=np.float32)
+            else:
+                canonical_affines_arr = np.array([], dtype=np.float32)
         else:
             # Empty frame (no detections)
             meas_arr = np.array([], dtype=np.float32).reshape(0, 3)
@@ -194,6 +206,7 @@ class DetectionCache:
             obb_arr = np.array([], dtype=np.float32)
             heading_hints_arr = np.array([], dtype=np.float32)
             directed_mask_arr = np.array([], dtype=np.uint8)
+            canonical_affines_arr = np.array([], dtype=np.float32)
 
         # Store with frame index as key
         frame_key = f"frame_{frame_idx:06d}"
@@ -205,6 +218,7 @@ class DetectionCache:
         self._data[f"{frame_key}_obb"] = obb_arr
         self._data[f"{frame_key}_heading_hints"] = heading_hints_arr
         self._data[f"{frame_key}_directed_mask"] = directed_mask_arr
+        self._data[f"{frame_key}_canonical_affine"] = canonical_affines_arr
 
         self._total_frames = max(self._total_frames, frame_idx + 1)
 
@@ -219,7 +233,7 @@ class DetectionCache:
                 "total_frames": self._total_frames,
                 "start_frame": self._start_frame,
                 "end_frame": self._end_frame,
-                "version": "2.1",
+                "version": "2.2",
                 "format": "raw_detections",
             }
         )
@@ -293,6 +307,9 @@ class DetectionCache:
         directed_mask_arr = self._loaded_data.get(
             f"{frame_key}_directed_mask", np.array([], dtype=np.uint8)
         )
+        canonical_affines_arr = self._loaded_data.get(
+            f"{frame_key}_canonical_affine", np.array([], dtype=np.float32)
+        )
 
         # Convert back to lists matching the original format
         # meas should be list of numpy arrays (one per detection)
@@ -314,6 +331,14 @@ class DetectionCache:
         heading_hints = heading_hints_arr.tolist()
         directed_mask = directed_mask_arr.tolist()
 
+        # Canonical affines: (N, 2, 3) or empty
+        if len(canonical_affines_arr) > 0 and canonical_affines_arr.ndim == 3:
+            canonical_affines = [
+                canonical_affines_arr[i] for i in range(len(canonical_affines_arr))
+            ]
+        else:
+            canonical_affines = None
+
         return (
             meas,
             sizes,
@@ -323,6 +348,7 @@ class DetectionCache:
             detection_ids,
             heading_hints,
             directed_mask,
+            canonical_affines,
         )
 
     def get_total_frames(self: object) -> object:

@@ -793,6 +793,7 @@ class TrackingWorker(QThread):
                 raw_obb_corners,
                 raw_heading_hints,
                 raw_directed_mask,
+                raw_canonical_affines,
             ) in enumerate(batch_results):
                 relative_idx = batch_start_idx + local_idx
                 actual_frame_idx = (
@@ -812,6 +813,7 @@ class TrackingWorker(QThread):
                     detection_ids,
                     raw_heading_hints,
                     raw_directed_mask,
+                    canonical_affines=raw_canonical_affines,
                 )
 
             # Track batch timing
@@ -1281,6 +1283,7 @@ class TrackingWorker(QThread):
                             _det_ids,
                             _heading_hints,
                             _directed_mask,
+                            _canonical_affines,
                         ) = detection_cache.get_frame(_fidx)
                         if _meas_list:
                             _meas_arr = np.array(_meas_list, dtype=np.float32)
@@ -1732,6 +1735,7 @@ class TrackingWorker(QThread):
                     raw_detection_ids,
                     raw_heading_hints,
                     raw_directed_mask,
+                    raw_canonical_affines,
                 ) = detection_cache.get_frame(actual_frame_index)
 
                 if detection_method == "yolo_obb":
@@ -1826,6 +1830,7 @@ class TrackingWorker(QThread):
                 raw_detection_ids = detection_ids
                 raw_heading_hints = []
                 raw_directed_mask = []
+                raw_canonical_affines = None
 
             elif (
                 detection_method == "yolo_obb" and frame is not None
@@ -1844,6 +1849,7 @@ class TrackingWorker(QThread):
                     raw_obb_corners,
                     raw_heading_hints,
                     raw_directed_mask,
+                    raw_canonical_affines,
                 ) = detector.detect_objects(
                     frame,
                     self.frame_count,
@@ -1903,6 +1909,7 @@ class TrackingWorker(QThread):
                     raw_detection_ids,
                     raw_heading_hints,
                     raw_directed_mask,
+                    canonical_affines=raw_canonical_affines,
                 )
                 cached_frame_indices.add(actual_frame_index)
 
