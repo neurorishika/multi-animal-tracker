@@ -9,6 +9,7 @@ Single video read per tracking run regardless of how many phases are enabled.
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -110,8 +111,7 @@ class CropConfig:
     padding_fraction: float = 0.1  # maps to INDIVIDUAL_CROP_PADDING
     suppress_foreign: bool = True  # maps to SUPPRESS_FOREIGN_OBB_REGIONS
     bg_color: Tuple[int, int, int] = (0, 0, 0)  # maps to INDIVIDUAL_BACKGROUND_COLOR
-    canonical_crop_width: int = 0  # 0 = disabled (legacy AABB path)
-    canonical_crop_height: int = 0  # derived from reference_aspect_ratio
+    reference_aspect_ratio: float = 2.0  # used to derive native-scale crop dims
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +127,8 @@ class UnifiedPrecompute:
     writes, and resource lifecycle.
     """
 
+    _CROP_WORKERS = 4  # parallel crop extraction threads
+
     def __init__(
         self,
         phases: List[PrecomputePhase],
@@ -134,6 +136,8 @@ class UnifiedPrecompute:
     ) -> None:
         self._phases = phases
         self._crop_config = crop_config
+        # Pre-compute whether any phase needs AABB crops (e.g. AprilTag).
+        self._needs_aabb = any(getattr(p, "_prefer_aabb_crops", False) for p in phases)
 
     def run(
         self,
@@ -147,6 +151,7 @@ class UnifiedPrecompute:
         progress_cb: Optional[Callable[[int, str], None]] = None,
         stop_check: Optional[Callable[[], bool]] = None,
         warning_cb: Optional[Callable[[str, str], None]] = None,
+        profiler=None,
     ) -> Dict[str, Optional[str]]:
         """Run all phases over [start_frame, end_frame].
 
@@ -187,12 +192,17 @@ class UnifiedPrecompute:
 
         # --- frame loop ---
         cancelled = False
+        _prof = profiler  # local alias (may be None)
         for rel_idx in range(total):
             frame_idx = start_frame + rel_idx
 
             # read + optional resize
+            if _prof:
+                _prof.phase_start("precompute_frame_read")
             ret, frame = cap.read()
             if not ret:
+                if _prof:
+                    _prof.phase_end("precompute_frame_read")
                 logger.warning(
                     "cap.read() failed at frame %d (frame %d/%d) — stopping precompute early",
                     frame_idx,
@@ -208,8 +218,12 @@ class UnifiedPrecompute:
                     fy=resize_factor,
                     interpolation=cv2.INTER_AREA,
                 )
+            if _prof:
+                _prof.phase_end("precompute_frame_read")
 
             # get raw detections
+            if _prof:
+                _prof.phase_start("precompute_cache_load")
             try:
                 (
                     raw_meas,
@@ -221,13 +235,19 @@ class UnifiedPrecompute:
                     raw_headings,
                     raw_directed,
                     raw_canonical_affines,
+                    _raw_canvas_dims,
+                    _raw_M_inverse,
                 ) = detection_cache.get_frame(frame_idx)
             except Exception:
                 raw_meas = raw_sizes = raw_shapes = raw_confs = []
                 raw_obb = raw_ids = raw_headings = raw_directed = []
                 raw_canonical_affines = None
+            if _prof:
+                _prof.phase_end("precompute_cache_load")
 
             # filter detections (ROI mask, size/confidence gates)
+            if _prof:
+                _prof.phase_start("precompute_filter")
             (
                 _meas,
                 _sz,
@@ -248,15 +268,13 @@ class UnifiedPrecompute:
                 heading_hints=raw_headings,
                 directed_mask=raw_directed,
             )
+            if _prof:
+                _prof.phase_end("precompute_filter")
 
             all_obb = [np.asarray(c, dtype=np.float32) for c in (filt_obb or [])]
 
             # --- Determine canonical extraction availability ---
-            use_canonical = (
-                cfg.canonical_crop_width > 0
-                and cfg.canonical_crop_height > 0
-                and raw_canonical_affines is not None
-            )
+            use_canonical = raw_canonical_affines is not None
 
             # Map raw detection IDs → raw indices so we can filter affines
             filtered_affines: Optional[List[Optional[np.ndarray]]] = None
@@ -276,7 +294,7 @@ class UnifiedPrecompute:
                     else:
                         filtered_affines.append(None)
 
-            # --- Extract crops ---
+            # --- Extract crops (parallelised across detections) ---
             aabb_crops: List[np.ndarray] = []
             aabb_offsets: List[Tuple[int, int]] = []
             canonical_crops: List[np.ndarray] = []
@@ -284,52 +302,116 @@ class UnifiedPrecompute:
             crop_det_indices: List[int] = []
 
             if all_obb:
-                for di, corners in enumerate(all_obb):
-                    # Always extract AABB crop (for AprilTag + fallback)
-                    aabb_result = extract_one_crop(
-                        frame,
-                        corners,
-                        di,
-                        cfg.padding_fraction,
-                        all_obb,
-                        cfg.suppress_foreign,
-                        cfg.bg_color,
-                    )
-                    if aabb_result is None:
-                        continue
+                if _prof:
+                    _prof.phase_start("precompute_crop_extraction")
+                from multi_tracker.core.tracking.canonical_crop import (
+                    compute_native_crop_dimensions,
+                    extract_canonical_crop,
+                )
 
-                    aabb_crop, offset, _ = aabb_result
-                    aabb_crops.append(aabb_crop)
-                    aabb_offsets.append((int(offset[0]), int(offset[1])))
-                    crop_det_indices.append(di)
+                # --- helper closures for thread-pool submission ---
+                def _extract_single(
+                    di_corners,
+                    frame=frame,
+                    all_obb=all_obb,
+                    filtered_affines=filtered_affines,
+                    use_canonical=use_canonical,
+                ):
+                    """Extract AABB and/or canonical crop for one detection."""
+                    di, corners = di_corners
+                    aabb_result = None
+                    if self._needs_aabb:
+                        aabb_result = extract_one_crop(
+                            frame,
+                            corners,
+                            di,
+                            cfg.padding_fraction,
+                            all_obb,
+                            cfg.suppress_foreign,
+                            cfg.bg_color,
+                        )
+                        if aabb_result is None:
+                            return None  # skip detection entirely
 
-                    # Extract canonical crop when affine is available
                     M_can = (
                         filtered_affines[di]
                         if (filtered_affines and di < len(filtered_affines))
                         else None
                     )
+                    c_crop = None
+                    M_inv = None
                     if use_canonical and M_can is not None:
-                        from multi_tracker.core.tracking.canonical_crop import (
-                            extract_canonical_crop,
+                        _cw, _ch = compute_native_crop_dimensions(
+                            corners,
+                            cfg.reference_aspect_ratio,
+                            cfg.padding_fraction,
                         )
-
                         c_crop = extract_canonical_crop(
                             frame,
                             M_can,
-                            cfg.canonical_crop_width,
-                            cfg.canonical_crop_height,
+                            _cw,
+                            _ch,
                             bg_color=cfg.bg_color,
                         )
                         M_inv = cv2.invertAffineTransform(
                             np.asarray(M_can, dtype=np.float64)
+                        ).astype(np.float32)
+
+                    # When AABB was skipped (no phase needs it), we still need
+                    # a validity check — canonical crop must succeed.
+                    if not self._needs_aabb:
+                        if c_crop is None:
+                            # Fallback: extract AABB for this detection
+                            aabb_result = extract_one_crop(
+                                frame,
+                                corners,
+                                di,
+                                cfg.padding_fraction,
+                                all_obb,
+                                cfg.suppress_foreign,
+                                cfg.bg_color,
+                            )
+                            if aabb_result is None:
+                                return None
+                        else:
+                            # Synthesise a minimal aabb_result for offset tracking
+                            c = np.asarray(corners, dtype=np.float32)
+                            x0 = max(0, int(c[:, 0].min()))
+                            y0 = max(0, int(c[:, 1].min()))
+                            aabb_result = (c_crop, (x0, y0), di)
+
+                    return (di, aabb_result, c_crop, M_inv)
+
+                # Fan out crop extraction across threads
+                with ThreadPoolExecutor(
+                    max_workers=min(self._CROP_WORKERS, len(all_obb)),
+                    thread_name_prefix="precompute-crop",
+                ) as pool:
+                    results = list(
+                        pool.map(
+                            _extract_single,
+                            [(di, corners) for di, corners in enumerate(all_obb)],
                         )
+                    )
+
+                # Gather results in deterministic order
+                for result in results:
+                    if result is None:
+                        continue
+                    di, aabb_result, c_crop, M_inv = result
+                    aabb_crop, offset, _ = aabb_result
+                    aabb_crops.append(aabb_crop)
+                    aabb_offsets.append((int(offset[0]), int(offset[1])))
+                    crop_det_indices.append(di)
+
+                    if c_crop is not None:
                         canonical_crops.append(c_crop)
-                        canonical_M_inv.append(M_inv.astype(np.float32))
+                        canonical_M_inv.append(M_inv)
                     else:
-                        # Fallback: use AABB crop, no affine
                         canonical_crops.append(aabb_crop)
                         canonical_M_inv.append(None)
+                if _prof:
+                    _prof.phase_end("precompute_crop_extraction")
 
             frame_detection_ids = [
                 int(det_ids[i]) if det_ids and i < len(det_ids) else i
@@ -340,6 +422,9 @@ class UnifiedPrecompute:
             # Phases that prefer AABB crops (e.g. AprilTag) get aabb_crops + offsets.
             # Other phases get canonical crops + M_inverse affines.
             for phase in self._phases:
+                _phase_prof_name = f"precompute_{phase.name}"
+                if _prof:
+                    _prof.phase_start(_phase_prof_name)
                 if getattr(phase, "_prefer_aabb_crops", False):
                     phase.process_frame(
                         frame_idx,
@@ -359,6 +444,8 @@ class UnifiedPrecompute:
                         aabb_offsets,
                         canonical_affines=(canonical_M_inv if use_canonical else None),
                     )
+                if _prof:
+                    _prof.phase_end(_phase_prof_name)
 
             # cancellation check — AFTER processing the frame
             if stop_check and stop_check():

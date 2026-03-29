@@ -310,7 +310,7 @@ def test_individual_properties_cache_path_defaults_to_video_cache_dir(
     cache_path = worker._build_individual_properties_cache_path("props", 4, 9)
 
     assert cache_path.parent == tmp_path / "clip_caches"
-    assert cache_path.name == "clip_individual_properties_props_4_9.npz"
+    assert cache_path.name == "clip_pose_cache_props_4_9.npz"
 
 
 def test_confidence_density_enabled_defaults_true_and_respects_flag() -> None:

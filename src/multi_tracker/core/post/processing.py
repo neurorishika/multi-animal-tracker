@@ -2103,7 +2103,10 @@ def _split_rows_into_segments(rows, max_gap=5, max_spatial_jump=50.0):
 
 
 def interpolate_trajectories(
-    trajectories_df: object, method: object = "linear", max_gap: object = 10
+    trajectories_df: object,
+    method: object = "linear",
+    max_gap: object = 10,
+    heading_flip_max_burst: int = 5,
 ) -> object:
     """
     Interpolate missing values in trajectories using various methods.
@@ -2112,6 +2115,8 @@ def interpolate_trajectories(
         trajectories_df: DataFrame with trajectory data (must have X, Y, Theta, FrameID columns)
         method: Interpolation method - 'linear', 'cubic', 'spline', or 'none'
         max_gap: Maximum gap size to interpolate (frames). Larger gaps are left as NaN.
+        heading_flip_max_burst: Maximum length of an isolated heading-flip burst to
+            correct in post-processing.  Longer segments are assumed genuine.
 
     Returns:
         DataFrame with interpolated values
@@ -2155,6 +2160,11 @@ def interpolate_trajectories(
 
         # Fast-path: no gaps possible — skip reindex and interpolation entirely.
         if len(traj_data) >= max_frame - min_frame + 1:
+            # Still fix heading flips even without gaps
+            if "Theta" in traj_data.columns:
+                traj_data["Theta"] = _fix_heading_flips(
+                    traj_data["Theta"].values, max_burst=heading_flip_max_burst
+                )
             interpolated_parts.append(traj_data)
             continue
 
@@ -2178,6 +2188,13 @@ def interpolate_trajectories(
                 method=method,
                 max_gap=max_gap,
             )
+
+        # Fix isolated 180-degree heading flips before interpolation.
+        # Must happen before _interpolate_angle so that sin/cos interpolation
+        # doesn't smooth across an artificial discontinuity.
+        traj_data["Theta"] = _fix_heading_flips(
+            traj_data["Theta"].values, max_burst=heading_flip_max_burst
+        )
 
         traj_data["Theta"] = _interpolate_angle(
             traj_data["FrameID"].values,
@@ -2616,6 +2633,105 @@ def _interpolate_column(frames, values, method="linear", max_gap=10):
             result[fill_mask] = interp_func(frames[fill_mask])
         except Exception:
             pass  # Keep NaN if interpolation fails
+
+    return result
+
+
+def _fix_heading_flips(theta: np.ndarray, max_burst: int = 5) -> np.ndarray:
+    """Detect and correct isolated 180-degree heading flips in a trajectory.
+
+    Scans the theta array for contiguous bursts of frames where the heading
+    jumped ~180° relative to the surrounding values and then returned.  Such
+    bursts are corrected by adding π (mod 2π).
+
+    Parameters
+    ----------
+    theta : np.ndarray
+        Heading values in radians.  May contain NaN for missing frames.
+    max_burst : int
+        Maximum length (in frames) of a flip burst to correct.  Longer
+        segments are assumed to be genuine orientation changes.
+
+    Returns
+    -------
+    np.ndarray
+        Corrected heading array (copy).
+    """
+    two_pi = 2.0 * np.pi
+    result = theta.copy()
+    n = len(result)
+    if n < 3:
+        return result
+
+    def _circ_diff(a, b):
+        """Absolute circular difference in [0, pi]."""
+        d = abs(a - b) % two_pi
+        return min(d, two_pi - d)
+
+    # Iterative passes — a single pass may leave residual flips when bursts
+    # are adjacent.  Three passes is sufficient for typical data.
+    for _pass in range(3):
+        changed = False
+        i = 0
+        while i < n:
+            # Skip NaN values
+            if np.isnan(result[i]):
+                i += 1
+                continue
+
+            # Find the last valid value before this position
+            prev_idx = i - 1
+            while prev_idx >= 0 and np.isnan(result[prev_idx]):
+                prev_idx -= 1
+            if prev_idx < 0:
+                i += 1
+                continue
+
+            prev_val = result[prev_idx]
+            cur_val = result[i]
+
+            # Check if this frame is a potential flip (>90° from previous)
+            if _circ_diff(cur_val, prev_val) <= np.pi / 2:
+                i += 1
+                continue
+
+            # Found a potential flip start at index i.  Find how long it lasts.
+            burst_end = i + 1
+            while burst_end < n and burst_end - i < max_burst + 1:
+                if np.isnan(result[burst_end]):
+                    burst_end += 1
+                    continue
+                # Is this frame still flipped relative to prev_val?
+                if _circ_diff(result[burst_end], prev_val) > np.pi / 2:
+                    burst_end += 1
+                else:
+                    break
+
+            burst_len = burst_end - i
+            # Only correct if the burst is short enough AND there's a valid
+            # frame after the burst that agrees with the pre-flip heading
+            # (confirming it was a transient flip, not a real turn).
+            if burst_len <= max_burst:
+                # Check the frame at burst_end: it should be close to prev_val
+                post_idx = burst_end
+                while post_idx < n and np.isnan(result[post_idx]):
+                    post_idx += 1
+                if post_idx < n:
+                    post_val = result[post_idx]
+                    if _circ_diff(post_val, prev_val) <= np.pi / 2:
+                        # Confirmed isolated flip burst — correct it
+                        for j in range(i, burst_end):
+                            if not np.isnan(result[j]):
+                                result[j] = (result[j] + np.pi) % two_pi
+                        changed = True
+                        i = burst_end
+                        continue
+
+            # Either burst too long or no confirming post-value — skip
+            i = burst_end if burst_len > max_burst else i + 1
+
+        if not changed:
+            break
 
     return result
 

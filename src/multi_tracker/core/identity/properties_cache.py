@@ -216,6 +216,62 @@ def compute_individual_properties_id(
     return _hash_payload(payload)
 
 
+def compute_apriltag_cache_id(
+    params: Dict[str, Any],
+    inference_model_id: str,
+) -> str:
+    """Compute a settings hash for the AprilTag observation cache.
+
+    Includes all AprilTag detector parameters that affect detection results
+    plus the upstream detection model ID (since tags are detected from
+    detection crops).  Thread count is excluded (performance-only).
+    """
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "inference_model_id": str(inference_model_id or ""),
+        "apriltag_family": str(params.get("APRILTAG_FAMILY", "tag36h11")),
+        "apriltag_max_hamming": int(params.get("APRILTAG_MAX_HAMMING", 1)),
+        "apriltag_decimate": float(params.get("APRILTAG_DECIMATE", 1.0)),
+        "apriltag_blur": float(params.get("APRILTAG_BLUR", 0.8)),
+        "apriltag_refine_edges": bool(params.get("APRILTAG_REFINE_EDGES", True)),
+        "apriltag_decode_sharpening": float(
+            params.get("APRILTAG_DECODE_SHARPENING", 0.25)
+        ),
+        "apriltag_unsharp_kernel": list(params.get("APRILTAG_UNSHARP_KERNEL", (5, 5))),
+        "apriltag_unsharp_sigma": float(params.get("APRILTAG_UNSHARP_SIGMA", 1.0)),
+        "apriltag_unsharp_amount": float(params.get("APRILTAG_UNSHARP_AMOUNT", 1.5)),
+        "apriltag_contrast_factor": float(params.get("APRILTAG_CONTRAST_FACTOR", 1.5)),
+        "apriltag_max_tag_id": (
+            int(params["APRILTAG_MAX_TAG_ID"])
+            if params.get("APRILTAG_MAX_TAG_ID") is not None
+            else None
+        ),
+        "padding_fraction": float(params.get("INDIVIDUAL_CROP_PADDING", 0.1)),
+    }
+    return _hash_payload(payload)
+
+
+def compute_classify_cache_id(
+    model_path: str,
+    compute_runtime: str,
+    inference_model_id: str,
+) -> str:
+    """Compute a settings hash for the CNN classification cache.
+
+    Includes the model fingerprint, compute runtime, and the upstream
+    detection model ID.  Confidence threshold and batch size are excluded
+    because the cache stores raw predictions — threshold filtering is
+    applied at read time.
+    """
+    payload = {
+        "schema_version": SCHEMA_VERSION,
+        "inference_model_id": str(inference_model_id or ""),
+        "model": _file_fingerprint(model_path),
+        "compute_runtime": str(compute_runtime or "cpu").strip().lower(),
+    }
+    return _hash_payload(payload)
+
+
 class IndividualPropertiesCache:
     """NPZ-backed cache for per-detection properties keyed by frame and detection ID."""
 

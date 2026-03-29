@@ -82,10 +82,10 @@ class DetectionCache:
             if "metadata" in self._loaded_data:
                 metadata = self._loaded_data["metadata"].item()
                 cache_version = str(metadata.get("version", ""))
-                if cache_version not in {"2.0", "2.1", "2.2"}:
+                if cache_version not in {"2.0", "2.1", "2.2", "2.3"}:
                     logger.warning(
                         f"Incompatible detection cache version '{cache_version}' "
-                        f"(expected '2.0', '2.1', or '2.2'). Cache will be regenerated."
+                        f"(expected '2.0', '2.1', '2.2', or '2.3'). Cache will be regenerated."
                     )
                     self._compatible = False
                     self._loaded_data.close()
@@ -137,6 +137,8 @@ class DetectionCache:
         heading_hints: object = None,
         directed_mask: object = None,
         canonical_affines: object = None,
+        canonical_canvas_dims: object = None,
+        canonical_M_inverse: object = None,
     ) -> object:
         """
         Add detection data for a single frame (forward pass).
@@ -152,6 +154,8 @@ class DetectionCache:
             heading_hints: Optional list of directed heading hints (radians).
             directed_mask: Optional list indicating whether heading_hints are directed.
             canonical_affines: Optional list of (2, 3) affine matrices (M_align per detection).
+            canonical_canvas_dims: Optional list of (width, height) int tuples per detection.
+            canonical_M_inverse: Optional list of (2, 3) inverse affine matrices per detection.
         """
         if self.mode != "w":
             raise RuntimeError("Cache opened in read mode, cannot write")
@@ -196,6 +200,28 @@ class DetectionCache:
                     canonical_affines_arr = np.array([], dtype=np.float32)
             else:
                 canonical_affines_arr = np.array([], dtype=np.float32)
+
+            # Canvas dimensions: (N, 2) int32 — [width, height] per detection
+            if canonical_canvas_dims and len(canonical_canvas_dims) > 0:
+                valid_dims = [d for d in canonical_canvas_dims if d is not None]
+                canvas_dims_arr = (
+                    np.array(valid_dims, dtype=np.int32)
+                    if valid_dims
+                    else np.array([], dtype=np.int32)
+                )
+            else:
+                canvas_dims_arr = np.array([], dtype=np.int32)
+
+            # Inverse affines: (N, 2, 3) float32
+            if canonical_M_inverse and len(canonical_M_inverse) > 0:
+                valid_inv = [a for a in canonical_M_inverse if a is not None]
+                M_inverse_arr = (
+                    np.array(valid_inv, dtype=np.float32)
+                    if valid_inv
+                    else np.array([], dtype=np.float32)
+                )
+            else:
+                M_inverse_arr = np.array([], dtype=np.float32)
         else:
             # Empty frame (no detections)
             meas_arr = np.array([], dtype=np.float32).reshape(0, 3)
@@ -207,6 +233,8 @@ class DetectionCache:
             heading_hints_arr = np.array([], dtype=np.float32)
             directed_mask_arr = np.array([], dtype=np.uint8)
             canonical_affines_arr = np.array([], dtype=np.float32)
+            canvas_dims_arr = np.array([], dtype=np.int32)
+            M_inverse_arr = np.array([], dtype=np.float32)
 
         # Store with frame index as key
         frame_key = f"frame_{frame_idx:06d}"
@@ -219,6 +247,8 @@ class DetectionCache:
         self._data[f"{frame_key}_heading_hints"] = heading_hints_arr
         self._data[f"{frame_key}_directed_mask"] = directed_mask_arr
         self._data[f"{frame_key}_canonical_affine"] = canonical_affines_arr
+        self._data[f"{frame_key}_canvas_dims"] = canvas_dims_arr
+        self._data[f"{frame_key}_M_inverse"] = M_inverse_arr
 
         self._total_frames = max(self._total_frames, frame_idx + 1)
 
@@ -233,7 +263,7 @@ class DetectionCache:
                 "total_frames": self._total_frames,
                 "start_frame": self._start_frame,
                 "end_frame": self._end_frame,
-                "version": "2.2",
+                "version": "2.3",
                 "format": "raw_detections",
             }
         )
@@ -310,6 +340,12 @@ class DetectionCache:
         canonical_affines_arr = self._loaded_data.get(
             f"{frame_key}_canonical_affine", np.array([], dtype=np.float32)
         )
+        canvas_dims_arr = self._loaded_data.get(
+            f"{frame_key}_canvas_dims", np.array([], dtype=np.int32)
+        )
+        M_inverse_arr = self._loaded_data.get(
+            f"{frame_key}_M_inverse", np.array([], dtype=np.float32)
+        )
 
         # Convert back to lists matching the original format
         # meas should be list of numpy arrays (one per detection)
@@ -339,6 +375,20 @@ class DetectionCache:
         else:
             canonical_affines = None
 
+        # Canvas dims: (N, 2) int32 or empty
+        if len(canvas_dims_arr) > 0 and canvas_dims_arr.ndim == 2:
+            canonical_canvas_dims = [
+                tuple(canvas_dims_arr[i]) for i in range(len(canvas_dims_arr))
+            ]
+        else:
+            canonical_canvas_dims = None
+
+        # M_inverse: (N, 2, 3) float32 or empty
+        if len(M_inverse_arr) > 0 and M_inverse_arr.ndim == 3:
+            canonical_M_inverse = [M_inverse_arr[i] for i in range(len(M_inverse_arr))]
+        else:
+            canonical_M_inverse = None
+
         return (
             meas,
             sizes,
@@ -349,6 +399,8 @@ class DetectionCache:
             heading_hints,
             directed_mask,
             canonical_affines,
+            canonical_canvas_dims,
+            canonical_M_inverse,
         )
 
     def get_total_frames(self: object) -> object:

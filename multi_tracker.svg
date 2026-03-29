@@ -1518,18 +1518,18 @@
 <title>multi_tracker_classkit_cluster&#45;&gt;multi_tracker_classkit_gui_dialogs</title><style>.edge>path:hover{stroke-width:8}</style>
 <path fill="none" stroke="black" d="M3533.89,-4920.97C3562.57,-4924.72 3599.18,-4929.15 3631.88,-4932"/>
 </g>
-<!-- multi_tracker_classkit_cluster_metalfaiss_backend -->
+<!-- multi_tracker_classkit_cluster_clustering_backend -->
 <g id="node56" class="node">
-<title>multi_tracker_classkit_cluster_metalfaiss_backend</title><style>.edge>path:hover{stroke-width:8}</style>
+<title>multi_tracker_classkit_cluster_clustering_backend</title><style>.edge>path:hover{stroke-width:8}</style>
 <polygon fill="blue" stroke="black" points="3534,-4827.5 3431,-4827.5 3431,-4774.5 3534,-4774.5 3534,-4827.5"/>
 <text xml:space="preserve" text-anchor="middle" x="3482.5" y="-4814" font-family="Helvetica,sans-Serif" font-size="10.00" fill="white">multi_tracker.</text>
 <text xml:space="preserve" text-anchor="middle" x="3482.5" y="-4802.75" font-family="Helvetica,sans-Serif" font-size="10.00" fill="white">classkit.</text>
 <text xml:space="preserve" text-anchor="middle" x="3482.5" y="-4791.5" font-family="Helvetica,sans-Serif" font-size="10.00" fill="white">cluster.</text>
-<text xml:space="preserve" text-anchor="middle" x="3482.5" y="-4780.25" font-family="Helvetica,sans-Serif" font-size="10.00" fill="white">metalfaiss_backend</text>
+<text xml:space="preserve" text-anchor="middle" x="3482.5" y="-4780.25" font-family="Helvetica,sans-Serif" font-size="10.00" fill="white">clustering_backend</text>
 </g>
-<!-- multi_tracker_classkit_cluster_metalfaiss_backend&#45;&gt;multi_tracker_classkit_gui_dialogs -->
+<!-- multi_tracker_classkit_cluster_clustering_backend&#45;&gt;multi_tracker_classkit_gui_dialogs -->
 <g id="edge124" class="edge">
-<title>multi_tracker_classkit_cluster_metalfaiss_backend&#45;&gt;multi_tracker_classkit_gui_dialogs</title><style>.edge>path:hover{stroke-width:8}</style>
+<title>multi_tracker_classkit_cluster_clustering_backend&#45;&gt;multi_tracker_classkit_gui_dialogs</title><style>.edge>path:hover{stroke-width:8}</style>
 <path fill="none" stroke="black" d="M3499.64,-4827.58C3515.31,-4851.46 3541.11,-4886.06 3571.18,-4908 3594.62,-4925.1 3602.98,-4929.48 3631.88,-4932"/>
 <path fill="none" stroke="black" d="M3633.88,-4932C3679.8,-4936 3729.93,-4919.02 3765.28,-4903.24"/>
 <polygon fill="blue" stroke="black" points="3766.3,-4906.62 3773.92,-4899.25 3763.37,-4900.26 3766.3,-4906.62"/>
@@ -5484,9 +5484,9 @@
 <path fill="none" stroke="black" d="M2948.08,-5182.28C2964.53,-5263.76 3035.4,-5601.51 3131.2,-5867 3234.53,-6153.38 3404.07,-6480 3461.65,-6588.12"/>
 <polygon fill="blue" stroke="black" points="3458.51,-6589.68 3466.31,-6596.85 3464.69,-6586.38 3458.51,-6589.68"/>
 </g>
-<!-- sklearn&#45;&gt;multi_tracker_classkit_cluster_metalfaiss_backend -->
+<!-- sklearn&#45;&gt;multi_tracker_classkit_cluster_clustering_backend -->
 <g id="edge639" class="edge">
-<title>sklearn&#45;&gt;multi_tracker_classkit_cluster_metalfaiss_backend</title><style>.edge>path:hover{stroke-width:8}</style>
+<title>sklearn&#45;&gt;multi_tracker_classkit_cluster_clustering_backend</title><style>.edge>path:hover{stroke-width:8}</style>
 <path fill="none" stroke="black" d="M2970.86,-5149.53C3022.87,-5120.74 3141.72,-5053.49 3236.56,-4989 3276.19,-4962.05 3379.97,-4881.02 3438.94,-4834.61"/>
 <polygon fill="blue" stroke="black" points="3440.78,-4837.62 3446.47,-4828.69 3436.45,-4832.12 3440.78,-4837.62"/>
 </g>

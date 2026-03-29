@@ -44,6 +44,7 @@ from multi_tracker.core.tracking.precompute import (
     CropConfig,
     UnifiedPrecompute,
 )
+from multi_tracker.core.tracking.profiler import TrackingProfiler
 from multi_tracker.core.tracking.tag_features import (
     NO_TAG,
     TrackTagHistory,
@@ -409,29 +410,45 @@ class TrackingWorker(QThread):
         return self._collapse_obb_axis_theta(measured_theta, reference_theta)
 
     def _build_cnn_identity_cache_path(
-        self, label: str, start_frame: int, end_frame: int
+        self, label: str, classify_id: str, start_frame: int, end_frame: int
     ):
-        """Derive the CNN identity cache path from the detection cache path."""
-        if not self.detection_cache_path:
-            return None
-        import re as _re
+        """Build an independent, hash-keyed classify cache path."""
+        from multi_tracker.utils.video_artifacts import build_classify_cache_path
 
-        base = Path(self.detection_cache_path)
-        safe_label = _re.sub(r"[^\w-]", "_", label)
         return str(
-            base.with_name(
-                base.stem + f"_cnn_{safe_label}_{start_frame}_{end_frame}.npz"
+            build_classify_cache_path(
+                self.video_path,
+                classify_id,
+                label,
+                start_frame,
+                end_frame,
+                artifact_base_dir=(
+                    Path(self.detection_cache_path).parent
+                    if self.detection_cache_path
+                    else None
+                ),
+                create_dir=True,
             )
         )
 
-    def _build_tag_cache_path(self, start_frame, end_frame):
-        """Derive the tag observation cache path from the detection cache path."""
-        if not self.detection_cache_path:
-            return None
-        from pathlib import Path as _P
+    def _build_tag_cache_path(self, apriltag_id, start_frame, end_frame):
+        """Build an independent, hash-keyed AprilTag cache path."""
+        from multi_tracker.utils.video_artifacts import build_apriltag_cache_path
 
-        base = _P(self.detection_cache_path)
-        return base.with_name(base.stem + f"_tags_{start_frame}_{end_frame}.npz")
+        return str(
+            build_apriltag_cache_path(
+                self.video_path,
+                apriltag_id,
+                start_frame,
+                end_frame,
+                artifact_base_dir=(
+                    Path(self.detection_cache_path).parent
+                    if self.detection_cache_path
+                    else None
+                ),
+                create_dir=True,
+            )
+        )
 
     def _build_precompute_phases(
         self,
@@ -580,9 +597,18 @@ class TrackingWorker(QThread):
         # --- AprilTag ---
         if bool(params.get("USE_APRILTAGS", False)):
             from multi_tracker.core.identity.apriltag_detector import AprilTagConfig
+            from multi_tracker.core.identity.properties_cache import (
+                compute_apriltag_cache_id,
+            )
 
             cfg = AprilTagConfig.from_params(params)
-            tag_cache_path = self._build_tag_cache_path(start_frame, end_frame)
+            apriltag_id = compute_apriltag_cache_id(
+                params,
+                inference_model_id=str(params.get("INFERENCE_MODEL_ID", "")),
+            )
+            tag_cache_path = self._build_tag_cache_path(
+                apriltag_id, start_frame, end_frame
+            )
             if tag_cache_path is not None:
                 try:
                     phase = AprilTagPrecomputePhase(
@@ -609,14 +635,22 @@ class TrackingWorker(QThread):
                 )
                 continue
             from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+            from multi_tracker.core.identity.properties_cache import (
+                compute_classify_cache_id,
+            )
 
             cnn_cfg = CNNIdentityConfig(
                 model_path=model_path,
                 confidence=float(cnn_cfg_dict.get("confidence", 0.5)),
                 batch_size=int(cnn_cfg_dict.get("batch_size", 64)),
             )
+            classify_id = compute_classify_cache_id(
+                model_path=model_path,
+                compute_runtime=str(params.get("COMPUTE_RUNTIME", "cpu")),
+                inference_model_id=str(params.get("INFERENCE_MODEL_ID", "")),
+            )
             cnn_cache_path = self._build_cnn_identity_cache_path(
-                label, start_frame, end_frame
+                label, classify_id, start_frame, end_frame
             )
             if cnn_cache_path:
                 phase = CNNPrecomputePhase(
@@ -631,7 +665,14 @@ class TrackingWorker(QThread):
         return phases
 
     def _run_batched_detection_phase(
-        self, cap, detection_cache, detector, params, start_frame, end_frame
+        self,
+        cap,
+        detection_cache,
+        detector,
+        params,
+        start_frame,
+        end_frame,
+        profiler=None,
     ):
         """
         Phase 1: Run batched YOLO detection on specified frame range and cache results.
@@ -782,6 +823,7 @@ class TrackingWorker(QThread):
                 batch_start_idx,
                 progress_cb,
                 return_raw=True,
+                profiler=profiler,
             )
 
             # Cache each frame's detections
@@ -857,12 +899,19 @@ class TrackingWorker(QThread):
         )
         return frame_idx
 
-    def run(self: object) -> object:
+    def run(self: object) -> object:  # noqa: C901
         """Execute tracking pipeline for the configured video and parameters."""
         # === 1. INITIALIZATION (Identical to Original) ===
         gc.collect()
         self._stop_requested = False
         p = self.get_current_params()
+
+        # Create profiler early so initialization timing is captured.
+        # The profiler is configured with metadata later, once all params are known.
+        _profiling_enabled = bool(p.get("ENABLE_PROFILING", False))
+        profiler = TrackingProfiler(enabled=_profiling_enabled)
+        profiler.phase_start("initialization")
+
         density_map_enabled = self._confidence_density_enabled(p)
         if not density_map_enabled:
             self._density_regions = []
@@ -1032,6 +1081,7 @@ class TrackingWorker(QThread):
             deque(maxlen=2) for _ in range(N)
         ]  # entries: (x, y, frame_count)
         orientation_last, last_shape_info = [None] * N, [None] * N
+        heading_flip_counters = [0] * N  # Hysteresis for directed heading flips
         track_pose_prototypes = [None] * N
         track_avg_step = [0.0] * N
         tracking_continuity = [0] * N
@@ -1065,19 +1115,22 @@ class TrackingWorker(QThread):
         local_counts, intensity_history, lighting_state = [0] * N, deque(maxlen=50), {}
         roi_fill_color = None  # Average color outside ROI for visualization overlay
 
-        # Profiling accumulators
-        profile_times = {
-            "frame_read": 0.0,
-            "preprocessing": 0.0,
-            "detection": 0.0,
-            "assignment": 0.0,
-            "tracking_update": 0.0,
-            "visualization": 0.0,
-            "video_write": 0.0,
-            "gui_emit": 0.0,
-        }
-        profile_counts = 0
-        PROFILE_INTERVAL = 100  # Log every 100 frames
+        # Pipeline profiler — store run metadata now that all params are known,
+        # and close the initialization phase.
+        profiler.set_config(
+            detection_method=detection_method,
+            n_targets=N,
+            resize_factor=float(p.get("RESIZE_FACTOR", 1.0)),
+            compute_runtime=str(p.get("COMPUTE_RUNTIME", "cpu")),
+            start_frame=start_frame,
+            end_frame=end_frame,
+            backward_mode=self.backward_mode,
+            preview_mode=self.preview_mode,
+            batched_detection=use_batched_detection,
+            density_map_enabled=density_map_enabled,
+            precompute_enabled=individual_data_precompute_enabled,
+        )
+        profiler.phase_end("initialization")
 
         # Initialize detection cache
         detection_cache = None
@@ -1202,9 +1255,17 @@ class TrackingWorker(QThread):
         # Only run batched detection if we don't already have cached detections
         if use_batched_detection and not use_cached_detections:
             # Phase 1: Batched YOLO detection
+            profiler.phase_start("batched_detection")
             frames_processed = self._run_batched_detection_phase(
-                cap, detection_cache, detector, p, start_frame, end_frame
+                cap,
+                detection_cache,
+                detector,
+                p,
+                start_frame,
+                end_frame,
+                profiler=profiler,
             )
+            profiler.phase_end("batched_detection")
 
             # Save detection cache after phase 1
             detection_cache.save()
@@ -1234,6 +1295,7 @@ class TrackingWorker(QThread):
             and detection_cache is not None
             and use_cached_detections
         ):
+            profiler.phase_start("confidence_density")
             from pathlib import Path as _Path
 
             _regions_path = _Path(self.detection_cache_path).with_name(
@@ -1284,6 +1346,8 @@ class TrackingWorker(QThread):
                             _heading_hints,
                             _directed_mask,
                             _canonical_affines,
+                            _canvas_dims,
+                            _M_inverse,
                         ) = detection_cache.get_frame(_fidx)
                         if _meas_list:
                             _meas_arr = np.array(_meas_list, dtype=np.float32)
@@ -1387,6 +1451,8 @@ class TrackingWorker(QThread):
                     # Ensure video is reset even on failure.
                     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
+            profiler.phase_end("confidence_density")
+
         # === UNIFIED PRECOMPUTE ===
         props_path = None
         tag_observation_cache_path = None
@@ -1398,13 +1464,7 @@ class TrackingWorker(QThread):
         if phases:
             _bg_raw = p.get("INDIVIDUAL_BACKGROUND_COLOR", [0, 0, 0])
             _adv = p.get("ADVANCED_CONFIG", {})
-            _canon_long = int(_adv.get("canonical_crop_long_edge", 256))
             _ref_ar = float(_adv.get("reference_aspect_ratio", 2.0))
-            from multi_tracker.core.tracking.canonical_crop import (
-                compute_crop_dimensions,
-            )
-
-            _canon_w, _canon_h = compute_crop_dimensions(_canon_long, _ref_ar)
             crop_config = CropConfig(
                 padding_fraction=float(p.get("INDIVIDUAL_CROP_PADDING", 0.1)),
                 suppress_foreign=bool(p.get("SUPPRESS_FOREIGN_OBB_REGIONS", True)),
@@ -1413,10 +1473,10 @@ class TrackingWorker(QThread):
                     if isinstance(_bg_raw, (list, tuple)) and len(_bg_raw) == 3
                     else (0, 0, 0)
                 ),
-                canonical_crop_width=_canon_w,
-                canonical_crop_height=_canon_h,
+                reference_aspect_ratio=_ref_ar,
             )
             precompute = UnifiedPrecompute(phases, crop_config)
+            profiler.phase_start("precompute")
             try:
                 results = precompute.run(
                     cap,
@@ -1429,8 +1489,10 @@ class TrackingWorker(QThread):
                     progress_cb=lambda pct, msg: self.progress_signal.emit(pct, msg),
                     stop_check=lambda: self._stop_requested,
                     warning_cb=lambda title, msg: self.warning_signal.emit(title, msg),
+                    profiler=profiler,
                 )
             except Exception as exc:
+                profiler.phase_end("precompute")
                 logger.exception("Unified precompute failed (fatal phase).")
                 self.warning_signal.emit(
                     "Precompute Failed",
@@ -1447,9 +1509,13 @@ class TrackingWorker(QThread):
             props_path = results.get("pose")
             tag_observation_cache_path = results.get("apriltag")
             cnn_identity_cache_path = results.get("cnn_identity")
+            profiler.phase_end("precompute")
 
             if props_path:
                 logger.info("Individual properties cache: %s", props_path)
+
+            # Reset cap position after precompute consumed all frames.
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
         # Open tag observation cache for reading during tracking loop.
         tag_obs_cache = None
@@ -1475,7 +1541,19 @@ class TrackingWorker(QThread):
         )  # list of (label, cache, history, match_bonus, mismatch_penalty)
         for cnn_cfg_dict in p.get("CNN_CLASSIFIERS", []):
             label = str(cnn_cfg_dict.get("label", "cnn_identity"))
-            _path = self._build_cnn_identity_cache_path(label, start_frame, end_frame)
+            model_path = str(cnn_cfg_dict.get("model_path", ""))
+            from multi_tracker.core.identity.properties_cache import (
+                compute_classify_cache_id,
+            )
+
+            classify_id = compute_classify_cache_id(
+                model_path=model_path,
+                compute_runtime=str(p.get("COMPUTE_RUNTIME", "cpu")),
+                inference_model_id=str(p.get("INFERENCE_MODEL_ID", "")),
+            )
+            _path = self._build_cnn_identity_cache_path(
+                label, classify_id, start_frame, end_frame
+            )
             if _path and os.path.exists(_path):
                 from multi_tracker.core.identity.cnn_identity import (
                     CNNIdentityCache,
@@ -1629,8 +1707,8 @@ class TrackingWorker(QThread):
         # Pre-compute ROI contours once (the mask is static for the entire run).
         _roi_contours_cache = None
 
+        profiler.phase_start("tracking_loop")
         for frame, _ in frame_iterator:
-            loop_start = time.time()
 
             params = self.get_current_params()
             self.frame_count += 1
@@ -1655,13 +1733,18 @@ class TrackingWorker(QThread):
                     break
 
             # --- Preprocessing & Detection ---
-            prep_start = time.time()
+            profiler.tick("preprocessing")
             resize_f = params["RESIZE_FACTOR"]
 
             # Skip preprocessing if no frame (cached detection mode)
             if frame is not None:
-                # Keep original frame for individual dataset generation (high resolution)
-                original_frame = frame.copy() if individual_generator else None
+                # Keep original frame for individual dataset generation (high resolution).
+                # When resize_f >= 1.0 the frame won't be replaced below, so a
+                # copy is unnecessary — the same buffer can be re-used read-only.
+                if individual_generator:
+                    original_frame = frame if resize_f >= 1.0 else frame.copy()
+                else:
+                    original_frame = None
 
                 if resize_f < 1.0:
                     frame = cv2.resize(
@@ -1674,7 +1757,7 @@ class TrackingWorker(QThread):
             else:
                 original_frame = None
 
-            profile_times["preprocessing"] += time.time() - prep_start
+            profiler.tock("preprocessing")
 
             detection_method = params.get("DETECTION_METHOD", "background_subtraction")
 
@@ -1709,7 +1792,7 @@ class TrackingWorker(QThread):
                     else:
                         roi_fill_color = np.array([0, 0, 0], dtype=np.uint8)
 
-            detect_start = time.time()
+            profiler.tick("detection")
 
             # Initialize detection-related variables (in case no detection occurs)
             detection_ids = []
@@ -1746,6 +1829,8 @@ class TrackingWorker(QThread):
                     raw_heading_hints,
                     raw_directed_mask,
                     raw_canonical_affines,
+                    _raw_canvas_dims,
+                    _raw_M_inverse,
                 ) = detection_cache.get_frame(actual_frame_index)
 
                 if detection_method == "yolo_obb":
@@ -1864,6 +1949,7 @@ class TrackingWorker(QThread):
                     frame,
                     self.frame_count,
                     return_raw=True,
+                    profiler=profiler,
                 )
 
                 raw_detection_ids = [
@@ -1923,8 +2009,9 @@ class TrackingWorker(QThread):
                 )
                 cached_frame_indices.add(actual_frame_index)
 
-            profile_times["detection"] += time.time() - detect_start
+            profiler.tock("detection")
 
+            profiler.tick("features")
             detection_crop_quality = np.zeros(len(meas), dtype=np.float32)
             detection_pose_heading = np.full(len(meas), np.nan, dtype=np.float32)
             detection_pose_keypoints = [None] * len(meas)
@@ -2023,10 +2110,15 @@ class TrackingWorker(QThread):
             else:
                 overlay = None
 
+            profiler.tock("features")
+
             if detection_initialized and meas:
                 # --- Assignment ---
-                assign_start = time.time()
+                profiler.tick("kf_predict")
                 preds = self.kf_manager.get_predictions()
+                profiler.tock("kf_predict")
+
+                profiler.tick("cost_matrix")
 
                 # --- AprilTag detection map for this frame ---
                 _tag_det_map = build_tag_detection_map(
@@ -2142,6 +2234,8 @@ class TrackingWorker(QThread):
                         for _c in _flagged_cols:
                             cost[_raw_dist[:, _c] >= _density_max_dist, _c] = 1e9
 
+                profiler.tock("cost_matrix")
+                profiler.tick("hungarian")
                 rows, cols, free_dets, next_id, high_cost_tracks = (
                     assigner.assign_tracks(
                         cost,
@@ -2159,6 +2253,7 @@ class TrackingWorker(QThread):
                 )
                 next_trajectory_id = next_id
                 respawned_matches = {r for r in rows if track_states[r] == "lost"}
+                profiler.tock("hungarian")
 
                 # --- Diagnostic: log large-distance assignments ---
                 if rows and self.frame_count % 10 == 0:
@@ -2216,6 +2311,7 @@ class TrackingWorker(QThread):
                     position_uncertainties = []
 
                 # --- State Management (Identical to Original) ---
+                profiler.tick("state_update")
                 matched = set(rows)
                 unmatched = list((set(range(N)) - matched) | set(high_cost_tracks))
                 for r in matched:
@@ -2252,6 +2348,8 @@ class TrackingWorker(QThread):
                     )
 
                 # --- KF Update & State Update ---
+                profiler.tock("state_update")
+                profiler.tick("kf_update")
                 total_cost = 0.0
                 for r, c in zip(rows, cols):
                     meas_x = float(meas[c][0])
@@ -2287,6 +2385,7 @@ class TrackingWorker(QThread):
                         track_avg_step[r] = 0.0
                         local_counts[r] = 0
                         orientation_last[r] = theta_for_tracking
+                        heading_flip_counters[r] = 0
                         track_pose_prototypes[r] = None
                         self.kf_manager.initialize_filter(
                             r,
@@ -2299,7 +2398,27 @@ class TrackingWorker(QThread):
                     corrected_meas = np.asarray(
                         [meas_x, meas_y, theta_for_tracking], dtype=np.float32
                     )
-                    self.kf_manager.correct(r, corrected_meas)
+                    # Scale theta measurement noise by heading confidence:
+                    # low-confidence headings get inflated R[2,2] so the KF
+                    # trusts its own prediction more than a noisy measurement.
+                    _orient_conf_for_r = 1.0
+                    if directed_heading:
+                        if c < len(pose_directed_mask) and pose_directed_mask[c]:
+                            _orient_conf_for_r = (
+                                float(detection_pose_visibility[c])
+                                if c < len(detection_pose_visibility)
+                                else 1.0
+                            )
+                        else:
+                            _orient_conf_for_r = (
+                                float(detection_confidences[c])
+                                if c < len(detection_confidences)
+                                else 1.0
+                            )
+                    _theta_r_scale = 1.0 / max(_orient_conf_for_r, 0.1)
+                    self.kf_manager.correct(
+                        r, corrected_meas, theta_r_scale=_theta_r_scale
+                    )
                     track_x = float(self.kf_manager.X[r, 0])
                     track_y = float(self.kf_manager.X[r, 1])
                     if not (np.isfinite(track_x) and np.isfinite(track_y)):
@@ -2338,7 +2457,15 @@ class TrackingWorker(QThread):
                         position_deques,
                         directed_heading=directed_heading,
                         orient_confidence=orient_confidence,
+                        heading_flip_counters=heading_flip_counters,
                     )
+                    # Feed smoothed heading back into the Kalman state so that
+                    # the KF prediction stays consistent with the orientation
+                    # actually used for tracking/display.  Without this, the KF
+                    # state diverges from orientation_last and subsequent
+                    # innovations are computed against a stale reference.
+                    if orientation_last[r] is not None and r < len(self.kf_manager.X):
+                        self.kf_manager.X[r, 2] = float(orientation_last[r])
                     last_shape_info[r] = shapes[c]
                     feature_alpha = float(
                         np.clip(params.get("TRACK_FEATURE_EMA_ALPHA", 0.85), 0.0, 0.999)
@@ -2607,11 +2734,10 @@ class TrackingWorker(QThread):
                     tracking_stabilized = True
                     logger.info(f"Tracking stabilized (avg cost={avg_cost:.2f})")
 
-            profile_times["assignment"] += (
-                time.time() - assign_start if detection_initialized and meas else 0
-            )
+                profiler.tock("kf_update")
 
             # --- Individual Dataset Generation (supports YOLO OBB and BG subtraction) ---
+            profiler.tick("individual_dataset")
             if individual_generator is not None and meas:
                 # Get track and trajectory IDs for matched detections
                 # cols contains the detection indices that were matched to tracks (rows)
@@ -2768,10 +2894,7 @@ class TrackingWorker(QThread):
                         canonical_affines=_canon_for_dataset,
                     )
 
-            # --- Tracking State Updates ---
-            track_start = time.time()
-            # (All the tracking state updates happen here - already in code)
-            profile_times["tracking_update"] += time.time() - track_start
+            profiler.tock("individual_dataset")
 
             # Emit progress signal periodically to avoid overwhelming the GUI thread
             # We also check that total_frames is valid
@@ -2805,7 +2928,7 @@ class TrackingWorker(QThread):
             viz_free_mode = params.get("VISUALIZATION_FREE_MODE", False)
 
             if not viz_free_mode and overlay is not None:
-                viz_start = time.time()
+                profiler.tick("visualization")
                 # Incrementally prune old trajectory points instead of
                 # rebuilding from trajectories_full every frame.
                 _traj_horizon = params["TRAJECTORY_HISTORY_SECONDS"]
@@ -2826,14 +2949,14 @@ class TrackingWorker(QThread):
                     yolo_results,
                     filtered_obb_corners,  # Pass OBB corners for visualization
                 )
-                profile_times["visualization"] += time.time() - viz_start
+                profiler.tock("visualization")
 
-                write_start = time.time()
+                profiler.tick("video_write")
                 if self.video_writer:
                     self.video_writer.write(overlay)
-                profile_times["video_write"] += time.time() - write_start
+                profiler.tock("video_write")
 
-                emit_start = time.time()
+                profiler.tick("gui_emit")
                 # For YOLO with ROI, draw boundary overlay before emitting
                 if (
                     detection_method != "background_subtraction"
@@ -2851,7 +2974,7 @@ class TrackingWorker(QThread):
                         )
 
                 self.emit_frame(overlay)
-                profile_times["gui_emit"] += time.time() - emit_start
+                profiler.tock("gui_emit")
 
             # === Real-time Stats (Always emit, even in viz-free mode) ===
             current_time = time.time()
@@ -2887,36 +3010,15 @@ class TrackingWorker(QThread):
                     {"fps": current_fps, "elapsed": elapsed, "eta": eta}
                 )
 
-            # Calculate frame read time (total loop time - all other operations)
-            loop_time = time.time() - loop_start
-            other_time = sum(profile_times.values()) - profile_times["frame_read"]
-            profile_times["frame_read"] += max(0, loop_time - other_time)
-
-            profile_counts += 1
-
-            # Log profiling summary periodically
-            if profile_counts % PROFILE_INTERVAL == 0:
-                total_time = sum(profile_times.values())
-                if total_time > 0:
-                    logger.info(
-                        "=== PROFILING SUMMARY (last %d frames) ===", PROFILE_INTERVAL
-                    )
-                    for key in sorted(profile_times.keys()):
-                        pct = (profile_times[key] / total_time) * 100
-                        avg_ms = (profile_times[key] / PROFILE_INTERVAL) * 1000
-                        logger.info("  %s: %.1f%% (%.2fms/frame)", key, pct, avg_ms)
-                    logger.info(
-                        "  Total: %.2fms/frame", (total_time / PROFILE_INTERVAL) * 1000
-                    )
-                    logger.info("===========================================")
-                    # Reset counters
-                    for key in profile_times:
-                        profile_times[key] = 0.0
-                    profile_counts = 0
+            # Finalize profiling for this frame and log periodically
+            profiler.end_frame()
+            profiler.log_periodic(100)
 
             elapsed = time.time() - start_time
             if elapsed > 0:
                 fps_list.append(self.frame_count / elapsed)
+
+        profiler.phase_end("tracking_loop")
 
         # Ensure cache has entries for all frames in the requested range (forward pass)
         if detection_cache and not self.backward_mode and not use_cached_detections:
@@ -2935,6 +3037,7 @@ class TrackingWorker(QThread):
                     )
 
         # === 3. CLEANUP (Identical to Original) ===
+        profiler.phase_start("cleanup")
         # Stop frame prefetcher if still running
         if self.frame_prefetcher is not None:
             self.frame_prefetcher.stop()
@@ -2973,6 +3076,28 @@ class TrackingWorker(QThread):
                 int(pose_direction_fallback_count),
             )
 
+        # --- Profiling: final summary and JSON export ---
+        profiler.phase_end("cleanup")
+        profiler.log_final_summary()
+        # Export JSON next to the video output or detection cache, whichever is available.
+        # Use a direction suffix so forward and backward profiles are kept separate.
+        _dir_tag = "backward" if self.backward_mode else "forward"
+        profile_export_path = None
+        if self.video_output_path:
+            _pbase = Path(self.video_output_path).with_suffix("")
+            profile_export_path = Path(f"{_pbase}_{_dir_tag}.profile.json")
+        elif self.detection_cache_path:
+            profile_export_path = (
+                Path(self.detection_cache_path).parent
+                / f"tracking_profile_{_dir_tag}.json"
+            )
+        elif self.video_path:
+            profile_export_path = (
+                Path(self.video_path).parent / f"tracking_profile_{_dir_tag}.json"
+            )
+        if profile_export_path is not None:
+            profiler.export_summary(profile_export_path)
+
         logger.info("Tracking worker finished. Emitting raw trajectory data.")
 
         self.finished_signal.emit(
@@ -2989,6 +3114,7 @@ class TrackingWorker(QThread):
         position_deques,
         directed_heading=False,
         orient_confidence=1.0,
+        heading_flip_counters=None,
     ):
         final_theta, old = theta, orientation_last[r]
 
@@ -2999,14 +3125,17 @@ class TrackingWorker(QThread):
             # as-is — unlike undirected OBB headings, there is no axis jitter
             # to rate-limit when stopped.
             if old is None:
+                if heading_flip_counters is not None:
+                    heading_flip_counters[r] = 0
                 return theta
             flip_conf_thresh = float(p.get("DIRECTED_ORIENT_FLIP_CONFIDENCE", 0.7))
+            flip_persistence = int(p.get("DIRECTED_ORIENT_FLIP_PERSISTENCE", 3))
             old_deg = math.degrees(old)
             new_deg = math.degrees(theta)
             delta = wrap_angle_degs(new_deg - old_deg)
             if abs(delta) > 90:
                 # Likely head-tail swap: check motion evidence + confidence.
-                accept_flip = False
+                single_frame_accept = False
                 if speed >= p["VELOCITY_THRESHOLD"] and len(position_deques[r]) == 2:
                     (x1, y1, _), (x2, y2, _) = position_deques[r]
                     ang_deg = math.degrees(math.atan2(y2 - y1, x2 - x1))
@@ -3017,14 +3146,35 @@ class TrackingWorker(QThread):
                     # confidence is adequate.  When motion contradicts (animal
                     # still going the same way), never accept regardless of
                     # confidence — the flip is almost certainly spurious.
-                    accept_flip = (
+                    single_frame_accept = (
                         motion_favors_new and orient_confidence >= flip_conf_thresh
                     )
                 else:
                     # Stopped or no motion history: confidence alone decides.
-                    accept_flip = orient_confidence >= flip_conf_thresh
-                if not accept_flip:
+                    single_frame_accept = orient_confidence >= flip_conf_thresh
+
+                # Temporal hysteresis: require flip_persistence consecutive
+                # frames requesting a flip before actually accepting it.
+                if single_frame_accept and heading_flip_counters is not None:
+                    heading_flip_counters[r] += 1
+                    if heading_flip_counters[r] >= flip_persistence:
+                        heading_flip_counters[r] = 0
+                        # Accept the flip
+                    else:
+                        # Not yet enough evidence — reject this frame's flip
+                        new_deg = (new_deg + 180.0) % 360.0
+                elif not single_frame_accept:
+                    if heading_flip_counters is not None:
+                        heading_flip_counters[r] = 0
                     new_deg = (new_deg + 180.0) % 360.0
+                else:
+                    # No hysteresis array — fall back to original behavior
+                    if not single_frame_accept:
+                        new_deg = (new_deg + 180.0) % 360.0
+            else:
+                # No flip detected — reset the counter
+                if heading_flip_counters is not None:
+                    heading_flip_counters[r] = 0
             return math.radians(new_deg % 360.0)
 
         # --- Original undirected smoothing (axis-only, no direction signal) ---

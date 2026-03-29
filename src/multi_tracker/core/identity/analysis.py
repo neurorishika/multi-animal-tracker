@@ -119,22 +119,13 @@ class IndividualDatasetGenerator:
             params.get("SUPPRESS_FOREIGN_OBB_DATASET", False)
         )
 
-        # Canonical crop dimensions (from ADVANCED_CONFIG).  When > 0,
-        # process_frame will prefer canonical crops over AABB extraction.
+        # Canonical crop configuration.  When enabled, process_frame will
+        # prefer native-scale canonical crops (AR-standardised, resolution-
+        # preserving) over legacy AABB extraction.
         _adv = params.get("ADVANCED_CONFIG", {})
-        _canon_long = int(_adv.get("canonical_crop_long_edge", 256))
-        _ref_ar = float(_adv.get("reference_aspect_ratio", 2.0))
-        if _canon_long > 0 and _ref_ar > 0:
-            from multi_tracker.core.tracking.canonical_crop import (
-                compute_crop_dimensions,
-            )
-
-            self._canonical_crop_width, self._canonical_crop_height = (
-                compute_crop_dimensions(_canon_long, _ref_ar)
-            )
-        else:
-            self._canonical_crop_width = 0
-            self._canonical_crop_height = 0
+        self._canonical_ref_ar = float(_adv.get("reference_aspect_ratio", 2.0))
+        self._canonical_padding = float(params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+        self._canonical_enabled = self._canonical_ref_ar > 0
 
         # Save interval (use detections as-is, just control frequency)
         self.save_every_n_frames = params.get("INDIVIDUAL_SAVE_INTERVAL", 1)
@@ -303,6 +294,8 @@ class IndividualDatasetGenerator:
         directed_mask: Optional[Sequence[int]] = None,
         velocities: Optional[Sequence[Optional[Tuple[float, float]]]] = None,
         canonical_affines: Optional[Sequence[Optional[np.ndarray]]] = None,
+        canonical_canvas_dims: Optional[Sequence[Optional[Tuple[int, int]]]] = None,
+        canonical_M_inverse: Optional[Sequence[Optional[np.ndarray]]] = None,
     ) -> int:
         """
         Process a frame and save masked crops for each detection.
@@ -405,11 +398,7 @@ class IndividualDatasetGenerator:
                 if (canonical_affines is not None and i < len(canonical_affines))
                 else None
             )
-            use_canonical_crop = (
-                M_canonical_i is not None
-                and self._canonical_crop_width > 0
-                and self._canonical_crop_height > 0
-            )
+            use_canonical_crop = M_canonical_i is not None and self._canonical_enabled
 
             crop = None
             crop_info = None
@@ -417,54 +406,72 @@ class IndividualDatasetGenerator:
 
             if use_canonical_crop:
                 from multi_tracker.core.tracking.canonical_crop import (
+                    compute_native_crop_dimensions,
                     extract_canonical_crop,
                 )
+
+                # Use pre-computed canvas dims when available, else compute
+                _pre_dims = (
+                    canonical_canvas_dims[i]
+                    if (
+                        canonical_canvas_dims is not None
+                        and i < len(canonical_canvas_dims)
+                        and canonical_canvas_dims[i] is not None
+                    )
+                    else None
+                )
+                if _pre_dims is not None:
+                    _cw, _ch = int(_pre_dims[0]), int(_pre_dims[1])
+                else:
+                    _cw, _ch = compute_native_crop_dimensions(
+                        corners, self._canonical_ref_ar, self._canonical_padding
+                    )
 
                 M_can = np.asarray(M_canonical_i, dtype=np.float64)
                 crop = extract_canonical_crop(
                     frame,
                     M_can,
-                    self._canonical_crop_width,
-                    self._canonical_crop_height,
+                    _cw,
+                    _ch,
                     bg_color=self.background_color,
                 )
-                M_inverse_i = cv2.invertAffineTransform(M_can).astype(np.float32)
+
+                # Use pre-computed M_inverse when available, else compute
+                _pre_inv = (
+                    canonical_M_inverse[i]
+                    if (
+                        canonical_M_inverse is not None
+                        and i < len(canonical_M_inverse)
+                        and canonical_M_inverse[i] is not None
+                    )
+                    else None
+                )
+                M_inverse_i = (
+                    _pre_inv
+                    if _pre_inv is not None
+                    else cv2.invertAffineTransform(M_can).astype(np.float32)
+                )
 
                 # Foreign OBB suppression in canonical space
                 if other_corners and self.suppress_foreign_obb:
-                    _mask = (
-                        np.ones(
-                            (self._canonical_crop_height, self._canonical_crop_width),
-                            dtype=np.uint8,
-                        )
-                        * 255
-                    )
                     for oc in other_corners:
                         # Transform foreign corners into canonical crop space
                         oc_h = np.hstack([oc, np.ones((4, 1))]).T  # 3 x 4
                         oc_canon = (M_can @ oc_h).T.astype(np.int32)  # 4 x 2
-                        cv2.fillPoly(_mask, [oc_canon], 0)
-                    _mask_3ch = cv2.cvtColor(_mask, cv2.COLOR_GRAY2BGR)
-                    _bg = np.full_like(crop, self.background_color, dtype=np.uint8)
-                    crop = cv2.bitwise_and(crop, _mask_3ch) + cv2.bitwise_and(
-                        _bg, cv2.bitwise_not(_mask_3ch)
-                    )
+                        cv2.fillPoly(crop, [oc_canon], self.background_color)
 
                 crop_info = {
-                    "crop_size": (
-                        self._canonical_crop_width,
-                        self._canonical_crop_height,
-                    ),
+                    "crop_size": (_cw, _ch),
                     "crop_bbox": None,  # not applicable for canonical crops
                     "obb_corners_local": None,
                     "obb_corners_expanded_local": None,
                     "canonical_center_px": [
-                        self._canonical_crop_width / 2.0,
-                        self._canonical_crop_height / 2.0,
+                        _cw / 2.0,
+                        _ch / 2.0,
                     ],
                     "canonical_size_px": [
-                        float(self._canonical_crop_width),
-                        float(self._canonical_crop_height),
+                        float(_cw),
+                        float(_ch),
                     ],
                     "expansion_factor": None,
                 }
@@ -579,36 +586,31 @@ class IndividualDatasetGenerator:
 
         # Prefer canonical crop when affine is provided
         M_inv = None
-        if (
-            canonical_affine is not None
-            and self._canonical_crop_width > 0
-            and self._canonical_crop_height > 0
-        ):
+        if canonical_affine is not None and self._canonical_enabled:
             from multi_tracker.core.tracking.canonical_crop import (
+                compute_native_crop_dimensions,
                 extract_canonical_crop,
+            )
+
+            _cw, _ch = compute_native_crop_dimensions(
+                corners, self._canonical_ref_ar, self._canonical_padding
             )
 
             M_can = np.asarray(canonical_affine, dtype=np.float64)
             crop = extract_canonical_crop(
                 frame,
                 M_can,
-                self._canonical_crop_width,
-                self._canonical_crop_height,
+                _cw,
+                _ch,
                 bg_color=self.background_color,
             )
             M_inv = cv2.invertAffineTransform(M_can).astype(np.float32)
             crop_info = {
-                "crop_size": (self._canonical_crop_width, self._canonical_crop_height),
+                "crop_size": (_cw, _ch),
                 "obb_corners_local": None,
                 "obb_corners_expanded_local": None,
-                "canonical_center_px": [
-                    self._canonical_crop_width / 2.0,
-                    self._canonical_crop_height / 2.0,
-                ],
-                "canonical_size_px": [
-                    float(self._canonical_crop_width),
-                    float(self._canonical_crop_height),
-                ],
+                "canonical_center_px": [_cw / 2.0, _ch / 2.0],
+                "canonical_size_px": [float(_cw), float(_ch)],
             }
         else:
             crop, crop_info = self._extract_obb_masked_crop(
@@ -735,15 +737,9 @@ class IndividualDatasetGenerator:
         mask = np.zeros((crop_h, crop_w), dtype=np.uint8)
         cv2.fillPoly(mask, [shifted_expanded_corners.astype(np.int32)], 255)
 
-        # Apply mask - keep OBB region, fill rest with background color
-        mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        masked_crop = cv2.bitwise_and(crop, mask_3ch)
-
-        # Fill background with the specified color
-        background = np.full_like(crop, self.background_color, dtype=np.uint8)
-        mask_inv = cv2.bitwise_not(mask_3ch)
-        background = cv2.bitwise_and(background, mask_inv)
-        masked_crop = cv2.add(masked_crop, background)
+        # Apply mask in-place: fill outside-OBB pixels with background color
+        crop[mask == 0] = self.background_color
+        masked_crop = crop
 
         # Option 1: suppress other animals' OBB regions before pose inference
         if other_corners_list:

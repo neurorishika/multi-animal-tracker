@@ -49,6 +49,10 @@ def _predict_kernel(X, P, F, Q_base, q_long, q_lat):
             if P[i, j, j] < 0.1:
                 P[i, j, j] = 0.1
 
+        # 5. Normalize theta to [0, 2*pi) to prevent state drift
+        two_pi = 2.0 * np.pi
+        X[i, 2] = X[i, 2] - np.floor(X[i, 2] / two_pi) * two_pi
+
     return X, P
 
 
@@ -95,6 +99,10 @@ def _correct_kernel(X, P, H, R, identity_mat, track_idx, measurement, max_veloci
 
     # Update State (K @ y_clipped == K_eff @ y_orig)
     X[track_idx] = (x + (K @ y)).flatten()
+
+    # Normalize theta to [0, 2*pi) after correction
+    two_pi = 2.0 * np.pi
+    X[track_idx, 2] = X[track_idx, 2] - np.floor(X[track_idx, 2] / two_pi) * two_pi
 
     # Apply velocity constraint after correction
     vx, vy = X[track_idx, 3], X[track_idx, 4]
@@ -260,6 +268,9 @@ class KalmanFilterManager:
                     if self.P[i, j, j] < 0.1:
                         self.P[i, j, j] = 0.1
 
+                # Normalize theta to [0, 2*pi)
+                self.X[i, 2] = self.X[i, 2] % (2.0 * np.pi)
+
             # Cap diagonal covariance (mirrors the Numba-path cap above)
             _p_max = float(self.params.get("KALMAN_MAX_COVARIANCE_DIAGONAL", 1000.0))
             _diag = np.arange(self.dim_s)
@@ -309,14 +320,29 @@ class KalmanFilterManager:
         """Compatibility wrapper returning `predict()` output."""
         return self.predict()
 
-    def correct(self, track_idx: int, measurement: np.ndarray) -> None:
-        """Correct a track with one measurement update."""
+    def correct(
+        self, track_idx: int, measurement: np.ndarray, theta_r_scale: float = 1.0
+    ) -> None:
+        """Correct a track with one measurement update.
+
+        Parameters
+        ----------
+        theta_r_scale : float
+            Multiplier applied to R[2,2] (theta measurement noise) for this
+            correction.  Values > 1 make the filter trust its own heading
+            prediction more than the measurement; used when heading confidence
+            is low.
+        """
+        R_eff = self.R
+        if theta_r_scale != 1.0:
+            R_eff = self.R.copy()
+            R_eff[2, 2] *= theta_r_scale
         if NUMBA_AVAILABLE:
             self.X, self.P = _correct_kernel(
                 self.X,
                 self.P,
                 self.H,
-                self.R,
+                R_eff,
                 self.identity_mat,
                 track_idx,
                 measurement,
@@ -332,7 +358,7 @@ class KalmanFilterManager:
                 y[2, 0] -= 2 * np.pi
             elif y[2, 0] < -np.pi:
                 y[2, 0] += 2 * np.pi
-            S = self.H @ p @ self.H.T + self.R
+            S = self.H @ p @ self.H.T + R_eff
             K = p @ self.H.T @ np.linalg.inv(S)
             # Innovation clipping with K_eff for consistent covariance update
             pos_innov_sq = float(y[0, 0] ** 2 + y[1, 0] ** 2)
@@ -346,8 +372,10 @@ class KalmanFilterManager:
                 K_eff[:, 0] *= clip_scale
                 K_eff[:, 1] *= clip_scale
             self.X[track_idx] = (x + (K @ y)).flatten()
+            # Normalize theta to [0, 2*pi) after correction
+            self.X[track_idx, 2] = self.X[track_idx, 2] % (2.0 * np.pi)
             IKH = self.identity_mat - (K_eff @ self.H)
-            self.P[track_idx] = IKH @ p @ IKH.T + (K_eff @ self.R @ K_eff.T)
+            self.P[track_idx] = IKH @ p @ IKH.T + (K_eff @ R_eff @ K_eff.T)
             # Velocity constraint + covariance propagation
             vx, vy = self.X[track_idx, 3], self.X[track_idx, 4]
             speed = np.sqrt(vx**2 + vy**2)

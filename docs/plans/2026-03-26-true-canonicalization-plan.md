@@ -1,6 +1,6 @@
 # True Canonicalization Plan
 
-**Date:** 2026-03-26  
+**Date:** 2026-03-26
 **Status:** Proposed — ready for phased implementation
 
 ---

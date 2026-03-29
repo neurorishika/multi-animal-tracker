@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 )
 
 from ...training.torchvision_model import BACKBONE_DISPLAY_NAMES, TORCHVISION_BACKBONES
-from ..cluster.metalfaiss_backend import probe_ann_backend
+from ..cluster.clustering_backend import probe_clustering_backend
 
 
 class _KeyCapture(QLineEdit):
@@ -1527,7 +1527,7 @@ class ClusterDialog(QDialog):
         self.setMinimumWidth(500)
 
         # Detect available backends
-        ann_probe = probe_ann_backend()
+        ann_probe = probe_clustering_backend()
         ann_ready = (
             ann_probe.get("hdbscan_available", False)
             or ann_probe.get("best_ann") != "numpy"

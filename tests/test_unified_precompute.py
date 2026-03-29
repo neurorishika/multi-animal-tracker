@@ -19,6 +19,7 @@ def test_crop_config_defaults():
     assert cfg.padding_fraction == 0.1
     assert cfg.suppress_foreign is True
     assert cfg.bg_color == (0, 0, 0)
+    assert cfg.reference_aspect_ratio == 2.0
 
 
 def test_crop_config_custom():

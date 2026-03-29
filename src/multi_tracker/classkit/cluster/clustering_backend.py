@@ -1,7 +1,5 @@
 """ANN/clustering backend probe helpers for ClassKit.
-
-Replaces the old metalfaiss_backend.py.  No FAISS, MLX, or
-platform-specific dependencies required.
+No FAISS, MLX, or other    platfoRm-specific dependencies required.
 """
 
 from __future__ import annotations
@@ -10,7 +8,7 @@ import importlib.util
 from typing import Any, Dict
 
 
-def probe_ann_backend() -> Dict[str, Any]:
+def probe_clustering_backend() -> Dict[str, Any]:
     """Probe available ANN / clustering backends.
 
     Returns a dict describing which libraries are importable and which to use.
@@ -43,24 +41,3 @@ def probe_ann_backend() -> Dict[str, Any]:
         result["best_ann"] = "numpy"
 
     return result
-
-
-# ── Legacy shim ────────────────────────────────────────────────────────────────
-# Any code that still calls probe_metalfaiss_backend() gets a safe
-# "not installed" response instead of an ImportError.
-
-
-def probe_metalfaiss_backend() -> (
-    Dict[str, Any]
-):  # noqa: DC02  (legacy shim; callers get a safe "not installed" response)
-    """Legacy shim — metalfaiss removed; use probe_ann_backend() instead."""
-    return {
-        "installed": False,
-        "ready": False,
-        "origin": None,
-        "error": "metalfaiss removed; backend is now hnswlib/sklearn",
-        "remediation": None,
-        "shadow_path_removed": False,
-        "local_path_added": False,
-        "likely_local_shadow": False,
-    }

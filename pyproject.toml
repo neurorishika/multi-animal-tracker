@@ -162,8 +162,4 @@ ignore-names = [
     # Convenience properties on SuspicionEvent (dataclass API surface)
     "track_a",
     "track_b",
-    # Legacy shim kept for backward compatibility in downstream callers
-    "probe_metalfaiss_backend",
-    # Backward-compatible / test-facing alias for POSE_SUMMARY_COLUMNS
-    "POSE_EXPORT_COLUMNS",
 ]

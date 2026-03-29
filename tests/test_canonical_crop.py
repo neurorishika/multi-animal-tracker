@@ -15,6 +15,8 @@ from multi_tracker.core.tracking.canonical_crop import (
     apply_headtail_rotation,
     compute_alignment_affine,
     compute_crop_dimensions,
+    compute_native_crop_dimensions,
+    compute_native_scale_affine,
     extract_and_classify_batch,
     extract_canonical_crop,
     invert_keypoints,
@@ -72,6 +74,100 @@ def _make_obb(cx, cy, w, h, angle_deg=0.0):
         y = cy + dx * sin_a + dy * cos_a
         corners.append([x, y])
     return np.array(corners, dtype=np.float32)
+
+
+# ---------------------------------------------------------------------------
+# compute_native_crop_dimensions
+# ---------------------------------------------------------------------------
+
+
+class TestComputeNativeCropDimensions:
+    def test_basic_native_scale(self):
+        # OBB 200×100 px, AR 2.0, no padding
+        corners = _make_obb(300, 300, 200, 100, 0)
+        cw, ch = compute_native_crop_dimensions(corners, 2.0, 0.0)
+        # Long edge ≈ 200, short = 200/2 = 100, both rounded to even
+        assert cw == 200
+        assert ch == 100
+
+    def test_with_padding(self):
+        corners = _make_obb(300, 300, 200, 100, 0)
+        cw, ch = compute_native_crop_dimensions(corners, 2.0, 0.1)
+        # 200*1.1 = 220.00…03 in float64 → ceil-even rounds to 222
+        assert cw == 222
+        assert ch == 112  # 222/2=111 → ceil-even → 112
+
+    def test_rotated_obb_same_dimensions(self):
+        corners_0 = _make_obb(300, 300, 200, 100, 0)
+        corners_45 = _make_obb(300, 300, 200, 100, 45)
+        cw_0, ch_0 = compute_native_crop_dimensions(corners_0, 2.0, 0.1)
+        cw_45, ch_45 = compute_native_crop_dimensions(corners_45, 2.0, 0.1)
+        assert cw_0 == cw_45
+        assert ch_0 == ch_45
+
+    def test_different_sizes_different_crops(self):
+        small = _make_obb(100, 100, 100, 50, 0)
+        large = _make_obb(100, 100, 400, 200, 0)
+        cw_s, ch_s = compute_native_crop_dimensions(small, 2.0, 0.0)
+        cw_l, ch_l = compute_native_crop_dimensions(large, 2.0, 0.0)
+        assert cw_l > cw_s
+        assert ch_l > ch_s
+        # AR should be the same
+        assert abs(cw_s / ch_s - cw_l / ch_l) < 0.1
+
+    def test_even_rounding(self):
+        # OBB 201×101 → should round to even
+        corners = _make_obb(100, 100, 201, 101, 0)
+        cw, ch = compute_native_crop_dimensions(corners, 2.0, 0.0)
+        assert cw % 2 == 0
+        assert ch % 2 == 0
+
+    def test_minimum_clamped(self):
+        # Tiny OBB
+        corners = _make_obb(10, 10, 3, 2, 0)
+        cw, ch = compute_native_crop_dimensions(corners, 2.0, 0.0)
+        assert cw >= 8
+        assert ch >= 8
+
+
+# ---------------------------------------------------------------------------
+# compute_native_scale_affine
+# ---------------------------------------------------------------------------
+
+
+class TestComputeNativeScaleAffine:
+    def test_returns_correct_shape(self):
+        corners = _make_obb(300, 300, 200, 100, 0)
+        M, cw, ch, theta = compute_native_scale_affine(corners, 2.0, 0.1)
+        assert M.shape == (2, 3)
+        assert cw == 222  # 200*1.1=220.00…03 → ceil-even 222
+        assert ch == 112  # 222/2=111.00…01 → ceil-even 112
+
+    def test_centroid_maps_to_canvas_centre(self):
+        corners = _make_obb(300, 300, 200, 100, 30)
+        M, cw, ch, theta = compute_native_scale_affine(corners, 2.0, 0.0)
+        cx = np.mean(corners[:, 0])
+        cy = np.mean(corners[:, 1])
+        pt = M @ np.array([cx, cy, 1.0])
+        assert abs(pt[0] - cw / 2.0) < 2.0
+        assert abs(pt[1] - ch / 2.0) < 2.0
+
+    def test_crop_extraction_at_native_scale(self):
+        frame = np.random.randint(0, 255, (600, 800, 3), dtype=np.uint8)
+        corners = _make_obb(400, 300, 200, 100, 15)
+        M, cw, ch, _ = compute_native_scale_affine(corners, 2.0, 0.1)
+        crop = extract_canonical_crop(frame, M, cw, ch)
+        assert crop.shape == (ch, cw, 3)
+        assert crop.dtype == np.uint8
+
+    def test_consistent_ar_across_sizes(self):
+        for size_mult in [0.5, 1.0, 2.0, 3.0]:
+            w = int(200 * size_mult)
+            h = int(100 * size_mult)
+            corners = _make_obb(400, 400, w, h, 0)
+            M, cw, ch, _ = compute_native_scale_affine(corners, 2.0, 0.0)
+            ar = cw / ch
+            assert abs(ar - 2.0) < 0.15  # consistent AR
 
 
 class TestComputeAlignmentAffine:

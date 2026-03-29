@@ -288,6 +288,7 @@ class PosePipeline:
         self._infer_pool = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="pose-infer"
         )
+        self._cache_writer = cache_writer
         self._async_cache = AsyncCacheWriter(cache_writer) if cache_writer else None
 
         # Batch accumulators
@@ -353,6 +354,8 @@ class PosePipeline:
                 raw_headings,
                 raw_directed,
                 raw_canonical_affines,
+                _raw_canvas_dims,
+                _raw_M_inverse,
             ) = detection_cache.get_frame(frame_idx)
             (
                 meas,
@@ -531,6 +534,9 @@ class PosePipeline:
             self._flush()
         self._wait_inflight()
         self._close_async_cache()
+        # Persist accumulated frames to disk with metadata.
+        if self._cache_writer is not None:
+            self._cache_writer.save(metadata=self._finalize_metadata)
         logger.info("Pose properties cache saved: %s", self._cache_path)
         return self._cache_path
 

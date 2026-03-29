@@ -294,30 +294,33 @@ class CNNIdentityBackend:
         return np.log(np.clip(probs, 1e-9, 1.0))
 
     def _preprocess(self, crops: list[np.ndarray]) -> np.ndarray:
-        """Resize and normalize crops to the model's expected input format."""
-        import cv2
-        from PIL import Image
-        from torchvision import transforms
+        """Resize and normalize crops to the model's expected input format.
 
-        mean = [0.485, 0.456, 0.406]
-        std = [0.229, 0.224, 0.225]
+        Uses vectorised OpenCV operations instead of per-crop PIL conversion.
+        """
+        import cv2
+
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(1, 1, 1, 3)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(1, 1, 1, 3)
         h, w = self._input_size
-        tf = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize(mean, std),
-            ]
-        )
-        tensors = []
-        for crop in crops:
+        n = len(crops)
+
+        # Pre-allocate batch (N, H, W, 3) float32
+        batch_hwc = np.empty((n, h, w, 3), dtype=np.float32)
+
+        for i, crop in enumerate(crops):
             if crop is None or crop.size == 0:
-                tensors.append(np.zeros((3, h, w), dtype=np.float32))
+                batch_hwc[i] = 0.0
                 continue
-            img_bgr = cv2.resize(crop, (w, h))
-            img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
-            pil_img = Image.fromarray(img_rgb)
-            tensors.append(tf(pil_img).numpy())
-        return np.stack(tensors).astype(np.float32)
+            resized = cv2.resize(crop, (w, h), interpolation=cv2.INTER_LINEAR)
+            # BGR→RGB and uint8→float32 in one step
+            batch_hwc[i] = resized[:, :, ::-1].astype(np.float32) * (1.0 / 255.0)
+
+        # Vectorised normalise: (N, H, W, 3)
+        batch_hwc = (batch_hwc - mean) / std
+
+        # Transpose to (N, 3, H, W) for PyTorch / ONNX
+        return batch_hwc.transpose(0, 3, 1, 2).astype(np.float32)
 
     def predict_batch(self, crops: list[np.ndarray]) -> list[ClassPrediction]:
         """Run inference on *crops*. Returns one ClassPrediction per crop."""

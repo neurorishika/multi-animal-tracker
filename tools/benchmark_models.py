@@ -229,10 +229,10 @@ def _is_cropped_model(model_path: str) -> bool:
     """
     parts = Path(model_path).resolve().parts
     # Match any path segment called 'cropped' that follows 'obb'
-    for i, part in enumerate(parts):
-        if part == "obb" and i + 1 < len(parts) and parts[i + 1] == "cropped":
-            return True
-    return False
+    return any(
+        part == "obb" and i + 1 < len(parts) and parts[i + 1] == "cropped"
+        for i, part in enumerate(parts)
+    )
 
 
 def _runtime_to_obb_params(
@@ -1249,7 +1249,7 @@ def main() -> None:
         full_models = [m for m in obb_models if not _is_cropped_model(m)]
         crop_models = [m for m in obb_models if _is_cropped_model(m)]
         print(f"\n{'═' * 60}")
-        print(f"  OBB Detection Benchmarks")
+        print("  OBB Detection Benchmarks")
         print(
             f"  Models: {len(obb_models)} ({len(full_models)} full @ {frame_size[0]}x{frame_size[1]}, "
             f"{len(crop_models)} cropped @ {args.crop_size}x{args.crop_size})"
@@ -1290,7 +1290,7 @@ def main() -> None:
             if r in supported_runtimes_for_pipeline("yolo_obb_detection")
         ]
         print(f"\n{'═' * 60}")
-        print(f"  Detection Model Benchmarks  (task=detect, full-frame)")
+        print("  Detection Model Benchmarks  (task=detect, full-frame)")
         print(f"  Models: {len(detect_models)} @ {frame_size[0]}x{frame_size[1]}")
         print(f"  Runtimes: {len(det_runtimes)} │ Batch sizes: {args.batch_sizes}")
         print(f"{'═' * 60}")
@@ -1324,7 +1324,7 @@ def main() -> None:
             r for r in runtimes if r in supported_runtimes_for_pipeline("yolo_pose")
         ]
         print(f"\n{'═' * 60}")
-        print(f"  Pose Estimation Benchmarks")
+        print("  Pose Estimation Benchmarks")
         print(
             f"  Models: {len(pose_models)} │ Runtimes: {len(pose_runtimes)} │ Batch sizes: {args.batch_sizes}"
         )
@@ -1350,7 +1350,7 @@ def main() -> None:
             r for r in runtimes if r in supported_runtimes_for_pipeline("tiny_classify")
         ]
         print(f"\n{'═' * 60}")
-        print(f"  Classification Benchmarks")
+        print("  Classification Benchmarks")
         print(
             f"  Models: {len(classify_models)} │ Runtimes: {len(cls_runtimes)} │ Batch sizes: {args.batch_sizes}"
         )

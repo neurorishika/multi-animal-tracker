@@ -181,8 +181,12 @@ def _preview_object_size_pixels(context: dict, key: str, default: float) -> int:
 
 def _build_preview_background_params(context: dict) -> dict:
     """Build preview background-subtraction parameters from the frozen context."""
+    _fps = float(context.get("fps", 30.0))
+    _bg_seconds = float(
+        context.get("bg_prime_seconds", context.get("bg_prime_frames", 30) / _fps)
+    )
     return {
-        "BACKGROUND_PRIME_FRAMES": int(context.get("bg_prime_frames", 30)),
+        "BACKGROUND_PRIME_FRAMES": max(0, round(_bg_seconds * _fps)),
         "BRIGHTNESS": int(context.get("brightness", 0)),
         "CONTRAST": float(context.get("contrast", 1.0)),
         "GAMMA": float(context.get("gamma", 1.0)),
@@ -317,6 +321,9 @@ class MergeWorker(QThread):
         interp_method,
         max_gap,
         tag_cache_path=None,
+        heading_flip_max_burst=5,
+        enable_profiling=False,
+        profile_export_path=None,
     ):
         super().__init__()
         self.forward_trajs = forward_trajs
@@ -327,6 +334,9 @@ class MergeWorker(QThread):
         self.interp_method = interp_method
         self.max_gap = max_gap
         self.tag_cache_path = tag_cache_path
+        self.heading_flip_max_burst = heading_flip_max_burst
+        self.enable_profiling = enable_profiling
+        self.profile_export_path = profile_export_path
         self._stop_requested = False
 
     def stop(self):
@@ -338,10 +348,14 @@ class MergeWorker(QThread):
 
     def run(self: object) -> object:
         """run method documentation."""
+        from multi_tracker.core.tracking.profiler import TrackingProfiler
+
+        profiler = TrackingProfiler(enabled=self.enable_profiling)
         # pose_backend = None
         try:
             if self._should_stop():
                 return
+            profiler.phase_start("post_prepare")
             self.progress_signal.emit(10, "Preparing trajectories...")
 
             # Convert DataFrames to list of DataFrames (one per trajectory)
@@ -353,9 +367,11 @@ class MergeWorker(QThread):
 
             forward_prepared = prepare_trajs_for_merge(self.forward_trajs)
             backward_prepared = prepare_trajs_for_merge(self.backward_trajs)
+            profiler.phase_end("post_prepare")
 
             if self._should_stop():
                 return
+            profiler.phase_start("post_resolve")
             self.progress_signal.emit(30, "Resolving trajectory conflicts...")
 
             resolved_trajectories = resolve_trajectories(
@@ -363,6 +379,7 @@ class MergeWorker(QThread):
                 backward_prepared,
                 params=self.params,
             )
+            profiler.phase_end("post_resolve")
 
             if self._should_stop():
                 return
@@ -399,6 +416,7 @@ class MergeWorker(QThread):
                     else:
                         resolved_trajectories = []
 
+            profiler.phase_start("post_interpolate")
             self.progress_signal.emit(75, "Applying interpolation...")
 
             # Apply interpolation if enabled
@@ -408,11 +426,17 @@ class MergeWorker(QThread):
                         resolved_trajectories,
                         method=self.interp_method,
                         max_gap=self.max_gap,
+                        heading_flip_max_burst=self.heading_flip_max_burst,
                     )
+
+            profiler.phase_end("post_interpolate")
 
             if self._should_stop():
                 return
             self.progress_signal.emit(90, "Scaling to original space...")
+
+            # --- AprilTag identity resolution (before coordinate rescaling) ---
+            profiler.phase_start("post_tag_identity")
 
             # --- AprilTag identity resolution (before coordinate rescaling) ---
             if (
@@ -445,7 +469,10 @@ class MergeWorker(QThread):
                         exc_info=True,
                     )
 
+            profiler.phase_end("post_tag_identity")
+
             # Scale coordinates back to original video space
+            profiler.phase_start("post_rescale")
             if isinstance(resolved_trajectories, pd.DataFrame):
                 # Log pre-scaling ranges for debugging
                 logger.info(
@@ -469,7 +496,13 @@ class MergeWorker(QThread):
                     f"Y range [{resolved_trajectories['Y'].min():.1f}, {resolved_trajectories['Y'].max():.1f}]"
                 )
 
+            profiler.phase_end("post_rescale")
+
             if not self._should_stop():
+                # Export profiling summary for post-processing
+                profiler.log_final_summary()
+                if self.profile_export_path:
+                    profiler.export_summary(self.profile_export_path)
                 self.progress_signal.emit(100, "Merge complete!")
                 self.finished_signal.emit(resolved_trajectories)
 
@@ -484,12 +517,22 @@ class InterpolatedCropsWorker(QThread):
     progress_signal = Signal(int, str)
     finished_signal = Signal(dict)
 
-    def __init__(self, csv_path, video_path, detection_cache_path, params):
+    def __init__(
+        self,
+        csv_path,
+        video_path,
+        detection_cache_path,
+        params,
+        enable_profiling=False,
+        profile_export_path=None,
+    ):
         super().__init__()
         self.csv_path = csv_path
         self.video_path = video_path
         self.detection_cache_path = detection_cache_path
         self.params = params
+        self.enable_profiling = enable_profiling
+        self.profile_export_path = profile_export_path
         self._stop_requested = False
 
     def stop(self):
@@ -554,6 +597,20 @@ class InterpolatedCropsWorker(QThread):
 
     def run(self: object) -> object:
         """run method documentation."""
+        from multi_tracker.core.tracking.canonical_crop import (
+            compute_native_scale_affine as _compute_native_scale,
+        )
+        from multi_tracker.core.tracking.canonical_crop import (
+            extract_canonical_crop as _extract_canonical,
+        )
+        from multi_tracker.core.tracking.canonical_crop import (
+            invert_keypoints as _invert_kpts,
+        )
+        from multi_tracker.core.tracking.profiler import TrackingProfiler
+
+        profiler = TrackingProfiler(enabled=self.enable_profiling)
+        profiler.phase_start("interp_setup")
+
         pose_backend = None
         detection_cache = None
         cap = None
@@ -612,6 +669,11 @@ class InterpolatedCropsWorker(QThread):
                 self.params.get("INDIVIDUAL_DATASET_NAME", "individual_dataset"),
             )
             gen.enabled = cache_interpolated_artifacts
+
+            # Canonical crop parameters (mirrored from the generator so that
+            # interpolated crops match the forward-pass canonical framework).
+            _canonical_ref_ar = gen._canonical_ref_ar
+            _canonical_padding = gen._canonical_padding
 
             pose_enabled = bool(self.params.get("ENABLE_POSE_EXTRACTOR", False))
             pose_kpt_source_names = []
@@ -674,6 +736,9 @@ class InterpolatedCropsWorker(QThread):
                 logger.warning("Interpolated crops skipped: CSV missing TrajectoryID.")
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
                 return
+
+            profiler.phase_end("interp_setup")
+            profiler.phase_start("interp_gap_detection")
 
             for traj_id, group in df.groupby("TrajectoryID"):
                 if self._should_stop():
@@ -796,6 +861,9 @@ class InterpolatedCropsWorker(QThread):
             del df
             gc.collect()
 
+            profiler.phase_end("interp_gap_detection")
+            profiler.phase_start("interp_crop_extraction")
+
             if frame_tasks:
                 needed_frames = sorted(frame_tasks.keys())
                 total_frames = len(needed_frames)
@@ -825,9 +893,22 @@ class InterpolatedCropsWorker(QThread):
                         )
                         for t in frame_tasks[f]
                     ]
+                    # Pre-compute canonical affines for each interpolated
+                    # detection so that both saved crops and pose crops
+                    # use the canonical crop framework.
+                    _frame_affines = []
+                    for _c in _frame_all_corners:
+                        try:
+                            _M, _cw, _ch, _ = _compute_native_scale(
+                                _c, _canonical_ref_ar, _canonical_padding
+                            )
+                            _frame_affines.append((_M, _cw, _ch))
+                        except (ValueError, Exception):
+                            _frame_affines.append(None)
                     for task_idx, task in enumerate(frame_tasks[f]):
                         filename = ""
                         corners = _frame_all_corners[task_idx]
+                        _aff = _frame_affines[task_idx]
                         if save_interpolated_outputs:
                             filename = gen.save_interpolated_crop(
                                 frame=frame,
@@ -841,6 +922,9 @@ class InterpolatedCropsWorker(QThread):
                                 interp_from=task["interp_from"],
                                 interp_index=task["interp_index"],
                                 interp_total=task["interp_total"],
+                                canonical_affine=(
+                                    _aff[0] if _aff is not None else None
+                                ),
                             )
                         if save_interpolated_outputs and filename:
                             interp_saved += 1
@@ -881,17 +965,41 @@ class InterpolatedCropsWorker(QThread):
                                     for ci, c in enumerate(_frame_all_corners)
                                     if ci != task_idx
                                 ]
-                                pose_crop, pose_crop_info = (
-                                    gen._extract_obb_masked_crop(
-                                        frame,
-                                        corners,
-                                        frame.shape[0],
-                                        frame.shape[1],
-                                        other_corners_list=(
-                                            _other_corners if _other_corners else None
-                                        ),
+                                if _aff is not None:
+                                    _M_pose, _cw_pose, _ch_pose = _aff
+                                    _foreign = (
+                                        _other_corners if _other_corners else None
                                     )
-                                )
+                                    pose_crop = _extract_canonical(
+                                        frame,
+                                        _M_pose,
+                                        _cw_pose,
+                                        _ch_pose,
+                                        bg_color=gen.background_color,
+                                        foreign_corners=_foreign,
+                                    )
+                                    _M_inv = cv2.invertAffineTransform(_M_pose).astype(
+                                        np.float32
+                                    )
+                                    pose_crop_info = {
+                                        "crop_size": (_cw_pose, _ch_pose),
+                                        "M_inverse": _M_inv,
+                                        "canonical": True,
+                                    }
+                                else:
+                                    pose_crop, pose_crop_info = (
+                                        gen._extract_obb_masked_crop(
+                                            frame,
+                                            corners,
+                                            frame.shape[0],
+                                            frame.shape[1],
+                                            other_corners_list=(
+                                                _other_corners
+                                                if _other_corners
+                                                else None
+                                            ),
+                                        )
+                                    )
                             except Exception:
                                 pose_crop = None
                                 pose_crop_info = None
@@ -918,7 +1026,9 @@ class InterpolatedCropsWorker(QThread):
                     if _flush_batch:
                         if self._should_stop():
                             return
+                        profiler.tick("interp_pose_inference")
                         pose_results = pose_backend.predict_batch(_pending_crops)
+                        profiler.tock("interp_pose_inference")
                         for pidx, entry in enumerate(_pending_entries):
                             pose_out = (
                                 pose_results[pidx] if pidx < len(pose_results) else None
@@ -941,20 +1051,25 @@ class InterpolatedCropsWorker(QThread):
                                 )
                                 keypoints = getattr(pose_out, "keypoints", None)
                                 crop_info = entry.get("crop_info") or {}
-                                crop_bbox = crop_info.get("crop_bbox")
-                                if (
-                                    keypoints is not None
-                                    and crop_bbox is not None
-                                    and len(crop_bbox) >= 2
-                                    and len(keypoints) > 0
-                                ):
-                                    x0 = float(crop_bbox[0])
-                                    y0 = float(crop_bbox[1])
+                                if keypoints is not None and len(keypoints) > 0:
                                     gkpts = np.asarray(
                                         keypoints, dtype=np.float32
                                     ).copy()
-                                    gkpts[:, 0] += x0
-                                    gkpts[:, 1] += y0
+                                    _M_inv = crop_info.get("M_inverse")
+                                    if _M_inv is not None and crop_info.get(
+                                        "canonical"
+                                    ):
+                                        gkpts = _invert_kpts(gkpts, _M_inv).astype(
+                                            np.float32
+                                        )
+                                    else:
+                                        crop_bbox = crop_info.get("crop_bbox")
+                                        if (
+                                            crop_bbox is not None
+                                            and len(crop_bbox) >= 2
+                                        ):
+                                            gkpts[:, 0] += float(crop_bbox[0])
+                                            gkpts[:, 1] += float(crop_bbox[1])
                                     if len(gkpts) > len(pose_kpt_labels):
                                         pose_kpt_labels = build_pose_keypoint_labels(
                                             pose_kpt_source_names, len(gkpts)
@@ -989,6 +1104,9 @@ class InterpolatedCropsWorker(QThread):
             roi_csv_path = None
             roi_npz_path = None
             pose_csv_path = None
+
+            profiler.phase_end("interp_crop_extraction")
+            profiler.phase_start("interp_finalize")
             if save_interpolated_outputs and interp_rows and gen.crops_dir is not None:
                 mapping_path = gen.crops_dir.parent / "interpolated_mapping.csv"
                 try:
@@ -1099,6 +1217,12 @@ class InterpolatedCropsWorker(QThread):
                     pose_csv_path = None
             if cache_interpolated_artifacts:
                 gen.finalize()
+
+            profiler.phase_end("interp_finalize")
+            profiler.log_final_summary()
+            if self.profile_export_path:
+                profiler.export_summary(self.profile_export_path)
+
             if not self._should_stop():
                 self.finished_signal.emit(
                     {
@@ -1625,6 +1749,7 @@ def _run_preview_detection_job(
             raw_obb_corners,
             raw_heading_hints,
             raw_directed_mask,
+            _raw_canonical_affines,
         ) = detector.detect_objects(frame_to_process, 0, return_raw=True)
         (
             meas,
@@ -3946,6 +4071,13 @@ class MainWindow(QMainWindow):
         self.chk_debug_logging = QCheckBox("Enable detailed debug logging")
         self.chk_debug_logging.stateChanged.connect(self.toggle_debug_logging)
         v_dbg.addWidget(self.chk_debug_logging)
+        self.chk_enable_profiling = QCheckBox("Enable performance profiling")
+        self.chk_enable_profiling.setToolTip(
+            "Collect detailed timing for every tracking pipeline step "
+            "(init, detection, precompute, tracking loop, post-processing). "
+            "Exports a JSON profile next to outputs. Disabled by default for zero overhead."
+        )
+        v_dbg.addWidget(self.chk_enable_profiling)
         form.addWidget(g_debug)
 
         scroll.setWidget(content)
@@ -4156,16 +4288,19 @@ class MainWindow(QMainWindow):
         f_bg.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         f_bg.setHorizontalSpacing(10)
         f_bg.setVerticalSpacing(8)
-        self.spin_bg_prime = QSpinBox()
-        self.spin_bg_prime.setRange(0, 5000)
-        self.spin_bg_prime.setValue(10)
+        self.spin_bg_prime = QDoubleSpinBox()
+        self.spin_bg_prime.setRange(0.0, 120.0)
+        self.spin_bg_prime.setSingleStep(0.5)
+        self.spin_bg_prime.setDecimals(2)
+        self.spin_bg_prime.setValue(0.33)
         self.spin_bg_prime.setFixedHeight(30)
         self.spin_bg_prime.setToolTip(
-            "Number of initial frames to build background model.\n"
-            "Recommended: 10-100 frames.\n"
+            "Time to build background model (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
+            "Recommended: 0.3-3.0 s.\n"
             "Use more if background varies or animals are present initially."
         )
-        f_bg.addRow("Startup frames", self.spin_bg_prime)
+        f_bg.addRow("Startup time (seconds)", self.spin_bg_prime)
 
         self.chk_adaptive_bg = QCheckBox("Continuously update background model")
         self.chk_adaptive_bg.setChecked(True)
@@ -4985,32 +5120,6 @@ class MainWindow(QMainWindow):
         h_ar_mult.addWidget(self.spin_max_ar_multiplier)
         f_ar.addRow(h_ar_mult)
 
-        self.spin_canonical_crop_long_edge = QSpinBox()
-        self.spin_canonical_crop_long_edge.setRange(64, 1024)
-        self.spin_canonical_crop_long_edge.setSingleStep(32)
-        self.spin_canonical_crop_long_edge.setValue(256)
-        self.spin_canonical_crop_long_edge.setFixedHeight(30)
-        self.spin_canonical_crop_long_edge.setToolTip(
-            "Long-edge size (px) of canonical crops used for pose estimation\n"
-            "and identity classification. The short edge is derived from the\n"
-            "reference aspect ratio. Default 256."
-        )
-        f_ar.addRow("Canonical crop long edge (px)", self.spin_canonical_crop_long_edge)
-
-        self.spin_canonical_headtail_long_edge = QSpinBox()
-        self.spin_canonical_headtail_long_edge.setRange(32, 512)
-        self.spin_canonical_headtail_long_edge.setSingleStep(16)
-        self.spin_canonical_headtail_long_edge.setValue(128)
-        self.spin_canonical_headtail_long_edge.setFixedHeight(30)
-        self.spin_canonical_headtail_long_edge.setToolTip(
-            "Long-edge size (px) of the canonical crop used for head-tail\n"
-            "classification. The short edge is derived from the reference\n"
-            "aspect ratio. Default 128."
-        )
-        f_ar.addRow(
-            "Head-tail crop long edge (px)", self.spin_canonical_headtail_long_edge
-        )
-
         vl_ar.addLayout(f_ar)
         vbox.addWidget(g_ar)
 
@@ -5246,18 +5355,22 @@ class MainWindow(QMainWindow):
         age_label.setStyleSheet("font-weight: bold; margin-top: 10px;")
         f_kf.addRow(age_label)
 
-        self.spin_kalman_maturity_age = QSpinBox()
-        self.spin_kalman_maturity_age.setRange(1, 30)
-        self.spin_kalman_maturity_age.setValue(5)
+        self.spin_kalman_maturity_age = QDoubleSpinBox()
+        self.spin_kalman_maturity_age.setRange(0.01, 2.0)
+        self.spin_kalman_maturity_age.setSingleStep(0.02)
+        self.spin_kalman_maturity_age.setDecimals(2)
+        self.spin_kalman_maturity_age.setValue(0.17)
         self.spin_kalman_maturity_age.setToolTip(
-            "Number of frames for a track to reach maturity (1-30).\n"
+            "Time for a track to reach maturity (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
             "Young tracks use conservative velocity estimates.\n"
-            "After this many successful updates, tracks use full dynamics.\n"
+            "After this time, tracks use full dynamics.\n"
             "Lower = faster adaptation, Higher = more conservative.\n"
-            "Recommended: 3-10 frames"
+            "Recommended: 0.10-0.35 s"
         )
         f_kf.addRow(
-            "How many frames until a track is trusted?", self.spin_kalman_maturity_age
+            "How long until a track is trusted (seconds)?",
+            self.spin_kalman_maturity_age,
         )
 
         self.spin_kalman_initial_velocity_retention = QDoubleSpinBox()
@@ -5608,6 +5721,18 @@ class MainWindow(QMainWindow):
             "Directed-flip confidence threshold", self.spin_directed_orient_flip_conf
         )
 
+        self.spin_directed_orient_flip_persist = QSpinBox()
+        self.spin_directed_orient_flip_persist.setRange(1, 20)
+        self.spin_directed_orient_flip_persist.setValue(3)
+        self.spin_directed_orient_flip_persist.setToolTip(
+            "Number of consecutive frames a >90° heading flip must be observed\n"
+            "before it is accepted as genuine. Higher values suppress transient\n"
+            "head-tail classifier errors at the cost of slower real-turn response."
+        )
+        f_misc.addRow(
+            "Directed-flip persistence (frames)", self.spin_directed_orient_flip_persist
+        )
+
         vl_misc.addLayout(f_misc)
         g_misc.setContentLayout(vl_misc)
         vbox.addWidget(g_misc)
@@ -5624,17 +5749,20 @@ class MainWindow(QMainWindow):
         )
         f_lifecycle = QFormLayout(None)
 
-        self.spin_lost_thresh = QSpinBox()
-        self.spin_lost_thresh.setRange(1, 100)
-        self.spin_lost_thresh.setValue(10)
+        self.spin_lost_thresh = QDoubleSpinBox()
+        self.spin_lost_thresh.setRange(0.01, 10.0)
+        self.spin_lost_thresh.setSingleStep(0.05)
+        self.spin_lost_thresh.setDecimals(2)
+        self.spin_lost_thresh.setValue(0.33)
         self.spin_lost_thresh.setToolTip(
-            "Number of frames without detection before track is terminated (1-100).\n"
+            "Time without detection before track is terminated (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
             "Higher = tracks persist longer during occlusions.\n"
             "Lower = tracks end quickly, creating fragments.\n"
-            "Recommended: 5-20 frames."
+            "Recommended: 0.15-0.70 s."
         )
         f_lifecycle.addRow(
-            "How long to keep a track without detections (frames)?",
+            "How long to keep a track without detections (seconds)?",
             self.spin_lost_thresh,
         )
 
@@ -5667,41 +5795,50 @@ class MainWindow(QMainWindow):
             )
         )
         f_stab = QFormLayout(None)
-        self.spin_min_detections_to_start = QSpinBox()
-        self.spin_min_detections_to_start.setRange(1, 50)
-        self.spin_min_detections_to_start.setValue(1)
+        self.spin_min_detections_to_start = QDoubleSpinBox()
+        self.spin_min_detections_to_start.setRange(0.01, 2.0)
+        self.spin_min_detections_to_start.setSingleStep(0.02)
+        self.spin_min_detections_to_start.setDecimals(2)
+        self.spin_min_detections_to_start.setValue(0.03)
         self.spin_min_detections_to_start.setToolTip(
-            "Minimum consecutive detections before starting a new track (1-50).\n"
+            "Minimum time of consecutive detections before starting a track (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
             "Higher = fewer false tracks from noise, slower to start tracking.\n"
             "Lower = faster tracking startup, more noise-based tracks.\n"
-            "Recommended: 1-3"
+            "Recommended: 0.03-0.10 s"
         )
         f_stab.addRow(
-            "How many detections before starting a new track?",
+            "How long must detections persist before starting a track (seconds)?",
             self.spin_min_detections_to_start,
         )
 
-        self.spin_min_detect = QSpinBox()
-        self.spin_min_detect.setRange(1, 500)
-        self.spin_min_detect.setValue(10)
+        self.spin_min_detect = QDoubleSpinBox()
+        self.spin_min_detect.setRange(0.01, 30.0)
+        self.spin_min_detect.setSingleStep(0.1)
+        self.spin_min_detect.setDecimals(2)
+        self.spin_min_detect.setValue(0.33)
         self.spin_min_detect.setToolTip(
-            "Minimum total detection frames to keep a track (1-500).\n"
+            "Minimum total detection time to keep a track (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
             "Filters out short-lived false tracks in post-processing.\n"
-            "Recommended: 5-20 frames."
+            "Recommended: 0.15-0.70 s."
         )
 
-        self.spin_min_track = QSpinBox()
-        self.spin_min_track.setRange(1, 500)
-        self.spin_min_track.setValue(10)
+        self.spin_min_track = QDoubleSpinBox()
+        self.spin_min_track.setRange(0.01, 30.0)
+        self.spin_min_track.setSingleStep(0.1)
+        self.spin_min_track.setDecimals(2)
+        self.spin_min_track.setValue(0.33)
         self.spin_min_track.setToolTip(
-            "Minimum tracking frames (including predicted) to keep (1-500).\n"
+            "Minimum tracking time (including predicted) to keep (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
             "Filters out tracks with too many gaps/predictions.\n"
-            "Recommended: Similar to min detect frames."
+            "Recommended: similar to min detection time."
         )
         _min_frames_row = QHBoxLayout()
-        _min_frames_row.addWidget(QLabel("Min detection frames"))
+        _min_frames_row.addWidget(QLabel("Min detection time (s)"))
         _min_frames_row.addWidget(self.spin_min_detect)
-        _min_frames_row.addWidget(QLabel("Min total frames"))
+        _min_frames_row.addWidget(QLabel("Min total time (s)"))
         _min_frames_row.addWidget(self.spin_min_track)
         f_stab.addRow(_min_frames_row)
         vl_stab.addLayout(f_stab)
@@ -5873,15 +6010,18 @@ class MainWindow(QMainWindow):
         self.enable_postprocessing.stateChanged.connect(self._on_cleaning_toggled)
         f_pp.addRow(self.enable_postprocessing)
 
-        self.spin_min_trajectory_length = QSpinBox()
-        self.spin_min_trajectory_length.setRange(1, 1000)
-        self.spin_min_trajectory_length.setValue(10)
+        self.spin_min_trajectory_length = QDoubleSpinBox()
+        self.spin_min_trajectory_length.setRange(0.01, 60.0)
+        self.spin_min_trajectory_length.setSingleStep(0.1)
+        self.spin_min_trajectory_length.setDecimals(2)
+        self.spin_min_trajectory_length.setValue(0.33)
         self.spin_min_trajectory_length.setToolTip(
-            "Remove trajectories shorter than this (1-1000 frames).\n"
+            "Remove trajectories shorter than this (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
             "Filters out brief false detections and transient tracks.\n"
-            "Recommended: 5-30 frames depending on video length."
+            "Recommended: 0.15-1.0 s depending on video length."
         )
-        self.lbl_min_trajectory_length = QLabel("Minimum trajectory length (frames)")
+        self.lbl_min_trajectory_length = QLabel("Minimum trajectory length (seconds)")
         f_pp.addRow(self.lbl_min_trajectory_length, self.spin_min_trajectory_length)
 
         self.spin_max_velocity_break = QDoubleSpinBox()
@@ -5900,16 +6040,19 @@ class MainWindow(QMainWindow):
         )
         f_pp.addRow(self.lbl_max_velocity_break, self.spin_max_velocity_break)
 
-        self.spin_max_occlusion_gap = QSpinBox()
-        self.spin_max_occlusion_gap.setRange(0, 200)
-        self.spin_max_occlusion_gap.setValue(30)
+        self.spin_max_occlusion_gap = QDoubleSpinBox()
+        self.spin_max_occlusion_gap.setRange(0.0, 10.0)
+        self.spin_max_occlusion_gap.setSingleStep(0.1)
+        self.spin_max_occlusion_gap.setDecimals(2)
+        self.spin_max_occlusion_gap.setValue(1.0)
         self.spin_max_occlusion_gap.setToolTip(
-            "Maximum consecutive occluded/lost frames before splitting trajectory (0-200).\n"
+            "Maximum occlusion duration before splitting trajectory (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
             "Prevents unreliable interpolation across long gaps.\n"
             "Set to 0 to disable occlusion-based splitting.\n"
-            "Recommended: 20-50 frames for typical tracking scenarios."
+            "Recommended: 0.5-2.0 s for typical tracking scenarios."
         )
-        self.lbl_max_occlusion_gap = QLabel("Maximum occlusion gap (frames)")
+        self.lbl_max_occlusion_gap = QLabel("Maximum occlusion gap (seconds)")
         f_pp.addRow(self.lbl_max_occlusion_gap, self.spin_max_occlusion_gap)
 
         self.chk_enable_tracklet_relinking = QCheckBox(
@@ -6042,16 +6185,19 @@ class MainWindow(QMainWindow):
         self.lbl_max_velocity_zscore = QLabel("Velocity z-score threshold")
         f_pp.addRow(self.lbl_max_velocity_zscore, self.spin_max_velocity_zscore)
 
-        self.spin_velocity_zscore_window = QSpinBox()
-        self.spin_velocity_zscore_window.setRange(5, 50)
-        self.spin_velocity_zscore_window.setValue(10)
+        self.spin_velocity_zscore_window = QDoubleSpinBox()
+        self.spin_velocity_zscore_window.setRange(0.1, 5.0)
+        self.spin_velocity_zscore_window.setSingleStep(0.1)
+        self.spin_velocity_zscore_window.setDecimals(2)
+        self.spin_velocity_zscore_window.setValue(0.33)
         self.spin_velocity_zscore_window.setToolTip(
-            "Number of past velocities to use for z-score calculation (5-50 frames).\n"
-            "Larger windows = more stable statistics but less responsive to changes.\n"
+            "Time window for z-score velocity calculation (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
+            "Larger windows = more stable statistics but less responsive.\n"
             "Smaller windows = more sensitive but may be noisy.\n"
-            "Recommended: 10-20 frames."
+            "Recommended: 0.3-0.7 s."
         )
-        self.lbl_velocity_zscore_window = QLabel("Z-score window (frames)")
+        self.lbl_velocity_zscore_window = QLabel("Z-score window (seconds)")
         f_pp.addRow(self.lbl_velocity_zscore_window, self.spin_velocity_zscore_window)
 
         self.spin_velocity_zscore_min_vel = QDoubleSpinBox()
@@ -6088,17 +6234,36 @@ class MainWindow(QMainWindow):
         )
         f_pp.addRow(self.lbl_interpolation_method, self.combo_interpolation_method)
 
-        self.spin_interpolation_max_gap = QSpinBox()
-        self.spin_interpolation_max_gap.setRange(1, 100)
-        self.spin_interpolation_max_gap.setValue(10)
+        self.spin_interpolation_max_gap = QDoubleSpinBox()
+        self.spin_interpolation_max_gap.setRange(0.01, 10.0)
+        self.spin_interpolation_max_gap.setSingleStep(0.1)
+        self.spin_interpolation_max_gap.setDecimals(2)
+        self.spin_interpolation_max_gap.setValue(0.33)
         self.spin_interpolation_max_gap.setToolTip(
-            "Maximum gap size to interpolate (1-100 frames).\n"
+            "Maximum gap duration to interpolate (seconds).\n"
+            "Converted to frames using the acquisition frame rate.\n"
             "Gaps larger than this will remain as NaN.\n"
             "Prevents interpolation across large occlusions.\n"
-            "Recommended: 5-15 frames."
+            "Recommended: 0.15-0.50 s."
         )
-        self.lbl_interpolation_max_gap = QLabel("Maximum interpolation gap (frames)")
+        self.lbl_interpolation_max_gap = QLabel("Maximum interpolation gap (seconds)")
         f_pp.addRow(self.lbl_interpolation_max_gap, self.spin_interpolation_max_gap)
+
+        self.spin_heading_flip_max_burst = QSpinBox()
+        self.spin_heading_flip_max_burst.setRange(1, 50)
+        self.spin_heading_flip_max_burst.setValue(5)
+        self.spin_heading_flip_max_burst.setToolTip(
+            "Maximum length (frames) of an isolated heading-flip burst that\n"
+            "post-processing will correct. Contiguous runs of ~180° flips\n"
+            "shorter than this are assumed to be classifier errors and are\n"
+            "reverted. Longer runs are kept as genuine orientation changes.\n"
+            "Increase if brief real flips are being suppressed; decrease if\n"
+            "extended flip artefacts survive. Recommended: 3–10."
+        )
+        self.lbl_heading_flip_max_burst = QLabel(
+            "Max heading-flip burst to correct (frames)"
+        )
+        f_pp.addRow(self.lbl_heading_flip_max_burst, self.spin_heading_flip_max_burst)
 
         # Trajectory Merging Settings (Conservative Strategy)
         self.spin_merge_overlap_multiplier = QDoubleSpinBox()
@@ -7528,8 +7693,10 @@ class MainWindow(QMainWindow):
                 if "KALMAN_DAMPING" in new_params:
                     self.spin_kalman_damping.setValue(new_params["KALMAN_DAMPING"])
                 if "KALMAN_MATURITY_AGE" in new_params:
+                    # Optimizer returns frame count; convert to seconds for UI
+                    _opt_fps = self.spin_fps.value()
                     self.spin_kalman_maturity_age.setValue(
-                        new_params["KALMAN_MATURITY_AGE"]
+                        new_params["KALMAN_MATURITY_AGE"] / _opt_fps
                     )
                 if "KALMAN_MAX_VELOCITY_MULTIPLIER" in new_params:
                     self.spin_kalman_max_velocity.setValue(
@@ -7540,7 +7707,11 @@ class MainWindow(QMainWindow):
                         new_params["KALMAN_LONGITUDINAL_NOISE_MULTIPLIER"]
                     )
                 if "LOST_THRESHOLD_FRAMES" in new_params:
-                    self.spin_lost_thresh.setValue(new_params["LOST_THRESHOLD_FRAMES"])
+                    # Optimizer returns frame count; convert to seconds for UI
+                    _opt_fps = self.spin_fps.value()
+                    self.spin_lost_thresh.setValue(
+                        new_params["LOST_THRESHOLD_FRAMES"] / _opt_fps
+                    )
 
                 # Signals from setValue() calls above fire _on_parameter_changed
                 # automatically, which calls get_parameters_dict() and emits
@@ -9616,6 +9787,8 @@ class MainWindow(QMainWindow):
         self.lbl_interpolation_method.setVisible(enabled)
         self.spin_interpolation_max_gap.setVisible(enabled)
         self.lbl_interpolation_max_gap.setVisible(enabled)
+        self.spin_heading_flip_max_burst.setVisible(enabled)
+        self.lbl_heading_flip_max_burst.setVisible(enabled)
         self.spin_merge_overlap_multiplier.setVisible(enabled)
         self.lbl_merge_overlap_multiplier.setVisible(enabled)
         self.spin_min_overlap_frames.setVisible(enabled)
@@ -9633,6 +9806,7 @@ class MainWindow(QMainWindow):
         self.spin_velocity_zscore_min_vel.setEnabled(enabled)
         self.combo_interpolation_method.setEnabled(enabled)
         self.spin_interpolation_max_gap.setEnabled(enabled)
+        self.spin_heading_flip_max_burst.setEnabled(enabled)
         self.spin_merge_overlap_multiplier.setEnabled(enabled)
         self.spin_min_overlap_frames.setEnabled(enabled)
         self.chk_cleanup_temp_files.setEnabled(enabled)
@@ -10695,7 +10869,8 @@ class MainWindow(QMainWindow):
         return {
             "detection_method": self.combo_detection_method.currentIndex(),
             "video_path": self.file_line.text(),
-            "bg_prime_frames": self.spin_bg_prime.value(),
+            "bg_prime_seconds": self.spin_bg_prime.value(),
+            "fps": self.spin_fps.value(),
             "brightness": self.slider_brightness.value(),
             "contrast": self.slider_contrast.value() / 100.0,
             "gamma": self.slider_gamma.value() / 100.0,
@@ -13026,7 +13201,10 @@ class MainWindow(QMainWindow):
         current_params = self.get_parameters_dict()
         resize_factor = self.spin_resize.value()
         interp_method = self.combo_interpolation_method.currentText().lower()
-        max_gap = self.spin_interpolation_max_gap.value()
+        max_gap = max(
+            1, round(self.spin_interpolation_max_gap.value() * self.spin_fps.value())
+        )
+        heading_flip_max_burst = self.spin_heading_flip_max_burst.value()
 
         # Show progress bar
         self.progress_bar.setVisible(True)
@@ -13050,6 +13228,18 @@ class MainWindow(QMainWindow):
                 if _candidates:
                     _tag_cache_path = _candidates[-1]
 
+        # Determine profiling settings for MergeWorker
+        _enable_profiling = current_params.get("ENABLE_PROFILING", False)
+        _merge_profile_path = None
+        if _enable_profiling:
+            _det_cache = getattr(self, "current_detection_cache_path", None)
+            if _det_cache:
+                _merge_profile_path = str(
+                    Path(_det_cache).parent / "merge_profile.json"
+                )
+            elif video_fp:
+                _merge_profile_path = str(Path(video_fp).parent / "merge_profile.json")
+
         self.merge_worker = MergeWorker(
             forward_trajs,
             backward_trajs,
@@ -13059,6 +13249,9 @@ class MainWindow(QMainWindow):
             interp_method,
             max_gap,
             tag_cache_path=_tag_cache_path,
+            heading_flip_max_burst=heading_flip_max_burst,
+            enable_profiling=_enable_profiling,
+            profile_export_path=_merge_profile_path,
         )
         self.merge_worker.progress_signal.connect(self.on_merge_progress)
         self.merge_worker.finished_signal.connect(self.on_merge_finished)
@@ -14096,11 +14289,21 @@ class MainWindow(QMainWindow):
                         self.combo_interpolation_method.currentText().lower()
                     )
                     if interp_method != "none":
-                        max_gap = self.spin_interpolation_max_gap.value()
+                        max_gap = max(
+                            1,
+                            round(
+                                self.spin_interpolation_max_gap.value()
+                                * self.spin_fps.value()
+                            ),
+                        )
+                        heading_flip_max_burst = (
+                            self.spin_heading_flip_max_burst.value()
+                        )
                         processed_trajectories = interpolate_trajectories(
                             processed_trajectories,
                             method=interp_method,
                             max_gap=max_gap,
+                            heading_flip_max_burst=heading_flip_max_burst,
                         )
 
                     # Scale coordinates to original video space (forward-only mode)
@@ -14748,11 +14951,27 @@ class MainWindow(QMainWindow):
             self.current_interpolated_roi_npz_path = None
             self.current_interpolated_pose_csv_path = None
             self.current_interpolated_pose_df = None
+
+            _interp_profiling = bool(params.get("ENABLE_PROFILING", False))
+            _interp_profile_path = None
+            if _interp_profiling:
+                if self.current_detection_cache_path:
+                    _interp_profile_path = str(
+                        Path(self.current_detection_cache_path).parent
+                        / "interp_profile.json"
+                    )
+                elif video_path:
+                    _interp_profile_path = str(
+                        Path(video_path).parent / "interp_profile.json"
+                    )
+
             self.interp_worker = InterpolatedCropsWorker(
                 target_csv,
                 video_path,
                 self.current_detection_cache_path,
                 params,
+                enable_profiling=_interp_profiling,
+                profile_export_path=_interp_profile_path,
             )
             self.interp_worker.progress_signal.connect(self.on_progress_update)
             self.interp_worker.finished_signal.connect(
@@ -15458,6 +15677,28 @@ class MainWindow(QMainWindow):
             self.spin_max_velocity_break.value() * scaled_body_size / fps
         )
 
+        # Convert time-based durations (seconds) to frame counts
+        def _seconds_to_frames(seconds: float, min_frames: int = 1) -> int:
+            """Convert a duration in seconds to an integer frame count."""
+            return max(min_frames, round(seconds * fps))
+
+        lost_threshold_frames = _seconds_to_frames(self.spin_lost_thresh.value())
+        kalman_maturity_age = _seconds_to_frames(self.spin_kalman_maturity_age.value())
+        bg_prime_frames = _seconds_to_frames(self.spin_bg_prime.value(), min_frames=0)
+        min_detections_to_start = _seconds_to_frames(
+            self.spin_min_detections_to_start.value()
+        )
+        min_detection_counts = _seconds_to_frames(self.spin_min_detect.value())
+        min_tracking_counts = _seconds_to_frames(self.spin_min_track.value())
+        min_trajectory_length = _seconds_to_frames(
+            self.spin_min_trajectory_length.value()
+        )
+        max_occlusion_gap = _seconds_to_frames(
+            self.spin_max_occlusion_gap.value(), min_frames=0
+        )
+        velocity_zscore_window = _seconds_to_frames(
+            self.spin_velocity_zscore_window.value(), min_frames=5
+        )
         # YOLO Batching settings from UI (overrides advanced_config defaults)
         advanced_config = self.advanced_config.copy()
         advanced_config["enable_yolo_batching"] = (
@@ -15486,12 +15727,6 @@ class MainWindow(QMainWindow):
             int(self._video_pose_color[2]),
         ]
         # Canonical crop / aspect ratio params (from UI widgets)
-        advanced_config["canonical_crop_long_edge"] = (
-            self.spin_canonical_crop_long_edge.value()
-        )
-        advanced_config["canonical_headtail_long_edge"] = (
-            self.spin_canonical_headtail_long_edge.value()
-        )
         advanced_config["reference_aspect_ratio"] = (
             self.spin_reference_aspect_ratio.value()
         )
@@ -15579,9 +15814,9 @@ class MainWindow(QMainWindow):
             "MAX_DISTANCE_THRESHOLD": max_distance_pixels,
             "MAX_DISTANCE_MULTIPLIER": self.spin_max_dist.value(),
             "ENABLE_POSTPROCESSING": self.enable_postprocessing.isChecked(),
-            "MIN_TRAJECTORY_LENGTH": self.spin_min_trajectory_length.value(),
+            "MIN_TRAJECTORY_LENGTH": min_trajectory_length,
             "MAX_VELOCITY_BREAK": max_velocity_break_pixels_per_frame,
-            "MAX_OCCLUSION_GAP": self.spin_max_occlusion_gap.value(),
+            "MAX_OCCLUSION_GAP": max_occlusion_gap,
             "ENABLE_TRACKLET_RELINKING": self.chk_enable_tracklet_relinking.isChecked(),
             "RELINK_POSE_MAX_DISTANCE": self.spin_relink_pose_max_distance.value(),
             "POSE_EXPORT_MIN_VALID_FRACTION": self.spin_pose_export_min_valid_fraction.value(),
@@ -15590,17 +15825,17 @@ class MainWindow(QMainWindow):
             "POSE_POSTPROC_MAX_GAP": self.spin_pose_postproc_max_gap.value(),
             "POSE_TEMPORAL_OUTLIER_ZSCORE": self.spin_pose_temporal_outlier_zscore.value(),
             "MAX_VELOCITY_ZSCORE": self.spin_max_velocity_zscore.value(),
-            "VELOCITY_ZSCORE_WINDOW": self.spin_velocity_zscore_window.value(),
+            "VELOCITY_ZSCORE_WINDOW": velocity_zscore_window,
             "VELOCITY_ZSCORE_MIN_VELOCITY": self.spin_velocity_zscore_min_vel.value()
             * scaled_body_size
             / fps,
             "CONTINUITY_THRESHOLD": recovery_search_distance_pixels,
             "MIN_RESPAWN_DISTANCE": min_respawn_distance_pixels,
-            "MIN_DETECTION_COUNTS": self.spin_min_detect.value(),
-            "MIN_DETECTIONS_TO_START": self.spin_min_detections_to_start.value(),
-            "MIN_TRACKING_COUNTS": self.spin_min_track.value(),
+            "MIN_DETECTION_COUNTS": min_detection_counts,
+            "MIN_DETECTIONS_TO_START": min_detections_to_start,
+            "MIN_TRACKING_COUNTS": min_tracking_counts,
             "TRAJECTORY_HISTORY_SECONDS": self.spin_traj_hist.value(),
-            "BACKGROUND_PRIME_FRAMES": self.spin_bg_prime.value(),
+            "BACKGROUND_PRIME_FRAMES": bg_prime_frames,
             "ENABLE_LIGHTING_STABILIZATION": self.chk_lighting_stab.isChecked(),
             "ENABLE_ADAPTIVE_BACKGROUND": self.chk_adaptive_bg.isChecked(),
             "BACKGROUND_LEARNING_RATE": self.spin_bg_learning.value(),
@@ -15609,7 +15844,7 @@ class MainWindow(QMainWindow):
             "KALMAN_NOISE_COVARIANCE": self.spin_kalman_noise.value(),
             "KALMAN_MEASUREMENT_NOISE_COVARIANCE": self.spin_kalman_meas.value(),
             "KALMAN_DAMPING": self.spin_kalman_damping.value(),
-            "KALMAN_MATURITY_AGE": self.spin_kalman_maturity_age.value(),
+            "KALMAN_MATURITY_AGE": kalman_maturity_age,
             "KALMAN_INITIAL_VELOCITY_RETENTION": self.spin_kalman_initial_velocity_retention.value(),
             "KALMAN_MAX_VELOCITY_MULTIPLIER": self.spin_kalman_max_velocity.value(),
             "KALMAN_LONGITUDINAL_NOISE_MULTIPLIER": self.spin_kalman_longitudinal_noise.value(),
@@ -15637,7 +15872,8 @@ class MainWindow(QMainWindow):
             "MAX_ORIENT_DELTA_STOPPED": self.spin_max_orient.value(),
             "DIRECTED_ORIENT_SMOOTHING": self.chk_directed_orient_smoothing.isChecked(),
             "DIRECTED_ORIENT_FLIP_CONFIDENCE": self.spin_directed_orient_flip_conf.value(),
-            "LOST_THRESHOLD_FRAMES": self.spin_lost_thresh.value(),
+            "DIRECTED_ORIENT_FLIP_PERSISTENCE": self.spin_directed_orient_flip_persist.value(),
+            "LOST_THRESHOLD_FRAMES": lost_threshold_frames,
             "W_POSITION": self.spin_Wp.value(),
             "W_ORIENTATION": self.spin_Wo.value(),
             "W_AREA": self.spin_Wa.value(),
@@ -15786,6 +16022,7 @@ class MainWindow(QMainWindow):
             "DENSITY_MIN_FRAME_DURATION": self.spin_density_min_duration.value(),
             "DENSITY_MIN_AREA_BODIES": self.spin_density_min_area_bodies.value(),
             "DENSITY_DOWNSAMPLE_FACTOR": self.spin_density_downsample_factor.value(),
+            "ENABLE_PROFILING": self.chk_enable_profiling.isChecked(),
         }
 
         # Backward compat: map old color_tag keys to new cnn_classifier keys
@@ -15833,6 +16070,27 @@ class MainWindow(QMainWindow):
                 if key in cfg:
                     return cfg[key]
             return default
+
+        def get_cfg_time(
+            seconds_key: str,
+            *frame_keys: str,
+            default_seconds: float,
+        ) -> float:
+            """Load a time parameter, with backward-compat from frame-based configs.
+
+            Tries ``seconds_key`` first (new-style, value in seconds).
+            Falls back to legacy ``frame_keys`` (old-style, value in frames),
+            converting ``frames / config_fps`` to seconds.
+            """
+            val = get_cfg(seconds_key, default=None)
+            if val is not None:
+                return float(val)
+            # Try legacy frame-based keys and convert
+            config_fps = float(get_cfg("fps", default=30.0))
+            for fk in frame_keys:
+                if fk in cfg:
+                    return float(cfg[fk]) / config_fps
+            return default_seconds
 
         try:
             with open(config_path, "r") as f:
@@ -15917,7 +16175,12 @@ class MainWindow(QMainWindow):
 
             # === BACKGROUND SUBTRACTION ===
             self.spin_bg_prime.setValue(
-                get_cfg("background_prime_frames", "bg_prime_frames", default=10)
+                get_cfg_time(
+                    "background_prime_seconds",
+                    "background_prime_frames",
+                    "bg_prime_frames",
+                    default_seconds=0.33,
+                )
             )
             self.chk_adaptive_bg.setChecked(
                 get_cfg(
@@ -16079,12 +16342,6 @@ class MainWindow(QMainWindow):
             self.spin_yolo_headtail_conf.setValue(
                 float(get_cfg("yolo_headtail_conf_threshold", default=0.50))
             )
-            self.spin_canonical_crop_long_edge.setValue(
-                int(get_cfg("canonical_crop_long_edge", default=256))
-            )
-            self.spin_canonical_headtail_long_edge.setValue(
-                int(get_cfg("canonical_headtail_long_edge", default=128))
-            )
             self.spin_reference_aspect_ratio.setValue(
                 float(get_cfg("reference_aspect_ratio", default=2.0))
             )
@@ -16193,7 +16450,11 @@ class MainWindow(QMainWindow):
                 get_cfg("kalman_velocity_damping", "kalman_damping", default=0.95)
             )
             self.spin_kalman_maturity_age.setValue(
-                get_cfg("kalman_maturity_age", default=5)
+                get_cfg_time(
+                    "kalman_maturity_age_seconds",
+                    "kalman_maturity_age",
+                    default_seconds=0.17,
+                )
             )
             self.spin_kalman_initial_velocity_retention.setValue(
                 get_cfg("kalman_initial_velocity_retention", default=0.2)
@@ -16303,22 +16564,44 @@ class MainWindow(QMainWindow):
             self.spin_directed_orient_flip_conf.setValue(
                 float(get_cfg("directed_orient_flip_confidence", default=0.7))
             )
+            self.spin_directed_orient_flip_persist.setValue(
+                int(get_cfg("directed_orient_flip_persistence", default=3))
+            )
 
             # === TRACK LIFECYCLE ===
             self.spin_lost_thresh.setValue(
-                get_cfg("lost_frames_threshold", "lost_threshold_frames", default=10)
+                get_cfg_time(
+                    "lost_threshold_seconds",
+                    "lost_frames_threshold",
+                    "lost_threshold_frames",
+                    default_seconds=0.33,
+                )
             )
             self.spin_min_respawn_distance.setValue(
                 get_cfg("min_respawn_distance_multiplier", default=2.5)
             )
             self.spin_min_detections_to_start.setValue(
-                get_cfg("min_detections_to_start", default=1)
+                get_cfg_time(
+                    "min_detections_to_start_seconds",
+                    "min_detections_to_start",
+                    default_seconds=0.03,
+                )
             )
             self.spin_min_detect.setValue(
-                get_cfg("min_detect_frames", "min_detect_counts", default=10)
+                get_cfg_time(
+                    "min_detect_seconds",
+                    "min_detect_frames",
+                    "min_detect_counts",
+                    default_seconds=0.33,
+                )
             )
             self.spin_min_track.setValue(
-                get_cfg("min_track_frames", "min_track_counts", default=10)
+                get_cfg_time(
+                    "min_track_seconds",
+                    "min_track_frames",
+                    "min_track_counts",
+                    default_seconds=0.33,
+                )
             )
 
             # === POST-PROCESSING ===
@@ -16326,13 +16609,21 @@ class MainWindow(QMainWindow):
                 get_cfg("enable_postprocessing", default=True)
             )
             self.spin_min_trajectory_length.setValue(
-                get_cfg("min_trajectory_length", default=10)
+                get_cfg_time(
+                    "min_trajectory_length_seconds",
+                    "min_trajectory_length",
+                    default_seconds=0.33,
+                )
             )
             self.spin_max_velocity_break.setValue(
                 get_cfg("max_velocity_break", default=50.0)
             )
             self.spin_max_occlusion_gap.setValue(
-                get_cfg("max_occlusion_gap", default=30)
+                get_cfg_time(
+                    "max_occlusion_gap_seconds",
+                    "max_occlusion_gap",
+                    default_seconds=1.0,
+                )
             )
             self.chk_enable_tracklet_relinking.setChecked(
                 get_cfg("enable_tracklet_relinking", default=False)
@@ -16386,7 +16677,11 @@ class MainWindow(QMainWindow):
                 get_cfg("max_velocity_zscore", default=0.0)
             )
             self.spin_velocity_zscore_window.setValue(
-                get_cfg("velocity_zscore_window", default=10)
+                get_cfg_time(
+                    "velocity_zscore_window_seconds",
+                    "velocity_zscore_window",
+                    default_seconds=0.33,
+                )
             )
             self.spin_velocity_zscore_min_vel.setValue(
                 get_cfg("velocity_zscore_min_velocity", default=2.0)
@@ -16398,7 +16693,14 @@ class MainWindow(QMainWindow):
             if idx >= 0:
                 self.combo_interpolation_method.setCurrentIndex(idx)
             self.spin_interpolation_max_gap.setValue(
-                get_cfg("interpolation_max_gap", default=10)
+                get_cfg_time(
+                    "interpolation_max_gap_seconds",
+                    "interpolation_max_gap",
+                    default_seconds=0.33,
+                )
+            )
+            self.spin_heading_flip_max_burst.setValue(
+                int(get_cfg("heading_flip_max_burst", default=5))
             )
             self.chk_cleanup_temp_files.setChecked(
                 get_cfg("cleanup_temp_files", default=True)
@@ -16513,6 +16815,9 @@ class MainWindow(QMainWindow):
                 get_cfg("trajectory_history_seconds", "traj_history", default=5)
             )
             self.chk_debug_logging.setChecked(get_cfg("debug_logging", default=False))
+            self.chk_enable_profiling.setChecked(
+                get_cfg("enable_profiling", default=False)
+            )
             self.slider_zoom.setValue(int(get_cfg("zoom_factor", default=1.0) * 100))
 
             # === DATASET GENERATION ===
@@ -16892,7 +17197,7 @@ class MainWindow(QMainWindow):
                 "gamma": self.slider_gamma.value() / 100.0,
                 "dark_on_light_background": self.chk_dark_on_light.isChecked(),
                 # === BACKGROUND SUBTRACTION ===
-                "background_prime_frames": self.spin_bg_prime.value(),
+                "background_prime_seconds": self.spin_bg_prime.value(),
                 "enable_adaptive_background": self.chk_adaptive_bg.isChecked(),
                 "background_learning_rate": self.spin_bg_learning.value(),
                 "subtraction_threshold": self.spin_threshold.value(),
@@ -16934,8 +17239,6 @@ class MainWindow(QMainWindow):
                 "yolo_seq_stage2_pow2_pad": self.chk_yolo_seq_stage2_pow2_pad.isChecked(),
                 "yolo_seq_detect_conf_threshold": self.spin_yolo_seq_detect_conf.value(),
                 "yolo_headtail_conf_threshold": self.spin_yolo_headtail_conf.value(),
-                "canonical_crop_long_edge": self.spin_canonical_crop_long_edge.value(),
-                "canonical_headtail_long_edge": self.spin_canonical_headtail_long_edge.value(),
                 "reference_aspect_ratio": self.spin_reference_aspect_ratio.value(),
                 "enable_aspect_ratio_filtering": self.chk_enable_aspect_ratio_filtering.isChecked(),
                 "min_aspect_ratio_multiplier": self.spin_min_ar_multiplier.value(),
@@ -17005,7 +17308,7 @@ class MainWindow(QMainWindow):
                 "kalman_process_noise": self.spin_kalman_noise.value(),
                 "kalman_measurement_noise": self.spin_kalman_meas.value(),
                 "kalman_velocity_damping": self.spin_kalman_damping.value(),
-                "kalman_maturity_age": self.spin_kalman_maturity_age.value(),
+                "kalman_maturity_age_seconds": self.spin_kalman_maturity_age.value(),
                 "kalman_initial_velocity_retention": self.spin_kalman_initial_velocity_retention.value(),
                 "kalman_max_velocity_multiplier": self.spin_kalman_max_velocity.value(),
                 "kalman_longitudinal_noise_multiplier": self.spin_kalman_longitudinal_noise.value(),
@@ -17037,17 +17340,18 @@ class MainWindow(QMainWindow):
                 "max_orientation_delta_stopped": self.spin_max_orient.value(),
                 "directed_orient_smoothing": self.chk_directed_orient_smoothing.isChecked(),
                 "directed_orient_flip_confidence": self.spin_directed_orient_flip_conf.value(),
+                "directed_orient_flip_persistence": self.spin_directed_orient_flip_persist.value(),
                 # === TRACK LIFECYCLE ===
-                "lost_frames_threshold": self.spin_lost_thresh.value(),
+                "lost_threshold_seconds": self.spin_lost_thresh.value(),
                 "min_respawn_distance_multiplier": self.spin_min_respawn_distance.value(),
-                "min_detections_to_start": self.spin_min_detections_to_start.value(),
-                "min_detect_frames": self.spin_min_detect.value(),
-                "min_track_frames": self.spin_min_track.value(),
+                "min_detections_to_start_seconds": self.spin_min_detections_to_start.value(),
+                "min_detect_seconds": self.spin_min_detect.value(),
+                "min_track_seconds": self.spin_min_track.value(),
                 # === POST-PROCESSING ===
                 "enable_postprocessing": self.enable_postprocessing.isChecked(),
-                "min_trajectory_length": self.spin_min_trajectory_length.value(),
+                "min_trajectory_length_seconds": self.spin_min_trajectory_length.value(),
                 "max_velocity_break": self.spin_max_velocity_break.value(),
-                "max_occlusion_gap": self.spin_max_occlusion_gap.value(),
+                "max_occlusion_gap_seconds": self.spin_max_occlusion_gap.value(),
                 "enable_tracklet_relinking": self.chk_enable_tracklet_relinking.isChecked(),
                 "relink_pose_max_distance": self.spin_relink_pose_max_distance.value(),
                 "pose_export_min_valid_fraction": self.spin_pose_export_min_valid_fraction.value(),
@@ -17064,10 +17368,11 @@ class MainWindow(QMainWindow):
                 "density_min_area_bodies": self.spin_density_min_area_bodies.value(),
                 "density_downsample_factor": self.spin_density_downsample_factor.value(),
                 "max_velocity_zscore": self.spin_max_velocity_zscore.value(),
-                "velocity_zscore_window": self.spin_velocity_zscore_window.value(),
+                "velocity_zscore_window_seconds": self.spin_velocity_zscore_window.value(),
                 "velocity_zscore_min_velocity": self.spin_velocity_zscore_min_vel.value(),
                 "interpolation_method": self.combo_interpolation_method.currentText(),
-                "interpolation_max_gap": self.spin_interpolation_max_gap.value(),
+                "interpolation_max_gap_seconds": self.spin_interpolation_max_gap.value(),
+                "heading_flip_max_burst": self.spin_heading_flip_max_burst.value(),
                 "cleanup_temp_files": self.chk_cleanup_temp_files.isChecked(),
                 # === TRAJECTORY MERGING (Conservative Strategy) ===
                 # Agreement distance and min overlap frames for conservative merging
@@ -17107,6 +17412,7 @@ class MainWindow(QMainWindow):
                 "show_yolo_obb": self.chk_show_yolo_obb.isChecked(),
                 "trajectory_history_seconds": self.spin_traj_hist.value(),
                 "debug_logging": self.chk_debug_logging.isChecked(),
+                "enable_profiling": self.chk_enable_profiling.isChecked(),
                 "zoom_factor": self.slider_zoom.value() / 100.0,
             }
         )

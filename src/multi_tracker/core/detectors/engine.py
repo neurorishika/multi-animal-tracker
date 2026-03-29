@@ -990,7 +990,7 @@ class YOLOOBBDetector:
                     nn.Linear(64, 1),
                 )
 
-            def forward(self, x):  # noqa: DC04  (nn.Module; called via __call__)
+            def forward(self, x):  # nn.Module; called via __call__
                 x = self.features(x)
                 return self.classifier(x)
 
@@ -1254,7 +1254,10 @@ class YOLOOBBDetector:
         if backend == "tiny":
             import torch
 
-            batch = self._crops_to_tensor(source_crops).to(self.device)
+            target_hw = getattr(self, "headtail_input_size", None)
+            batch = self._crops_to_tensor(source_crops, target_hw=target_hw).to(
+                self.device
+            )
             with torch.inference_mode():
                 logits = self.headtail_model(batch)
                 probs = torch.sigmoid(logits).squeeze(1).detach().cpu().numpy()
@@ -1458,24 +1461,23 @@ class YOLOOBBDetector:
         """
         from multi_tracker.core.tracking.canonical_crop import (
             compute_alignment_affine,
-            compute_crop_dimensions,
             extract_canonical_crop,
         )
 
-        # Canonical crop dimensions from config (power-user overrides via advanced_config)
-        ht_long = int(self._advanced_config_value("canonical_headtail_long_edge", 128))
-        ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
-        canon_w, canon_h = compute_crop_dimensions(ht_long, ref_ar)
-
-        # Legacy overrides: honour explicit width/height if set
-        out_w = int(
-            self._advanced_config_value("yolo_headtail_canonical_width", canon_w)
-        )
-        out_h = int(
-            self._advanced_config_value("yolo_headtail_canonical_height", canon_h)
-        )
-        out_w = max(8, out_w)
-        out_h = max(8, out_h)
+        # Use the model's own input_size when available (tiny / classkit_tiny
+        # checkpoints store it).  Fall back to a sensible default for YOLO
+        # backend where the model handles its own resizing.
+        ht_input_size = getattr(self, "headtail_input_size", None)
+        if ht_input_size is not None and len(ht_input_size) == 2:
+            out_w, out_h = max(8, int(ht_input_size[0])), max(8, int(ht_input_size[1]))
+        else:
+            # YOLO backend – canvas only needs to be big enough for quality.
+            # Use a 128-based default derived from reference_aspect_ratio.
+            ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
+            out_w = 128
+            out_h = max(8, int(round(128 / ref_ar)))
+            # Round to even
+            out_h = out_h + (out_h % 2)
 
         margin = float(
             self._advanced_config_value("yolo_headtail_canonical_margin", 1.3)
@@ -1495,16 +1497,20 @@ class YOLOOBBDetector:
             return None, None, None
         return crop, axis_theta, M_align
 
-    def _compute_headtail_hints(self, frame, obb_corners_list):
+    def _compute_headtail_hints(self, frame, obb_corners_list, profiler=None):
         """Infer directed heading hints from optional head-tail classifier.
 
         Delegates to the cross-frame batched implementation so both the
         single-frame and multi-frame paths share the same logic.
         """
-        results = self._compute_headtail_hints_cross_frame([frame], [obb_corners_list])
+        results = self._compute_headtail_hints_cross_frame(
+            [frame], [obb_corners_list], profiler=profiler
+        )
         return results[0]
 
-    def _compute_headtail_hints_cross_frame(self, frames, per_frame_obb_corners):
+    def _compute_headtail_hints_cross_frame(
+        self, frames, per_frame_obb_corners, profiler=None
+    ):
         """Batch head-tail classification across multiple frames in one GPU call.
 
         Instead of calling ``_predict_headtail_results`` once per frame,
@@ -1535,6 +1541,8 @@ class YOLOOBBDetector:
         conf_threshold = float(self.params.get("YOLO_HEADTAIL_CONF_THRESHOLD", 0.50))
 
         # ----- Phase 1: collect canonical crops across ALL frames (CPU) ----
+        if profiler is not None:
+            profiler.phase_start("headtail_crop")
         all_crops = []
         # Each entry: (frame_idx, detection_idx_within_frame, axis_theta, M_align)
         all_meta = []
@@ -1553,14 +1561,43 @@ class YOLOOBBDetector:
                     continue
 
         if not all_crops:
+            if profiler is not None:
+                profiler.phase_end("headtail_crop")
             return results_per_frame
 
+        if profiler is not None:
+            profiler.phase_end("headtail_crop")
+
         # ----- Phase 2: ONE GPU inference call for all crops ---------------
+        if profiler is not None:
+            profiler.phase_start("headtail_inference")
         cls_results = self._predict_headtail_results(all_crops)
+        if profiler is not None:
+            profiler.phase_end("headtail_inference")
         if cls_results is None or len(cls_results) == 0:
-            # Even without classification, store M_align for canonical affines
-            for fi, di, axis_theta, M_align in all_meta:
-                results_per_frame[fi][2][di] = M_align.astype(np.float32)
+            # No classification — compute native-scale affines from corners
+            try:
+                from multi_tracker.core.tracking.canonical_crop import (
+                    compute_native_scale_affine,
+                )
+
+                ref_ar = float(
+                    self._advanced_config_value("reference_aspect_ratio", 2.0)
+                )
+                padding = float(self.params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+                for fi in range(n_frames):
+                    for di, corners in enumerate(per_frame_obb_corners[fi]):
+                        try:
+                            M_native, _cw, _ch, _th = compute_native_scale_affine(
+                                corners, ref_ar, padding
+                            )
+                            results_per_frame[fi][2][di] = M_native.astype(np.float32)
+                        except (ValueError, Exception):
+                            pass
+            except ImportError:
+                # Fallback: store head-tail M_align as before
+                for fi, di, axis_theta, M_align in all_meta:
+                    results_per_frame[fi][2][di] = M_align.astype(np.float32)
             return results_per_frame
 
         # ----- Phase 3: scatter results back to per-frame arrays -----------
@@ -1628,6 +1665,61 @@ class YOLOOBBDetector:
                     results_per_frame[fi][1][di] = 1
                 except Exception:
                     continue
+
+        # ----- Phase 4: replace stored affines with native-scale variants --
+        # Head-tail used a fixed-size canvas (e.g. 128px) for batched GPU
+        # inference. The canonical_affines stored in results_per_frame still
+        # carry that fixed-size scaling.  Re-derive native-scale affines from
+        # OBB corners so downstream consumers (individual dataset, oriented
+        # video) get crops at the source video's native pixel resolution.
+        #
+        # Vectorised: pre-compute all edge norms and canvas dims in bulk,
+        # then loop only for cv2.getAffineTransform (inherently per-element).
+        try:
+            from multi_tracker.core.tracking.canonical_crop import (
+                compute_alignment_affine,
+            )
+
+            ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
+            padding = float(self.params.get("INDIVIDUAL_CROP_PADDING", 0.1))
+            _margin = 1.0 + max(0.0, padding)
+            _ar = max(1.0, ref_ar)
+
+            # Flatten all corners for vectorised edge-norm computation
+            _all_corners = []
+            _all_indices = []
+            for fi in range(n_frames):
+                for di, corners in enumerate(per_frame_obb_corners[fi]):
+                    _all_corners.append(
+                        np.asarray(corners, dtype=np.float32).reshape(4, 2)
+                    )
+                    _all_indices.append((fi, di))
+
+            if _all_corners:
+                _stacked = np.stack(_all_corners)  # (N, 4, 2)
+                # Edge lengths: e01 = ||c1-c0||, e12 = ||c2-c1||
+                _e01 = np.linalg.norm(_stacked[:, 1] - _stacked[:, 0], axis=1)
+                _e12 = np.linalg.norm(_stacked[:, 2] - _stacked[:, 1], axis=1)
+                _major = np.maximum(_e01, _e12)
+                # Canvas dimensions (vectorised)
+                _raw_w = _major * _margin
+                _canvas_w = np.maximum(8, (np.ceil(_raw_w / 2.0) * 2).astype(np.int32))
+                _canvas_h = np.maximum(
+                    8, np.round(_canvas_w / _ar / 2.0).astype(np.int32) * 2
+                )
+
+                for idx, (fi, di) in enumerate(_all_indices):
+                    try:
+                        cw_i = int(_canvas_w[idx])
+                        ch_i = int(_canvas_h[idx])
+                        M_align, _ = compute_alignment_affine(
+                            _all_corners[idx], cw_i, ch_i, padding
+                        )
+                        results_per_frame[fi][2][di] = M_align.astype(np.float32)
+                    except (ValueError, Exception):
+                        pass  # keep whatever was there (or None)
+        except ImportError:
+            pass  # graceful fallback if canonical_crop not available
 
         return results_per_frame
 
@@ -2468,7 +2560,11 @@ class YOLOOBBDetector:
         )
 
     def detect_objects(
-        self: object, frame: object, frame_count: object, return_raw: bool = False
+        self: object,
+        frame: object,
+        frame_count: object,
+        return_raw: bool = False,
+        profiler: object = None,
     ) -> object:
         """
         Detects objects in a frame using YOLO OBB.
@@ -2548,7 +2644,7 @@ class YOLOOBBDetector:
             return [], [], [], yolo_results, []
 
         raw_heading_hints, raw_directed_mask, _raw_affines = (
-            self._compute_headtail_hints(frame, raw_obb_corners)
+            self._compute_headtail_hints(frame, raw_obb_corners, profiler=profiler)
         )
 
         if return_raw:
@@ -2603,6 +2699,7 @@ class YOLOOBBDetector:
         start_frame_idx: object,
         progress_callback: object = None,
         return_raw: bool = False,
+        profiler: object = None,
     ) -> object:
         """
         Detect objects in a batch of frames using YOLO OBB.
@@ -2715,6 +2812,9 @@ class YOLOOBBDetector:
             fixed_batch_size = max(1, int(getattr(self, "onnx_batch_size", 1)))
             fixed_backend = "ONNX"
 
+        if profiler is not None:
+            profiler.phase_start("yolo_obb_inference")
+
         if fixed_batch_size is not None:
             all_results = []
             # obb_predict_device is None when the model was placed via .to(device).
@@ -2823,6 +2923,9 @@ class YOLOOBBDetector:
                         )
                         results_batch.append(None)
 
+        if profiler is not None:
+            profiler.phase_end("yolo_obb_inference")
+
         # ===================================================================
         # Post-process: extract raw detections, cross-frame head-tail, assemble
         # ===================================================================
@@ -2843,7 +2946,7 @@ class YOLOOBBDetector:
                 raw[4] if raw is not None else [] for raw in per_frame_raw
             ]
             headtail_per_frame = self._compute_headtail_hints_cross_frame(
-                frames[:actual_frame_count], per_frame_corners
+                frames[:actual_frame_count], per_frame_corners, profiler=profiler
             )
         else:
             headtail_per_frame = None
@@ -2968,4 +3071,5 @@ class DetectionFilter:
     _compute_obb_iou = YOLOOBBDetector._compute_obb_iou
     _compute_obb_iou_batch = YOLOOBBDetector._compute_obb_iou_batch
     _filter_overlapping_detections = YOLOOBBDetector._filter_overlapping_detections
+    filter_raw_detections = YOLOOBBDetector.filter_raw_detections
     filter_raw_detections = YOLOOBBDetector.filter_raw_detections

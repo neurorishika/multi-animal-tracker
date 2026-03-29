@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -357,6 +358,8 @@ class OrientedTrackVideoExporter:
             _heading_hints,
             _directed_mask,
             _canonical_affines,
+            _canvas_dims,
+            _M_inverse,
         ) = detection_cache.get_frame(frame_id)
         det_index = {}
         for idx, det_id in enumerate(detection_ids or []):
@@ -484,41 +487,69 @@ class OrientedTrackVideoExporter:
         frames_written_by_track: dict[int, int] = defaultdict(int)
         current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
 
+        # Pre-allocate one reusable canvas per track to avoid per-frame np.full()
+        _canvases: dict[int, np.ndarray] = {}
+        for traj_id, (cw, ch) in track_sizes.items():
+            _canvases[traj_id] = np.full(
+                (ch, cw, 3), self.background_color, dtype=np.uint8
+            )
+
+        def _read_frame(fid):
+            """Read a single frame (called from background thread)."""
+            nonlocal current_pos
+            if fid != current_pos:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, int(fid))
+            ok, frm = cap.read()
+            current_pos = int(fid) + 1
+            return ok, frm
+
         try:
             total_frames = len(needed_frames)
-            for index, frame_id in enumerate(needed_frames, start=1):
-                if should_stop and should_stop():
-                    break
-                self._emit(
-                    progress_callback,
-                    35 + int(60 * index / max(1, total_frames)),
-                    f"Writing oriented track videos... {index}/{total_frames}",
-                )
-                if frame_id != current_pos:
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_id))
-                ok, frame = cap.read()
-                current_pos = int(frame_id) + 1
-                if not ok or frame is None:
-                    continue
+            # Use a single-thread executor for 1-frame read-ahead
+            with ThreadPoolExecutor(max_workers=1) as reader:
+                # Submit the first read
+                future = reader.submit(_read_frame, needed_frames[0])
 
-                bundle = frame_bundles.get(frame_id)
-                if bundle is None:
-                    continue
-                for task in bundle.tasks:
-                    canvas_size = track_sizes.get(task.trajectory_id)
-                    if canvas_size is None:
-                        continue
-                    writer = writers.get(task.trajectory_id)
-                    if writer is None:
-                        writer = self._open_writer(task.trajectory_id, canvas_size)
-                        writers[task.trajectory_id] = writer
-                    rendered = self._render_task(
-                        frame, task, bundle.polygons, canvas_size
+                for index, frame_id in enumerate(needed_frames, start=1):
+                    if should_stop and should_stop():
+                        break
+                    self._emit(
+                        progress_callback,
+                        35 + int(60 * index / max(1, total_frames)),
+                        f"Writing oriented track videos... {index}/{total_frames}",
                     )
-                    if rendered is None:
+
+                    ok, frame = future.result()
+
+                    # Submit read-ahead for next frame while processing this one
+                    if index < total_frames:
+                        future = reader.submit(_read_frame, needed_frames[index])
+
+                    if not ok or frame is None:
                         continue
-                    writer.write(rendered)
-                    frames_written_by_track[task.trajectory_id] += 1
+
+                    bundle = frame_bundles.get(frame_id)
+                    if bundle is None:
+                        continue
+                    for task in bundle.tasks:
+                        canvas_size = track_sizes.get(task.trajectory_id)
+                        if canvas_size is None:
+                            continue
+                        writer = writers.get(task.trajectory_id)
+                        if writer is None:
+                            writer = self._open_writer(task.trajectory_id, canvas_size)
+                            writers[task.trajectory_id] = writer
+                        rendered = self._render_task(
+                            frame,
+                            task,
+                            bundle.polygons,
+                            canvas_size,
+                            canvas=_canvases.get(task.trajectory_id),
+                        )
+                        if rendered is None:
+                            continue
+                        writer.write(rendered)
+                        frames_written_by_track[task.trajectory_id] += 1
         finally:
             cap.release()
             for writer in writers.values():
@@ -564,6 +595,7 @@ class OrientedTrackVideoExporter:
         task: FrameTask,
         frame_polygons: list[np.ndarray],
         canvas_size: tuple[int, int],
+        canvas: Optional[np.ndarray] = None,
     ) -> Optional[np.ndarray]:
         warped = cv2.warpAffine(
             frame,
@@ -602,7 +634,17 @@ class OrientedTrackVideoExporter:
         if masked.shape[1] == canvas_w and masked.shape[0] == canvas_h:
             return masked
 
-        canvas = np.full((canvas_h, canvas_w, 3), self.background_color, dtype=np.uint8)
+        # Reuse pre-allocated canvas when available, otherwise allocate
+        if (
+            canvas is not None
+            and canvas.shape[0] == canvas_h
+            and canvas.shape[1] == canvas_w
+        ):
+            canvas[:] = self.background_color
+        else:
+            canvas = np.full(
+                (canvas_h, canvas_w, 3), self.background_color, dtype=np.uint8
+            )
         x0 = max(0, (canvas_w - masked.shape[1]) // 2)
         y0 = max(0, (canvas_h - masked.shape[0]) // 2)
         x1 = min(canvas_w, x0 + masked.shape[1])

@@ -61,6 +61,72 @@ def compute_crop_dimensions(
     return long_edge, short_edge
 
 
+def compute_native_crop_dimensions(
+    corners: np.ndarray,
+    reference_aspect_ratio: float,
+    padding_fraction: float,
+) -> Tuple[int, int]:
+    """Derive canvas (W, H) from an OBB's native pixel extent.
+
+    The long edge of the canvas matches the OBB's major axis (times padding)
+    at native pixel scale — no downsampling.  The short edge is derived
+    from ``reference_aspect_ratio`` so all crops share a consistent AR.
+
+    Both dimensions are rounded to the nearest even integer (≥ 8).
+
+    Args:
+        corners: (4, 2) OBB corner array in frame coordinates.
+        reference_aspect_ratio: Species AR (long / short), e.g. 2.0.
+        padding_fraction: Fractional expansion (e.g. 0.1 = 10 %).
+
+    Returns:
+        (width, height) — width is the long (major-axis) dimension.
+    """
+    c = np.asarray(corners, dtype=np.float32).reshape(4, 2)
+    e01 = float(np.linalg.norm(c[1] - c[0]))
+    e12 = float(np.linalg.norm(c[2] - c[1]))
+    major = max(e01, e12)
+
+    margin = 1.0 + max(0.0, float(padding_fraction))
+    ar = max(1.0, float(reference_aspect_ratio))
+
+    raw_w = major * margin
+
+    # Round W to even first, then derive H from the rounded W so that
+    # canvas_w / canvas_h stays close to the target AR.
+    canvas_w = max(8, int(math.ceil(raw_w / 2.0) * 2))
+    canvas_h = max(8, int(round(canvas_w / ar / 2.0) * 2))
+    return canvas_w, canvas_h
+
+
+def compute_native_scale_affine(
+    corners: np.ndarray,
+    reference_aspect_ratio: float,
+    padding_fraction: float,
+) -> Tuple[np.ndarray, int, int, float]:
+    """Build a native-scale alignment affine for one OBB.
+
+    Like :func:`compute_alignment_affine`, but the output canvas is sized
+    to preserve the OBB's native pixel extent (no down- or up-sampling).
+    The canvas aspect ratio is standardised to *reference_aspect_ratio*.
+
+    Args:
+        corners: (4, 2) OBB corner array in frame coordinates.
+        reference_aspect_ratio: Species AR (long / short).
+        padding_fraction: Fractional expansion (e.g. 0.1).
+
+    Returns:
+        (M_align, canvas_w, canvas_h, major_axis_theta)
+    """
+    canvas_w, canvas_h = compute_native_crop_dimensions(
+        corners, reference_aspect_ratio, padding_fraction
+    )
+    M_align, theta = compute_alignment_affine(
+        corners, canvas_w, canvas_h, padding_fraction
+    )
+    return M_align, canvas_w, canvas_h, theta
+
+
 def compute_alignment_affine(
     corners: np.ndarray,
     canvas_w: int,

@@ -104,3 +104,119 @@ def test_find_existing_detection_cache_path_prefers_new_layout(tmp_path: Path) -
     )
 
     assert resolved == new_path
+
+
+# ---- AprilTag cache path ----
+
+
+def test_apriltag_cache_path_uses_video_cache_subdirectory(tmp_path: Path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+
+    cache_path = mod.build_apriltag_cache_path(
+        str(video_path),
+        "at_hash123",
+        0,
+        100,
+        artifact_base_dir=artifact_root,
+    )
+
+    assert cache_path == (
+        artifact_root / "clip_caches" / "clip_apriltag_cache_at_hash123_0_100.npz"
+    )
+
+
+def test_find_existing_apriltag_cache_path(tmp_path: Path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+
+    cache_path = mod.build_apriltag_cache_path(
+        str(video_path),
+        "hash_abc",
+        10,
+        200,
+        artifact_base_dir=artifact_root,
+        create_dir=True,
+    )
+    cache_path.write_bytes(b"data")
+
+    found = mod.find_existing_apriltag_cache_path(
+        str(video_path),
+        "hash_abc",
+        10,
+        200,
+        artifact_base_dirs=[artifact_root],
+    )
+    assert found == cache_path
+
+    not_found = mod.find_existing_apriltag_cache_path(
+        str(video_path),
+        "hash_xyz",
+        10,
+        200,
+        artifact_base_dirs=[artifact_root],
+    )
+    assert not_found is None
+
+
+# ---- Classify cache path ----
+
+
+def test_classify_cache_path_uses_video_cache_subdirectory(tmp_path: Path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+
+    cache_path = mod.build_classify_cache_path(
+        str(video_path),
+        "cl_hash456",
+        "individual_id",
+        0,
+        100,
+        artifact_base_dir=artifact_root,
+    )
+
+    assert cache_path == (
+        artifact_root
+        / "clip_caches"
+        / "clip_classify_cache_individual_id_cl_hash456_0_100.npz"
+    )
+
+
+def test_find_existing_classify_cache_path(tmp_path: Path) -> None:
+    video_path = tmp_path / "clip.mp4"
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+
+    cache_path = mod.build_classify_cache_path(
+        str(video_path),
+        "hash_def",
+        "age",
+        5,
+        50,
+        artifact_base_dir=artifact_root,
+        create_dir=True,
+    )
+    cache_path.write_bytes(b"data")
+
+    found = mod.find_existing_classify_cache_path(
+        str(video_path),
+        "hash_def",
+        "age",
+        5,
+        50,
+        artifact_base_dirs=[artifact_root],
+    )
+    assert found == cache_path
+
+    not_found = mod.find_existing_classify_cache_path(
+        str(video_path),
+        "hash_other",
+        "age",
+        5,
+        50,
+        artifact_base_dirs=[artifact_root],
+    )
+    assert not_found is None

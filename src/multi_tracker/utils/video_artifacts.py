@@ -173,9 +173,96 @@ def build_individual_properties_cache_path(
         )
     stem = _video_stem(video_path)
     return base_dir / (
-        f"{stem}_individual_properties_{properties_id}_"
+        f"{stem}_pose_cache_{properties_id}_" f"{int(start_frame)}_{int(end_frame)}.npz"
+    )
+
+
+def build_apriltag_cache_path(
+    video_path: str | os.PathLike[str],
+    apriltag_id: str,
+    start_frame: int,
+    end_frame: int,
+    artifact_base_dir: str | os.PathLike[str] | None = None,
+    create_dir: bool = False,
+) -> Path:
+    cache_dir = build_video_cache_dir(
+        video_path,
+        artifact_base_dir=artifact_base_dir,
+        create=create_dir,
+    )
+    stem = _video_stem(video_path)
+    return cache_dir / (
+        f"{stem}_apriltag_cache_{apriltag_id}_"
         f"{int(start_frame)}_{int(end_frame)}.npz"
     )
+
+
+def find_existing_apriltag_cache_path(
+    video_path: str | os.PathLike[str],
+    apriltag_id: str,
+    start_frame: int,
+    end_frame: int,
+    artifact_base_dirs: Iterable[str | os.PathLike[str] | None] | None = None,
+) -> Path | None:
+    base_dirs = artifact_base_dirs or candidate_artifact_base_dirs(video_path)
+    for base_dir in base_dirs:
+        current = build_apriltag_cache_path(
+            video_path,
+            apriltag_id,
+            start_frame,
+            end_frame,
+            artifact_base_dir=base_dir,
+        )
+        if current.exists():
+            return current
+    return None
+
+
+def build_classify_cache_path(
+    video_path: str | os.PathLike[str],
+    classify_id: str,
+    label: str,
+    start_frame: int,
+    end_frame: int,
+    artifact_base_dir: str | os.PathLike[str] | None = None,
+    create_dir: bool = False,
+) -> Path:
+    import re as _re
+
+    cache_dir = build_video_cache_dir(
+        video_path,
+        artifact_base_dir=artifact_base_dir,
+        create=create_dir,
+    )
+    stem = _video_stem(video_path)
+    safe_label = _re.sub(r"[^\w-]", "_", label)
+    return cache_dir / (
+        f"{stem}_classify_cache_{safe_label}_{classify_id}_"
+        f"{int(start_frame)}_{int(end_frame)}.npz"
+    )
+
+
+def find_existing_classify_cache_path(
+    video_path: str | os.PathLike[str],
+    classify_id: str,
+    label: str,
+    start_frame: int,
+    end_frame: int,
+    artifact_base_dirs: Iterable[str | os.PathLike[str] | None] | None = None,
+) -> Path | None:
+    base_dirs = artifact_base_dirs or candidate_artifact_base_dirs(video_path)
+    for base_dir in base_dirs:
+        current = build_classify_cache_path(
+            video_path,
+            classify_id,
+            label,
+            start_frame,
+            end_frame,
+            artifact_base_dir=base_dir,
+        )
+        if current.exists():
+            return current
+    return None
 
 
 def build_autotune_state_path(
@@ -232,7 +319,9 @@ def iter_detection_cache_candidates(
 
 
 __all__ = [
+    "build_apriltag_cache_path",
     "build_autotune_state_path",
+    "build_classify_cache_path",
     "build_detection_cache_path",
     "build_individual_properties_cache_path",
     "build_optimizer_detection_cache_path",
@@ -241,6 +330,8 @@ __all__ = [
     "build_video_log_dir",
     "candidate_artifact_base_dirs",
     "choose_writable_artifact_base_dir",
+    "find_existing_apriltag_cache_path",
+    "find_existing_classify_cache_path",
     "find_existing_detection_cache_path",
     "iter_detection_cache_candidates",
 ]
