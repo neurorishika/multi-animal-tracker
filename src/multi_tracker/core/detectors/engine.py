@@ -8,7 +8,6 @@ import json
 import logging
 import math
 import shutil
-from collections import OrderedDict
 from pathlib import Path
 
 import cv2
@@ -51,10 +50,6 @@ def _normalize_detection_ids(detection_ids):
         normalized.append(int(float_value))
 
     return normalized
-
-
-_HEADTAIL_DIRECTIONAL_CLASS_SET = frozenset({"left", "right"})
-_HEADTAIL_FIVE_CLASS_SET = frozenset({"up", "down", "left", "right", "unknown"})
 
 
 class ObjectDetector:
@@ -294,13 +289,9 @@ class YOLOOBBDetector:
         self.params = params
         self.model = None
         self.detect_model = None
-        self.headtail_model = None
-        self.headtail_backend = "none"
-        self.headtail_class_names = None  # populated for classkit_tiny N-class models
-        self.headtail_input_size = None  # (w, h) used during classkit_tiny training
+        self._headtail_analyzer = None  # HeadTailAnalyzer instance
         self.obb_predict_device = None
         self.detect_predict_device = None
-        self.headtail_predict_device = None
         self.device = self._detect_device()
         self.use_tensorrt = False
         self.use_onnx = False
@@ -961,170 +952,70 @@ class YOLOOBBDetector:
                 predict_device = self.device
         return model, predict_device
 
-    def _build_tiny_head_classifier(self, input_size=(128, 64)):
-        """Build notebook-compatible tiny head direction classifier."""
-        import torch.nn as nn
-
-        class _TinyHeadClassifier(nn.Module):
-            def __init__(self, input_size=(128, 64)):
-                super().__init__()
-                self.input_size = tuple(input_size)
-                self.features = nn.Sequential(
-                    nn.Conv2d(3, 16, kernel_size=3, stride=2, padding=1),
-                    nn.BatchNorm2d(16),
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
-                    nn.BatchNorm2d(32),
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1),
-                    nn.BatchNorm2d(64),
-                    nn.ReLU(inplace=True),
-                    nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1),
-                    nn.BatchNorm2d(64),
-                    nn.ReLU(inplace=True),
-                    nn.AdaptiveAvgPool2d(1),
-                )
-                self.classifier = nn.Sequential(
-                    nn.Flatten(),
-                    nn.Dropout(0.2),
-                    nn.Linear(64, 1),
-                )
-
-            def forward(self, x):  # nn.Module; called via __call__
-                x = self.features(x)
-                return self.classifier(x)
-
-        return _TinyHeadClassifier(input_size=input_size)
-
-    def _try_load_tiny_head_classifier(self, model_path_str: str):
-        """Load a tiny head-tail classifier (.pth checkpoint).
-
-        Supports two checkpoint formats:
-                * **Notebook/legacy binary** – older single-output checkpoints.
-          Classifier has a single output (sigmoid). Returns ``(model, None, input_size)``.
-        * **ClassKit N-class** – produced by ``_train_tiny_classify`` in runner.py.
-          Classifier has N outputs (softmax). Stores ``class_names`` alongside the model.
-          Returns ``(model, class_names, input_size)``.
-
-        Returns ``None`` when the file is not a recognised tiny checkpoint.
-        """
-        import torch
-
-        model_path = Path(model_path_str).expanduser().resolve()
-        if not model_path.exists():
-            return None
-        if model_path.suffix.lower() not in {".pth", ".pt"}:
-            return None
-
-        try:
-            checkpoint = torch.load(
-                str(model_path), map_location="cpu", weights_only=False
-            )
-        except Exception:
-            return None
-
-        state_dict = None
-        input_size = (128, 64)
-        class_names = None
-
-        if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-            state_dict = checkpoint.get("model_state_dict")
-            maybe_size = checkpoint.get("input_size")
-            if isinstance(maybe_size, (list, tuple)) and len(maybe_size) == 2:
-                input_size = (int(maybe_size[0]), int(maybe_size[1]))
-            # ClassKit checkpoints include class_names
-            raw_names = checkpoint.get("class_names")
-            if isinstance(raw_names, (list, tuple)) and raw_names:
-                class_names = [str(n) for n in raw_names]
-        elif isinstance(checkpoint, (dict, OrderedDict)):
-            # Raw state-dict save path used in old HeadTail notebooks
-            state_dict = checkpoint
-        else:
-            return None
-
-        if not isinstance(state_dict, (dict, OrderedDict)):
-            return None
-        keys = list(state_dict.keys())
-        if not keys:
-            return None
-        if not any(str(k).startswith("features.") for k in keys):
-            return None
-
-        # Detect N-class vs binary by inspecting the last Linear output size.
-        linear_classifier_keys = sorted(
-            [k for k in keys if k.startswith("classifier.") and k.endswith(".weight")],
-            key=lambda k: int(k.split(".")[1]),
-        )
-        if not linear_classifier_keys:
-            return None
-        last_weight = state_dict[linear_classifier_keys[-1]]
-        n_out = int(last_weight.shape[0])
-
-        if n_out == 1:
-            # Binary notebook-format model – use the local minimal architecture.
-            try:
-                model = self._build_tiny_head_classifier(input_size=input_size)
-                model.load_state_dict(state_dict, strict=True)
-            except Exception:
-                return None
-        else:
-            # ClassKit N-class model – reconstruct via training.tiny_model.
-            try:
-                from multi_tracker.training.tiny_model import rebuild_from_checkpoint
-
-                model = rebuild_from_checkpoint({"model_state_dict": state_dict})
-            except Exception as exc:
-                logger.warning(
-                    "Failed to load ClassKit tiny head-tail classifier: %s", exc
-                )
-                return None
-
-        model.to(self.device)
-        model.eval()
-        return model, class_names, input_size
-
     def _load_headtail_model(self, model_path_str: str):
-        """Load optional head-tail model (tiny .pth or YOLO classify)."""
-        tiny_result = self._try_load_tiny_head_classifier(model_path_str)
-        if tiny_result is not None:
-            tiny_model, class_names, input_size = tiny_result
-            self.headtail_class_names = (
-                self._validate_headtail_class_names(
-                    class_names,
+        """Load optional head-tail model via HeadTailAnalyzer.
+
+        Tiny / classkit_tiny checkpoints are loaded directly by
+        HeadTailAnalyzer.  YOLO classify models are loaded through
+        ``_load_model_for_task`` (which handles ONNX / TensorRT export
+        and explicit device placement) and then injected via
+        ``HeadTailAnalyzer.from_components``.
+        """
+        from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+
+        ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
+        margin = float(
+            self._advanced_config_value("yolo_headtail_canonical_margin", 1.3)
+        )
+        conf_threshold = float(self.params.get("YOLO_HEADTAIL_CONF_THRESHOLD", 0.50))
+
+        # Try tiny / classkit_tiny first (inherent to HeadTailAnalyzer)
+        analyzer = HeadTailAnalyzer(
+            model_path=model_path_str,
+            device=str(self.device),
+            conf_threshold=conf_threshold,
+            reference_aspect_ratio=ref_ar,
+            canonical_margin=margin,
+        )
+        if analyzer.is_available:
+            # Validate class names strictly for engine context
+            if analyzer.class_names:
+                HeadTailAnalyzer._validate_class_names(
+                    analyzer.class_names,
+                    strict=True,
                     source=f"head-tail checkpoint {Path(model_path_str).name}",
                 )
-                if class_names is not None
-                else None
+            self._headtail_analyzer = analyzer
+            logger.info(
+                "Loaded %s head-tail classifier from %s.",
+                analyzer.backend,
+                Path(model_path_str).name,
             )
-            self.headtail_input_size = input_size
-            self.headtail_predict_device = None
-            if class_names is not None:
-                self.headtail_backend = "classkit_tiny"
-                self.headtail_model = tiny_model
-                logger.info(
-                    "Loaded ClassKit tiny head-tail classifier (%d classes: %s).",
-                    len(self.headtail_class_names),
-                    ", ".join(self.headtail_class_names[:8]),
-                )
-            else:
-                self.headtail_backend = "tiny"
-                self.headtail_model = tiny_model
-                logger.info("Loaded notebook tiny head-tail classifier.")
             return
 
+        # Tiny loading failed — try YOLO classify via engine's runtime loader
         model, predict_device = self._load_model_for_task(
             model_path_str, task="classify"
         )
         model_names = getattr(model, "names", None)
         if model_names is None:
             model_names = getattr(getattr(model, "model", None), "names", None)
-        self.headtail_class_names = self._validate_headtail_class_names(
+        validated_names = HeadTailAnalyzer._validate_class_names(
             model_names,
+            strict=True,
             source=f"head-tail model {Path(model_path_str).name}",
         )
-        self.headtail_backend = "yolo"
-        self.headtail_model = model
-        self.headtail_predict_device = predict_device
+        self._headtail_analyzer = HeadTailAnalyzer.from_components(
+            model=model,
+            backend="yolo",
+            class_names=validated_names,
+            input_size=None,
+            device=str(self.device),
+            conf_threshold=conf_threshold,
+            reference_aspect_ratio=ref_ar,
+            canonical_margin=margin,
+            predict_device=str(predict_device) if predict_device is not None else None,
+        )
 
     def _load_aux_models(self):
         """Load optional sequential + head-tail models."""
@@ -1140,13 +1031,15 @@ class YOLOOBBDetector:
 
         if self.headtail_model_path:
             self._load_headtail_model(self.headtail_model_path)
-            if self.headtail_backend not in ("yolo", "none"):
-                logger.info(
-                    "Head-tail tiny classifier model loaded (%s).",
-                    self.headtail_backend,
-                )
-            else:
-                logger.info("YOLO head-tail classify model loaded.")
+            if self._headtail_analyzer is not None:
+                backend = self._headtail_analyzer.backend
+                if backend not in ("yolo", "none"):
+                    logger.info(
+                        "Head-tail tiny classifier model loaded (%s).",
+                        backend,
+                    )
+                else:
+                    logger.info("YOLO head-tail classify model loaded.")
 
     def _runtime_fixed_batch_size(self) -> int:
         """Return fixed runtime batch size when backend enforces static batch dims."""
@@ -1222,104 +1115,6 @@ class YOLOOBBDetector:
             results = results[:1]
         return results
 
-    def _crops_to_tensor(self, source_crops, target_hw=None):
-        """Convert a list of BGR ndarray crops to a float32 RGB tensor [N,3,H,W]."""
-        import torch
-
-        tensors = []
-        for crop in source_crops:
-            c = np.asarray(crop)
-            if c.ndim == 2:
-                c = np.stack([c, c, c], axis=-1)
-            # Tracking frames are BGR; tiny models are trained on RGB crops.
-            if c.ndim == 3 and c.shape[2] == 3:
-                c = c[:, :, ::-1].copy()
-            if target_hw is not None:
-                import cv2
-
-                w, h = int(target_hw[0]), int(target_hw[1])
-                if c.shape[1] != w or c.shape[0] != h:
-                    c = cv2.resize(c, (w, h), interpolation=cv2.INTER_LINEAR)
-            t = torch.from_numpy(c).permute(2, 0, 1).float() / 255.0
-            tensors.append(t)
-        return torch.stack(tensors, dim=0)
-
-    def _predict_headtail_results(self, source_crops):
-        """Run head-tail classification in batches when possible."""
-        if self.headtail_model is None or not source_crops:
-            return []
-
-        backend = getattr(self, "headtail_backend", "yolo")
-
-        if backend == "tiny":
-            import torch
-
-            target_hw = getattr(self, "headtail_input_size", None)
-            batch = self._crops_to_tensor(source_crops, target_hw=target_hw).to(
-                self.device
-            )
-            with torch.inference_mode():
-                logits = self.headtail_model(batch)
-                probs = torch.sigmoid(logits).squeeze(1).detach().cpu().numpy()
-            return probs
-
-        if backend == "classkit_tiny":
-            import torch
-            import torch.nn.functional as F
-
-            target_hw = getattr(self, "headtail_input_size", None)
-            batch = self._crops_to_tensor(source_crops, target_hw=target_hw).to(
-                self.device
-            )
-            class_names = getattr(self, "headtail_class_names", None) or []
-            with torch.inference_mode():
-                logits = self.headtail_model(batch)  # [B, n_classes]
-                softmax = F.softmax(logits, dim=1)  # [B, n_classes]
-                top1_conf, top1_idx = softmax.max(dim=1)  # [B]
-                top1_conf = top1_conf.detach().cpu().numpy()
-                top1_idx = top1_idx.detach().cpu().numpy()
-
-            classified = []
-            for cls_idx, conf in zip(top1_idx, top1_conf):
-                label = self._label_from_top1(int(cls_idx), class_names)
-                direction = self._headtail_class_to_direction(
-                    label, cls_idx=int(cls_idx), names=class_names
-                )
-                classified.append((direction, float(conf)))
-            return classified
-
-        # headtail_predict_device is None when the model was placed via .to(device).
-        # Always fall back to self.device so the explicit device= argument is always
-        # passed to predict(), preventing Ultralytics from auto-selecting a wrong device.
-        predict_device = getattr(self, "headtail_predict_device", None) or self.device
-        try:
-            kwargs = dict(
-                source=source_crops,
-                conf=0.0,
-                verbose=False,
-            )
-            if predict_device is not None:
-                kwargs["device"] = predict_device
-            return self.headtail_model.predict(**kwargs)
-        except Exception:
-            # Backend/model combinations can reject list sources.
-            # Fall back to per-crop inference for compatibility.
-            outputs = []
-            for crop in source_crops:
-                try:
-                    kwargs = dict(
-                        source=crop,
-                        conf=0.0,
-                        verbose=False,
-                    )
-                    if predict_device is not None:
-                        kwargs["device"] = predict_device
-                    one = self.headtail_model.predict(**kwargs)
-                    outputs.append(one[0] if one else None)
-                except Exception:
-                    outputs.append(None)
-            return outputs
-
     def _clip_crop_box(self, x1, y1, x2, y2, frame_w, frame_h):
         xi1 = int(np.floor(max(0.0, x1)))
         yi1 = int(np.floor(max(0.0, y1)))
@@ -1365,138 +1160,6 @@ class YOLOOBBDetector:
             return None, None
         return crop, (float(xi1), float(yi1))
 
-    def _label_from_top1(self, cls_idx, names):
-        if names is None:
-            return ""
-        if isinstance(names, dict):
-            return str(names.get(int(cls_idx), "")).strip().lower()
-        if isinstance(names, (list, tuple)) and 0 <= int(cls_idx) < len(names):
-            return str(names[int(cls_idx)]).strip().lower()
-        return ""
-
-    def _ordered_headtail_class_names(self, names):
-        if isinstance(names, dict):
-            try:
-                ordered_items = sorted(names.items(), key=lambda kv: int(kv[0]))
-            except Exception:
-                ordered_items = list(names.items())
-            return [str(v) for _, v in ordered_items]
-        if isinstance(names, (list, tuple)):
-            return [str(v) for v in names]
-        return []
-
-    def _canonicalize_headtail_class_label(self, label: str):
-        text = str(label or "").strip().lower().replace("-", "_").replace(" ", "_")
-        aliases = {
-            "left": "left",
-            "head_left": "left",
-            "right": "right",
-            "head_right": "right",
-            "up": "up",
-            "head_up": "up",
-            "down": "down",
-            "head_down": "down",
-            "unknown": "unknown",
-            "head_unknown": "unknown",
-        }
-        return aliases.get(text)
-
-    def _validate_headtail_class_names(self, class_names, *, source: str = "model"):
-        ordered = self._ordered_headtail_class_names(class_names)
-        if not ordered:
-            raise ValueError(
-                f"{source} is missing class names. Expected exactly left/right or up/down/left/right/unknown."
-            )
-
-        normalized = []
-        for raw_name in ordered:
-            token = self._canonicalize_headtail_class_label(raw_name)
-            if token is None:
-                raise ValueError(
-                    f"Unsupported head-tail class label {raw_name!r} in {source}. "
-                    "Expected exactly left/right or up/down/left/right/unknown."
-                )
-            normalized.append(token)
-
-        normalized_set = frozenset(normalized)
-        if len(normalized_set) != len(normalized):
-            raise ValueError(
-                f"Duplicate or aliased head-tail labels in {source}: {ordered}."
-            )
-        if normalized_set not in (
-            _HEADTAIL_DIRECTIONAL_CLASS_SET,
-            _HEADTAIL_FIVE_CLASS_SET,
-        ):
-            raise ValueError(
-                f"Unsupported head-tail class schema in {source}: {ordered}. "
-                "Expected exactly left/right or up/down/left/right/unknown."
-            )
-        return normalized
-
-    def _headtail_class_to_direction(self, label: str, cls_idx=None, names=None):
-        text = self._canonicalize_headtail_class_label(label)
-        if text == "left":
-            return "left"
-        if text == "right":
-            return "right"
-        if text in {"up", "down", "unknown"}:
-            return None
-
-        # Fallback for unnamed binary classifiers.
-        if names is not None:
-            ordered = self._ordered_headtail_class_names(names)
-            if len(ordered) == 2:
-                if cls_idx is not None:
-                    return "right" if int(cls_idx) == 1 else "left"
-        return None
-
-    def _canonicalize_obb_for_headtail(self, frame, corners):
-        """
-        Affine canonicalization for head-tail inference.
-
-        Uses the unified canonical_crop module for geometry, then resizes
-        to the head-tail model's expected input dimensions.
-
-        Returns (canonical_crop, major_axis_theta, M_align) or (None, None, None).
-        """
-        from multi_tracker.core.tracking.canonical_crop import (
-            compute_alignment_affine,
-            extract_canonical_crop,
-        )
-
-        # Use the model's own input_size when available (tiny / classkit_tiny
-        # checkpoints store it).  Fall back to a sensible default for YOLO
-        # backend where the model handles its own resizing.
-        ht_input_size = getattr(self, "headtail_input_size", None)
-        if ht_input_size is not None and len(ht_input_size) == 2:
-            out_w, out_h = max(8, int(ht_input_size[0])), max(8, int(ht_input_size[1]))
-        else:
-            # YOLO backend – canvas only needs to be big enough for quality.
-            # Use a 128-based default derived from reference_aspect_ratio.
-            ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
-            out_w = 128
-            out_h = max(8, int(round(128 / ref_ar)))
-            # Round to even
-            out_h = out_h + (out_h % 2)
-
-        margin = float(
-            self._advanced_config_value("yolo_headtail_canonical_margin", 1.3)
-        )
-        # The canonical module uses padding_fraction (= margin - 1)
-        padding_fraction = max(0.0, margin - 1.0)
-
-        try:
-            M_align, axis_theta = compute_alignment_affine(
-                corners, out_w, out_h, padding_fraction
-            )
-        except ValueError:
-            return None, None, None
-
-        crop = extract_canonical_crop(frame, M_align, out_w, out_h)
-        if crop is None or crop.size == 0:
-            return None, None, None
-        return crop, axis_theta, M_align
-
     def _compute_headtail_hints(self, frame, obb_corners_list, profiler=None):
         """Infer directed heading hints from optional head-tail classifier.
 
@@ -1513,10 +1176,10 @@ class YOLOOBBDetector:
     ):
         """Batch head-tail classification across multiple frames in one GPU call.
 
-        Instead of calling ``_predict_headtail_results`` once per frame,
-        canonical crops from **all** frames are collected first, classified
-        in a single forward pass, and then scattered back to per-frame
-        heading-hint / directed-mask arrays.
+        Delegates crop canonicalization and inference to
+        :class:`~multi_tracker.core.identity.headtail_analyzer.HeadTailAnalyzer`,
+        then re-derives native-scale affines from OBB corners for downstream
+        consumers.
 
         Args:
             frames: list of *N* video frames (BGR ndarray).
@@ -1535,143 +1198,28 @@ class YOLOOBBDetector:
             n = len(corners)
             results_per_frame.append(([float("nan")] * n, [0] * n, [None] * n))
 
-        if self.headtail_model is None:
+        analyzer = self._headtail_analyzer
+        if analyzer is None or not analyzer.is_available:
             return results_per_frame
 
-        conf_threshold = float(self.params.get("YOLO_HEADTAIL_CONF_THRESHOLD", 0.50))
-
-        # ----- Phase 1: collect canonical crops across ALL frames (CPU) ----
+        # ----- Phases 1-3: delegate to HeadTailAnalyzer --------------------
         if profiler is not None:
             profiler.phase_start("headtail_crop")
-        all_crops = []
-        # Each entry: (frame_idx, detection_idx_within_frame, axis_theta, M_align)
-        all_meta = []
-        for fi in range(n_frames):
-            frame = frames[fi]
-            for di, corners in enumerate(per_frame_obb_corners[fi]):
-                try:
-                    canonical, axis_theta, M_align = (
-                        self._canonicalize_obb_for_headtail(frame, corners)
-                    )
-                    if canonical is None or axis_theta is None:
-                        continue
-                    all_crops.append(canonical)
-                    all_meta.append((fi, di, float(axis_theta), M_align))
-                except Exception:
-                    continue
-
-        if not all_crops:
-            if profiler is not None:
-                profiler.phase_end("headtail_crop")
-            return results_per_frame
-
+        ht_results = analyzer.analyze_crops(frames, per_frame_obb_corners)
         if profiler is not None:
             profiler.phase_end("headtail_crop")
 
-        # ----- Phase 2: ONE GPU inference call for all crops ---------------
-        if profiler is not None:
-            profiler.phase_start("headtail_inference")
-        cls_results = self._predict_headtail_results(all_crops)
-        if profiler is not None:
-            profiler.phase_end("headtail_inference")
-        if cls_results is None or len(cls_results) == 0:
-            # No classification — compute native-scale affines from corners
-            try:
-                from multi_tracker.core.tracking.canonical_crop import (
-                    compute_native_scale_affine,
-                )
-
-                ref_ar = float(
-                    self._advanced_config_value("reference_aspect_ratio", 2.0)
-                )
-                padding = float(self.params.get("INDIVIDUAL_CROP_PADDING", 0.1))
-                for fi in range(n_frames):
-                    for di, corners in enumerate(per_frame_obb_corners[fi]):
-                        try:
-                            M_native, _cw, _ch, _th = compute_native_scale_affine(
-                                corners, ref_ar, padding
-                            )
-                            results_per_frame[fi][2][di] = M_native.astype(np.float32)
-                        except (ValueError, Exception):
-                            pass
-            except ImportError:
-                # Fallback: store head-tail M_align as before
-                for fi, di, axis_theta, M_align in all_meta:
-                    results_per_frame[fi][2][di] = M_align.astype(np.float32)
-            return results_per_frame
-
-        # ----- Phase 3: scatter results back to per-frame arrays -----------
-        backend = getattr(self, "headtail_backend", "yolo")
-        TWO_PI = 2.0 * np.pi
-
-        if backend == "tiny":
-            probs = np.asarray(cls_results, dtype=np.float32).reshape(-1)
-            n_eval = min(len(all_meta), len(probs))
-            for j in range(n_eval):
-                fi, di, axis_theta, M_align = all_meta[j]
-                results_per_frame[fi][2][di] = M_align.astype(np.float32)
-                p_right = float(probs[j])
-                conf = max(p_right, 1.0 - p_right)
-                if conf < conf_threshold:
-                    continue
-                theta = axis_theta if p_right >= 0.5 else (axis_theta + np.pi)
-                results_per_frame[fi][0][di] = float(theta % TWO_PI)
-                results_per_frame[fi][1][di] = 1
-
-        elif backend == "classkit_tiny":
-            n_eval = min(len(all_meta), len(cls_results))
-            for j in range(n_eval):
-                fi, di, axis_theta, M_align = all_meta[j]
-                results_per_frame[fi][2][di] = M_align.astype(np.float32)
-                try:
-                    direction, conf = cls_results[j]
-                except Exception:
-                    continue
-                if direction not in {"left", "right"}:
-                    continue
-                if float(conf) < conf_threshold:
-                    continue
-                theta = axis_theta if direction == "right" else (axis_theta + np.pi)
-                results_per_frame[fi][0][di] = float(theta % TWO_PI)
-                results_per_frame[fi][1][di] = 1
-
-        else:
-            n_eval = min(len(all_meta), len(cls_results))
-            for j in range(n_eval):
-                fi, di, axis_theta, M_align = all_meta[j]
-                results_per_frame[fi][2][di] = M_align.astype(np.float32)
-                try:
-                    result = cls_results[j]
-                    if result is None:
-                        continue
-                    probs = getattr(result, "probs", None)
-                    if probs is None:
-                        continue
-                    top1 = int(getattr(probs, "top1", -1))
-                    top1_conf = float(getattr(probs, "top1conf", 0.0))
-                    if top1 < 0 or top1_conf < conf_threshold:
-                        continue
-                    names = getattr(self, "headtail_class_names", None) or getattr(
-                        result, "names", None
-                    )
-                    label = self._label_from_top1(top1, names)
-                    direction = self._headtail_class_to_direction(
-                        label, cls_idx=top1, names=names
-                    )
-                    if direction is None:
-                        continue
-                    theta = axis_theta if direction == "right" else (axis_theta + np.pi)
-                    results_per_frame[fi][0][di] = float(theta % TWO_PI)
-                    results_per_frame[fi][1][di] = 1
-                except Exception:
-                    continue
+        # Unpack (heading, confidence, directed_flag) tuples into result arrays
+        for fi in range(n_frames):
+            for di, (heading, _conf, directed) in enumerate(ht_results[fi]):
+                results_per_frame[fi][0][di] = heading
+                results_per_frame[fi][1][di] = directed
 
         # ----- Phase 4: replace stored affines with native-scale variants --
         # Head-tail used a fixed-size canvas (e.g. 128px) for batched GPU
-        # inference. The canonical_affines stored in results_per_frame still
-        # carry that fixed-size scaling.  Re-derive native-scale affines from
-        # OBB corners so downstream consumers (individual dataset, oriented
-        # video) get crops at the source video's native pixel resolution.
+        # inference. Re-derive native-scale affines from OBB corners so
+        # downstream consumers (individual dataset, oriented video) get
+        # crops at the source video's native pixel resolution.
         #
         # Vectorised: pre-compute all edge norms and canvas dims in bulk,
         # then loop only for cv2.getAffineTransform (inherently per-element).
@@ -2941,7 +2489,7 @@ class YOLOOBBDetector:
 
         # Phase 2 — cross-frame head-tail classification (single GPU call
         # batching canonical crops from ALL frames together).
-        if self.headtail_model is not None:
+        if self._headtail_analyzer is not None and self._headtail_analyzer.is_available:
             per_frame_corners = [
                 raw[4] if raw is not None else [] for raw in per_frame_raw
             ]

@@ -435,7 +435,7 @@ class TrackCNNHistory:
 # ---------------------------------------------------------------------------
 
 
-def _apply_cnn_identity_cost(
+def apply_cnn_identity_cost(
     cost: float,
     det_class: str | None,
     track_identity: str | None,

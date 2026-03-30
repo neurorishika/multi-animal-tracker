@@ -193,13 +193,20 @@ class UnifiedPrecompute:
         # --- frame loop ---
         cancelled = False
         _prof = profiler  # local alias (may be None)
+
+        # Prefetch frames in a background thread to overlap I/O with
+        # crop-extraction / inference work.
+        from multi_tracker.utils.frame_prefetcher import FramePrefetcher
+
+        _prefetcher = FramePrefetcher(cap, buffer_size=4)
+        _prefetcher.start()
         for rel_idx in range(total):
             frame_idx = start_frame + rel_idx
 
             # read + optional resize
             if _prof:
                 _prof.phase_start("precompute_frame_read")
-            ret, frame = cap.read()
+            ret, frame = _prefetcher.read()
             if not ret:
                 if _prof:
                     _prof.phase_end("precompute_frame_read")
@@ -456,6 +463,7 @@ class UnifiedPrecompute:
             if progress_cb and (rel_idx % 50 == 0 or rel_idx == total - 1):
                 pct = int((rel_idx + 1) * 100 / total)
                 progress_cb(pct, f"Precompute: {rel_idx + 1}/{total} frames")
+        _prefetcher.stop()
 
         # --- cancellation: skip finalize, just close ---
         if cancelled:

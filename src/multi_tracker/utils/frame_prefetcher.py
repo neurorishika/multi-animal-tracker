@@ -150,6 +150,98 @@ class FramePrefetcher:
         return False
 
 
+class SparseFramePrefetcher:
+    """
+    Prefetcher for a pre-determined list of sparse frame indices.
+
+    Reads frames in a background thread using seek-then-read, skipping the
+    seek when frames are contiguous.  The main thread calls ``read()`` to
+    get ``(frame_idx, ret, frame)`` tuples in the same order as the
+    supplied *frame_indices* list.
+    """
+
+    def __init__(self, video_capture, frame_indices, buffer_size=4):
+        self.cap = video_capture
+        self.frame_indices = list(frame_indices)
+        self.buffer_size = buffer_size
+        self.frame_queue = queue.Queue(maxsize=buffer_size)
+        self.stop_requested = threading.Event()
+        self.exception = None
+        self.thread = None
+        self._started = False
+
+    def start(self):
+        if self._started:
+            return
+        self.stop_requested.clear()
+        self.thread = threading.Thread(target=self._prefetch_loop, daemon=True)
+        self.thread.start()
+        self._started = True
+
+    def _prefetch_loop(self):
+        try:
+            current_pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+            for f in self.frame_indices:
+                if self.stop_requested.is_set():
+                    break
+                if f != current_pos:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, f)
+                ret, frame = self.cap.read()
+                current_pos = f + 1
+                while not self.stop_requested.is_set():
+                    try:
+                        self.frame_queue.put((f, ret, frame), timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+            # sentinel
+            if not self.stop_requested.is_set():
+                while not self.stop_requested.is_set():
+                    try:
+                        self.frame_queue.put(None, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+        except Exception as e:
+            self.exception = e
+            logger.error("SparseFramePrefetcher error: %s", e, exc_info=True)
+            try:
+                self.frame_queue.put(None, block=False)
+            except queue.Full:
+                pass
+
+    def read(self):
+        """Return ``(frame_idx, ret, frame)`` or *None* at end."""
+        if self.exception is not None:
+            raise RuntimeError("SparseFramePrefetcher failed") from self.exception
+        try:
+            item = self.frame_queue.get(timeout=10.0)
+            return item
+        except queue.Empty:
+            return None
+
+    def stop(self):
+        if not self._started:
+            return
+        self.stop_requested.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._started = False
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *args):
+        self.stop()
+        return False
+
+
 class FramePrefetcherBackward(FramePrefetcher):
     """
     Frame prefetcher for backward (reverse) video iteration.

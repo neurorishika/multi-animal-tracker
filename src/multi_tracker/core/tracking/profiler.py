@@ -64,6 +64,8 @@ CATEGORY_ORDER = [
     "other",
     # InterpolatedCropsWorker categories
     "interp_pose_inference",
+    # Batched detection diagnostic categories
+    "batched_frame_read",
 ]
 
 # Canonical ordering for pipeline phases (coarse timing).

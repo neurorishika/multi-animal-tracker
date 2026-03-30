@@ -703,6 +703,96 @@ class InterpolatedCropsWorker(QThread):
                     )
                     pose_backend = None
 
+            # --- AprilTag detector (reuse precompute config) ---
+            apriltag_detector = None
+            apriltag_enabled = (
+                bool(self.params.get("USE_APRILTAGS", False))
+                or str(self.params.get("IDENTITY_METHOD", "")).lower() == "apriltags"
+            )
+            if apriltag_enabled:
+                try:
+                    from multi_tracker.core.identity.apriltag_detector import (
+                        AprilTagConfig,
+                        AprilTagDetector,
+                    )
+
+                    apriltag_detector = AprilTagDetector(
+                        AprilTagConfig.from_params(self.params)
+                    )
+                except Exception as exc:
+                    logger.warning("Interpolated AprilTag analysis disabled: %s", exc)
+                    apriltag_detector = None
+
+            # --- CNN identity backends ---
+            cnn_backends = []
+            cnn_labels = []
+            cnn_classifiers_cfg = self.params.get("CNN_CLASSIFIERS", [])
+            if cnn_classifiers_cfg:
+                try:
+                    from multi_tracker.core.identity.cnn_identity import (
+                        CNNIdentityBackend,
+                        CNNIdentityConfig,
+                    )
+
+                    compute_rt = str(self.params.get("COMPUTE_RUNTIME", "cpu"))
+                    for cnn_cfg_dict in cnn_classifiers_cfg:
+                        model_path = str(cnn_cfg_dict.get("model_path", ""))
+                        if not model_path or not os.path.exists(model_path):
+                            continue
+                        label = str(cnn_cfg_dict.get("label", "cnn_identity"))
+                        cnn_cfg = CNNIdentityConfig(
+                            model_path=model_path,
+                            confidence=float(cnn_cfg_dict.get("confidence", 0.5)),
+                            batch_size=int(cnn_cfg_dict.get("batch_size", 64)),
+                        )
+                        try:
+                            backend = CNNIdentityBackend(
+                                cnn_cfg,
+                                model_path=model_path,
+                                compute_runtime=compute_rt,
+                            )
+                            cnn_backends.append(backend)
+                            cnn_labels.append(label)
+                        except Exception as exc:
+                            logger.warning(
+                                "Interpolated CNN identity '%s' disabled: %s",
+                                label,
+                                exc,
+                            )
+                except Exception as exc:
+                    logger.warning(
+                        "Interpolated CNN identity analysis disabled: %s", exc
+                    )
+
+            # --- Head-tail direction analyzer ---
+            headtail_analyzer = None
+            headtail_model_path = str(self.params.get("YOLO_HEADTAIL_MODEL_PATH", ""))
+            if headtail_model_path and os.path.exists(headtail_model_path):
+                try:
+                    from multi_tracker.core.identity.headtail_analyzer import (
+                        HeadTailAnalyzer,
+                    )
+
+                    _ht_device = str(self.params.get("COMPUTE_RUNTIME", "cpu"))
+                    if _ht_device not in ("cpu", "cuda", "mps"):
+                        _ht_device = "cpu"
+                    headtail_analyzer = HeadTailAnalyzer(
+                        model_path=headtail_model_path,
+                        device=_ht_device,
+                        conf_threshold=float(
+                            self.params.get("YOLO_HEADTAIL_CONF_THRESHOLD", 0.5)
+                        ),
+                        reference_aspect_ratio=float(
+                            self.params.get("REFERENCE_ASPECT_RATIO", 2.0)
+                        ),
+                    )
+                    if not headtail_analyzer.is_available:
+                        headtail_analyzer.close()
+                        headtail_analyzer = None
+                except Exception as exc:
+                    logger.warning("Interpolated head-tail analysis disabled: %s", exc)
+                    headtail_analyzer = None
+
             cap = cv2.VideoCapture(self.video_path)
             if not cap.isOpened():
                 self.finished_signal.emit({"saved": 0, "gaps": 0})
@@ -729,6 +819,9 @@ class InterpolatedCropsWorker(QThread):
             interp_runs = 0
             interp_rows = []
             interp_pose_rows = []
+            interp_tag_rows = []
+            interp_cnn_rows = {label: [] for label in cnn_labels}
+            interp_headtail_rows = []
             roi_rows = []
             roi_corners = []
             frame_tasks = defaultdict(list)
@@ -867,7 +960,6 @@ class InterpolatedCropsWorker(QThread):
             if frame_tasks:
                 needed_frames = sorted(frame_tasks.keys())
                 total_frames = len(needed_frames)
-                current_pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES))
                 # Accumulate pose crops across multiple frames before running
                 # inference.  One large batch call is far faster than one
                 # predict_batch call per frame (GPU utilisation is the bottleneck).
@@ -876,13 +968,27 @@ class InterpolatedCropsWorker(QThread):
                 )
                 _pending_crops: list = []
                 _pending_entries: list = []
-                for idx, f in enumerate(needed_frames, start=1):
+
+                # CNN identity accumulator (shared batch across frames)
+                _cnn_batch_size = 64
+                _pending_cnn_crops: list = []
+                _pending_cnn_entries: list = []
+
+                # Use a background thread to prefetch frames while the main
+                # thread processes crops.  This overlaps I/O (seek + decode)
+                # with the crop extraction / pose inference work.
+                from multi_tracker.utils.frame_prefetcher import SparseFramePrefetcher
+
+                _prefetcher = SparseFramePrefetcher(cap, needed_frames, buffer_size=4)
+                _prefetcher.start()
+                for idx in range(1, total_frames + 1):
                     if self._should_stop():
+                        _prefetcher.stop()
                         return
-                    if f != current_pos:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, f)
-                    ret, frame = cap.read()
-                    current_pos = f + 1
+                    _pf_item = _prefetcher.read()
+                    if _pf_item is None:
+                        break
+                    f, ret, frame = _pf_item
                     if not ret or frame is None:
                         continue
                     # Pre-compute all OBB corners for this frame so that
@@ -1012,6 +1118,101 @@ class InterpolatedCropsWorker(QThread):
                                         "crop_info": pose_crop_info,
                                     }
                                 )
+                            # CNN identity reuses the same canonical/OBB crop
+                            if (
+                                cnn_backends
+                                and pose_crop is not None
+                                and pose_crop.size > 0
+                            ):
+                                _pending_cnn_crops.append(pose_crop)
+                                _pending_cnn_entries.append(
+                                    {
+                                        "task": task,
+                                    }
+                                )
+
+                    # ----- AprilTag: extract AABB crops per frame and detect -----
+                    if apriltag_detector is not None and frame_tasks[f]:
+                        from multi_tracker.core.tracking.pose_pipeline import (
+                            extract_one_crop as _extract_aabb_crop,
+                        )
+
+                        _tag_crops = []
+                        _tag_offsets = []
+                        _tag_det_indices = []
+                        _tag_tasks = []
+                        _crop_padding = float(
+                            self.params.get("INDIVIDUAL_CROP_PADDING", 0.1)
+                        )
+                        _suppress_foreign = bool(
+                            self.params.get("SUPPRESS_FOREIGN_OBB_REGIONS", True)
+                        )
+                        _bg_color = tuple(
+                            self.params.get("INDIVIDUAL_BACKGROUND_COLOR", (0, 0, 0))
+                        )
+                        for ti, task in enumerate(frame_tasks[f]):
+                            aabb_result = _extract_aabb_crop(
+                                frame,
+                                _frame_all_corners[ti],
+                                ti,
+                                _crop_padding,
+                                _frame_all_corners,
+                                _suppress_foreign,
+                                _bg_color,
+                            )
+                            if aabb_result is not None:
+                                crop, offset, _ = aabb_result
+                                _tag_crops.append(crop)
+                                _tag_offsets.append(offset)
+                                _tag_det_indices.append(ti)
+                                _tag_tasks.append(task)
+                        if _tag_crops:
+                            tag_obs = apriltag_detector.detect_in_crops(
+                                _tag_crops,
+                                _tag_offsets,
+                                det_indices=_tag_det_indices,
+                            )
+                            for obs in tag_obs:
+                                _ti = obs.det_index
+                                _ttask = (
+                                    _tag_tasks[_ti]
+                                    if _ti < len(_tag_tasks)
+                                    else _tag_tasks[0]
+                                )
+                                interp_tag_rows.append(
+                                    {
+                                        "frame_id": int(_ttask["frame_id"]),
+                                        "trajectory_id": int(_ttask["traj_id"]),
+                                        "tag_id": int(obs.tag_id),
+                                        "center_x": float(obs.center_xy[0]),
+                                        "center_y": float(obs.center_xy[1]),
+                                        "hamming": int(obs.hamming),
+                                    }
+                                )
+
+                    # ----- Head-tail: analyse all detections in this frame -----
+                    if (
+                        headtail_analyzer is not None
+                        and frame_tasks[f]
+                        and _frame_all_corners
+                    ):
+                        ht_results = headtail_analyzer.analyze_crops(
+                            [frame], [_frame_all_corners]
+                        )
+                        if ht_results and ht_results[0]:
+                            for ti, (heading, conf, directed) in enumerate(
+                                ht_results[0]
+                            ):
+                                task = frame_tasks[f][ti]
+                                interp_headtail_rows.append(
+                                    {
+                                        "frame_id": int(task["frame_id"]),
+                                        "trajectory_id": int(task["traj_id"]),
+                                        "heading_rad": float(heading),
+                                        "heading_conf": float(conf),
+                                        "heading_directed": int(directed),
+                                    }
+                                )
 
                     # Flush the pose batch when it reaches the target size or on the
                     # last frame so we never carry unprocessed crops past finalization.
@@ -1092,6 +1293,49 @@ class InterpolatedCropsWorker(QThread):
                         _pending_crops.clear()
                         _pending_entries.clear()
 
+                    # ----- Flush CNN identity batch -----
+                    _flush_cnn = (
+                        cnn_backends
+                        and _pending_cnn_crops
+                        and (
+                            len(_pending_cnn_crops) >= _cnn_batch_size
+                            or idx == total_frames
+                        )
+                    )
+                    if _flush_cnn:
+                        profiler.tick("interp_cnn_inference")
+                        for _bi, _cnn_be in enumerate(cnn_backends):
+                            _cnn_label = cnn_labels[_bi]
+                            try:
+                                _cnn_preds = _cnn_be.predict_batch(_pending_cnn_crops)
+                                for _pi, _pred in enumerate(_cnn_preds):
+                                    if _pi >= len(_pending_cnn_entries):
+                                        break
+                                    _ce = _pending_cnn_entries[_pi]
+                                    interp_cnn_rows[_cnn_label].append(
+                                        {
+                                            "frame_id": int(_ce["task"]["frame_id"]),
+                                            "trajectory_id": int(
+                                                _ce["task"]["traj_id"]
+                                            ),
+                                            "class_name": (
+                                                _pred.class_name
+                                                if _pred.class_name
+                                                else ""
+                                            ),
+                                            "confidence": float(_pred.confidence),
+                                        }
+                                    )
+                            except Exception as exc:
+                                logger.warning(
+                                    "Interp CNN '%s' batch failed: %s",
+                                    _cnn_label,
+                                    exc,
+                                )
+                        profiler.tock("interp_cnn_inference")
+                        _pending_cnn_crops.clear()
+                        _pending_cnn_entries.clear()
+
                     if idx % 25 == 0 or idx == total_frames:
                         progress = int((idx / total_frames) * 100)
                         self.progress_signal.emit(
@@ -1099,11 +1343,15 @@ class InterpolatedCropsWorker(QThread):
                             f"Interpolating occlusions... {idx}/{total_frames}",
                         )
                         del frame
+                _prefetcher.stop()
 
             mapping_path = None
             roi_csv_path = None
             roi_npz_path = None
             pose_csv_path = None
+            tag_csv_path = None
+            cnn_csv_paths = {}
+            headtail_csv_path = None
 
             profiler.phase_end("interp_crop_extraction")
             profiler.phase_start("interp_finalize")
@@ -1215,6 +1463,67 @@ class InterpolatedCropsWorker(QThread):
                         writer.writerows(interp_pose_rows)
                 except Exception:
                     pose_csv_path = None
+            # --- Write interpolated AprilTag CSV ---
+            if interp_tag_rows and gen.crops_dir is not None:
+                tag_csv_path = gen.crops_dir.parent / "interpolated_tags.csv"
+                try:
+                    with open(tag_csv_path, "w", newline="") as f:
+                        writer = csv.DictWriter(
+                            f,
+                            fieldnames=[
+                                "frame_id",
+                                "trajectory_id",
+                                "tag_id",
+                                "center_x",
+                                "center_y",
+                                "hamming",
+                            ],
+                        )
+                        writer.writeheader()
+                        writer.writerows(interp_tag_rows)
+                except Exception:
+                    tag_csv_path = None
+            # --- Write interpolated CNN identity CSVs ---
+            for _cnn_label, _cnn_rows in interp_cnn_rows.items():
+                if _cnn_rows and gen.crops_dir is not None:
+                    _cnn_path = (
+                        gen.crops_dir.parent / f"interpolated_cnn_{_cnn_label}.csv"
+                    )
+                    try:
+                        with open(_cnn_path, "w", newline="") as f:
+                            writer = csv.DictWriter(
+                                f,
+                                fieldnames=[
+                                    "frame_id",
+                                    "trajectory_id",
+                                    "class_name",
+                                    "confidence",
+                                ],
+                            )
+                            writer.writeheader()
+                            writer.writerows(_cnn_rows)
+                        cnn_csv_paths[_cnn_label] = str(_cnn_path)
+                    except Exception:
+                        pass
+            # --- Write interpolated head-tail CSV ---
+            if interp_headtail_rows and gen.crops_dir is not None:
+                headtail_csv_path = gen.crops_dir.parent / "interpolated_headtail.csv"
+                try:
+                    with open(headtail_csv_path, "w", newline="") as f:
+                        writer = csv.DictWriter(
+                            f,
+                            fieldnames=[
+                                "frame_id",
+                                "trajectory_id",
+                                "heading_rad",
+                                "heading_conf",
+                                "heading_directed",
+                            ],
+                        )
+                        writer.writeheader()
+                        writer.writerows(interp_headtail_rows)
+                except Exception:
+                    headtail_csv_path = None
             if cache_interpolated_artifacts:
                 gen.finalize()
 
@@ -1237,6 +1546,26 @@ class InterpolatedCropsWorker(QThread):
                             if (interp_pose_rows and not save_interpolated_outputs)
                             else None
                         ),
+                        "tag_csv_path": (str(tag_csv_path) if tag_csv_path else None),
+                        "tag_rows": (
+                            interp_tag_rows
+                            if (interp_tag_rows and not tag_csv_path)
+                            else None
+                        ),
+                        "cnn_csv_paths": cnn_csv_paths if cnn_csv_paths else None,
+                        "cnn_rows": (
+                            interp_cnn_rows
+                            if (any(interp_cnn_rows.values()) and not cnn_csv_paths)
+                            else None
+                        ),
+                        "headtail_csv_path": (
+                            str(headtail_csv_path) if headtail_csv_path else None
+                        ),
+                        "headtail_rows": (
+                            interp_headtail_rows
+                            if (interp_headtail_rows and not headtail_csv_path)
+                            else None
+                        ),
                     }
                 )
         except Exception:
@@ -1255,6 +1584,21 @@ class InterpolatedCropsWorker(QThread):
             if pose_backend is not None:
                 try:
                     pose_backend.close()
+                except Exception:
+                    pass
+            if apriltag_detector is not None:
+                try:
+                    apriltag_detector.close()
+                except Exception:
+                    pass
+            for _be in cnn_backends:
+                try:
+                    _be.close()
+                except Exception:
+                    pass
+            if headtail_analyzer is not None:
+                try:
+                    headtail_analyzer.close()
                 except Exception:
                     pass
 
@@ -2736,6 +3080,12 @@ class MainWindow(QMainWindow):
         self.current_interpolated_roi_npz_path = None
         self.current_interpolated_pose_csv_path = None
         self.current_interpolated_pose_df = None
+        self.current_interpolated_tag_csv_path = None
+        self.current_interpolated_tag_df = None
+        self.current_interpolated_cnn_csv_paths = {}
+        self.current_interpolated_cnn_dfs = {}
+        self.current_interpolated_headtail_csv_path = None
+        self.current_interpolated_headtail_df = None
         self._pending_pose_export_csv_path = None
         self._pending_video_csv_path = None
         self._pending_video_generation = False
@@ -12441,6 +12791,12 @@ class MainWindow(QMainWindow):
             self.current_interpolated_roi_npz_path = None
             self.current_interpolated_pose_csv_path = None
             self.current_interpolated_pose_df = None
+            self.current_interpolated_tag_csv_path = None
+            self.current_interpolated_tag_df = None
+            self.current_interpolated_cnn_csv_paths = {}
+            self.current_interpolated_cnn_dfs = {}
+            self.current_interpolated_headtail_csv_path = None
+            self.current_interpolated_headtail_df = None
             self._pending_pose_export_csv_path = None
             self._pending_video_csv_path = None
             self._pending_video_generation = False
@@ -12595,6 +12951,12 @@ class MainWindow(QMainWindow):
         self.current_interpolated_roi_npz_path = None
         self.current_interpolated_pose_csv_path = None
         self.current_interpolated_pose_df = None
+        self.current_interpolated_tag_csv_path = None
+        self.current_interpolated_tag_df = None
+        self.current_interpolated_cnn_csv_paths = {}
+        self.current_interpolated_cnn_dfs = {}
+        self.current_interpolated_headtail_csv_path = None
+        self.current_interpolated_headtail_df = None
 
         # Hide stats labels when tracking stops
         self.label_current_fps.setVisible(False)
@@ -13299,6 +13661,12 @@ class MainWindow(QMainWindow):
         roi_npz_path = None
         pose_csv_path = None
         pose_rows = None
+        tag_csv_path = None
+        tag_rows = None
+        cnn_csv_paths = None
+        cnn_rows = None
+        headtail_csv_path = None
+        headtail_rows = None
         try:
             saved = int(result.get("saved", 0))
             gaps = int(result.get("gaps", 0))
@@ -13307,6 +13675,12 @@ class MainWindow(QMainWindow):
             roi_npz_path = result.get("roi_npz_path")
             pose_csv_path = result.get("pose_csv_path")
             pose_rows = result.get("pose_rows")
+            tag_csv_path = result.get("tag_csv_path")
+            tag_rows = result.get("tag_rows")
+            cnn_csv_paths = result.get("cnn_csv_paths")
+            cnn_rows = result.get("cnn_rows")
+            headtail_csv_path = result.get("headtail_csv_path")
+            headtail_rows = result.get("headtail_rows")
         except Exception:
             pass
         self._refresh_progress_visibility()
@@ -13332,6 +13706,46 @@ class MainWindow(QMainWindow):
                 )
             except Exception:
                 self.current_interpolated_pose_df = None
+
+        # --- Store interpolated AprilTag results ---
+        if tag_csv_path:
+            self.current_interpolated_tag_csv_path = tag_csv_path
+            self.current_interpolated_tag_df = None
+            logger.info(f"Interpolated tag CSV saved: {tag_csv_path}")
+        elif tag_rows:
+            try:
+                self.current_interpolated_tag_df = pd.DataFrame(tag_rows)
+                self.current_interpolated_tag_csv_path = None
+            except Exception:
+                self.current_interpolated_tag_df = None
+
+        # --- Store interpolated CNN identity results ---
+        if cnn_csv_paths:
+            self.current_interpolated_cnn_csv_paths = cnn_csv_paths
+            self.current_interpolated_cnn_dfs = {}
+            logger.info(f"Interpolated CNN CSVs: {cnn_csv_paths}")
+        elif cnn_rows:
+            try:
+                self.current_interpolated_cnn_dfs = {
+                    label: pd.DataFrame(rows)
+                    for label, rows in cnn_rows.items()
+                    if rows
+                }
+                self.current_interpolated_cnn_csv_paths = {}
+            except Exception:
+                self.current_interpolated_cnn_dfs = {}
+
+        # --- Store interpolated head-tail results ---
+        if headtail_csv_path:
+            self.current_interpolated_headtail_csv_path = headtail_csv_path
+            self.current_interpolated_headtail_df = None
+            logger.info(f"Interpolated head-tail CSV saved: {headtail_csv_path}")
+        elif headtail_rows:
+            try:
+                self.current_interpolated_headtail_df = pd.DataFrame(headtail_rows)
+                self.current_interpolated_headtail_csv_path = None
+            except Exception:
+                self.current_interpolated_headtail_df = None
 
         self._cleanup_thread_reference("interp_worker")
         self._refresh_progress_visibility()
@@ -14412,7 +14826,33 @@ class MainWindow(QMainWindow):
         """Load final CSV and merge available cached/interpolated pose columns."""
         if not final_csv_path or not os.path.exists(final_csv_path):
             return None
-        if not self._is_pose_export_enabled():
+
+        # Check for any available analysis source (pose, tag, cnn, headtail)
+        _has_interp_tag = bool(
+            (getattr(self, "current_interpolated_tag_csv_path", None))
+            or (
+                isinstance(
+                    getattr(self, "current_interpolated_tag_df", None),
+                    pd.DataFrame,
+                )
+            )
+        )
+        _has_interp_cnn = bool(
+            getattr(self, "current_interpolated_cnn_csv_paths", None)
+            or getattr(self, "current_interpolated_cnn_dfs", None)
+        )
+        _has_interp_ht = bool(
+            (getattr(self, "current_interpolated_headtail_csv_path", None))
+            or (
+                isinstance(
+                    getattr(self, "current_interpolated_headtail_df", None),
+                    pd.DataFrame,
+                )
+            )
+        )
+        _has_other_analyses = _has_interp_tag or _has_interp_cnn or _has_interp_ht
+
+        if not self._is_pose_export_enabled() and not _has_other_analyses:
             return None
 
         cache_path = str(self.current_individual_properties_cache_path or "").strip()
@@ -14424,7 +14864,12 @@ class MainWindow(QMainWindow):
             isinstance(interp_pose_df_mem, pd.DataFrame)
             and not interp_pose_df_mem.empty
         )
-        if not cache_available and not interp_available and not interp_mem_available:
+        if (
+            not cache_available
+            and not interp_available
+            and not interp_mem_available
+            and not _has_other_analyses
+        ):
             logger.warning(
                 "Pose export skipped: no pose sources found (cache=%s, interpolated=%s, in_memory=%s).",
                 cache_path or "<empty>",
@@ -14459,6 +14904,80 @@ class MainWindow(QMainWindow):
                 with_pose_df = merge_interpolated_pose_df(
                     with_pose_df, interp_pose_df_mem
                 )
+
+            # --- Merge interpolated AprilTag observations ---
+            _interp_tag_path = str(
+                getattr(self, "current_interpolated_tag_csv_path", None) or ""
+            ).strip()
+            _interp_tag_df = getattr(self, "current_interpolated_tag_df", None)
+            try:
+                from multi_tracker.core.identity.properties_export import (
+                    merge_interpolated_apriltag_df,
+                )
+
+                if _interp_tag_path and os.path.exists(_interp_tag_path):
+                    _tag_df = pd.read_csv(_interp_tag_path)
+                    with_pose_df = merge_interpolated_apriltag_df(with_pose_df, _tag_df)
+                elif (
+                    isinstance(_interp_tag_df, pd.DataFrame)
+                    and not _interp_tag_df.empty
+                ):
+                    with_pose_df = merge_interpolated_apriltag_df(
+                        with_pose_df, _interp_tag_df
+                    )
+            except Exception:
+                logger.debug("Interpolated AprilTag merge skipped.", exc_info=True)
+
+            # --- Merge interpolated CNN identity predictions ---
+            _interp_cnn_paths = (
+                getattr(self, "current_interpolated_cnn_csv_paths", {}) or {}
+            )
+            _interp_cnn_dfs = getattr(self, "current_interpolated_cnn_dfs", {}) or {}
+            try:
+                from multi_tracker.core.identity.properties_export import (
+                    merge_interpolated_cnn_df,
+                )
+
+                _all_cnn_labels = set(_interp_cnn_paths.keys()) | set(
+                    _interp_cnn_dfs.keys()
+                )
+                for _cnn_label in _all_cnn_labels:
+                    _cnn_path = str(_interp_cnn_paths.get(_cnn_label, "")).strip()
+                    if _cnn_path and os.path.exists(_cnn_path):
+                        _cnn_df = pd.read_csv(_cnn_path)
+                        with_pose_df = merge_interpolated_cnn_df(
+                            with_pose_df, _cnn_df, label=_cnn_label
+                        )
+                    elif _cnn_label in _interp_cnn_dfs:
+                        _cnn_df = _interp_cnn_dfs[_cnn_label]
+                        if isinstance(_cnn_df, pd.DataFrame) and not _cnn_df.empty:
+                            with_pose_df = merge_interpolated_cnn_df(
+                                with_pose_df, _cnn_df, label=_cnn_label
+                            )
+            except Exception:
+                logger.debug("Interpolated CNN merge skipped.", exc_info=True)
+
+            # --- Merge interpolated head-tail directions ---
+            _interp_ht_path = str(
+                getattr(self, "current_interpolated_headtail_csv_path", None) or ""
+            ).strip()
+            _interp_ht_df = getattr(self, "current_interpolated_headtail_df", None)
+            try:
+                from multi_tracker.core.identity.properties_export import (
+                    merge_interpolated_headtail_df,
+                )
+
+                if _interp_ht_path and os.path.exists(_interp_ht_path):
+                    _ht_df = pd.read_csv(_interp_ht_path)
+                    with_pose_df = merge_interpolated_headtail_df(with_pose_df, _ht_df)
+                elif (
+                    isinstance(_interp_ht_df, pd.DataFrame) and not _interp_ht_df.empty
+                ):
+                    with_pose_df = merge_interpolated_headtail_df(
+                        with_pose_df, _interp_ht_df
+                    )
+            except Exception:
+                logger.debug("Interpolated head-tail merge skipped.", exc_info=True)
         except Exception:
             logger.exception(
                 "Pose export skipped: failed while merging pose sources (cache=%s, interpolated=%s)",
@@ -14951,6 +15470,12 @@ class MainWindow(QMainWindow):
             self.current_interpolated_roi_npz_path = None
             self.current_interpolated_pose_csv_path = None
             self.current_interpolated_pose_df = None
+            self.current_interpolated_tag_csv_path = None
+            self.current_interpolated_tag_df = None
+            self.current_interpolated_cnn_csv_paths = {}
+            self.current_interpolated_cnn_dfs = {}
+            self.current_interpolated_headtail_csv_path = None
+            self.current_interpolated_headtail_df = None
 
             _interp_profiling = bool(params.get("ENABLE_PROFILING", False))
             _interp_profile_path = None

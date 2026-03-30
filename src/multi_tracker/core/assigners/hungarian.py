@@ -220,38 +220,43 @@ class TrackAssigner:
         max_aspect_diff = float(p.get("ASSOCIATION_STAGE1_MAX_ASPECT_DIFF", 0.8))
         uncertainty_ref = max(1.0, reference_body_size**2)
 
+        # --- Vectorized position distances (N × M) ---
+        diff = meas_pos[None, :, :] - pred_pos[:, None, :]  # (N, M, 2)
+        if p["USE_MAHALANOBIS"]:
+            S_inv_2x2 = S_inv_batch[:, :2, :2]  # (N, 2, 2)
+            pos_dist = np.sqrt(np.einsum("nmd,nde,nme->nm", diff, S_inv_2x2, diff))
+        else:
+            pos_dist = np.linalg.norm(diff, axis=2)  # (N, M)
+
+        # --- Per-track adaptive gate threshold ---
+        unc_scale = np.minimum(2.0, track_uncertainty / uncertainty_ref)
+        mot_scale = np.minimum(2.0, track_avg_step / reference_body_size)
+        local_gates = (
+            cull_threshold
+            * gate_multiplier
+            * (1.0 + 0.5 * unc_scale + 0.35 * mot_scale)
+        )  # (N,)
+
+        # --- Vectorized area ratio and aspect diff ---
+        _prev = np.maximum(prev_areas, 1e-6)[:, None]  # (N, 1)
+        _curr = np.maximum(shapes_area, 1e-6)[None, :]  # (1, M)
+        area_ratio = np.maximum(_prev, _curr) / np.maximum(
+            np.minimum(_prev, _curr), 1e-6
+        )
+        asp_diff = np.abs(shapes_asp[None, :] - prev_asps[:, None])
+
+        # --- Build boolean pass mask and extract candidates ---
+        mask = (
+            (pos_dist <= local_gates[:, None])
+            & (area_ratio <= max_area_ratio)
+            & (asp_diff <= max_aspect_diff)
+        )
+
         candidates = {}
         for i in range(N):
-            inv_S_pos = S_inv_batch[i, :2, :2]
-            uncertainty_scale = min(2.0, float(track_uncertainty[i]) / uncertainty_ref)
-            motion_scale = min(2.0, float(track_avg_step[i]) / reference_body_size)
-            local_gate = (
-                cull_threshold
-                * gate_multiplier
-                * (1.0 + 0.5 * uncertainty_scale + 0.35 * motion_scale)
-            )
-            det_indices = []
-            for j in range(M):
-                diff = meas_pos[j] - pred_pos[i]
-                pos_dist = (
-                    float(np.sqrt(diff @ inv_S_pos @ diff))
-                    if p["USE_MAHALANOBIS"]
-                    else float(np.linalg.norm(diff))
-                )
-                if pos_dist > local_gate:
-                    continue
-                prev_area = max(1e-6, float(prev_areas[i]))
-                curr_area = max(1e-6, float(shapes_area[j]))
-                area_ratio = max(prev_area, curr_area) / max(
-                    min(prev_area, curr_area), 1e-6
-                )
-                if area_ratio > max_area_ratio:
-                    continue
-                if abs(float(shapes_asp[j]) - float(prev_asps[i])) > max_aspect_diff:
-                    continue
-                det_indices.append(j)
-            if det_indices:
-                candidates[i] = det_indices
+            indices = np.where(mask[i])[0]
+            if len(indices) > 0:
+                candidates[i] = indices.tolist()
         return candidates
 
     def _compute_advanced_cost_matrix(

@@ -405,3 +405,6 @@ posekit/
 
 # remove .claude directory (only at the base)
 .claude/
+
+# remove test_classkit.db
+test_classkit.db

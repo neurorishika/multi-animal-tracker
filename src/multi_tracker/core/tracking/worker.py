@@ -750,6 +750,8 @@ class TrackingWorker(QThread):
             batch_frames = []
             batch_start_idx = frame_idx
 
+            if profiler:
+                profiler.tick("batched_frame_read")
             for _ in range(batch_size):
                 if self._stop_requested:
                     break
@@ -774,6 +776,8 @@ class TrackingWorker(QThread):
 
                 batch_frames.append(frame)
                 frame_idx += 1
+            if profiler:
+                profiler.tock("batched_frame_read")
 
             if not batch_frames:
                 break  # No more frames

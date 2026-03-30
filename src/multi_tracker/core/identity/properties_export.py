@@ -17,11 +17,7 @@ POSE_SUMMARY_COLUMNS = [
     "PoseNumKeypoints",
 ]
 
-# Backward-compatible / test-facing alias.
-POSE_EXPORT_COLUMNS = POSE_SUMMARY_COLUMNS
 
-
-# Backward-compatible alias used by tests/importers.
 def _pose_value_columns(df: pd.DataFrame) -> List[str]:
     return [c for c in df.columns if str(c).startswith("Pose")]
 
@@ -437,3 +433,286 @@ def merge_interpolated_pose_df(
         errors="ignore",
     )
     return _ensure_pose_columns(merged)
+
+
+# ---------------------------------------------------------------------------
+# AprilTag interpolated merge
+# ---------------------------------------------------------------------------
+
+APRILTAG_INTERP_COLUMNS = ["InterpTagID", "InterpTagHamming", "InterpTagConf"]
+
+
+def merge_interpolated_apriltag_df(
+    trajectories_df: pd.DataFrame,
+    interp_tag_df: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Merge interpolated AprilTag observations into final trajectories.
+
+    Existing ``TagID`` values (from pre-tracking) are preserved.
+    Interpolated rows receive ``InterpTagID`` / ``InterpTagHamming``.
+    """
+    if trajectories_df is None or trajectories_df.empty:
+        return trajectories_df
+    if (
+        interp_tag_df is None
+        or interp_tag_df.empty
+        or "FrameID" not in trajectories_df.columns
+        or "TrajectoryID" not in trajectories_df.columns
+    ):
+        return trajectories_df
+
+    needed = {"frame_id", "trajectory_id", "tag_id"}
+    if not needed.issubset(interp_tag_df.columns):
+        return trajectories_df
+
+    out = trajectories_df.copy()
+    for col in APRILTAG_INTERP_COLUMNS:
+        if col not in out.columns:
+            out[col] = np.nan
+
+    out["_frame_join"] = (
+        pd.to_numeric(out["FrameID"], errors="coerce").round().astype("Int64")
+    )
+    out["_traj_join"] = (
+        pd.to_numeric(out["TrajectoryID"], errors="coerce").round().astype("Int64")
+    )
+
+    interp = interp_tag_df.copy()
+    interp["_frame_join"] = (
+        pd.to_numeric(interp["frame_id"], errors="coerce").round().astype("Int64")
+    )
+    interp["_traj_join"] = (
+        pd.to_numeric(interp["trajectory_id"], errors="coerce").round().astype("Int64")
+    )
+
+    tag_cols = ["tag_id"]
+    if "hamming" in interp.columns:
+        tag_cols.append("hamming")
+    if "confidence" in interp.columns:
+        tag_cols.append("confidence")
+
+    interp_lookup = interp[["_frame_join", "_traj_join", *tag_cols]].drop_duplicates(
+        subset=["_frame_join", "_traj_join"], keep="first"
+    )
+
+    merged = out.merge(
+        interp_lookup,
+        how="left",
+        on=["_frame_join", "_traj_join"],
+        suffixes=("", "_itag"),
+        sort=False,
+    )
+
+    if "tag_id" in merged.columns:
+        merged["InterpTagID"] = merged["InterpTagID"].where(
+            merged["InterpTagID"].notna(), merged["tag_id"]
+        )
+        merged.drop(columns=["tag_id"], inplace=True, errors="ignore")
+    if "hamming" in merged.columns:
+        merged["InterpTagHamming"] = merged["InterpTagHamming"].where(
+            merged["InterpTagHamming"].notna(), merged["hamming"]
+        )
+        merged.drop(columns=["hamming"], inplace=True, errors="ignore")
+    if "confidence" in merged.columns:
+        merged["InterpTagConf"] = merged["InterpTagConf"].where(
+            merged["InterpTagConf"].notna(), merged["confidence"]
+        )
+        merged.drop(columns=["confidence"], inplace=True, errors="ignore")
+
+    merged.drop(
+        columns=["_frame_join", "_traj_join"],
+        inplace=True,
+        errors="ignore",
+    )
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# CNN identity interpolated merge
+# ---------------------------------------------------------------------------
+
+
+def merge_interpolated_cnn_df(
+    trajectories_df: pd.DataFrame,
+    interp_cnn_df: Optional[pd.DataFrame],
+    label: str = "cnn_identity",
+) -> pd.DataFrame:
+    """Merge interpolated CNN identity predictions into final trajectories.
+
+    Each classifier label gets its own column pair: ``CNN_{label}_Class``,
+    ``CNN_{label}_Conf``.
+    """
+    col_class = f"CNN_{label}_Class"
+    col_conf = f"CNN_{label}_Conf"
+
+    if trajectories_df is None or trajectories_df.empty:
+        return trajectories_df
+    if (
+        interp_cnn_df is None
+        or interp_cnn_df.empty
+        or "FrameID" not in trajectories_df.columns
+        or "TrajectoryID" not in trajectories_df.columns
+    ):
+        out = trajectories_df.copy()
+        for c in (col_class, col_conf):
+            if c not in out.columns:
+                out[c] = np.nan
+        return out
+
+    needed = {"frame_id", "trajectory_id", "class_name", "confidence"}
+    if not needed.issubset(interp_cnn_df.columns):
+        out = trajectories_df.copy()
+        for c in (col_class, col_conf):
+            if c not in out.columns:
+                out[c] = np.nan
+        return out
+
+    out = trajectories_df.copy()
+    for c in (col_class, col_conf):
+        if c not in out.columns:
+            out[c] = np.nan
+
+    out["_frame_join"] = (
+        pd.to_numeric(out["FrameID"], errors="coerce").round().astype("Int64")
+    )
+    out["_traj_join"] = (
+        pd.to_numeric(out["TrajectoryID"], errors="coerce").round().astype("Int64")
+    )
+
+    interp = interp_cnn_df.copy()
+    interp["_frame_join"] = (
+        pd.to_numeric(interp["frame_id"], errors="coerce").round().astype("Int64")
+    )
+    interp["_traj_join"] = (
+        pd.to_numeric(interp["trajectory_id"], errors="coerce").round().astype("Int64")
+    )
+
+    interp_lookup = interp[
+        ["_frame_join", "_traj_join", "class_name", "confidence"]
+    ].drop_duplicates(subset=["_frame_join", "_traj_join"], keep="first")
+
+    merged = out.merge(
+        interp_lookup,
+        how="left",
+        on=["_frame_join", "_traj_join"],
+        suffixes=("", "_icnn"),
+        sort=False,
+    )
+
+    if "class_name" in merged.columns:
+        merged[col_class] = merged[col_class].where(
+            merged[col_class].notna(), merged["class_name"]
+        )
+        merged.drop(columns=["class_name"], inplace=True, errors="ignore")
+    if "confidence" in merged.columns:
+        merged[col_conf] = merged[col_conf].where(
+            merged[col_conf].notna(), merged["confidence"]
+        )
+        merged.drop(columns=["confidence"], inplace=True, errors="ignore")
+
+    merged.drop(
+        columns=["_frame_join", "_traj_join"],
+        inplace=True,
+        errors="ignore",
+    )
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Head-tail interpolated merge
+# ---------------------------------------------------------------------------
+
+HEADTAIL_INTERP_COLUMNS = [
+    "InterpHeadingRad",
+    "InterpHeadingConf",
+    "InterpHeadingDirected",
+]
+
+
+def merge_interpolated_headtail_df(
+    trajectories_df: pd.DataFrame,
+    interp_ht_df: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Merge interpolated head-tail direction into final trajectories."""
+    if trajectories_df is None or trajectories_df.empty:
+        return trajectories_df
+    if (
+        interp_ht_df is None
+        or interp_ht_df.empty
+        or "FrameID" not in trajectories_df.columns
+        or "TrajectoryID" not in trajectories_df.columns
+    ):
+        out = trajectories_df.copy()
+        for c in HEADTAIL_INTERP_COLUMNS:
+            if c not in out.columns:
+                out[c] = np.nan
+        return out
+
+    needed = {"frame_id", "trajectory_id", "heading_rad"}
+    if not needed.issubset(interp_ht_df.columns):
+        out = trajectories_df.copy()
+        for c in HEADTAIL_INTERP_COLUMNS:
+            if c not in out.columns:
+                out[c] = np.nan
+        return out
+
+    out = trajectories_df.copy()
+    for c in HEADTAIL_INTERP_COLUMNS:
+        if c not in out.columns:
+            out[c] = np.nan
+
+    out["_frame_join"] = (
+        pd.to_numeric(out["FrameID"], errors="coerce").round().astype("Int64")
+    )
+    out["_traj_join"] = (
+        pd.to_numeric(out["TrajectoryID"], errors="coerce").round().astype("Int64")
+    )
+
+    interp = interp_ht_df.copy()
+    interp["_frame_join"] = (
+        pd.to_numeric(interp["frame_id"], errors="coerce").round().astype("Int64")
+    )
+    interp["_traj_join"] = (
+        pd.to_numeric(interp["trajectory_id"], errors="coerce").round().astype("Int64")
+    )
+
+    ht_cols = ["heading_rad"]
+    if "heading_conf" in interp.columns:
+        ht_cols.append("heading_conf")
+    if "heading_directed" in interp.columns:
+        ht_cols.append("heading_directed")
+
+    interp_lookup = interp[["_frame_join", "_traj_join", *ht_cols]].drop_duplicates(
+        subset=["_frame_join", "_traj_join"], keep="first"
+    )
+
+    merged = out.merge(
+        interp_lookup,
+        how="left",
+        on=["_frame_join", "_traj_join"],
+        suffixes=("", "_iht"),
+        sort=False,
+    )
+
+    if "heading_rad" in merged.columns:
+        merged["InterpHeadingRad"] = merged["InterpHeadingRad"].where(
+            merged["InterpHeadingRad"].notna(), merged["heading_rad"]
+        )
+        merged.drop(columns=["heading_rad"], inplace=True, errors="ignore")
+    if "heading_conf" in merged.columns:
+        merged["InterpHeadingConf"] = merged["InterpHeadingConf"].where(
+            merged["InterpHeadingConf"].notna(), merged["heading_conf"]
+        )
+        merged.drop(columns=["heading_conf"], inplace=True, errors="ignore")
+    if "heading_directed" in merged.columns:
+        merged["InterpHeadingDirected"] = merged["InterpHeadingDirected"].where(
+            merged["InterpHeadingDirected"].notna(), merged["heading_directed"]
+        )
+        merged.drop(columns=["heading_directed"], inplace=True, errors="ignore")
+
+    merged.drop(
+        columns=["_frame_join", "_traj_join"],
+        inplace=True,
+        errors="ignore",
+    )
+    return merged

@@ -14,8 +14,6 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from multi_tracker.utils.image_processing import compute_median_color_from_frame
-
 
 def _resolve_directed_angle(
     theta: float,
@@ -152,22 +150,6 @@ class IndividualDatasetGenerator:
             f"Individual dataset generator initialized: enabled={self.enabled}, "
             f"output_dir={self.output_dir}"
         )
-
-    @staticmethod
-    def compute_median_color_from_frame(frame: np.ndarray) -> Tuple[int, int, int]:
-        """
-        Compute the median color (BGR) from a frame.
-
-        DEPRECATED: Use compute_median_color_from_frame from image_processing utils instead.
-        This method is kept for backward compatibility.
-
-        Args:
-            frame: Input frame (BGR, shape: H x W x 3)
-
-        Returns:
-            Tuple of (B, G, R) median values
-        """
-        return compute_median_color_from_frame(frame)
 
     @staticmethod
     def ellipse_to_obb_corners(
