@@ -513,7 +513,7 @@ def test_apriltag_phase_finalize_returns_path_on_hit(tmp_path):
 
 
 def test_cnn_phase_has_cache_hit_false_when_no_file(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+    from multi_tracker.core.identity.classification.cnn import CNNIdentityConfig
     from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn_0_9.npz"
@@ -528,7 +528,7 @@ def test_cnn_phase_has_cache_hit_false_when_no_file(tmp_path):
 
 
 def test_cnn_phase_has_cache_hit_true_when_file_exists(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+    from multi_tracker.core.identity.classification.cnn import CNNIdentityConfig
     from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn.npz"
@@ -543,7 +543,7 @@ def test_cnn_phase_has_cache_hit_true_when_file_exists(tmp_path):
 
 
 def test_cnn_phase_process_frame_batches_crops(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import (
+    from multi_tracker.core.identity.classification.cnn import (
         ClassPrediction,
         CNNIdentityConfig,
     )
@@ -578,7 +578,7 @@ def test_cnn_phase_process_frame_batches_crops(tmp_path):
 
 
 def test_cnn_phase_finalize_flushes_partial_batch(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import (
+    from multi_tracker.core.identity.classification.cnn import (
         ClassPrediction,
         CNNIdentityConfig,
     )
@@ -612,7 +612,7 @@ def test_cnn_phase_finalize_flushes_partial_batch(tmp_path):
 
 
 def test_cnn_phase_process_frame_empty_crops_does_not_add_to_batch(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+    from multi_tracker.core.identity.classification.cnn import CNNIdentityConfig
     from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn_empty.npz"
@@ -635,7 +635,7 @@ def test_cnn_phase_process_frame_empty_crops_does_not_add_to_batch(tmp_path):
 
 
 def test_cnn_phase_close_is_idempotent(tmp_path):
-    from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
+    from multi_tracker.core.identity.classification.cnn import CNNIdentityConfig
     from multi_tracker.core.tracking.precompute import CNNPrecomputePhase
 
     cache_path = tmp_path / "cnn.npz"

@@ -2233,7 +2233,7 @@ def _relink_pose_labels(df: pd.DataFrame) -> list[str]:
 def _normalize_pose_keypoints_window(
     window_df: pd.DataFrame, pose_labels: list[str], min_valid_conf: float
 ):
-    from multi_tracker.core.identity.pose_quality import (
+    from multi_tracker.core.identity.pose.quality import (
         normalize_pose_keypoints_for_relink,
     )
 

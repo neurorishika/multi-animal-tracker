@@ -16,7 +16,7 @@ from typing import Callable, List, Optional
 import cv2
 import numpy as np
 
-from ...core.identity.apriltag_detector import AprilTagConfig, AprilTagDetector
+from ...core.identity.classification.apriltag import AprilTagConfig, AprilTagDetector
 
 # ---------------------------------------------------------------------------
 # Preprocessing profiles

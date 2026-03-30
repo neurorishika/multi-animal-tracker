@@ -961,7 +961,7 @@ class YOLOOBBDetector:
         and explicit device placement) and then injected via
         ``HeadTailAnalyzer.from_components``.
         """
-        from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+        from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
 
         ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
         margin = float(

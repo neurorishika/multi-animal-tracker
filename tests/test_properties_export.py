@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from multi_tracker.core.identity.properties_cache import IndividualPropertiesCache
-from multi_tracker.core.identity.properties_export import (
-    POSE_EXPORT_COLUMNS,
+from multi_tracker.core.identity.properties.cache import IndividualPropertiesCache
+from multi_tracker.core.identity.properties.export import (
+    POSE_SUMMARY_COLUMNS,
     augment_trajectories_with_pose_cache,
     merge_interpolated_pose_df,
 )
@@ -47,7 +47,7 @@ def test_augment_trajectories_with_pose_cache_merges_by_frame_and_detection(tmp_
     )
     out = augment_trajectories_with_pose_cache(trajectories, str(cache_path))
 
-    for col in POSE_EXPORT_COLUMNS:
+    for col in POSE_SUMMARY_COLUMNS:
         assert col in out.columns
 
     # First detection: keypoints [[1, 2, 0.9], [3, 4, 0.8]]

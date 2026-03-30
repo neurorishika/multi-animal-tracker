@@ -1,8 +1,33 @@
-"""Pose inference backends for YOLO and SLEAP."""
+"""Pose inference subsystem: backends, types, utilities, and quality assessment."""
 
-from multi_tracker.core.identity.pose.yolo_backend import (
+from multi_tracker.core.identity.pose.api import (
+    build_runtime_config,
+    create_pose_backend_from_config,
+)
+from multi_tracker.core.identity.pose.backends.sleap import (
+    SleapServiceBackend,
+    auto_export_sleap_model,
+)
+from multi_tracker.core.identity.pose.backends.yolo import (
     YoloNativeBackend,
-    _auto_export_yolo_model,
+    auto_export_yolo_model,
+)
+from multi_tracker.core.identity.pose.types import (
+    PoseInferenceBackend,
+    PoseResult,
+    PoseRuntimeConfig,
+    RuntimeMetrics,
 )
 
-__all__ = ["YoloNativeBackend", "_auto_export_yolo_model"]
+__all__ = [
+    "PoseResult",
+    "PoseRuntimeConfig",
+    "PoseInferenceBackend",
+    "RuntimeMetrics",
+    "YoloNativeBackend",
+    "SleapServiceBackend",
+    "auto_export_yolo_model",
+    "auto_export_sleap_model",
+    "build_runtime_config",
+    "create_pose_backend_from_config",
+]

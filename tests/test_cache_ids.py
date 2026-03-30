@@ -5,7 +5,7 @@ from __future__ import annotations
 from tests.helpers.module_loader import load_src_module
 
 mod = load_src_module(
-    "multi_tracker/core/identity/properties_cache.py",
+    "multi_tracker/core/identity/properties/cache.py",
     "properties_cache_under_test",
 )
 

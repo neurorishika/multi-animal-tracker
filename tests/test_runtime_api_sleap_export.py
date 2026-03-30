@@ -70,7 +70,7 @@ def _patched_modules(stubs: dict):
 
 def _load_runtime_api_module(stubs: dict):
     module_name = "runtime_api_sleap_export_test"
-    module_path = SRC_ROOT / "multi_tracker" / "core" / "identity" / "runtime_api.py"
+    module_path = SRC_ROOT / "multi_tracker" / "core" / "identity" / "pose" / "api.py"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load module spec: {module_path}")

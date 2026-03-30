@@ -259,7 +259,7 @@ def load_pose_context_from_params(
     if not pose_enabled or not cache_path or not os.path.exists(cache_path):
         return None, [], [], [], False
 
-    from multi_tracker.core.identity.properties_cache import IndividualPropertiesCache
+    from multi_tracker.core.identity.properties.cache import IndividualPropertiesCache
 
     pose_props_cache = IndividualPropertiesCache(cache_path, mode="r")
     if not pose_props_cache.is_compatible():

@@ -10,7 +10,7 @@ from .assigners.hungarian import TrackAssigner
 from .background.model import BackgroundModel
 from .detectors.engine import ObjectDetector
 from .filters.kalman import KalmanFilterManager
-from .identity.analysis import IndividualDatasetGenerator
+from .identity.dataset.generator import IndividualDatasetGenerator
 from .post.processing import (
     interpolate_trajectories,
     process_trajectories,

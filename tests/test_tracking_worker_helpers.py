@@ -124,14 +124,63 @@ def _load_worker_module():
     assigner = types.ModuleType("multi_tracker.core.assigners.hungarian")
     assigner.TrackAssigner = object
 
-    identity = types.ModuleType("multi_tracker.core.identity.analysis")
-    identity.IndividualDatasetGenerator = object
+    identity_dataset = types.ModuleType("multi_tracker.core.identity.dataset")
+    identity_dataset_generator = types.ModuleType(
+        "multi_tracker.core.identity.dataset.generator"
+    )
+    identity_dataset_generator.IndividualDatasetGenerator = object
 
     tag_features = types.ModuleType("multi_tracker.core.tracking.tag_features")
     tag_features.NO_TAG = -1
     tag_features.TrackTagHistory = object
     tag_features.build_detection_tag_id_list = lambda *_args, **_kwargs: []
     tag_features.build_tag_detection_map = lambda *_args, **_kwargs: {}
+
+    # Classification sub-package stubs
+    classification = types.ModuleType("multi_tracker.core.identity.classification")
+    classification_apriltag = types.ModuleType(
+        "multi_tracker.core.identity.classification.apriltag"
+    )
+    classification_apriltag.AprilTagDetector = object
+    classification_apriltag.AprilTagConfig = object
+    classification_cnn = types.ModuleType(
+        "multi_tracker.core.identity.classification.cnn"
+    )
+    classification_cnn.ClassPrediction = object
+    classification_cnn.CNNIdentityBackend = object
+    classification_cnn.CNNIdentityCache = object
+    classification_cnn.CNNIdentityConfig = object
+    classification_cnn.apply_cnn_identity_cost = lambda *_args, **_kwargs: 0.0
+    classification_headtail = types.ModuleType(
+        "multi_tracker.core.identity.classification.headtail"
+    )
+    classification_headtail.HeadTailAnalyzer = object
+
+    # Pose sub-package stubs
+    pose_pkg = types.ModuleType("multi_tracker.core.identity.pose")
+    pose_api = types.ModuleType("multi_tracker.core.identity.pose.api")
+    pose_api.build_runtime_config = lambda *_args, **_kwargs: None
+    pose_api.create_pose_backend_from_config = lambda *_args, **_kwargs: None
+
+    # Properties sub-package stubs
+    properties_pkg = types.ModuleType("multi_tracker.core.identity.properties")
+    properties_cache = types.ModuleType("multi_tracker.core.identity.properties.cache")
+    properties_cache.IndividualPropertiesCache = object
+    properties_cache.compute_detection_hash = lambda *_args, **_kwargs: ""
+    properties_cache.compute_extractor_hash = lambda *_args, **_kwargs: ""
+    properties_cache.compute_filter_settings_hash = lambda *_args, **_kwargs: ""
+    properties_cache.compute_individual_properties_id = lambda *_args, **_kwargs: ""
+
+    # Tracking sub-module stubs for precompute
+    pose_pipeline = types.ModuleType("multi_tracker.core.tracking.pose_pipeline")
+    pose_pipeline.extract_one_crop = lambda *_args, **_kwargs: None
+    precompute = types.ModuleType("multi_tracker.core.tracking.precompute")
+    precompute.AprilTagPrecomputePhase = object
+    precompute.CNNPrecomputePhase = object
+    precompute.CropConfig = object
+    precompute.UnifiedPrecompute = object
+    profiler = types.ModuleType("multi_tracker.core.tracking.profiler")
+    profiler.TrackingProfiler = object
 
     stubs = {
         "cv2": make_cv2_stub(),
@@ -159,7 +208,19 @@ def _load_worker_module():
         "multi_tracker.core.background.model": background_model,
         "multi_tracker.core.detectors.engine": detectors_engine,
         "multi_tracker.core.assigners.hungarian": assigner,
-        "multi_tracker.core.identity.analysis": identity,
+        "multi_tracker.core.identity.dataset": identity_dataset,
+        "multi_tracker.core.identity.dataset.generator": identity_dataset_generator,
+        "multi_tracker.core.identity.classification": classification,
+        "multi_tracker.core.identity.classification.apriltag": classification_apriltag,
+        "multi_tracker.core.identity.classification.cnn": classification_cnn,
+        "multi_tracker.core.identity.classification.headtail": classification_headtail,
+        "multi_tracker.core.identity.pose": pose_pkg,
+        "multi_tracker.core.identity.pose.api": pose_api,
+        "multi_tracker.core.identity.properties": properties_pkg,
+        "multi_tracker.core.identity.properties.cache": properties_cache,
+        "multi_tracker.core.tracking.pose_pipeline": pose_pipeline,
+        "multi_tracker.core.tracking.precompute": precompute,
+        "multi_tracker.core.tracking.profiler": profiler,
         "multi_tracker.core.tracking.tag_features": tag_features,
     }
 

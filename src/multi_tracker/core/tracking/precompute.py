@@ -17,8 +17,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
-from multi_tracker.core.identity.apriltag_detector import AprilTagDetector
-from multi_tracker.core.identity.cnn_identity import (
+from multi_tracker.core.identity.classification.apriltag import AprilTagDetector
+from multi_tracker.core.identity.classification.cnn import (
     ClassPrediction,
     CNNIdentityBackend,
     CNNIdentityCache,

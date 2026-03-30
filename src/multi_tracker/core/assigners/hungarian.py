@@ -11,7 +11,7 @@ import numpy as np
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
 
-from multi_tracker.core.identity.cnn_identity import _apply_cnn_identity_cost
+from multi_tracker.core.identity.classification.cnn import apply_cnn_identity_cost
 
 try:
     from numba import njit
@@ -439,7 +439,7 @@ class TrackAssigner:
                     _ti = _phase["track_identities"]
                     _det_cls = _dc[det_idx] if det_idx < len(_dc) else None
                     _trk_cls = _ti[track_idx] if track_idx < len(_ti) else None
-                    motion_core_cost = _apply_cnn_identity_cost(
+                    motion_core_cost = apply_cnn_identity_cost(
                         motion_core_cost,
                         _det_cls,
                         _trk_cls,

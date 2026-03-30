@@ -92,7 +92,7 @@ class PosePredictWorker(QObject):
 
             # Preferred path: shared runtime API.
             try:
-                from multi_tracker.core.identity.runtime_api import (
+                from multi_tracker.core.identity.pose.api import (
                     build_runtime_config,
                     create_pose_backend_from_config,
                 )
@@ -272,7 +272,7 @@ class BulkPosePredictWorker(QObject):
 
             # Preferred path: shared runtime API with chunked image loading.
             try:
-                from multi_tracker.core.identity.runtime_api import (
+                from multi_tracker.core.identity.pose.api import (
                     build_runtime_config,
                     create_pose_backend_from_config,
                 )

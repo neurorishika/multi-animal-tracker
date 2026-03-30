@@ -19,7 +19,7 @@ from multi_tracker.core.assigners.hungarian import TrackAssigner
 from multi_tracker.core.background.model import BackgroundModel
 from multi_tracker.core.detectors.engine import create_detector
 from multi_tracker.core.filters.kalman import KalmanFilterManager
-from multi_tracker.core.identity.analysis import IndividualDatasetGenerator
+from multi_tracker.core.identity.dataset.generator import IndividualDatasetGenerator
 from multi_tracker.core.tracking.pose_features import (
     build_detection_direction_overrides as _pf_build_direction_overrides,
 )
@@ -475,16 +475,16 @@ class TrackingWorker(QThread):
         # --- Pose ---
         pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
         if pose_enabled:
-            from multi_tracker.core.identity.properties_cache import (
+            from multi_tracker.core.identity.pose.api import (
+                build_runtime_config,
+                create_pose_backend_from_config,
+            )
+            from multi_tracker.core.identity.properties.cache import (
                 IndividualPropertiesCache,
                 compute_detection_hash,
                 compute_extractor_hash,
                 compute_filter_settings_hash,
                 compute_individual_properties_id,
-            )
-            from multi_tracker.core.identity.runtime_api import (
-                build_runtime_config,
-                create_pose_backend_from_config,
             )
 
             detection_hash = compute_detection_hash(
@@ -596,8 +596,10 @@ class TrackingWorker(QThread):
 
         # --- AprilTag ---
         if bool(params.get("USE_APRILTAGS", False)):
-            from multi_tracker.core.identity.apriltag_detector import AprilTagConfig
-            from multi_tracker.core.identity.properties_cache import (
+            from multi_tracker.core.identity.classification.apriltag import (
+                AprilTagConfig,
+            )
+            from multi_tracker.core.identity.properties.cache import (
                 compute_apriltag_cache_id,
             )
 
@@ -634,8 +636,8 @@ class TrackingWorker(QThread):
                     model_path,
                 )
                 continue
-            from multi_tracker.core.identity.cnn_identity import CNNIdentityConfig
-            from multi_tracker.core.identity.properties_cache import (
+            from multi_tracker.core.identity.classification.cnn import CNNIdentityConfig
+            from multi_tracker.core.identity.properties.cache import (
                 compute_classify_cache_id,
             )
 
@@ -1546,7 +1548,7 @@ class TrackingWorker(QThread):
         for cnn_cfg_dict in p.get("CNN_CLASSIFIERS", []):
             label = str(cnn_cfg_dict.get("label", "cnn_identity"))
             model_path = str(cnn_cfg_dict.get("model_path", ""))
-            from multi_tracker.core.identity.properties_cache import (
+            from multi_tracker.core.identity.properties.cache import (
                 compute_classify_cache_id,
             )
 
@@ -1559,7 +1561,7 @@ class TrackingWorker(QThread):
                 label, classify_id, start_frame, end_frame
             )
             if _path and os.path.exists(_path):
-                from multi_tracker.core.identity.cnn_identity import (
+                from multi_tracker.core.identity.classification.cnn import (
                     CNNIdentityCache,
                     TrackCNNHistory,
                 )
@@ -1602,7 +1604,7 @@ class TrackingWorker(QThread):
             and pose_cache_candidate
             and os.path.exists(pose_cache_candidate)
         ):
-            from multi_tracker.core.identity.properties_cache import (
+            from multi_tracker.core.identity.properties.cache import (
                 IndividualPropertiesCache,
             )
 

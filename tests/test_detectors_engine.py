@@ -461,7 +461,7 @@ def test_sequential_stage2_obb_runs_in_batched_crop_call() -> None:
 
 def test_headtail_hint_uses_batched_classify_call() -> None:
     """Verify _compute_headtail_hints delegates to analyzer.analyze_crops."""
-    from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
 
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
@@ -494,7 +494,7 @@ def test_headtail_hint_uses_batched_classify_call() -> None:
 
 
 def test_validate_headtail_class_names_accepts_five_class_schema() -> None:
-    from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
 
     normalized = HeadTailAnalyzer._validate_class_names(
         ["head_up", "head_down", "head_left", "head_right", "head_unknown"],
@@ -506,7 +506,7 @@ def test_validate_headtail_class_names_accepts_five_class_schema() -> None:
 
 
 def test_validate_headtail_class_names_rejects_partial_schema() -> None:
-    from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
 
     with pytest.raises(ValueError, match="Expected exactly"):
         HeadTailAnalyzer._validate_class_names(
@@ -516,7 +516,7 @@ def test_validate_headtail_class_names_rejects_partial_schema() -> None:
 
 def test_load_headtail_yolo_model_requires_supported_schema() -> None:
     """Loading a YOLO head-tail model populates _headtail_analyzer."""
-    from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
 
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
@@ -565,7 +565,7 @@ def test_load_headtail_yolo_model_requires_supported_schema() -> None:
 
 def test_load_headtail_model_rejects_invalid_named_schema() -> None:
     """Strict validation rejects unsupported 3-class schema."""
-    from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
 
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
@@ -597,7 +597,7 @@ def test_load_headtail_model_rejects_invalid_named_schema() -> None:
 
 def test_classkit_headtail_hints_abstain_on_up_down_unknown() -> None:
     """classkit_tiny backend abstains on up/down/unknown directions."""
-    from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
 
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
@@ -693,7 +693,7 @@ def test_filter_overlapping_uses_precise_iou_for_all_overlaps() -> None:
 
 def test_loads_notebook_tiny_headtail_state_dict(tmp_path: Path) -> None:
     """HeadTailAnalyzer loads a notebook-style raw state_dict checkpoint."""
-    from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
 
     # Build and save a notebook-style raw state_dict checkpoint
     tiny = HeadTailAnalyzer._build_tiny_classifier(input_size=(128, 64))
@@ -715,7 +715,7 @@ def test_tiny_headtail_inference_converts_bgr_to_rgb() -> None:
     """HeadTailAnalyzer._predict converts BGR crops to RGB for tiny backend."""
     import torch.nn as nn
 
-    from multi_tracker.core.identity.headtail_analyzer import HeadTailAnalyzer
+    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
 
     class _Probe(nn.Module):
         # Logit uses channel0 - channel2. If RGB conversion is correct, BGR-red

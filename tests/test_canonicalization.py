@@ -7,7 +7,7 @@ import numpy as np
 from PIL import Image
 
 from multi_tracker.core.canonicalization import MatMetadataCanonicalizer
-from multi_tracker.core.identity.analysis import IndividualDatasetGenerator
+from multi_tracker.core.identity.dataset.generator import IndividualDatasetGenerator
 
 
 def _write_dataset(root: Path, annotations: list[dict]) -> Path:

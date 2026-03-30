@@ -66,18 +66,18 @@ from PySide6.QtWidgets import (
 
 from multi_tracker.core.tracking.optimizer import DetectionCacheBuilderWorker
 
-from ..core.identity.analysis import IndividualDatasetGenerator
-from ..core.identity.oriented_video import (
+from ..core.identity.dataset.generator import IndividualDatasetGenerator
+from ..core.identity.dataset.oriented_video import (
     OrientedTrackVideoExporter,
     resolve_individual_dataset_dir,
 )
-from ..core.identity.pose_quality import (
+from ..core.identity.pose.quality import (
     apply_quality_to_dataframe,
     apply_temporal_pose_postprocessing,
     calibrate_body_length_prior,
     calibrate_edge_length_priors,
 )
-from ..core.identity.properties_export import (
+from ..core.identity.properties.export import (
     POSE_SUMMARY_COLUMNS,
     augment_trajectories_with_pose_cache,
     build_pose_keypoint_labels,
@@ -679,7 +679,7 @@ class InterpolatedCropsWorker(QThread):
             pose_kpt_source_names = []
             pose_kpt_labels = []
             if pose_enabled:
-                from ..core.identity.runtime_api import (
+                from ..core.identity.pose.api import (
                     build_runtime_config,
                     create_pose_backend_from_config,
                 )
@@ -711,7 +711,7 @@ class InterpolatedCropsWorker(QThread):
             )
             if apriltag_enabled:
                 try:
-                    from multi_tracker.core.identity.apriltag_detector import (
+                    from multi_tracker.core.identity.classification.apriltag import (
                         AprilTagConfig,
                         AprilTagDetector,
                     )
@@ -729,7 +729,7 @@ class InterpolatedCropsWorker(QThread):
             cnn_classifiers_cfg = self.params.get("CNN_CLASSIFIERS", [])
             if cnn_classifiers_cfg:
                 try:
-                    from multi_tracker.core.identity.cnn_identity import (
+                    from multi_tracker.core.identity.classification.cnn import (
                         CNNIdentityBackend,
                         CNNIdentityConfig,
                     )
@@ -769,7 +769,7 @@ class InterpolatedCropsWorker(QThread):
             headtail_model_path = str(self.params.get("YOLO_HEADTAIL_MODEL_PATH", ""))
             if headtail_model_path and os.path.exists(headtail_model_path):
                 try:
-                    from multi_tracker.core.identity.headtail_analyzer import (
+                    from multi_tracker.core.identity.classification.headtail import (
                         HeadTailAnalyzer,
                     )
 
@@ -993,10 +993,12 @@ class InterpolatedCropsWorker(QThread):
                         continue
                     # Pre-compute all OBB corners for this frame so that
                     # foreign-OBB masking can exclude overlapping animals.
+                    from multi_tracker.core.identity.geometry import (
+                        ellipse_to_obb_corners as _e2obb,
+                    )
+
                     _frame_all_corners = [
-                        gen.ellipse_to_obb_corners(
-                            t["cx"], t["cy"], t["w"], t["h"], t["theta"]
-                        )
+                        _e2obb(t["cx"], t["cy"], t["w"], t["h"], t["theta"])
                         for t in frame_tasks[f]
                     ]
                     # Pre-compute canonical affines for each interpolated
@@ -14911,7 +14913,7 @@ class MainWindow(QMainWindow):
             ).strip()
             _interp_tag_df = getattr(self, "current_interpolated_tag_df", None)
             try:
-                from multi_tracker.core.identity.properties_export import (
+                from multi_tracker.core.identity.properties.export import (
                     merge_interpolated_apriltag_df,
                 )
 
@@ -14934,7 +14936,7 @@ class MainWindow(QMainWindow):
             )
             _interp_cnn_dfs = getattr(self, "current_interpolated_cnn_dfs", {}) or {}
             try:
-                from multi_tracker.core.identity.properties_export import (
+                from multi_tracker.core.identity.properties.export import (
                     merge_interpolated_cnn_df,
                 )
 
@@ -14963,7 +14965,7 @@ class MainWindow(QMainWindow):
             ).strip()
             _interp_ht_df = getattr(self, "current_interpolated_headtail_df", None)
             try:
-                from multi_tracker.core.identity.properties_export import (
+                from multi_tracker.core.identity.properties.export import (
                     merge_interpolated_headtail_df,
                 )
 
@@ -15010,7 +15012,7 @@ class MainWindow(QMainWindow):
 
             kpt_names = []
             try:
-                from multi_tracker.core.identity.properties_cache import (
+                from multi_tracker.core.identity.properties.cache import (
                     IndividualPropertiesCache,
                 )
 

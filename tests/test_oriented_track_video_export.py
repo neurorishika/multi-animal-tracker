@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from multi_tracker.core.identity.oriented_video import (
+from multi_tracker.core.identity.dataset.oriented_video import (
     OrientedTrackVideoExporter,
     resolve_individual_dataset_dir,
 )

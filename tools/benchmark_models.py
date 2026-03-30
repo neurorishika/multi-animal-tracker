@@ -458,11 +458,11 @@ def bench_pose(
     )
 
     try:
-        from multi_tracker.core.identity.pose.yolo_backend import (
+        from multi_tracker.core.identity.pose.backends.yolo import (
             YoloNativeBackend,
-            _auto_export_yolo_model,
+            auto_export_yolo_model,
         )
-        from multi_tracker.core.identity.runtime_types import PoseRuntimeConfig
+        from multi_tracker.core.identity.pose.types import PoseRuntimeConfig
 
         flavor, device = _runtime_to_pose_flavor(runtime)
 
@@ -476,7 +476,7 @@ def bench_pose(
                 yolo_batch=batch_size,
             )
             try:
-                actual_model = _auto_export_yolo_model(
+                actual_model = auto_export_yolo_model(
                     config, flavor, runtime_device=device
                 )
                 logger.info("Exported pose model for %s: %s", flavor, actual_model)
@@ -540,10 +540,10 @@ def bench_pose_compile(
         return result
 
     try:
-        from multi_tracker.core.identity.pose.yolo_backend import (
-            _auto_export_yolo_model,
+        from multi_tracker.core.identity.pose.backends.yolo import (
+            auto_export_yolo_model,
         )
-        from multi_tracker.core.identity.runtime_types import PoseRuntimeConfig
+        from multi_tracker.core.identity.pose.types import PoseRuntimeConfig
 
         flavor, device = _runtime_to_pose_flavor(runtime)
         artifact_path = _resolve_pose_artifact_path(model_path, runtime)
@@ -561,7 +561,7 @@ def bench_pose_compile(
             yolo_batch=batch_size,
         )
         t0 = time.perf_counter()
-        exported_path = _auto_export_yolo_model(config, flavor, runtime_device=device)
+        exported_path = auto_export_yolo_model(config, flavor, runtime_device=device)
         result.compile_ms = (time.perf_counter() - t0) * 1000.0
         result.artifact_path = str(exported_path)
     except Exception as exc:
@@ -598,7 +598,7 @@ def bench_classify(
     )
 
     try:
-        from multi_tracker.core.identity.cnn_identity import (
+        from multi_tracker.core.identity.classification.cnn import (
             CNNIdentityBackend,
             CNNIdentityConfig,
         )
