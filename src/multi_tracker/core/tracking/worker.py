@@ -17,27 +17,37 @@ from PySide6.QtCore import QMutex, QThread, Signal, Slot
 
 from multi_tracker.core.assigners.hungarian import TrackAssigner
 from multi_tracker.core.background.model import BackgroundModel
-from multi_tracker.core.detectors.engine import create_detector
+from multi_tracker.core.detectors import create_detector
 from multi_tracker.core.filters.kalman import KalmanFilterManager
 from multi_tracker.core.identity.dataset.generator import IndividualDatasetGenerator
-from multi_tracker.core.tracking.pose_features import (
+from multi_tracker.core.identity.geometry import (
     build_detection_direction_overrides as _pf_build_direction_overrides,
 )
-from multi_tracker.core.tracking.pose_features import (
-    build_pose_detection_keypoint_map as _pf_build_keypoint_map,
-)
-from multi_tracker.core.tracking.pose_features import (
-    compute_pose_geometry_from_keypoints as _pf_compute_geometry,
-)
-from multi_tracker.core.tracking.pose_features import (
-    normalize_pose_keypoints as _pf_normalize_keypoints,
-)
-from multi_tracker.core.tracking.pose_features import (
+from multi_tracker.core.identity.geometry import (
     resolve_detection_tracking_theta as _pf_resolve_detection_tracking_theta,
 )
-from multi_tracker.core.tracking.pose_features import (
+from multi_tracker.core.identity.geometry import (
+    resolve_tracking_theta as _pf_resolve_tracking_theta,
+)
+from multi_tracker.core.identity.pose.features import (
+    build_pose_detection_keypoint_map as _pf_build_keypoint_map,
+)
+from multi_tracker.core.identity.pose.features import (
+    compute_pose_geometry_from_keypoints as _pf_compute_geometry,
+)
+from multi_tracker.core.identity.pose.features import (
+    normalize_pose_keypoints as _pf_normalize_keypoints,
+)
+from multi_tracker.core.identity.pose.features import (
     resolve_pose_group_indices as _pf_resolve_indices,
 )
+from multi_tracker.core.tracking.cnn_features import (
+    cnn_build_association_entries as _cnn_build_association_entries,
+)
+from multi_tracker.core.tracking.cnn_features import (
+    cnn_update_track_history as _cnn_update_track_history,
+)
+from multi_tracker.core.tracking.density import get_density_region_flags
 from multi_tracker.core.tracking.precompute import (
     AprilTagPrecomputePhase,
     CNNPrecomputePhase,
@@ -53,9 +63,8 @@ from multi_tracker.core.tracking.tag_features import (
 )
 from multi_tracker.data.detection_cache import DetectionCache
 from multi_tracker.data.tag_observation_cache import TagObservationCache
-from multi_tracker.utils.batch_optimizer import BatchOptimizer
 from multi_tracker.utils.frame_prefetcher import FramePrefetcher
-from multi_tracker.utils.geometry import wrap_angle_degs
+from multi_tracker.utils.geometry import estimate_detection_crop_quality
 from multi_tracker.utils.image_processing import (
     apply_image_adjustments,
     stabilize_lighting,
@@ -63,81 +72,6 @@ from multi_tracker.utils.image_processing import (
 from multi_tracker.utils.video_artifacts import build_individual_properties_cache_path
 
 logger = logging.getLogger(__name__)
-
-
-def get_density_region_flags(
-    meas,
-    regions,
-    frame_idx: int,
-) -> np.ndarray:
-    """Return a boolean mask indicating which detections fall inside a density region.
-
-    Parameters
-    ----------
-    meas:
-        List/array of detection measurements.  Each element must be indexable
-        with ``[0]`` (x) and ``[1]`` (y).
-    regions:
-        List of :class:`DensityRegion` to test against.
-    frame_idx:
-        Current frame index.
-
-    Returns
-    -------
-    np.ndarray
-        Shape ``(M,)`` bool array — ``True`` for detections inside a flagged
-        region.
-    """
-    M = len(meas)
-    flags = np.zeros(M, dtype=bool)
-    if not regions:
-        return flags
-
-    for j in range(M):
-        cx, cy = float(meas[j][0]), float(meas[j][1])
-        for region in regions:
-            if region.contains(frame_idx, cx, cy):
-                flags[j] = True
-                break
-    return flags
-
-
-def _cnn_build_association_entries(
-    cnn_identity_cache, cnn_track_history, frame_idx, n_det, N
-):
-    """Return (det_classes, track_identities, frame_preds) for CNN identity assigner fields.
-
-    Returns three values ready for use by the caller.  Either cache argument
-    may be None; in that case (None, None, None) is returned and the caller
-    should skip the update.  The returned *frame_preds* list can be passed
-    directly to _cnn_update_track_history to avoid a second cache.load() call.
-    """
-    if cnn_identity_cache is None or cnn_track_history is None:
-        return None, None, None
-    frame_preds = cnn_identity_cache.load(frame_idx)
-    det_classes = [None] * n_det
-    for pred in frame_preds:
-        if pred.det_index < n_det:
-            det_classes[pred.det_index] = pred.class_name
-    track_identities = cnn_track_history.build_track_identity_list(N)
-    return det_classes, track_identities, frame_preds
-
-
-def _cnn_update_track_history(cnn_track_history, frame_preds, frame_idx, N, rows, cols):
-    """Record CNN predictions for the matched (track, detection) pairs.
-
-    *frame_preds* should be the list already loaded by
-    _cnn_build_association_entries so that the cache is not read twice per
-    frame.
-    """
-    if cnn_track_history is None or frame_preds is None:
-        return
-    cnn_track_history.resize(N)
-    pred_by_det = {pred.det_index: pred for pred in frame_preds}
-    for r, c in zip(rows, cols):
-        pred = pred_by_det.get(c)
-        if pred is not None and pred.class_name is not None:
-            cnn_track_history.record(r, frame_idx, pred.class_name)
 
 
 class TrackingWorker(QThread):
@@ -299,92 +233,17 @@ class TrackingWorker(QThread):
             detection_cache_path=self.detection_cache_path,
         )
 
-    def _extract_expanded_obb_crop(
-        self, frame: np.ndarray, corners: np.ndarray, padding_fraction: float
-    ):
-        """Extract axis-aligned crop around expanded OBB polygon.
+    @staticmethod
+    def _should_precompute_individual_data(params: dict, detection_method: str) -> bool:
+        """Return True when individual-data precompute should run."""
+        if detection_method != "yolo_obb":
+            return False
+        return bool(params.get("ENABLE_POSE_EXTRACTOR", False))
 
-        Returns:
-            tuple[np.ndarray | None, tuple[int, int] | None]:
-                (crop, (x_min, y_min)) where offsets map crop-local -> frame-global.
-        """
-        if frame is None or corners is None:
-            return None, None
-        if corners.shape[0] < 4:
-            return None, None
-
-        frame_h, frame_w = frame.shape[:2]
-        centroid = corners.mean(axis=0)
-        expanded = corners.copy()
-        for i in range(4):
-            direction = corners[i] - centroid
-            expanded[i] = centroid + direction * (1.0 + padding_fraction)
-
-        expanded[:, 0] = np.clip(expanded[:, 0], 0, frame_w - 1)
-        expanded[:, 1] = np.clip(expanded[:, 1], 0, frame_h - 1)
-
-        x_min = max(0, int(np.floor(expanded[:, 0].min())))
-        x_max = min(frame_w, int(np.ceil(expanded[:, 0].max())) + 1)
-        y_min = max(0, int(np.floor(expanded[:, 1].min())))
-        y_max = min(frame_h, int(np.ceil(expanded[:, 1].max())) + 1)
-        if x_max <= x_min or y_max <= y_min:
-            return None, None
-
-        return frame[y_min:y_max, x_min:x_max].copy(), (x_min, y_min)
+    _estimate_detection_crop_quality = staticmethod(estimate_detection_crop_quality)
 
     @staticmethod
-    def _normalize_theta(theta):
-        """Normalize radians to [0, 2*pi)."""
-        try:
-            value = float(theta)
-        except Exception:
-            value = 0.0
-        return value % (2 * math.pi)
-
-    @staticmethod
-    def _circular_abs_diff_rad(theta_a, theta_b):
-        """Return absolute circular difference in radians in [0, pi]."""
-        a = float(theta_a)
-        b = float(theta_b)
-        d = (a - b + math.pi) % (2 * math.pi) - math.pi
-        return abs(d)
-
-    def _collapse_obb_axis_theta(self, theta_axis, reference_theta):
-        """
-        Resolve 180-degree OBB ambiguity by picking theta or theta+pi nearest reference.
-        """
-        theta0 = self._normalize_theta(theta_axis)
-        theta1 = self._normalize_theta(theta0 + math.pi)
-        if reference_theta is None:
-            return theta0
-        try:
-            ref = float(reference_theta)
-            if not np.isfinite(ref):
-                return theta0
-            ref = self._normalize_theta(ref)
-        except Exception:
-            return theta0
-        d0 = self._circular_abs_diff_rad(theta0, ref)
-        d1 = self._circular_abs_diff_rad(theta1, ref)
-        return theta0 if d0 <= d1 else theta1
-
-    @staticmethod
-    def _estimate_detection_crop_quality(shape, reference_body_size):
-        """Estimate crop quality from detection geometry."""
-        try:
-            area = float(shape[0])
-            aspect = float(shape[1])
-        except Exception:
-            return 0.0
-        if not np.isfinite(area) or area <= 0:
-            return 0.0
-        aspect = max(1e-3, float(abs(aspect)))
-        minor = math.sqrt(max(1e-6, (4.0 * area) / (math.pi * max(aspect, 1e-3))))
-        ref = max(1.0, float(reference_body_size) * 0.75)
-        return float(np.clip(minor / ref, 0.0, 1.0))
-
     def _resolve_tracking_theta(
-        self,
         track_idx,
         measured_theta,
         pose_directed,
@@ -392,22 +251,9 @@ class TrackingWorker(QThread):
         fallback_theta=None,
     ):
         """Resolve directed vs axis-aligned orientation consistently for one track."""
-        if pose_directed:
-            return self._normalize_theta(measured_theta)
-
-        reference_theta = None
-        if orientation_last is not None and 0 <= int(track_idx) < len(orientation_last):
-            reference_theta = orientation_last[int(track_idx)]
-
-        if reference_theta is None and fallback_theta is not None:
-            try:
-                candidate = float(fallback_theta)
-            except Exception:
-                candidate = None
-            if candidate is not None and np.isfinite(candidate):
-                reference_theta = candidate
-
-        return self._collapse_obb_axis_theta(measured_theta, reference_theta)
+        return _pf_resolve_tracking_theta(
+            track_idx, measured_theta, pose_directed, orientation_last, fallback_theta
+        )
 
     def _build_cnn_identity_cache_path(
         self, label: str, classify_id: str, start_frame: int, end_frame: int
@@ -676,234 +522,23 @@ class TrackingWorker(QThread):
         end_frame,
         profiler=None,
     ):
-        """
-        Phase 1: Run batched YOLO detection on specified frame range and cache results.
-
-        Args:
-            cap: OpenCV VideoCapture object
-            detection_cache: DetectionCache instance for writing
-            detector: YOLOOBBDetector instance
-            params: Configuration parameters
-            start_frame: Starting frame index (0-based)
-            end_frame: Ending frame index (0-based)
-
-        Returns:
-            int: Total frames processed
-        """
-        logger.info("=" * 80)
-        logger.info("PHASE 1: Batched YOLO Detection")
-        logger.info("=" * 80)
-
-        # Get batch size using advanced config
-        # Include TensorRT settings from top-level params
-        advanced_config = params.get("ADVANCED_CONFIG", {}).copy()
-        advanced_config["enable_tensorrt"] = params.get("ENABLE_TENSORRT", False)
-        advanced_config["tensorrt_max_batch_size"] = params.get(
-            "TENSORRT_MAX_BATCH_SIZE", 16
-        )
-        batch_optimizer = BatchOptimizer(advanced_config)
-
-        # Get video properties
-        frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        total_frames = end_frame - start_frame + 1  # Process only the specified range
-
-        logger.info(
-            f"Processing frame range: {start_frame} to {end_frame} ({total_frames} frames)"
+        """Phase 1: Run batched YOLO detection and cache results."""
+        from multi_tracker.core.tracking.detection_phase import (
+            run_batched_detection_phase,
         )
 
-        # Seek to start frame
-        if start_frame > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-        # Account for resize factor in batch size estimation
-        resize_factor = params.get("RESIZE_FACTOR", 1.0)
-        effective_width = int(frame_width * resize_factor)
-        effective_height = int(frame_height * resize_factor)
-
-        # Estimate optimal batch size using effective (resized) dimensions
-        model_name = params.get("YOLO_MODEL_PATH", "yolo26s-obb.pt")
-        batch_size = batch_optimizer.estimate_batch_size(
-            effective_width, effective_height, model_name
+        return run_batched_detection_phase(
+            cap,
+            detection_cache,
+            detector,
+            params,
+            start_frame,
+            end_frame,
+            is_stop_requested=lambda: self._stop_requested,
+            on_progress=lambda pct, msg: self.progress_signal.emit(pct, msg),
+            on_stats=lambda stats: self.stats_signal.emit(stats),
+            profiler=profiler,
         )
-
-        logger.info(f"Video: {frame_width}x{frame_height}, {total_frames} frames")
-        if resize_factor < 1.0:
-            logger.info(
-                f"Resize factor: {resize_factor} → Effective: {effective_width}x{effective_height}"
-            )
-        logger.info(f"Batch size: {batch_size}")
-
-        # Initialize timing stats for detection phase
-        detection_start_time = time.time()
-        batch_times = deque(maxlen=30)  # Track last 30 batch times for FPS calculation
-
-        # Process video in batches
-        frame_idx = 0
-        batch_count = 0
-        total_batches = (total_frames + batch_size - 1) // batch_size
-
-        # Note: resize_factor already retrieved above
-
-        while not self._stop_requested:
-            batch_start_time = time.time()
-
-            # Read a batch of frames
-            batch_frames = []
-            batch_start_idx = frame_idx
-
-            if profiler:
-                profiler.tick("batched_frame_read")
-            for _ in range(batch_size):
-                if self._stop_requested:
-                    break
-                ret, frame = cap.read()
-                if not ret:
-                    break
-
-                # Check if we've exceeded end_frame
-                current_frame_index = start_frame + frame_idx
-                if current_frame_index > end_frame:
-                    break
-
-                # Apply resize if needed (same as single-frame mode)
-                if resize_factor < 1.0:
-                    frame = cv2.resize(
-                        frame,
-                        (0, 0),
-                        fx=resize_factor,
-                        fy=resize_factor,
-                        interpolation=cv2.INTER_AREA,
-                    )
-
-                batch_frames.append(frame)
-                frame_idx += 1
-            if profiler:
-                profiler.tock("batched_frame_read")
-
-            if not batch_frames:
-                break  # No more frames
-
-            if self._stop_requested:
-                break
-
-            # Run batched detection
-            batch_count += 1
-            logger.info(
-                f"Processing batch {batch_count}/{total_batches} ({len(batch_frames)} frames)"
-            )
-
-            # Progress callback for within-batch updates
-            def progress_cb(
-                current,
-                total,
-                msg,
-                _batch_start=batch_start_idx,
-                _batch_num=batch_count,
-                _total_batches=total_batches,
-            ):
-                if self._stop_requested:
-                    return
-                if total <= 0:
-                    return
-                # Keep UI responsive without flooding signals.
-                if current != total and current % 10 != 0:
-                    return
-                batch_fraction = float(current) / float(total)
-                overall_processed = _batch_start + current
-                overall_pct = (
-                    int((overall_processed * 100) / total_frames)
-                    if total_frames > 0
-                    else 0
-                )
-                self.progress_signal.emit(
-                    overall_pct,
-                    "Detecting objects: "
-                    f"batch {_batch_num}/{_total_batches}, "
-                    f"within-batch {int(batch_fraction * 100)}% "
-                    f"({current}/{total})",
-                )
-
-            batch_results = detector.detect_objects_batched(
-                batch_frames,
-                batch_start_idx,
-                progress_cb,
-                return_raw=True,
-                profiler=profiler,
-            )
-
-            # Cache each frame's detections
-            for local_idx, (
-                raw_meas,
-                raw_sizes,
-                raw_shapes,
-                raw_confidences,
-                raw_obb_corners,
-                raw_heading_hints,
-                raw_directed_mask,
-                raw_canonical_affines,
-            ) in enumerate(batch_results):
-                relative_idx = batch_start_idx + local_idx
-                actual_frame_idx = (
-                    start_frame + relative_idx
-                )  # Convert to actual video frame
-                # Calculate DetectionID for each detection using actual frame index
-                detection_ids = [
-                    actual_frame_idx * 10000 + i for i in range(len(raw_meas))
-                ]
-                detection_cache.add_frame(
-                    actual_frame_idx,  # Use actual frame index for cache key
-                    raw_meas,
-                    raw_sizes,
-                    raw_shapes,
-                    raw_confidences,
-                    raw_obb_corners,
-                    detection_ids,
-                    raw_heading_hints,
-                    raw_directed_mask,
-                    canonical_affines=raw_canonical_affines,
-                )
-
-            # Track batch timing
-            batch_time = time.time() - batch_start_time
-            batch_times.append(batch_time)
-
-            # Calculate stats
-            elapsed = time.time() - detection_start_time
-
-            # Calculate FPS based on recent batch times
-            if len(batch_times) > 0:
-                avg_batch_time = sum(batch_times) / len(batch_times)
-                frames_per_batch = (
-                    batch_size if len(batch_frames) == batch_size else len(batch_frames)
-                )
-                current_fps = (
-                    frames_per_batch / avg_batch_time if avg_batch_time > 0 else 0
-                )
-            else:
-                current_fps = 0
-
-            # Calculate ETA
-            if current_fps > 0:
-                remaining_frames = total_frames - frame_idx
-                eta = remaining_frames / current_fps
-            else:
-                eta = 0
-
-            # Emit progress and stats
-            percentage = (
-                int((frame_idx / total_frames) * 100) if total_frames > 0 else 0
-            )
-            status_text = f"Detecting objects: batch {batch_count}/{total_batches} ({percentage}%)"
-            self.progress_signal.emit(percentage, status_text)
-
-            # Emit stats signal for FPS/elapsed/ETA display
-            self.stats_signal.emit({"fps": current_fps, "elapsed": elapsed, "eta": eta})
-
-        logger.info(
-            f"Detection phase complete: {frame_idx} frames processed in {batch_count} batches"
-        )
-        return frame_idx
 
     def run(self: object) -> object:  # noqa: C901
         """Execute tracking pipeline for the configured video and parameters."""
@@ -922,7 +557,7 @@ class TrackingWorker(QThread):
         if not density_map_enabled:
             self._density_regions = []
 
-        cap = cv2.VideoCapture(self.video_path)
+        cap = cv2.VideoCapture(self.video_path, cv2.CAP_FFMPEG)
         if not cap.isOpened():
             logger.error(f"Failed to open video: {self.video_path}")
             self.finished_signal.emit(True, [], [])
@@ -1284,7 +919,12 @@ class TrackingWorker(QThread):
             use_cached_detections = True  # Phase 2 uses cached detections
 
             # Reset video capture to start frame for phase 2 (tracking + visualization)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            # Reopen instead of seeking — seeking is unreliable with some
+            # codecs after reading through all frames.
+            cap.release()
+            cap = cv2.VideoCapture(self.video_path, cv2.CAP_FFMPEG)
+            if start_frame > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
             logger.info(f"Reset video to start frame {start_frame} for phase 2")
 
             logger.info("=" * 80)
@@ -1446,16 +1086,24 @@ class TrackingWorker(QThread):
                     self.progress_signal.emit(100, "Density map complete")
                     logger.info(f"Diagnostic video exported: {_diag_path}")
 
-                    # Reset video capture for subsequent phases.
-                    cap.set(_cv2.CAP_PROP_POS_FRAMES, start_frame)
+                    # Reopen video capture for subsequent phases.
+                    # CAP_PROP_POS_FRAMES seek is unreliable with some
+                    # codecs after reading to EOF, so reopen instead.
+                    cap.release()
+                    cap = _cv2.VideoCapture(self.video_path, _cv2.CAP_FFMPEG)
+                    if start_frame > 0:
+                        cap.set(_cv2.CAP_PROP_POS_FRAMES, start_frame)
 
                 except Exception:
                     logger.exception(
                         "Confidence density map generation failed (non-fatal)"
                     )
                     self._density_regions = []
-                    # Ensure video is reset even on failure.
-                    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+                    # Reopen video capture to guarantee clean state.
+                    cap.release()
+                    cap = cv2.VideoCapture(self.video_path, cv2.CAP_FFMPEG)
+                    if start_frame > 0:
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
             profiler.phase_end("confidence_density")
 
@@ -1521,7 +1169,11 @@ class TrackingWorker(QThread):
                 logger.info("Individual properties cache: %s", props_path)
 
             # Reset cap position after precompute consumed all frames.
-            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            # Reopen for reliability — codec-dependent seek can fail post-EOF.
+            cap.release()
+            cap = cv2.VideoCapture(self.video_path, cv2.CAP_FFMPEG)
+            if start_frame > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
         # Open tag observation cache for reading during tracking loop.
         tag_obs_cache = None
@@ -3122,131 +2774,19 @@ class TrackingWorker(QThread):
         orient_confidence=1.0,
         heading_flip_counters=None,
     ):
-        final_theta, old = theta, orientation_last[r]
+        from multi_tracker.core.tracking.orientation import smooth_orientation
 
-        if directed_heading and p.get("DIRECTED_ORIENT_SMOOTHING", True):
-            # Directed headings (pose/head-tail) are noisy estimates: trust the
-            # axis but gate 180-degree flips via temporal continuity and
-            # per-detection confidence.  Small changes (<=90°) are accepted
-            # as-is — unlike undirected OBB headings, there is no axis jitter
-            # to rate-limit when stopped.
-            if old is None:
-                if heading_flip_counters is not None:
-                    heading_flip_counters[r] = 0
-                return theta
-            flip_conf_thresh = float(p.get("DIRECTED_ORIENT_FLIP_CONFIDENCE", 0.7))
-            flip_persistence = int(p.get("DIRECTED_ORIENT_FLIP_PERSISTENCE", 3))
-            old_deg = math.degrees(old)
-            new_deg = math.degrees(theta)
-            delta = wrap_angle_degs(new_deg - old_deg)
-            if abs(delta) > 90:
-                # Likely head-tail swap: check motion evidence + confidence.
-                single_frame_accept = False
-                if speed >= p["VELOCITY_THRESHOLD"] and len(position_deques[r]) == 2:
-                    (x1, y1, _), (x2, y2, _) = position_deques[r]
-                    ang_deg = math.degrees(math.atan2(y2 - y1, x2 - x1))
-                    motion_favors_new = abs(wrap_angle_degs(new_deg - ang_deg)) < abs(
-                        wrap_angle_degs(old_deg - ang_deg)
-                    )
-                    # Accept only when motion corroborates the flip AND
-                    # confidence is adequate.  When motion contradicts (animal
-                    # still going the same way), never accept regardless of
-                    # confidence — the flip is almost certainly spurious.
-                    single_frame_accept = (
-                        motion_favors_new and orient_confidence >= flip_conf_thresh
-                    )
-                else:
-                    # Stopped or no motion history: confidence alone decides.
-                    single_frame_accept = orient_confidence >= flip_conf_thresh
-
-                # Temporal hysteresis: require flip_persistence consecutive
-                # frames requesting a flip before actually accepting it.
-                if single_frame_accept and heading_flip_counters is not None:
-                    heading_flip_counters[r] += 1
-                    if heading_flip_counters[r] >= flip_persistence:
-                        heading_flip_counters[r] = 0
-                        # Accept the flip
-                    else:
-                        # Not yet enough evidence — reject this frame's flip
-                        new_deg = (new_deg + 180.0) % 360.0
-                elif not single_frame_accept:
-                    if heading_flip_counters is not None:
-                        heading_flip_counters[r] = 0
-                    new_deg = (new_deg + 180.0) % 360.0
-                else:
-                    # No hysteresis array — fall back to original behavior
-                    if not single_frame_accept:
-                        new_deg = (new_deg + 180.0) % 360.0
-            else:
-                # No flip detected — reset the counter
-                if heading_flip_counters is not None:
-                    heading_flip_counters[r] = 0
-            return math.radians(new_deg % 360.0)
-
-        # --- Original undirected smoothing (axis-only, no direction signal) ---
-        if speed < p["VELOCITY_THRESHOLD"] and old is not None:
-            old_deg, new_deg = math.degrees(old), math.degrees(theta)
-            delta = wrap_angle_degs(new_deg - old_deg)
-            if abs(delta) > 90:
-                new_deg = (new_deg + 180) % 360
-            elif abs(delta) > p["MAX_ORIENT_DELTA_STOPPED"]:
-                new_deg = old_deg + math.copysign(p["MAX_ORIENT_DELTA_STOPPED"], delta)
-            final_theta = math.radians(new_deg)
-        elif speed >= p["VELOCITY_THRESHOLD"] and p["INSTANT_FLIP_ORIENTATION"]:
-            (x1, y1, _), (x2, y2, _) = position_deques[r]
-            ang = math.atan2(y2 - y1, x2 - x1)
-            diff = (ang - theta + math.pi) % (2 * math.pi) - math.pi
-            if abs(diff) > math.pi / 2:
-                final_theta = (theta + math.pi) % (2 * math.pi)
-        return final_theta
-
-    def _draw_uncertainty_ellipses(self, overlay, params, track_states):
-        """Draw Kalman filter uncertainty ellipses for debugging."""
-        if not hasattr(self, "kf_manager"):
-            return
-
-        # Get covariance matrices for all tracks
-        P = self.kf_manager.P  # Shape: (N, 5, 5)
-        X = self.kf_manager.X  # Shape: (N, 5)
-        colors = params.get("TRAJECTORY_COLORS", [(255, 0, 0)] * len(X))
-
-        for i in range(len(X)):
-            # Skip lost tracks - they are not being actively predicted
-            if track_states[i] == "lost":
-                continue
-
-            # Extract position (x, y)
-            x, y = X[i, 0], X[i, 1]
-
-            # Extract 2x2 position covariance
-            P_pos = P[i, :2, :2]
-
-            # Compute eigenvalues and eigenvectors
-            eigenvalues, eigenvectors = np.linalg.eig(P_pos)
-
-            # Sort by eigenvalue magnitude
-            order = eigenvalues.argsort()[::-1]
-            eigenvalues = eigenvalues[order]
-            eigenvectors = eigenvectors[:, order]
-
-            # Convert to ellipse parameters (95% confidence ~= 2.45 sigma)
-            # Using chi-square distribution for 2D: 95% confidence is sqrt(5.991)
-            scale = np.sqrt(5.991)
-            width = 2 * scale * np.sqrt(max(0, eigenvalues[0]))
-            height = 2 * scale * np.sqrt(max(0, eigenvalues[1]))
-
-            # Calculate rotation angle
-            angle = np.degrees(np.arctan2(eigenvectors[1, 0], eigenvectors[0, 0]))
-
-            # Draw ellipse
-            center = (int(x), int(y))
-            axes = (int(width), int(height))
-
-            # Use track color (BGR format)
-            color = tuple(int(c) for c in colors[i])
-
-            # Draw with thicker line and more opacity for visibility
-            cv2.ellipse(overlay, center, axes, angle, 0, 360, color, 2)
+        return smooth_orientation(
+            r,
+            theta,
+            speed,
+            p,
+            orientation_last,
+            position_deques,
+            directed_heading=directed_heading,
+            orient_confidence=orient_confidence,
+            heading_flip_counters=heading_flip_counters,
+        )
 
     def _draw_overlays(
         self,
@@ -3258,118 +2798,21 @@ class TrackingWorker(QThread):
         continuity,
         fg,
         bg,
-        yolo_results=None,  # YOLO results object (direct detection)
-        obb_corners=None,  # OBB corners list (cached detections)
+        yolo_results=None,
+        obb_corners=None,
     ):
-        # Draw YOLO OBB boxes if enabled and available
-        if p.get("SHOW_YOLO_OBB", False):
-            # First try to use filtered OBB corners (works with cached detections)
-            if obb_corners is not None and len(obb_corners) > 0:
-                for corners in obb_corners:
-                    if corners is not None:
-                        # corners is already a numpy array of shape (4, 2)
-                        corners_int = corners.astype(np.int32)
-                        cv2.polylines(
-                            overlay,
-                            [corners_int],
-                            isClosed=True,
-                            color=(0, 255, 255),  # Yellow
-                            thickness=2,
-                        )
-            # Fall back to yolo_results object (direct detection mode)
-            elif yolo_results is not None:
-                if (
-                    hasattr(yolo_results, "obb")
-                    and yolo_results.obb is not None
-                    and len(yolo_results.obb) > 0
-                ):
-                    obb_data = yolo_results.obb
-                    for i in range(len(obb_data)):
-                        # Get the 4 corner points of the OBB
-                        corners = obb_data.xyxyxyxy[i].cpu().numpy().astype(np.int32)
-                        # Draw the OBB as a polygon
-                        cv2.polylines(
-                            overlay,
-                            [corners],
-                            isClosed=True,
-                            color=(0, 255, 255),
-                            thickness=2,
-                        )
+        from multi_tracker.core.tracking.visualization import draw_overlays
 
-                        # Optionally draw confidence score
-                        if hasattr(obb_data, "conf"):
-                            conf = obb_data.conf[i].cpu().item()
-                            cx = int(corners[:, 0].mean())
-                            cy = int(corners[:, 1].mean())
-                            cv2.putText(
-                                overlay,
-                                f"{conf:.2f}",
-                                (cx - 15, cy - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.4,
-                                (0, 255, 255),
-                                1,
-                            )
-
-        # Draw Kalman uncertainty ellipses if enabled (for debugging)
-        if p.get("SHOW_KALMAN_UNCERTAINTY", False):
-            self._draw_uncertainty_ellipses(overlay, p, track_states)
-
-        if any(
-            p.get(k)
-            for k in [
-                "SHOW_CIRCLES",
-                "SHOW_ORIENTATION",
-                "SHOW_TRAJECTORIES",
-                "SHOW_LABELS",
-                "SHOW_STATE",
-            ]
-        ):
-            for i, tr in enumerate(trajectories):
-                if not tr or track_states[i] == "lost":
-                    continue
-                x, y, th, _ = tr[-1]
-                pt = (int(x), int(y))
-                if math.isnan(x):
-                    continue
-                col = tuple(
-                    int(c)
-                    for c in p["TRAJECTORY_COLORS"][i % len(p["TRAJECTORY_COLORS"])]
-                )
-                if p.get("SHOW_CIRCLES"):
-                    cv2.circle(overlay, pt, 8, col, -1)
-                if p.get("SHOW_ORIENTATION"):
-                    ex, ey = int(x + 20 * math.cos(th)), int(y + 20 * math.sin(th))
-                    cv2.line(overlay, pt, (ex, ey), col, 2)
-                if p.get("SHOW_TRAJECTORIES"):
-                    pts = np.array(
-                        [(pt[0], pt[1]) for pt in tr if not math.isnan(pt[0])],
-                        dtype=np.int32,
-                    ).reshape((-1, 1, 2))
-                    if len(pts) > 1:
-                        cv2.polylines(
-                            overlay, [pts], isClosed=False, color=col, thickness=2
-                        )
-                if p.get("SHOW_LABELS") or p.get("SHOW_STATE"):
-                    label = (
-                        f"T{ids[i]} C:{continuity[i]}" if p.get("SHOW_LABELS") else ""
-                    )
-                    state = f" [{track_states[i]}]" if p.get("SHOW_STATE") else ""
-                    cv2.putText(
-                        overlay,
-                        f"{label}{state}",
-                        (pt[0] + 15, pt[1] - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        col,
-                        2,
-                    )
-        if p.get("SHOW_FG") and fg is not None:
-            small_fg = cv2.resize(fg, (0, 0), fx=0.3, fy=0.3)
-            overlay[0 : small_fg.shape[0], 0 : small_fg.shape[1]] = cv2.cvtColor(
-                small_fg, cv2.COLOR_GRAY2BGR
-            )
-        if p.get("SHOW_BG") and bg is not None:
-            bg_bgr = cv2.cvtColor(bg, cv2.COLOR_GRAY2BGR)
-            small_bg = cv2.resize(bg_bgr, (0, 0), fx=0.3, fy=0.3)
-            overlay[0 : small_bg.shape[0], -small_bg.shape[1] :] = small_bg
+        draw_overlays(
+            overlay,
+            p,
+            trajectories,
+            track_states,
+            ids,
+            continuity,
+            fg,
+            bg,
+            kf_manager=getattr(self, "kf_manager", None),
+            yolo_results=yolo_results,
+            obb_corners=obb_corners,
+        )

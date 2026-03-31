@@ -452,7 +452,7 @@ class HeadTailAnalyzer:
     # ------------------------------------------------------------------
 
     def _canonicalize_obb(self, frame, corners):
-        from multi_tracker.core.tracking.canonical_crop import (
+        from multi_tracker.core.canonicalization.crop import (
             compute_alignment_affine,
             extract_canonical_crop,
         )

@@ -23,10 +23,6 @@ def _load_worker_module():
         "multi_tracker/utils/video_artifacts.py",
         "video_artifacts_under_test",
     )
-    pose_features = load_src_module(
-        "multi_tracker/core/tracking/pose_features.py",
-        "pose_features_under_test",
-    )
 
     # Minimal QtCore stub
     qtcore = types.ModuleType("PySide6.QtCore")
@@ -70,6 +66,7 @@ def _load_worker_module():
 
     geometry = types.ModuleType("multi_tracker.utils.geometry")
     geometry.wrap_angle_degs = lambda x: x
+    geometry.estimate_detection_crop_quality = lambda shape, ref: 0.0
 
     detection_cache = types.ModuleType("multi_tracker.data.detection_cache")
     detection_cache.DetectionCache = object
@@ -118,8 +115,8 @@ def _load_worker_module():
     background_model = types.ModuleType("multi_tracker.core.background.model")
     background_model.BackgroundModel = object
 
-    detectors_engine = types.ModuleType("multi_tracker.core.detectors.engine")
-    detectors_engine.create_detector = lambda *_args, **_kwargs: None
+    # worker.py imports create_detector from the package
+    core_detectors.create_detector = lambda *_args, **_kwargs: None
 
     assigner = types.ModuleType("multi_tracker.core.assigners.hungarian")
     assigner.TrackAssigner = object
@@ -156,8 +153,25 @@ def _load_worker_module():
     )
     classification_headtail.HeadTailAnalyzer = object
 
+    # Identity geometry stubs
+    identity_geometry = types.ModuleType("multi_tracker.core.identity.geometry")
+    identity_geometry.build_detection_direction_overrides = lambda *_args, **_kwargs: (
+        np.full(0, np.nan, dtype=np.float32),
+        np.zeros(0, dtype=np.uint8),
+    )
+    identity_geometry.resolve_detection_tracking_theta = lambda *_args, **_kwargs: 0.0
+    identity_geometry.resolve_tracking_theta = lambda *_args, **_kwargs: 0.0
+    identity_geometry.normalize_theta = lambda x: float(x) % (2 * 3.141592653589793)
+
     # Pose sub-package stubs
     pose_pkg = types.ModuleType("multi_tracker.core.identity.pose")
+    pose_features_new = types.ModuleType("multi_tracker.core.identity.pose.features")
+    pose_features_new.build_pose_detection_keypoint_map = lambda *_args, **_kwargs: {}
+    pose_features_new.compute_pose_geometry_from_keypoints = (
+        lambda *_args, **_kwargs: None
+    )
+    pose_features_new.normalize_pose_keypoints = lambda *_args, **_kwargs: None
+    pose_features_new.resolve_pose_group_indices = lambda *_args, **_kwargs: []
     pose_api = types.ModuleType("multi_tracker.core.identity.pose.api")
     pose_api.build_runtime_config = lambda *_args, **_kwargs: None
     pose_api.create_pose_backend_from_config = lambda *_args, **_kwargs: None
@@ -171,7 +185,18 @@ def _load_worker_module():
     properties_cache.compute_filter_settings_hash = lambda *_args, **_kwargs: ""
     properties_cache.compute_individual_properties_id = lambda *_args, **_kwargs: ""
 
-    # Tracking sub-module stubs for precompute
+    # Tracking sub-module stubs for density, cnn_features, precompute
+    density = types.ModuleType("multi_tracker.core.tracking.density")
+    density.get_density_region_flags = lambda *_args, **_kwargs: np.zeros(0, dtype=bool)
+
+    cnn_features = types.ModuleType("multi_tracker.core.tracking.cnn_features")
+    cnn_features.cnn_build_association_entries = lambda *_args, **_kwargs: (
+        None,
+        None,
+        None,
+    )
+    cnn_features.cnn_update_track_history = lambda *_args, **_kwargs: None
+
     pose_pipeline = types.ModuleType("multi_tracker.core.tracking.pose_pipeline")
     pose_pipeline.extract_one_crop = lambda *_args, **_kwargs: None
     precompute = types.ModuleType("multi_tracker.core.tracking.precompute")
@@ -203,10 +228,8 @@ def _load_worker_module():
         "multi_tracker.core.detectors": core_detectors,
         "multi_tracker.core.assigners": core_assigners,
         "multi_tracker.core.identity": core_identity,
-        "multi_tracker.core.tracking.pose_features": pose_features,
         "multi_tracker.core.filters.kalman": kalman,
         "multi_tracker.core.background.model": background_model,
-        "multi_tracker.core.detectors.engine": detectors_engine,
         "multi_tracker.core.assigners.hungarian": assigner,
         "multi_tracker.core.identity.dataset": identity_dataset,
         "multi_tracker.core.identity.dataset.generator": identity_dataset_generator,
@@ -214,10 +237,14 @@ def _load_worker_module():
         "multi_tracker.core.identity.classification.apriltag": classification_apriltag,
         "multi_tracker.core.identity.classification.cnn": classification_cnn,
         "multi_tracker.core.identity.classification.headtail": classification_headtail,
+        "multi_tracker.core.identity.geometry": identity_geometry,
         "multi_tracker.core.identity.pose": pose_pkg,
+        "multi_tracker.core.identity.pose.features": pose_features_new,
         "multi_tracker.core.identity.pose.api": pose_api,
         "multi_tracker.core.identity.properties": properties_pkg,
         "multi_tracker.core.identity.properties.cache": properties_cache,
+        "multi_tracker.core.tracking.density": density,
+        "multi_tracker.core.tracking.cnn_features": cnn_features,
         "multi_tracker.core.tracking.pose_pipeline": pose_pipeline,
         "multi_tracker.core.tracking.precompute": precompute,
         "multi_tracker.core.tracking.profiler": profiler,
@@ -283,20 +310,24 @@ def test_forward_frame_iterator_sync_and_prefetch_paths() -> None:
 
 
 def test_collapse_obb_axis_theta_chooses_nearest_branch() -> None:
-    mod = _load_worker_module()
-    worker = mod.TrackingWorker("dummy.mp4")
+    pf = load_src_module(
+        "multi_tracker/core/identity/geometry.py",
+        "geometry_for_collapse_test",
+    )
 
     theta_axis = np.deg2rad(12.0)
     reference = np.deg2rad(205.0)
-    collapsed = worker._collapse_obb_axis_theta(theta_axis, reference)
+    collapsed = pf.collapse_obb_axis_theta(theta_axis, reference)
     expected = (theta_axis + np.pi) % (2 * np.pi)
     diff = ((collapsed - expected + np.pi) % (2 * np.pi)) - np.pi
     assert abs(float(diff)) < 1e-6
 
 
 def test_pose_heading_from_keypoints_uses_weighted_centroids() -> None:
-    mod = _load_worker_module()
-    worker = mod.TrackingWorker("dummy.mp4")
+    pf = load_src_module(
+        "multi_tracker/core/identity/pose/features.py",
+        "pose_features_for_heading_test",
+    )
 
     keypoints = np.array(
         [
@@ -307,30 +338,34 @@ def test_pose_heading_from_keypoints_uses_weighted_centroids() -> None:
         ],
         dtype=np.float32,
     )
-    theta = worker._compute_pose_heading_from_keypoints(
+    result = pf.compute_pose_geometry_from_keypoints(
         keypoints=keypoints,
         anterior_indices=[0, 1],
         posterior_indices=[2, 3],
         min_valid_conf=0.2,
     )
+    theta = result["heading"] if result else None
     assert theta is not None
     assert abs(float(theta)) < 1e-6
 
-    theta_none = worker._compute_pose_heading_from_keypoints(
+    result_none = pf.compute_pose_geometry_from_keypoints(
         keypoints=keypoints,
         anterior_indices=[3],  # low confidence only
         posterior_indices=[2],
         min_valid_conf=0.2,
     )
+    theta_none = result_none["heading"] if result_none else None
     assert theta_none is None
 
 
 def test_resolve_pose_group_indices_accepts_names_and_indices() -> None:
-    mod = _load_worker_module()
-    worker = mod.TrackingWorker("dummy.mp4")
+    pf = load_src_module(
+        "multi_tracker/core/identity/pose/features.py",
+        "pose_features_for_indices_test",
+    )
 
     names = ["head", "thorax", "abdomen"]
-    idxs = worker._resolve_pose_group_indices(["head", 2, "HEAD", "missing"], names)
+    idxs = pf.resolve_pose_group_indices(["head", 2, "HEAD", "missing"], names)
     assert idxs == [0, 2]
 
 
@@ -393,16 +428,17 @@ def test_confidence_density_enabled_defaults_true_and_respects_flag() -> None:
 
 
 def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:
-    mod = _load_worker_module()
-    worker = mod.TrackingWorker("dummy.mp4")
+    pf = load_src_module(
+        "multi_tracker/core/identity/geometry.py",
+        "geometry_for_orient_flip_test",
+    )
 
-    worker.backward_mode = True
-    base_theta = worker._normalize_theta(np.deg2rad(35.0))
+    base_theta = pf.normalize_theta(np.deg2rad(35.0))
 
     motion_theta_out = (base_theta + np.pi) % (2 * np.pi)
     pose_theta_out = base_theta
 
-    expected_motion = worker._normalize_theta(np.deg2rad(215.0))
+    expected_motion = pf.normalize_theta(np.deg2rad(215.0))
     diff_motion = (
         (float(motion_theta_out) - float(expected_motion) + np.pi) % (2 * np.pi)
     ) - np.pi
@@ -415,10 +451,12 @@ def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:
 
 
 def test_select_directed_heading_prefers_pose_by_default() -> None:
-    mod = _load_worker_module()
-    worker = mod.TrackingWorker("dummy.mp4")
+    pf = load_src_module(
+        "multi_tracker/core/identity/geometry.py",
+        "geometry_for_heading_select_test",
+    )
 
-    selected, directed = worker._select_directed_heading(
+    selected, directed = pf.select_directed_heading(
         pose_heading=np.deg2rad(30.0),
         pose_directed=True,
         headtail_heading=np.deg2rad(210.0),
@@ -431,10 +469,12 @@ def test_select_directed_heading_prefers_pose_by_default() -> None:
 
 
 def test_select_directed_heading_can_prefer_headtail() -> None:
-    mod = _load_worker_module()
-    worker = mod.TrackingWorker("dummy.mp4")
+    pf = load_src_module(
+        "multi_tracker/core/identity/geometry.py",
+        "geometry_for_headtail_test",
+    )
 
-    selected, directed = worker._select_directed_heading(
+    selected, directed = pf.select_directed_heading(
         pose_heading=np.deg2rad(30.0),
         pose_directed=True,
         headtail_heading=np.deg2rad(210.0),

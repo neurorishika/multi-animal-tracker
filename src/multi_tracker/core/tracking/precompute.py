@@ -196,9 +196,12 @@ class UnifiedPrecompute:
 
         # Prefetch frames in a background thread to overlap I/O with
         # crop-extraction / inference work.
+        # Use a generous timeout: when GPU inference (MPS / CUDA) runs
+        # concurrently with hardware video decoding (VideoToolbox / NVDEC),
+        # the decoder can stall for tens of seconds under resource contention.
         from multi_tracker.utils.frame_prefetcher import FramePrefetcher
 
-        _prefetcher = FramePrefetcher(cap, buffer_size=4)
+        _prefetcher = FramePrefetcher(cap, buffer_size=8, read_timeout=120.0)
         _prefetcher.start()
         for rel_idx in range(total):
             frame_idx = start_frame + rel_idx
@@ -210,11 +213,26 @@ class UnifiedPrecompute:
             if not ret:
                 if _prof:
                     _prof.phase_end("precompute_frame_read")
+                _thread_alive = (
+                    _prefetcher.thread.is_alive() if _prefetcher.thread else False
+                )
                 logger.warning(
-                    "cap.read() failed at frame %d (frame %d/%d) — stopping precompute early",
+                    "cap.read() failed at frame %d (frame %d/%d) — stopping precompute early. "
+                    "Prefetcher diagnostics: bg_thread_alive=%s, "
+                    "frames_read_by_thread=%d, frames_consumed=%d, "
+                    "queue_size=%d/%d, stopped_reason=%s, "
+                    "last_read_ok=%s, exception=%s",
                     frame_idx,
                     rel_idx + 1,
                     total,
+                    _thread_alive,
+                    _prefetcher._frames_read,
+                    _prefetcher._frames_consumed,
+                    _prefetcher.frame_queue.qsize(),
+                    _prefetcher.buffer_size,
+                    _prefetcher._stopped_reason,
+                    _prefetcher._last_read_ok,
+                    _prefetcher.exception,
                 )
                 break
             if resize_factor < 1.0:
@@ -311,7 +329,7 @@ class UnifiedPrecompute:
             if all_obb:
                 if _prof:
                     _prof.phase_start("precompute_crop_extraction")
-                from multi_tracker.core.tracking.canonical_crop import (
+                from multi_tracker.core.canonicalization.crop import (
                     compute_native_crop_dimensions,
                     extract_canonical_crop,
                 )

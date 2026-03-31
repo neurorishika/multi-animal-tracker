@@ -191,7 +191,7 @@ class TestSmoothOrientationHysteresis:
         return worker
 
     def test_hysteresis_blocks_single_frame_flip(self):
-        """A single directed 180° flip should be blocked with persistence=3."""
+        """A single directed stationary 180° flip should be blocked."""
         from collections import deque
 
         worker = self._make_worker_stub()
@@ -223,10 +223,10 @@ class TestSmoothOrientationHysteresis:
         diff = abs(result - base) % (2 * math.pi)
         diff = min(diff, 2 * math.pi - diff)
         assert diff < 0.5, f"Single-frame flip should be rejected, got {result}"
-        assert flip_counters[0] == 1  # Counter incremented
+        assert flip_counters[0] == 0
 
-    def test_hysteresis_accepts_after_persistence(self):
-        """After persistence consecutive flips, the flip should be accepted."""
+    def test_hysteresis_rejects_stationary_flip_after_persistence(self):
+        """Persistent stationary 180° swaps should remain rejected."""
         from collections import deque
 
         worker = self._make_worker_stub()
@@ -242,8 +242,7 @@ class TestSmoothOrientationHysteresis:
             "VELOCITY_THRESHOLD": 2.0,
         }
 
-        # Simulate 3 consecutive frames requesting the same flip
-        for i in range(3):
+        for _ in range(5):
             result = worker._smooth_orientation(
                 0,
                 flipped,
@@ -257,7 +256,47 @@ class TestSmoothOrientationHysteresis:
             )
             orientation_last[0] = result
 
-        # After 3 frames, the flip should be accepted
+        diff = abs(result - base) % (2 * math.pi)
+        diff = min(diff, 2 * math.pi - diff)
+        assert (
+            diff < 0.5
+        ), f"Stationary persistent flip should remain rejected, got {result}"
+        assert flip_counters[0] == 0
+
+    def test_hysteresis_accepts_motion_supported_flip_after_persistence(self):
+        """A persistent flip should be accepted once motion corroborates it."""
+        from collections import deque
+
+        worker = self._make_worker_stub()
+        base = 0.0
+        flipped = math.pi
+        orientation_last = [base]
+        pos_deques = [deque([(0.0, 0.0, 0), (-5.0, 0.0, 1)], maxlen=2)]
+        flip_counters = [0]
+        params = {
+            "DIRECTED_ORIENT_SMOOTHING": True,
+            "DIRECTED_ORIENT_FLIP_CONFIDENCE": 0.5,
+            "DIRECTED_ORIENT_FLIP_PERSISTENCE": 3,
+            "VELOCITY_THRESHOLD": 2.0,
+        }
+
+        for _ in range(3):
+            result = worker._smooth_orientation(
+                0,
+                flipped,
+                5.0,
+                params,
+                orientation_last,
+                pos_deques,
+                directed_heading=True,
+                orient_confidence=0.9,
+                heading_flip_counters=flip_counters,
+            )
+            orientation_last[0] = result
+
         diff = abs(result - flipped) % (2 * math.pi)
         diff = min(diff, 2 * math.pi - diff)
-        assert diff < 0.5, f"Flip should be accepted after persistence, got {result}"
+        assert (
+            diff < 0.5
+        ), f"Motion-supported flip should be accepted after persistence, got {result}"
+        assert flip_counters[0] == 0

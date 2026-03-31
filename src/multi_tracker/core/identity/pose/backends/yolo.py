@@ -287,3 +287,7 @@ class YoloNativeBackend:
             outputs.append(summarize_keypoints(kpts, self.min_valid_conf))
 
         return outputs
+
+    def close(self) -> None:
+        """Release backend resources (no-op for YOLO native backend)."""
+        pass

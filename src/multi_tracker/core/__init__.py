@@ -8,7 +8,7 @@ object detection, and track assignment.
 
 from .assigners.hungarian import TrackAssigner
 from .background.model import BackgroundModel
-from .detectors.engine import ObjectDetector
+from .detectors import ObjectDetector
 from .filters.kalman import KalmanFilterManager
 from .identity.dataset.generator import IndividualDatasetGenerator
 from .post.processing import (

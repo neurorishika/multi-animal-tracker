@@ -9,8 +9,6 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from ...core.canonicalization import MatMetadataCanonicalizer
-
 
 class TaskSignals(QObject):
     """
@@ -82,7 +80,6 @@ class EmbeddingWorker(QRunnable):
         batch_size: int = 32,
         db_path: Optional[Path] = None,
         force_recompute: bool = False,
-        canonicalize_mat: bool = False,
     ):
         super().__init__()
         self.setAutoDelete(False)  # prevent Qt from freeing C++ side before Python GC
@@ -92,7 +89,6 @@ class EmbeddingWorker(QRunnable):
         self.batch_size = batch_size
         self.db_path = db_path
         self.force_recompute = force_recompute
-        self.canonicalize_mat = bool(canonicalize_mat)
         self.signals = TaskSignals()
 
     @Slot()
@@ -114,8 +110,6 @@ class EmbeddingWorker(QRunnable):
         try:
             self.signals.started.emit()
             cache_model_name = self.model_name
-            if self.canonicalize_mat:
-                cache_model_name = f"{self.model_name}__matcanon_v1"
 
             # Check for cached embeddings
             if db_cls is not None and not self.force_recompute:
@@ -154,7 +148,6 @@ class EmbeddingWorker(QRunnable):
 
             self.signals.progress.emit(8, "Loading model weights...")
             embedder.load_model()
-            canonicalizer = MatMetadataCanonicalizer(enabled=self.canonicalize_mat)
 
             self.signals.progress.emit(
                 10, f"Computing embeddings for {len(self.image_paths):,} images..."
@@ -167,7 +160,6 @@ class EmbeddingWorker(QRunnable):
             embeddings = embedder.embed(
                 self.image_paths,
                 batch_size=self.batch_size,
-                preprocess_fn=canonicalizer if self.canonicalize_mat else None,
             )
 
             self.signals.progress.emit(
@@ -185,8 +177,6 @@ class EmbeddingWorker(QRunnable):
                     self.batch_size,
                     meta={
                         "model_name": self.model_name,
-                        "canonicalize_mat": bool(self.canonicalize_mat),
-                        "canonicalization_summary": canonicalizer.summary(),
                     },
                 )
                 self.signals.progress.emit(95, "Cached for future use")
@@ -199,8 +189,6 @@ class EmbeddingWorker(QRunnable):
                     "cached": False,
                     "metadata": {
                         "model_name": self.model_name,
-                        "canonicalize_mat": bool(self.canonicalize_mat),
-                        "canonicalization_summary": canonicalizer.summary(),
                     },
                 }
             )
@@ -514,7 +502,6 @@ class ExportWorker(QRunnable):
         val_fraction: float = 0.2,
         test_fraction: float = 0.0,
         copy_files: bool = True,
-        canonicalize: bool = False,
         temp_dir: Optional[Path] = None,
         label_expansion: Optional[Dict[str, Dict[str, str]]] = None,
     ):
@@ -528,7 +515,6 @@ class ExportWorker(QRunnable):
         self.val_fraction = float(val_fraction)
         self.test_fraction = float(test_fraction)
         self.copy_files = copy_files
-        self.canonicalize = canonicalize
         self.temp_dir = temp_dir
         # label_expansion: {"fliplr": {"left": "right", "right": "left"}, ...}
         self.label_expansion: Dict[str, Dict[str, str]] = label_expansion or {}
@@ -574,12 +560,6 @@ class ExportWorker(QRunnable):
             self.signals.started.emit()
             self.signals.progress.emit(0, f"Exporting to {self.format}...")
 
-            if self.label_expansion and not self.canonicalize:
-                raise RuntimeError(
-                    "Label expansion requires canonical training space. "
-                    "Enable Canonical mode before using label expansion."
-                )
-
             # Ensure temp_dir exists when label expansion is requested
             if self.label_expansion and self.temp_dir is None:
                 import tempfile
@@ -600,39 +580,6 @@ class ExportWorker(QRunnable):
 
             image_paths = [item[0] for item in valid]
             labels = [item[1] for item in valid]
-
-            if self.canonicalize and self.temp_dir:
-                self.signals.progress.emit(10, "Canonicalizing images...")
-                from PIL import Image as PILImage
-
-                from ...core.canonicalization import MatMetadataCanonicalizer
-
-                canon = MatMetadataCanonicalizer(enabled=True)
-                new_paths = []
-                for i, p in enumerate(image_paths):
-                    if i % 10 == 0:
-                        self.signals.progress.emit(
-                            10 + int(40 * i / len(image_paths)),
-                            f"Canonicalizing {i}/{len(image_paths)}...",
-                        )
-
-                    try:
-                        pil_img = PILImage.open(str(p)).convert("RGB")
-                        canon_img = canon(str(p), pil_img)
-
-                        # Save to temp dir
-                        out_p = self.temp_dir / f"canon_{i}_{p.name}"
-                        if out_p.suffix.lower() not in {".jpg", ".png"}:
-                            out_p = out_p.with_suffix(".jpg")
-
-                        canon_img.save(out_p)
-                        new_paths.append(out_p)
-                    except Exception:
-                        # Fallback to original if transformation fails
-                        new_paths.append(p)
-
-                image_paths = new_paths
-                self.copy_files = True  # Must copy since they are in temp dir
 
             splits = self._build_splits()
             splits = [
@@ -843,7 +790,6 @@ class YoloInferenceWorker(QRunnable):
         image_paths: List[Path],
         compute_runtime: str = "cpu",
         batch_size: int = 64,
-        canonicalize_mat: bool = False,
         # Deprecated — use compute_runtime instead.
         device: str = "",
     ):
@@ -856,7 +802,6 @@ class YoloInferenceWorker(QRunnable):
                 compute_runtime = device
         self.compute_runtime = str(compute_runtime or "cpu")
         self.batch_size = batch_size
-        self.canonicalize_mat = bool(canonicalize_mat)
         self.signals = TaskSignals()
 
     @staticmethod
@@ -967,23 +912,11 @@ class YoloInferenceWorker(QRunnable):
             )
             all_probs = []
 
-            from PIL import Image as _PILImage
-
-            from ...core.canonicalization import MatMetadataCanonicalizer
-
-            canonicalizer = MatMetadataCanonicalizer(enabled=self.canonicalize_mat)
-
             for batch_start in range(0, num_images, self.batch_size):
                 batch_paths = self.image_paths[
                     batch_start : batch_start + self.batch_size
                 ]
-                if self.canonicalize_mat:
-                    batch_input = [
-                        canonicalizer(p, _PILImage.open(p).convert("RGB"))
-                        for p in batch_paths
-                    ]
-                else:
-                    batch_input = [str(p) for p in batch_paths]
+                batch_input = [str(p) for p in batch_paths]
                 kwargs = {"verbose": False}
                 if predict_device is not None:
                     kwargs["device"] = predict_device
@@ -1204,7 +1137,6 @@ class TinyCNNInferenceWorker(QRunnable):
         class_names: List[str],
         compute_runtime: str = "cpu",
         batch_size: int = 64,
-        canonicalize_mat: bool = False,
         # Deprecated — use compute_runtime instead.
         device: str = "",
     ):
@@ -1219,7 +1151,6 @@ class TinyCNNInferenceWorker(QRunnable):
                 compute_runtime = device
         self.compute_runtime = str(compute_runtime or "cpu")
         self.batch_size = batch_size
-        self.canonicalize_mat = bool(canonicalize_mat)
         self.signals = TaskSignals()
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -1242,7 +1173,6 @@ class TinyCNNInferenceWorker(QRunnable):
             import cv2
             import numpy as np
 
-            from ...core.canonicalization import MatMetadataCanonicalizer
             from ...core.runtime.compute_runtime import _normalize_runtime
 
             rt = _normalize_runtime(self.compute_runtime)
@@ -1257,30 +1187,19 @@ class TinyCNNInferenceWorker(QRunnable):
             )
 
             num_images = len(self.image_paths)
-            canonicalizer = MatMetadataCanonicalizer(enabled=self.canonicalize_mat)
 
             # ── Image-loading helper (shared between both inference paths) ────
             def _load_batch_images(batch_paths, input_w, input_h):
                 tensors = []
                 for p in batch_paths:
                     try:
-                        if self.canonicalize_mat:
-                            from PIL import Image as _PIL
-
-                            pil_img = canonicalizer(p, _PIL.open(p).convert("RGB"))
-                            img = np.array(pil_img)
-                            if img.ndim == 2:
-                                img = np.stack([img] * 3, axis=-1)
-                            elif img.shape[2] == 4:
-                                img = img[:, :, :3]
-                        else:
-                            img = cv2.imread(str(p), cv2.IMREAD_COLOR)
-                            if img is None:
-                                tensors.append(
-                                    np.zeros((3, input_h, input_w), dtype=np.float32)
-                                )
-                                continue
-                            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                        img = cv2.imread(str(p), cv2.IMREAD_COLOR)
+                        if img is None:
+                            tensors.append(
+                                np.zeros((3, input_h, input_w), dtype=np.float32)
+                            )
+                            continue
+                        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                         img = cv2.resize(
                             img, (input_w, input_h), interpolation=cv2.INTER_LINEAR
                         )

@@ -120,7 +120,6 @@ class MainWindow(QMainWindow):
         self._img_bgr = None
         self._img_display = None
         self._img_wh = (1, 1)
-        self._canonicalize_enabled = False
         self._ann: Optional[FrameAnn] = None
         self._dirty = False
         self._undo_stack: List[List[Keypoint]] = []
@@ -352,12 +351,6 @@ class MainWindow(QMainWindow):
         self.btn_enhance_settings = QPushButton("Enhancement settings…")
         disp_layout.addWidget(self.cb_enhance)
         disp_layout.addWidget(self.btn_enhance_settings)
-        self.cb_canonicalize = QCheckBox("Canonicalize (MAT metadata)")
-        self.cb_canonicalize.setChecked(False)
-        self.cb_canonicalize.setToolTip(
-            "Rotate/crop each image using MAT individual-dataset metadata.json when available."
-        )
-        disp_layout.addWidget(self.cb_canonicalize)
         self.cb_show_preds = QCheckBox("Show predictions")
         self.cb_show_preds.setChecked(True)
         disp_layout.addWidget(self.cb_show_preds)
@@ -738,7 +731,6 @@ class MainWindow(QMainWindow):
         self.class_combo.currentIndexChanged.connect(self._mark_dirty)
         self.cb_enhance.toggled.connect(self._toggle_enhancement)
         self.btn_enhance_settings.clicked.connect(self._open_enhancement_settings)
-        self.cb_canonicalize.toggled.connect(self._toggle_canonicalization)
         self.sp_kpt_size.valueChanged.connect(self._update_kpt_size)
         self.sp_label_size.valueChanged.connect(self._update_label_size)
         self.sp_kpt_opacity.valueChanged.connect(self._update_kpt_opacity)
@@ -1621,14 +1613,6 @@ class MainWindow(QMainWindow):
         self.act_enhance_settings = QAction("Enhancement Settings…", self)
         self.act_enhance_settings.triggered.connect(self._open_enhancement_settings)
 
-        self.act_canonicalize = QAction("Canonicalize (MAT Metadata)", self)
-        self.act_canonicalize.setCheckable(True)
-        self.act_canonicalize.setChecked(False)
-        self.act_canonicalize.setShortcut(QKeySequence("Ctrl+Shift+C"))
-        self.act_canonicalize.triggered.connect(
-            lambda checked: self._toggle_canonicalization(checked)
-        )
-
         self.act_show_pred_conf = QAction("Show Prediction Confidence", self)
         self.act_show_pred_conf.setCheckable(True)
         self.act_show_pred_conf.setChecked(bool(self.show_pred_conf))
@@ -1670,7 +1654,6 @@ class MainWindow(QMainWindow):
         m_tools.addSeparator()
         m_tools.addAction(self.act_enhance)
         m_tools.addAction(self.act_enhance_settings)
-        m_tools.addAction(self.act_canonicalize)
         m_tools.addSeparator()
         m_tools.addAction(self.act_show_pred_conf)
 
@@ -2276,55 +2259,13 @@ class MainWindow(QMainWindow):
         img = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if img is None:
             raise RuntimeError(f"Failed to read image: {path}")
-        if self._canonicalize_enabled:
-            try:
-                from PIL import Image as _PILImage
-
-                from ...core.canonicalization import MatMetadataCanonicalizer
-
-                img_pil = _PILImage.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-                canon = MatMetadataCanonicalizer(enabled=True)
-                img_pil = canon(path, img_pil)
-                img = cv2.cvtColor(np.asarray(img_pil), cv2.COLOR_RGB2BGR)
-            except Exception:
-                pass
         return img
 
     def _kpts_to_save_space(
         self, kpts: "List[Keypoint]", img_path: "Path"
     ) -> "tuple[List[Keypoint], int, int]":
-        """Return ``(kpts_orig_px, save_w, save_h)`` always in **original** image space.
-
-        When canonicalization is active the in-memory keypoints live in canonical
-        pixel coordinates.  This helper applies the inverse affine so the
-        returned coordinates are relative to the original (pre-warp) image,
-        which is what YOLO training expects on disk.  Falls back gracefully when
-        the metadata transform is unavailable.
-        """
-        if not self._canonicalize_enabled:
-            return list(kpts), self._img_wh[0], self._img_wh[1]
-        try:
-            from ...core.canonicalization import get_canon_transform
-
-            raw = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
-            if raw is None:
-                return list(kpts), self._img_wh[0], self._img_wh[1]
-            orig_h, orig_w = raw.shape[:2]
-            t = get_canon_transform(img_path)
-            if t is None:
-                return list(kpts), orig_w, orig_h
-            inv_A = t["inv_affine"]
-            out: List[Keypoint] = []
-            for kp in kpts:
-                if kp.v == 0:
-                    out.append(Keypoint(0.0, 0.0, 0))
-                else:
-                    x_o = float(inv_A[0, 0] * kp.x + inv_A[0, 1] * kp.y + inv_A[0, 2])
-                    y_o = float(inv_A[1, 0] * kp.x + inv_A[1, 1] * kp.y + inv_A[1, 2])
-                    out.append(Keypoint(x_o, y_o, kp.v))
-            return out, orig_w, orig_h
-        except Exception:
-            return list(kpts), self._img_wh[0], self._img_wh[1]
+        """Return ``(kpts_px, save_w, save_h)`` in image pixel space."""
+        return list(kpts), self._img_wh[0], self._img_wh[1]
 
     def _clone_ann(self, ann: FrameAnn) -> FrameAnn:
         return FrameAnn(
@@ -2359,8 +2300,8 @@ class MainWindow(QMainWindow):
 
     def _load_ann_from_disk(self, idx: int) -> FrameAnn:
         img_path = self.image_paths[idx]
-        # Labels on disk are always stored in original (pre-canonicalization) image
-        # coordinates.  Read raw dims directly so denormalization is correct.
+        # Labels on disk are stored in image pixel coordinates.
+        # Read raw dims directly so denormalization is correct.
         raw = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
         if raw is None:
             raw = self._read_image(img_path)
@@ -2375,21 +2316,6 @@ class MainWindow(QMainWindow):
             cls_loaded, kpts_norm, bbox_cxcywh = loaded
             cls = int(cls_loaded)
 
-            # When canonicalization is active, forward-transform pixel coords from
-            # original space into canonical display space for the UI.
-            canon_affine = None
-            disp_w, disp_h = orig_w, orig_h
-            if self._canonicalize_enabled:
-                try:
-                    from ...core.canonicalization import get_canon_transform
-
-                    t = get_canon_transform(img_path)
-                    if t is not None:
-                        canon_affine = t["affine"]
-                        disp_w, disp_h = t["canon_w"], t["canon_h"]
-                except Exception:
-                    pass
-
             kpts = []
             for kp in kpts_norm:
                 if kp.v == 0:
@@ -2397,20 +2323,14 @@ class MainWindow(QMainWindow):
                 else:
                     x_px = kp.x * orig_w
                     y_px = kp.y * orig_h
-                    if canon_affine is not None:
-                        A = canon_affine
-                        x_px, y_px = (
-                            float(A[0, 0] * x_px + A[0, 1] * y_px + A[0, 2]),
-                            float(A[1, 0] * x_px + A[1, 1] * y_px + A[1, 2]),
-                        )
                     kpts.append(Keypoint(float(x_px), float(y_px), int(kp.v)))
 
             if bbox_cxcywh is not None:
                 cx, cy, bw, bh = bbox_cxcywh
-                cx *= disp_w
-                cy *= disp_h
-                bw *= disp_w
-                bh *= disp_h
+                cx *= orig_w
+                cy *= orig_h
+                bw *= orig_w
+                bh *= orig_h
                 x1 = cx - bw / 2
                 x2 = cx + bw / 2
                 y1 = cy - bh / 2
@@ -2644,83 +2564,6 @@ class MainWindow(QMainWindow):
         self._img_display = None
         self._refresh_canvas_image()
         self.save_project()
-
-    @staticmethod
-    def _apply_affine_to_ann(ann: "FrameAnn", A: "np.ndarray") -> "FrameAnn":
-        """Return a new FrameAnn with keypoints transformed by the 2×3 affine A."""
-        new_kpts = []
-        for kp in ann.kpts:
-            if kp.v == 0:
-                new_kpts.append(Keypoint(0.0, 0.0, 0))
-            else:
-                x = float(A[0, 0] * kp.x + A[0, 1] * kp.y + A[0, 2])
-                y = float(A[1, 0] * kp.x + A[1, 1] * kp.y + A[1, 2])
-                new_kpts.append(Keypoint(x, y, kp.v))
-        return FrameAnn(cls=ann.cls, bbox_xyxy=ann.bbox_xyxy, kpts=new_kpts)
-
-    def _toggle_canonicalization(self, checked: bool):
-        prev_enabled = self._canonicalize_enabled
-        self._canonicalize_enabled = bool(checked)
-        if self.cb_canonicalize.isChecked() != self._canonicalize_enabled:
-            self.cb_canonicalize.setChecked(self._canonicalize_enabled)
-        if self.act_canonicalize.isChecked() != self._canonicalize_enabled:
-            self.act_canonicalize.setChecked(self._canonicalize_enabled)
-
-        if (
-            self.current_index >= len(self.image_paths)
-            or prev_enabled == self._canonicalize_enabled
-        ):
-            return
-
-        img_path = self.image_paths[self.current_index]
-
-        # Transform all cached annotations in-place (avoids disk re-reads on
-        # subsequent frame navigation).  Each image may belong to a different
-        # source with its own metadata.json, so the transform is looked up per
-        # path.  A small path→affine dict is built once to amortise repeated
-        # lookups for frames that share the same metadata (common case).
-        try:
-            from ...core.canonicalization import get_canon_transform
-
-            _transform_cache: dict = {}
-            key = "affine" if self._canonicalize_enabled else "inv_affine"
-
-            def _get_A(path):
-                """Return the affine matrix for *path*, or None if unavailable."""
-                p = str(path)
-                if p not in _transform_cache:
-                    t = get_canon_transform(path)
-                    _transform_cache[p] = t
-                t = _transform_cache[p]
-                return None if t is None else t[key]
-
-            # Re-map in-memory annotation
-            if self._ann is not None:
-                A = _get_A(img_path)
-                if A is not None:
-                    self._ann = self._apply_affine_to_ann(self._ann, A)
-
-            # Re-map every cached frame in-place
-            for idx, ann in list(self._frame_cache.items()):
-                A = _get_A(self.image_paths[idx])
-                if A is not None:
-                    self._frame_cache[idx] = self._apply_affine_to_ann(ann, A)
-
-        except Exception:
-            # If transform lookup fails entirely, fall back to clearing the cache
-            # so frames are re-read cleanly from disk.
-            self._frame_cache.clear()
-
-        # Reload current image and update canvas dimensions / overlays
-        try:
-            self._img_bgr = self._read_image(img_path)
-            self._img_display = None
-            h, w = self._img_bgr.shape[:2]
-            self._img_wh = (w, h)
-            self._refresh_canvas_image()
-            self._rebuild_canvas()
-        except Exception:
-            pass
 
     def _update_kpt_size(self, value: float):
         self.project.kpt_radius = float(value)
@@ -3375,9 +3218,7 @@ class MainWindow(QMainWindow):
         cls = int(self.class_combo.currentIndex())
         self._ann.cls = cls
 
-        # Convert keypoints back to original image space before saving so that
-        # YOLO-normalised coordinates on disk are always relative to the original
-        # (pre-canonicalization) image.  Falls back to current dims if unavailable.
+        # Convert keypoints to image pixel space before saving.
         kpts_save, w, h = self._kpts_to_save_space(self._ann.kpts, img_path)
 
         bbox = compute_bbox_from_kpts(kpts_save, self.project.bbox_pad_frac, w, h)
@@ -3438,8 +3279,7 @@ class MainWindow(QMainWindow):
 
             img_path = self.image_paths[idx]
 
-            # Convert keypoints back to original image space (inverse affine when
-            # canonicalization is active) so labels on disk always use original dims.
+            # Convert keypoints to image pixel space for saving.
             kpts_save, w, h = self._kpts_to_save_space(ann.kpts, img_path)
 
             bbox = compute_bbox_from_kpts(kpts_save, self.project.bbox_pad_frac, w, h)

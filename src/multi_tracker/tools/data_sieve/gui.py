@@ -122,7 +122,6 @@ class SieveWorker(QThread):
 
             stats = {
                 "loaded": loaded_count,
-                "after_canonicalization": loaded_count,
                 "after_quality": loaded_count,
                 "after_temporal": loaded_count,
                 "after_dedup": loaded_count,
@@ -136,73 +135,6 @@ class SieveWorker(QThread):
                 return
 
             dataset = loaded
-            self.status.emit(f"Loaded {len(dataset)} images.")
-
-            if self.config.get("canonicalize_enabled"):
-                import tempfile
-
-                from ...core.canonicalization import get_canon_transform
-
-                self.temp_dir = tempfile.mkdtemp(prefix="datasieve_canon_")
-                self.progress.emit(10, "Step 2/7: Applying canonicalization")
-                self.status.emit("Applying canonicalization...")
-
-                canon_dataset = []
-                total = len(dataset)
-                for idx, item in enumerate(dataset):
-                    if not self._is_running:
-                        self.stop()
-                        return
-
-                    if item.get("annotations"):
-                        img = cv2.imread(item["path"])
-                        if img is not None:
-                            # Use the first annotation for canonicalization
-                            ann = item["annotations"][0]
-                            # Use new flexible API: pass annotation dict and custom angle field
-                            transform = get_canon_transform(
-                                item["path"],
-                                annotation=ann,
-                                angle_field="tracking_theta",
-                            )
-
-                            if transform is not None:
-                                M = transform["affine"]
-                                out_w = transform["canon_w"]
-                                out_h = transform["canon_h"]
-
-                                # Perform the warp with the correct canonical dimensions
-                                canonical_img = cv2.warpAffine(img, M, (out_w, out_h))
-
-                                temp_path = Path(self.temp_dir) / item["filename"]
-                                cv2.imwrite(str(temp_path), canonical_img)
-
-                                new_item = item.copy()
-                                # Track original path so Process Dataset can restore it later
-                                new_item["original_path"] = item["path"]
-                                new_item["path"] = str(temp_path)
-                                canon_dataset.append(new_item)
-                            else:
-                                canon_dataset.append(item)
-                        else:
-                            canon_dataset.append(item)
-                    else:
-                        canon_dataset.append(item)
-
-                    if idx == 1 or idx % 100 == 0 or idx == total:
-                        self._emit_stage_progress(
-                            10, 25, idx, total, "Canonicalization"
-                        )
-
-                dataset = canon_dataset
-                stats["after_canonicalization"] = len(dataset)
-                self.progress.emit(25, "Step 2/7 complete: canonicalization applied")
-            else:
-                self.progress.emit(25, "Step 2/7 skipped: canonicalization disabled")
-
-            if not self._is_running:
-                self.stop()
-                return
 
             if self.config.get("quality_enabled"):
                 self.progress.emit(25, "Step 3/7: Running quality filter")
@@ -945,13 +877,6 @@ class DataSieveWindow(QMainWindow):
             "Filters blurry or low-contrast crops before sampling. Useful on noisy extraction pipelines.",
         )
 
-        self.chk_canonicalize = QCheckBox("Canonicalize images (align orientation)")
-        layout.addWidget(self.chk_canonicalize)
-        self._add_help(
-            layout,
-            "Aligns all images to a standard orientation (e.g., facing right). Requires `metadata.json` from `multi-animal-tracker` export.",
-        )
-
         self.lbl_estimate = QLabel("Estimated kept images: n/a")
         self.lbl_estimate.setStyleSheet("font-weight: 600;")
         layout.addWidget(self.lbl_estimate)
@@ -967,7 +892,6 @@ class DataSieveWindow(QMainWindow):
         self.chk_preserve_color.stateChanged.connect(self.update_live_estimate)
         self.chk_diversity.stateChanged.connect(self.update_live_estimate)
         self.chk_quality.stateChanged.connect(self.update_live_estimate)
-        self.chk_canonicalize.stateChanged.connect(self.update_live_estimate)
         self.spin_temporal.valueChanged.connect(self.update_live_estimate)
         self.spin_dedup.valueChanged.connect(self.update_live_estimate)
         self.spin_color_threshold.valueChanged.connect(self.update_live_estimate)
@@ -1369,7 +1293,6 @@ class DataSieveWindow(QMainWindow):
             "quality_enabled": self.chk_quality.isChecked(),
             "quality_min_blur": self.spin_quality_blur.value(),
             "quality_min_contrast": self.spin_quality_contrast.value(),
-            "canonicalize_enabled": self.chk_canonicalize.isChecked(),
         }
 
         self.btn_process.setEnabled(False)
@@ -1450,7 +1373,6 @@ class DataSieveWindow(QMainWindow):
                 [
                     "Run Summary:",
                     f"• Loaded: {loaded:,}",
-                    f"• After canonicalization: {s.get('after_canonicalization', loaded):,}",
                     f"• After quality: {s.get('after_quality', loaded):,}",
                     f"• After temporal: {s.get('after_temporal', loaded):,}",
                     f"• After dedup: {s.get('after_dedup', loaded):,}",

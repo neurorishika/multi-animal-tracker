@@ -312,7 +312,7 @@ def bench_obb(
     )
 
     try:
-        from multi_tracker.core.detectors.engine import YOLOOBBDetector
+        from multi_tracker.core.detectors import YOLOOBBDetector
 
         params = _runtime_to_obb_params(
             runtime,
@@ -393,7 +393,7 @@ def bench_obb_compile(
     effective_imgsz = imgsz if imgsz is not None else max(frame_size)
 
     try:
-        from multi_tracker.core.detectors.engine import YOLOOBBDetector
+        from multi_tracker.core.detectors import YOLOOBBDetector
 
         params = _runtime_to_obb_params(
             runtime,

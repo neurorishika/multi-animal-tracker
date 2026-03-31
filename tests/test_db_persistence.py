@@ -17,8 +17,8 @@ def test_db():
     print(f"Initial labels: {labels}")
     assert all(l is None for l in labels)
 
-    # Update one label
-    db.update_label(str(paths[2]), "class_A")
+    # Update one label (use resolved path to match what add_images stores)
+    db.update_labels_batch({str(paths[2].resolve()): "class_A"})
 
     # Reload and check
     labels = db.get_all_labels()

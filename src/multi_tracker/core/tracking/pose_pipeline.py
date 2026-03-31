@@ -127,7 +127,7 @@ def extract_one_crop(
         return None
 
     if suppress_foreign and len(all_obb_corners) > 1:
-        from multi_tracker.core.tracking.pose_features import apply_foreign_obb_mask
+        from multi_tracker.utils.geometry import apply_foreign_obb_mask
 
         other = [
             all_obb_corners[j] for j in range(len(all_obb_corners)) if j != det_idx
@@ -677,7 +677,7 @@ class PosePipeline:
                     # Map crop-local → frame-global coordinates
                     if M_inverse is not None:
                         # Canonical crop: use affine inverse for accurate mapping
-                        from multi_tracker.core.tracking.canonical_crop import (
+                        from multi_tracker.core.canonicalization.crop import (
                             invert_keypoints,
                         )
 
@@ -689,7 +689,7 @@ class PosePipeline:
                         gkpts[:, 1] += float(y0)
                     # Suppress keypoints landing inside other animals' OBBs
                     if self._suppress_foreign and len(pf.all_obb_corners) > 1:
-                        from multi_tracker.core.tracking.pose_features import (
+                        from multi_tracker.utils.geometry import (
                             filter_keypoints_by_foreign_obbs,
                         )
 

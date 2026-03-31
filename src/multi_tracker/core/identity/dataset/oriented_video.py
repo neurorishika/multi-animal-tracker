@@ -187,6 +187,59 @@ class OrientedTrackVideoExporter:
         fill = int(np.clip(color if color is not None else 0, 0, 255))
         return (fill, fill, fill)
 
+    @staticmethod
+    def _normalize_theta(theta: float) -> float:
+        try:
+            value = float(theta)
+        except Exception:
+            value = 0.0
+        return value % (2.0 * math.pi)
+
+    @classmethod
+    def _collapse_branch_to_reference(
+        cls, theta: float, reference_theta: Optional[float]
+    ) -> float:
+        theta0 = cls._normalize_theta(theta)
+        theta1 = cls._normalize_theta(theta0 + math.pi)
+        if reference_theta is None:
+            return theta0
+        try:
+            ref = float(reference_theta)
+        except Exception:
+            return theta0
+        if not np.isfinite(ref):
+            return theta0
+        ref = cls._normalize_theta(ref)
+        diff0 = abs(((theta0 - ref) + math.pi) % (2.0 * math.pi) - math.pi)
+        diff1 = abs(((theta1 - ref) + math.pi) % (2.0 * math.pi) - math.pi)
+        return theta0 if diff0 <= diff1 else theta1
+
+    @classmethod
+    def _resolve_task_theta(
+        cls,
+        row: Any,
+        fallback_theta: float,
+        *,
+        reference_theta: Optional[float] = None,
+        directed_heading: Optional[float] = None,
+        directed: bool = False,
+    ) -> float:
+        theta = float("nan")
+        if directed:
+            try:
+                candidate = float(directed_heading)
+                if np.isfinite(candidate):
+                    theta = candidate
+            except Exception:
+                pass
+        if not np.isfinite(theta):
+            row_theta = getattr(row, "Theta", np.nan)
+            if pd.notna(row_theta):
+                theta = float(row_theta)
+            else:
+                theta = float(fallback_theta)
+        return cls._collapse_branch_to_reference(theta, reference_theta)
+
     def _load_final_dataframe(self) -> pd.DataFrame:
         if not self.final_csv_path.exists():
             raise FileNotFoundError(
@@ -269,73 +322,94 @@ class OrientedTrackVideoExporter:
         track_sizes: dict[int, tuple[int, int]] = {}
         missing_rows = 0
 
+        actual_frames = sorted(actual_rows_by_frame)
+        total_actual = len(actual_frames)
+        interp_frames = sorted(interp_rows_by_frame)
+        total_interp = len(interp_frames)
+        frame_ids = sorted(set(actual_rows_by_frame) | set(interp_rows_by_frame))
+        track_theta_state: dict[int, float] = {}
+
+        detection_cache = None
         if actual_rows_by_frame:
             if not self.detection_cache_path.exists():
                 raise FileNotFoundError(
                     f"Missing detection cache for oriented track videos: {self.detection_cache_path}"
                 )
-            with DetectionCache(self.detection_cache_path, mode="r") as detection_cache:
-                if not detection_cache.is_compatible():
-                    raise ValueError(
-                        f"Incompatible detection cache for oriented track videos: {self.detection_cache_path}"
-                    )
-                actual_frames = sorted(actual_rows_by_frame)
-                total_actual = len(actual_frames)
-                for index, frame_id in enumerate(actual_frames, start=1):
-                    if should_stop and should_stop():
-                        break
+            detection_cache = DetectionCache(self.detection_cache_path, mode="r")
+            if not detection_cache.is_compatible():
+                detection_cache.close()
+                raise ValueError(
+                    f"Incompatible detection cache for oriented track videos: {self.detection_cache_path}"
+                )
+
+        actual_index = 0
+        interp_index = 0
+        try:
+            for frame_id in frame_ids:
+                if should_stop and should_stop():
+                    break
+
+                actual_rows = actual_rows_by_frame.get(frame_id, [])
+                if actual_rows and detection_cache is not None:
+                    actual_index += 1
                     self._emit(
                         progress_callback,
-                        12 + int(16 * index / max(1, total_actual)),
-                        f"Preparing cached detection geometry... {index}/{total_actual}",
+                        12 + int(16 * actual_index / max(1, total_actual)),
+                        f"Preparing cached detection geometry... {actual_index}/{total_actual}",
                     )
-                    rows = actual_rows_by_frame.get(frame_id, [])
                     bundle = frame_bundles.setdefault(frame_id, FrameBundle())
                     missing_rows += self._add_actual_tasks(
                         detection_cache,
                         frame_id,
-                        rows,
+                        actual_rows,
                         bundle,
                         track_sizes,
+                        track_theta_state,
                     )
 
-        interp_frames = sorted(interp_rows_by_frame)
-        total_interp = len(interp_frames)
-        for index, frame_id in enumerate(interp_frames, start=1):
-            if should_stop and should_stop():
-                break
-            self._emit(
-                progress_callback,
-                28 + int(6 * index / max(1, total_interp)),
-                f"Preparing interpolated geometry... {index}/{total_interp}",
-            )
-            bundle = frame_bundles.setdefault(frame_id, FrameBundle())
-            for row in interp_rows_by_frame.get(frame_id, []):
-                traj_id = int(row.TrajectoryID)
-                record = interp_lookup.get((frame_id, traj_id))
-                if record is None:
-                    missing_rows += 1
-                    continue
-                theta = self._resolve_task_theta(row, record.get("theta", 0.0))
-                task = self._build_task(
-                    frame_id=frame_id,
-                    trajectory_id=traj_id,
-                    center_x=float(record["cx"]),
-                    center_y=float(record["cy"]),
-                    width=float(record["w"]),
-                    height=float(record["h"]),
-                    theta=theta,
-                    corners=np.asarray(record["obb_corners"], dtype=np.float32),
-                    polygon_index=len(bundle.polygons),
-                )
-                if task is None:
-                    missing_rows += 1
-                    continue
-                bundle.polygons.append(task.corners)
-                bundle.tasks.append(task)
-                track_sizes[traj_id] = self._merge_canvas_size(
-                    track_sizes.get(traj_id), (task.out_w, task.out_h)
-                )
+                interp_rows = interp_rows_by_frame.get(frame_id, [])
+                if interp_rows:
+                    interp_index += 1
+                    self._emit(
+                        progress_callback,
+                        28 + int(6 * interp_index / max(1, total_interp)),
+                        f"Preparing interpolated geometry... {interp_index}/{total_interp}",
+                    )
+                    bundle = frame_bundles.setdefault(frame_id, FrameBundle())
+                    for row in interp_rows:
+                        traj_id = int(row.TrajectoryID)
+                        record = interp_lookup.get((frame_id, traj_id))
+                        if record is None:
+                            missing_rows += 1
+                            continue
+                        theta = self._resolve_task_theta(
+                            row,
+                            record.get("theta", 0.0),
+                            reference_theta=track_theta_state.get(traj_id),
+                        )
+                        task = self._build_task(
+                            frame_id=frame_id,
+                            trajectory_id=traj_id,
+                            center_x=float(record["cx"]),
+                            center_y=float(record["cy"]),
+                            width=float(record["w"]),
+                            height=float(record["h"]),
+                            theta=theta,
+                            corners=np.asarray(record["obb_corners"], dtype=np.float32),
+                            polygon_index=len(bundle.polygons),
+                        )
+                        if task is None:
+                            missing_rows += 1
+                            continue
+                        bundle.polygons.append(task.corners)
+                        bundle.tasks.append(task)
+                        track_theta_state[traj_id] = theta
+                        track_sizes[traj_id] = self._merge_canvas_size(
+                            track_sizes.get(traj_id), (task.out_w, task.out_h)
+                        )
+        finally:
+            if detection_cache is not None:
+                detection_cache.close()
 
         frame_bundles = {k: v for k, v in frame_bundles.items() if v.tasks}
         return frame_bundles, track_sizes, missing_rows
@@ -347,6 +421,7 @@ class OrientedTrackVideoExporter:
         rows: list[Any],
         bundle: FrameBundle,
         track_sizes: dict[int, tuple[int, int]],
+        track_theta_state: dict[int, float],
     ) -> int:
         missing_rows = 0
         (
@@ -356,8 +431,8 @@ class OrientedTrackVideoExporter:
             _confidences,
             obb_corners,
             detection_ids,
-            _heading_hints,
-            _directed_mask,
+            heading_hints,
+            directed_mask,
             _canonical_affines,
             _canvas_dims,
             _M_inverse,
@@ -405,7 +480,25 @@ class OrientedTrackVideoExporter:
             theta_fallback = (
                 float(meas[idx][2]) if idx < len(meas) and len(meas[idx]) > 2 else 0.0
             )
-            theta = self._resolve_task_theta(row, theta_fallback)
+            directed_heading = (
+                float(heading_hints[idx])
+                if heading_hints is not None and idx < len(heading_hints)
+                else None
+            )
+            directed = bool(
+                directed_mask is not None
+                and idx < len(directed_mask)
+                and directed_mask[idx]
+                and directed_heading is not None
+                and np.isfinite(directed_heading)
+            )
+            theta = self._resolve_task_theta(
+                row,
+                theta_fallback,
+                reference_theta=track_theta_state.get(traj_id),
+                directed_heading=directed_heading,
+                directed=directed,
+            )
             task = self._build_task(
                 frame_id=frame_id,
                 trajectory_id=traj_id,
@@ -422,6 +515,7 @@ class OrientedTrackVideoExporter:
                 continue
             bundle.polygons.append(task.corners)
             bundle.tasks.append(task)
+            track_theta_state[traj_id] = theta
             track_sizes[traj_id] = self._merge_canvas_size(
                 track_sizes.get(traj_id), (task.out_w, task.out_h)
             )
@@ -749,10 +843,3 @@ class OrientedTrackVideoExporter:
         return max(int(current[0]), int(candidate[0])), max(
             int(current[1]), int(candidate[1])
         )
-
-    @staticmethod
-    def _resolve_task_theta(row: Any, fallback_theta: float) -> float:
-        theta = getattr(row, "Theta", np.nan)
-        if pd.notna(theta):
-            return float(theta)
-        return float(fallback_theta)

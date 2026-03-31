@@ -17,7 +17,6 @@ def _seed_model_entry(
             mode=mode,
             artifact_paths=[str(artifact_path)],
             class_names=["alpha", "beta"],
-            canonicalize_mat=True,
             best_val_acc=0.91,
             num_classes=2,
             meta={"owner": "test"},

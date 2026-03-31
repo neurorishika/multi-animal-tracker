@@ -17,11 +17,75 @@ class _FakeContour(dict):
 
 
 def _load_engine_module():
-    return load_src_module(
-        "multi_tracker/core/detectors/engine.py",
-        "detectors_engine_under_test",
-        stubs={"cv2": make_cv2_stub()},
+    """Load the detectors package components with a cv2 stub.
+
+    Now that engine.py is split into multiple modules, we load each
+    submodule and assemble a combined namespace for backward compatibility
+    with existing tests.
+    """
+    cv2_stub = make_cv2_stub()
+    stubs = {"cv2": cv2_stub}
+
+    # Load submodules in dependency order
+    utils_mod = load_src_module(
+        "multi_tracker/core/detectors/_utils.py",
+        "multi_tracker.core.detectors._utils",
+        stubs=stubs,
     )
+    # Ensure the _utils module is importable by the geometry/artifact mixins
+    sys.modules["multi_tracker.core.detectors._utils"] = utils_mod
+
+    geom_mod = load_src_module(
+        "multi_tracker/core/detectors/_obb_geometry.py",
+        "multi_tracker.core.detectors._obb_geometry",
+        stubs=stubs,
+    )
+    sys.modules["multi_tracker.core.detectors._obb_geometry"] = geom_mod
+
+    art_mod = load_src_module(
+        "multi_tracker/core/detectors/_runtime_artifacts.py",
+        "multi_tracker.core.detectors._runtime_artifacts",
+        stubs=stubs,
+    )
+    sys.modules["multi_tracker.core.detectors._runtime_artifacts"] = art_mod
+
+    bg_mod = load_src_module(
+        "multi_tracker/core/detectors/bg_detector.py",
+        "multi_tracker.core.detectors.bg_detector",
+        stubs=stubs,
+    )
+    sys.modules["multi_tracker.core.detectors.bg_detector"] = bg_mod
+
+    yolo_mod = load_src_module(
+        "multi_tracker/core/detectors/yolo_detector.py",
+        "multi_tracker.core.detectors.yolo_detector",
+        stubs=stubs,
+    )
+    sys.modules["multi_tracker.core.detectors.yolo_detector"] = yolo_mod
+
+    filter_mod = load_src_module(
+        "multi_tracker/core/detectors/detection_filter.py",
+        "multi_tracker.core.detectors.detection_filter",
+        stubs=stubs,
+    )
+    sys.modules["multi_tracker.core.detectors.detection_filter"] = filter_mod
+
+    factory_mod = load_src_module(
+        "multi_tracker/core/detectors/factory.py",
+        "multi_tracker.core.detectors.factory",
+        stubs=stubs,
+    )
+    sys.modules["multi_tracker.core.detectors.factory"] = factory_mod
+
+    # Assemble combined namespace matching what the old engine.py exported
+    mod = types.ModuleType("detectors_engine_under_test")
+    mod.ObjectDetector = bg_mod.ObjectDetector
+    mod.YOLOOBBDetector = yolo_mod.YOLOOBBDetector
+    mod.create_detector = factory_mod.create_detector
+    mod.DetectionFilter = filter_mod.DetectionFilter
+    mod._normalize_detection_ids = utils_mod._normalize_detection_ids
+    mod.Path = Path
+    return mod
 
 
 def test_object_detector_detect_objects_filters_and_limits_count() -> None:

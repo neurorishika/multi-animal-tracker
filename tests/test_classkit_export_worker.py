@@ -16,7 +16,8 @@ def _run_worker_and_collect_error(worker: ExportWorker) -> list[str]:
     return errors
 
 
-def test_label_expansion_requires_canonical_space(tmp_path: Path) -> None:
+def test_label_expansion_auto_creates_temp_dir(tmp_path: Path) -> None:
+    """Label expansion should auto-create a temp dir when none is provided."""
     worker = ExportWorker(
         image_paths=[tmp_path / "img_0.jpg"],
         labels=[0],
@@ -24,16 +25,17 @@ def test_label_expansion_requires_canonical_space(tmp_path: Path) -> None:
         format="csv",
         class_names={0: "left"},
         label_expansion={"fliplr": {"left": "right"}},
-        canonicalize=False,
     )
 
     errors = _run_worker_and_collect_error(worker)
 
+    # Should fail because img_0.jpg doesn't exist, but NOT because of
+    # a missing canonical guard (which was removed).
     assert errors
-    assert "Label expansion requires canonical training space" in errors[0]
+    assert "Label expansion requires canonical training space" not in errors[0]
 
 
-def test_label_expansion_does_not_raise_canonical_guard_when_enabled(
+def test_export_worker_no_labeled_samples(
     tmp_path: Path,
 ) -> None:
     worker = ExportWorker(
@@ -43,11 +45,9 @@ def test_label_expansion_does_not_raise_canonical_guard_when_enabled(
         format="csv",
         class_names={0: "left"},
         label_expansion={"fliplr": {"left": "right"}},
-        canonicalize=True,
     )
 
     errors = _run_worker_and_collect_error(worker)
 
     assert errors
-    assert "Label expansion requires canonical training space" not in errors[0]
     assert "No labeled samples found to export" in errors[0]

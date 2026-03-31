@@ -1,4 +1,8 @@
-"""Shared geometry utilities for the identity module."""
+"""Shared geometry utilities for the identity module.
+
+Includes angle normalization, OBB axis disambiguation, and directed
+heading resolution helpers used by both tracking and identity pipelines.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,209 @@ import math
 from typing import Optional, Tuple
 
 import numpy as np
+
+# ---------------------------------------------------------------------------
+# Angle / theta helpers
+# ---------------------------------------------------------------------------
+
+
+def normalize_theta(theta: float) -> float:
+    """Normalize radians to [0, 2*pi)."""
+    try:
+        value = float(theta)
+    except Exception:
+        value = 0.0
+    return value % (2 * math.pi)
+
+
+def circular_abs_diff_rad(a: float, b: float) -> float:
+    """Absolute circular difference between two angles in radians."""
+    d = (float(a) - float(b) + math.pi) % (2 * math.pi) - math.pi
+    return abs(d)
+
+
+def collapse_obb_axis_theta(theta_axis: float, reference_theta) -> float:
+    """Resolve 180-degree OBB axis ambiguity.
+
+    Picks *theta_axis* or *theta_axis + pi* — whichever is angularly closer to
+    *reference_theta*.  Returns ``normalize_theta(theta_axis)`` when
+    *reference_theta* is None or non-finite.
+    """
+    theta0 = normalize_theta(theta_axis)
+    theta1 = normalize_theta(theta0 + math.pi)
+    if reference_theta is None:
+        return theta0
+    try:
+        ref = float(reference_theta)
+        if not math.isfinite(ref):
+            return theta0
+        ref = normalize_theta(ref)
+    except Exception:
+        return theta0
+    d0 = circular_abs_diff_rad(theta0, ref)
+    d1 = circular_abs_diff_rad(theta1, ref)
+    return theta0 if d0 <= d1 else theta1
+
+
+def select_directed_heading(
+    pose_heading,
+    pose_directed: bool,
+    headtail_heading,
+    headtail_directed: bool,
+    pose_overrides_headtail: bool = True,
+) -> Tuple[float, bool]:
+    """Choose directed heading source (pose / head-tail) by precedence.
+
+    Returns ``(heading_radians, is_directed)``.
+    """
+    try:
+        pose_valid = bool(pose_directed) and math.isfinite(float(pose_heading))
+    except Exception:
+        pose_valid = False
+    try:
+        headtail_valid = bool(headtail_directed) and math.isfinite(
+            float(headtail_heading)
+        )
+    except Exception:
+        headtail_valid = False
+    if pose_overrides_headtail:
+        if pose_valid:
+            return float(pose_heading), True
+        if headtail_valid:
+            return float(headtail_heading), True
+        return float("nan"), False
+    if headtail_valid:
+        return float(headtail_heading), True
+    if pose_valid:
+        return float(pose_heading), True
+    return float("nan"), False
+
+
+def build_detection_direction_overrides(
+    n_detections: int,
+    pose_headings,
+    pose_directed_mask,
+    headtail_headings,
+    headtail_directed_mask,
+    pose_overrides_headtail: bool = True,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Build per-detection directed heading overrides and validity mask."""
+    try:
+        count = max(int(n_detections), 0)
+    except Exception:
+        count = 0
+
+    detection_directed_heading = np.full(count, np.nan, dtype=np.float32)
+    detection_directed_mask = np.zeros(count, dtype=np.uint8)
+
+    for det_idx in range(count):
+        try:
+            pose_heading = (
+                float(pose_headings[det_idx])
+                if pose_headings is not None and det_idx < len(pose_headings)
+                else math.nan
+            )
+        except Exception:
+            pose_heading = math.nan
+        try:
+            pose_directed = bool(
+                pose_directed_mask is not None
+                and det_idx < len(pose_directed_mask)
+                and pose_directed_mask[det_idx]
+            )
+        except Exception:
+            pose_directed = False
+        try:
+            headtail_heading = (
+                float(headtail_headings[det_idx])
+                if headtail_headings is not None and det_idx < len(headtail_headings)
+                else math.nan
+            )
+        except Exception:
+            headtail_heading = math.nan
+        try:
+            headtail_directed = bool(
+                headtail_directed_mask is not None
+                and det_idx < len(headtail_directed_mask)
+                and headtail_directed_mask[det_idx]
+            )
+        except Exception:
+            headtail_directed = False
+
+        selected_heading, is_directed = select_directed_heading(
+            pose_heading=pose_heading,
+            pose_directed=pose_directed,
+            headtail_heading=headtail_heading,
+            headtail_directed=headtail_directed,
+            pose_overrides_headtail=pose_overrides_headtail,
+        )
+        if is_directed:
+            detection_directed_heading[det_idx] = np.float32(selected_heading)
+            detection_directed_mask[det_idx] = 1
+
+    return detection_directed_heading, detection_directed_mask
+
+
+def resolve_tracking_theta(
+    track_idx: int,
+    measured_theta: float,
+    pose_directed: bool,
+    orientation_last,
+    fallback_theta=None,
+) -> float:
+    """Resolve directed vs axis-aligned orientation for one track.
+
+    *orientation_last* is a list indexed by track index whose entries are
+    the last committed theta (float) or None.
+    """
+    if pose_directed:
+        return normalize_theta(measured_theta)
+    reference_theta = None
+    if orientation_last is not None:
+        try:
+            if 0 <= int(track_idx) < len(orientation_last):
+                reference_theta = orientation_last[int(track_idx)]
+        except Exception:
+            pass
+    if reference_theta is None and fallback_theta is not None:
+        try:
+            candidate = float(fallback_theta)
+            if math.isfinite(candidate):
+                reference_theta = candidate
+        except Exception:
+            pass
+    return collapse_obb_axis_theta(measured_theta, reference_theta)
+
+
+def resolve_detection_tracking_theta(
+    track_idx: int,
+    measured_theta: float,
+    directed_heading,
+    pose_directed: bool,
+    orientation_last,
+    fallback_theta=None,
+) -> float:
+    """Resolve tracking theta, preferring selected directed headings when valid."""
+    tracking_theta = measured_theta
+    if pose_directed:
+        try:
+            candidate = float(directed_heading)
+            if math.isfinite(candidate):
+                tracking_theta = candidate
+        except Exception:
+            pass
+    return resolve_tracking_theta(
+        track_idx,
+        tracking_theta,
+        pose_directed,
+        orientation_last,
+        fallback_theta=fallback_theta,
+    )
+
+
+# ---------------------------------------------------------------------------
+# OBB / ellipse geometry
+# ---------------------------------------------------------------------------
 
 
 def resolve_directed_angle(

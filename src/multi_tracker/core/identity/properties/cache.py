@@ -430,6 +430,28 @@ class IndividualPropertiesCache:
             "pose_keypoints": list(pose_arr.tolist()),
         }
 
+    def get_detection(
+        self, frame_idx: int, detection_id: float
+    ) -> Optional[Dict[str, Any]]:
+        """Get per-detection data for a specific detection ID in a frame.
+
+        Returns a dict of pose properties for the matching detection, or None
+        if the detection ID is not found in that frame.
+        """
+        frame = self.get_frame(frame_idx)
+        ids = frame["detection_ids"]
+        target = float(detection_id)
+        for i, did in enumerate(ids):
+            if float(did) == target:
+                return {
+                    "pose_mean_conf": frame["pose_mean_conf"][i],
+                    "pose_valid_fraction": frame["pose_valid_fraction"][i],
+                    "pose_num_valid": frame["pose_num_valid"][i],
+                    "pose_num_keypoints": frame["pose_num_keypoints"][i],
+                    "pose_keypoints": frame["pose_keypoints"][i],
+                }
+        return None
+
     def close(self) -> None:
         if self._loaded_data is not None:
             self._loaded_data.close()

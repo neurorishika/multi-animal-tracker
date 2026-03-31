@@ -259,8 +259,18 @@ def build_pose_lookup_dataframe(
 def augment_trajectories_with_pose_df(
     trajectories_df: pd.DataFrame,
     pose_lookup_df: pd.DataFrame,
+    coordinate_scale: float = 1.0,
 ) -> pd.DataFrame:
-    """Merge pose properties into trajectory rows using (FrameID, DetectionID)."""
+    """Merge pose properties into trajectory rows using (FrameID, DetectionID).
+
+    Args:
+        trajectories_df: Trajectories dataframe to augment.
+        pose_lookup_df: Wide pose lookup dataframe from build_pose_lookup_dataframe.
+        coordinate_scale: Scale factor applied to all PoseKpt_*_X and PoseKpt_*_Y
+            columns after merging.  Set to ``1.0 / RESIZE_FACTOR`` when the pose
+            cache was built on down-scaled frames but the trajectory CSV already
+            contains original-resolution coordinates.
+    """
     if trajectories_df is None or trajectories_df.empty:
         return trajectories_df
     if (
@@ -317,6 +327,18 @@ def augment_trajectories_with_pose_df(
     for col in POSE_SUMMARY_COLUMNS:
         if col not in merged.columns:
             merged[col] = np.nan
+
+    # Rescale keypoint X/Y when the cache was built on down-scaled frames
+    if coordinate_scale != 1.0 and coordinate_scale > 0.0:
+        for col in merged.columns:
+            col_str = str(col)
+            if col_str.startswith("PoseKpt_") and (
+                col_str.endswith("_X") or col_str.endswith("_Y")
+            ):
+                merged[col] = (
+                    pd.to_numeric(merged[col], errors="coerce") * coordinate_scale
+                )
+
     return merged
 
 
@@ -325,6 +347,7 @@ def augment_trajectories_with_pose_cache(
     cache_path: str,
     ignore_keypoints: Any = None,
     min_valid_conf: float = 0.2,
+    coordinate_scale: float = 1.0,
 ) -> pd.DataFrame:
     """Load properties cache and merge wide pose columns into trajectory rows.
 
@@ -333,6 +356,9 @@ def augment_trajectories_with_pose_cache(
         cache_path: Path to individual properties cache
         ignore_keypoints: Keypoints to ignore
         min_valid_conf: Minimum confidence threshold for keypoint validity
+        coordinate_scale: Scale factor applied to PoseKpt_*_X / _Y columns.
+            Set to ``1.0 / RESIZE_FACTOR`` when the cache was built on
+            down-scaled frames.
     """
     cache = IndividualPropertiesCache(cache_path, mode="r")
     try:
@@ -351,7 +377,9 @@ def augment_trajectories_with_pose_cache(
         )
     finally:
         cache.close()
-    return augment_trajectories_with_pose_df(trajectories_df, lookup)
+    return augment_trajectories_with_pose_df(
+        trajectories_df, lookup, coordinate_scale=coordinate_scale
+    )
 
 
 def _ensure_pose_columns(

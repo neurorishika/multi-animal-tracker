@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import pytest
 
-from multi_tracker.core.tracking.canonical_crop import (
+from multi_tracker.core.canonicalization.crop import (
     CanonicalCropResult,
     _compose_affine,
     _rotation_matrix,

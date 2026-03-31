@@ -299,7 +299,7 @@ class IndividualDatasetGenerator:
             M_inverse_i = None
 
             if use_canonical_crop:
-                from multi_tracker.core.tracking.canonical_crop import (
+                from multi_tracker.core.canonicalization.crop import (
                     compute_native_crop_dimensions,
                     extract_canonical_crop,
                 )
@@ -481,7 +481,7 @@ class IndividualDatasetGenerator:
         # Prefer canonical crop when affine is provided
         M_inv = None
         if canonical_affine is not None and self._canonical_enabled:
-            from multi_tracker.core.tracking.canonical_crop import (
+            from multi_tracker.core.canonicalization.crop import (
                 compute_native_crop_dimensions,
                 extract_canonical_crop,
             )
@@ -637,7 +637,7 @@ class IndividualDatasetGenerator:
 
         # Option 1: suppress other animals' OBB regions before pose inference
         if other_corners_list:
-            from multi_tracker.core.tracking.pose_features import apply_foreign_obb_mask
+            from multi_tracker.utils.geometry import apply_foreign_obb_mask
 
             masked_crop = apply_foreign_obb_mask(
                 masked_crop,

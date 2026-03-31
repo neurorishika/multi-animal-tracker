@@ -265,7 +265,7 @@ def export_dataset(
 
     import pandas as pd
 
-    from ..core.detectors.engine import create_detector
+    from ..core.detectors import create_detector
 
     logger.info(f"Starting dataset export for {len(frame_ids)} frames")
 

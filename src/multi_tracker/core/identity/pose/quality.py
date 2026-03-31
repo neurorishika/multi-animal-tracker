@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from multi_tracker.core.tracking.pose_features import (
+from multi_tracker.core.identity.pose.features import (
     compute_pose_geometry_from_keypoints,
 )
 

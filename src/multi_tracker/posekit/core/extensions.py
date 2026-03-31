@@ -1258,8 +1258,6 @@ def build_coco_keypoints_dataset(
 
 from PySide6.QtCore import QObject, Signal, Slot
 
-from ...core.canonicalization import MatMetadataCanonicalizer
-
 
 class EmbeddingWorker(QObject):
     """Worker thread for computing embeddings."""
@@ -1282,7 +1280,6 @@ class EmbeddingWorker(QObject):
         use_enhance: bool,
         max_side: int,
         cache_ok: bool = True,
-        canonicalize_mat: bool = False,
     ):
         super().__init__()
         self.image_paths = image_paths
@@ -1294,7 +1291,6 @@ class EmbeddingWorker(QObject):
         self.use_enhance = use_enhance
         self.max_side = max_side
         self.cache_ok = cache_ok
-        self.canonicalize_mat = bool(canonicalize_mat)
         self._cancel = False
 
     def cancel(self) -> None:
@@ -1313,7 +1309,6 @@ class EmbeddingWorker(QObject):
                 "batch_size": int(self.batch_size),
                 "use_enhance": bool(self.use_enhance),
                 "max_side": int(self.max_side),
-                "canonicalize_mat": bool(self.canonicalize_mat),
             }
             key = _stable_hash_dict(meta)
             cache = IncrementalEmbeddingCache(self.cache_dir, key)
@@ -1348,7 +1343,6 @@ class EmbeddingWorker(QObject):
             model.eval().to(device)
             data_config = resolve_data_config({}, model=model)
             transform = create_transform(**data_config)
-            canonicalizer = MatMetadataCanonicalizer(enabled=self.canonicalize_mat)
 
             # embed missing
             feats = []
@@ -1364,8 +1358,6 @@ class EmbeddingWorker(QObject):
                 imgs = []
                 for i in batch_idx:
                     img = _read_image_pil(self.image_paths[i])
-                    if self.canonicalize_mat:
-                        img = canonicalizer(self.image_paths[i], img)
                     img = _maybe_downscale_pil(img, self.max_side)
                     if self.use_enhance:
                         img = _enhance_pil_for_pose(img)
@@ -1396,7 +1388,6 @@ class EmbeddingWorker(QObject):
                 self.failed.emit("Failed to load embeddings from cache.")
                 return
             emb = emb_all[self.eligible_indices]
-            meta["canonicalization_summary"] = canonicalizer.summary()
             cache.set_metadata(meta)
             self.finished.emit(emb, self.eligible_indices, meta)
 

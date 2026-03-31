@@ -1475,12 +1475,6 @@ class EmbeddingDialog(QDialog):
         self.force_recompute_check.setStyleSheet("color: #cccccc;")
         form.addRow("", self.force_recompute_check)
 
-        self.canonicalize_check = QCheckBox(
-            "Canonicalize MAT individual datasets using metadata.json when available"
-        )
-        self.canonicalize_check.setStyleSheet("color: #cccccc;")
-        form.addRow("", self.canonicalize_check)
-
         layout.addLayout(form)
 
         # Info
@@ -1490,7 +1484,6 @@ class EmbeddingDialog(QDialog):
             + "• <b>CLIP:</b> Good for semantic similarity<br>"
             + "• <b>ResNet/EfficientNet:</b> Faster, less memory<br><br>"
             + "<b>Device:</b> GPU is recommended for faster processing.<br>"
-            + "<b>Canonicalize:</b> Rotates/crops MAT individual-analysis crops using OBB metadata when available.<br>"
             + "<b>Cache:</b> Embeddings are cached automatically. Uncheck to recompute."
         )
         info = QLabel(info_text)
@@ -1513,9 +1506,8 @@ class EmbeddingDialog(QDialog):
         device = self.device_combo.currentData()
         batch_size = self.batch_spin.value()
         force_recompute = self.force_recompute_check.isChecked()
-        canonicalize_mat = self.canonicalize_check.isChecked()
 
-        return model_name, device, batch_size, force_recompute, canonicalize_mat
+        return model_name, device, batch_size, force_recompute
 
 
 class ClusterDialog(QDialog):
@@ -2007,16 +1999,8 @@ class ClassKitTrainingDialog(QDialog):
         aug_scroll_content = QWidget()
         aug_layout = QVBoxLayout(aug_scroll_content)
 
-        space_group = QGroupBox("Training Space")
-        space_layout = QHBoxLayout(space_group)
-        self.space_combo = QComboBox()
-        self.space_combo.addItem("Canonical (rotation corrected)", "canonical")
-        self.space_combo.addItem("Original (raw frames)", "original")
-        space_layout.addWidget(QLabel("<b>Space:</b>"))
-        space_layout.addWidget(self.space_combo)
-        aug_layout.addWidget(space_group)
-
         aug_group = QGroupBox("Augmentations")
+        aug_layout.addWidget(aug_group)
         aug_form = QFormLayout(aug_group)
 
         self.flip_lr_spin = QDoubleSpinBox()
@@ -2034,8 +2018,6 @@ class ClassKitTrainingDialog(QDialog):
         self.rotate_spin.setValue(0.0)
         aug_form.addRow("<b>Max Rotation (deg):</b>", self.rotate_spin)
 
-        aug_layout.addWidget(aug_group)
-
         # ---- Label-Switching Expansion (advanced, collapsible) ----
         exp_group = QGroupBox("Label-Switching Expansion  (advanced)")
         exp_group.setCheckable(True)
@@ -2050,7 +2032,6 @@ class ClassKitTrainingDialog(QDialog):
         exp_note = QLabel(
             "<i>Each row: source label → destination label when that flip is applied.<br>"
             "Pairs are applied to train images only; evaluation data is never flipped.<br>"
-            "Label expansion is available only in canonical space.<br>"
             "When enabled, all stochastic augmentations (flip/rotate) are disabled.</i>"
         )
         exp_note.setWordWrap(True)
@@ -2261,12 +2242,9 @@ class ClassKitTrainingDialog(QDialog):
         self._on_mode_changed()
         self._on_rebalance_mode_changed()
 
-        # Enforce canonical-only label expansion and explicit augmentation lockout.
+        # Enforce augmentation lockout when label expansion is active.
         self._exp_group.toggled.connect(
             lambda _checked: self._sync_expansion_constraints()
-        )
-        self.space_combo.currentIndexChanged.connect(
-            lambda _idx: self._sync_expansion_constraints()
         )
         self._sync_expansion_constraints()
 
@@ -2393,13 +2371,6 @@ class ClassKitTrainingDialog(QDialog):
         """Keep label-expansion settings valid and explicit in the UI."""
         expansion_enabled = bool(self._exp_group.isChecked())
 
-        if expansion_enabled and self.space_combo.currentData() != "canonical":
-            idx = self.space_combo.findData("canonical")
-            if idx >= 0:
-                self.space_combo.blockSignals(True)
-                self.space_combo.setCurrentIndex(idx)
-                self.space_combo.blockSignals(False)
-
         # Expansion in this workflow is deterministic augmentation, so disable
         # random flips/rotations to avoid conflicting semantics.
         for widget in (self.flip_lr_spin, self.flip_ud_spin, self.rotate_spin):
@@ -2409,14 +2380,12 @@ class ClassKitTrainingDialog(QDialog):
             self.flip_lr_spin.setValue(0.0)
             self.flip_ud_spin.setValue(0.0)
             self.rotate_spin.setValue(0.0)
-            self.space_combo.setEnabled(False)
             self._exp_constraints_label.setText(
-                "Label expansion ON: canonical space is locked and all random augmentations are disabled."
+                "Label expansion ON: all random augmentations are disabled."
             )
         else:
-            self.space_combo.setEnabled(True)
             self._exp_constraints_label.setText(
-                "Label expansion OFF: choose canonical/original space and augmentation probabilities freely."
+                "Label expansion OFF: choose augmentation probabilities freely."
             )
 
     def append_log(self, msg: str):
@@ -2452,9 +2421,6 @@ class ClassKitTrainingDialog(QDialog):
                 label_expansion["flipud"] = ud_map
 
         expansion_enabled = bool(self._exp_group.isChecked())
-        training_space = self.space_combo.currentData()
-        if expansion_enabled:
-            training_space = "canonical"
 
         # Label expansion creates deterministic flipped copies with remapped
         # labels, so stochastic augmentations are disabled while it is enabled.
@@ -2510,7 +2476,6 @@ class ClassKitTrainingDialog(QDialog):
             "custom_backbone_lr_scale": self._custom_backbone_lr_spin.value(),
             "custom_input_size": self._custom_input_size_spin.value(),
             # Space & Augmentations
-            "training_space": training_space,
             "flipud": flipud_value,
             "fliplr": fliplr_value,
             "rotate": rotate_value,
@@ -2692,9 +2657,9 @@ class ModelHistoryDialog(QDialog):
         self._qt_align = _Qt.AlignVCenter | _Qt.AlignLeft
         self._table_item_type = QTableWidgetItem
 
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
-            ["Name", "Timestamp", "Mode", "Classes", "Val Acc", "Canonicalize"]
+            ["Name", "Timestamp", "Mode", "Classes", "Val Acc"]
         )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(
@@ -2812,10 +2777,9 @@ class ModelHistoryDialog(QDialog):
             names = ", ".join(entry.get("class_names") or [])
             acc = entry.get("best_val_acc")
             acc_str = f"{acc:.3f}" if acc is not None else "—"
-            canon = "Yes" if entry.get("canonicalize_mat") else "No"
             display_name = self._display_name(entry)
 
-            values = [display_name, ts, mode, names, acc_str, canon]
+            values = [display_name, ts, mode, names, acc_str]
             for col, text in enumerate(values):
                 item = self._table_item_type(text)
                 item.setTextAlignment(self._qt_align)
@@ -2884,11 +2848,9 @@ class ModelHistoryDialog(QDialog):
             if filenames
             else "—"
         )
-        canon = "Yes" if entry.get("canonicalize_mat") else "No"
         self.detail_label.setText(
             f"<b>{display_name}</b> &nbsp;&bull;&nbsp; Mode: <b>{mode}</b>"
-            f" &nbsp;&bull;&nbsp; Val acc: <b>{acc_str}</b>"
-            f" &nbsp;&bull;&nbsp; Canonicalize: <b>{canon}</b><br>"
+            f" &nbsp;&bull;&nbsp; Val acc: <b>{acc_str}</b><br>"
             f"<span style='color:#888'>Classes:</span> {classes_html}<br>"
             f"<span style='color:#888'>Files:</span> {files_html}<br>"
             f"<span style='color:#555;font-size:10px'>{ts}</span>"

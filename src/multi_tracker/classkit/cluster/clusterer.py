@@ -220,7 +220,3 @@ def _build_knn_fn(embeddings: np.ndarray, k: int):
         return d[:, 1:k_actual].mean(axis=1)
 
     return _np
-
-
-# Backward-compat alias so any code that does
-# `from .clusterer import FAISSClusterer` keeps working.

@@ -10,7 +10,7 @@ from typing import List, Optional
 
 import numpy as np
 from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -138,15 +138,6 @@ class SmartSelectDialog(QDialog):
         self.cb_use_enhance = QCheckBox("Enhance images (CLAHE + unsharp)")
         self.cb_use_enhance.setChecked(bool(self.project.enhance_enabled))
         emb_form.addRow("", self.cb_use_enhance)
-
-        self.cb_canonicalize_mat = QCheckBox(
-            "Canonicalize MAT individual datasets using metadata.json when possible"
-        )
-        self.cb_canonicalize_mat.setToolTip(
-            "Uses MAT individual-dataset metadata to rotate/crop saved animal crops "
-            "before embedding and clustering. Images without usable metadata stay unchanged."
-        )
-        emb_form.addRow("", self.cb_canonicalize_mat)
 
         layout.addLayout(emb_form)
 
@@ -315,9 +306,6 @@ class SmartSelectDialog(QDialog):
         self.cb_use_enhance.setChecked(
             bool(settings.get("use_enhance", self.cb_use_enhance.isChecked()))
         )
-        self.cb_canonicalize_mat.setChecked(
-            bool(settings.get("canonicalize_mat", self.cb_canonicalize_mat.isChecked()))
-        )
         self.n_spin.setValue(int(settings.get("n", self.n_spin.value())))
         self.k_spin.setValue(int(settings.get("k", self.k_spin.value())))
         self.min_per_spin.setValue(
@@ -351,7 +339,6 @@ class SmartSelectDialog(QDialog):
                 "auto_batch": bool(self.cb_auto_batch.isChecked()),
                 "max_side": int(self.max_side_spin.value()),
                 "use_enhance": bool(self.cb_use_enhance.isChecked()),
-                "canonicalize_mat": bool(self.cb_canonicalize_mat.isChecked()),
                 "n": int(self.n_spin.value()),
                 "k": int(self.k_spin.value()),
                 "min_per": int(self.min_per_spin.value()),
@@ -421,7 +408,6 @@ class SmartSelectDialog(QDialog):
             use_enhance=bool(self.cb_use_enhance.isChecked()),
             max_side=int(self.max_side_spin.value()),
             cache_ok=True,
-            canonicalize_mat=bool(self.cb_canonicalize_mat.isChecked()),
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
@@ -453,16 +439,7 @@ class SmartSelectDialog(QDialog):
         self._cleanup_thread()
         self._emb = emb
         self._eligible_indices = eligible_indices
-        canon = meta.get("canonicalization_summary", {})
-        canon_text = ""
-        if meta.get("canonicalize_mat"):
-            canon_text = (
-                f" | canonicalized {canon.get('applied_count', 0)}"
-                f", skipped {canon.get('skipped_count', 0)}"
-            )
-        self.lbl_status.setText(
-            f"Embeddings ready: {emb.shape[0]} × {emb.shape[1]}{canon_text}"
-        )
+        self.lbl_status.setText(f"Embeddings ready: {emb.shape[0]} × {emb.shape[1]}")
         self.progress.setValue(self.progress.maximum())
         self.btn_compute.setEnabled(True)
         self.btn_cancel.setEnabled(False)
@@ -579,7 +556,6 @@ class SmartSelectDialog(QDialog):
             image_paths=[self.image_paths[i] for i in self._eligible_indices],
             cluster_ids=self._cluster,
             is_labeled_fn=self.is_labeled_fn if self.is_labeled_fn else lambda p: False,
-            canonicalize_mat=bool(self.cb_canonicalize_mat.isChecked()),
             parent=self,
         )
 
@@ -828,7 +804,6 @@ class EmbeddingExplorerDialog(QDialog):
         image_paths: List[Path],
         cluster_ids: Optional[np.ndarray] = None,
         is_labeled_fn=None,
-        canonicalize_mat: bool = False,
         parent=None,
     ):
         super().__init__(parent)
@@ -839,14 +814,12 @@ class EmbeddingExplorerDialog(QDialog):
         self.image_paths = image_paths
         self.cluster_ids = cluster_ids
         self.is_labeled_fn = is_labeled_fn or (lambda p: False)
-        self.canonicalize_mat = canonicalize_mat
 
         self.umap_projection: Optional[np.ndarray] = None
         self.selected_indices: List[int] = []
         self._umap_thread = None
         self._umap_worker = None
         self._pending_preview_idx: Optional[int] = None
-        self._canon_cache: dict = {}
 
         self._init_ui()
 
@@ -892,11 +865,6 @@ class EmbeddingExplorerDialog(QDialog):
         self.btn_cancel_umap.setEnabled(False)
         self.btn_cancel_umap.clicked.connect(self._cancel_umap)
         ctrl.addWidget(self.btn_cancel_umap)
-
-        if self.canonicalize_mat:
-            canon_badge = QLabel("  Canonicalization ON")
-            canon_badge.setStyleSheet("color: #4ec9b0; font-weight: bold;")
-            ctrl.addWidget(canon_badge)
 
         ctrl.addStretch()
         outer.addLayout(ctrl)
@@ -1045,44 +1013,13 @@ class EmbeddingExplorerDialog(QDialog):
         if idx is not None:
             self._load_preview(idx)
 
-    def _canonicalized_pixmap(self, path: Path) -> QPixmap:
-        """Load image and apply MAT canonicalization if enabled."""
-        cache_key = str(path)
-        if cache_key in self._canon_cache:
-            return self._canon_cache[cache_key]
-
-        try:
-            from PIL import Image as PILImage
-
-            from ....core.canonicalization import MatMetadataCanonicalizer
-
-            img_pil = PILImage.open(str(path)).convert("RGB")
-            canonicalizer = MatMetadataCanonicalizer(enabled=True)
-            img_pil = canonicalizer(path, img_pil)
-
-            arr = np.asarray(img_pil)
-            h, w = arr.shape[:2]
-            if arr.ndim == 2:
-                qimg = QImage(arr.data, w, h, w, QImage.Format_Grayscale8)
-            else:
-                qimg = QImage(arr.tobytes(), w, h, w * 3, QImage.Format_RGB888)
-            pixmap = QPixmap.fromImage(qimg)
-        except Exception:
-            pixmap = QPixmap(str(path))
-
-        self._canon_cache[cache_key] = pixmap
-        return pixmap
-
     def _load_preview(self, idx: int):
         if idx < 0 or idx >= len(self.image_paths):
             return
         path = self.image_paths[idx]
 
         try:
-            if self.canonicalize_mat:
-                pixmap = self._canonicalized_pixmap(path)
-            else:
-                pixmap = QPixmap(str(path))
+            pixmap = QPixmap(str(path))
 
             if not pixmap.isNull():
                 preview_w = max(8, self.preview_label.width() - 8)
@@ -1108,16 +1045,10 @@ class EmbeddingExplorerDialog(QDialog):
             cluster_str = str(int(self.cluster_ids[idx]))
         labeled_str = "yes" if self.is_labeled_fn(path) else "no"
         selected_str = "yes" if idx in self.selected_indices else "no"
-        canon_badge = (
-            "&nbsp; <span style='color:#4ec9b0;'>canonicalized</span>"
-            if self.canonicalize_mat
-            else ""
-        )
         self.preview_info.setText(
             f"<div style='line-height:1.6;'>"
             f"<b>Index:</b> {idx} &nbsp; <b>Cluster:</b> {cluster_str}<br>"
-            f"<b>Labeled:</b> {labeled_str} &nbsp; <b>Selected:</b> {selected_str}"
-            f"{canon_badge}<br>"
+            f"<b>Labeled:</b> {labeled_str} &nbsp; <b>Selected:</b> {selected_str}<br>"
             f"<span style='color:#9e9e9e; font-size:11px;'>{path.name}</span>"
             f"</div>"
         )

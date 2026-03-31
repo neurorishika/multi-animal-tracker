@@ -120,11 +120,6 @@ def _load_optimizer_module():
     data_pkg = types.ModuleType("multi_tracker.data")
     data_pkg.__path__ = []
 
-    pose_features = load_src_module(
-        "multi_tracker/core/tracking/pose_features.py",
-        "pose_features_for_optimizer_test",
-    )
-
     qtcore = types.ModuleType("PySide6.QtCore")
 
     class Signal:
@@ -157,14 +152,32 @@ def _load_optimizer_module():
     assigner = types.ModuleType("multi_tracker.core.assigners.hungarian")
     assigner.TrackAssigner = _StubTrackAssigner
 
-    detectors_engine = types.ModuleType("multi_tracker.core.detectors.engine")
-    detectors_engine.DetectionFilter = _StubDetectionFilter
+    core_detectors = types.ModuleType("multi_tracker.core.detectors")
+    core_detectors.__path__ = []
+    core_detectors.DetectionFilter = _StubDetectionFilter
 
     kalman = types.ModuleType("multi_tracker.core.filters.kalman")
     kalman.KalmanFilterManager = _StubKalmanFilterManager
 
     detection_cache = types.ModuleType("multi_tracker.data.detection_cache")
     detection_cache.DetectionCache = object
+
+    # Identity sub-package stubs (optimizer imports from canonical locations).
+    # These are pure-Python modules; load the real implementations.
+    core_identity = types.ModuleType("multi_tracker.core.identity")
+    core_identity.__path__ = []
+
+    identity_geometry = load_src_module(
+        "multi_tracker/core/identity/geometry.py",
+        "identity_geometry_for_optimizer_test",
+    )
+
+    pose_pkg = types.ModuleType("multi_tracker.core.identity.pose")
+    pose_pkg.__path__ = []
+    pose_features = load_src_module(
+        "multi_tracker/core/identity/pose/features.py",
+        "pose_features_for_optimizer_test",
+    )
 
     stubs = {
         "cv2": make_cv2_stub(),
@@ -175,11 +188,14 @@ def _load_optimizer_module():
         "multi_tracker.core": core_pkg,
         "multi_tracker.core.tracking": core_tracking,
         "multi_tracker.data": data_pkg,
-        "multi_tracker.core.tracking.pose_features": pose_features,
         "multi_tracker.core.assigners.hungarian": assigner,
-        "multi_tracker.core.detectors.engine": detectors_engine,
+        "multi_tracker.core.detectors": core_detectors,
         "multi_tracker.core.filters.kalman": kalman,
         "multi_tracker.data.detection_cache": detection_cache,
+        "multi_tracker.core.identity": core_identity,
+        "multi_tracker.core.identity.geometry": identity_geometry,
+        "multi_tracker.core.identity.pose": pose_pkg,
+        "multi_tracker.core.identity.pose.features": pose_features,
     }
 
     return load_src_module(

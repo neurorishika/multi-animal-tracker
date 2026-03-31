@@ -7,7 +7,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-from PIL import Image as PILImage
 from PySide6.QtCore import QEvent, QSize, Qt, QThreadPool, QTimer, Slot
 from PySide6.QtGui import QAction, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
@@ -37,8 +36,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-
-from multi_tracker.core.canonicalization import MatMetadataCanonicalizer
 
 from .color_utils import best_text_color, build_category_color_map, to_hex
 
@@ -89,14 +86,10 @@ class MainWindow(QMainWindow):
         self._show_model_umap = False  # Explorer toggle: embedding vs model UMAP
         self._show_model_pca = False  # Explorer toggle: embedding vs model PCA
         self._al_candidates = None  # np.ndarray of selected AL batch indices
-        self._yolo_canonicalize_mat = (
-            False  # Whether loaded model was trained on canonical views
-        )
         self._active_model_mode = None  # "yolo", "tiny", or None
         self._current_knn_neighbors = []
         self._stepper = None
         self._custom_shortcuts: dict = {}  # action_name → key sequence string
-        self._canonicalize_enabled = True
         self._outline_threshold = 0.60
 
         # Display enhancement settings (sync with PoseKit)
@@ -363,16 +356,6 @@ class MainWindow(QMainWindow):
         view_menu.addAction(refresh_action)
 
         view_menu.addSeparator()
-
-        self.act_canonicalize = QAction("Canonical &View (MAT Metadata)", self)
-        self.act_canonicalize.setShortcut("Ctrl+Shift+C")
-        self.act_canonicalize.setCheckable(True)
-        self.act_canonicalize.setChecked(True)
-        self.act_canonicalize.setStatusTip(
-            "Toggle canonical (rotation-corrected) image display in the preview panel"
-        )
-        self.act_canonicalize.toggled.connect(self._toggle_canonicalize)
-        view_menu.addAction(self.act_canonicalize)
 
         self.act_enhance = QAction("&Enhance Contrast (CLAHE)", self)
         self.act_enhance.setShortcut("Ctrl+Shift+E")
@@ -965,19 +948,7 @@ class MainWindow(QMainWindow):
         )
         preview_layout.addWidget(preview_title)
 
-        # Canonical view toggle row
-        canon_row = QHBoxLayout()
-        self.cb_canonicalize = QCheckBox("Canonical View")
-        self.cb_canonicalize.setToolTip(
-            "Display images in canonical orientation (rotation-corrected via MAT metadata).\n"
-            "Matches the orientation used when 'Canonicalize' is enabled in embedding computation."
-        )
-        self.cb_canonicalize.setStyleSheet("color: #cccccc;")
-        self.cb_canonicalize.setChecked(True)
-        self.cb_canonicalize.toggled.connect(self._toggle_canonicalize)
-        canon_row.addWidget(self.cb_canonicalize)
-        canon_row.addStretch()
-        preview_layout.addLayout(canon_row)
+        # Enhance toggle
 
         self.preview_canvas = ImageCanvas()
         self.preview_canvas.setMinimumHeight(320)
@@ -1504,9 +1475,6 @@ class MainWindow(QMainWindow):
                         self._active_model_mode = cached_preds.get(
                             "active_model_mode", "yolo"
                         )
-                        self._yolo_canonicalize_mat = bool(
-                            cached_preds.get("canonicalize_mat", False)
-                        )
                         self.image_confidences = list(
                             self._model_probs.max(axis=1).astype(float)
                         )
@@ -1526,17 +1494,6 @@ class MainWindow(QMainWindow):
                     ):
                         self._yolo_model_path = yolo_ckpt
                         self._active_model_mode = "yolo"
-                        meta_path = yolo_ckpt.with_name(
-                            "yolo_classifier_latest_meta.json"
-                        )
-                        if meta_path.exists():
-                            try:
-                                _meta = json.loads(meta_path.read_text())
-                                self._yolo_canonicalize_mat = bool(
-                                    _meta.get("canonicalize_mat", False)
-                                )
-                            except Exception:
-                                pass
                         QTimer.singleShot(
                             200, lambda p=yolo_ckpt: self._run_yolo_inference(p)
                         )
@@ -1562,9 +1519,6 @@ class MainWindow(QMainWindow):
                         self._model_class_names = cached_preds["class_names"]
                         self._active_model_mode = cached_preds.get(
                             "active_model_mode", ""
-                        )
-                        self._yolo_canonicalize_mat = bool(
-                            cached_preds.get("canonicalize_mat", False)
                         )
                         self.image_confidences = list(
                             self._model_probs.max(axis=1).astype(float)
@@ -2345,22 +2299,7 @@ class MainWindow(QMainWindow):
 
         image_path = self.image_paths[index]
 
-        if self._canonicalize_enabled:
-            try:
-                pil_img = PILImage.open(str(image_path)).convert("RGB")
-                canon_img = MatMetadataCanonicalizer(enabled=True)(
-                    str(image_path), pil_img
-                )
-                # Convert PIL to numpy RGB for the canvas
-                img_rgb = np.asarray(canon_img)
-                # Use set_cv_image which handles CLAHE enhancement
-                cache_key = f"canon_{image_path}"
-                self.preview_canvas.set_cv_image(img_rgb, cache_key=cache_key)
-            except Exception:
-                # Fall back to normal display if canonicalization fails
-                self.preview_canvas.set_image(str(image_path))
-        else:
-            self.preview_canvas.set_image(str(image_path))
+        self.preview_canvas.set_image(str(image_path))
 
         self.last_preview_index = index
         current_label = (
@@ -2837,7 +2776,6 @@ class MainWindow(QMainWindow):
         model_name = last_embed_meta.get("model_name", "dinov2_vitb14")
         device = last_embed_meta.get("device", "cpu")
         batch_size = last_embed_meta.get("batch_size", 32)
-        canonicalize_mat = bool(last_embed_meta.get("canonicalize_mat", False))
 
         n_clusters = 500
         cluster_method = "minibatch"
@@ -2871,7 +2809,6 @@ class MainWindow(QMainWindow):
             model_name,
             device,
             batch_size,
-            canonicalize_mat,
             n_clusters,
             cluster_method,
             n_neighbors,
@@ -2924,7 +2861,6 @@ class MainWindow(QMainWindow):
         model_name,
         device,
         batch_size,
-        canonicalize_mat,
         n_clusters,
         cluster_method,
         n_neighbors,
@@ -2940,7 +2876,6 @@ class MainWindow(QMainWindow):
             batch_size,
             db_path=self.db_path,
             force_recompute=True,
-            canonicalize_mat=canonicalize_mat,
         )
         worker.signals.started.connect(
             lambda: self.status.showMessage("Re-computing embeddings…")
@@ -3169,9 +3104,7 @@ class MainWindow(QMainWindow):
         dialog = EmbeddingDialog(self)
         if not dialog.exec():
             return
-        model_name, device, batch_size, force_recompute, canonicalize_mat = (
-            dialog.get_settings()
-        )
+        model_name, device, batch_size, force_recompute = dialog.get_settings()
 
         from ..jobs.task_workers import EmbeddingWorker
 
@@ -3182,7 +3115,6 @@ class MainWindow(QMainWindow):
             batch_size,
             db_path=self.db_path,
             force_recompute=force_recompute,
-            canonicalize_mat=canonicalize_mat,
         )
         worker.signals.started.connect(
             lambda: self.status.showMessage("Computing embeddings…")
@@ -3496,9 +3428,7 @@ class MainWindow(QMainWindow):
 
         dialog = EmbeddingDialog(self)
         if dialog.exec():
-            model_name, device, batch_size, force_recompute, canonicalize_mat = (
-                dialog.get_settings()
-            )
+            model_name, device, batch_size, force_recompute = dialog.get_settings()
 
             from ..jobs.task_workers import EmbeddingWorker
 
@@ -3509,7 +3439,6 @@ class MainWindow(QMainWindow):
                 batch_size,
                 db_path=self.db_path,
                 force_recompute=force_recompute,
-                canonicalize_mat=canonicalize_mat,
             )
             worker.signals.started.connect(
                 lambda: self.status.showMessage("Computing embeddings...")
@@ -3693,9 +3622,6 @@ class MainWindow(QMainWindow):
             is_yolo = "yolo" in mode
             multi_head = mode.startswith("multihead")
 
-            # Canonical space training requires on-the-fly transformation during export
-            use_canonical = settings.get("training_space") == "canonical"
-
             role_map = {
                 "flat_tiny": TrainingRole.CLASSIFY_FLAT_TINY,
                 "flat_yolo": TrainingRole.CLASSIFY_FLAT_YOLO,
@@ -3714,13 +3640,6 @@ class MainWindow(QMainWindow):
             timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
             run_dir = project_path / ".classkit_runs" / f"{mode}_{timestamp}"
             run_dir.mkdir(parents=True, exist_ok=True)
-
-            # Temp directory for canonicalized images (only if needed)
-            temp_canon_dir = None
-            if use_canonical:
-                temp_canon_path = run_dir / "canonical_images"
-                temp_canon_path.mkdir(parents=True, exist_ok=True)
-                temp_canon_dir = temp_canon_path
 
             images = [_Path(p) for p, _ in labeled_pairs]
             labels_str = [lbl for _, lbl in labeled_pairs]
@@ -3770,7 +3689,7 @@ class MainWindow(QMainWindow):
                         label_smoothing=settings.get("tiny_label_smoothing", 0.0),
                     ),
                     device=settings.get("device", "cpu"),
-                    training_space="canonical" if use_canonical else "original",
+                    training_space="original",
                     augmentation_profile=aug,
                 )
                 if mode in ("flat_custom", "multihead_custom"):
@@ -3833,9 +3752,6 @@ class MainWindow(QMainWindow):
                 dialog.start_btn.setEnabled(True)
                 dialog.cancel_btn.setEnabled(False)
 
-                # Persist canonicalization setting for inference consistency
-                self._yolo_canonicalize_mat = use_canonical
-
                 # ── Save to project model cache (DB) ──────────────────
                 if self.db_path and results:
                     try:
@@ -3864,7 +3780,6 @@ class MainWindow(QMainWindow):
                                 mode=mode,
                                 artifact_paths=artifact_paths,
                                 class_names=all_classes,
-                                canonicalize_mat=use_canonical,
                                 best_val_acc=best_acc,
                                 num_classes=len(all_classes),
                             )
@@ -3991,8 +3906,6 @@ class MainWindow(QMainWindow):
                                     format="ultralytics",
                                     class_names=f_names,
                                     val_fraction=self.val_fraction,
-                                    canonicalize=self.canonicalize,
-                                    temp_dir=self.temp_dir,
                                     label_expansion=_exp_label_expansion,
                                 )
                                 # Run synchronously within this thread
@@ -4010,8 +3923,6 @@ class MainWindow(QMainWindow):
                     output_path=run_dir,
                     format="ultralytics",
                     val_fraction=settings.get("val_fraction", 0.2),
-                    canonicalize=use_canonical,
-                    temp_dir=temp_canon_dir,
                     scheme=scheme,
                     labels_str=labels_str,
                 )
@@ -4023,8 +3934,6 @@ class MainWindow(QMainWindow):
                     format="ultralytics",
                     class_names=class_names_int,
                     val_fraction=settings.get("val_fraction", 0.2),
-                    canonicalize=use_canonical,
-                    temp_dir=temp_canon_dir,
                     label_expansion=settings.get("label_expansion") or {},
                 )
 
@@ -4035,9 +3944,7 @@ class MainWindow(QMainWindow):
 
             dialog.start_btn.setEnabled(False)
             dialog.cancel_btn.setEnabled(True)
-            dialog.append_log(
-                f"Starting dataset export (space: {settings.get('training_space')})..."
-            )
+            dialog.append_log("Starting dataset export...")
             self._threadpool_start(worker)
 
         scheme_name = scheme.name if scheme else "classkit"
@@ -4097,17 +4004,6 @@ class MainWindow(QMainWindow):
                             dest = model_dir / "yolo_classifier_latest.pt"
                             shutil.copy2(artifact, dest)
                             self._yolo_model_path = dest
-                            # Write sidecar so inference uses correct preprocessing on reload
-                            meta_dest = model_dir / "yolo_classifier_latest_meta.json"
-                            meta_dest.write_text(
-                                json.dumps(
-                                    {
-                                        "canonicalize_mat": bool(
-                                            self._yolo_canonicalize_mat
-                                        )
-                                    }
-                                )
-                            )
                             dialog.append_log(f"Saved to project models: {dest.name}")
                         except Exception as copy_exc:
                             dialog.append_log(f"Model copy warning: {copy_exc}")
@@ -4608,24 +4504,6 @@ class MainWindow(QMainWindow):
             if self.last_preview_index is not None:
                 self.load_preview_for_index(self.last_preview_index, source="enhance")
 
-    def _toggle_canonicalize(self, checked: bool):
-        """Toggle canonical (rotation-corrected) image display in the preview panel."""
-        self._canonicalize_enabled = checked
-        # Sync checkbox and menu action without re-triggering
-        if self.cb_canonicalize.isChecked() != checked:
-            self.cb_canonicalize.blockSignals(True)
-            self.cb_canonicalize.setChecked(checked)
-            self.cb_canonicalize.blockSignals(False)
-        if self.act_canonicalize.isChecked() != checked:
-            self.act_canonicalize.blockSignals(True)
-            self.act_canonicalize.setChecked(checked)
-            self.act_canonicalize.blockSignals(False)
-        # Re-display current preview with the new setting
-        if self.last_preview_index is not None:
-            self.load_preview_for_index(self.last_preview_index, source="canonicalize")
-        label = "ON" if checked else "OFF"
-        self.status.showMessage(f"Canonical view {label}")
-
     def show_about(self):
         """Show about dialog."""
         QMessageBox.about(
@@ -4778,7 +4656,6 @@ class MainWindow(QMainWindow):
                 probs=probs,
                 class_names=class_names or [],
                 active_model_mode=mode,
-                canonicalize_mat=self._yolo_canonicalize_mat,
             )
         except Exception:
             pass  # non-fatal — just means cache won't be available next session
@@ -4798,7 +4675,6 @@ class MainWindow(QMainWindow):
             self.image_paths,
             compute_runtime=compute_runtime,
             batch_size=64,
-            canonicalize_mat=self._yolo_canonicalize_mat,
         )
 
         def _inference_success(result):
@@ -4854,7 +4730,6 @@ class MainWindow(QMainWindow):
             class_names,
             compute_runtime=compute_runtime,
             batch_size=64,
-            canonicalize_mat=self._yolo_canonicalize_mat,
         )
 
         def _tiny_success(result):
@@ -5030,7 +4905,6 @@ class MainWindow(QMainWindow):
                 f"Model file not found:\n{paths[0] if paths else 'unknown'}",
             )
             return
-        self._yolo_canonicalize_mat = bool(entry.get("canonicalize_mat", False))
         class_names = entry.get("class_names") or list(self.classes)
 
         def _after(r):

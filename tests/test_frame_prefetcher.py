@@ -19,6 +19,8 @@ import numpy as np
 from multi_tracker.utils.frame_prefetcher import (
     FramePrefetcher,
     FramePrefetcherBackward,
+    SequentialScanPrefetcher,
+    SparseFramePrefetcher,
 )
 
 
@@ -120,6 +122,34 @@ class TestFramePrefetcher:
                     break
                 assert frame is not None
                 frames_read += 1
+
+            assert frames_read == num_frames
+
+            prefetcher.stop()
+            cap.release()
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+    def test_slow_consumer_does_not_drop_frames(self):
+        """A full queue must not cause already-read frames to be discarded."""
+        num_frames = 20
+        video_path = create_test_video(num_frames)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            prefetcher = FramePrefetcher(cap, buffer_size=1)
+            prefetcher.start()
+
+            # Give the producer time to fill the single-slot queue.
+            time.sleep(0.25)
+
+            frames_read = 0
+            while True:
+                ret, frame = prefetcher.read()
+                if not ret:
+                    break
+                assert frame is not None
+                frames_read += 1
+                time.sleep(0.02)
 
             assert frames_read == num_frames
 
@@ -355,6 +385,221 @@ class TestFramePrefetcherRobustness:
                 ret, frame = prefetcher.read()
                 prefetcher.stop()
 
+            cap.release()
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+
+class TestSparseFramePrefetcher:
+    """Test suite for SparseFramePrefetcher class."""
+
+    def test_read_specific_frames(self):
+        """Test reading specific sparse frames."""
+        num_frames = 30
+        video_path = create_test_video(num_frames)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            indices = [0, 5, 10, 15, 20, 25]
+            prefetcher = SparseFramePrefetcher(cap, indices, buffer_size=4)
+            prefetcher.start()
+
+            read_indices = []
+            while True:
+                item = prefetcher.read()
+                if item is None:
+                    break
+                f, ret, frame = item
+                assert ret is True
+                assert frame is not None
+                read_indices.append(f)
+
+            assert read_indices == indices
+
+            prefetcher.stop()
+            cap.release()
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+    def test_contiguous_frames(self):
+        """Test reading contiguous frames (should skip seeks)."""
+        num_frames = 20
+        video_path = create_test_video(num_frames)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            indices = list(range(5, 15))
+            prefetcher = SparseFramePrefetcher(cap, indices, buffer_size=4)
+            prefetcher.start()
+
+            read_indices = []
+            while True:
+                item = prefetcher.read()
+                if item is None:
+                    break
+                f, ret, frame = item
+                assert ret is True
+                read_indices.append(f)
+
+            assert read_indices == indices
+
+            prefetcher.stop()
+            cap.release()
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+    def test_context_manager(self):
+        """Test context manager usage."""
+        video_path = create_test_video(20)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            with SparseFramePrefetcher(cap, [0, 5, 10], buffer_size=2) as pf:
+                item = pf.read()
+                assert item is not None
+                f, ret, frame = item
+                assert f == 0
+                assert ret is True
+            cap.release()
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+
+class TestSequentialScanPrefetcher:
+    """Test suite for SequentialScanPrefetcher class."""
+
+    def test_read_specific_frames(self):
+        """Test that only needed frames are returned."""
+        num_frames = 30
+        video_path = create_test_video(num_frames)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            indices = [5, 10, 15, 20, 25]
+            prefetcher = SequentialScanPrefetcher(cap, indices, buffer_size=4)
+            prefetcher.start()
+
+            read_indices = []
+            while True:
+                item = prefetcher.read()
+                if item is None:
+                    break
+                f, ret, frame = item
+                assert ret is True
+                assert frame is not None
+                read_indices.append(f)
+
+            assert read_indices == indices
+
+            prefetcher.stop()
+            cap.release()
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+    def test_contiguous_frames(self):
+        """Test reading contiguous frames."""
+        num_frames = 20
+        video_path = create_test_video(num_frames)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            indices = list(range(3, 13))
+            prefetcher = SequentialScanPrefetcher(cap, indices, buffer_size=4)
+            prefetcher.start()
+
+            read_indices = []
+            while True:
+                item = prefetcher.read()
+                if item is None:
+                    break
+                f, ret, frame = item
+                assert ret is True
+                read_indices.append(f)
+
+            assert read_indices == indices
+
+            prefetcher.stop()
+            cap.release()
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+    def test_single_frame(self):
+        """Test with a single needed frame."""
+        video_path = create_test_video(20)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            prefetcher = SequentialScanPrefetcher(cap, [10], buffer_size=2)
+            prefetcher.start()
+
+            item = prefetcher.read()
+            assert item is not None
+            f, ret, frame = item
+            assert f == 10
+            assert ret is True
+
+            # Should get sentinel next
+            item = prefetcher.read()
+            assert item is None
+
+            prefetcher.stop()
+            cap.release()
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+    def test_context_manager(self):
+        """Test context manager usage."""
+        video_path = create_test_video(20)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            with SequentialScanPrefetcher(cap, [2, 8, 14], buffer_size=2) as pf:
+                item = pf.read()
+                assert item is not None
+                f, ret, frame = item
+                assert f == 2
+                assert ret is True
+            cap.release()
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+    def test_returns_same_frames_as_sparse(self):
+        """Verify sequential and sparse prefetchers return same frame indices."""
+        num_frames = 30
+        video_path = create_test_video(num_frames)
+        try:
+            indices = [2, 7, 12, 17, 22, 27]
+
+            # Sparse
+            cap1 = cv2.VideoCapture(video_path)
+            pf1 = SparseFramePrefetcher(cap1, indices, buffer_size=4)
+            pf1.start()
+            sparse_indices = []
+            while True:
+                item = pf1.read()
+                if item is None:
+                    break
+                sparse_indices.append(item[0])
+            pf1.stop()
+            cap1.release()
+
+            # Sequential
+            cap2 = cv2.VideoCapture(video_path)
+            pf2 = SequentialScanPrefetcher(cap2, indices, buffer_size=4)
+            pf2.start()
+            seq_indices = []
+            while True:
+                item = pf2.read()
+                if item is None:
+                    break
+                seq_indices.append(item[0])
+            pf2.stop()
+            cap2.release()
+
+            assert sparse_indices == seq_indices == indices
+        finally:
+            Path(video_path).unlink(missing_ok=True)
+
+    def test_stop_without_start(self):
+        """Test that stopping without starting is safe."""
+        video_path = create_test_video(10)
+        try:
+            cap = cv2.VideoCapture(video_path)
+            pf = SequentialScanPrefetcher(cap, [0, 5], buffer_size=2)
+            pf.stop()  # Should not crash
             cap.release()
         finally:
             Path(video_path).unlink(missing_ok=True)

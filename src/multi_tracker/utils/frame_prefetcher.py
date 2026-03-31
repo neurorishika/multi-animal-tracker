@@ -36,7 +36,7 @@ class FramePrefetcher:
         prefetcher.stop()
     """
 
-    def __init__(self, video_capture, buffer_size=2):
+    def __init__(self, video_capture, buffer_size=2, read_timeout=30.0):
         """
         Initialize frame prefetcher.
 
@@ -44,10 +44,18 @@ class FramePrefetcher:
             video_capture: OpenCV VideoCapture object
             buffer_size (int): Number of frames to buffer (default: 2)
                               Higher = more memory, but better I/O tolerance
+            read_timeout (float): Seconds to wait for a frame before declaring
+                              a stall (default: 30).  Increase when the decode
+                              backend shares resources with GPU inference.
         """
         self.cap = video_capture
         self.buffer_size = buffer_size
+        self._read_timeout = read_timeout
         self.frame_queue = queue.Queue(maxsize=buffer_size)
+        self._frames_read = 0  # frames successfully read by bg thread
+        self._frames_consumed = 0  # frames returned to caller via read()
+        self._last_read_ok = True  # last cap.read() return value
+        self._stopped_reason = None  # why the bg thread exited
         self.stop_requested = threading.Event()
         self.exception = None  # Store exceptions from background thread
         self.thread = None
@@ -71,22 +79,48 @@ class FramePrefetcher:
             while not self.stop_requested.is_set():
                 # Read next frame from video
                 ret, frame = self.cap.read()
+                self._last_read_ok = ret
 
-                # Put frame in queue (blocks if queue is full)
-                # Use timeout to allow periodic stop checks
-                try:
-                    self.frame_queue.put((ret, frame), timeout=0.1)
-                except queue.Full:
-                    # Queue is full, retry (allows checking stop_requested)
-                    continue
+                # Keep retrying the same frame until it is enqueued. Dropping
+                # already-read frames advances the capture and can terminate the
+                # stream early under slow-consumer workloads.
+                enqueued = False
+                while not self.stop_requested.is_set():
+                    try:
+                        self.frame_queue.put((ret, frame), timeout=0.1)
+                        enqueued = True
+                        break
+                    except queue.Full:
+                        continue
+
+                if not enqueued:
+                    self._stopped_reason = "stop_requested"
+                    break
+
+                if ret:
+                    self._frames_read += 1
 
                 # If we've reached end of video, stop prefetching
                 if not ret:
+                    self._stopped_reason = "eof_or_read_error"
+                    logger.warning(
+                        "Prefetcher bg-thread: cap.read() returned False after "
+                        "%d successful frames. cap.isOpened()=%s, "
+                        "CAP_PROP_POS_FRAMES=%.0f, CAP_PROP_FRAME_COUNT=%.0f",
+                        self._frames_read,
+                        self.cap.isOpened() if self.cap else "N/A",
+                        self.cap.get(1) if self.cap and self.cap.isOpened() else -1,
+                        self.cap.get(7) if self.cap and self.cap.isOpened() else -1,
+                    )
                     break
+
+            if self._stopped_reason is None and self.stop_requested.is_set():
+                self._stopped_reason = "stop_requested"
 
         except Exception as e:
             # Store exception to be raised in main thread
             self.exception = e
+            self._stopped_reason = f"exception: {e}"
             logger.error("Exception in prefetcher thread: %s", e, exc_info=True)
             # Put sentinel to unblock main thread
             try:
@@ -108,11 +142,34 @@ class FramePrefetcher:
 
         try:
             # Get frame from queue with timeout to detect stalls
-            ret, frame = self.frame_queue.get(timeout=5.0)
+            ret, frame = self.frame_queue.get(timeout=self._read_timeout)
+            if ret:
+                self._frames_consumed += 1
             return ret, frame
         except queue.Empty:
             # Queue is empty after timeout - likely stalled
-            logger.error("Frame prefetcher timeout - no frames available")
+            _thread_alive = self.thread.is_alive() if self.thread else False
+            logger.error(
+                "Frame prefetcher timeout (%.1fs) — no frames available. "
+                "bg_thread_alive=%s, frames_read=%d, frames_consumed=%d, "
+                "queue_size=%d/%d, stopped_reason=%s, last_read_ok=%s, "
+                "cap_isOpened=%s, cap_pos=%.0f, exception=%s",
+                self._read_timeout,
+                _thread_alive,
+                self._frames_read,
+                self._frames_consumed,
+                self.frame_queue.qsize(),
+                self.buffer_size,
+                self._stopped_reason,
+                self._last_read_ok,
+                self.cap.isOpened() if self.cap else "N/A",
+                (
+                    self.cap.get(cv2.CAP_PROP_POS_FRAMES)
+                    if self.cap and self.cap.isOpened()
+                    else -1
+                ),
+                self.exception,
+            )
             return False, None
 
     def stop(self: object) -> object:
@@ -214,6 +271,111 @@ class SparseFramePrefetcher:
         """Return ``(frame_idx, ret, frame)`` or *None* at end."""
         if self.exception is not None:
             raise RuntimeError("SparseFramePrefetcher failed") from self.exception
+        try:
+            item = self.frame_queue.get(timeout=10.0)
+            return item
+        except queue.Empty:
+            return None
+
+    def stop(self):
+        if not self._started:
+            return
+        self.stop_requested.set()
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=2.0)
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
+        self._started = False
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *args):
+        self.stop()
+        return False
+
+
+class SequentialScanPrefetcher:
+    """
+    Prefetcher that does a single sequential forward pass through a frame range.
+
+    Instead of seeking to each needed frame individually (expensive with
+    H.264/H.265 codecs), this reads every frame from ``min(frame_indices)``
+    to ``max(frame_indices)`` sequentially and only queues frames that appear
+    in the *frame_indices* set.  Frames not in the set are decoded but
+    immediately discarded.
+
+    This is dramatically faster than :class:`SparseFramePrefetcher` when the
+    needed frames are spread across a large portion of the video range, because
+    sequential ``cap.read()`` avoids the per-frame seek cost (~5–50 ms each on
+    compressed codecs).
+    """
+
+    def __init__(self, video_capture, frame_indices, buffer_size=4):
+        self.cap = video_capture
+        self.needed = set(frame_indices)
+        self.first_frame = min(frame_indices)
+        self.last_frame = max(frame_indices)
+        self.buffer_size = buffer_size
+        self.frame_queue = queue.Queue(maxsize=buffer_size)
+        self.stop_requested = threading.Event()
+        self.exception = None
+        self.thread = None
+        self._started = False
+
+    def start(self):
+        if self._started:
+            return
+        self.stop_requested.clear()
+        self.thread = threading.Thread(target=self._scan_loop, daemon=True)
+        self.thread.start()
+        self._started = True
+
+    def _scan_loop(self):
+        try:
+            # Single seek to the start of the range
+            current_pos = int(self.cap.get(cv2.CAP_PROP_POS_FRAMES))
+            if current_pos != self.first_frame:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.first_frame)
+
+            for f in range(self.first_frame, self.last_frame + 1):
+                if self.stop_requested.is_set():
+                    break
+                ret, frame = self.cap.read()
+                if not ret:
+                    break
+                if f not in self.needed:
+                    continue  # discard non-needed frames (no seek cost)
+                while not self.stop_requested.is_set():
+                    try:
+                        self.frame_queue.put((f, ret, frame), timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+            # sentinel
+            if not self.stop_requested.is_set():
+                while not self.stop_requested.is_set():
+                    try:
+                        self.frame_queue.put(None, timeout=0.1)
+                        break
+                    except queue.Full:
+                        continue
+        except Exception as e:
+            self.exception = e
+            logger.error("SequentialScanPrefetcher error: %s", e, exc_info=True)
+            try:
+                self.frame_queue.put(None, block=False)
+            except queue.Full:
+                pass
+
+    def read(self):
+        """Return ``(frame_idx, ret, frame)`` or *None* at end."""
+        if self.exception is not None:
+            raise RuntimeError("SequentialScanPrefetcher failed") from self.exception
         try:
             item = self.frame_queue.get(timeout=10.0)
             return item

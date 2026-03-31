@@ -195,3 +195,46 @@ def test_merge_interpolated_pose_fills_only_missing_detection_pose():
     assert out.iloc[1]["PoseKpt_head_X"] == pytest.approx(3.0)
     assert out.iloc[1]["PoseKpt_head_Y"] == pytest.approx(4.0)
     assert out.iloc[1]["PoseKpt_head_Conf"] == pytest.approx(0.7)
+
+
+def test_augment_trajectories_with_pose_cache_coordinate_scale(tmp_path):
+    """When coordinate_scale != 1.0, PoseKpt_*_X/Y are rescaled."""
+    cache_path = tmp_path / "props_scale.npz"
+    writer = IndividualPropertiesCache(str(cache_path), mode="w")
+    writer.add_frame(
+        5,
+        [501.0],
+        pose_keypoints=[np.array([[10, 20, 0.9], [30, 40, 0.8]], dtype=np.float32)],
+    )
+    writer.save(
+        metadata={
+            "individual_properties_id": "abc",
+            "pose_keypoint_names": ["head", "tail"],
+        }
+    )
+    writer.close()
+
+    trajectories = pd.DataFrame(
+        [{"FrameID": 5, "DetectionID": 501, "TrajectoryID": 1, "X": 20, "Y": 40}]
+    )
+
+    # No scaling (default)
+    out_noscale = augment_trajectories_with_pose_cache(trajectories, str(cache_path))
+    assert out_noscale.iloc[0]["PoseKpt_head_X"] == pytest.approx(10.0)
+    assert out_noscale.iloc[0]["PoseKpt_head_Y"] == pytest.approx(20.0)
+    assert out_noscale.iloc[0]["PoseKpt_tail_X"] == pytest.approx(30.0)
+    assert out_noscale.iloc[0]["PoseKpt_tail_Y"] == pytest.approx(40.0)
+
+    # With coordinate_scale=2.0 (simulates RESIZE_FACTOR=0.5 → scale=1/0.5=2)
+    out_scaled = augment_trajectories_with_pose_cache(
+        trajectories, str(cache_path), coordinate_scale=2.0
+    )
+    assert out_scaled.iloc[0]["PoseKpt_head_X"] == pytest.approx(20.0)
+    assert out_scaled.iloc[0]["PoseKpt_head_Y"] == pytest.approx(40.0)
+    assert out_scaled.iloc[0]["PoseKpt_tail_X"] == pytest.approx(60.0)
+    assert out_scaled.iloc[0]["PoseKpt_tail_Y"] == pytest.approx(80.0)
+    # Confidence should NOT be scaled
+    assert out_scaled.iloc[0]["PoseKpt_head_Conf"] == pytest.approx(0.9)
+    assert out_scaled.iloc[0]["PoseKpt_tail_Conf"] == pytest.approx(0.8)
+    # Summary columns should remain unchanged
+    assert out_scaled.iloc[0]["PoseMeanConf"] == pytest.approx(0.85)

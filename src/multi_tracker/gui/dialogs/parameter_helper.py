@@ -41,8 +41,8 @@ from multi_tracker.core.tracking.optimizer import (
     _PARAM_RANGES,
     OptimizationResult,
     TrackingOptimizer,
-    TrackingPreviewWorker,
 )
+from multi_tracker.core.tracking.optimizer_workers import TrackingPreviewWorker
 from multi_tracker.utils.video_artifacts import build_autotune_state_path
 
 logger = logging.getLogger(__name__)

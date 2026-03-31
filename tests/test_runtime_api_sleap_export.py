@@ -84,6 +84,30 @@ def _load_runtime_api_module(stubs: dict):
     return module
 
 
+def _load_sleap_backend_module(stubs: dict):
+    module_name = "sleap_backend_under_test"
+    module_path = (
+        SRC_ROOT
+        / "multi_tracker"
+        / "core"
+        / "identity"
+        / "pose"
+        / "backends"
+        / "sleap.py"
+    )
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load module spec: {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    with _patched_modules(stubs):
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            sys.modules.pop(module_name, None)
+    return module
+
+
 def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> None:
     calls = []
 
@@ -124,7 +148,7 @@ def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> 
 
     stubs = {
         "multi_tracker.utils.gpu_utils": _gpu_stub(),
-        "multi_tracker.posekit.pose_inference": types.SimpleNamespace(
+        "multi_tracker.posekit.inference.service": types.SimpleNamespace(
             PoseInferenceService=_FakePoseInferenceService
         ),
     }
@@ -446,7 +470,7 @@ def test_attempt_sleap_cli_export_prefers_size_aware_commands_first(
     stubs = {
         "multi_tracker.utils.gpu_utils": _gpu_stub(),
     }
-    mod = _load_runtime_api_module(stubs)
+    mod = _load_sleap_backend_module(stubs)
 
     model_dir = tmp_path / "sleap_model"
     export_dir = tmp_path / "sleap_export"
@@ -459,7 +483,7 @@ def test_attempt_sleap_cli_export_prefers_size_aware_commands_first(
         seen_cmds.append(list(cmd))
         return False, "fail"
 
-    mod._run_cli_command = _fake_run
+    mod.run_cli_command = _fake_run
     ok, _err = mod._attempt_sleap_cli_export(
         model_dir=model_dir,
         export_dir=export_dir,
@@ -482,7 +506,7 @@ def test_attempt_sleap_cli_export_includes_batch_profile(
     stubs = {
         "multi_tracker.utils.gpu_utils": _gpu_stub(),
     }
-    mod = _load_runtime_api_module(stubs)
+    mod = _load_sleap_backend_module(stubs)
 
     model_dir = tmp_path / "sleap_model"
     export_dir = tmp_path / "sleap_export"
@@ -496,7 +520,7 @@ def test_attempt_sleap_cli_export_includes_batch_profile(
         seen_cmds.append(list(cmd))
         return False, "fail"
 
-    mod._run_cli_command = _fake_run
+    mod.run_cli_command = _fake_run
     ok, _err = mod._attempt_sleap_cli_export(
         model_dir=model_dir,
         export_dir=export_dir,
@@ -516,14 +540,24 @@ def test_coerce_prediction_batch_normalizes_out_of_range_confidences() -> None:
     stubs = {
         "multi_tracker.utils.gpu_utils": _gpu_stub(),
     }
-    mod = _load_runtime_api_module(stubs)
+    pose_utils = importlib.util.spec_from_file_location(
+        "pose_utils_under_test",
+        SRC_ROOT / "multi_tracker" / "core" / "identity" / "pose" / "utils.py",
+    )
+    utils_module = importlib.util.module_from_spec(pose_utils)
+    with _patched_modules(stubs):
+        sys.modules["pose_utils_under_test"] = utils_module
+        try:
+            pose_utils.loader.exec_module(utils_module)
+        finally:
+            sys.modules.pop("pose_utils_under_test", None)
 
     # Mimic exported ONNX outputs that provide logits instead of probabilities.
     pred_out = {
         "instance_peaks": np.array([[[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]]]),
         "instance_peak_vals": np.array([[2.0, 0.0, -2.0]], dtype=np.float32),
     }
-    kpts = mod._coerce_prediction_batch(pred_out, batch_size=1)[0]
+    kpts = utils_module.coerce_prediction_batch(pred_out, batch_size=1)[0]
     assert kpts is not None
     assert np.all((kpts[:, 2] >= 0.0) & (kpts[:, 2] <= 1.0))
     assert np.isclose(kpts[0, 2], 0.880797, atol=1e-5)

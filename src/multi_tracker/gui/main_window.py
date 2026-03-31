@@ -64,7 +64,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.core.tracking.optimizer import DetectionCacheBuilderWorker
+from multi_tracker.core.tracking.optimizer_workers import DetectionCacheBuilderWorker
 
 from ..core.identity.dataset.generator import IndividualDatasetGenerator
 from ..core.identity.dataset.oriented_video import (
@@ -597,13 +597,13 @@ class InterpolatedCropsWorker(QThread):
 
     def run(self: object) -> object:
         """run method documentation."""
-        from multi_tracker.core.tracking.canonical_crop import (
+        from multi_tracker.core.canonicalization.crop import (
             compute_native_scale_affine as _compute_native_scale,
         )
-        from multi_tracker.core.tracking.canonical_crop import (
+        from multi_tracker.core.canonicalization.crop import (
             extract_canonical_crop as _extract_canonical,
         )
-        from multi_tracker.core.tracking.canonical_crop import (
+        from multi_tracker.core.canonicalization.crop import (
             invert_keypoints as _invert_kpts,
         )
         from multi_tracker.core.tracking.profiler import TrackingProfiler
@@ -977,9 +977,46 @@ class InterpolatedCropsWorker(QThread):
                 # Use a background thread to prefetch frames while the main
                 # thread processes crops.  This overlaps I/O (seek + decode)
                 # with the crop extraction / pose inference work.
-                from multi_tracker.utils.frame_prefetcher import SparseFramePrefetcher
+                #
+                # Strategy selection: sequential forward scan vs. sparse seeking.
+                # Sequential scan reads every frame in the range (no seeks) —
+                # far faster when many frames are needed.  Sparse seeking is
+                # better only when very few frames are scattered across
+                # a huge range.
+                from multi_tracker.utils.frame_prefetcher import (
+                    SequentialScanPrefetcher,
+                    SparseFramePrefetcher,
+                )
 
-                _prefetcher = SparseFramePrefetcher(cap, needed_frames, buffer_size=4)
+                _frame_range = needed_frames[-1] - needed_frames[0] + 1
+                _density = total_frames / max(_frame_range, 1)
+                # Use sequential scan when ≥5 % of the range is needed, or
+                # the average gap between needed frames is under 100.
+                _use_sequential = (
+                    _density >= 0.05 or (_frame_range / max(total_frames, 1)) < 100
+                )
+                if _use_sequential:
+                    logger.info(
+                        "Interpolation: sequential scan (%d needed / %d range, "
+                        "density=%.2f%%)",
+                        total_frames,
+                        _frame_range,
+                        _density * 100,
+                    )
+                    _prefetcher = SequentialScanPrefetcher(
+                        cap, needed_frames, buffer_size=8
+                    )
+                else:
+                    logger.info(
+                        "Interpolation: sparse seek (%d needed / %d range, "
+                        "density=%.2f%%)",
+                        total_frames,
+                        _frame_range,
+                        _density * 100,
+                    )
+                    _prefetcher = SparseFramePrefetcher(
+                        cap, needed_frames, buffer_size=4
+                    )
                 _prefetcher.start()
                 for idx in range(1, total_frames + 1):
                     if self._should_stop():
@@ -1830,24 +1867,130 @@ class DatasetGenerationWorker(QThread):
                     pass
 
 
+def _normalize_preview_model_names(names) -> dict[int, str]:
+    """Normalize Ultralytics model names into an int->label mapping."""
+    if isinstance(names, dict):
+        out = {}
+        for key, value in names.items():
+            try:
+                out[int(key)] = str(value)
+            except Exception:
+                continue
+        return out
+    if isinstance(names, (list, tuple)):
+        return {int(i): str(value) for i, value in enumerate(names)}
+    return {}
+
+
+def _preview_class_label(names: dict[int, str], class_id: object) -> str:
+    """Return a readable class label for one prediction."""
+    try:
+        cls_idx = int(class_id)
+    except Exception:
+        return "cls ?"
+    if cls_idx < 0:
+        return "cls ?"
+    return names.get(cls_idx, f"cls {cls_idx}")
+
+
+def _preview_label_anchor(
+    corners: np.ndarray, image_shape: tuple[int, ...]
+) -> tuple[int, int]:
+    """Place annotation text just outside an OBB when possible."""
+    pts = np.asarray(corners, dtype=np.float32).reshape(-1, 2)
+    img_h, img_w = image_shape[:2]
+    x = int(np.max(pts[:, 0]) + 8)
+    y = int(np.min(pts[:, 1]) + 14)
+    if x > img_w - 170:
+        x = max(4, int(np.min(pts[:, 0]) - 166))
+    return max(4, x), int(np.clip(y, 14, max(14, img_h - 6)))
+
+
+def _draw_preview_label_stack(
+    image: np.ndarray,
+    anchor_xy: tuple[int, int],
+    lines: list[str],
+    color: tuple[int, int, int],
+    font_scale: float = 0.45,
+    thickness: int = 1,
+) -> None:
+    """Draw a compact multi-line label block with a solid backing box."""
+    text_lines = [str(line).strip() for line in lines if str(line).strip()]
+    if not text_lines:
+        return
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    gap = 4
+    sizes = [
+        cv2.getTextSize(line, font, font_scale, thickness)[0] for line in text_lines
+    ]
+    text_w = max((size[0] for size in sizes), default=0)
+    text_h = sum(size[1] for size in sizes) + gap * max(0, len(sizes) - 1)
+    pad = 4
+    x, y = anchor_xy
+    img_h, img_w = image.shape[:2]
+    x = int(np.clip(x, 0, max(0, img_w - text_w - 2 * pad - 1)))
+    top = int(np.clip(y - sizes[0][1], 0, max(0, img_h - text_h - 2 * pad - 1)))
+    bottom = min(img_h - 1, top + text_h + 2 * pad)
+    right = min(img_w - 1, x + text_w + 2 * pad)
+    cv2.rectangle(image, (x, top), (right, bottom), (0, 0, 0), -1)
+
+    cursor_y = top + pad + sizes[0][1]
+    for idx, line in enumerate(text_lines):
+        cv2.putText(
+            image,
+            line,
+            (x + pad, cursor_y),
+            font,
+            font_scale,
+            color,
+            thickness,
+            lineType=cv2.LINE_AA,
+        )
+        if idx + 1 < len(text_lines):
+            cursor_y += sizes[idx + 1][1] + gap
+
+
+def _draw_preview_pose_points(
+    image: np.ndarray,
+    keypoints: object,
+    min_valid_conf: float,
+    color: tuple[int, int, int] = (255, 0, 255),
+) -> None:
+    """Render valid pose keypoints directly on the preview image."""
+    if keypoints is None:
+        return
+    arr = np.asarray(keypoints, dtype=np.float32)
+    if arr.ndim != 2 or arr.shape[1] < 3:
+        return
+    for keypoint in arr:
+        if not is_renderable_pose_keypoint(
+            keypoint[0], keypoint[1], keypoint[2], min_valid_conf
+        ):
+            continue
+        x = int(round(float(keypoint[0])))
+        y = int(round(float(keypoint[1])))
+        cv2.circle(image, (x, y), 3, color, -1, lineType=cv2.LINE_AA)
+
+
 class PreviewDetectionWorker(QThread):
     """Worker thread for non-blocking preview detection."""
 
     finished_signal = Signal(dict)
     error_signal = Signal(str)
 
-    def __init__(self, preview_frame_rgb, context, use_size_filtering):
+    def __init__(self, preview_frame_rgb, context, use_detection_filters):
         super().__init__()
         self.preview_frame_rgb = preview_frame_rgb
         self.context = context
-        self.use_size_filtering = bool(use_size_filtering)
+        self.use_detection_filters = bool(use_detection_filters)
 
     def run(self):
         try:
             result = _run_preview_detection_job(
                 self.preview_frame_rgb,
                 self.context,
-                self.use_size_filtering,
+                self.use_detection_filters,
             )
             self.finished_signal.emit(result)
         except Exception as exc:
@@ -1857,10 +2000,10 @@ class PreviewDetectionWorker(QThread):
 
 
 def _run_preview_detection_job(
-    frame_rgb, context: dict, use_size_filtering: bool
+    frame_rgb, context: dict, use_detection_filters: bool
 ) -> dict:
     """Run preview detection using a frozen parameter snapshot."""
-    from ..core.detectors.engine import ObjectDetector, YOLOOBBDetector
+    from ..core.detectors import ObjectDetector, YOLOOBBDetector
     from ..utils.image_processing import apply_image_adjustments
 
     frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
@@ -1937,7 +2080,11 @@ def _run_preview_detection_job(
         reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
         scaled_body_area = reference_body_area * (resize_f**2)
 
-        if use_size_filtering:
+        apply_aspect_ratio_filtering = bool(
+            use_detection_filters
+            and context.get("enable_aspect_ratio_filtering", False)
+        )
+        if use_detection_filters:
             min_size_multiplier = float(context.get("min_object_size", 0.0))
             max_size_multiplier = float(context.get("max_object_size", 999.0))
             min_size_px2 = min_size_multiplier * scaled_body_area
@@ -1946,16 +2093,27 @@ def _run_preview_detection_job(
             min_size_px2 = 0.0
             max_size_px2 = float("inf")
 
+        ref_ar = float(context.get("reference_aspect_ratio", 2.0))
+        min_ar = ref_ar * float(context.get("min_aspect_ratio_multiplier", 0.5))
+        max_ar = ref_ar * float(context.get("max_aspect_ratio_multiplier", 2.0))
+
         for c in cnts:
             area = cv2.contourArea(c)
             if area < min_contour or len(c) < 5:
                 continue
-            if use_size_filtering and not (min_size_px2 <= area <= max_size_px2):
-                continue
             (cx, cy), (ax1, ax2), ang = cv2.fitEllipse(c)
-            detections.append(((cx, cy), (ax1, ax2), ang, area))
             major_axis = max(ax1, ax2)
             minor_axis = min(ax1, ax2)
+            aspect_ratio = (
+                float(major_axis) / float(minor_axis)
+                if minor_axis and float(minor_axis) > 0.0
+                else float("inf")
+            )
+            if use_detection_filters and not (min_size_px2 <= area <= max_size_px2):
+                continue
+            if apply_aspect_ratio_filtering and not (min_ar <= aspect_ratio <= max_ar):
+                continue
+            detections.append(((cx, cy), (ax1, ax2), ang, area))
             detected_dimensions.append((major_axis, minor_axis))
             cv2.ellipse(
                 test_frame,
@@ -2005,7 +2163,7 @@ def _run_preview_detection_job(
         reference_body_area = math.pi * (reference_body_size / 2.0) ** 2
         scaled_body_area = reference_body_area * (resize_f**2)
 
-        if use_size_filtering:
+        if use_detection_filters:
             min_size_px2 = int(
                 float(context.get("min_object_size", 0.0)) * scaled_body_area
             )
@@ -2021,6 +2179,21 @@ def _run_preview_detection_job(
             "YOLO_OBB_MODE": str(context.get("yolo_obb_mode", "direct"))
             .strip()
             .lower(),
+            "ADVANCED_CONFIG": {
+                "reference_aspect_ratio": float(
+                    context.get("reference_aspect_ratio", 2.0)
+                ),
+                "enable_aspect_ratio_filtering": bool(
+                    use_detection_filters
+                    and context.get("enable_aspect_ratio_filtering", False)
+                ),
+                "min_aspect_ratio_multiplier": float(
+                    context.get("min_aspect_ratio_multiplier", 0.5)
+                ),
+                "max_aspect_ratio_multiplier": float(
+                    context.get("max_aspect_ratio_multiplier", 2.0)
+                ),
+            },
             "YOLO_OBB_DIRECT_MODEL_PATH": resolve_model_path(
                 context.get(
                     "yolo_obb_direct_model_path", context.get("yolo_model_path", "")
@@ -2068,7 +2241,7 @@ def _run_preview_detection_job(
             "TENSORRT_MAX_BATCH_SIZE": int(context.get("tensorrt_max_batch_size", 1)),
             "MAX_TARGETS": int(context.get("max_targets", 1)),
             "MAX_CONTOUR_MULTIPLIER": float(context.get("max_contour_multiplier", 3.0)),
-            "ENABLE_SIZE_FILTERING": bool(use_size_filtering),
+            "ENABLE_SIZE_FILTERING": bool(use_detection_filters),
             "MIN_OBJECT_SIZE": min_size_px2,
             "MAX_OBJECT_SIZE": max_size_px2,
         }
@@ -2086,26 +2259,72 @@ def _run_preview_detection_job(
             f"iou={yolo_params['YOLO_IOU_THRESHOLD']:.2f})"
         )
         detector = YOLOOBBDetector(yolo_params)
-        (
-            raw_meas,
-            raw_sizes,
-            raw_shapes,
-            _yolo_results,
-            raw_confidences,
-            raw_obb_corners,
-            raw_heading_hints,
-            raw_directed_mask,
-            _raw_canonical_affines,
-        ) = detector.detect_objects(frame_to_process, 0, return_raw=True)
+        raw_conf_floor = max(
+            1e-4, float(yolo_params.get("RAW_YOLO_CONFIDENCE_FLOOR", 1e-3))
+        )
+        yolo_mode = str(yolo_params.get("YOLO_OBB_MODE", "direct")).strip().lower()
+        obb_color = (0, 255, 255)
+        detect_color = (255, 200, 0)
+        headtail_color = (0, 255, 0)
+        pose_color = (255, 0, 255)
+        apriltag_color = (0, 165, 255)
+        stage1_result = None
+        raw_meas = []
+        raw_sizes = []
+        raw_shapes = []
+        raw_confidences = []
+        raw_obb_corners = []
+        raw_class_ids = []
+        raw_heading_hints = []
+        raw_directed_mask = []
+        if yolo_mode == "sequential":
+            (
+                raw_meas,
+                raw_sizes,
+                raw_shapes,
+                raw_confidences,
+                raw_obb_corners,
+                raw_class_ids,
+                stage1_result,
+            ) = detector._run_sequential_raw_detection(
+                frame_to_process,
+                target_classes=yolo_params.get("YOLO_TARGET_CLASSES"),
+                raw_conf_floor=raw_conf_floor,
+                max_det=max(1, int(yolo_params.get("MAX_TARGETS", 1))) * 2,
+                return_class_ids=True,
+            )
+        else:
+            (
+                raw_meas,
+                raw_sizes,
+                raw_shapes,
+                raw_confidences,
+                raw_obb_corners,
+                raw_class_ids,
+                stage1_result,
+            ) = detector._run_direct_raw_detection(
+                frame_to_process,
+                target_classes=yolo_params.get("YOLO_TARGET_CLASSES"),
+                raw_conf_floor=raw_conf_floor,
+                max_det=max(1, int(yolo_params.get("MAX_TARGETS", 1))) * 2,
+                return_class_ids=True,
+            )
+
+        if raw_meas:
+            raw_heading_hints, raw_directed_mask, _ = detector._compute_headtail_hints(
+                frame_to_process, raw_obb_corners
+            )
+
+        raw_ids = list(range(len(raw_meas)))
         (
             meas,
             _sizes,
             _shapes,
             detection_confidences,
             filtered_obb_corners,
-            _,
-            filtered_heading_hints,
-            filtered_directed_mask,
+            filtered_ids,
+            _filtered_heading_hints,
+            _filtered_directed_mask,
         ) = detector.filter_raw_detections(
             raw_meas,
             raw_sizes,
@@ -2113,15 +2332,39 @@ def _run_preview_detection_job(
             raw_confidences,
             raw_obb_corners,
             roi_mask=roi_for_yolo,
-            detection_ids=None,
+            detection_ids=raw_ids,
             heading_hints=raw_heading_hints,
             directed_mask=raw_directed_mask,
         )
 
-        yolo_mode = str(yolo_params.get("YOLO_OBB_MODE", "direct")).strip().lower()
-        if yolo_mode == "sequential" and _yolo_results is not None:
+        stage2_names = _normalize_preview_model_names(
+            getattr(detector.model, "names", None)
+            or getattr(getattr(detector.model, "model", None), "names", None)
+        )
+        filtered_class_labels = []
+        for det_id in filtered_ids:
+            if 0 <= int(det_id) < len(raw_class_ids):
+                filtered_class_labels.append(
+                    _preview_class_label(stage2_names, raw_class_ids[int(det_id)])
+                )
+            else:
+                filtered_class_labels.append("cls ?")
+
+        if (
+            getattr(detector, "_headtail_analyzer", None) is not None
+            and filtered_obb_corners
+        ):
+            filtered_headtail = detector._headtail_analyzer.analyze_crops(
+                [frame_to_process], [filtered_obb_corners]
+            )[0]
+        else:
+            filtered_headtail = [
+                (float("nan"), 0.0, 0) for _ in range(len(filtered_obb_corners))
+            ]
+
+        if yolo_mode == "sequential" and stage1_result is not None:
             # Visualize stage-1 full-frame detect boxes in sequential mode.
-            boxes = getattr(_yolo_results, "boxes", None)
+            boxes = getattr(stage1_result, "boxes", None)
             if boxes is not None and len(boxes) > 0:
                 try:
                     det_xyxy = np.ascontiguousarray(
@@ -2130,21 +2373,36 @@ def _run_preview_detection_job(
                     det_conf = np.ascontiguousarray(
                         boxes.conf.cpu().numpy(), dtype=np.float32
                     )
+                    det_cls = np.ascontiguousarray(
+                        boxes.cls.cpu().numpy(), dtype=np.int32
+                    )
                 except Exception:
                     det_xyxy = np.empty((0, 4), dtype=np.float32)
                     det_conf = np.empty((0,), dtype=np.float32)
+                    det_cls = np.empty((0,), dtype=np.int32)
+                detect_names = _normalize_preview_model_names(
+                    getattr(stage1_result, "names", None)
+                    or getattr(
+                        getattr(detector.detect_model, "model", None), "names", None
+                    )
+                    or getattr(detector.detect_model, "names", None)
+                )
                 for di in range(len(det_xyxy)):
                     x1, y1, x2, y2 = [int(v) for v in det_xyxy[di]]
-                    cv2.rectangle(test_frame, (x1, y1), (x2, y2), (255, 200, 0), 1)
+                    cv2.rectangle(test_frame, (x1, y1), (x2, y2), detect_color, 1)
                     if di < len(det_conf):
-                        cv2.putText(
+                        detect_label = _preview_class_label(
+                            detect_names,
+                            det_cls[di] if di < len(det_cls) else -1,
+                        )
+                        _draw_preview_label_stack(
                             test_frame,
-                            f"D {float(det_conf[di]):.2f}",
-                            (x1, max(12, y1 - 4)),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.4,
-                            (255, 200, 0),
-                            1,
+                            (
+                                min(test_frame.shape[1] - 140, x2 + 6),
+                                max(14, y1 + 12),
+                            ),
+                            [f"det {detect_label} {float(det_conf[di]):.2f}"],
+                            detect_color,
                         )
                 # In sequential mode, stage-2 OBB can occasionally yield zero
                 # usable detections in preview. Fall back to stage-1 detect box
@@ -2158,66 +2416,360 @@ def _run_preview_detection_job(
                         minor_axis = min(w_box, h_box)
                         detected_dimensions.append((major_axis, minor_axis))
 
-        for i, corners in enumerate(filtered_obb_corners):
-            corners = np.asarray(corners, dtype=np.float32)
+        filtered_corners = [
+            np.asarray(corners, dtype=np.float32) for corners in filtered_obb_corners
+        ]
+        label_stacks = [[] for _ in range(len(filtered_corners))]
+        label_anchors = []
+        canonical_crops = [None] * len(filtered_corners)
+        canonical_inverses = [None] * len(filtered_corners)
+        crop_padding = float(context.get("individual_crop_padding", 0.1))
+        bg_color = tuple(
+            int(v) for v in context.get("individual_background_color", [0, 0, 0])
+        )
+        suppress_foreign = bool(context.get("suppress_foreign_obb_regions", True))
+        ref_aspect_ratio = float(context.get("reference_aspect_ratio", 2.0))
+
+        for i, corners in enumerate(filtered_corners):
             major_axis = float(np.linalg.norm(corners[1] - corners[0]))
             minor_axis = float(np.linalg.norm(corners[2] - corners[1]))
             if major_axis < minor_axis:
                 major_axis, minor_axis = minor_axis, major_axis
             detected_dimensions.append((major_axis, minor_axis))
+            label_anchors.append(_preview_label_anchor(corners, test_frame.shape))
 
+            try:
+                from multi_tracker.core.canonicalization.crop import (
+                    compute_native_scale_affine,
+                    extract_canonical_crop,
+                )
+
+                M_align, canvas_w, canvas_h, _ = compute_native_scale_affine(
+                    corners,
+                    ref_aspect_ratio,
+                    crop_padding,
+                )
+                foreign = None
+                if suppress_foreign:
+                    foreign = [
+                        other for ci, other in enumerate(filtered_corners) if ci != i
+                    ]
+                canonical_crops[i] = extract_canonical_crop(
+                    frame_to_process,
+                    M_align,
+                    canvas_w,
+                    canvas_h,
+                    bg_color=bg_color,
+                    foreign_corners=foreign,
+                )
+                canonical_inverses[i] = cv2.invertAffineTransform(M_align).astype(
+                    np.float32
+                )
+            except Exception:
+                canonical_crops[i] = None
+                canonical_inverses[i] = None
+
+        pose_backend = None
+        apriltag_detector = None
+        cnn_backends = []
+        pose_keypoints_by_det = {}
+
+        if filtered_corners and bool(context.get("enable_pose_extractor", False)):
+            try:
+                from multi_tracker.core.canonicalization.crop import (
+                    invert_keypoints as _invert_kpts,
+                )
+                from multi_tracker.core.identity.pose.api import (
+                    build_runtime_config,
+                    create_pose_backend_from_config,
+                )
+
+                preview_pose_params = {
+                    "POSE_MODEL_TYPE": str(context.get("pose_model_type", "yolo")),
+                    "POSE_MODEL_DIR": str(context.get("pose_model_dir", "")),
+                    "POSE_RUNTIME_FLAVOR": str(
+                        context.get("pose_runtime_flavor", "auto")
+                    ),
+                    "POSE_SKELETON_FILE": str(context.get("pose_skeleton_file", "")),
+                    "POSE_MIN_KPT_CONF_VALID": float(
+                        context.get("pose_min_kpt_conf_valid", 0.2)
+                    ),
+                    "POSE_YOLO_BATCH": int(context.get("pose_batch_size", 4)),
+                    "POSE_BATCH_SIZE": int(context.get("pose_batch_size", 4)),
+                    "POSE_SLEAP_BATCH": int(context.get("pose_batch_size", 4)),
+                    "POSE_SLEAP_ENV": str(context.get("pose_sleap_env", "sleap")),
+                    "POSE_SLEAP_DEVICE": str(context.get("pose_sleap_device", "auto")),
+                    "POSE_SLEAP_EXPERIMENTAL_FEATURES": bool(
+                        context.get("pose_sleap_experimental_features", False)
+                    ),
+                    "COMPUTE_RUNTIME": str(context.get("compute_runtime", "cpu")),
+                    "YOLO_DEVICE": str(context.get("yolo_device", "cpu")),
+                }
+                video_path = str(context.get("video_path", "") or "").strip()
+                out_root = (
+                    str(Path(video_path).expanduser().resolve().parent)
+                    if video_path
+                    else os.getcwd()
+                )
+                pose_config = build_runtime_config(
+                    preview_pose_params, out_root=out_root
+                )
+                pose_backend = create_pose_backend_from_config(pose_config)
+                valid_pose_entries = [
+                    (idx, crop)
+                    for idx, crop in enumerate(canonical_crops)
+                    if crop is not None and getattr(crop, "size", 0) > 0
+                ]
+                if valid_pose_entries:
+                    pose_results = pose_backend.predict_batch(
+                        [crop for _, crop in valid_pose_entries]
+                    )
+                    for pidx, (det_idx, _crop) in enumerate(valid_pose_entries):
+                        pose_out = (
+                            pose_results[pidx] if pidx < len(pose_results) else None
+                        )
+                        if pose_out is None:
+                            continue
+                        pose_mean_conf = float(getattr(pose_out, "mean_conf", 0.0))
+                        pose_num_valid = int(getattr(pose_out, "num_valid", 0))
+                        pose_num_keypoints = int(getattr(pose_out, "num_keypoints", 0))
+                        label_stacks[det_idx].append(
+                            f"pose {pose_mean_conf:.2f} {pose_num_valid}/{pose_num_keypoints}"
+                        )
+                        keypoints = getattr(pose_out, "keypoints", None)
+                        if (
+                            keypoints is not None
+                            and canonical_inverses[det_idx] is not None
+                            and len(keypoints) > 0
+                        ):
+                            pose_keypoints_by_det[det_idx] = _invert_kpts(
+                                np.asarray(keypoints, dtype=np.float32),
+                                canonical_inverses[det_idx],
+                            ).astype(np.float32)
+            except Exception as exc:
+                logger.warning("Preview pose overlay disabled: %s", exc)
+
+        cnn_cfgs = context.get("cnn_classifiers", []) or []
+        if filtered_corners and cnn_cfgs:
+            try:
+                from multi_tracker.core.identity.classification.cnn import (
+                    CNNIdentityBackend,
+                    CNNIdentityConfig,
+                )
+
+                valid_cnn_entries = [
+                    (idx, crop)
+                    for idx, crop in enumerate(canonical_crops)
+                    if crop is not None and getattr(crop, "size", 0) > 0
+                ]
+                if valid_cnn_entries:
+                    cnn_crops = [crop for _, crop in valid_cnn_entries]
+                    for cnn_cfg in cnn_cfgs:
+                        model_path = str(cnn_cfg.get("model_path", ""))
+                        if not model_path or not os.path.exists(model_path):
+                            continue
+                        label_name = str(cnn_cfg.get("label", "cnn"))
+                        backend = CNNIdentityBackend(
+                            CNNIdentityConfig(
+                                model_path=model_path,
+                                confidence=float(cnn_cfg.get("confidence", 0.5)),
+                                batch_size=int(cnn_cfg.get("batch_size", 64)),
+                            ),
+                            model_path=model_path,
+                            compute_runtime=str(context.get("compute_runtime", "cpu")),
+                        )
+                        cnn_backends.append(backend)
+                        cnn_predictions = backend.predict_batch(cnn_crops)
+                        for pidx, (det_idx, _crop) in enumerate(valid_cnn_entries):
+                            if pidx >= len(cnn_predictions):
+                                continue
+                            prediction = cnn_predictions[pidx]
+                            pred_label = str(
+                                getattr(prediction, "class_name", None) or "?"
+                            )
+                            pred_conf = float(getattr(prediction, "confidence", 0.0))
+                            label_stacks[det_idx].append(
+                                f"{label_name}: {pred_label} {pred_conf:.2f}"
+                            )
+            except Exception as exc:
+                logger.warning("Preview CNN overlay disabled: %s", exc)
+
+        if filtered_corners and bool(context.get("use_apriltags", False)):
+            try:
+                from multi_tracker.core.identity.classification.apriltag import (
+                    AprilTagConfig,
+                    AprilTagDetector,
+                )
+                from multi_tracker.core.tracking.pose_pipeline import (
+                    extract_one_crop as _extract_aabb_crop,
+                )
+
+                apriltag_detector = AprilTagDetector(
+                    AprilTagConfig.from_params(
+                        {
+                            "APRILTAG_FAMILY": context.get(
+                                "apriltag_family", "tag36h11"
+                            ),
+                            "APRILTAG_DECIMATE": context.get("apriltag_decimate", 1.0),
+                            "INDIVIDUAL_CROP_PADDING": crop_padding,
+                        }
+                    )
+                )
+                tag_crops = []
+                tag_offsets = []
+                tag_det_indices = []
+                for det_idx, corners in enumerate(filtered_corners):
+                    aabb_result = _extract_aabb_crop(
+                        frame_to_process,
+                        corners,
+                        det_idx,
+                        crop_padding,
+                        filtered_corners,
+                        suppress_foreign,
+                        bg_color,
+                    )
+                    if aabb_result is None:
+                        continue
+                    crop, offset, mapped_idx = aabb_result
+                    tag_crops.append(crop)
+                    tag_offsets.append(offset)
+                    tag_det_indices.append(mapped_idx)
+                if tag_crops:
+                    tag_obs = apriltag_detector.detect_in_crops(
+                        tag_crops,
+                        tag_offsets,
+                        det_indices=tag_det_indices,
+                    )
+                    tags_by_det = defaultdict(list)
+                    for obs in tag_obs:
+                        tags_by_det[int(obs.det_index)].append(int(obs.tag_id))
+                        tag_corners = np.asarray(obs.corners, dtype=np.int32)
+                        cv2.polylines(
+                            test_frame,
+                            [tag_corners],
+                            isClosed=True,
+                            color=apriltag_color,
+                            thickness=2,
+                        )
+                        _draw_preview_label_stack(
+                            test_frame,
+                            (
+                                int(np.max(tag_corners[:, 0]) + 6),
+                                int(np.min(tag_corners[:, 1]) + 14),
+                            ),
+                            [f"tag {int(obs.tag_id)}"],
+                            apriltag_color,
+                            font_scale=0.4,
+                        )
+                    for det_idx, tag_ids in tags_by_det.items():
+                        unique_ids = ",".join(
+                            str(tag_id) for tag_id in sorted(set(tag_ids))
+                        )
+                        label_stacks[det_idx].append(f"tag {unique_ids}")
+            except Exception as exc:
+                logger.warning("Preview AprilTag overlay disabled: %s", exc)
+
+        for i, corners in enumerate(filtered_corners):
             corners_int = corners.astype(np.int32)
             cv2.polylines(
                 test_frame,
                 [corners_int],
                 isClosed=True,
-                color=(0, 255, 255),
+                color=obb_color,
                 thickness=2,
             )
+
+            cx = int(corners[:, 0].mean())
+            cy = int(corners[:, 1].mean())
+            cv2.circle(test_frame, (cx, cy), 4, obb_color, -1, lineType=cv2.LINE_AA)
 
             conf = (
                 detection_confidences[i]
                 if i < len(detection_confidences)
                 else float("nan")
             )
+            label_lines = []
             if not np.isnan(conf):
-                cx = int(corners[:, 0].mean())
-                cy = int(corners[:, 1].mean())
-                cv2.putText(
+                label_lines.append(
+                    f"{filtered_class_labels[i] if i < len(filtered_class_labels) else 'cls ?'} {float(conf):.2f}"
+                )
+            else:
+                label_lines.append(
+                    filtered_class_labels[i]
+                    if i < len(filtered_class_labels)
+                    else "cls ?"
+                )
+            label_lines.extend(label_stacks[i])
+            _draw_preview_label_stack(
+                test_frame,
+                label_anchors[i],
+                label_lines,
+                obb_color,
+            )
+
+            if i in pose_keypoints_by_det:
+                _draw_preview_pose_points(
                     test_frame,
-                    f"{conf:.2f}",
-                    (cx - 15, cy - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 255),
-                    2,
+                    pose_keypoints_by_det[i],
+                    float(context.get("pose_min_kpt_conf_valid", 0.2)),
+                    color=pose_color,
                 )
 
-        for det_idx, m in enumerate(meas):
-            cx, cy, angle_rad = m
-            cv2.circle(test_frame, (int(cx), int(cy)), 5, (0, 255, 0), -1)
-            theta = float(angle_rad)
-            if 0 <= det_idx < len(filtered_heading_hints):
-                if (
-                    det_idx < len(filtered_directed_mask)
-                    and int(filtered_directed_mask[det_idx]) == 1
-                    and np.isfinite(float(filtered_heading_hints[det_idx]))
-                ):
-                    theta = float(filtered_heading_hints[det_idx])
-            ex = int(cx + 30 * math.cos(theta))
-            ey = int(cy + 30 * math.sin(theta))
-            cv2.arrowedLine(
-                test_frame,
-                (int(cx), int(cy)),
-                (ex, ey),
-                (0, 255, 0),
-                2,
-                tipLength=0.3,
-            )
+            if i < len(filtered_headtail):
+                heading, ht_conf, directed = filtered_headtail[i]
+                if int(directed) == 1 and np.isfinite(float(heading)):
+                    ex = int(cx + 34 * math.cos(float(heading)))
+                    ey = int(cy + 34 * math.sin(float(heading)))
+                    cv2.arrowedLine(
+                        test_frame,
+                        (cx, cy),
+                        (ex, ey),
+                        headtail_color,
+                        2,
+                        tipLength=0.3,
+                    )
+                    _draw_preview_label_stack(
+                        test_frame,
+                        (min(test_frame.shape[1] - 90, ex + 6), max(14, ey + 12)),
+                        [f"head {float(ht_conf):.2f}"],
+                        headtail_color,
+                        font_scale=0.4,
+                    )
+
+        try:
+            if pose_backend is not None and hasattr(pose_backend, "close"):
+                pose_backend.close()
+        except Exception:
+            pass
+        for backend in cnn_backends:
+            try:
+                backend.close()
+            except Exception:
+                pass
+        try:
+            if apriltag_detector is not None:
+                apriltag_detector.close()
+        except Exception:
+            pass
+
+        active_layers = []
+        if str(context.get("yolo_headtail_model_path", "")).strip():
+            active_layers.append("head-tail")
+        if bool(context.get("enable_pose_extractor", False)):
+            active_layers.append("pose")
+        if bool(context.get("use_apriltags", False)):
+            active_layers.append("apriltag")
+        if context.get("cnn_classifiers"):
+            active_layers.append("cnn")
+        footer = (
+            f"Detections: {len(meas)} (IOU={yolo_params['YOLO_IOU_THRESHOLD']:.2f})"
+        )
+        if active_layers:
+            footer += f" | preview: {', '.join(active_layers)}"
 
         cv2.putText(
             test_frame,
-            f"Detections: {len(meas)} (IOU={yolo_params['YOLO_IOU_THRESHOLD']:.2f})",
+            footer,
             (10, test_frame.shape[0] - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.6,
@@ -4977,46 +5529,6 @@ class MainWindow(QMainWindow):
         )
         f_yolo.addRow("Seq crop OBB model", self.combo_yolo_crop_obb_model)
 
-        # Head-tail classifier — type selects subdirectory (YOLO vs tiny)
-        self.combo_yolo_headtail_model_type = QComboBox()
-        self.combo_yolo_headtail_model_type.addItems(["YOLO", "tiny"])
-        self.combo_yolo_headtail_model_type.setFixedHeight(30)
-        self.combo_yolo_headtail_model_type.setToolTip(
-            "Architecture family of the head-tail classifier.\n"
-            "YOLO → models/classification/orientation/YOLO/\n"
-            "tiny → models/classification/orientation/tiny/"
-        )
-        self.combo_yolo_headtail_model_type.currentIndexChanged.connect(
-            self._on_headtail_model_type_changed
-        )
-
-        self.combo_yolo_headtail_model = QComboBox()
-        self._refresh_yolo_headtail_model_combo()
-        self.combo_yolo_headtail_model.activated.connect(
-            self.on_yolo_headtail_model_changed
-        )
-        self.combo_yolo_headtail_model.setFixedHeight(30)
-        self.combo_yolo_headtail_model.setToolTip(
-            "Optional head-tail classifier used to direct orientation along OBB major axis."
-        )
-
-        self.headtail_model_row_widget = QWidget()
-        _headtail_row = QHBoxLayout(self.headtail_model_row_widget)
-        _headtail_row.setContentsMargins(0, 0, 0, 0)
-        _headtail_row.setSpacing(4)
-        _headtail_row.addWidget(self.combo_yolo_headtail_model_type, 0)
-        _headtail_row.addWidget(self.combo_yolo_headtail_model, 1)
-        f_yolo.addRow("Head-tail model", self.headtail_model_row_widget)
-
-        self.chk_pose_overrides_headtail = QCheckBox(
-            "Pose orientation overrides head-tail"
-        )
-        self.chk_pose_overrides_headtail.setChecked(True)
-        self.chk_pose_overrides_headtail.setToolTip(
-            "When enabled, valid pose heading takes precedence over head-tail heading."
-        )
-        f_yolo.addRow("", self.chk_pose_overrides_headtail)
-
         self.yolo_seq_advanced = CollapsibleGroupBox(
             "Sequential Advanced Settings", initially_expanded=False
         )
@@ -5048,12 +5560,6 @@ class MainWindow(QMainWindow):
             "Recommended: 0.1–0.3"
         )
         f_seq_adv.addRow("Stage-1 detect conf", self.spin_yolo_seq_detect_conf)
-        self.spin_yolo_headtail_conf = QDoubleSpinBox()
-        self.spin_yolo_headtail_conf.setRange(0.0, 1.0)
-        self.spin_yolo_headtail_conf.setSingleStep(0.01)
-        self.spin_yolo_headtail_conf.setValue(0.50)
-        self.spin_yolo_headtail_conf.setFixedHeight(30)
-        f_seq_adv.addRow("Head-tail min confidence", self.spin_yolo_headtail_conf)
         self.spin_yolo_seq_stage2_imgsz = QSpinBox()
         self.spin_yolo_seq_stage2_imgsz.setRange(0, 2048)
         self.spin_yolo_seq_stage2_imgsz.setValue(160)
@@ -5312,21 +5818,23 @@ class MainWindow(QMainWindow):
         self.g_overlays_yolo.setVisible(False)
 
         # ============================================================
-        # Reference Body Size (Spatial Scale)
+        # Reference Scale (size + aspect ratio)
         # ============================================================
-        g_body_size = QGroupBox("Reference Size")
-        self._set_compact_section_widget(g_body_size)
-        vl_body_size = QVBoxLayout(g_body_size)
-        vl_body_size.addWidget(
+        g_ref_scale = QGroupBox("Reference Scale")
+        self._set_compact_section_widget(g_ref_scale)
+        vl_ref_scale = QVBoxLayout(g_ref_scale)
+        vl_ref_scale.addWidget(
             self._create_help_label(
-                "Define the spatial scale for tracking. This reference size makes all distance/size "
-                "parameters portable across videos. Set this BEFORE configuring tracking parameters."
+                "Define the spatial scale for tracking. These reference values make all distance, "
+                "size, and shape parameters portable across videos and species. Set them BEFORE "
+                "configuring tracking parameters. Use 'Test Detection' then the Auto-Set buttons "
+                "to have values estimated automatically from a sample frame."
             )
         )
-        fl_body = QFormLayout(None)
-        fl_body.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        fl_body.setHorizontalSpacing(10)
-        fl_body.setVerticalSpacing(8)
+        fl_ref = QFormLayout(None)
+        fl_ref.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fl_ref.setHorizontalSpacing(10)
+        fl_ref.setVerticalSpacing(8)
 
         self.spin_reference_body_size = QDoubleSpinBox()
         self.spin_reference_body_size.setRange(1.0, 500.0)
@@ -5342,33 +5850,28 @@ class MainWindow(QMainWindow):
             "All distance/size parameters are scaled relative to this value."
         )
         self.spin_reference_body_size.valueChanged.connect(self._update_body_size_info)
-        fl_body.addRow("Reference body size (px)", self.spin_reference_body_size)
+        fl_ref.addRow("Reference body size (px)", self.spin_reference_body_size)
 
-        # Info label showing calculated area
         self.label_body_size_info = QLabel()
         self.label_body_size_info.setStyleSheet(
             "color: #6a6a6a; font-size: 10px; font-style: italic;"
         )
-        fl_body.addRow("", self.label_body_size_info)
-        vl_body_size.addLayout(fl_body)
-        vbox.addWidget(g_body_size)
+        fl_ref.addRow("", self.label_body_size_info)
 
-        # ============================================================
-        # Detection size statistics panel
-        # ============================================================
-        g_detect_stats = QGroupBox("Estimate Size")
-        self._set_compact_section_widget(g_detect_stats)
-        vl_stats = QVBoxLayout(g_detect_stats)
-        vl_stats.addWidget(
-            self._create_help_label(
-                "Workflow for accurate size estimation:\n"
-                "1. Configure your detection method above\n"
-                "2. Click 'Load Random Frame for Preview' (bottom of page)\n"
-                "3. Choose a frame with many animals well-separated\n"
-                "4. Click 'Test Detection' to analyze sizes\n"
-                "5. Use 'Auto-Set' to apply the recommended body size"
-            )
+        self.spin_reference_aspect_ratio = QDoubleSpinBox()
+        self.spin_reference_aspect_ratio.setRange(1.0, 20.0)
+        self.spin_reference_aspect_ratio.setSingleStep(0.1)
+        self.spin_reference_aspect_ratio.setDecimals(2)
+        self.spin_reference_aspect_ratio.setValue(2.0)
+        self.spin_reference_aspect_ratio.setFixedHeight(30)
+        self.spin_reference_aspect_ratio.setToolTip(
+            "Species-typical major/minor axis ratio.\n"
+            "Used for adaptive canonical crop dimensions and aspect ratio filtering.\n"
+            "Click 'Auto-Set Aspect Ratio' to detect from sample frames."
         )
+        fl_ref.addRow("Reference aspect ratio", self.spin_reference_aspect_ratio)
+
+        vl_ref_scale.addLayout(fl_ref)
 
         self.label_detection_stats = QLabel(
             "No detection data yet.\nRun 'Test Detection' to estimate sizes."
@@ -5378,9 +5881,8 @@ class MainWindow(QMainWindow):
             "background-color: #252526; border-radius: 4px;"
         )
         self.label_detection_stats.setWordWrap(True)
-        vl_stats.addWidget(self.label_detection_stats)
+        vl_ref_scale.addWidget(self.label_detection_stats)
 
-        # Auto-set button
         btn_layout = QHBoxLayout()
         self.btn_auto_set_body_size = QPushButton("Auto-Set Body Size from Median")
         self.btn_auto_set_body_size.clicked.connect(
@@ -5401,101 +5903,33 @@ class MainWindow(QMainWindow):
             "Set reference aspect ratio from the median detected major/minor ratio"
         )
         btn_layout.addWidget(self.btn_auto_set_aspect_ratio)
-        vl_stats.addLayout(btn_layout)
+        vl_ref_scale.addLayout(btn_layout)
 
-        vbox.addWidget(g_detect_stats)
+        vbox.addWidget(g_ref_scale)
 
         # ============================================================
-        # Aspect Ratio & Canonical Crop
+        # Detection Filters (size + aspect ratio ranges)
         # ============================================================
-        g_ar = QGroupBox("Aspect Ratio & Canonical Crop")
-        self._set_compact_section_widget(g_ar)
-        vl_ar = QVBoxLayout(g_ar)
-        vl_ar.addWidget(
+        g_filters = QGroupBox("Detection Filters")
+        self._set_compact_section_widget(g_filters)
+        vl_filters = QVBoxLayout(g_filters)
+        vl_filters.addWidget(
             self._create_help_label(
-                "Filter detections by aspect ratio and configure the canonical "
-                "crop used for head-tail classification. The reference aspect "
-                "ratio can be auto-detected from the median OBB dimensions."
+                "Filter detections by size and aspect ratio relative to the reference values above. "
+                "Enabling these removes noise, debris, and erroneous clusters before tracking."
             )
         )
-        f_ar = QFormLayout(None)
-        f_ar.setHorizontalSpacing(10)
-        f_ar.setVerticalSpacing(8)
+        f_filters = QFormLayout(None)
+        f_filters.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        f_filters.setHorizontalSpacing(10)
+        f_filters.setVerticalSpacing(8)
 
-        self.spin_reference_aspect_ratio = QDoubleSpinBox()
-        self.spin_reference_aspect_ratio.setRange(1.0, 20.0)
-        self.spin_reference_aspect_ratio.setSingleStep(0.1)
-        self.spin_reference_aspect_ratio.setDecimals(2)
-        self.spin_reference_aspect_ratio.setValue(2.0)
-        self.spin_reference_aspect_ratio.setFixedHeight(30)
-        self.spin_reference_aspect_ratio.setToolTip(
-            "Species-typical major/minor axis ratio.\n"
-            "Used for adaptive canonical crop dimensions and aspect ratio filtering.\n"
-            "Click 'Auto-Set Aspect Ratio' to detect from sample frames."
-        )
-        f_ar.addRow("Reference aspect ratio", self.spin_reference_aspect_ratio)
-
-        self.chk_enable_aspect_ratio_filtering = QCheckBox(
-            "Filter detections by aspect ratio"
-        )
-        self.chk_enable_aspect_ratio_filtering.setChecked(False)
-        self.chk_enable_aspect_ratio_filtering.setToolTip(
-            "Reject detections with aspect ratios outside the expected range.\n"
-            "Helps filter scratches, debris, and other non-animal detections."
-        )
-        f_ar.addRow(self.chk_enable_aspect_ratio_filtering)
-
-        h_ar_mult = QHBoxLayout()
-        self.spin_min_ar_multiplier = QDoubleSpinBox()
-        self.spin_min_ar_multiplier.setRange(0.1, 1.0)
-        self.spin_min_ar_multiplier.setSingleStep(0.05)
-        self.spin_min_ar_multiplier.setDecimals(2)
-        self.spin_min_ar_multiplier.setValue(0.5)
-        self.spin_min_ar_multiplier.setFixedHeight(30)
-        self.spin_min_ar_multiplier.setToolTip(
-            "Minimum aspect ratio = reference × this multiplier.\n"
-            "Detections more compact than this are rejected."
-        )
-        self.spin_max_ar_multiplier = QDoubleSpinBox()
-        self.spin_max_ar_multiplier.setRange(1.0, 10.0)
-        self.spin_max_ar_multiplier.setSingleStep(0.1)
-        self.spin_max_ar_multiplier.setDecimals(2)
-        self.spin_max_ar_multiplier.setValue(2.0)
-        self.spin_max_ar_multiplier.setFixedHeight(30)
-        self.spin_max_ar_multiplier.setToolTip(
-            "Maximum aspect ratio = reference × this multiplier.\n"
-            "Detections more elongated than this are rejected."
-        )
-        h_ar_mult.addWidget(QLabel("Min multiplier"))
-        h_ar_mult.addWidget(self.spin_min_ar_multiplier)
-        h_ar_mult.addWidget(QLabel("Max multiplier"))
-        h_ar_mult.addWidget(self.spin_max_ar_multiplier)
-        f_ar.addRow(h_ar_mult)
-
-        vl_ar.addLayout(f_ar)
-        vbox.addWidget(g_ar)
-
-        # ============================================================
-        # Size Filtering
-        # ============================================================
-        g_size = QGroupBox("Size Filter")
-        self._set_compact_section_widget(g_size)
-        vl_size = QVBoxLayout(g_size)
-        vl_size.addWidget(
-            self._create_help_label(
-                "Filter detections by size relative to your reference body size. This removes noise (too small) "
-                "and erroneous clusters (too large). Most effective when animals are similar size."
-            )
-        )
-        f_size = QFormLayout(None)
-        f_size.setHorizontalSpacing(10)
-        f_size.setVerticalSpacing(8)
         self.chk_size_filtering = QCheckBox("Filter detections by size")
         self.chk_size_filtering.setToolTip(
             "Filter detected objects by area to remove noise and artifacts.\n"
             "Recommended: Enable for cleaner tracking."
         )
-        f_size.addRow(self.chk_size_filtering)
+        f_filters.addRow(self.chk_size_filtering)
 
         h_sf = QHBoxLayout()
         self.spin_min_object_size = QDoubleSpinBox()
@@ -5524,9 +5958,47 @@ class MainWindow(QMainWindow):
         h_sf.addWidget(self.spin_min_object_size)
         h_sf.addWidget(QLabel("Max size (body lengths)"))
         h_sf.addWidget(self.spin_max_object_size)
-        f_size.addRow(h_sf)
-        vl_size.addLayout(f_size)
-        vbox.addWidget(g_size)
+        f_filters.addRow(h_sf)
+
+        self.chk_enable_aspect_ratio_filtering = QCheckBox(
+            "Filter detections by aspect ratio"
+        )
+        self.chk_enable_aspect_ratio_filtering.setChecked(False)
+        self.chk_enable_aspect_ratio_filtering.setToolTip(
+            "Reject detections with aspect ratios outside the expected range.\n"
+            "Helps filter scratches, debris, and other non-animal detections."
+        )
+        f_filters.addRow(self.chk_enable_aspect_ratio_filtering)
+
+        h_ar_mult = QHBoxLayout()
+        self.spin_min_ar_multiplier = QDoubleSpinBox()
+        self.spin_min_ar_multiplier.setRange(0.1, 1.0)
+        self.spin_min_ar_multiplier.setSingleStep(0.05)
+        self.spin_min_ar_multiplier.setDecimals(2)
+        self.spin_min_ar_multiplier.setValue(0.5)
+        self.spin_min_ar_multiplier.setFixedHeight(30)
+        self.spin_min_ar_multiplier.setToolTip(
+            "Minimum aspect ratio = reference × this multiplier.\n"
+            "Detections more compact than this are rejected."
+        )
+        self.spin_max_ar_multiplier = QDoubleSpinBox()
+        self.spin_max_ar_multiplier.setRange(1.0, 10.0)
+        self.spin_max_ar_multiplier.setSingleStep(0.1)
+        self.spin_max_ar_multiplier.setDecimals(2)
+        self.spin_max_ar_multiplier.setValue(2.0)
+        self.spin_max_ar_multiplier.setFixedHeight(30)
+        self.spin_max_ar_multiplier.setToolTip(
+            "Maximum aspect ratio = reference × this multiplier.\n"
+            "Detections more elongated than this are rejected."
+        )
+        h_ar_mult.addWidget(QLabel("Min multiplier"))
+        h_ar_mult.addWidget(self.spin_min_ar_multiplier)
+        h_ar_mult.addWidget(QLabel("Max multiplier"))
+        h_ar_mult.addWidget(self.spin_max_ar_multiplier)
+        f_filters.addRow(h_ar_mult)
+
+        vl_filters.addLayout(f_filters)
+        vbox.addWidget(g_filters)
 
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -7335,26 +7807,6 @@ class MainWindow(QMainWindow):
         form.setSpacing(8)
         self._set_compact_scroll_layout(form)
 
-        # Pipeline enable + overview
-        self.chk_enable_individual_analysis = QGroupBox("Enable Individual Analysis")
-        self.chk_enable_individual_analysis.setCheckable(True)
-        self.chk_enable_individual_analysis.setChecked(False)
-        self.chk_enable_individual_analysis.toggled.connect(
-            self._on_individual_analysis_toggled
-        )
-        self._set_compact_section_widget(self.chk_enable_individual_analysis)
-        info_layout = QVBoxLayout(self.chk_enable_individual_analysis)
-        info_layout.addWidget(
-            self._create_help_label(
-                "Available tools in the individual-analysis pipeline:\n\n"
-                "• Identity classification with CNN Classifier or AprilTags\n"
-                "• Pose extraction with YOLO, SLEAP, or ViTPose backends\n"
-                "• Occlusion interpolation, crop export, and oriented track videos\n"
-                "• Pose contamination suppression and reusable per-animal caches"
-            )
-        )
-        form.addWidget(self.chk_enable_individual_analysis)
-
         self.lbl_individual_yolo_only_notice = self._create_help_label(
             "Individual analysis requires YOLO OBB mode.\n"
             "Switch detection method to YOLO OBB to enable this pipeline.",
@@ -7559,6 +8011,58 @@ class MainWindow(QMainWindow):
         fl_common.addRow(
             "Pose contamination suppression", self.chk_suppress_foreign_obb
         )
+
+        # Head-tail orientation classifier
+        self.combo_yolo_headtail_model_type = QComboBox()
+        self.combo_yolo_headtail_model_type.addItems(["YOLO", "tiny"])
+        self.combo_yolo_headtail_model_type.setFixedHeight(30)
+        self.combo_yolo_headtail_model_type.setToolTip(
+            "Architecture family of the head-tail classifier.\n"
+            "YOLO → models/classification/orientation/YOLO/\n"
+            "tiny → models/classification/orientation/tiny/"
+        )
+        self.combo_yolo_headtail_model_type.currentIndexChanged.connect(
+            self._on_headtail_model_type_changed
+        )
+
+        self.combo_yolo_headtail_model = QComboBox()
+        self._refresh_yolo_headtail_model_combo()
+        self.combo_yolo_headtail_model.activated.connect(
+            self.on_yolo_headtail_model_changed
+        )
+        self.combo_yolo_headtail_model.setFixedHeight(30)
+        self.combo_yolo_headtail_model.setToolTip(
+            "Optional classifier to resolve head vs. tail orientation along the OBB major axis.\n"
+            "Runs during tracking and post-hoc individual analysis."
+        )
+
+        self.headtail_model_row_widget = QWidget()
+        _headtail_row = QHBoxLayout(self.headtail_model_row_widget)
+        _headtail_row.setContentsMargins(0, 0, 0, 0)
+        _headtail_row.setSpacing(4)
+        _headtail_row.addWidget(self.combo_yolo_headtail_model_type, 0)
+        _headtail_row.addWidget(self.combo_yolo_headtail_model, 1)
+        fl_common.addRow("Head-tail model", self.headtail_model_row_widget)
+
+        self.spin_yolo_headtail_conf = QDoubleSpinBox()
+        self.spin_yolo_headtail_conf.setRange(0.0, 1.0)
+        self.spin_yolo_headtail_conf.setSingleStep(0.01)
+        self.spin_yolo_headtail_conf.setValue(0.50)
+        self.spin_yolo_headtail_conf.setFixedHeight(30)
+        self.spin_yolo_headtail_conf.setToolTip(
+            "Minimum classifier confidence for a head-tail assignment to be accepted (0–1).\n"
+            "Lower = more assignments accepted; higher = fewer but more reliable."
+        )
+        fl_common.addRow("Head-tail min confidence", self.spin_yolo_headtail_conf)
+
+        self.chk_pose_overrides_headtail = QCheckBox(
+            "Pose orientation overrides head-tail"
+        )
+        self.chk_pose_overrides_headtail.setChecked(True)
+        self.chk_pose_overrides_headtail.setToolTip(
+            "When enabled, valid pose heading takes precedence over head-tail heading."
+        )
+        fl_common.addRow("", self.chk_pose_overrides_headtail)
 
         form.addWidget(self.g_individual_pipeline_common)
         form.addWidget(self.g_identity)
@@ -9759,12 +10263,7 @@ class MainWindow(QMainWindow):
 
     def _is_individual_pipeline_enabled(self) -> bool:
         """Return effective runtime state for individual analysis pipeline."""
-        if not hasattr(self, "chk_enable_individual_analysis"):
-            return False
-        return bool(
-            self.chk_enable_individual_analysis.isChecked()
-            and self._is_yolo_detection_mode()
-        )
+        return self._is_yolo_detection_mode()
 
     def _is_identity_analysis_enabled(self) -> bool:
         """Return effective runtime state for identity classification."""
@@ -9883,7 +10382,6 @@ class MainWindow(QMainWindow):
 
     def _sync_individual_analysis_mode_ui(self):
         """Enforce YOLO-only pipeline and run/save dependency in UI."""
-        has_analyze_toggle = hasattr(self, "chk_enable_individual_analysis")
         has_save_toggle = hasattr(self, "chk_enable_individual_dataset")
         is_yolo = self._is_yolo_detection_mode()
 
@@ -9903,9 +10401,6 @@ class MainWindow(QMainWindow):
                 ):
                     self.tabs.tabBar().setTabVisible(tab_index, is_yolo)
                 self.tabs.setTabEnabled(tab_index, is_yolo)
-
-        if has_analyze_toggle:
-            self.chk_enable_individual_analysis.setEnabled(is_yolo)
 
         pipeline_enabled = self._is_individual_pipeline_enabled()
 
@@ -11133,24 +11628,29 @@ class MainWindow(QMainWindow):
             logger.info("Preview detection is already running")
             return
 
-        # If size filtering is enabled, ask user whether to use it for the test
-        use_size_filtering = False
-        if self.chk_size_filtering.isChecked():
+        # If detection filters are enabled, ask user whether to use them for the test.
+        use_detection_filters = False
+        detection_filters_enabled = bool(
+            self.chk_size_filtering.isChecked()
+            or self.chk_enable_aspect_ratio_filtering.isChecked()
+        )
+        if detection_filters_enabled:
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Question)
-            msg.setWindowTitle("Size Filtering Options")
-            msg.setText("Size filtering is currently enabled!")
+            msg.setWindowTitle("Detection Filter Options")
+            msg.setText("Detection filters are currently enabled!")
             msg.setInformativeText(
                 "For accurate size estimation, it's recommended to run detection\n"
-                "WITHOUT size constraints. However, you can test with constraints\n"
+                "WITHOUT detection constraints. However, you can test with constraints\n"
                 "if you want to see how filtering affects the results.\n\n"
+                "This includes both size and aspect-ratio filtering.\n\n"
                 "How would you like to proceed?"
             )
 
             btn_without = msg.addButton(
-                "NO Size Filtering (Recommended)", QMessageBox.AcceptRole
+                "NO Detection Filtering (Recommended)", QMessageBox.AcceptRole
             )
-            btn_with = msg.addButton("WITH Size Filtering", QMessageBox.ActionRole)
+            btn_with = msg.addButton("WITH Detection Filtering", QMessageBox.ActionRole)
             btn_cancel = msg.addButton("Cancel", QMessageBox.RejectRole)
             msg.setDefaultButton(btn_without)
 
@@ -11160,12 +11660,12 @@ class MainWindow(QMainWindow):
             if clicked == btn_cancel:
                 return
             elif clicked == btn_with:
-                use_size_filtering = True
-                logger.info("Running detection test WITH size filtering enabled")
+                use_detection_filters = True
+                logger.info("Running detection test WITH detection filtering enabled")
             else:  # btn_without
-                use_size_filtering = False
+                use_detection_filters = False
                 logger.info(
-                    "Running detection test WITHOUT size filtering (recommended for size estimation)"
+                    "Running detection test WITHOUT detection filtering (recommended for size estimation)"
                 )
 
         context = self._collect_preview_detection_context()
@@ -11186,7 +11686,7 @@ class MainWindow(QMainWindow):
         self.preview_detection_worker = PreviewDetectionWorker(
             self.preview_frame_original.copy(),
             context,
-            use_size_filtering,
+            use_detection_filters,
         )
         self.preview_detection_worker.finished_signal.connect(
             self._on_preview_detection_finished
@@ -11205,6 +11705,11 @@ class MainWindow(QMainWindow):
         # ONNX/TensorRT are not used for single-frame preview detection.
         selected_runtime = self._preview_safe_runtime(self._selected_compute_runtime())
         runtime_detection = derive_detection_runtime_settings(selected_runtime)
+        identity_cfg = self._identity_config()
+        pose_backend_family = self.combo_pose_model_type.currentText().strip().lower()
+        runtime_pose = derive_pose_runtime_settings(
+            selected_runtime, backend_family=pose_backend_family
+        )
         trt_batch_size = (
             self.spin_yolo_batch_size.value()
             if self._runtime_requires_fixed_yolo_batch(selected_runtime)
@@ -11236,8 +11741,13 @@ class MainWindow(QMainWindow):
             "dilation_iterations": self.spin_dilation_iterations.value(),
             "min_contour": self.spin_min_contour.value(),
             "reference_body_size": self.spin_reference_body_size.value(),
+            "reference_aspect_ratio": self.spin_reference_aspect_ratio.value(),
+            "enable_aspect_ratio_filtering": self.chk_enable_aspect_ratio_filtering.isChecked(),
+            "min_aspect_ratio_multiplier": self.spin_min_ar_multiplier.value(),
+            "max_aspect_ratio_multiplier": self.spin_max_ar_multiplier.value(),
             "min_object_size": self.spin_min_object_size.value(),
             "max_object_size": self.spin_max_object_size.value(),
+            "compute_runtime": selected_runtime,
             "yolo_obb_mode": (
                 "sequential"
                 if self.combo_yolo_obb_mode.currentIndex() == 1
@@ -11269,6 +11779,29 @@ class MainWindow(QMainWindow):
             "enable_conservative_split": self.chk_conservative_split.isChecked(),
             "conservative_kernel_size": self.spin_conservative_kernel.value(),
             "conservative_erode_iterations": self.spin_conservative_erode.value(),
+            "use_apriltags": identity_cfg.get("use_apriltags", False),
+            "cnn_classifiers": identity_cfg.get("cnn_classifiers", []),
+            "apriltag_family": self.combo_apriltag_family.currentText(),
+            "apriltag_decimate": self.spin_apriltag_decimate.value(),
+            "enable_pose_extractor": self._is_pose_inference_enabled(),
+            "pose_model_type": pose_backend_family,
+            "pose_model_dir": resolve_pose_model_path(
+                self._pose_model_path_for_backend(pose_backend_family),
+                backend=pose_backend_family,
+            ),
+            "pose_runtime_flavor": runtime_pose["pose_runtime_flavor"],
+            "pose_min_kpt_conf_valid": self.spin_pose_min_kpt_conf_valid.value(),
+            "pose_skeleton_file": self.line_pose_skeleton_file.text().strip(),
+            "pose_ignore_keypoints": self._parse_pose_ignore_keypoints(),
+            "pose_direction_anterior_keypoints": self._parse_pose_direction_anterior_keypoints(),
+            "pose_direction_posterior_keypoints": self._parse_pose_direction_posterior_keypoints(),
+            "pose_batch_size": self.spin_pose_batch.value(),
+            "pose_sleap_env": self._selected_pose_sleap_env(),
+            "pose_sleap_device": runtime_pose["pose_sleap_device"],
+            "pose_sleap_experimental_features": self._sleap_experimental_features_enabled(),
+            "individual_crop_padding": self.spin_individual_padding.value(),
+            "individual_background_color": [int(c) for c in self._background_color],
+            "suppress_foreign_obb_regions": self.chk_suppress_foreign_obb.isChecked(),
         }
 
     def _validate_yolo_model_requirements(self, params: dict, mode_label: str) -> bool:
@@ -14893,11 +15426,20 @@ class MainWindow(QMainWindow):
             with_pose_df = trajectories_df
             if cache_available:
                 min_valid_conf = float(self.spin_pose_min_kpt_conf_valid.value())
+                _resize_factor = float(
+                    self.get_parameters_dict().get("RESIZE_FACTOR", 1.0)
+                )
+                _coord_scale = (
+                    1.0 / _resize_factor
+                    if _resize_factor and _resize_factor != 1.0
+                    else 1.0
+                )
                 with_pose_df = augment_trajectories_with_pose_cache(
                     with_pose_df,
                     cache_path,
                     ignore_keypoints=self._parse_pose_ignore_keypoints(),
                     min_valid_conf=min_valid_conf,
+                    coordinate_scale=_coord_scale,
                 )
             if interp_available:
                 interp_pose_df = pd.read_csv(interp_pose_path)
@@ -15006,7 +15548,7 @@ class MainWindow(QMainWindow):
         if pose_labels:
             params = self.get_parameters_dict()
             # Resolve anterior/posterior indices for body-length calibration
-            from multi_tracker.core.tracking.pose_features import (
+            from multi_tracker.core.identity.pose.features import (
                 resolve_pose_group_indices,
             )
 
@@ -17391,12 +17933,6 @@ class MainWindow(QMainWindow):
             )
 
             # === INDIVIDUAL ANALYSIS ===
-            pipeline_enabled = get_cfg(
-                "enable_individual_pipeline",
-                "enable_identity_analysis",
-                default=False,
-            )
-            self.chk_enable_individual_analysis.setChecked(bool(pipeline_enabled))
             old_method = str(
                 get_cfg("identity_method", default="none_disabled")
             ).lower()
