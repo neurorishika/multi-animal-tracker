@@ -37,5 +37,5 @@
 
 ## Integrations and Utils
 
-- `multi_tracker.integrations.xanylabeling_cli`
+- `multi_tracker.integrations.xanylabeling.cli`
 - `multi_tracker.utils.*`
