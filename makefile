@@ -120,7 +120,7 @@ env-remove-rocm:
 
 test:
 	@echo "Testing package installation..."
-	python -c "from multi_tracker.app.launcher import main; print('✅ Import successful')"
+	python -c "from multi_tracker.mat.app.launcher import main; print('✅ Import successful')"
 	@echo "✅ All tests passed!"
 
 pytest:

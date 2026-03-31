@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ...training import (
+from multi_tracker.training import (
     PublishPolicy,
     SourceDataset,
     SplitConfig,
@@ -42,8 +42,8 @@ from ...training import (
     TrainingRole,
     TrainingRunSpec,
 )
-from ...training.validation import format_validation_report
-from ...utils.gpu_utils import get_device_info
+from multi_tracker.training.validation import format_validation_report
+from multi_tracker.utils.gpu_utils import get_device_info
 
 logger = logging.getLogger(__name__)
 

@@ -64,20 +64,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.core.tracking.optimizer_workers import DetectionCacheBuilderWorker
-
-from ..core.identity.dataset.generator import IndividualDatasetGenerator
-from ..core.identity.dataset.oriented_video import (
+from multi_tracker.core.identity.dataset.generator import IndividualDatasetGenerator
+from multi_tracker.core.identity.dataset.oriented_video import (
     OrientedTrackVideoExporter,
     resolve_individual_dataset_dir,
 )
-from ..core.identity.pose.quality import (
+from multi_tracker.core.identity.pose.quality import (
     apply_quality_to_dataframe,
     apply_temporal_pose_postprocessing,
     calibrate_body_length_prior,
     calibrate_edge_length_priors,
 )
-from ..core.identity.properties.export import (
+from multi_tracker.core.identity.properties.export import (
     POSE_SUMMARY_COLUMNS,
     augment_trajectories_with_pose_cache,
     build_pose_keypoint_labels,
@@ -85,13 +83,13 @@ from ..core.identity.properties.export import (
     merge_interpolated_pose_df,
     pose_wide_columns_for_labels,
 )
-from ..core.post.processing import (
+from multi_tracker.core.post.processing import (
     interpolate_trajectories,
     process_trajectories,
     relink_trajectories_with_pose,
     resolve_trajectories,
 )
-from ..core.runtime.compute_runtime import (
+from multi_tracker.core.runtime.compute_runtime import (
     CANONICAL_RUNTIMES,
     allowed_runtimes_for_pipelines,
     derive_detection_runtime_settings,
@@ -99,16 +97,21 @@ from ..core.runtime.compute_runtime import (
     infer_compute_runtime_from_legacy,
     runtime_label,
 )
-from ..core.tracking.worker import TrackingWorker
-from ..data.csv_writer import CSVWriterThread
-from ..data.detection_cache import DetectionCache
-from ..utils.geometry import fit_circle_to_points, wrap_angle_degs
-from ..utils.gpu_utils import MPS_AVAILABLE, TENSORRT_AVAILABLE, TORCH_CUDA_AVAILABLE
-from ..utils.pose_visualization import (
+from multi_tracker.core.tracking.optimizer_workers import DetectionCacheBuilderWorker
+from multi_tracker.core.tracking.worker import TrackingWorker
+from multi_tracker.data.csv_writer import CSVWriterThread
+from multi_tracker.data.detection_cache import DetectionCache
+from multi_tracker.utils.geometry import fit_circle_to_points, wrap_angle_degs
+from multi_tracker.utils.gpu_utils import (
+    MPS_AVAILABLE,
+    TENSORRT_AVAILABLE,
+    TORCH_CUDA_AVAILABLE,
+)
+from multi_tracker.utils.pose_visualization import (
     is_renderable_pose_keypoint,
     normalize_pose_render_min_conf,
 )
-from ..utils.video_artifacts import (
+from multi_tracker.utils.video_artifacts import (
     build_detection_cache_path,
     build_optimizer_detection_cache_path,
     build_tracking_session_log_path,
@@ -117,12 +120,13 @@ from ..utils.video_artifacts import (
     find_existing_detection_cache_path,
     iter_detection_cache_candidates,
 )
+
 from .dialogs.bg_parameter_helper import BgParameterHelperDialog
 from .dialogs.parameter_helper import ParameterHelperDialog
 from .dialogs.train_yolo_dialog import TrainYoloDialog
 
 try:
-    from ..posekit.ui.dialogs.utils import get_available_devices
+    from multi_tracker.posekit.ui.dialogs.utils import get_available_devices
 except ImportError:
 
     def get_available_devices():
@@ -250,7 +254,7 @@ def _store_preview_background_state(context: dict, bg_model) -> None:
 
 def _build_preview_background_model(context: dict):
     """Build or restore a preview-only primed background model."""
-    from ..core.background.model import BackgroundModel
+    from multi_tracker.core.background.model import BackgroundModel
 
     bg_params = _build_preview_background_params(context)
     bg_model = BackgroundModel(bg_params)
@@ -444,11 +448,13 @@ class MergeWorker(QThread):
                 and self.tag_cache_path is not None
             ):
                 try:
-                    from ..core.post.tag_identity import (
+                    from multi_tracker.core.post.tag_identity import (
                         detect_tag_swaps,
                         resolve_tag_identities,
                     )
-                    from ..data.tag_observation_cache import TagObservationCache
+                    from multi_tracker.data.tag_observation_cache import (
+                        TagObservationCache,
+                    )
 
                     self.progress_signal.emit(92, "Resolving tag identities...")
                     tag_cache = TagObservationCache(str(self.tag_cache_path), mode="r")
@@ -679,7 +685,7 @@ class InterpolatedCropsWorker(QThread):
             pose_kpt_source_names = []
             pose_kpt_labels = []
             if pose_enabled:
-                from ..core.identity.pose.api import (
+                from multi_tracker.core.identity.pose.api import (
                     build_runtime_config,
                     create_pose_backend_from_config,
                 )
@@ -1751,7 +1757,10 @@ class DatasetGenerationWorker(QThread):
         """run method documentation."""
         detection_cache = None
         try:
-            from ..data.dataset_generation import FrameQualityScorer, export_dataset
+            from multi_tracker.data.dataset_generation import (
+                FrameQualityScorer,
+                export_dataset,
+            )
 
             if self._should_stop():
                 return
@@ -2003,8 +2012,8 @@ def _run_preview_detection_job(
     frame_rgb, context: dict, use_detection_filters: bool
 ) -> dict:
     """Run preview detection using a frozen parameter snapshot."""
-    from ..core.detectors import ObjectDetector, YOLOOBBDetector
-    from ..utils.image_processing import apply_image_adjustments
+    from multi_tracker.core.detectors import ObjectDetector, YOLOOBBDetector
+    from multi_tracker.utils.image_processing import apply_image_adjustments
 
     frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
     detection_method = int(context.get("detection_method", 0))
@@ -9369,7 +9378,7 @@ class MainWindow(QMainWindow):
             self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
             return
 
-        from multi_tracker.gui.dialogs import CNNIdentityImportDialog
+        from multi_tracker.mat.gui.dialogs import CNNIdentityImportDialog
 
         dlg = CNNIdentityImportDialog(meta, parent=self)
         if dlg.exec() != QDialog.Accepted:
@@ -10512,7 +10521,9 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            from ..utils.image_processing import compute_median_color_from_frame
+            from multi_tracker.utils.image_processing import (
+                compute_median_color_from_frame,
+            )
 
             # Compute median color
             median_color = compute_median_color_from_frame(frame)
@@ -11557,7 +11568,7 @@ class MainWindow(QMainWindow):
         is_background_subtraction = detection_method == "Background Subtraction"
 
         # Apply adjustments
-        from ..utils.image_processing import apply_image_adjustments
+        from multi_tracker.utils.image_processing import apply_image_adjustments
 
         if is_background_subtraction:
             # Background subtraction uses grayscale with adjustments
@@ -13809,7 +13820,7 @@ class MainWindow(QMainWindow):
 
     def show_gpu_info(self: object) -> object:
         """Display GPU and acceleration information dialog."""
-        from ..utils.gpu_utils import get_device_info
+        from multi_tracker.utils.gpu_utils import get_device_info
 
         info = get_device_info()
 
@@ -15166,7 +15177,7 @@ class MainWindow(QMainWindow):
 
                 if csv_to_process and os.path.exists(csv_to_process):
                     # Use CSV-based processing to preserve confidence columns
-                    from ..core.post.processing import (
+                    from multi_tracker.core.post.processing import (
                         interpolate_trajectories,
                         process_trajectories_from_csv,
                     )
@@ -15232,7 +15243,9 @@ class MainWindow(QMainWindow):
                     self.start_backward_tracking()
                 else:
                     # Forward-only mode: Apply interpolation here (no merge step)
-                    from ..core.post.processing import interpolate_trajectories
+                    from multi_tracker.core.post.processing import (
+                        interpolate_trajectories,
+                    )
 
                     interp_method = (
                         self.combo_interpolation_method.currentText().lower()

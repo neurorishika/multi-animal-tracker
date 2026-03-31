@@ -20,11 +20,11 @@ __version__ = "1.0.0"
 __author__ = "Your Name"
 __email__ = "your.email@example.com"
 
-from .app.launcher import main, parse_arguments, setup_logging
+from .mat.app.launcher import main, parse_arguments, setup_logging
 
 try:
     from .core.tracking.worker import TrackingWorker
-    from .gui.main_window import MainWindow
+    from .mat.gui.main_window import MainWindow
 
     __all__ = [
         "main",

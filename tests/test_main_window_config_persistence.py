@@ -13,7 +13,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication
 
-from multi_tracker.gui.main_window import MainWindow
+from multi_tracker.mat.gui.main_window import MainWindow
 
 
 @pytest.fixture(scope="module")

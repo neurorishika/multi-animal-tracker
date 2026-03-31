@@ -149,8 +149,9 @@ def main() -> object:
             sys.exit(1)
 
         # Import GUI components (after dependency check)
+        from multi_tracker.utils.gpu_utils import log_device_info
+
         from ..gui.main_window import MainWindow
-        from ..utils.gpu_utils import log_device_info
 
         # Log GPU/acceleration availability
         log_device_info()
