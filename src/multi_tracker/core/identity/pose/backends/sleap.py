@@ -298,10 +298,7 @@ class SleapServiceBackend:
         exported_model_path: str = "",
         export_input_hw: Optional[Tuple[int, int]] = None,
     ):
-        try:
-            from multi_tracker.posekit.inference.service import PoseInferenceService
-        except ImportError:
-            from multi_tracker.posekit_old.pose_inference import PoseInferenceService
+        from multi_tracker.integrations.sleap.service import PoseInferenceService
 
         self.model_dir = Path(model_dir).expanduser().resolve()
         self.out_root = Path(out_root).expanduser().resolve()

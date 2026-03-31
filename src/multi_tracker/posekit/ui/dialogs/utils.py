@@ -47,7 +47,7 @@ logger = logging.getLogger("pose_label.dialogs.utils")
 
 # PoseInferenceService — optional; guarded at call sites
 try:
-    from multi_tracker.posekit.inference.service import PoseInferenceService
+    from multi_tracker.integrations.sleap.service import PoseInferenceService
 except ImportError:
     PoseInferenceService = None  # type: ignore[assignment]
 

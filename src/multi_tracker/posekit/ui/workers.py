@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 from PySide6.QtCore import QObject, Signal
 
-from multi_tracker.posekit.inference.service import PoseInferenceService
+from multi_tracker.integrations.sleap.service import PoseInferenceService
 
 from .utils import _maybe_empty_cuda_cache
 

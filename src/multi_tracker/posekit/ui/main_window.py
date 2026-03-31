@@ -84,13 +84,13 @@ from .workers import BulkPosePredictWorker, PosePredictWorker, SleapServiceWorke
 
 # External imports (formerly in try/except blocks in main.py)
 try:
+    from multi_tracker.integrations.sleap.service import PoseInferenceService
     from multi_tracker.posekit.core.extensions import (
         IncrementalEmbeddingCache,
         MetadataManager,
         build_yolo_pose_dataset,
         cluster_stratified_split,
     )
-    from multi_tracker.posekit.inference.service import PoseInferenceService
     from multi_tracker.posekit.ui.dialogs.active_learning import ActiveLearningDialog
     from multi_tracker.posekit.ui.dialogs.evaluation import EvaluationDashboardDialog
     from multi_tracker.posekit.ui.dialogs.exploration import SmartSelectDialog

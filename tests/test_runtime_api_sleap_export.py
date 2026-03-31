@@ -148,7 +148,7 @@ def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> 
 
     stubs = {
         "multi_tracker.utils.gpu_utils": _gpu_stub(),
-        "multi_tracker.posekit.inference.service": types.SimpleNamespace(
+        "multi_tracker.integrations.sleap.service": types.SimpleNamespace(
             PoseInferenceService=_FakePoseInferenceService
         ),
     }
@@ -239,7 +239,7 @@ def test_sleap_export_backend_falls_back_to_service_when_unavailable(
         "sleap_nn.export": export_mod,
         "sleap_nn.export.predictors": predictors_mod,
         "sleap_nn.export.metadata": metadata_mod,
-        "multi_tracker.posekit.pose_inference": types.SimpleNamespace(
+        "multi_tracker.integrations.sleap.service": types.SimpleNamespace(
             PoseInferenceService=_FakePoseInferenceService
         ),
     }
