@@ -89,7 +89,11 @@ from multi_tracker.core.post.processing import (
     relink_trajectories_with_pose,
     resolve_trajectories,
 )
-from multi_tracker.core.runtime.compute_runtime import (
+from multi_tracker.core.tracking.optimizer_workers import DetectionCacheBuilderWorker
+from multi_tracker.core.tracking.worker import TrackingWorker
+from multi_tracker.data.csv_writer import CSVWriterThread
+from multi_tracker.data.detection_cache import DetectionCache
+from multi_tracker.runtime.compute_runtime import (
     CANONICAL_RUNTIMES,
     allowed_runtimes_for_pipelines,
     derive_detection_runtime_settings,
@@ -97,10 +101,6 @@ from multi_tracker.core.runtime.compute_runtime import (
     infer_compute_runtime_from_legacy,
     runtime_label,
 )
-from multi_tracker.core.tracking.optimizer_workers import DetectionCacheBuilderWorker
-from multi_tracker.core.tracking.worker import TrackingWorker
-from multi_tracker.data.csv_writer import CSVWriterThread
-from multi_tracker.data.detection_cache import DetectionCache
 from multi_tracker.utils.geometry import fit_circle_to_points, wrap_angle_degs
 from multi_tracker.utils.gpu_utils import (
     MPS_AVAILABLE,

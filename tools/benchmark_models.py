@@ -56,7 +56,7 @@ sys.path.insert(0, str(_REPO_ROOT / "src"))
 os.environ.setdefault("YOLO_AUTOINSTALL", "false")
 os.environ.setdefault("ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS", "1")
 
-from multi_tracker.core.runtime.compute_runtime import (
+from multi_tracker.runtime.compute_runtime import (
     CANONICAL_RUNTIMES,
     _normalize_runtime,
     allowed_runtimes_for_pipelines,

@@ -1677,7 +1677,7 @@ class ClassKitTrainingDialog(QDialog):
         # Inference runtime (used by TinyCNN inference after training / on load)
         self.compute_runtime_combo = QComboBox()
         try:
-            from ...core.runtime.compute_runtime import (
+            from ...runtime.compute_runtime import (
                 runtime_label,
                 supported_runtimes_for_pipeline,
             )

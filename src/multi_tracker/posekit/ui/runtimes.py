@@ -1,5 +1,5 @@
 try:
-    from multi_tracker.core.runtime.compute_runtime import (
+    from multi_tracker.runtime.compute_runtime import (
         CANONICAL_RUNTIMES,
         allowed_runtimes_for_pipelines,
         derive_pose_runtime_settings,

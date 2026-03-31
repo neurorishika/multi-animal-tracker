@@ -139,7 +139,7 @@ Process noise is anisotropic (longitudinal vs. lateral). Young tracks have atten
 
 All compute-heavy methods use a single `compute_runtime` setting. Runtime support logic is centralized in:
 
-- `src/multi_tracker/core/runtime/compute_runtime.py`
+- `src/multi_tracker/runtime/compute_runtime.py`
 - `src/multi_tracker/utils/gpu_utils.py`
 
 Canonical runtimes: `cpu`, `mps`, `cuda`, `rocm`, `onnx_cpu`, `onnx_cuda`, `onnx_rocm`, `tensorrt`.
@@ -159,7 +159,7 @@ When adding a new model/method: define a pipeline key, add capability rules in `
 - `src/multi_tracker/core/assigners/hungarian.py`
 - `src/multi_tracker/core/post/processing.py`
 - `src/multi_tracker/core/identity/runtime_api.py`
-- `src/multi_tracker/core/runtime/compute_runtime.py`
+- `src/multi_tracker/runtime/compute_runtime.py`
 
 ### `legacy/` Policy
 

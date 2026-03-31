@@ -821,7 +821,7 @@ class YoloInferenceWorker(QRunnable):
             import numpy as np
             from ultralytics import YOLO
 
-            from ...core.runtime.compute_runtime import _normalize_runtime
+            from ...runtime.compute_runtime import _normalize_runtime
 
             rt = _normalize_runtime(self.compute_runtime)
             use_onnx = rt.startswith("onnx_")
@@ -1122,7 +1122,7 @@ class TinyCNNInferenceWorker(QRunnable):
     """Run tiny CNN classification inference on all project images.
 
     Supports PyTorch (cpu/mps/cuda/rocm) and ONNX/TensorRT runtimes via the
-    canonical ``compute_runtime`` parameter (see ``core.runtime.compute_runtime``).
+    canonical ``compute_runtime`` parameter (see ``runtime.compute_runtime``).
     ONNX inference requires a ``<stem>.onnx`` sibling of the ``.pth`` model file,
     which is auto-exported by ``runner.py`` after training.
 
@@ -1173,7 +1173,7 @@ class TinyCNNInferenceWorker(QRunnable):
             import cv2
             import numpy as np
 
-            from ...core.runtime.compute_runtime import _normalize_runtime
+            from ...runtime.compute_runtime import _normalize_runtime
 
             rt = _normalize_runtime(self.compute_runtime)
             use_onnx = rt.startswith("onnx_") or rt == "tensorrt"
@@ -1359,7 +1359,7 @@ class TorchvisionInferenceWorker(QRunnable):
 
         try:
             self.signals.started.emit()
-            from ...core.runtime.compute_runtime import _normalize_runtime
+            from ...runtime.compute_runtime import _normalize_runtime
 
             rt = _normalize_runtime(self.compute_runtime)
             sz = self.input_size

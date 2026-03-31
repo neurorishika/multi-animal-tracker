@@ -31,7 +31,7 @@ from multi_tracker.core.identity.pose.utils import (
     normalize_runtime_flavor,
     parse_runtime_request,
 )
-from multi_tracker.core.runtime.compute_runtime import derive_pose_runtime_settings
+from multi_tracker.runtime.compute_runtime import derive_pose_runtime_settings
 
 logger = logging.getLogger(__name__)
 
