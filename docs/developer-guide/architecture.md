@@ -17,8 +17,11 @@
 
 ## Runtime Entry Paths
 
-- MAT: `multi_tracker.app.launcher:main`
-- PoseKit: `multi_tracker.posekit.pose_label:main`
+- MAT: `multi_tracker.mat.app.launcher:main`
+- PoseKit: `multi_tracker.posekit.ui.main:main`
+- DataSieve: `multi_tracker.datasieve.gui:main`
+- ClassKit: `multi_tracker.classkit.app:main`
+- Afterhours: `multi_tracker.afterhours.app:main`
 
 ## Key Operational Boundaries
 

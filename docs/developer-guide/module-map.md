@@ -2,8 +2,11 @@
 
 ## Entrypoints
 
-- `multi_tracker.app.launcher`
-- `multi_tracker.posekit.pose_label`
+- `multi_tracker.mat.app.launcher`
+- `multi_tracker.posekit.ui.main`
+- `multi_tracker.datasieve.gui`
+- `multi_tracker.classkit.app`
+- `multi_tracker.afterhours.app`
 
 ## Core
 
@@ -22,20 +25,25 @@
 - `multi_tracker.data.dataset_generation`
 - `multi_tracker.data.dataset_merge`
 
-## GUI
+## Runtime
 
-- `multi_tracker.gui.main_window`
-- `multi_tracker.gui.dialogs.train_yolo_dialog`
-- `multi_tracker.gui.widgets.histograms`
+- `multi_tracker.runtime.compute_runtime`
+
+## MAT GUI
+
+- `multi_tracker.mat.gui.main_window`
+- `multi_tracker.mat.gui.dialogs.train_yolo_dialog`
+- `multi_tracker.mat.gui.widgets.histograms`
 
 ## PoseKit
 
-- `multi_tracker.posekit.pose_label`
-- `multi_tracker.posekit.pose_label_dialogs`
-- `multi_tracker.posekit.pose_label_extensions`
-- `multi_tracker.posekit.pose_inference`
+- `multi_tracker.posekit.ui.main`
+- `multi_tracker.posekit.ui.main_window`
+- `multi_tracker.posekit.core.extensions`
+- `multi_tracker.posekit.inference`
 
 ## Integrations and Utils
 
+- `multi_tracker.integrations.sleap.service`
 - `multi_tracker.integrations.xanylabeling.cli`
 - `multi_tracker.utils.*`

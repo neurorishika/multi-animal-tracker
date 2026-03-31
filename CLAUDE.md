@@ -98,20 +98,24 @@ See `to_fix.md` for known dead-code findings and the rationale for false-positiv
 
 | Layer | Package | Role |
 |---|---|---|
-| Launcher / CLI | `multi_tracker.app` | Entry points and bootstrap |
-| MAT GUI | `multi_tracker.gui` | Tracking GUI, dialogs, widgets |
+| MAT App | `multi_tracker.mat` | MAT launcher, GUI, dialogs, widgets |
+| PoseKit | `multi_tracker.posekit` | Pose-labeling application |
+| ClassKit | `multi_tracker.classkit` | Classification/embedding toolkit |
+| Afterhours | `multi_tracker.afterhours` | Interactive proofreading |
+| DataSieve | `multi_tracker.datasieve` | Data sieve tool |
+| Integrations | `multi_tracker.integrations` | External tool bridges (SLEAP, X-AnyLabeling) |
 | Core | `multi_tracker.core` | Detection, Kalman filter, assignment, post-processing, identity |
+| Runtime | `multi_tracker.runtime` | Compute runtime selection and GPU utilities |
 | Data | `multi_tracker.data` | CSV export, detection cache, dataset generation/merge |
-| PoseKit | `multi_tracker.posekit` | Pose-labeling application (separate UI surface, shared env) |
-| ClassKit | `multi_tracker.classkit` | Classification/embedding toolkit (active development) |
 | Training | `multi_tracker.training` | Dataset builders, training runner, registry, service |
-| Tools | `multi_tracker.tools` | Standalone tools (datasieve, etc.) |
-| Utils | `multi_tracker.utils` | GPU detection, geometry, image processing, batching, prefetch |
+| Utils | `multi_tracker.utils` | Geometry, image processing, batching, prefetch |
 
 **Key boundary rules:**
-- Core tracking must not depend on GUI widget internals.
+- Dependency flows downward: App layers (MAT, PoseKit, ClassKit, Afterhours, DataSieve) may import from Core, Runtime, Data, Training, and Utils, but never the reverse.
+- Core, Runtime, Data, Training, and Utils must not import from any app-layer package or from Integrations.
+- Integrations bridges external tools and may import from Core/Runtime/Data/Utils but not from app layers.
 - Data layer must be reusable from both GUI and scripts.
-- PoseKit is a separate app surface with its own workflow.
+- Each app (MAT, PoseKit, ClassKit, Afterhours, DataSieve) is a separate surface with its own workflow.
 
 ### MAT Tracking Pipeline
 

@@ -1,5 +1,5 @@
 # API: App
 
-::: multi_tracker.app
+::: multi_tracker.mat.app
 
-::: multi_tracker.app.launcher
+::: multi_tracker.mat.app.launcher

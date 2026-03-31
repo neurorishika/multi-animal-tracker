@@ -151,7 +151,7 @@ For ROCm system prerequisites and troubleshooting, see `ROCM_SETUP.md`.
 Run these checks in the activated environment:
 
 ```bash
-python -c "from multi_tracker.app.launcher import parse_arguments; print('✅ Core import OK')"
+python -c "from multi_tracker.mat.app.launcher import parse_arguments; print('✅ Core import OK')"
 python -c "from multi_tracker.utils.gpu_utils import log_device_info; log_device_info()"
 ```
 

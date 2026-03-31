@@ -2,7 +2,7 @@
 
 ## Tracking App
 
-Entry: `multi_tracker.app.launcher:main`
+Entry: `multi_tracker.mat.app.launcher:main`
 
 ### Commands
 
@@ -18,7 +18,7 @@ Entry: `multi_tracker.app.launcher:main`
 
 ## PoseKit Labeler
 
-Entry: `multi_tracker.posekit.pose_label:main`
+Entry: `multi_tracker.posekit.ui.main:main`
 
 ### Commands
 
