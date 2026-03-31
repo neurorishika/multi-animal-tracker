@@ -27,13 +27,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.afterhours.core.confidence_density import load_regions
 from multi_tracker.afterhours.core.correction_writer import CorrectionWriter
 from multi_tracker.afterhours.core.event_scorer import EventScorer
 from multi_tracker.afterhours.core.event_types import EventType, SuspicionEvent
 from multi_tracker.afterhours.gui.widgets.suspicion_queue import SuspicionQueueWidget
 from multi_tracker.afterhours.gui.widgets.timeline_panel import TimelinePanelWidget
 from multi_tracker.afterhours.gui.widgets.video_player import VideoPlayerWidget
+from multi_tracker.core.tracking.confidence_density import load_regions
 
 logger = logging.getLogger(__name__)
 

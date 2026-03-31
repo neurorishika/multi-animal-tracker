@@ -855,7 +855,7 @@ class TrackingWorker(QThread):
                 try:
                     from pathlib import Path as _Path
 
-                    from multi_tracker.afterhours.core.confidence_density import (
+                    from multi_tracker.core.tracking.confidence_density import (
                         load_regions as _load_regions,
                     )
 
@@ -950,7 +950,7 @@ class TrackingWorker(QThread):
             if _regions_path.exists():
                 # Regions already computed — just load them.
                 try:
-                    from multi_tracker.afterhours.core.confidence_density import (
+                    from multi_tracker.core.tracking.confidence_density import (
                         load_regions as _load_regions,
                     )
 
@@ -969,7 +969,7 @@ class TrackingWorker(QThread):
                 try:
                     import cv2 as _cv2
 
-                    from multi_tracker.afterhours.core.confidence_density import (
+                    from multi_tracker.core.tracking.confidence_density import (
                         compute_density_map_from_cache,
                         export_diagnostic_video,
                         save_regions,

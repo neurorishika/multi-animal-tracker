@@ -15,8 +15,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from multi_tracker.afterhours.core.confidence_density import DensityRegion
 from multi_tracker.afterhours.core.event_types import EventType, SuspicionEvent
+from multi_tracker.core.tracking.confidence_density import DensityRegion
 
 # ---------------------------------------------------------------------------
 # Signal weights  (pairwise swap / flicker scoring)

@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from multi_tracker.afterhours.core.confidence_density import DensityRegion
+from multi_tracker.core.tracking.confidence_density import DensityRegion
 from multi_tracker.core.tracking.density import get_density_region_flags
 
 
