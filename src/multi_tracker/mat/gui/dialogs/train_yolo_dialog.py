@@ -521,11 +521,13 @@ class TrainYoloDialog(QDialog):
             "Launch training as a background process. You can close this dialog "
             "and continue tracking. Check Run History for results."
         )
+        self.btn_history = QPushButton("Run History...")
         row.addWidget(self.btn_build)
         row.addWidget(self.btn_train)
         row.addWidget(self.btn_detach)
         row.addWidget(self.btn_stop)
         row.addWidget(self.btn_resume)
+        row.addWidget(self.btn_history)
         v.addLayout(row)
 
         self.progress = QProgressBar()
@@ -546,6 +548,7 @@ class TrainYoloDialog(QDialog):
         self.btn_detach.clicked.connect(self._start_detached)
         self.btn_stop.clicked.connect(self._stop_training)
         self.btn_resume.clicked.connect(self._resume_training)
+        self.btn_history.clicked.connect(self._show_history)
 
         return gb
 
@@ -1279,6 +1282,13 @@ class TrainYoloDialog(QDialog):
                 "Training Completed",
                 f"All {len(succeeded)} selected roles completed successfully.",
             )
+
+    def _show_history(self):
+        """Open the training run history viewer dialog."""
+        from multi_tracker.mat.gui.dialogs.run_history_dialog import RunHistoryDialog
+
+        dlg = RunHistoryDialog(parent=self)
+        dlg.exec()
 
     def _resume_training(self):
         """Resume training from the last.pt checkpoint of the most recent run."""
