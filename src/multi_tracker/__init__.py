@@ -16,9 +16,15 @@ Key Features:
 - Configurable tracking parameters with persistence
 """
 
-__version__ = "1.0.0"
-__author__ = "Your Name"
-__email__ = "your.email@example.com"
+try:
+    from importlib.metadata import version as _version
+
+    __version__ = _version("multi-animal-tracker")
+except Exception:
+    __version__ = "1.0.0"  # Fallback for editable installs without metadata
+
+__author__ = "Rishika Mohanta"
+__email__ = "neurorishika@gmail.com"
 
 from .mat.app.launcher import main, parse_arguments, setup_logging
 
