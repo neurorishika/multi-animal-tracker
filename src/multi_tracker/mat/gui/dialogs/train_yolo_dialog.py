@@ -516,8 +516,14 @@ class TrainYoloDialog(QDialog):
         self.btn_resume.setToolTip(
             "Resume training from the last.pt checkpoint of the most recent run."
         )
+        self.btn_detach = QPushButton("Start Detached")
+        self.btn_detach.setToolTip(
+            "Launch training as a background process. You can close this dialog "
+            "and continue tracking. Check Run History for results."
+        )
         row.addWidget(self.btn_build)
         row.addWidget(self.btn_train)
+        row.addWidget(self.btn_detach)
         row.addWidget(self.btn_stop)
         row.addWidget(self.btn_resume)
         v.addLayout(row)
@@ -537,6 +543,7 @@ class TrainYoloDialog(QDialog):
 
         self.btn_build.clicked.connect(self._build_role_datasets)
         self.btn_train.clicked.connect(self._start_training)
+        self.btn_detach.clicked.connect(self._start_detached)
         self.btn_stop.clicked.connect(self._stop_training)
         self.btn_resume.clicked.connect(self._resume_training)
 
@@ -1027,6 +1034,83 @@ class TrainYoloDialog(QDialog):
             "model_info": f"{tag}_{role_suffix}",
             "training_params": training_params,
         }
+
+    def _start_detached(self):
+        """Launch training as a detached subprocess."""
+        import subprocess
+
+        roles = self._selected_roles()
+        if not roles:
+            QMessageBox.warning(self, "No Roles", "Select at least one training role.")
+            return
+        if not self.role_dataset_dirs:
+            if not self._build_role_datasets():
+                return
+
+        launched = []
+        for role in roles:
+            ds = self.role_dataset_dirs.get(role.value, "")
+            if not ds:
+                continue
+            base_model = self._base_model_for_role(role)
+            if not base_model:
+                continue
+
+            batch_val = (
+                -1 if self.chk_auto_batch.isChecked() else self.spin_batch.value()
+            )
+            spec = TrainingRunSpec(
+                role=role,
+                source_datasets=self._collect_sources(),
+                derived_dataset_dir=ds,
+                base_model=base_model,
+                hyperparams=TrainingHyperParams(
+                    epochs=self.spin_epochs.value(),
+                    imgsz=self._imgsz_for_role(role),
+                    batch=batch_val,
+                    lr0=self.spin_lr0.value(),
+                    patience=self.spin_patience.value(),
+                    workers=self.spin_workers.value(),
+                    cache=self.chk_cache.isChecked(),
+                ),
+                device=self.combo_device.currentText().strip() or "auto",
+                seed=self.spin_seed.value(),
+            )
+            from multi_tracker.training.runner import build_ultralytics_command
+
+            run_dir = self.workspace_default / "runs" / ("detached_" + role.value)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            cmd = build_ultralytics_command(spec, str(run_dir))
+
+            log_file = run_dir / "detached_output.log"
+            with open(log_file, "w") as log_fh:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            launched.append((role.value, proc.pid, str(log_file)))
+            self._append_log(
+                "Detached "
+                + role.value
+                + " training: PID="
+                + str(proc.pid)
+                + ", log="
+                + str(log_file)
+            )
+
+        if launched:
+            msg = "\n".join(
+                "* " + role + ": PID " + str(pid) + "\n  Log: " + log
+                for role, pid, log in launched
+            )
+            QMessageBox.information(
+                self,
+                "Detached Training Started",
+                "Training launched in background:\n\n" + msg + "\n\n"
+                "You can close this dialog. Check Run History for results.",
+            )
 
     def _start_training(self):
         if self.worker is not None and self.worker.isRunning():
