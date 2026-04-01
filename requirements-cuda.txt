@@ -16,6 +16,7 @@ torchaudio
 timm
 pupil-apriltags
 ultralytics
+platformdirs>=3.0
 
 # TensorRT - NVIDIA inference optimization for YOLO acceleration
 # See: https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html

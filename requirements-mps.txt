@@ -19,6 +19,7 @@ annoy
 
 pupil-apriltags
 ultralytics
+platformdirs>=3.0
 
 # ONNX for model export (CPU version - no ONNX runtime GPU for MPS yet)
 onnx

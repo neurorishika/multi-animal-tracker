@@ -58,6 +58,7 @@ usearch
 annoy
 pupil-apriltags
 ultralytics
+platformdirs>=3.0
 
 # ONNX runtime with DirectML support (works with ROCm via HIP)
 onnx
