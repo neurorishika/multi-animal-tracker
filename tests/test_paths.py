@@ -57,13 +57,12 @@ def test_get_bundled_skeleton_names_returns_list():
 
 
 def test_user_config_dir_is_writable(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    # Clear any cached values by reimporting
-    import importlib
+    monkeypatch.setattr(
+        "multi_tracker.paths.user_config_dir",
+        lambda *a, **kw: str(tmp_path / "config"),
+    )
 
     import multi_tracker.paths as paths_mod
-
-    importlib.reload(paths_mod)
 
     d = paths_mod._user_config_dir()
     assert d.exists()
@@ -71,12 +70,12 @@ def test_user_config_dir_is_writable(tmp_path, monkeypatch):
 
 
 def test_user_data_dir_is_writable(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    import importlib
+    monkeypatch.setattr(
+        "multi_tracker.paths.user_data_dir",
+        lambda *a, **kw: str(tmp_path / "data"),
+    )
 
     import multi_tracker.paths as paths_mod
-
-    importlib.reload(paths_mod)
 
     d = paths_mod._user_data_dir()
     assert d.exists()
@@ -110,17 +109,18 @@ def test_get_training_workspace_dir_returns_path():
 
 
 def test_get_presets_dir_seeds_on_first_use(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_dir = tmp_path / "config"
+    monkeypatch.setattr("multi_tracker.paths._user_config_dir", lambda: config_dir)
     from multi_tracker.paths import get_presets_dir
 
     p = get_presets_dir()
     assert (p / ".seeded").exists()
-    # Should contain at least default.json
     assert any(f.suffix == ".json" for f in p.iterdir())
 
 
 def test_get_skeleton_dir_seeds_on_first_use(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    config_dir = tmp_path / "config"
+    monkeypatch.setattr("multi_tracker.paths._user_config_dir", lambda: config_dir)
     from multi_tracker.paths import get_skeleton_dir
 
     p = get_skeleton_dir()

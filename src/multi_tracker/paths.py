@@ -8,10 +8,13 @@ Qt helpers provide lazy-loaded QIcon construction.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Optional
 
 from platformdirs import user_config_dir, user_data_dir
+
+logger = logging.getLogger(__name__)
 
 APP_NAME = "multi-animal-tracker"
 APP_AUTHOR = "Kronauer Lab"
@@ -123,6 +126,8 @@ def _resources_files(package: str):
 
 def get_brand_icon_bytes(name: str) -> Optional[bytes]:
     """Read a brand icon asset by filename. Returns None if not found."""
+    if "/" in name or "\\" in name or name.startswith("."):
+        return None
     try:
         ref = _resources_files("multi_tracker.resources.brand").joinpath(name)
         return ref.read_bytes()
@@ -132,6 +137,8 @@ def get_brand_icon_bytes(name: str) -> Optional[bytes]:
 
 def get_default_config(name: str) -> Optional[dict]:
     """Read a bundled config preset as a dict. Returns None if not found."""
+    if "/" in name or "\\" in name or name.startswith("."):
+        return None
     try:
         ref = _resources_files("multi_tracker.resources.configs").joinpath(name)
         return json.loads(ref.read_text(encoding="utf-8"))
@@ -141,6 +148,8 @@ def get_default_config(name: str) -> Optional[dict]:
 
 def get_skeleton_config(name: str) -> Optional[dict]:
     """Read a bundled skeleton config as a dict. Returns None if not found."""
+    if "/" in name or "\\" in name or name.startswith("."):
+        return None
     try:
         ref = _resources_files("multi_tracker.resources.configs.skeletons").joinpath(
             name
