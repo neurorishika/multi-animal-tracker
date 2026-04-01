@@ -8,7 +8,6 @@ Qt helpers provide lazy-loaded QIcon construction.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -116,21 +115,10 @@ def _seed_bundled_skeletons(dest: Path) -> None:
 
 
 def _resources_files(package: str):
-    """Return a Traversable for the given package, compatible with Python 3.9+."""
-    if sys.version_info >= (3, 11):
-        from importlib.resources import files
+    """Get importlib.resources files handle for a package."""
+    from importlib.resources import files
 
-        return files(package)
-    else:
-        from importlib.resources import files  # type: ignore[attr-defined]
-
-        try:
-            return files(package)
-        except AttributeError:
-            # Python 3.9 fallback
-            from importlib import resources  # noqa: F811
-
-            return resources.files(package)
+    return files(package)
 
 
 def get_brand_icon_bytes(name: str) -> Optional[bytes]:

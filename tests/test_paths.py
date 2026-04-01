@@ -99,3 +99,30 @@ def test_get_advanced_config_path_returns_path():
     p = get_advanced_config_path()
     assert isinstance(p, Path)
     assert p.name == "advanced_config.json"
+
+
+def test_get_training_workspace_dir_returns_path():
+    from multi_tracker.paths import get_training_workspace_dir
+
+    p = get_training_workspace_dir("YOLO")
+    assert isinstance(p, Path)
+    assert "training" in str(p)
+
+
+def test_get_presets_dir_seeds_on_first_use(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from multi_tracker.paths import get_presets_dir
+
+    p = get_presets_dir()
+    assert (p / ".seeded").exists()
+    # Should contain at least default.json
+    assert any(f.suffix == ".json" for f in p.iterdir())
+
+
+def test_get_skeleton_dir_seeds_on_first_use(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    from multi_tracker.paths import get_skeleton_dir
+
+    p = get_skeleton_dir()
+    assert (p / ".seeded").exists()
+    assert any(f.suffix == ".json" for f in p.iterdir())
