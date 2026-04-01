@@ -1,4 +1,4 @@
-.PHONY: env-create env-create-cuda env-create-mps env-create-rocm env-update env-update-cuda env-update-mps env-update-rocm env-remove env-remove-cuda env-remove-mps env-remove-rocm install install-cuda install-mps install-rocm install-dev setup setup-cuda setup-mps setup-rocm test pytest test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check techref-build techref-clean pre-commit-install pre-commit-autopep8 pre-commit-run pre-commit-update format format-check lint lint-fix lint-strict lint-report dead-code dead-code-fix dep-graph dep-graph-text type-check audit benchmark benchmark-quick benchmark-obb benchmark-pose benchmark-classify help
+.PHONY: env-create env-create-cuda env-create-mps env-create-rocm env-update env-update-cuda env-update-mps env-update-rocm env-remove env-remove-cuda env-remove-mps env-remove-rocm install install-cuda install-mps install-rocm install-dev setup setup-cuda setup-mps setup-rocm test pytest test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check techref-build techref-clean pre-commit-install pre-commit-autopep8 pre-commit-run pre-commit-update format format-check lint lint-fix lint-strict lint-report dead-code dead-code-fix dep-graph dep-graph-text type-check audit benchmark benchmark-quick benchmark-obb benchmark-pose benchmark-classify build publish publish-test help
 
 # Environment names for different platforms
 ENV_NAME = multi-animal-tracker
@@ -236,6 +236,37 @@ setup-rocm:
 	@echo "   1. conda activate $(ENV_NAME_ROCM)"
 	@echo "   2. make install-rocm"
 	@echo "   3. make verify-rocm  # Verify ROCm installation"
+
+# =============================================================================
+# PACKAGING & PUBLISHING
+# =============================================================================
+
+build:
+	@echo "📦 Building wheel and sdist..."
+	rm -rf dist/ build/
+	python -m build
+	@echo ""
+	@echo "✅ Built:"
+	@ls -lh dist/
+	@echo ""
+	@echo "Verify assets:"
+	@unzip -l dist/*.whl | grep -c "resources/" | xargs -I {} echo "  {} resource files bundled"
+
+publish-test: build
+	@echo "📤 Uploading to Test PyPI..."
+	twine upload --repository testpypi dist/*
+	@echo ""
+	@echo "✅ Uploaded to Test PyPI."
+	@echo "   Test with: pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ multi-animal-tracker"
+
+publish: build
+	@echo "📤 Uploading to PyPI..."
+	@echo "   ⚠️  This publishes to the REAL PyPI. Press Ctrl+C to cancel."
+	@sleep 3
+	twine upload dist/*
+	@echo ""
+	@echo "✅ Published to PyPI."
+	@echo "   Install with: pip install multi-animal-tracker"
 
 # =============================================================================
 # DOCUMENTATION
@@ -501,6 +532,11 @@ help:
 	@echo "  make dep-graph-text  - Text module map (pyreverse, no graphviz needed)"
 	@echo "  make type-check      - Static type checking (mypy)"
 	@echo "  make audit           - Full sweep: dead-code + dep-graph + types + coverage"
+	@echo ""
+	@echo "📦 PACKAGING & PUBLISHING  (requires: pip install build twine)"
+	@echo "  make build           - Build wheel and sdist"
+	@echo "  make publish-test    - Build + upload to Test PyPI"
+	@echo "  make publish         - Build + upload to PyPI (real)"
 	@echo ""
 	@echo "📚 DOCUMENTATION"
 	@echo "  make docs-serve      - Live preview at http://127.0.0.1:8000"
