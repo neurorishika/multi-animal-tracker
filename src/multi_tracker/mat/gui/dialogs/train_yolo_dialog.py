@@ -536,6 +536,14 @@ class TrainYoloDialog(QDialog):
         row.addWidget(self.btn_quick_test)
         v.addLayout(row)
 
+        cfg_row = QHBoxLayout()
+        self.btn_save_config = QPushButton("Save Config...")
+        self.btn_load_config = QPushButton("Load Config...")
+        cfg_row.addWidget(self.btn_save_config)
+        cfg_row.addWidget(self.btn_load_config)
+        cfg_row.addStretch()
+        v.addLayout(cfg_row)
+
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
@@ -556,8 +564,227 @@ class TrainYoloDialog(QDialog):
         self.btn_resume.clicked.connect(self._resume_training)
         self.btn_history.clicked.connect(self._show_history)
         self.btn_quick_test.clicked.connect(self._quick_test)
+        self.btn_save_config.clicked.connect(self._save_training_config)
+        self.btn_load_config.clicked.connect(self._load_training_config)
 
         return gb
+
+    # ------------------------------------------------------------------
+    # Save / Load training config
+    # ------------------------------------------------------------------
+
+    def _save_training_config(self):
+        """Export all dialog settings to a JSON file."""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Training Config",
+            str(getattr(self, "workspace_default", Path.home())),
+            "JSON Files (*.json)",
+        )
+        if not path:
+            return
+
+        # Gather roles
+        roles = []
+        for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
+            chk = getattr(self, f"chk_role_{role_key}", None)
+            if chk and chk.isChecked():
+                roles.append(role_key)
+
+        # Gather sources from table
+        sources = []
+        for row in range(self.table_sources.rowCount()):
+            st = self.table_sources.item(row, 0).data(Qt.UserRole)
+            p = self.table_sources.item(row, 1).text().strip()
+            sources.append({"source_type": st, "path": p})
+
+        config = {
+            "version": 1,
+            "class_name": self.line_class.text().strip(),
+            "roles": roles,
+            "sources": sources,
+            "hyperparams": {
+                "epochs": self.spin_epochs.value(),
+                "batch": self.spin_batch.value(),
+                "lr0": self.spin_lr0.value(),
+                "patience": self.spin_patience.value(),
+                "workers": self.spin_workers.value(),
+                "cache": self.chk_cache.isChecked(),
+            },
+            "imgsz": {
+                "obb_direct": self.spin_imgsz_obb_direct.value(),
+                "seq_detect": self.spin_imgsz_seq_detect.value(),
+                "seq_crop_obb": self.spin_imgsz_seq_crop_obb.value(),
+            },
+            "split": {
+                "train": self.spin_train.value(),
+                "val": self.spin_val.value(),
+            },
+            "seed": self.spin_seed.value(),
+            "dedup": self.chk_dedup.isChecked(),
+            "crop_derivation": {
+                "pad_ratio": self.spin_crop_pad.value(),
+                "min_crop_size_px": self.spin_crop_min_px.value(),
+                "enforce_square": self.chk_crop_square.isChecked(),
+            },
+            "base_models": {
+                "obb_direct": self.combo_model_obb_direct.currentText(),
+                "seq_detect": self.combo_model_seq_detect.currentText(),
+                "seq_crop_obb": self.combo_model_seq_crop_obb.currentText(),
+            },
+            "augmentation": {
+                "enabled": self.aug_group.isChecked(),
+                "fliplr": self.spin_aug_fliplr.value(),
+                "flipud": self.spin_aug_flipud.value(),
+                "degrees": self.spin_aug_degrees.value(),
+                "mosaic": self.spin_aug_mosaic.value(),
+                "mixup": self.spin_aug_mixup.value(),
+                "hsv_h": self.spin_aug_hsv_h.value(),
+                "hsv_s": self.spin_aug_hsv_s.value(),
+                "hsv_v": self.spin_aug_hsv_v.value(),
+            },
+            "device": self.combo_device.currentText(),
+            "publish": {
+                "species": self.line_species.text().strip(),
+                "model_tag": self.line_model_tag.text().strip(),
+                "auto_import": self.chk_auto_import.isChecked(),
+                "auto_select": self.chk_auto_select.isChecked(),
+            },
+        }
+
+        try:
+            Path(path).write_text(json.dumps(config, indent=2), encoding="utf-8")
+            self._append_log(f"Config saved to {path}")
+        except Exception as exc:
+            self._append_log(f"Failed to save config: {exc}")
+
+    def _load_training_config(self):
+        """Restore dialog settings from a JSON config file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Training Config",
+            str(getattr(self, "workspace_default", Path.home())),
+            "JSON Files (*.json)",
+        )
+        if not path:
+            return
+
+        try:
+            config = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._append_log(f"Failed to load config: {exc}")
+            return
+
+        # Class name
+        if "class_name" in config:
+            self.line_class.setText(config["class_name"])
+
+        # Roles
+        roles = config.get("roles", [])
+        for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
+            chk = getattr(self, f"chk_role_{role_key}", None)
+            if chk:
+                chk.setChecked(role_key in roles)
+
+        # Sources
+        sources = config.get("sources", [])
+        if sources:
+            self.table_sources.setRowCount(0)
+            for src in sources:
+                self._add_source_row(
+                    src.get("source_type", "obb"),
+                    src.get("path", ""),
+                )
+
+        # Hyperparams
+        hp = config.get("hyperparams", {})
+        for key, widget_name in (
+            ("epochs", "spin_epochs"),
+            ("batch", "spin_batch"),
+            ("lr0", "spin_lr0"),
+            ("patience", "spin_patience"),
+            ("workers", "spin_workers"),
+        ):
+            if key in hp:
+                w = getattr(self, widget_name, None)
+                if w:
+                    w.setValue(hp[key])
+        if "cache" in hp:
+            self.chk_cache.setChecked(hp["cache"])
+
+        # Image sizes
+        isz = config.get("imgsz", {})
+        for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
+            if role_key in isz:
+                w = getattr(self, f"spin_imgsz_{role_key}", None)
+                if w:
+                    w.setValue(isz[role_key])
+
+        # Split
+        sp = config.get("split", {})
+        if "train" in sp:
+            self.spin_train.setValue(sp["train"])
+        if "val" in sp:
+            self.spin_val.setValue(sp["val"])
+
+        # Seed / dedup
+        if "seed" in config:
+            self.spin_seed.setValue(config["seed"])
+        if "dedup" in config:
+            self.chk_dedup.setChecked(config["dedup"])
+
+        # Crop derivation
+        cd = config.get("crop_derivation", {})
+        if "pad_ratio" in cd:
+            self.spin_crop_pad.setValue(cd["pad_ratio"])
+        if "min_crop_size_px" in cd:
+            self.spin_crop_min_px.setValue(cd["min_crop_size_px"])
+        if "enforce_square" in cd:
+            self.chk_crop_square.setChecked(cd["enforce_square"])
+
+        # Base models
+        bm = config.get("base_models", {})
+        for role_key in ("obb_direct", "seq_detect", "seq_crop_obb"):
+            if role_key in bm:
+                combo = getattr(self, f"combo_model_{role_key}", None)
+                if combo:
+                    combo.setCurrentText(bm[role_key])
+
+        # Augmentation
+        aug = config.get("augmentation", {})
+        if "enabled" in aug:
+            self.aug_group.setChecked(aug["enabled"])
+        for key in (
+            "fliplr",
+            "flipud",
+            "degrees",
+            "mosaic",
+            "mixup",
+            "hsv_h",
+            "hsv_s",
+            "hsv_v",
+        ):
+            if key in aug:
+                w = getattr(self, f"spin_aug_{key}", None)
+                if w:
+                    w.setValue(aug[key])
+
+        # Device
+        if "device" in config:
+            self.combo_device.setCurrentText(config["device"])
+
+        # Publish
+        pub = config.get("publish", {})
+        if "species" in pub:
+            self.line_species.setText(pub["species"])
+        if "model_tag" in pub:
+            self.line_model_tag.setText(pub["model_tag"])
+        if "auto_import" in pub:
+            self.chk_auto_import.setChecked(pub["auto_import"])
+        if "auto_select" in pub:
+            self.chk_auto_select.setChecked(pub["auto_select"])
+
+        self._append_log(f"Config loaded from {path}")
 
     def _build_device_options(self):
         info = get_device_info()
