@@ -133,7 +133,7 @@ class TrainYoloDialog(QDialog):
         self.conda_envs = conda_envs or []
         self.worker = None
 
-        self.repo_root = Path(__file__).resolve().parents[3]
+        self.repo_root = Path(__file__).resolve().parents[5]
         self.workspace_default = self.repo_root / "training" / "YOLO"
         self.orchestrator = TrainingOrchestrator(self.workspace_default)
 

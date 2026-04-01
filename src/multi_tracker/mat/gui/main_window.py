@@ -2817,7 +2817,9 @@ def get_models_directory() -> object:
 def get_models_root_directory() -> object:
     """Return project-local models/ root and create it when missing."""
     project_root = os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        os.path.dirname(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        )
     )
     models_root = os.path.join(project_root, "models")
     os.makedirs(models_root, exist_ok=True)
@@ -8161,7 +8163,7 @@ class MainWindow(QMainWindow):
         ).strip()
         if not default_skeleton:
             candidate = (
-                Path(__file__).resolve().parents[3]
+                Path(__file__).resolve().parents[4]
                 / "configs"
                 / "skeletons"
                 / "ooceraea_biroi.json"
@@ -19188,9 +19190,9 @@ class MainWindow(QMainWindow):
 
     def _get_presets_dir(self):
         """Get the presets directory path."""
-        # Get the repo root (3 levels up from this file)
+        # Get the repo root (4 levels up from mat/gui/main_window.py)
         repo_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
         )
         presets_dir = os.path.join(repo_root, "configs")
         return presets_dir
