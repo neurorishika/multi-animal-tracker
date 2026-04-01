@@ -522,12 +522,18 @@ class TrainYoloDialog(QDialog):
             "and continue tracking. Check Run History for results."
         )
         self.btn_history = QPushButton("Run History...")
+        self.btn_quick_test = QPushButton("Quick Test...")
+        self.btn_quick_test.setEnabled(False)
+        self.btn_quick_test.setToolTip(
+            "Run the last trained model on sample images to visually verify detections."
+        )
         row.addWidget(self.btn_build)
         row.addWidget(self.btn_train)
         row.addWidget(self.btn_detach)
         row.addWidget(self.btn_stop)
         row.addWidget(self.btn_resume)
         row.addWidget(self.btn_history)
+        row.addWidget(self.btn_quick_test)
         v.addLayout(row)
 
         self.progress = QProgressBar()
@@ -549,6 +555,7 @@ class TrainYoloDialog(QDialog):
         self.btn_stop.clicked.connect(self._stop_training)
         self.btn_resume.clicked.connect(self._resume_training)
         self.btn_history.clicked.connect(self._show_history)
+        self.btn_quick_test.clicked.connect(self._quick_test)
 
         return gb
 
@@ -1262,6 +1269,7 @@ class TrainYoloDialog(QDialog):
 
         succeeded = [r for r in results if r.get("success")]
         failed = [r for r in results if not r.get("success")]
+        self.btn_quick_test.setEnabled(bool(succeeded))
 
         self._append_log(
             f"Session complete: {len(succeeded)} success, {len(failed)} failed"
@@ -1288,6 +1296,65 @@ class TrainYoloDialog(QDialog):
         from multi_tracker.mat.gui.dialogs.run_history_dialog import RunHistoryDialog
 
         dlg = RunHistoryDialog(parent=self)
+        dlg.exec()
+
+    def _quick_test(self):
+        """Open the Quick Test dialog for the last successful training result."""
+        from multi_tracker.mat.gui.dialogs.model_test_dialog import ModelTestDialog
+
+        results = getattr(self, "_last_training_results", [])
+        succeeded = [r for r in results if r.get("success")]
+        if not succeeded:
+            QMessageBox.warning(
+                self,
+                "No Model Available",
+                "No successfully trained model found. Run training first.",
+            )
+            return
+
+        result = succeeded[0]
+        model_path = result.get("published_model_path") or result.get(
+            "artifact_path", ""
+        )
+        if not model_path or not Path(model_path).exists():
+            QMessageBox.warning(
+                self,
+                "Model Not Found",
+                f"Model file not found: {model_path}",
+            )
+            return
+
+        role = result.get("role", "obb_direct")
+        dataset_dir = self.role_dataset_dirs.get(role, "")
+        if not dataset_dir:
+            QMessageBox.warning(
+                self,
+                "No Dataset",
+                f"No dataset directory found for role '{role}'.",
+            )
+            return
+
+        device = self.combo_device.currentText() or "cpu"
+
+        # Pick the appropriate imgsz for the role
+        imgsz_map = {
+            "obb_direct": self.spin_imgsz_obb_direct.value(),
+            "seq_detect": self.spin_imgsz_seq_detect.value(),
+            "seq_crop_obb": self.spin_imgsz_seq_crop_obb.value(),
+        }
+        imgsz = imgsz_map.get(role, 640)
+
+        dlg = ModelTestDialog(
+            model_path=model_path,
+            role=role,
+            dataset_dir=dataset_dir,
+            device=device,
+            imgsz=imgsz,
+            crop_pad_ratio=self.spin_crop_pad.value(),
+            min_crop_size_px=self.spin_crop_min_px.value(),
+            enforce_square=self.chk_crop_square.isChecked(),
+            parent=self,
+        )
         dlg.exec()
 
     def _resume_training(self):
