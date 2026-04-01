@@ -208,6 +208,7 @@ ignore-names = [
 # ============================================================================
 [tool.setuptools.packages.find]
 where = ["src"]
+exclude = ["brand", "brand.*"]
 
 [tool.setuptools.package-data]
 "multi_tracker" = [
