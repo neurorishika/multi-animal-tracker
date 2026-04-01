@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from multi_tracker.mat.gui.widgets.loss_plot_widget import LossPlotWidget
 from multi_tracker.training import (
     AugmentationProfile,
     PublishPolicy,
@@ -501,6 +502,10 @@ class TrainYoloDialog(QDialog):
         self.progress.setValue(0)
         v.addWidget(self.progress)
 
+        self.loss_plot = LossPlotWidget()
+        self.loss_plot.setMinimumHeight(180)
+        v.addWidget(self.loss_plot)
+
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         v.addWidget(self.log_view)
@@ -527,6 +532,8 @@ class TrainYoloDialog(QDialog):
 
     def _append_log(self, text: str):
         self.log_view.append(str(text))
+        if hasattr(self, "loss_plot"):
+            self.loss_plot.ingest_log_line(str(text))
 
     def _choose_workspace(self):
         d = QFileDialog.getExistingDirectory(self, "Select Workspace Root")
@@ -1092,6 +1099,8 @@ class TrainYoloDialog(QDialog):
         self.btn_train.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.progress.setValue(0)
+        if hasattr(self, "loss_plot"):
+            self.loss_plot.clear()
         self.worker.start()
 
     def _stop_training(self):
