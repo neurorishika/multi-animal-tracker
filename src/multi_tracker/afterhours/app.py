@@ -2,7 +2,6 @@ import argparse
 import sys
 from pathlib import Path
 
-from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 
@@ -21,13 +20,11 @@ def main():
     app.setDesktopFileName("mat-afterhours")
 
     try:
-        icon_path = (
-            Path(__file__).resolve().parents[2]
-            / "brand"
-            / "multianimaltrackerafterhours.svg"
-        )
-        if icon_path.exists():
-            app.setWindowIcon(QIcon(str(icon_path)))
+        from multi_tracker.paths import get_brand_qicon
+
+        icon = get_brand_qicon("multianimaltrackerafterhours.svg")
+        if icon and not icon.isNull():
+            app.setWindowIcon(icon)
     except Exception:
         pass
 

@@ -766,9 +766,13 @@ class MainWindow(QMainWindow):
 
         logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignCenter)
-        logo_path = Path(__file__).resolve().parents[3] / "brand" / "posekit.svg"
-        if logo_path.exists():
-            renderer = QSvgRenderer(str(logo_path))
+        from PySide6.QtCore import QByteArray
+
+        from multi_tracker.paths import get_brand_icon_bytes
+
+        logo_data = get_brand_icon_bytes("posekit.svg")
+        if logo_data is not None:
+            renderer = QSvgRenderer(QByteArray(logo_data))
             if renderer.isValid():
                 view_box = renderer.viewBoxF()
                 if view_box.isEmpty():
@@ -1193,14 +1197,19 @@ class MainWindow(QMainWindow):
     def _show_canvas_logo_placeholder(self):
         """Show PoseKit logo in the center canvas when no frame is active."""
         try:
-            project_root = Path(__file__).resolve().parents[3]
-            logo_path = project_root / "brand" / "posekit.svg"
+            from PySide6.QtCore import QByteArray
+
+            from multi_tracker.paths import get_brand_icon_bytes
+
+            logo_data = get_brand_icon_bytes("posekit.svg")
             vw = max(1000, self.canvas.viewport().width())
             vh = max(700, self.canvas.viewport().height())
             canvas = QPixmap(vw, vh)
             canvas.fill(QColor(18, 18, 18))
 
-            renderer = QSvgRenderer(str(logo_path))
+            renderer = (
+                QSvgRenderer(QByteArray(logo_data)) if logo_data else QSvgRenderer()
+            )
             if renderer.isValid():
                 view_box = renderer.viewBoxF()
                 if view_box.isEmpty():

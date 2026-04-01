@@ -10,7 +10,6 @@ import argparse
 import logging
 import os
 import sys
-from pathlib import Path
 
 # Fix OpenMP conflict on macOS (PyTorch + OpenCV + NumPy can load multiple OpenMP libraries)
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -166,17 +165,11 @@ def main() -> object:
 
         # Set application icon if available
         try:
-            from PySide6.QtGui import QIcon
+            from multi_tracker.paths import get_brand_qicon
 
-            project_root = Path(__file__).resolve().parents[3]
-            brand_icon = project_root / "brand" / "multianimaltracker.svg"
-            fallback_icon = (
-                Path(__file__).resolve().parent.parent / "resources" / "icon.png"
-            )
-            if brand_icon.exists():
-                app.setWindowIcon(QIcon(str(brand_icon)))
-            elif fallback_icon.exists():
-                app.setWindowIcon(QIcon(str(fallback_icon)))
+            icon = get_brand_qicon("multianimaltracker.svg")
+            if icon and not icon.isNull():
+                app.setWindowIcon(icon)
         except Exception:
             pass  # Icon not critical
 

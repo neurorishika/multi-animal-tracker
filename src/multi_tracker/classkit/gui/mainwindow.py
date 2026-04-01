@@ -459,9 +459,13 @@ class MainWindow(QMainWindow):
 
         logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignCenter)
-        logo_path = Path(__file__).resolve().parents[3] / "brand" / "classkit.svg"
-        if logo_path.exists():
-            renderer = QSvgRenderer(str(logo_path))
+        from PySide6.QtCore import QByteArray
+
+        from multi_tracker.paths import get_brand_icon_bytes
+
+        logo_data = get_brand_icon_bytes("classkit.svg")
+        if logo_data is not None:
+            renderer = QSvgRenderer(QByteArray(logo_data))
             if renderer.isValid():
                 vb = renderer.viewBoxF()
                 if vb.isEmpty():

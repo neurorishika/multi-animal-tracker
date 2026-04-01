@@ -9,7 +9,7 @@ from pathlib import Path
 
 import cv2
 from PySide6.QtCore import QRectF, QSize, Qt, QThread, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import (
     QApplication,
@@ -601,10 +601,11 @@ class DataSieveWindow(QMainWindow):
 
     def _set_window_icon(self):
         try:
-            project_root = Path(__file__).resolve().parents[3]
-            icon_path = project_root / "brand" / "datasieve.svg"
-            if icon_path.exists():
-                self.setWindowIcon(QIcon(str(icon_path)))
+            from multi_tracker.paths import get_brand_qicon
+
+            icon = get_brand_qicon("datasieve.svg")
+            if icon and not icon.isNull():
+                self.setWindowIcon(icon)
         except Exception:
             pass
 
@@ -657,9 +658,14 @@ class DataSieveWindow(QMainWindow):
         logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignCenter)
         try:
-            project_root = Path(__file__).resolve().parents[3]
-            logo_path = project_root / "brand" / "datasieve.svg"
-            renderer = QSvgRenderer(str(logo_path))
+            from PySide6.QtCore import QByteArray
+
+            from multi_tracker.paths import get_brand_icon_bytes
+
+            logo_data = get_brand_icon_bytes("datasieve.svg")
+            renderer = (
+                QSvgRenderer(QByteArray(logo_data)) if logo_data else QSvgRenderer()
+            )
             if renderer.isValid():
                 view_box = renderer.viewBoxF()
                 if view_box.isEmpty():
@@ -1054,15 +1060,20 @@ class DataSieveWindow(QMainWindow):
 
     def _show_logo(self):
         try:
-            project_root = Path(__file__).resolve().parents[3]
-            logo_path = project_root / "brand" / "datasieve.svg"
+            from PySide6.QtCore import QByteArray
+
+            from multi_tracker.paths import get_brand_icon_bytes
+
+            logo_data = get_brand_icon_bytes("datasieve.svg")
 
             canvas_w = max(500, self.logo_label.width() or 800)
             canvas_h = max(320, self.logo_label.height() or 520)
             canvas = QPixmap(canvas_w, canvas_h)
             canvas.fill(QColor(0, 0, 0))
 
-            renderer = QSvgRenderer(str(logo_path))
+            renderer = (
+                QSvgRenderer(QByteArray(logo_data)) if logo_data else QSvgRenderer()
+            )
             if renderer.isValid():
                 view_box = renderer.viewBoxF()
                 if view_box.isEmpty():
@@ -1671,10 +1682,11 @@ def main():
     app.setOrganizationName("NeuroRishika")
 
     try:
-        project_root = Path(__file__).resolve().parents[3]
-        icon_path = project_root / "brand" / "datasieve.svg"
-        if icon_path.exists():
-            app.setWindowIcon(QIcon(str(icon_path)))
+        from multi_tracker.paths import get_brand_qicon
+
+        icon = get_brand_qicon("datasieve.svg")
+        if icon and not icon.isNull():
+            app.setWindowIcon(icon)
     except Exception:
         pass
 

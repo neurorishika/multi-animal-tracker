@@ -4196,9 +4196,15 @@ class MainWindow(QMainWindow):
         logo_label.setAlignment(Qt.AlignCenter)
 
         try:
-            project_root = Path(__file__).resolve().parents[3]
-            logo_path = project_root / "brand" / "multianimaltracker.svg"
-            renderer = QSvgRenderer(str(logo_path))
+            from PySide6.QtCore import QByteArray
+
+            from multi_tracker.paths import get_brand_icon_bytes
+
+            logo_data = get_brand_icon_bytes("multianimaltracker.svg")
+            if logo_data is not None:
+                renderer = QSvgRenderer(QByteArray(logo_data))
+            else:
+                renderer = QSvgRenderer()
             if renderer.isValid():
                 view_box = renderer.viewBoxF()
                 if view_box.isEmpty():
@@ -13622,14 +13628,19 @@ class MainWindow(QMainWindow):
     def _show_video_logo_placeholder(self):
         """Show MAT logo in the video panel when no video is loaded."""
         try:
-            project_root = Path(__file__).resolve().parents[3]
-            logo_path = project_root / "brand" / "multianimaltracker.svg"
+            from PySide6.QtCore import QByteArray
+
+            from multi_tracker.paths import get_brand_icon_bytes
+
+            logo_data = get_brand_icon_bytes("multianimaltracker.svg")
             vw = max(640, self.scroll.viewport().width())
             vh = max(420, self.scroll.viewport().height())
             canvas = QPixmap(vw, vh)
             canvas.fill(QColor(0, 0, 0, 0))
 
-            renderer = QSvgRenderer(str(logo_path))
+            renderer = (
+                QSvgRenderer(QByteArray(logo_data)) if logo_data else QSvgRenderer()
+            )
             if renderer.isValid():
                 view_box = renderer.viewBoxF()
                 if view_box.isEmpty():
