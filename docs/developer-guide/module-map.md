@@ -47,3 +47,12 @@
 - `multi_tracker.integrations.sleap.service`
 - `multi_tracker.integrations.xanylabeling.cli`
 - `multi_tracker.utils.*`
+
+## Paths and Resources
+
+- `multi_tracker.paths` — central path resolver (brand icons, configs, models dir, training dir)
+- `multi_tracker.paths_migrate` — one-time migration helper for repo-to-user-dir data
+- `multi_tracker.resources` — bundled read-only assets package
+- `multi_tracker.resources.brand` — SVG/PNG brand icons
+- `multi_tracker.resources.configs` — default config presets
+- `multi_tracker.resources.configs.skeletons` — skeleton keypoint definitions

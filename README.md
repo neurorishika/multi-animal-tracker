@@ -16,10 +16,25 @@
 
 ## Install (Quick)
 
+### Option A: pip (CPU, simplest)
+
 ```bash
-mamba env create -f environment.yml
-conda activate multi-animal-tracker-mps  # or your platform env
-uv pip install -r requirements.txt
+pip install multi-animal-tracker
+```
+
+For GPU (NVIDIA), install PyTorch first:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install multi-animal-tracker[cuda]
+```
+
+### Option B: Full environment (GPU, recommended for development)
+
+```bash
+mamba env create -f environment.yml          # or environment-mps.yml / environment-cuda.yml
+conda activate multi-animal-tracker          # or -mps / -cuda
+uv pip install -r requirements.txt           # or requirements-mps.txt / requirements-cuda13.txt
 ```
 
 Platform-specific environments are documented in `ENVIRONMENTS.md` and in the online docs.

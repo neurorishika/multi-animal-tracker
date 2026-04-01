@@ -4,6 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build & Environment Setup
 
+### Quick Install (pip, CPU only)
+
+```bash
+pip install multi-animal-tracker
+```
+
+For GPU variants:
+
+```bash
+# NVIDIA GPU
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install multi-animal-tracker[cuda]
+
+# Apple Silicon
+pip install multi-animal-tracker[mps]
+```
+
+### Full Environment (conda)
+
 Platform-specific conda environments are used. Choose one:
 
 ```bash
@@ -109,6 +128,8 @@ See `to_fix.md` for known dead-code findings and the rationale for false-positiv
 | Data | `multi_tracker.data` | CSV export, detection cache, dataset generation/merge |
 | Training | `multi_tracker.training` | Dataset builders, training runner, registry, service |
 | Utils | `multi_tracker.utils` | Geometry, image processing, batching, prefetch |
+| Resources | `multi_tracker.resources` | Bundled read-only assets (brand icons, default configs, skeletons) |
+| Paths | `multi_tracker.paths` | Central path resolution: bundled assets via `importlib.resources`, user dirs via `platformdirs` |
 
 **Key boundary rules:**
 - Dependency flows downward: App layers (MAT, PoseKit, ClassKit, Afterhours, DataSieve) may import from Core, Runtime, Data, Training, and Utils, but never the reverse.
@@ -116,6 +137,9 @@ See `to_fix.md` for known dead-code findings and the rationale for false-positiv
 - Integrations bridges external tools and may import from Core/Runtime/Data/Utils but not from app layers.
 - Data layer must be reusable from both GUI and scripts.
 - Each app (MAT, PoseKit, ClassKit, Afterhours, DataSieve) is a separate surface with its own workflow.
+- All path resolution must go through `multi_tracker.paths`. No module should use `Path(__file__).parents[N]` to navigate to repo root.
+- Bundled read-only assets are accessed via `importlib.resources` through the `paths` module.
+- User-writable data (models, training, config) goes to platform-appropriate directories via `platformdirs`.
 
 ### MAT Tracking Pipeline
 
@@ -164,6 +188,7 @@ When adding a new model/method: define a pipeline key, add capability rules in `
 - `src/multi_tracker/core/post/processing.py`
 - `src/multi_tracker/core/identity/runtime_api.py`
 - `src/multi_tracker/runtime/compute_runtime.py`
+- `src/multi_tracker/paths.py` — central path resolution (all asset/data paths)
 
 ### `legacy/` Policy
 

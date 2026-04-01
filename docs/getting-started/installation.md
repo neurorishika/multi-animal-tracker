@@ -22,6 +22,67 @@ git clone https://github.com/neurorishika/multi-animal-tracker.git
 cd multi-animal-tracker
 ```
 
+## Quick Install (pip)
+
+If you want the simplest install without GPU acceleration:
+
+```bash
+pip install multi-animal-tracker
+```
+
+This installs all dependencies and bundled assets. Launch with `mat` or `posekit-labeler`.
+
+### GPU via pip
+
+Install the correct PyTorch variant first, then install the package with GPU extras:
+
+```bash
+# NVIDIA CUDA 12.8
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install multi-animal-tracker[cuda]
+
+# NVIDIA CUDA 13.0
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+pip install multi-animal-tracker[cuda]
+
+# Apple Silicon (MPS) — torch includes MPS by default
+pip install torch torchvision
+pip install multi-animal-tracker[mps]
+
+# AMD ROCm
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+pip install multi-animal-tracker[rocm]
+```
+
+> **Note:** PyTorch GPU builds are not hosted on PyPI. You must install torch from PyTorch's own index first. The `pip install multi-animal-tracker` step will not overwrite your existing torch installation.
+
+### Data directories
+
+After installation, user data is stored in platform-appropriate locations:
+
+| Data | macOS | Linux |
+|------|-------|-------|
+| Config | `~/Library/Application Support/multi-animal-tracker/` | `~/.config/multi-animal-tracker/` |
+| Models | `~/Library/Application Support/multi-animal-tracker/models/` | `~/.local/share/multi-animal-tracker/models/` |
+| Training | `~/Library/Application Support/multi-animal-tracker/training/` | `~/.local/share/multi-animal-tracker/training/` |
+
+Default config presets and skeleton definitions are bundled with the package and automatically seeded to your config directory on first run.
+
+### Migrating from a repo checkout
+
+If you previously used a cloned repo with models in `<repo>/models/` and training data in `<repo>/training/`, migrate with:
+
+```bash
+python -m multi_tracker.paths_migrate /path/to/multi-animal-tracker --dry-run  # preview
+python -m multi_tracker.paths_migrate /path/to/multi-animal-tracker            # copy
+```
+
+---
+
+## Full Environment Setup (recommended for GPU and development)
+
+The full environment setup uses conda/mamba for system libraries and pip for Python packages. This is recommended for GPU users and developers.
+
 ## Choose Your Installation Path
 
 - **CPU-only (most portable):** `environment.yml` + `requirements.txt`
