@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -34,6 +36,7 @@ from PySide6.QtWidgets import (
 )
 
 from multi_tracker.training import (
+    AugmentationProfile,
     PublishPolicy,
     SourceDataset,
     SplitConfig,
@@ -152,6 +155,7 @@ class TrainYoloDialog(QDialog):
         layout.addWidget(self._build_sources_group())
         layout.addWidget(self._build_roles_group())
         layout.addWidget(self._build_config_group())
+        layout.addWidget(self._build_augmentation_group())
         layout.addWidget(self._build_run_group())
 
         scroll.setWidget(content)
@@ -177,15 +181,49 @@ class TrainYoloDialog(QDialog):
         row.addWidget(self.btn_validate)
         v.addLayout(row)
 
+        row2 = QHBoxLayout()
+        self.btn_save_list = QPushButton("Save Dataset List…")
+        self.btn_load_list = QPushButton("Load Dataset List…")
+        self.btn_analyze = QPushButton("Analyze && Preview")
+        self.btn_save_list.setToolTip(
+            "Save the current source dataset paths to a JSON file for quick reuse."
+        )
+        self.btn_load_list.setToolTip(
+            "Load a previously saved dataset list (appends to current sources)."
+        )
+        self.btn_analyze.setToolTip(
+            "Analyze object sizes, preview crops at current settings, "
+            "and check for training/inference compatibility issues."
+        )
+        row2.addWidget(self.btn_save_list)
+        row2.addWidget(self.btn_load_list)
+        row2.addWidget(self.btn_analyze)
+        row2.addStretch()
+        v.addLayout(row2)
+
         self.validation_view = QTextEdit()
         self.validation_view.setReadOnly(True)
         self.validation_view.setPlaceholderText("Validation report appears here.")
         v.addWidget(self.validation_view)
 
+        # Crop preview area — shows sample crops at current settings.
+        self.preview_container = QGroupBox("Crop Preview (seq_crop_obb settings)")
+        self.preview_container.setVisible(False)
+        preview_layout = QVBoxLayout(self.preview_container)
+        self.preview_grid = QHBoxLayout()
+        preview_layout.addLayout(self.preview_grid)
+        self.preview_info = QLabel("")
+        self.preview_info.setWordWrap(True)
+        preview_layout.addWidget(self.preview_info)
+        v.addWidget(self.preview_container)
+
         self.btn_add_obb.clicked.connect(self._add_obb_sources)
         self.btn_remove.clicked.connect(self._remove_selected)
         self.btn_clear.clicked.connect(self._clear_sources)
         self.btn_validate.clicked.connect(self._validate_sources)
+        self.btn_save_list.clicked.connect(self._save_dataset_list)
+        self.btn_load_list.clicked.connect(self._load_dataset_list)
+        self.btn_analyze.clicked.connect(self._analyze_and_preview)
 
         return gb
 
@@ -288,9 +326,6 @@ class TrainYoloDialog(QDialog):
         self.spin_epochs = QSpinBox()
         self.spin_epochs.setRange(1, 1000)
         self.spin_epochs.setValue(100)
-        self.spin_imgsz = QSpinBox()
-        self.spin_imgsz.setRange(64, 2048)
-        self.spin_imgsz.setValue(640)
         self.spin_batch = QSpinBox()
         self.spin_batch.setRange(1, 256)
         self.spin_batch.setValue(16)
@@ -307,17 +342,40 @@ class TrainYoloDialog(QDialog):
         self.chk_cache = QCheckBox("Cache")
         tr.addWidget(QLabel("epochs"), 0, 0)
         tr.addWidget(self.spin_epochs, 0, 1)
-        tr.addWidget(QLabel("imgsz"), 0, 2)
-        tr.addWidget(self.spin_imgsz, 0, 3)
-        tr.addWidget(QLabel("batch"), 0, 4)
-        tr.addWidget(self.spin_batch, 0, 5)
-        tr.addWidget(QLabel("lr0"), 1, 0)
-        tr.addWidget(self.spin_lr0, 1, 1)
-        tr.addWidget(QLabel("patience"), 1, 2)
-        tr.addWidget(self.spin_patience, 1, 3)
-        tr.addWidget(QLabel("workers"), 1, 4)
-        tr.addWidget(self.spin_workers, 1, 5)
-        tr.addWidget(self.chk_cache, 2, 0, 1, 2)
+        tr.addWidget(QLabel("batch"), 0, 2)
+        tr.addWidget(self.spin_batch, 0, 3)
+        tr.addWidget(QLabel("lr0"), 0, 4)
+        tr.addWidget(self.spin_lr0, 0, 5)
+        tr.addWidget(QLabel("patience"), 1, 0)
+        tr.addWidget(self.spin_patience, 1, 1)
+        tr.addWidget(QLabel("workers"), 1, 2)
+        tr.addWidget(self.spin_workers, 1, 3)
+        tr.addWidget(self.chk_cache, 1, 4, 1, 2)
+
+        # Per-role imgsz — critical for training/inference compatibility.
+        # obb_direct and seq_detect train on full frames (640px default).
+        # seq_crop_obb trains on small crops and MUST match the inference
+        # stage-2 imgsz (default 160) to avoid distribution shift.
+        self.spin_imgsz_obb_direct = QSpinBox()
+        self.spin_imgsz_obb_direct.setRange(64, 2048)
+        self.spin_imgsz_obb_direct.setValue(640)
+        self.spin_imgsz_seq_detect = QSpinBox()
+        self.spin_imgsz_seq_detect.setRange(64, 2048)
+        self.spin_imgsz_seq_detect.setValue(640)
+        self.spin_imgsz_seq_crop_obb = QSpinBox()
+        self.spin_imgsz_seq_crop_obb.setRange(64, 2048)
+        self.spin_imgsz_seq_crop_obb.setValue(160)
+        self.spin_imgsz_seq_crop_obb.setToolTip(
+            "Must match YOLO_SEQ_STAGE2_IMGSZ used during inference (default 160).\n"
+            "Training at a different size causes distribution shift and poor detection."
+        )
+        tr.addWidget(QLabel("imgsz (obb_direct)"), 2, 0)
+        tr.addWidget(self.spin_imgsz_obb_direct, 2, 1)
+        tr.addWidget(QLabel("imgsz (seq_detect)"), 2, 2)
+        tr.addWidget(self.spin_imgsz_seq_detect, 2, 3)
+        tr.addWidget(QLabel("imgsz (seq_crop_obb)"), 2, 4)
+        tr.addWidget(self.spin_imgsz_seq_crop_obb, 2, 5)
+
         v.addWidget(gb_train)
 
         gb_models = QGroupBox("Base Models")
@@ -373,6 +431,56 @@ class TrainYoloDialog(QDialog):
         self.btn_workspace.clicked.connect(self._choose_workspace)
 
         return gb
+
+    def _build_augmentation_group(self):
+        self.aug_group = QGroupBox("Augmentation")
+        self.aug_group.setCheckable(True)
+        self.aug_group.setChecked(True)
+        v = QVBoxLayout(self.aug_group)
+
+        note = QLabel(
+            "These are passed directly to Ultralytics. Defaults match"
+            " Ultralytics v8 defaults. Set fliplr=0 for asymmetric animals."
+        )
+        note.setWordWrap(True)
+        v.addWidget(note)
+
+        form = QFormLayout()
+
+        def _spin(default: float, maximum: float = 1.0) -> QDoubleSpinBox:
+            sb = QDoubleSpinBox()
+            sb.setRange(0.0, maximum)
+            sb.setDecimals(3)
+            sb.setSingleStep(0.05)
+            sb.setValue(default)
+            return sb
+
+        self.aug_fliplr = _spin(0.5)
+        form.addRow("fliplr", self.aug_fliplr)
+
+        self.aug_flipud = _spin(0.0)
+        form.addRow("flipud", self.aug_flipud)
+
+        self.aug_degrees = _spin(0.0, 360.0)
+        form.addRow("degrees", self.aug_degrees)
+
+        self.aug_mosaic = _spin(1.0)
+        form.addRow("mosaic", self.aug_mosaic)
+
+        self.aug_mixup = _spin(0.0)
+        form.addRow("mixup", self.aug_mixup)
+
+        self.aug_hsv_h = _spin(0.015)
+        form.addRow("hsv_h", self.aug_hsv_h)
+
+        self.aug_hsv_s = _spin(0.7)
+        form.addRow("hsv_s", self.aug_hsv_s)
+
+        self.aug_hsv_v = _spin(0.4)
+        form.addRow("hsv_v", self.aug_hsv_v)
+
+        v.addLayout(form)
+        return self.aug_group
 
     def _build_run_group(self):
         gb = QGroupBox("Step 4: Build + Train + Monitor")
@@ -459,6 +567,280 @@ class TrainYoloDialog(QDialog):
 
     def _clear_sources(self):
         self.table_sources.setRowCount(0)
+
+    def _save_dataset_list(self):
+        if self.table_sources.rowCount() == 0:
+            QMessageBox.warning(
+                self, "No Sources", "Add at least one dataset before saving."
+            )
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Dataset List",
+            str(self.workspace_default / "dataset_list.json"),
+            "JSON Files (*.json)",
+        )
+        if not path:
+            return
+        entries = []
+        for row in range(self.table_sources.rowCount()):
+            st = self.table_sources.item(row, 0).data(Qt.UserRole)
+            p = self.table_sources.item(row, 1).text().strip()
+            entries.append({"source_type": st, "path": p})
+        try:
+            Path(path).write_text(json.dumps(entries, indent=2), encoding="utf-8")
+            self._append_log(f"Saved dataset list ({len(entries)} entries) → {path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Failed", str(exc))
+
+    def _load_dataset_list(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Dataset List",
+            str(self.workspace_default),
+            "JSON Files (*.json)",
+        )
+        if not path:
+            return
+        try:
+            entries = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as exc:
+            QMessageBox.critical(self, "Load Failed", str(exc))
+            return
+        if not isinstance(entries, list):
+            QMessageBox.critical(
+                self, "Load Failed", "Expected a JSON array of dataset entries."
+            )
+            return
+        added = 0
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            st = str(entry.get("source_type", "obb"))
+            p = str(entry.get("path", "")).strip()
+            if not p:
+                continue
+            self._add_source_row(st, p)
+            added += 1
+        self._append_log(f"Loaded {added} datasets from {path}")
+
+    def _analyze_and_preview(self):
+        """Analyze object/crop sizes and show sample crop previews."""
+        obb_sources = self._collect_sources()
+        if not obb_sources:
+            QMessageBox.warning(
+                self, "No Sources", "Add at least one OBB source dataset."
+            )
+            return
+
+        from multi_tracker.training.dataset_inspector import (
+            analyze_obb_sizes,
+            format_size_analysis,
+            inspect_obb_or_detect_dataset,
+        )
+
+        pad = self.spin_crop_pad.value()
+        min_px = self.spin_crop_min_px.value()
+        square = self.chk_crop_square.isChecked()
+        crop_imgsz = self.spin_imgsz_seq_crop_obb.value()
+        direct_imgsz = self.spin_imgsz_obb_direct.value()
+
+        # Merge inspections from all sources.
+        from multi_tracker.training.dataset_inspector import DatasetInspection
+
+        merged = DatasetInspection(root_dir="(merged)")
+        for src in obb_sources:
+            try:
+                insp = inspect_obb_or_detect_dataset(src.path)
+            except Exception as exc:
+                self._append_log(f"Skip {src.path}: {exc}")
+                continue
+            for split, items in insp.splits.items():
+                merged.splits.setdefault(split, []).extend(items)
+
+        if not any(merged.splits.values()):
+            QMessageBox.warning(self, "No Data", "No valid images found in sources.")
+            return
+
+        try:
+            stats = analyze_obb_sizes(
+                merged,
+                pad_ratio=pad,
+                min_crop_size_px=min_px,
+                enforce_square=square,
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Analysis Failed", str(exc))
+            return
+
+        # Format reports for both crop OBB and direct roles.
+        crop_report, crop_warnings = format_size_analysis(
+            stats, training_imgsz=crop_imgsz
+        )
+        direct_report, direct_warnings = format_size_analysis(
+            stats, training_imgsz=direct_imgsz
+        )
+
+        sections = []
+        sections.append("=" * 50)
+        sections.append("DATASET SIZE ANALYSIS")
+        sections.append("=" * 50)
+        sections.append("")
+        sections.append(crop_report)
+
+        if crop_warnings:
+            sections.append("")
+            sections.append("-" * 40)
+            sections.append(f"seq_crop_obb (imgsz={crop_imgsz}):")
+            for w in crop_warnings:
+                sections.append(f"  {w}")
+
+        if direct_warnings:
+            sections.append("")
+            sections.append("-" * 40)
+            sections.append(f"obb_direct (imgsz={direct_imgsz}):")
+            for w in direct_warnings:
+                sections.append(f"  {w}")
+
+        if not crop_warnings and not direct_warnings:
+            sections.append("")
+            sections.append("No compatibility issues detected.")
+
+        self.validation_view.setPlainText("\n".join(sections))
+
+        # Generate crop preview samples.
+        self._show_crop_previews(merged, pad, min_px, square, crop_imgsz)
+
+    def _show_crop_previews(self, inspection, pad, min_px, square, imgsz, n_samples=6):
+        """Render sample crops in the preview grid."""
+        import random
+
+        import cv2
+        import numpy as np
+
+        # Clear previous previews.
+        while self.preview_grid.count():
+            item = self.preview_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        all_items = []
+        for split_items in inspection.splits.values():
+            all_items.extend(split_items)
+        if not all_items:
+            self.preview_container.setVisible(False)
+            return
+
+        rng = random.Random(42)
+        rng.shuffle(all_items)
+
+        previews = []
+        for item in all_items:
+            if len(previews) >= n_samples:
+                break
+            lbl_path = Path(item.label_path)
+            img_path = Path(item.image_path)
+            if not lbl_path.exists() or not img_path.exists():
+                continue
+            img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+            if img is None or img.size == 0:
+                continue
+            h, w = img.shape[:2]
+
+            try:
+                lines = lbl_path.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+
+            for ln in lines:
+                if len(previews) >= n_samples:
+                    break
+                ln = ln.strip()
+                if not ln:
+                    continue
+                parts = ln.split()
+                if len(parts) != 9:
+                    continue
+                try:
+                    coords = np.asarray(
+                        [float(v) for v in parts[1:]], dtype=np.float32
+                    ).reshape(4, 2)
+                except Exception:
+                    continue
+
+                px = coords[:, 0] * float(w)
+                py = coords[:, 1] * float(h)
+                x1, x2 = float(np.min(px)), float(np.max(px))
+                y1, y2 = float(np.min(py)), float(np.max(py))
+                bw = max(1.0, x2 - x1)
+                bh = max(1.0, y2 - y1)
+                cx, cy = (x1 + x2) * 0.5, (y1 + y2) * 0.5
+
+                crop_w = max(float(min_px), bw * (1.0 + 2.0 * max(0.0, pad)))
+                crop_h = max(float(min_px), bh * (1.0 + 2.0 * max(0.0, pad)))
+                if square:
+                    side = max(crop_w, crop_h)
+                    crop_w = side
+                    crop_h = side
+
+                xi1 = max(0, int(cx - crop_w * 0.5))
+                yi1 = max(0, int(cy - crop_h * 0.5))
+                xi2 = min(w, int(cx + crop_w * 0.5))
+                yi2 = min(h, int(cy + crop_h * 0.5))
+                if xi2 <= xi1 or yi2 <= yi1:
+                    continue
+
+                crop = img[yi1:yi2, xi1:xi2].copy()
+
+                # Draw the OBB polygon on the crop.
+                poly_crop = np.zeros((4, 2), dtype=np.int32)
+                poly_crop[:, 0] = (px - xi1).astype(np.int32)
+                poly_crop[:, 1] = (py - yi1).astype(np.int32)
+                cv2.polylines(crop, [poly_crop], True, (0, 255, 0), 1)
+
+                original_size = max(crop.shape[:2])
+
+                # Resize to training imgsz.
+                if imgsz > 0:
+                    crop = cv2.resize(
+                        crop, (imgsz, imgsz), interpolation=cv2.INTER_LINEAR
+                    )
+
+                previews.append((crop, original_size))
+
+        if not previews:
+            self.preview_container.setVisible(False)
+            return
+
+        display_size = 140
+        for crop_img, orig_sz in previews:
+            rgb = cv2.cvtColor(crop_img, cv2.COLOR_BGR2RGB)
+            h_c, w_c = rgb.shape[:2]
+            qimg = QImage(rgb.data, w_c, h_c, w_c * 3, QImage.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg).scaled(
+                display_size, display_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            lbl = QLabel()
+            lbl.setPixmap(pixmap)
+            scale = imgsz / max(1, orig_sz) if imgsz > 0 else 1.0
+            if scale > 1.05:
+                lbl.setToolTip(
+                    f"Original {orig_sz}px → {imgsz}px (upscaled {scale:.1f}x)"
+                )
+            elif scale < 0.95:
+                lbl.setToolTip(
+                    f"Original {orig_sz}px → {imgsz}px (downscaled {1 / scale:.1f}x)"
+                )
+            else:
+                lbl.setToolTip(f"Original {orig_sz}px ≈ {imgsz}px (good match)")
+            lbl.setStyleSheet("border: 1px solid #555; padding: 2px;")
+            self.preview_grid.addWidget(lbl)
+
+        self.preview_info.setText(
+            f"Showing {len(previews)} sample crops at imgsz={imgsz}. "
+            f"Green polygon = OBB annotation. Hover for scale info."
+        )
+        self.preview_container.setVisible(True)
 
     def _collect_sources(self):
         obb_sources = []
@@ -567,6 +949,15 @@ class TrainYoloDialog(QDialog):
             return self.combo_model_seq_crop_obb.currentText().strip()
         return ""
 
+    def _imgsz_for_role(self, role: TrainingRole) -> int:
+        if role == TrainingRole.OBB_DIRECT:
+            return self.spin_imgsz_obb_direct.value()
+        if role == TrainingRole.SEQ_DETECT:
+            return self.spin_imgsz_seq_detect.value()
+        if role == TrainingRole.SEQ_CROP_OBB:
+            return self.spin_imgsz_seq_crop_obb.value()
+        return 640
+
     @staticmethod
     def _infer_size_token(model_path: str) -> str:
         name = Path(str(model_path or "")).name.lower()
@@ -590,10 +981,18 @@ class TrainYoloDialog(QDialog):
         species = self.line_species.text().strip() or "species"
         tag = self.line_model_tag.text().strip() or "train"
         role_suffix = role.value
+        training_params = {
+            "imgsz": self._imgsz_for_role(role),
+        }
+        if role == TrainingRole.SEQ_CROP_OBB:
+            training_params["crop_pad_ratio"] = self.spin_crop_pad.value()
+            training_params["min_crop_size_px"] = self.spin_crop_min_px.value()
+            training_params["enforce_square"] = self.chk_crop_square.isChecked()
         return {
             "size": self._infer_size_token(base_model),
             "species": species,
             "model_info": f"{tag}_{role_suffix}",
+            "training_params": training_params,
         }
 
     def _start_training(self):
@@ -637,6 +1036,19 @@ class TrainYoloDialog(QDialog):
                 )
                 return
 
+            aug_args: dict[str, float] = {}
+            if self.aug_group.isChecked():
+                aug_args = {
+                    "fliplr": self.aug_fliplr.value(),
+                    "flipud": self.aug_flipud.value(),
+                    "degrees": self.aug_degrees.value(),
+                    "mosaic": self.aug_mosaic.value(),
+                    "mixup": self.aug_mixup.value(),
+                    "hsv_h": self.aug_hsv_h.value(),
+                    "hsv_s": self.aug_hsv_s.value(),
+                    "hsv_v": self.aug_hsv_v.value(),
+                }
+
             spec = TrainingRunSpec(
                 role=role,
                 source_datasets=source_obb,
@@ -644,7 +1056,7 @@ class TrainYoloDialog(QDialog):
                 base_model=base_model,
                 hyperparams=TrainingHyperParams(
                     epochs=self.spin_epochs.value(),
-                    imgsz=self.spin_imgsz.value(),
+                    imgsz=self._imgsz_for_role(role),
                     batch=self.spin_batch.value(),
                     lr0=self.spin_lr0.value(),
                     patience=self.spin_patience.value(),
@@ -653,6 +1065,10 @@ class TrainYoloDialog(QDialog):
                 ),
                 device=self.combo_device.currentText().strip() or "auto",
                 seed=self.spin_seed.value(),
+                augmentation_profile=AugmentationProfile(
+                    enabled=self.aug_group.isChecked(),
+                    args=aug_args,
+                ),
                 publish_policy=PublishPolicy(
                     auto_import=self.chk_auto_import.isChecked(),
                     auto_select=self.chk_auto_select.isChecked(),
@@ -756,5 +1172,7 @@ class TrainYoloDialog(QDialog):
                         )
                     if hasattr(parent, "_set_yolo_crop_obb_model_selection"):
                         parent._set_yolo_crop_obb_model_selection(key)
+                    if hasattr(parent, "_apply_crop_obb_training_params"):
+                        parent._apply_crop_obb_training_params()
             except Exception as exc:
                 logger.warning("Auto-select model failed for role %s: %s", role, exc)
