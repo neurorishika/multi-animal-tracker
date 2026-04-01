@@ -318,6 +318,11 @@ class TrainYoloDialog(QDialog):
         form.addRow("Sequential crop derivation", h_crop)
 
         self.combo_device = QComboBox()
+        self.combo_device.setEditable(True)
+        self.combo_device.setToolTip(
+            "Select compute device. For multi-GPU, type a comma-separated list "
+            "like '0,1' in the editable combo box."
+        )
         self.combo_device.addItems(self._build_device_options())
         form.addRow("Device", self.combo_device)
 
@@ -331,6 +336,14 @@ class TrainYoloDialog(QDialog):
         self.spin_batch = QSpinBox()
         self.spin_batch.setRange(1, 256)
         self.spin_batch.setValue(16)
+        self.chk_auto_batch = QCheckBox("Auto")
+        self.chk_auto_batch.setToolTip(
+            "Let Ultralytics auto-detect optimal batch size (batch=-1). "
+            "Overrides manual batch setting."
+        )
+        self.chk_auto_batch.toggled.connect(
+            lambda checked: self.spin_batch.setEnabled(not checked)
+        )
         self.spin_lr0 = QDoubleSpinBox()
         self.spin_lr0.setRange(1e-5, 1.0)
         self.spin_lr0.setDecimals(5)
@@ -345,7 +358,12 @@ class TrainYoloDialog(QDialog):
         tr.addWidget(QLabel("epochs"), 0, 0)
         tr.addWidget(self.spin_epochs, 0, 1)
         tr.addWidget(QLabel("batch"), 0, 2)
-        tr.addWidget(self.spin_batch, 0, 3)
+        batch_layout = QHBoxLayout()
+        batch_layout.addWidget(self.spin_batch)
+        batch_layout.addWidget(self.chk_auto_batch)
+        batch_widget = QWidget()
+        batch_widget.setLayout(batch_layout)
+        tr.addWidget(batch_widget, 0, 3)
         tr.addWidget(QLabel("lr0"), 0, 4)
         tr.addWidget(self.spin_lr0, 0, 5)
         tr.addWidget(QLabel("patience"), 1, 0)
@@ -1064,6 +1082,9 @@ class TrainYoloDialog(QDialog):
                     "hsv_v": self.aug_hsv_v.value(),
                 }
 
+            batch_val = (
+                -1 if self.chk_auto_batch.isChecked() else self.spin_batch.value()
+            )
             spec = TrainingRunSpec(
                 role=role,
                 source_datasets=source_obb,
@@ -1072,7 +1093,7 @@ class TrainYoloDialog(QDialog):
                 hyperparams=TrainingHyperParams(
                     epochs=self.spin_epochs.value(),
                     imgsz=self._imgsz_for_role(role),
-                    batch=self.spin_batch.value(),
+                    batch=batch_val,
                     lr0=self.spin_lr0.value(),
                     patience=self.spin_patience.value(),
                     workers=self.spin_workers.value(),
@@ -1207,6 +1228,9 @@ class TrainYoloDialog(QDialog):
             )
             return
 
+        resume_batch_val = (
+            -1 if self.chk_auto_batch.isChecked() else int(self.spin_batch.value())
+        )
         spec = TrainingRunSpec(
             role=role,
             source_datasets=[],
@@ -1215,7 +1239,7 @@ class TrainYoloDialog(QDialog):
             hyperparams=TrainingHyperParams(
                 epochs=int(self.spin_epochs.value()),
                 imgsz=int(self.spin_imgsz.value()),
-                batch=int(self.spin_batch.value()),
+                batch=resume_batch_val,
                 lr0=float(self.spin_lr0.value()),
                 patience=int(self.spin_patience.value()),
                 workers=int(self.spin_workers.value()),
