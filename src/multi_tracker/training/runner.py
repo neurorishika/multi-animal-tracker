@@ -119,6 +119,8 @@ def build_ultralytics_command(spec: TrainingRunSpec, run_dir: str | Path) -> lis
     if spec.augmentation_profile.enabled and spec.augmentation_profile.args:
         for k, v in sorted(spec.augmentation_profile.args.items()):
             args.append(f"{k}={v}")
+    if spec.resume_from:
+        args.append("resume=True")
 
     yolo_exe = shutil.which("yolo")
     if yolo_exe:

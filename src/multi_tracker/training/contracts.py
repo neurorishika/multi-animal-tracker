@@ -149,6 +149,7 @@ class TrainingRunSpec:
     device: str = "auto"
     seed: int = 42
     training_space: str = "original"  # "original" or "canonical"
+    resume_from: str = ""  # Path to last.pt checkpoint to resume from
     augmentation_profile: AugmentationProfile = field(
         default_factory=AugmentationProfile
     )

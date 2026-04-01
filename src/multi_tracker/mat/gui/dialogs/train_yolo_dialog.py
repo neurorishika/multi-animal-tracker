@@ -136,6 +136,7 @@ class TrainYoloDialog(QDialog):
         self.class_name = str(class_name or "object")
         self.conda_envs = conda_envs or []
         self.worker = None
+        self._last_training_results: list[dict] = []
 
         from multi_tracker.paths import get_training_workspace_dir
 
@@ -492,9 +493,15 @@ class TrainYoloDialog(QDialog):
         self.btn_train = QPushButton("Start Training")
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setEnabled(False)
+        self.btn_resume = QPushButton("Resume Last Run")
+        self.btn_resume.setEnabled(False)
+        self.btn_resume.setToolTip(
+            "Resume training from the last.pt checkpoint of the most recent run."
+        )
         row.addWidget(self.btn_build)
         row.addWidget(self.btn_train)
         row.addWidget(self.btn_stop)
+        row.addWidget(self.btn_resume)
         v.addLayout(row)
 
         self.progress = QProgressBar()
@@ -513,6 +520,7 @@ class TrainYoloDialog(QDialog):
         self.btn_build.clicked.connect(self._build_role_datasets)
         self.btn_train.clicked.connect(self._start_training)
         self.btn_stop.clicked.connect(self._stop_training)
+        self.btn_resume.clicked.connect(self._resume_training)
 
         return gb
 
@@ -1126,6 +1134,24 @@ class TrainYoloDialog(QDialog):
         self.btn_stop.setEnabled(False)
         self.progress.setFormat("Done")
 
+        # Store results and check for resumable runs
+        self._last_training_results = results
+        for r in results:
+            run_dir = ""
+            artifact = r.get("artifact_path", "")
+            if artifact:
+                _wdir = Path(artifact).parent
+                if _wdir.name == "weights":
+                    run_dir = str(_wdir.parent)
+            r["_run_dir"] = run_dir
+        self.btn_resume.setEnabled(
+            any(
+                r.get("_run_dir")
+                and Path(r["_run_dir"]).joinpath("weights", "last.pt").exists()
+                for r in results
+            )
+        )
+
         succeeded = [r for r in results if r.get("success")]
         failed = [r for r in results if not r.get("success")]
 
@@ -1148,6 +1174,75 @@ class TrainYoloDialog(QDialog):
                 "Training Completed",
                 f"All {len(succeeded)} selected roles completed successfully.",
             )
+
+    def _resume_training(self):
+        """Resume training from the last.pt checkpoint of the most recent run."""
+        last_pt = None
+        resume_result = None
+        for r in reversed(self._last_training_results):
+            run_dir = r.get("_run_dir", "")
+            if run_dir:
+                candidate = Path(run_dir) / "weights" / "last.pt"
+                if candidate.exists():
+                    last_pt = candidate
+                    resume_result = r
+                    break
+
+        if last_pt is None:
+            QMessageBox.warning(
+                self,
+                "No Checkpoint Found",
+                "Could not find a last.pt checkpoint from the previous training run.",
+            )
+            return
+
+        role_str = str(resume_result.get("role", ""))
+        try:
+            role = TrainingRole(role_str)
+        except ValueError:
+            QMessageBox.warning(
+                self,
+                "Resume Failed",
+                f"Unknown training role: {role_str}",
+            )
+            return
+
+        spec = TrainingRunSpec(
+            role=role,
+            source_datasets=[],
+            derived_dataset_dir=resume_result.get("_run_dir", ""),
+            base_model=str(last_pt),
+            hyperparams=TrainingHyperParams(
+                epochs=int(self.spin_epochs.value()),
+                imgsz=int(self.spin_imgsz.value()),
+                batch=int(self.spin_batch.value()),
+                lr0=float(self.spin_lr0.value()),
+                patience=int(self.spin_patience.value()),
+                workers=int(self.spin_workers.value()),
+            ),
+            resume_from=str(last_pt),
+        )
+
+        publish_meta = {
+            "class_name": self.class_name,
+            "resumed_from": str(last_pt),
+        }
+        entry = {"role": role, "spec": spec, "publish_meta": publish_meta}
+
+        self._append_log(f"Resuming training from {last_pt}")
+        self.btn_train.setEnabled(False)
+        self.btn_resume.setEnabled(False)
+        self.btn_stop.setEnabled(True)
+        self.progress.setValue(0)
+        self.progress.setFormat("Resuming...")
+
+        self.worker = RoleTrainingWorker(self.orchestrator, [entry])
+        self.worker.log_signal.connect(self._append_log)
+        self.worker.role_started.connect(self._on_role_started)
+        self.worker.role_finished.connect(self._on_role_finished)
+        self.worker.progress_signal.connect(self._on_progress)
+        self.worker.done_signal.connect(self._on_training_done)
+        self.worker.start()
 
     def _try_auto_select_parent_models(self, results: list[dict]):
         parent = self.parent()
