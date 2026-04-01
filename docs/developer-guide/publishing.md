@@ -4,11 +4,15 @@ How to release new versions of multi-animal-tracker to PyPI.
 
 ## Prerequisites
 
+`build` and `twine` are included in dev dependencies. Install them with:
+
 ```bash
-pip install build twine
+make install-dev     # conda workflow
+# or
+pip install -e ".[dev]"  # pip workflow
 ```
 
-You need a [PyPI account](https://pypi.org/account/register/) and an [API token](https://pypi.org/manage/account/token/).
+You also need a [PyPI account](https://pypi.org/account/register/) and an [API token](https://pypi.org/manage/account/token/) (unless using trusted publishing via GitHub Actions).
 
 ## Release workflow
 

@@ -533,7 +533,7 @@ help:
 	@echo "  make type-check      - Static type checking (mypy)"
 	@echo "  make audit           - Full sweep: dead-code + dep-graph + types + coverage"
 	@echo ""
-	@echo "📦 PACKAGING & PUBLISHING  (requires: pip install build twine)"
+	@echo "📦 PACKAGING & PUBLISHING  (requires: make install-dev)"
 	@echo "  make build           - Build wheel and sdist"
 	@echo "  make publish-test    - Build + upload to Test PyPI"
 	@echo "  make publish         - Build + upload to PyPI (real)"

@@ -64,6 +64,8 @@ dev = [
     "flake8>=6.0",
     "mypy>=1.5",
     "vulture>=2.7",
+    "build>=1.0",
+    "twine>=5.0",
 ]
 
 [project.urls]
