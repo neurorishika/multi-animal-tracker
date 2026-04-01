@@ -11,14 +11,10 @@ from typing import Any
 from .contracts import TrainingRole
 
 
-def _project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
 def get_models_root() -> Path:
-    root = _project_root() / "models"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    from multi_tracker.paths import get_models_dir
+
+    return get_models_dir()
 
 
 def _repo_dir_for_role(role: TrainingRole, scheme_name: str = "classkit") -> Path:

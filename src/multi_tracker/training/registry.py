@@ -12,14 +12,10 @@ from typing import Any
 from .contracts import TrainingRunSpec
 
 
-def _project_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
 def get_runs_root() -> Path:
-    root = _project_root() / "training" / "runs"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    from multi_tracker.paths import get_training_runs_dir
+
+    return get_training_runs_dir()
 
 
 def get_registry_path() -> Path:

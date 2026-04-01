@@ -2814,16 +2814,11 @@ def get_models_directory() -> object:
     )
 
 
-def get_models_root_directory() -> object:
-    """Return project-local models/ root and create it when missing."""
-    project_root = os.path.dirname(
-        os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        )
-    )
-    models_root = os.path.join(project_root, "models")
-    os.makedirs(models_root, exist_ok=True)
-    return models_root
+def get_models_root_directory() -> str:
+    """Return user-local models/ root and create it when missing."""
+    from multi_tracker.paths import get_models_dir
+
+    return str(get_models_dir())
 
 
 def get_yolo_model_repository_directory(
@@ -8168,12 +8163,9 @@ class MainWindow(QMainWindow):
             self.advanced_config.get("pose_skeleton_file", "")
         ).strip()
         if not default_skeleton:
-            candidate = (
-                Path(__file__).resolve().parents[4]
-                / "configs"
-                / "skeletons"
-                / "ooceraea_biroi.json"
-            )
+            from multi_tracker.paths import get_skeleton_dir
+
+            candidate = get_skeleton_dir() / "ooceraea_biroi.json"
             if candidate.exists():
                 default_skeleton = str(candidate)
         if default_skeleton:
@@ -19201,12 +19193,9 @@ class MainWindow(QMainWindow):
 
     def _get_presets_dir(self):
         """Get the presets directory path."""
-        # Get the repo root (4 levels up from mat/gui/main_window.py)
-        repo_root = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        )
-        presets_dir = os.path.join(repo_root, "configs")
-        return presets_dir
+        from multi_tracker.paths import get_presets_dir
+
+        return str(get_presets_dir())
 
     def _on_preset_selection_changed(self, index):
         """Update description label when preset selection changes."""
@@ -19439,8 +19428,9 @@ class MainWindow(QMainWindow):
     def _load_advanced_config(self):
         """Load advanced configuration for power users."""
         # Store config in the package directory (where this file is located)
-        package_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_path = os.path.join(package_dir, "advanced_config.json")
+        from multi_tracker.paths import get_advanced_config_path
+
+        config_path = str(get_advanced_config_path())
 
         default_config = {
             "roi_crop_warning_threshold": 0.6,  # Warn if ROI is <60% of frame
@@ -19485,10 +19475,9 @@ class MainWindow(QMainWindow):
 
     def _save_advanced_config(self):
         """Save advanced configuration."""
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "advanced_config.json",
-        )
+        from multi_tracker.paths import get_advanced_config_path
+
+        config_path = str(get_advanced_config_path())
         try:
             import tempfile
 

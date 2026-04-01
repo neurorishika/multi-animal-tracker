@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 from PySide6.QtGui import QColor
 
-from .constants import DEFAULT_SKELETON_DIRNAME, IMG_EXTS
+from .constants import IMG_EXTS
 
 logger = logging.getLogger("pose_label")
 
@@ -62,17 +62,12 @@ def enhance_for_pose(
 
 
 def get_default_skeleton_dir() -> Optional[Path]:
-    """Return the repository-level skeleton config directory if available."""
-    here = Path(__file__).resolve()
-    # Assuming this file is now deep in src
-    # Original logic: repo_root = here.parents[3] if len(here.parents) >= 4 else here.parent
-    # New location: src/multi_tracker/posekit/ui/utils.py -> parents[4] is src root?
-    # Original was src/multi_tracker/posekit/ui/main.py -> parents[3] = multi-animal-tracker
-    # Now it is src/multi_tracker/posekit/ui/utils.py -> parents[4] = multi-animal-tracker
-    repo_root = here.parents[4] if len(here.parents) >= 5 else here.parent
-    cfg = repo_root / DEFAULT_SKELETON_DIRNAME
-    if cfg.exists() and cfg.is_dir():
-        return cfg
+    """Return the user-level skeleton config directory if available."""
+    from multi_tracker.paths import get_skeleton_dir
+
+    d = get_skeleton_dir()
+    if d.exists() and d.is_dir():
+        return d
     return None
 
 

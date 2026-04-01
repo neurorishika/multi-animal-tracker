@@ -133,8 +133,9 @@ class TrainYoloDialog(QDialog):
         self.conda_envs = conda_envs or []
         self.worker = None
 
-        self.repo_root = Path(__file__).resolve().parents[5]
-        self.workspace_default = self.repo_root / "training" / "YOLO"
+        from multi_tracker.paths import get_training_workspace_dir
+
+        self.workspace_default = get_training_workspace_dir("YOLO")
         self.orchestrator = TrainingOrchestrator(self.workspace_default)
 
         self.role_dataset_dirs: dict[str, str] = {}
