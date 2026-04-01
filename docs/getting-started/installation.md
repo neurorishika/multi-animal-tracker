@@ -1,95 +1,149 @@
 # Installation
 
-## Which method should I use?
+There are three ways to install Multi-Animal-Tracker, depending on your situation:
 
-| | pip | conda + pip |
-|---|---|---|
-| **Best for** | End users, deployment, CI | Developers, reproducible environments |
-| **GPU inference** (YOLO, pose) | Yes | Yes |
-| **TensorRT acceleration** | Yes | Yes |
-| **ONNX Runtime GPU** | Yes | Yes |
-| **CuPy GPU background subtraction** | Yes | Yes |
-| **Requires git clone** | No | Yes |
-| **Requires conda/mamba** | No | Yes |
-| **CUDA runtime libs** | PyTorch pip wheel provides them | conda provides them |
-| **LD_LIBRARY_PATH setup** | Not needed (PyTorch preloads CUDA libs) | Automatic via activation hooks |
+| Method | When to use |
+|--------|-------------|
+| [**pip install**](#pip-install-from-pypi) | You want to use the software. One command, no git needed. |
+| [**pip install from GitHub**](#pip-install-from-github) | You want the latest unreleased version, or the package isn't on PyPI yet. |
+| [**conda + pip (developer)**](#conda--pip-developer-install) | You're developing the code. Editable install, Makefile workflows. |
 
-Both methods are **functionally equivalent** for all GPU features. The conda path additionally manages system-level libraries (Qt, OpenGL) and provides reproducible environments for development.
+All three methods support full GPU acceleration. See the [platform matrix](#platform-matrix) for what's available on each platform.
 
 ---
 
-## pip install
+## Platform matrix
 
-Requires only Python 3.11+.
+| Feature | CPU | MPS (Apple Silicon) | CUDA (NVIDIA) | ROCm (AMD) |
+|---------|-----|---------------------|---------------|-------------|
+| YOLO detection / pose | CPU | GPU | GPU | GPU |
+| TensorRT acceleration | No | No | Yes | No (NVIDIA only) |
+| ONNX Runtime | CPU | CPU | GPU | CPU |
+| CuPy background subtraction | No | No (NVIDIA only) | GPU | GPU (experimental) |
+| Platforms | All | macOS M1-M4 | Linux, Windows | Linux only |
+| System requirements | Python 3.11+ | Python 3.11+ | Python 3.11+ | Python 3.11+, ROCm 6.0+ |
 
-### CPU
+---
+
+## pip install from PyPI
+
+Requires only Python 3.11+. No conda, no git clone.
+
+### CPU (all platforms)
 
 ```bash
 pip install multi-animal-tracker
 ```
 
-### Apple Silicon (MPS)
+### Apple Silicon / MPS (macOS M1-M4)
 
 ```bash
 pip install torch torchvision
 pip install "multi-animal-tracker[mps]"
 ```
 
-MPS support is built into the standard PyTorch macOS wheel. GPU acceleration works for YOLO inference and neural network operations. Background subtraction remains CPU (Numba-optimized).
+MPS is built into the standard PyTorch macOS wheel. GPU acceleration works for YOLO inference and neural network operations.
 
-### NVIDIA GPU (CUDA)
+### NVIDIA GPU / CUDA (Linux, Windows)
 
 ```bash
-# Step 1: Install PyTorch with CUDA from PyTorch's index
+# Step 1: Install PyTorch from PyTorch's own index
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
 # Step 2: Install multi-animal-tracker with CUDA extras
 pip install "multi-animal-tracker[cuda]"
 ```
 
-This installs everything: ONNX Runtime GPU, TensorRT, CuPy, and ONNX export tools.
+This installs everything: ONNX Runtime GPU, TensorRT, CuPy, ONNX export tools.
 
-**CUDA version variants:**
+**CUDA version selection:**
 
-| Your CUDA | PyTorch index | Package extra |
-|-----------|---------------|---------------|
-| 12.6 | `cu126` | `[cuda]` or `[cuda12]` |
-| 12.8 | `cu128` | `[cuda]` or `[cuda12]` |
-| 13.0 | `cu130` | `[cuda13]` |
+| Your CUDA version | PyTorch `--index-url` | Package extra |
+|---|---|---|
+| 12.6 | `.../cu126` | `[cuda]` or `[cuda12]` |
+| 12.8 | `.../cu128` | `[cuda]` or `[cuda12]` |
+| 13.0 | `.../cu130` | `[cuda13]` |
 
-`[cuda]` is an alias for `[cuda12]`. Use `[cuda13]` explicitly for CUDA 13 systems:
+`[cuda]` is an alias for `[cuda12]`. For CUDA 13 systems:
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
 pip install "multi-animal-tracker[cuda13]"
 ```
 
-**Why does this work without system CUDA?** PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, etc.) as pip dependencies. PyTorch preloads them at import time via `ctypes`, so ONNX Runtime and other CUDA consumers find them automatically in the same process — no `LD_LIBRARY_PATH` needed.
+**You do not need the CUDA toolkit installed.** PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, etc.) as pip dependencies and preloads them at import time, so ONNX Runtime and TensorRT find them automatically.
 
-### AMD GPU (ROCm, Linux only)
+### AMD GPU / ROCm (Linux only)
 
-Requires [ROCm 6.0+](https://rocm.docs.amd.com/) installed system-wide.
+Requires [ROCm 6.0+](https://rocm.docs.amd.com/) installed system-wide first.
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
 pip install "multi-animal-tracker[rocm]"
 ```
 
-Note: TensorRT is NVIDIA-only and not included in the ROCm extra.
-
 ### Why is GPU install two commands?
 
-PyTorch GPU builds are hosted on PyTorch's server, not PyPI. Python packaging (PEP 621) has no way to specify per-dependency index URLs. Every ML project handles this identically: install torch separately, then install the package. The second command will **not** overwrite your existing torch.
+PyTorch GPU builds are hosted on PyTorch's own server, not PyPI. Python packaging standards (PEP 621) have no way to specify per-dependency index URLs. This is how every ML project handles it: you install torch first, then the package. The second command will **not** overwrite your existing torch.
 
 ---
 
-## conda + pip install (developer workflow)
+## pip install from GitHub
 
-This method uses conda for system libraries (Qt, OpenGL, CUDA toolkit) and pip for Python packages. Recommended for development because it provides:
+Install the latest code directly from the repository without cloning. Useful when:
 
-- Reproducible environments with pinned system-level dependencies
-- Editable install (`-e .`) for live code changes
-- Makefile targets for common operations
+- The package isn't on PyPI yet
+- You need a fix that hasn't been released
+- A collaborator wants to try the latest version
+
+### CPU
+
+```bash
+pip install "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+```
+
+### With GPU extras
+
+```bash
+# MPS
+pip install torch torchvision
+pip install "multi-animal-tracker[mps] @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+
+# CUDA
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install "multi-animal-tracker[cuda] @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+
+# CUDA 13
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+pip install "multi-animal-tracker[cuda13] @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+
+# ROCm
+pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
+pip install "multi-animal-tracker[rocm] @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+```
+
+### Install a specific branch or tag
+
+```bash
+# Specific branch
+pip install "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git@main"
+
+# Specific tag
+pip install "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git@v1.0.0"
+```
+
+### Upgrading a GitHub install
+
+```bash
+pip install --upgrade --force-reinstall --no-deps \
+    "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+```
+
+---
+
+## conda + pip (developer install)
+
+For active development. Uses conda for system libraries (Qt, OpenGL) and pip for Python packages. Provides editable install so code changes are live immediately.
 
 ### Step 1: Clone
 
@@ -99,6 +153,8 @@ cd multi-animal-tracker
 ```
 
 ### Step 2: Create environment and install
+
+Pick your platform:
 
 ```bash
 # CPU
@@ -122,21 +178,31 @@ conda activate multi-animal-tracker-rocm
 make install-rocm
 ```
 
-### How dependencies stay in sync
+### Step 3: Install dev tools (optional)
 
-```
-pyproject.toml [dependencies]          ← single source of truth for base deps
-                                         (numpy, scipy, PySide6, ultralytics, ...)
-
-pyproject.toml [optional-dependencies] ← GPU extras (onnxruntime-gpu, tensorrt, cupy, ...)
-                                         Used by: pip install "multi-animal-tracker[cuda]"
-
-requirements-*.txt                     ← adds ONLY what pyproject.toml can't:
-  torch + --extra-index-url               - torch (needs custom index URL for GPU)
-  -e .                                    - pulls all pyproject.toml deps
+```bash
+make install-dev
 ```
 
-Adding a new base dependency means editing **one place**: `pyproject.toml`. The `requirements-*.txt` files inherit it via `-e .`.
+This adds formatting, linting, testing, and publishing tools. Run `make help` for the full command catalog.
+
+### How it works
+
+The conda environment provides system libraries and Python. The `make install-*` targets run `uv pip install -r requirements-*.txt`, which installs:
+
+1. **torch** with the correct GPU variant and index URL
+2. **`-e .`** — an editable install that pulls all `pyproject.toml` dependencies
+
+Base dependencies (numpy, scipy, PySide6, ultralytics, etc.) are declared once in `pyproject.toml`. The requirements files only add what `pyproject.toml` cannot express (torch GPU index URLs). This means there is **one source of truth** for dependencies.
+
+### Development workflow
+
+```bash
+conda activate multi-animal-tracker-mps   # or your env
+# Edit code — changes are live immediately (editable install)
+make pytest                               # run tests
+make format && make lint                  # format and lint before committing
+```
 
 ---
 
@@ -147,6 +213,13 @@ Adding a new base dependency means editing **one place**: `pyproject.toml`. The 
 ```bash
 mat --help
 python -c "import torch; print('CUDA:', torch.cuda.is_available(), '| MPS:', torch.backends.mps.is_available())"
+```
+
+For CUDA, also check ONNX Runtime:
+
+```bash
+python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+# Should include 'CUDAExecutionProvider'
 ```
 
 ### Launch
@@ -161,38 +234,49 @@ afterhours         # Afterhours proofreading
 
 ### Data directories
 
-User data is stored in platform-appropriate locations:
+User data is stored in platform-appropriate locations (not inside the package):
 
-| Data | macOS | Linux |
-|------|-------|-------|
-| Config / presets | `~/Library/Application Support/multi-animal-tracker/` | `~/.config/multi-animal-tracker/` |
-| Models | `~/Library/Application Support/multi-animal-tracker/models/` | `~/.local/share/multi-animal-tracker/models/` |
-| Training runs | `~/Library/Application Support/multi-animal-tracker/training/` | `~/.local/share/multi-animal-tracker/training/` |
+| Data | macOS | Linux | Windows |
+|------|-------|-------|---------|
+| Config / presets | `~/Library/Application Support/multi-animal-tracker/` | `~/.config/multi-animal-tracker/` | `%LOCALAPPDATA%\Kronauer Lab\multi-animal-tracker\` |
+| Models | same `/models/` | same `/models/` | same `\models\` |
+| Training runs | same `/training/` | same `/training/` | same `\training\` |
 
-Default presets and skeleton definitions are bundled with the package and seeded on first run.
+Default config presets and skeleton definitions are bundled with the package and seeded to your config directory on first run.
 
 ### Migrating from an older repo checkout
 
 If you had models in `<repo>/models/` or training data in `<repo>/training/`:
 
 ```bash
-python -m multi_tracker.paths_migrate /path/to/repo --dry-run  # preview
-python -m multi_tracker.paths_migrate /path/to/repo            # copy
+python -m multi_tracker.paths_migrate /path/to/repo --dry-run  # preview what would be copied
+python -m multi_tracker.paths_migrate /path/to/repo            # copy files
 ```
 
 ---
 
 ## Updating
 
-```bash
-# pip
-pip install --upgrade multi-animal-tracker
+### pip (PyPI)
 
-# conda + pip
+```bash
+pip install --upgrade multi-animal-tracker
+```
+
+### pip (GitHub)
+
+```bash
+pip install --upgrade --force-reinstall --no-deps \
+    "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+```
+
+### conda + pip (developer)
+
+```bash
 conda activate multi-animal-tracker-mps  # or your env
 git pull
-mamba env update -f environment-mps.yml --prune
-make install-mps
+mamba env update -f environment-mps.yml --prune   # if conda deps changed
+make install-mps                                  # reinstall pip packages
 ```
 
 ---
@@ -201,11 +285,14 @@ make install-mps
 
 ### `CUDAExecutionProvider` missing from ONNX Runtime
 
-- Ensure you installed with `[cuda]` or `[cuda13]` extra (pip), or used `requirements-cuda*.txt` (conda)
-- Verify: `python -c "import onnxruntime as ort; print(ort.get_available_providers())"`
+- Ensure you installed with `[cuda]` or `[cuda13]` extra
+- Ensure PyTorch is imported before ONNX Runtime (PyTorch preloads CUDA libs)
+- Verify: `python -c "import torch; import onnxruntime as ort; print(ort.get_available_providers())"`
 - **conda path:** re-run `make install-cuda CUDA_MAJOR=13` to refresh hooks
 
 ### PySide6 / Qt errors on Linux (pip only)
+
+pip-installed PySide6 may need system libraries:
 
 ```bash
 sudo apt install libgl1-mesa-glx libegl1 libxcb-xinerama0  # Ubuntu/Debian
@@ -213,11 +300,20 @@ sudo apt install libgl1-mesa-glx libegl1 libxcb-xinerama0  # Ubuntu/Debian
 
 The conda path handles this automatically.
 
+### CuPy-ROCm compilation fails
+
+CuPy-ROCm builds from source on first install (~5-10 minutes). If it fails, ensure ROCm dev packages are installed:
+
+```bash
+sudo apt install rocm-dev rocrand rocblas rocsparse rocfft hipsparse hiprand hipfft
+```
+
 ### Fresh reinstall
 
 ```bash
 # pip
-pip uninstall multi-animal-tracker && pip install "multi-animal-tracker[cuda]"
+pip uninstall multi-animal-tracker
+pip install "multi-animal-tracker[cuda]"
 
 # conda
 conda env remove -n multi-animal-tracker-cuda
@@ -230,7 +326,7 @@ make install-cuda CUDA_MAJOR=13
 
 ## Related docs
 
-- [Environments](environments.md) — full environment matrix
+- [Environments](environments.md) — conda environment matrix and Makefile reference
 - [Integrations](integrations.md) — SLEAP, X-AnyLabeling setup
 - `ROCM_SETUP.md` — ROCm system prerequisites
 - [Publishing to PyPI](../developer-guide/publishing.md) — releasing new versions

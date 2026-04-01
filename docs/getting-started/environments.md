@@ -1,185 +1,89 @@
-# Environment Setup and Makefile Options
+# Conda Environments and Makefile Reference
 
-This page is the full environment and installation matrix for Multi-Animal-Tracker.
+This page documents the conda environment files and Makefile targets used in the [developer install path](installation.md#conda--pip-developer-install).
 
-## Quick Start
+## Environment files
 
-### CPU (default)
+| File | Env name | Platform | What conda provides |
+|------|----------|----------|-------------------|
+| `environment.yml` | `multi-animal-tracker` | All | Python, NumPy, SciPy, PySide6, Qt6, OpenCV, Numba |
+| `environment-mps.yml` | `multi-animal-tracker-mps` | macOS M1-M4 | Same as CPU |
+| `environment-cuda.yml` | `multi-animal-tracker-cuda` | Linux/Windows (NVIDIA) | Same + CUDA 12 runtime libs (cublas, cudnn, cufft) |
+| `environment-rocm.yml` | `multi-animal-tracker-rocm` | Linux (AMD) | Same as CPU (ROCm is system-level) |
 
-```bash
-mamba env create -f environment.yml
-conda activate multi-animal-tracker-base
-uv pip install -v -r requirements.txt
-```
+The conda environments provide **system libraries only** (Qt, OpenGL, CUDA runtime). Python packages are installed separately via `make install-*`, which runs `uv pip install -r requirements-*.txt`.
 
-### NVIDIA CUDA
+## Requirements files
 
-```bash
-mamba env create -f environment-cuda.yml
-conda activate multi-animal-tracker-cuda
-uv pip install -v -r requirements-cuda13.txt   # CUDA 13.x
-# uv pip install -v -r requirements-cuda12.txt # CUDA 12.x
-```
+| File | Inherits | Adds (beyond pyproject.toml) |
+|------|----------|------------------------------|
+| `requirements.txt` | `-e .` | `torch`, `torchvision` (CPU) |
+| `requirements-mps.txt` | `-e .` | `torch`, `torchvision`, `torchaudio`, `onnxruntime` |
+| `requirements-cuda.txt` | `-e .` | `torch`, `torchvision`, `torchaudio`, `tensorrt`, `onnxruntime-gpu` |
+| `requirements-cuda12.txt` | `-r requirements-cuda.txt` | `--extra-index-url .../cu128`, `tensorrt-cu12-*`, `cupy-cuda12x` |
+| `requirements-cuda13.txt` | `-r requirements-cuda.txt` | `--extra-index-url .../cu130`, `tensorrt-cu13-*`, `cupy-cuda13x` |
+| `requirements-rocm.txt` | `-e .` | `torch` (ROCm), `cupy-rocm-6-0`, `onnxruntime` |
+| `requirements-dev.txt` | (standalone) | pytest, black, flake8, mypy, build, twine, etc. |
 
-## Environment Files
+All requirements files include `-e .` which installs the package in editable mode, pulling base dependencies from `pyproject.toml`. This means dependencies are declared once — in `pyproject.toml` — and requirements files only add what `pyproject.toml` cannot express (torch index URLs, GPU-specific wheels).
 
-### `environment.yml` + `requirements.txt` (CPU)
+## ONNX Runtime and CUDA compatibility
 
-Recommended for:
+`onnxruntime-gpu==1.24.1` links against CUDA 12 user-space libraries (`libcublasLt.so.12`, `libcudart.so.12`). This is handled differently by each install path:
 
-- General use and development
-- Portable installs across all platforms
-- CPU-only systems
+- **pip path:** PyTorch's CUDA wheel installs `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, etc. as pip dependencies and preloads them via `ctypes` at import time. ONNX Runtime finds them in the same process.
+- **conda path:** `environment-cuda.yml` installs CUDA 12 runtime libs via conda packages. `make install-cuda` writes `LD_LIBRARY_PATH` activation hooks.
 
-### `environment-cuda.yml` + `requirements-cuda12/13.txt` (NVIDIA)
+Both approaches work on CUDA 13 systems — CUDA 12 user-space libs coexist with a CUDA 13 driver.
 
-Recommended for:
+## Makefile targets
 
-- NVIDIA GPUs with CUDA support
-- High-throughput detection and inference
-- Users who need TensorRT and CuPy acceleration
-
-CUDA requirements profiles:
-
-- `requirements-cuda13.txt` for CUDA 13.x
-- `requirements-cuda12.txt` for CUDA 12.x
-
-Important ONNX Runtime note:
-
-- `onnxruntime-gpu==1.24.1` currently links against CUDA 12 user-space libraries.
-- `environment-cuda.yml` includes compatible CUDA 12 runtime libs for reliable loading.
-- `make install-gpu` writes conda activate/deactivate hooks to set runtime linker paths.
-
-Ultralytics ONNX note:
-
-- MAT disables Ultralytics auto-install checks at runtime to prevent automatic installation of CPU `onnxruntime` in CUDA environments.
-- This avoids accidental replacement of GPU-capable ONNX Runtime behavior.
-
-FAISS note:
-
-- `requirements-cuda12.txt` installs `faiss-gpu` by default.
-- `requirements-cuda13.txt` installs `faiss-cpu` by default for reliable installation on CUDA 13 + Python 3.13.
-- If you have a compatible CUDA 13 FAISS GPU build, you can replace/install `faiss-gpu` manually.
-
-### `environment-mps.yml` + `requirements-mps.txt` (Apple Silicon)
-
-Recommended for:
-
-- macOS on M1/M2/M3/M4 chips
-- PyTorch MPS acceleration
-
-### `environment-rocm.yml` + `requirements-rocm.txt` (AMD ROCm)
-
-Recommended for:
-
-- Linux systems with supported AMD GPUs
-- ROCm 6.0+ system installation
-
-See `ROCM_SETUP.md` for system prerequisites.
-
-## Installation by Platform
-
-### CPU
+### Setup (creates conda environment)
 
 ```bash
-mamba env create -f environment.yml
-conda activate multi-animal-tracker-base
-uv pip install -v -r requirements.txt
+make setup            # CPU
+make setup-mps        # Apple Silicon
+make setup-cuda       # NVIDIA CUDA
+make setup-rocm       # AMD ROCm
 ```
 
-### NVIDIA (CUDA)
+### Install (pip packages into activated environment)
 
 ```bash
-nvidia-smi
-mamba env create -f environment-cuda.yml
-conda activate multi-animal-tracker-cuda
-uv pip install -v -r requirements-cuda13.txt   # CUDA 13.x
-# uv pip install -v -r requirements-cuda12.txt # CUDA 12.x
+make install                      # CPU
+make install-mps                  # Apple Silicon
+make install-cuda CUDA_MAJOR=13  # NVIDIA CUDA 13
+make install-cuda CUDA_MAJOR=12  # NVIDIA CUDA 12
+make install-rocm                 # AMD ROCm
+make install-dev                  # Dev tools (formatting, linting, testing, publishing)
 ```
 
-### Apple Silicon (MPS)
+### Update (refresh both conda and pip)
 
 ```bash
-mamba env create -f environment-mps.yml
-conda activate multi-animal-tracker-mps
-uv pip install -v -r requirements-mps.txt
+make env-update                      # CPU
+make env-update-mps                  # Apple Silicon
+make env-update-cuda CUDA_MAJOR=13  # NVIDIA CUDA
+make env-update-rocm                 # AMD ROCm
 ```
 
-### AMD (ROCm)
+### Remove
 
 ```bash
-mamba env create -f environment-rocm.yml
-conda activate multi-animal-tracker-rocm
-uv pip install -v -r requirements-rocm.txt
+make env-remove         # CPU
+make env-remove-mps     # Apple Silicon
+make env-remove-cuda    # NVIDIA CUDA
+make env-remove-rocm    # AMD ROCm
 ```
 
-## Makefile Workflow and Options
-
-The project Makefile provides one-command setup/update flows.
-
-### Most-used setup commands
+### Other useful targets
 
 ```bash
-make setup            # CPU environment bootstrap
-make setup-gpu        # CUDA environment bootstrap
-make setup-mps        # Apple Silicon bootstrap
-make setup-rocm       # AMD ROCm bootstrap
+make help              # Full command catalog
+make pytest            # Run tests
+make format            # Format code (autopep8 → black → isort)
+make lint              # Lint at moderate severity
+make build             # Build wheel and sdist for PyPI
+make publish-test      # Upload to Test PyPI
+make publish           # Upload to real PyPI
 ```
-
-### Install package sets
-
-```bash
-make install
-make install-gpu CUDA_MAJOR=13
-# make install-gpu CUDA_MAJOR=12
-make install-mps
-make install-rocm
-```
-
-### Update environments
-
-```bash
-make env-update
-make env-update-gpu CUDA_MAJOR=13
-# make env-update-gpu CUDA_MAJOR=12
-make env-update-mps
-make env-update-rocm
-```
-
-### Remove environments
-
-```bash
-make env-remove
-make env-remove-gpu
-make env-remove-mps
-make env-remove-rocm
-```
-
-### Important Make variables
-
-- `CUDA_MAJOR` controls CUDA profile selection for GPU install/update targets.
-- Supported values: `12`, `13`.
-- Default: `13`.
-
-### Discover all targets
-
-```bash
-make help
-```
-
-## Verify Installation
-
-Run in the activated environment:
-
-```bash
-python -c "from multi_tracker.mat.app.launcher import parse_arguments; print('✅ Core import OK')"
-python -c "from multi_tracker.utils.gpu_utils import log_device_info; log_device_info()"
-```
-
-For CUDA installs:
-
-```bash
-python -c "import onnxruntime as ort; print(ort.get_available_providers())"
-```
-
-Expected: `CUDAExecutionProvider` appears in providers list for ONNX CUDA setups.
