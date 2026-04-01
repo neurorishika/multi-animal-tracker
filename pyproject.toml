@@ -45,13 +45,29 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-cuda = [
+cuda12 = [
     "onnxruntime-gpu>=1.24",
     "cupy-cuda12x",
+    "tensorrt-cu12",
+    "tensorrt-cu12-libs",
     "onnx",
     "onnxslim",
     "onnxscript",
     "torchaudio",
+]
+cuda13 = [
+    "onnxruntime-gpu>=1.24",
+    "cupy-cuda13x",
+    "tensorrt-cu13",
+    "tensorrt-cu13-libs",
+    "onnx",
+    "onnxslim",
+    "onnxscript",
+    "torchaudio",
+]
+cuda = [
+    # Alias for cuda12 (most common)
+    "multi-animal-tracker[cuda12]",
 ]
 mps = [
     "onnxruntime>=1.16",
