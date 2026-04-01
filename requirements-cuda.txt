@@ -1,38 +1,24 @@
-# GPU-accelerated packages for multi-animal-tracker
-# Install with:
-#   CUDA 13.x: uv pip install -v -r requirements-cuda13.txt
-#   CUDA 12.x: uv pip install -v -r requirements-cuda12.txt
+# Shared CUDA packages for multi-animal-tracker
+# Do not install directly — use requirements-cuda12.txt or requirements-cuda13.txt.
 #
-# This file contains shared CUDA package requirements only.
-# Version-specific wheels/indexes live in requirements-cuda12.txt and
-# requirements-cuda13.txt.
+# Base dependencies are in pyproject.toml (installed via -e . below).
+# This file adds torch and CUDA-specific packages only.
 
-# PyTorch with CUDA support
+# PyTorch with CUDA support (index URL set in requirements-cuda12/13.txt)
 torch
 torchvision
 torchaudio
 
-# Computer vision & deep learning
-timm
-pupil-apriltags
-ultralytics
-platformdirs>=3.0
-
 # TensorRT - NVIDIA inference optimization for YOLO acceleration
-# See: https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/installing.html
 tensorrt
 
-# ONNX runtime with GPU support for model export and optimization
+# ONNX runtime with GPU support
 onnx
 onnxslim
 onnxscript
-# IMPORTANT (CUDA 13 systems): onnxruntime-gpu currently links against CUDA 12
-# user-space libraries (e.g., libcublasLt.so.12). Do not co-install CPU
-# onnxruntime here, and keep GPU runtime explicit.
+# IMPORTANT: onnxruntime-gpu currently links against CUDA 12 user-space libraries.
+# Do not co-install CPU onnxruntime.
 onnxruntime-gpu==1.24.1
 
-# CuPy for GPU-accelerated array computations
-# Install version-specific CuPy in requirements-cuda12.txt / requirements-cuda13.txt
-
-# Install this package in editable mode
+# Install this package in editable mode (pulls all pyproject.toml dependencies)
 -e .
