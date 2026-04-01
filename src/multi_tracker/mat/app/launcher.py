@@ -168,7 +168,7 @@ def main() -> object:
         try:
             from PySide6.QtGui import QIcon
 
-            project_root = Path(__file__).resolve().parents[2]
+            project_root = Path(__file__).resolve().parents[3]
             brand_icon = project_root / "brand" / "multianimaltracker.svg"
             fallback_icon = (
                 Path(__file__).resolve().parent.parent / "resources" / "icon.png"
