@@ -48,13 +48,23 @@ dependencies = [
 cuda = [
     "onnxruntime-gpu>=1.24",
     "cupy-cuda12x",
+    "onnx",
+    "onnxslim",
+    "onnxscript",
+    "torchaudio",
 ]
 mps = [
     "onnxruntime>=1.16",
+    "onnx",
+    "onnxslim",
+    "torchaudio",
 ]
 rocm = [
     "cupy-rocm-6-0",
     "onnxruntime",
+    "onnx",
+    "onnxslim",
+    "torchaudio",
 ]
 dev = [
     "pytest>=7.0",
