@@ -20,6 +20,7 @@ from .dataset_inspector import (
     DatasetInspection,
     inspect_obb_or_detect_dataset,
     split_items_for_training,
+    stratified_split_items,
 )
 
 
@@ -138,7 +139,13 @@ def merge_obb_sources(
     for src in sources:
         src_name = _safe_name(src.name or Path(src.path).name)
         inspection: DatasetInspection = inspect_obb_or_detect_dataset(src.path)
-        split_items = split_items_for_training(inspection, split_tuple, seed=seed)
+        # Use stratified splitting to ensure proportional class representation
+        if "all" in inspection.splits:
+            split_items = stratified_split_items(
+                list(inspection.splits["all"]), split_tuple, seed=seed
+            )
+        else:
+            split_items = split_items_for_training(inspection, split_tuple, seed=seed)
 
         # If source already has train/val we keep their order deterministic but shuffled per-source.
         for split in ("train", "val", "test"):
