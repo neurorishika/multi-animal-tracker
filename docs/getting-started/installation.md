@@ -7,20 +7,12 @@ This guide walks you through a complete installation of Multi-Animal-Tracker for
 ### System requirements
 
 - Python 3.11+
-- Conda or Mamba (Mamba recommended for speed)
 - Linux/macOS/Windows supported (ROCm is Linux-only)
 
-### Recommended tooling
+### Recommended tooling (for full environment setup)
 
 - `mamba` for fast environment solving
 - `uv` for fast pip installs (already included in project environment files)
-
-### Clone the repository
-
-```bash
-git clone https://github.com/neurorishika/multi-animal-tracker.git
-cd multi-animal-tracker
-```
 
 ## Quick Install (pip)
 
@@ -83,7 +75,14 @@ python -m multi_tracker.paths_migrate /path/to/multi-animal-tracker            #
 
 The full environment setup uses conda/mamba for system libraries and pip for Python packages. This is recommended for GPU users and developers.
 
-## Choose Your Installation Path
+### Clone the repository
+
+```bash
+git clone https://github.com/neurorishika/multi-animal-tracker.git
+cd multi-animal-tracker
+```
+
+### Choose Your Installation Path
 
 - **CPU-only (most portable):** `environment.yml` + `requirements.txt`
 - **NVIDIA GPU:** `environment-cuda.yml` + `requirements-cuda12.txt` or `requirements-cuda13.txt`
@@ -148,10 +147,10 @@ Notes:
 
 ```bash
 # CUDA 13.x
-make install-gpu CUDA_MAJOR=13
+make install-cuda CUDA_MAJOR=13
 
 # CUDA 12.x
-# make install-gpu CUDA_MAJOR=12
+# make install-cuda CUDA_MAJOR=12
 ```
 
 ### Important ONNX Runtime note (CUDA users)
@@ -161,7 +160,7 @@ make install-gpu CUDA_MAJOR=13
 This project handles that by:
 
 - Installing compatible CUDA 12 runtime libs in `environment-cuda.yml`
-- Configuring `LD_LIBRARY_PATH` hooks during `make install-gpu`
+- Configuring `LD_LIBRARY_PATH` hooks during `make install-cuda`
 - Disabling Ultralytics auto-requirement installs to avoid pulling CPU `onnxruntime`
 
 This is expected behavior even on CUDA 13 systems.
@@ -173,13 +172,6 @@ When selecting ONNX CPU in MAT, the app still uses the ONNX Runtime module provi
 - You do **not** need a separate side-by-side `onnxruntime` CPU wheel in CUDA environments.
 - Auto-install is disabled to prevent accidental replacement of GPU-capable runtime behavior.
 - If ONNX CPU is selected, inference runs on CPU provider from the same ONNX Runtime install.
-
-### FAISS note (CUDA 13)
-
-- `faiss-gpu` currently has limited wheel availability for CUDA 13 + Python 3.13.
-- `requirements-cuda13.txt` uses `faiss-cpu` for reliable installation.
-- `requirements-cuda12.txt` includes `faiss-gpu` by default.
-- If you have a compatible FAISS GPU build (commonly CUDA 12-focused), install it manually.
 
 ---
 
@@ -230,8 +222,6 @@ You should see `CUDAExecutionProvider` in the output for a working CUDA setup.
 
 ```bash
 mat
-# or
-multianimaltracker
 ```
 
 ---
@@ -244,7 +234,7 @@ The Makefile provides one-command setup, install, update, and maintenance flows.
 
 ```bash
 make setup
-make setup-gpu
+make setup-cuda
 make setup-mps
 make setup-rocm
 ```
@@ -253,8 +243,8 @@ make setup-rocm
 
 ```bash
 make install
-make install-gpu CUDA_MAJOR=13
-# make install-gpu CUDA_MAJOR=12
+make install-cuda CUDA_MAJOR=13
+# make install-cuda CUDA_MAJOR=12
 make install-mps
 make install-rocm
 ```
@@ -263,8 +253,8 @@ make install-rocm
 
 ```bash
 make env-update
-make env-update-gpu CUDA_MAJOR=13
-# make env-update-gpu CUDA_MAJOR=12
+make env-update-cuda CUDA_MAJOR=13
+# make env-update-cuda CUDA_MAJOR=12
 make env-update-mps
 make env-update-rocm
 ```
@@ -310,7 +300,7 @@ Use the matching environment file for MPS/ROCm/CUDA updates.
 
 - Ensure you installed `requirements-cuda12.txt` or `requirements-cuda13.txt` (not CPU requirements)
 - Ensure you are in `multi-animal-tracker-cuda`
-- Re-run `make install-gpu CUDA_MAJOR=13` (or `12`) to refresh linker hooks
+- Re-run `make install-cuda CUDA_MAJOR=13` (or `12`) to refresh linker hooks
 
 ### Library error like `libcublasLt.so.12: cannot open shared object file`
 
@@ -336,7 +326,7 @@ uv pip install -v -r requirements-cuda13.txt
 ## Related Setup Docs
 
 - Integrations: [Integrations](integrations.md)
-- Full environment matrix: `ENVIRONMENTS.md`
+- Full environment matrix: [Environments](environments.md)
 - ROCm setup details: `ROCM_SETUP.md`
 
 ## Docs Tooling (Optional)

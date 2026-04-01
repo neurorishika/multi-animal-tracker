@@ -37,20 +37,21 @@ conda activate multi-animal-tracker          # or -mps / -cuda
 uv pip install -r requirements.txt           # or requirements-mps.txt / requirements-cuda13.txt
 ```
 
-Platform-specific environments are documented in `ENVIRONMENTS.md` and in the online docs.
+Platform-specific environments are documented in the [online docs](https://neurorishika.github.io/multi-animal-tracker/getting-started/environments/).
 
 ## Launch
 
 ```bash
 # Multi-Animal-Tracker GUI
 mat
-# or
-multianimaltracker
 
 # PoseKit labeler
 posekit-labeler
-# or
-pose
+
+# Other tools
+datasieve
+classkit
+afterhours
 ```
 
 ## Common Commands
@@ -63,8 +64,8 @@ make docs-build
 make techref-build
 
 # Lint / format
-make lint-autofix
-make lint-moderate
+make lint-fix
+make lint
 make lint-strict
 ```
 
