@@ -123,7 +123,6 @@ from multi_tracker.utils.video_artifacts import (
 
 from .dialogs.bg_parameter_helper import BgParameterHelperDialog
 from .dialogs.parameter_helper import ParameterHelperDialog
-from .dialogs.train_yolo_dialog import TrainYoloDialog
 
 try:
     from multi_tracker.posekit.ui.dialogs.utils import get_available_devices
@@ -7648,20 +7647,6 @@ class MainWindow(QMainWindow):
         # ============================================================
         form.addWidget(self.g_xanylabeling)
 
-        # ============================================================
-        # YOLO Training Center (separate section)
-        # ============================================================
-        self.g_yolo_training = QGroupBox("Do you want to train YOLO models?")
-        self._set_compact_section_widget(self.g_yolo_training)
-        vl_yolo_train = QVBoxLayout(self.g_yolo_training)
-        self.btn_open_training_dialog = QPushButton("Open Training Center...")
-        self.btn_open_training_dialog.setToolTip(
-            "Open role-aware training center for direct OBB, sequential detect/crop OBB, and head-tail models."
-        )
-        self.btn_open_training_dialog.clicked.connect(self._open_training_dialog)
-        vl_yolo_train.addWidget(self.btn_open_training_dialog)
-        form.addWidget(self.g_yolo_training)
-
         # Populate conda environments on startup
         self._refresh_xanylabeling_envs()
 
@@ -8306,11 +8291,6 @@ class MainWindow(QMainWindow):
         """Enable/disable dataset generation controls."""
         # Hide/show entire content container
         self.active_learning_content.setVisible(enabled)
-
-    def _open_training_dialog(self):
-        class_name = self.line_dataset_class_name.text().strip() or "object"
-        dialog = TrainYoloDialog(self, class_name=class_name)
-        dialog.exec()
 
     def _find_or_plan_optimizer_cache_path(
         self, video_path: str, params: dict, start_frame: int, end_frame: int
@@ -13742,7 +13722,6 @@ class MainWindow(QMainWindow):
                 self.combo_xanylabeling_env,
                 self.btn_refresh_envs,
                 self.btn_open_xanylabeling,
-                self.btn_open_training_dialog,
                 self.btn_open_pose_label,
             ]
             splash_allowed = list(getattr(self, "_splash_buttons", []))
