@@ -244,6 +244,43 @@ User data is stored in platform-appropriate locations (not inside the package):
 
 Default config presets and skeleton definitions are bundled with the package and seeded to your config directory on first run.
 
+### Customizing data directories
+
+Override the default locations with environment variables:
+
+| Variable | What it overrides | Default |
+|----------|------------------|---------|
+| `MAT_DATA_DIR` | Models, training runs | `platformdirs` user data dir |
+| `MAT_CONFIG_DIR` | Presets, skeletons, advanced config | `platformdirs` user config dir |
+
+Examples:
+
+```bash
+# Use a shared lab network drive for models
+export MAT_DATA_DIR=/mnt/lab-shared/mat-data
+mat
+
+# Use a project-specific config
+MAT_CONFIG_DIR=./my-project-config mat
+
+# Check where everything currently points
+python -c "from multi_tracker.paths import print_paths; print_paths()"
+```
+
+All sub-applications (MAT, PoseKit, DetectKit, ClassKit, Afterhours, DataSieve) use the same `multi_tracker.paths` module, so they all respect these overrides and share the same data directories.
+
+### Programmatic access from other tools
+
+Scripts and notebooks can access the same paths:
+
+```python
+from multi_tracker.paths import get_models_dir, get_presets_dir, get_skeleton_dir
+
+print(get_models_dir())        # where trained models are stored
+print(get_presets_dir())       # where config presets live
+print(get_skeleton_dir())      # where skeleton definitions live
+```
+
 ### Migrating from an older repo checkout
 
 If you had models in `<repo>/models/` or training data in `<repo>/training/`:

@@ -1,6 +1,15 @@
 """Central path resolution for multi-animal-tracker.
 
-User-writable directories are managed via *platformdirs*.
+All modules in the package import from here to locate user data,
+configuration, and bundled assets. Never use ``Path(__file__).parents[N]``
+to navigate to the repo root — use this module instead.
+
+User-writable directories are managed via *platformdirs* with optional
+environment variable overrides:
+
+    MAT_CONFIG_DIR  — override config directory (presets, skeletons, advanced config)
+    MAT_DATA_DIR    — override data directory (models, training runs)
+
 Bundled read-only assets are accessed via *importlib.resources*.
 Qt helpers provide lazy-loaded QIcon construction.
 """
@@ -9,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -25,15 +35,29 @@ APP_AUTHOR = "Rishika Mohanta"
 
 
 def _user_config_dir() -> Path:
-    """Return (and create) the user configuration directory."""
-    p = Path(user_config_dir(APP_NAME, APP_AUTHOR))
+    """Return (and create) the user configuration directory.
+
+    Override with the ``MAT_CONFIG_DIR`` environment variable.
+    """
+    override = os.environ.get("MAT_CONFIG_DIR")
+    if override:
+        p = Path(override)
+    else:
+        p = Path(user_config_dir(APP_NAME, APP_AUTHOR))
     p.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def _user_data_dir() -> Path:
-    """Return (and create) the user data directory."""
-    p = Path(user_data_dir(APP_NAME, APP_AUTHOR))
+    """Return (and create) the user data directory.
+
+    Override with the ``MAT_DATA_DIR`` environment variable.
+    """
+    override = os.environ.get("MAT_DATA_DIR")
+    if override:
+        p = Path(override)
+    else:
+        p = Path(user_data_dir(APP_NAME, APP_AUTHOR))
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -89,6 +113,28 @@ def get_skeleton_dir() -> Path:
         _seed_bundled_skeletons(p)
         marker.touch()
     return p
+
+
+def print_paths() -> None:
+    """Print all resolved paths. Useful for debugging and user support.
+
+    Usage::
+
+        python -c "from multi_tracker.paths import print_paths; print_paths()"
+    """
+    print(f"Config dir:        {_user_config_dir()}")
+    print(f"Data dir:          {_user_data_dir()}")
+    print(f"Models:            {get_models_dir()}")
+    print(f"Training runs:     {get_training_runs_dir()}")
+    print(f"Presets:           {get_presets_dir()}")
+    print(f"Skeletons:         {get_skeleton_dir()}")
+    print(f"Advanced config:   {get_advanced_config_path()}")
+    override_cfg = os.environ.get("MAT_CONFIG_DIR")
+    override_data = os.environ.get("MAT_DATA_DIR")
+    if override_cfg:
+        print(f"  (MAT_CONFIG_DIR override active: {override_cfg})")
+    if override_data:
+        print(f"  (MAT_DATA_DIR override active: {override_data})")
 
 
 # ---------------------------------------------------------------------------

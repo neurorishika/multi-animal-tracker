@@ -108,6 +108,39 @@ def test_get_training_workspace_dir_returns_path():
     assert "training" in str(p)
 
 
+def test_mat_config_dir_env_override(tmp_path, monkeypatch):
+    """MAT_CONFIG_DIR overrides the config directory."""
+    custom = tmp_path / "my_config"
+    monkeypatch.setenv("MAT_CONFIG_DIR", str(custom))
+    import multi_tracker.paths as paths_mod
+
+    d = paths_mod._user_config_dir()
+    assert d == custom
+    assert d.exists()
+
+
+def test_mat_data_dir_env_override(tmp_path, monkeypatch):
+    """MAT_DATA_DIR overrides the data directory."""
+    custom = tmp_path / "my_data"
+    monkeypatch.setenv("MAT_DATA_DIR", str(custom))
+    import multi_tracker.paths as paths_mod
+
+    d = paths_mod._user_data_dir()
+    assert d == custom
+    assert d.exists()
+
+
+def test_env_override_propagates_to_models(tmp_path, monkeypatch):
+    """MAT_DATA_DIR override propagates to get_models_dir()."""
+    custom = tmp_path / "shared"
+    monkeypatch.setenv("MAT_DATA_DIR", str(custom))
+    from multi_tracker.paths import get_models_dir
+
+    models = get_models_dir()
+    assert models == custom / "models"
+    assert models.exists()
+
+
 def test_get_presets_dir_seeds_on_first_use(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
     monkeypatch.setattr("multi_tracker.paths._user_config_dir", lambda: config_dir)
