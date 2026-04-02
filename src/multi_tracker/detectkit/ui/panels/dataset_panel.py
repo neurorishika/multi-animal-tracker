@@ -418,10 +418,16 @@ class DatasetPanel(QWidget):
             )
 
     def _refresh_labels(self) -> None:
-        """Re-validate selected source and refresh image list."""
+        """Convert xlabel JSONs to YOLO labels, then refresh image list.
+
+        Always attempts xlabel→YOLO conversion first (in case the user
+        edited annotations in X-AnyLabeling), then re-validates.
+        """
         source_path = self._selected_source_path()
         if source_path is None:
             return
+        self._ensure_classes_txt(Path(source_path))
+        self._try_xlabel_convert(source_path)
         self._validate_source(source_path)
         # Refresh image list
         self._on_source_changed(self.source_list.currentRow())
