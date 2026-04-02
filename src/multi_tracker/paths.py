@@ -17,7 +17,7 @@ from platformdirs import user_config_dir, user_data_dir
 logger = logging.getLogger(__name__)
 
 APP_NAME = "multi-animal-tracker"
-APP_AUTHOR = "Kronauer Lab"
+APP_AUTHOR = "Rishika Mohanta"
 
 # ---------------------------------------------------------------------------
 # Internal helpers — user-writable directories

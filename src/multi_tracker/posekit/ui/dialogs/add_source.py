@@ -159,7 +159,7 @@ class AddSourceDialog(QDialog):
                         [
                             sys.executable,
                             "-m",
-                            "multi_tracker.tools.data_sieve.gui",
+                            "multi_tracker.datasieve.gui",
                             str(d),
                         ],
                         start_new_session=True,

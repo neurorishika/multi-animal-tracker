@@ -10443,7 +10443,22 @@ class MainWindow(QMainWindow):
             self.lbl_individual_info.setVisible(save_enabled)
         if hasattr(self, "chk_generate_individual_track_videos"):
             self.chk_generate_individual_track_videos.setVisible(pipeline_enabled)
-            self.chk_generate_individual_track_videos.setEnabled(pipeline_enabled)
+            has_headtail = bool(
+                str(self._get_selected_yolo_headtail_model_path() or "").strip()
+            )
+            oriented_enabled = pipeline_enabled and has_headtail
+            self.chk_generate_individual_track_videos.setEnabled(oriented_enabled)
+            if not oriented_enabled:
+                self.chk_generate_individual_track_videos.setChecked(False)
+                self.chk_generate_individual_track_videos.setToolTip(
+                    "Requires a head-tail model to be configured."
+                )
+            else:
+                self.chk_generate_individual_track_videos.setToolTip(
+                    "After final cleaning completes, export one orientation-fixed video per\n"
+                    "final TrajectoryID by streaming the source video and using the detection\n"
+                    "cache plus interpolated ROI cache. Independent from saved crop files."
+                )
         self._sync_video_pose_overlay_controls()
         self._on_runtime_context_changed()
 
@@ -13118,6 +13133,40 @@ class MainWindow(QMainWindow):
             )
             return
         self._on_yolo_mode_changed(index)
+        self._apply_crop_obb_training_params()
+
+    def _apply_crop_obb_training_params(self):
+        """Auto-configure sequential inference params from model training metadata."""
+        model_path = self._get_selected_yolo_crop_obb_model_path()
+        if not model_path:
+            return
+        meta = get_yolo_model_metadata(model_path) or {}
+        tp = meta.get("training_params")
+        if not isinstance(tp, dict):
+            return
+
+        applied = []
+        if "imgsz" in tp:
+            val = int(tp["imgsz"])
+            self.spin_yolo_seq_stage2_imgsz.setValue(val)
+            applied.append(f"stage2_imgsz={val}")
+        if "crop_pad_ratio" in tp:
+            val = float(tp["crop_pad_ratio"])
+            self.spin_yolo_seq_crop_pad.setValue(val)
+            applied.append(f"crop_pad={val}")
+        if "min_crop_size_px" in tp:
+            val = int(tp["min_crop_size_px"])
+            self.spin_yolo_seq_min_crop_px.setValue(val)
+            applied.append(f"min_crop={val}")
+        if "enforce_square" in tp:
+            val = bool(tp["enforce_square"])
+            self.chk_yolo_seq_square_crop.setChecked(val)
+            applied.append(f"square={val}")
+        if applied:
+            logger.info(
+                "Auto-configured sequential params from model metadata: %s",
+                ", ".join(applied),
+            )
 
     def on_yolo_headtail_model_changed(self: object, index: object) -> object:
         if self.combo_yolo_headtail_model.itemData(index, Qt.UserRole) == "__add_new__":
@@ -13141,6 +13190,7 @@ class MainWindow(QMainWindow):
             )
             return
         self._on_yolo_mode_changed(index)
+        self._sync_individual_analysis_mode_ui()
 
     def _handle_add_new_yolo_model(
         self,
@@ -17081,7 +17131,11 @@ class MainWindow(QMainWindow):
             "ENABLE_INDIVIDUAL_DATASET": individual_image_save_enabled,
             "ENABLE_INDIVIDUAL_IMAGE_SAVE": individual_image_save_enabled,
             "GENERATE_ORIENTED_TRACK_VIDEOS": self._should_generate_oriented_track_videos(),
-            "INDIVIDUAL_DATASET_NAME": "",
+            "INDIVIDUAL_DATASET_NAME": (
+                ""
+                if str(self._get_selected_yolo_headtail_model_path() or "").strip()
+                else "unoriented"
+            ),
             "INDIVIDUAL_DATASET_OUTPUT_DIR": (
                 os.path.join(
                     os.path.dirname(self.current_video_path),

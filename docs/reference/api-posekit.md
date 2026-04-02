@@ -8,8 +8,6 @@
 
 ::: multi_tracker.posekit.inference
 
-::: multi_tracker.posekit.inference.service
-
 ::: multi_tracker.posekit.inference.worker
 
 ::: multi_tracker.posekit.ui

@@ -4,7 +4,7 @@
 
 ::: multi_tracker.core.tracking.worker
 
-::: multi_tracker.core.detectors.engine
+::: multi_tracker.core.detectors
 
 ::: multi_tracker.core.background.model
 
@@ -14,4 +14,4 @@
 
 ::: multi_tracker.core.post.processing
 
-::: multi_tracker.core.identity.analysis
+::: multi_tracker.core.identity

@@ -203,6 +203,7 @@ class TrainingOrchestrator:
                 trained_from_run_id=run_id,
                 dataset_fingerprint=ds_fp,
                 base_model=spec.base_model,
+                training_params=meta.get("training_params"),
             )
 
         finalize_run_record(

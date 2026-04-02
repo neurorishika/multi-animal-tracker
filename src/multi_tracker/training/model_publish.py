@@ -114,6 +114,7 @@ def publish_trained_model(
     scheme_name: str = "",
     factor_index: int | None = None,
     factor_name: str | None = None,
+    training_params: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
     """Copy trained artifact into repository and register metadata.
 
@@ -178,6 +179,8 @@ def publish_trained_model(
         "factor_index": factor_index,
         "factor_name": str(factor_name) if factor_name is not None else None,
     }
+    if training_params:
+        metadata["training_params"] = dict(training_params)
 
     reg = load_model_registry()
     reg[key] = metadata

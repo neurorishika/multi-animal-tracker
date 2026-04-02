@@ -408,3 +408,5 @@ posekit/
 
 # remove test_classkit.db
 test_classkit.db
+
+.VSCodeCounter/
