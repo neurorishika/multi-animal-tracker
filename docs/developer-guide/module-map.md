@@ -50,7 +50,11 @@
 
 ## Paths and Resources
 
-- `multi_tracker.paths` — central path resolver (brand icons, configs, models dir, training dir)
+- `multi_tracker.paths` — central path resolver; all apps import from here for models, configs, assets
+  - `get_models_dir()`, `get_presets_dir()`, `get_skeleton_dir()`, `get_training_runs_dir()`
+  - `get_brand_icon_bytes(name)`, `get_brand_qicon(name)`
+  - `print_paths()` — debug helper to show all resolved paths
+  - Respects `MAT_DATA_DIR` and `MAT_CONFIG_DIR` environment variable overrides
 - `multi_tracker.paths_migrate` — one-time migration helper for repo-to-user-dir data
 - `multi_tracker.resources` — bundled read-only assets package
 - `multi_tracker.resources.brand` — SVG/PNG brand icons

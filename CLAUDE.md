@@ -140,6 +140,31 @@ See `to_fix.md` for known dead-code findings and the rationale for false-positiv
 - All path resolution must go through `multi_tracker.paths`. No module should use `Path(__file__).parents[N]` to navigate to repo root.
 - Bundled read-only assets are accessed via `importlib.resources` through the `paths` module.
 - User-writable data (models, training, config) goes to platform-appropriate directories via `platformdirs`.
+- Users can override data/config directories with `MAT_DATA_DIR` and `MAT_CONFIG_DIR` environment variables.
+
+### Data and Config Directories
+
+All apps (MAT, PoseKit, DetectKit, ClassKit, Afterhours, DataSieve) share the same data directories via `multi_tracker.paths`:
+
+```python
+from multi_tracker.paths import get_models_dir, get_presets_dir, get_skeleton_dir
+```
+
+Default locations (via `platformdirs`):
+
+| | macOS | Linux |
+|---|---|---|
+| Config | `~/Library/Application Support/multi-animal-tracker/` | `~/.config/multi-animal-tracker/` |
+| Data | `~/Library/Application Support/multi-animal-tracker/` | `~/.local/share/multi-animal-tracker/` |
+
+Override with environment variables:
+
+```bash
+export MAT_DATA_DIR=/mnt/lab-shared/mat-data      # models, training runs
+export MAT_CONFIG_DIR=/path/to/project-config      # presets, skeletons, advanced config
+```
+
+Debug current paths: `python -c "from multi_tracker.paths import print_paths; print_paths()"`
 
 ### MAT Tracking Pipeline
 
