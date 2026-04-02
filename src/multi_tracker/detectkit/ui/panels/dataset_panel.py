@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -73,15 +74,29 @@ class DatasetPanel(QWidget):
         self.image_list.currentRowChanged.connect(self._on_image_changed)
         layout.addWidget(self.image_list)
 
-        # --- X-AnyLabeling button ---
+        # --- X-AnyLabeling section ---
+        layout.addWidget(QLabel("X-AnyLabeling"))
+        env_row = QHBoxLayout()
+        self.combo_xal_env = QComboBox()
+        self.combo_xal_env.setToolTip("Conda environment with X-AnyLabeling installed.")
+        self.btn_refresh_envs = QPushButton("⟳")
+        self.btn_refresh_envs.setFixedWidth(30)
+        self.btn_refresh_envs.setToolTip("Rescan conda environments")
+        self.btn_refresh_envs.clicked.connect(self._refresh_xal_envs)
+        env_row.addWidget(self.combo_xal_env, 1)
+        env_row.addWidget(self.btn_refresh_envs)
+        layout.addLayout(env_row)
+
+        xal_btn_row = QHBoxLayout()
         self.btn_xanylabeling = QPushButton("Open in X-AnyLabeling")
         self.btn_xanylabeling.clicked.connect(self._open_xanylabeling)
-        layout.addWidget(self.btn_xanylabeling)
-
-        # --- Refresh Labels button ---
         self.btn_refresh = QPushButton("Refresh Labels")
         self.btn_refresh.clicked.connect(self._refresh_labels)
-        layout.addWidget(self.btn_refresh)
+        xal_btn_row.addWidget(self.btn_xanylabeling)
+        xal_btn_row.addWidget(self.btn_refresh)
+        layout.addLayout(xal_btn_row)
+
+        self._refresh_xal_envs()
 
     # ------------------------------------------------------------------
     # Public API
@@ -144,6 +159,60 @@ class DatasetPanel(QWidget):
             return []
         return dlg.selectedFiles()
 
+    def _selected_xal_env(self) -> str | None:
+        """Return the selected X-AnyLabeling conda env name, or None."""
+        env = self.combo_xal_env.currentText().strip()
+        if (
+            not env
+            or env.startswith("No ")
+            or env.startswith("Conda ")
+            or env.startswith("Error")
+        ):
+            return None
+        return env
+
+    def _refresh_xal_envs(self) -> None:
+        """Scan for conda environments starting with 'x-anylabeling-'."""
+        self.combo_xal_env.clear()
+        try:
+            result = subprocess.run(
+                ["conda", "env", "list"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                envs = []
+                for line in result.stdout.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split()
+                    if parts and parts[0].startswith("x-anylabeling"):
+                        envs.append(parts[0])
+                if envs:
+                    self.combo_xal_env.addItems(envs)
+                    self.btn_xanylabeling.setEnabled(True)
+                    logger.info("Found %d X-AnyLabeling conda env(s)", len(envs))
+                else:
+                    self.combo_xal_env.addItem("No X-AnyLabeling envs found")
+                    self.btn_xanylabeling.setEnabled(False)
+                    logger.warning(
+                        "No conda envs starting with 'x-anylabeling-' found. "
+                        "Create one: conda create -n x-anylabeling-cpu python=3.10 "
+                        "&& conda activate x-anylabeling-cpu && pip install x-anylabeling"
+                    )
+            else:
+                self.combo_xal_env.addItem("Conda not available")
+                self.btn_xanylabeling.setEnabled(False)
+        except FileNotFoundError:
+            self.combo_xal_env.addItem("Conda not installed")
+            self.btn_xanylabeling.setEnabled(False)
+        except Exception as exc:
+            self.combo_xal_env.addItem("Error detecting envs")
+            self.btn_xanylabeling.setEnabled(False)
+            logger.warning("Failed to scan conda envs: %s", exc)
+
     def _validate_source(self, path: str) -> None:
         """Run validation and auto-convert xlabel JSON if needed."""
         try:
@@ -157,11 +226,12 @@ class DatasetPanel(QWidget):
             self._try_xlabel_convert(path)
 
     def _try_xlabel_convert(self, path: str) -> None:
-        """Attempt to convert xlabel JSON labels to YOLO format."""
+        """Attempt to convert xlabel JSON labels to YOLO format via conda env."""
+        env = self._selected_xal_env()
         try:
             from multi_tracker.integrations.xanylabeling.cli import convert_project
 
-            ok, msg = convert_project(path, path)
+            ok, msg = convert_project(path, path, conda_env=env)
             if ok:
                 logger.info("Auto-converted xlabel labels in %s: %s", path, msg)
             else:
@@ -265,25 +335,83 @@ class DatasetPanel(QWidget):
             self._add_source_item(src)
 
     def _open_xanylabeling(self) -> None:
-        """Launch X-AnyLabeling for the selected source."""
+        """Launch X-AnyLabeling for the selected source in the selected conda env."""
         source_path = self._selected_source_path()
         if source_path is None:
             QMessageBox.information(self, "No Source", "Select a source first.")
             return
 
+        env = self._selected_xal_env()
+        if env is None:
+            QMessageBox.warning(
+                self,
+                "No Environment",
+                "Select a valid conda environment with X-AnyLabeling installed.\n\n"
+                "Create one with:\n"
+                "  conda create -n x-anylabeling-cpu python=3.10\n"
+                "  conda activate x-anylabeling-cpu\n"
+                "  pip install x-anylabeling",
+            )
+            return
+
         source_dir = Path(source_path)
         self._ensure_classes_txt(source_dir)
-        self._try_xlabel_convert(source_path)
 
-        images_dir = source_dir / "images"
-        if not images_dir.is_dir():
-            images_dir = source_dir
+        # Build the shell command: activate conda env, convert yolo->xlabel, open GUI
+        convert_cmd = (
+            "xanylabeling convert --task yolo2xlabel --mode obb "
+            "--images ./images --labels ./labels --output ./images "
+            "--classes classes.txt"
+        )
+        open_cmd = "xanylabeling --filename ./images"
+        full_cmd = f"{convert_cmd} && {open_cmd}"
 
+        system = platform.system()
         try:
-            if platform.system() == "Darwin":
-                subprocess.Popen(["open", "-a", "Terminal", str(source_dir)])
+            if system == "Darwin":
+                # macOS: open Terminal with conda activation via AppleScript
+                script = (
+                    'tell application "Terminal"\n'
+                    "    activate\n"
+                    '    do script "source $(conda info --base)/etc/profile.d/conda.sh '
+                    f"&& conda activate {env} "
+                    f"&& cd '{source_dir}' "
+                    f'&& {full_cmd}"\n'
+                    "end tell"
+                )
+                subprocess.Popen(["osascript", "-e", script])
+            elif system == "Windows":
+                cmd = (
+                    f'start cmd /k "conda activate {env} '
+                    f"&& cd /d {source_dir} "
+                    f'&& {full_cmd}"'
+                )
+                subprocess.Popen(cmd, shell=True)  # noqa: S602
             else:
-                subprocess.Popen(["xanylabeling", "--filename", str(images_dir)])
+                # Linux: try common terminal emulators
+                shell_cmd = (
+                    f"source $(conda info --base)/etc/profile.d/conda.sh "
+                    f"&& conda activate {env} "
+                    f"&& cd '{source_dir}' "
+                    f"&& {full_cmd}"
+                )
+                for term_cmd in [
+                    ["gnome-terminal", "--", "bash", "-c", shell_cmd],
+                    ["konsole", "-e", "bash", "-c", shell_cmd],
+                    ["xterm", "-e", "bash", "-c", shell_cmd],
+                ]:
+                    try:
+                        subprocess.Popen(term_cmd)
+                        break
+                    except FileNotFoundError:
+                        continue
+                else:
+                    QMessageBox.warning(
+                        self,
+                        "No Terminal",
+                        "Could not find a terminal emulator "
+                        "(gnome-terminal, konsole, or xterm).",
+                    )
         except Exception as exc:
             QMessageBox.warning(
                 self, "Launch Error", f"Failed to open X-AnyLabeling:\n{exc}"
