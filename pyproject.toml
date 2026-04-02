@@ -111,6 +111,7 @@ classkit-labeler = "multi_tracker.classkit.app:main"
 classkit = "multi_tracker.classkit.app:main"
 mat-afterhours = "multi_tracker.afterhours.app:main"
 afterhours = "multi_tracker.afterhours.app:main"
+detectkit = "multi_tracker.detectkit.app:main"
 
 # ============================================================================
 # Black - Code formatter
