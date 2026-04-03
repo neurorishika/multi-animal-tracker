@@ -757,81 +757,52 @@ class MainWindow(QMainWindow):
 
     def _make_welcome_page(self) -> QWidget:
         """Logo/welcome screen shown when PoseKit starts without a loaded project."""
-        page = QWidget()
-        page.setStyleSheet("background-color: #121212;")
-        v = QVBoxLayout(page)
-        v.setAlignment(Qt.AlignCenter)
-        v.setSpacing(0)
-        v.addStretch(1)
-
-        logo_lbl = QLabel()
-        logo_lbl.setAlignment(Qt.AlignCenter)
-        from PySide6.QtCore import QByteArray
-
-        from hydra_suite.paths import get_brand_icon_bytes
-
-        logo_data = get_brand_icon_bytes("posekit.svg")
-        if logo_data is not None:
-            renderer = QSvgRenderer(QByteArray(logo_data))
-            if renderer.isValid():
-                view_box = renderer.viewBoxF()
-                if view_box.isEmpty():
-                    default_size = renderer.defaultSize()
-                    view_box = QRectF(
-                        0,
-                        0,
-                        max(1, default_size.width()),
-                        max(1, default_size.height()),
-                    )
-                max_w, max_h = 560, 300
-                scale = min(
-                    max_w / max(view_box.width(), 1),
-                    max_h / max(view_box.height(), 1),
-                )
-                draw_w = max(1, int(view_box.width() * scale))
-                draw_h = max(1, int(view_box.height() * scale))
-                canvas = QPixmap(draw_w, draw_h)
-                canvas.fill(QColor(0, 0, 0, 0))
-                painter = QPainter(canvas)
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                renderer.render(painter, QRectF(0, 0, draw_w, draw_h))
-                painter.end()
-                logo_lbl.setPixmap(canvas)
-        v.addWidget(logo_lbl)
-
-        sub = QLabel("Pose Labeling Workspace")
-        sub.setAlignment(Qt.AlignCenter)
-        sub.setStyleSheet(
-            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        from hydra_suite.widgets import (
+            ButtonDef,
+            RecentItemsStore,
+            WelcomeConfig,
+            WelcomePage,
         )
-        v.addWidget(sub)
-        v.addSpacing(40)
 
-        btn_row = QHBoxLayout()
-        btn_row.setAlignment(Qt.AlignCenter)
-        btn_row.setSpacing(16)
+        store = RecentItemsStore("posekit")
+        self._recents_store = store
 
-        btn_new = QPushButton("New Project…")
-        btn_new.setFixedWidth(180)
-        btn_new.clicked.connect(self.new_project_wizard)
-        btn_row.addWidget(btn_new)
+        config = WelcomeConfig(
+            logo_svg="posekit.svg",
+            tagline="Pose Labeling Workspace",
+            buttons=[
+                ButtonDef(label="New Project\u2026", callback=self.new_project_wizard),
+                ButtonDef(
+                    label="Open Existing Project\u2026", callback=self.open_project
+                ),
+                ButtonDef(label="Quit", callback=self.close),
+            ],
+            recents_label="Recent Projects",
+            recents_store=store,
+            on_recent_clicked=self._open_recent_project,
+        )
+        self._welcome_page = WelcomePage(config)
+        return self._welcome_page
 
-        btn_open = QPushButton("Open Existing Project…")
-        btn_open.setFixedWidth(220)
-        btn_open.clicked.connect(self.open_project)
-        btn_row.addWidget(btn_open)
+    def _open_recent_project(self, path: str):
+        """Open a project from the recent items list."""
+        from pathlib import Path
 
-        btn_quit = QPushButton("Quit")
-        btn_quit.setFixedWidth(140)
-        btn_quit.clicked.connect(self.close)
-        btn_row.addWidget(btn_quit)
+        project_path = Path(path)
+        if project_path.exists():
+            from hydra_suite.posekit.project import open_project_from_path
 
-        ctr = QWidget()
-        ctr.setLayout(btn_row)
-        v.addWidget(ctr)
-        v.addStretch(1)
-        return page
+            proj = open_project_from_path(project_path)
+            if proj is not None:
+                self._switch_project_window(proj)
+        else:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Not Found", f"Project not found:\n{path}")
+            if hasattr(self, "_recents_store"):
+                self._recents_store.remove(path)
+                if hasattr(self, "_welcome_page"):
+                    self._welcome_page.refresh_recents()
 
     def apply_stylesheet(self):
         """Apply the PoseKit dark theme to the entire window."""
@@ -3458,6 +3429,10 @@ class MainWindow(QMainWindow):
             self._update_info()
 
     def _switch_project_window(self, proj: Project):
+        if hasattr(self, "_recents_store") and proj is not None:
+            # Store the project file or directory path
+            if hasattr(proj, "project_path") and proj.project_path:
+                self._recents_store.add(str(proj.project_path))
         imgs = build_image_list(proj)
         if not imgs:
             QMessageBox.critical(
