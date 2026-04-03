@@ -1,6 +1,7 @@
 """
-Multi-Animal-Tracker Package
+HYDRA Suite Package
 
+Holistic YOLO-based Detection Recognition and Analysis Suite.
 A comprehensive solution for tracking multiple animals in video recordings using computer vision techniques.
 The system combines background subtraction, Kalman filtering, and Hungarian algorithm for robust multi-object tracking.
 
@@ -26,11 +27,11 @@ except Exception:
 __author__ = "Rishika Mohanta"
 __email__ = "neurorishika@gmail.com"
 
-from .mat.app.launcher import main, parse_arguments, setup_logging
+from .tracker.app.launcher import main, parse_arguments, setup_logging
 
 try:
     from .core.tracking.worker import TrackingWorker
-    from .mat.gui.main_window import MainWindow
+    from .tracker.gui.main_window import MainWindow
 
     __all__ = [
         "main",
