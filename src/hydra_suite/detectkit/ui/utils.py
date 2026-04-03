@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def get_ui_settings_path() -> Path:
     """Return the path to the DetectKit UI-settings JSON file."""
     try:
-        from multi_tracker.paths import _user_data_dir
+        from hydra_suite.paths import _user_data_dir
 
         return _user_data_dir() / "detectkit" / "ui_settings.json"
     except Exception:

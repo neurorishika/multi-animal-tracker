@@ -18,13 +18,14 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from multi_tracker.refinekit.core.track_editor_model import (
-    TrackEditorModel,
-    TrackFragment,
-)
 from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QKeyEvent, QMouseEvent, QPen
 from PySide6.QtWidgets import QLabel, QMenu, QScrollArea, QToolTip, QVBoxLayout, QWidget
+
+from hydra_suite.refinekit.core.track_editor_model import (
+    TrackEditorModel,
+    TrackFragment,
+)
 
 # Colour palette (RGB) — canonical source for all RefineKit views.
 # Import this from other modules to keep colours consistent.

@@ -113,7 +113,7 @@ class _TestWorker(QThread):
 
     def run(self):
         try:
-            from multi_tracker.core.detectors import YOLOOBBDetector
+            from hydra_suite.core.detectors import YOLOOBBDetector
 
             self.status.emit("Loading model...")
             detector = YOLOOBBDetector(self.params)

@@ -320,7 +320,7 @@ class HeadTailAnalyzer:
             model.load_state_dict(state_dict, strict=True)
         else:
             try:
-                from multi_tracker.training.tiny_model import rebuild_from_checkpoint
+                from hydra_suite.training.tiny_model import rebuild_from_checkpoint
 
                 model = rebuild_from_checkpoint({"model_state_dict": state_dict})
             except Exception as exc:
@@ -452,7 +452,7 @@ class HeadTailAnalyzer:
     # ------------------------------------------------------------------
 
     def _canonicalize_obb(self, frame, corners):
-        from multi_tracker.core.canonicalization.crop import (
+        from hydra_suite.core.canonicalization.crop import (
             compute_alignment_affine,
             extract_canonical_crop,
         )

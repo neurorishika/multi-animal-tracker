@@ -15,21 +15,22 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
-from multi_tracker.core.identity.pose.artifacts import (
+
+from hydra_suite.core.identity.pose.artifacts import (
     artifact_meta_matches,
     path_fingerprint_token,
     write_artifact_meta,
 )
-from multi_tracker.core.identity.pose.backends.sleap_utils import (
+from hydra_suite.core.identity.pose.backends.sleap_utils import (
     normalize_export_result_path,
 )
-from multi_tracker.core.identity.pose.types import PoseResult, PoseRuntimeConfig
-from multi_tracker.core.identity.pose.utils import (
+from hydra_suite.core.identity.pose.types import PoseResult, PoseRuntimeConfig
+from hydra_suite.core.identity.pose.utils import (
     empty_pose_result,
     resolve_device,
     summarize_keypoints,
 )
-from multi_tracker.utils.gpu_utils import CUDA_AVAILABLE, TENSORRT_AVAILABLE
+from hydra_suite.utils.gpu_utils import CUDA_AVAILABLE, TENSORRT_AVAILABLE
 
 logger = logging.getLogger(__name__)
 

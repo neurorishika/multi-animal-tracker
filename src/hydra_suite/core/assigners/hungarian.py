@@ -8,9 +8,10 @@ import logging
 from typing import Any, Dict, List, Tuple
 
 import numpy as np
-from multi_tracker.core.identity.classification.cnn import apply_cnn_identity_cost
 from scipy.optimize import linear_sum_assignment
 from scipy.spatial import cKDTree
+
+from hydra_suite.core.identity.classification.cnn import apply_cnn_identity_cost
 
 try:
     from numba import njit

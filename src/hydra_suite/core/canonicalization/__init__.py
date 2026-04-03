@@ -5,7 +5,7 @@ Submodules:
     crop    — real-time OBB-based canonical crop extraction for tracking.
 """
 
-from multi_tracker.core.canonicalization.crop import (  # noqa: F401
+from hydra_suite.core.canonicalization.crop import (  # noqa: F401
     CanonicalCropResult,
     apply_headtail_rotation,
     compute_alignment_affine,
@@ -16,7 +16,7 @@ from multi_tracker.core.canonicalization.crop import (  # noqa: F401
     extract_canonical_crop,
     invert_keypoints,
 )
-from multi_tracker.core.canonicalization.dataset import (  # noqa: F401
+from hydra_suite.core.canonicalization.dataset import (  # noqa: F401
     MatMetadataCanonicalizer,
     get_canon_transform,
 )

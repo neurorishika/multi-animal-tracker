@@ -6,7 +6,7 @@ and undirected (OBB axis) heading sources with flip detection and hysteresis.
 
 import math
 
-from multi_tracker.utils.geometry import wrap_angle_degs
+from hydra_suite.utils.geometry import wrap_angle_degs
 
 
 def smooth_orientation(

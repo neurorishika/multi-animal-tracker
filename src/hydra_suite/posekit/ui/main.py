@@ -53,7 +53,7 @@ def main() -> None:
     app.setOrganizationName("NeuroRishika")
     app.setDesktopFileName("posekit-labeler")
     try:
-        from multi_tracker.paths import get_brand_qicon
+        from hydra_suite.paths import get_brand_qicon
 
         icon = get_brand_qicon("posekit.svg")
         if icon and not icon.isNull():

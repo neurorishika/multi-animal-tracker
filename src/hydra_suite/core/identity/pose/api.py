@@ -11,27 +11,24 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
 
-from multi_tracker.core.identity.pose.backends.sleap import (
+from hydra_suite.core.identity.pose.backends.sleap import (
     SleapServiceBackend,
     auto_export_sleap_model,
 )
-from multi_tracker.core.identity.pose.backends.sleap_utils import (
+from hydra_suite.core.identity.pose.backends.sleap_utils import (
     derive_sleap_export_input_hw,
 )
-from multi_tracker.core.identity.pose.backends.yolo import (
+from hydra_suite.core.identity.pose.backends.yolo import (
     YoloNativeBackend,
     auto_export_yolo_model,
 )
-from multi_tracker.core.identity.pose.types import (
-    PoseInferenceBackend,
-    PoseRuntimeConfig,
-)
-from multi_tracker.core.identity.pose.utils import (
+from hydra_suite.core.identity.pose.types import PoseInferenceBackend, PoseRuntimeConfig
+from hydra_suite.core.identity.pose.utils import (
     load_skeleton_from_json,
     normalize_runtime_flavor,
     parse_runtime_request,
 )
-from multi_tracker.runtime.compute_runtime import derive_pose_runtime_settings
+from hydra_suite.runtime.compute_runtime import derive_pose_runtime_settings
 
 logger = logging.getLogger(__name__)
 

@@ -165,7 +165,7 @@ def build_torchvision_classifier(
             f"Unknown backbone {backbone!r}. Must be one of {TORCHVISION_BACKBONES}"
         )
     if backbone == "tinyclassifier":
-        from multi_tracker.training.tiny_model import _build_tiny_classifier_class
+        from hydra_suite.training.tiny_model import _build_tiny_classifier_class
 
         TinyClassifier = _build_tiny_classifier_class()
         return TinyClassifier(

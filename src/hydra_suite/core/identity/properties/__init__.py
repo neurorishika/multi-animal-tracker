@@ -1,7 +1,7 @@
 """Properties caching and CSV export aggregation."""
 
-from multi_tracker.core.identity.properties.cache import IndividualPropertiesCache
-from multi_tracker.core.identity.properties.export import (
+from hydra_suite.core.identity.properties.cache import IndividualPropertiesCache
+from hydra_suite.core.identity.properties.export import (
     POSE_SUMMARY_COLUMNS,
     augment_trajectories_with_pose_cache,
     augment_trajectories_with_pose_df,

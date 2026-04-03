@@ -1,1 +1,1 @@
-"""Bundled read-only resources for multi-animal-tracker."""
+"""Bundled read-only resources for hydra-suite."""

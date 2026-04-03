@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from multi_tracker.classkit.config.schemas import LabelingScheme
+from hydra_suite.classkit.config.schemas import LabelingScheme
 
 # ---------------------------------------------------------------------------
 # Pure state machine — no Qt dependencies, fully testable

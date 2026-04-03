@@ -23,7 +23,7 @@ _MAX_RECENT = 20
 def get_recent_projects_path() -> Path:
     """Return the path to the recent-projects JSON file."""
     try:
-        from multi_tracker.paths import _user_data_dir
+        from hydra_suite.paths import _user_data_dir
 
         return _user_data_dir() / "detectkit" / "recent_projects.json"
     except Exception:

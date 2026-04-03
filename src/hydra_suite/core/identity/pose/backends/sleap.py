@@ -13,20 +13,18 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
-from multi_tracker.core.identity.pose.artifacts import (
+
+from hydra_suite.core.identity.pose.artifacts import (
     artifact_meta_matches,
     path_fingerprint_token,
     write_artifact_meta,
 )
-from multi_tracker.core.identity.pose.backends.sleap_utils import (
+from hydra_suite.core.identity.pose.backends.sleap_utils import (
     looks_like_sleap_export_path,
     run_cli_command,
 )
-from multi_tracker.core.identity.pose.types import PoseResult, PoseRuntimeConfig
-from multi_tracker.core.identity.pose.utils import (
-    empty_pose_result,
-    summarize_keypoints,
-)
+from hydra_suite.core.identity.pose.types import PoseResult, PoseRuntimeConfig
+from hydra_suite.core.identity.pose.utils import empty_pose_result, summarize_keypoints
 
 logger = logging.getLogger(__name__)
 
@@ -297,7 +295,7 @@ class SleapServiceBackend:
         exported_model_path: str = "",
         export_input_hw: Optional[Tuple[int, int]] = None,
     ):
-        from multi_tracker.integrations.sleap.service import PoseInferenceService
+        from hydra_suite.integrations.sleap.service import PoseInferenceService
 
         self.model_dir = Path(model_dir).expanduser().resolve()
         self.out_root = Path(out_root).expanduser().resolve()

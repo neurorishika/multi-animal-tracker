@@ -113,7 +113,7 @@ class RuntimeArtifactMixin:
 
     def _get_tensorrt_build_context(self) -> dict[str, str]:
         """Summarize device/runtime details for TensorRT build logging."""
-        from multi_tracker.utils.gpu_utils import get_device_info
+        from hydra_suite.utils.gpu_utils import get_device_info
 
         gpu_name = str(self.device)
         cuda_version = "unknown"
@@ -523,11 +523,12 @@ class RuntimeArtifactMixin:
             return model_path_str
 
         try:
-            from multi_tracker.utils.gpu_utils import (
+            from ultralytics import YOLO
+
+            from hydra_suite.utils.gpu_utils import (
                 ONNXRUNTIME_AVAILABLE,
                 TENSORRT_AVAILABLE,
             )
-            from ultralytics import YOLO
 
             enable_onnx_runtime = bool(self.params.get("ENABLE_ONNX_RUNTIME", False))
             enable_tensorrt = bool(self.params.get("ENABLE_TENSORRT", False)) and str(

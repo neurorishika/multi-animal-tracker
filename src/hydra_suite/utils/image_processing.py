@@ -8,7 +8,8 @@ from functools import lru_cache
 
 import cv2
 import numpy as np
-from multi_tracker.utils.gpu_utils import CUDA_AVAILABLE, NUMBA_AVAILABLE, cp, njit
+
+from hydra_suite.utils.gpu_utils import CUDA_AVAILABLE, NUMBA_AVAILABLE, cp, njit
 
 
 @lru_cache(maxsize=128)

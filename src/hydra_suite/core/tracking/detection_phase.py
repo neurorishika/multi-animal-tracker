@@ -9,7 +9,8 @@ import time
 from collections import deque
 
 import cv2
-from multi_tracker.utils.batch_optimizer import BatchOptimizer
+
+from hydra_suite.utils.batch_optimizer import BatchOptimizer
 
 logger = logging.getLogger(__name__)
 

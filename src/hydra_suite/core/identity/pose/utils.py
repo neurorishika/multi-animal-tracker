@@ -12,8 +12,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
-from multi_tracker.core.identity.pose.types import PoseResult
-from multi_tracker.utils.gpu_utils import (
+
+from hydra_suite.core.identity.pose.types import PoseResult
+from hydra_suite.utils.gpu_utils import (
     CUDA_AVAILABLE,
     MPS_AVAILABLE,
     ONNXRUNTIME_AVAILABLE,

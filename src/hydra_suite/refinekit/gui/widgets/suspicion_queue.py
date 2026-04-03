@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
@@ -22,6 +21,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.refinekit.core.event_types import EventType, SuspicionEvent
 
 # ---------------------------------------------------------------------------
 # Event-type display helpers

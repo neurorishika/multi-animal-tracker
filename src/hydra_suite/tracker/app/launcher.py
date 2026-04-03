@@ -52,9 +52,9 @@ def parse_arguments() -> object:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  multi-animal-tracker                    # Launch GUI
-  multi-animal-tracker --log-level DEBUG # Launch with debug logging
-  multi-animal-tracker --no-file-log     # Disable file logging
+  hydra-suite                    # Launch GUI
+  hydra-suite --log-level DEBUG # Launch with debug logging
+  hydra-suite --no-file-log     # Disable file logging
         """,
     )
 
@@ -148,7 +148,7 @@ def main() -> object:
             sys.exit(1)
 
         # Import GUI components (after dependency check)
-        from multi_tracker.utils.gpu_utils import log_device_info
+        from hydra_suite.utils.gpu_utils import log_device_info
 
         from ..gui.main_window import MainWindow
 
@@ -161,11 +161,11 @@ def main() -> object:
         app.setApplicationDisplayName("Multi-Animal-Tracker")
         app.setApplicationVersion("1.0.0")
         app.setOrganizationName("NeuroRishika")
-        app.setDesktopFileName("multi-animal-tracker")
+        app.setDesktopFileName("hydra-suite")
 
         # Set application icon if available
         try:
-            from multi_tracker.paths import get_brand_qicon
+            from hydra_suite.paths import get_brand_qicon
 
             icon = get_brand_qicon("multianimaltracker.svg")
             if icon and not icon.isNull():

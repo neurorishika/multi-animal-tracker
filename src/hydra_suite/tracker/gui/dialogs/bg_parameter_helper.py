@@ -14,11 +14,6 @@ import logging
 from typing import Any, Dict, List
 
 import numpy as np
-from multi_tracker.core.detectors.bg_optimizer import (
-    BgDetectionPreviewWorker,
-    BgOptimizationResult,
-    BgSubtractionOptimizer,
-)
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -44,6 +39,12 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QVBoxLayout,
     QWidget,
+)
+
+from hydra_suite.core.detectors.bg_optimizer import (
+    BgDetectionPreviewWorker,
+    BgOptimizationResult,
+    BgSubtractionOptimizer,
 )
 
 logger = logging.getLogger(__name__)

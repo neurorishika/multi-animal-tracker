@@ -1,8 +1,8 @@
 """One-time migration helper: copy models/training data from repo to user dirs.
 
 Usage:
-    python -m multi_tracker.paths_migrate /path/to/multi-animal-tracker
-    python -m multi_tracker.paths_migrate /path/to/multi-animal-tracker --dry-run
+    python -m hydra_suite.paths_migrate /path/to/hydra-suite
+    python -m hydra_suite.paths_migrate /path/to/hydra-suite --dry-run
 """
 
 from __future__ import annotations
@@ -89,7 +89,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Migrate data from repo to user directories"
     )
-    parser.add_argument("repo_root", help="Path to multi-animal-tracker repo root")
+    parser.add_argument("repo_root", help="Path to hydra-suite repo root")
     parser.add_argument(
         "--dry-run",
         action="store_true",

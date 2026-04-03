@@ -12,7 +12,8 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
-from multi_tracker.core.identity.geometry import (
+
+from hydra_suite.core.identity.geometry import (
     ellipse_to_obb_corners,
     resolve_directed_angle,
 )
@@ -298,7 +299,7 @@ class IndividualDatasetGenerator:
             M_inverse_i = None
 
             if use_canonical_crop:
-                from multi_tracker.core.canonicalization.crop import (
+                from hydra_suite.core.canonicalization.crop import (
                     compute_native_crop_dimensions,
                     extract_canonical_crop,
                 )
@@ -480,7 +481,7 @@ class IndividualDatasetGenerator:
         # Prefer canonical crop when affine is provided
         M_inv = None
         if canonical_affine is not None and self._canonical_enabled:
-            from multi_tracker.core.canonicalization.crop import (
+            from hydra_suite.core.canonicalization.crop import (
                 compute_native_crop_dimensions,
                 extract_canonical_crop,
             )
@@ -636,7 +637,7 @@ class IndividualDatasetGenerator:
 
         # Option 1: suppress other animals' OBB regions before pose inference
         if other_corners_list:
-            from multi_tracker.utils.geometry import apply_foreign_obb_mask
+            from hydra_suite.utils.geometry import apply_foreign_obb_mask
 
             masked_crop = apply_foreign_obb_mask(
                 masked_crop,

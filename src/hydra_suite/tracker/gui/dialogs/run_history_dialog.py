@@ -51,7 +51,7 @@ class RunHistoryDialog(QDialog):
         self.setWindowTitle("Training Run History")
         self.resize(900, 520)
 
-        from multi_tracker.training.registry import get_registry_path
+        from hydra_suite.training.registry import get_registry_path
 
         registry_path = str(get_registry_path())
         self._runs = load_run_history(registry_path)

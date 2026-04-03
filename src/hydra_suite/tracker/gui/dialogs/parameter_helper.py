@@ -10,13 +10,6 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 import numpy as np
-from multi_tracker.core.tracking.optimizer import (
-    _PARAM_RANGES,
-    OptimizationResult,
-    TrackingOptimizer,
-)
-from multi_tracker.core.tracking.optimizer_workers import TrackingPreviewWorker
-from multi_tracker.utils.video_artifacts import build_autotune_state_path
 from PySide6.QtCore import Qt, Slot
 from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -43,6 +36,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.core.tracking.optimizer import (
+    _PARAM_RANGES,
+    OptimizationResult,
+    TrackingOptimizer,
+)
+from hydra_suite.core.tracking.optimizer_workers import TrackingPreviewWorker
+from hydra_suite.utils.video_artifacts import build_autotune_state_path
 
 logger = logging.getLogger(__name__)
 

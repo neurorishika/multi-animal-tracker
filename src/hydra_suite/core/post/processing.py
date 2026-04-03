@@ -1,4 +1,4 @@
-# src/multi_tracker/core/post/processing.py
+# src/hydra_suite/core/post/processing.py
 """
 Trajectory post-processing utilities for cleaning and refining tracking data.
 
@@ -18,7 +18,7 @@ from scipy.interpolate import CubicSpline, UnivariateSpline, interp1d
 # Import Numba from gpu_utils (handles availability detection).
 # Fallback keeps post-processing importable in lightweight test environments.
 try:
-    from multi_tracker.utils.gpu_utils import NUMBA_AVAILABLE, njit, prange
+    from hydra_suite.utils.gpu_utils import NUMBA_AVAILABLE, njit, prange
 except Exception:
     NUMBA_AVAILABLE = False
 
@@ -2233,7 +2233,7 @@ def _relink_pose_labels(df: pd.DataFrame) -> list[str]:
 def _normalize_pose_keypoints_window(
     window_df: pd.DataFrame, pose_labels: list[str], min_valid_conf: float
 ):
-    from multi_tracker.core.identity.pose.quality import (
+    from hydra_suite.core.identity.pose.quality import (
         normalize_pose_keypoints_for_relink,
     )
 

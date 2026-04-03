@@ -23,62 +23,6 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pandas as pd
-from multi_tracker.core.identity.dataset.generator import IndividualDatasetGenerator
-from multi_tracker.core.identity.dataset.oriented_video import (
-    OrientedTrackVideoExporter,
-    resolve_individual_dataset_dir,
-)
-from multi_tracker.core.identity.pose.quality import (
-    apply_quality_to_dataframe,
-    apply_temporal_pose_postprocessing,
-    calibrate_body_length_prior,
-    calibrate_edge_length_priors,
-)
-from multi_tracker.core.identity.properties.export import (
-    POSE_SUMMARY_COLUMNS,
-    augment_trajectories_with_pose_cache,
-    build_pose_keypoint_labels,
-    flatten_pose_keypoints_row,
-    merge_interpolated_pose_df,
-    pose_wide_columns_for_labels,
-)
-from multi_tracker.core.post.processing import (
-    interpolate_trajectories,
-    process_trajectories,
-    relink_trajectories_with_pose,
-    resolve_trajectories,
-)
-from multi_tracker.core.tracking.optimizer_workers import DetectionCacheBuilderWorker
-from multi_tracker.core.tracking.worker import TrackingWorker
-from multi_tracker.data.csv_writer import CSVWriterThread
-from multi_tracker.data.detection_cache import DetectionCache
-from multi_tracker.runtime.compute_runtime import (
-    CANONICAL_RUNTIMES,
-    allowed_runtimes_for_pipelines,
-    derive_detection_runtime_settings,
-    derive_pose_runtime_settings,
-    infer_compute_runtime_from_legacy,
-    runtime_label,
-)
-from multi_tracker.utils.geometry import fit_circle_to_points, wrap_angle_degs
-from multi_tracker.utils.gpu_utils import (
-    MPS_AVAILABLE,
-    TENSORRT_AVAILABLE,
-    TORCH_CUDA_AVAILABLE,
-)
-from multi_tracker.utils.pose_visualization import (
-    is_renderable_pose_keypoint,
-    normalize_pose_render_min_conf,
-)
-from multi_tracker.utils.video_artifacts import (
-    build_detection_cache_path,
-    build_optimizer_detection_cache_path,
-    build_tracking_session_log_path,
-    candidate_artifact_base_dirs,
-    choose_writable_artifact_base_dir,
-    find_existing_detection_cache_path,
-    iter_detection_cache_candidates,
-)
 from PySide6.QtCore import QPoint, QRectF, QSize, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtSvg import QSvgRenderer
@@ -120,11 +64,68 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from hydra_suite.core.identity.dataset.generator import IndividualDatasetGenerator
+from hydra_suite.core.identity.dataset.oriented_video import (
+    OrientedTrackVideoExporter,
+    resolve_individual_dataset_dir,
+)
+from hydra_suite.core.identity.pose.quality import (
+    apply_quality_to_dataframe,
+    apply_temporal_pose_postprocessing,
+    calibrate_body_length_prior,
+    calibrate_edge_length_priors,
+)
+from hydra_suite.core.identity.properties.export import (
+    POSE_SUMMARY_COLUMNS,
+    augment_trajectories_with_pose_cache,
+    build_pose_keypoint_labels,
+    flatten_pose_keypoints_row,
+    merge_interpolated_pose_df,
+    pose_wide_columns_for_labels,
+)
+from hydra_suite.core.post.processing import (
+    interpolate_trajectories,
+    process_trajectories,
+    relink_trajectories_with_pose,
+    resolve_trajectories,
+)
+from hydra_suite.core.tracking.optimizer_workers import DetectionCacheBuilderWorker
+from hydra_suite.core.tracking.worker import TrackingWorker
+from hydra_suite.data.csv_writer import CSVWriterThread
+from hydra_suite.data.detection_cache import DetectionCache
+from hydra_suite.runtime.compute_runtime import (
+    CANONICAL_RUNTIMES,
+    allowed_runtimes_for_pipelines,
+    derive_detection_runtime_settings,
+    derive_pose_runtime_settings,
+    infer_compute_runtime_from_legacy,
+    runtime_label,
+)
+from hydra_suite.utils.geometry import fit_circle_to_points, wrap_angle_degs
+from hydra_suite.utils.gpu_utils import (
+    MPS_AVAILABLE,
+    TENSORRT_AVAILABLE,
+    TORCH_CUDA_AVAILABLE,
+)
+from hydra_suite.utils.pose_visualization import (
+    is_renderable_pose_keypoint,
+    normalize_pose_render_min_conf,
+)
+from hydra_suite.utils.video_artifacts import (
+    build_detection_cache_path,
+    build_optimizer_detection_cache_path,
+    build_tracking_session_log_path,
+    candidate_artifact_base_dirs,
+    choose_writable_artifact_base_dir,
+    find_existing_detection_cache_path,
+    iter_detection_cache_candidates,
+)
+
 from .dialogs.bg_parameter_helper import BgParameterHelperDialog
 from .dialogs.parameter_helper import ParameterHelperDialog
 
 try:
-    from multi_tracker.posekit.ui.dialogs.utils import get_available_devices
+    from hydra_suite.posekit.ui.dialogs.utils import get_available_devices
 except ImportError:
 
     def get_available_devices():
@@ -252,7 +253,7 @@ def _store_preview_background_state(context: dict, bg_model) -> None:
 
 def _build_preview_background_model(context: dict):
     """Build or restore a preview-only primed background model."""
-    from multi_tracker.core.background.model import BackgroundModel
+    from hydra_suite.core.background.model import BackgroundModel
 
     bg_params = _build_preview_background_params(context)
     bg_model = BackgroundModel(bg_params)
@@ -350,7 +351,7 @@ class MergeWorker(QThread):
 
     def run(self: object) -> object:
         """run method documentation."""
-        from multi_tracker.core.tracking.profiler import TrackingProfiler
+        from hydra_suite.core.tracking.profiler import TrackingProfiler
 
         profiler = TrackingProfiler(enabled=self.enable_profiling)
         # pose_backend = None
@@ -446,11 +447,11 @@ class MergeWorker(QThread):
                 and self.tag_cache_path is not None
             ):
                 try:
-                    from multi_tracker.core.post.tag_identity import (
+                    from hydra_suite.core.post.tag_identity import (
                         detect_tag_swaps,
                         resolve_tag_identities,
                     )
-                    from multi_tracker.data.tag_observation_cache import (
+                    from hydra_suite.data.tag_observation_cache import (
                         TagObservationCache,
                     )
 
@@ -601,16 +602,16 @@ class InterpolatedCropsWorker(QThread):
 
     def run(self: object) -> object:
         """run method documentation."""
-        from multi_tracker.core.canonicalization.crop import (
+        from hydra_suite.core.canonicalization.crop import (
             compute_native_scale_affine as _compute_native_scale,
         )
-        from multi_tracker.core.canonicalization.crop import (
+        from hydra_suite.core.canonicalization.crop import (
             extract_canonical_crop as _extract_canonical,
         )
-        from multi_tracker.core.canonicalization.crop import (
+        from hydra_suite.core.canonicalization.crop import (
             invert_keypoints as _invert_kpts,
         )
-        from multi_tracker.core.tracking.profiler import TrackingProfiler
+        from hydra_suite.core.tracking.profiler import TrackingProfiler
 
         profiler = TrackingProfiler(enabled=self.enable_profiling)
         profiler.phase_start("interp_setup")
@@ -683,7 +684,7 @@ class InterpolatedCropsWorker(QThread):
             pose_kpt_source_names = []
             pose_kpt_labels = []
             if pose_enabled:
-                from multi_tracker.core.identity.pose.api import (
+                from hydra_suite.core.identity.pose.api import (
                     build_runtime_config,
                     create_pose_backend_from_config,
                 )
@@ -715,7 +716,7 @@ class InterpolatedCropsWorker(QThread):
             )
             if apriltag_enabled:
                 try:
-                    from multi_tracker.core.identity.classification.apriltag import (
+                    from hydra_suite.core.identity.classification.apriltag import (
                         AprilTagConfig,
                         AprilTagDetector,
                     )
@@ -733,7 +734,7 @@ class InterpolatedCropsWorker(QThread):
             cnn_classifiers_cfg = self.params.get("CNN_CLASSIFIERS", [])
             if cnn_classifiers_cfg:
                 try:
-                    from multi_tracker.core.identity.classification.cnn import (
+                    from hydra_suite.core.identity.classification.cnn import (
                         CNNIdentityBackend,
                         CNNIdentityConfig,
                     )
@@ -773,7 +774,7 @@ class InterpolatedCropsWorker(QThread):
             headtail_model_path = str(self.params.get("YOLO_HEADTAIL_MODEL_PATH", ""))
             if headtail_model_path and os.path.exists(headtail_model_path):
                 try:
-                    from multi_tracker.core.identity.classification.headtail import (
+                    from hydra_suite.core.identity.classification.headtail import (
                         HeadTailAnalyzer,
                     )
 
@@ -987,7 +988,7 @@ class InterpolatedCropsWorker(QThread):
                 # far faster when many frames are needed.  Sparse seeking is
                 # better only when very few frames are scattered across
                 # a huge range.
-                from multi_tracker.utils.frame_prefetcher import (
+                from hydra_suite.utils.frame_prefetcher import (
                     SequentialScanPrefetcher,
                     SparseFramePrefetcher,
                 )
@@ -1034,7 +1035,7 @@ class InterpolatedCropsWorker(QThread):
                         continue
                     # Pre-compute all OBB corners for this frame so that
                     # foreign-OBB masking can exclude overlapping animals.
-                    from multi_tracker.core.identity.geometry import (
+                    from hydra_suite.core.identity.geometry import (
                         ellipse_to_obb_corners as _e2obb,
                     )
 
@@ -1176,7 +1177,7 @@ class InterpolatedCropsWorker(QThread):
 
                     # ----- AprilTag: extract AABB crops per frame and detect -----
                     if apriltag_detector is not None and frame_tasks[f]:
-                        from multi_tracker.core.tracking.pose_pipeline import (
+                        from hydra_suite.core.tracking.pose_pipeline import (
                             extract_one_crop as _extract_aabb_crop,
                         )
 
@@ -1755,7 +1756,7 @@ class DatasetGenerationWorker(QThread):
         """run method documentation."""
         detection_cache = None
         try:
-            from multi_tracker.data.dataset_generation import (
+            from hydra_suite.data.dataset_generation import (
                 FrameQualityScorer,
                 export_dataset,
             )
@@ -2010,8 +2011,8 @@ def _run_preview_detection_job(
     frame_rgb, context: dict, use_detection_filters: bool
 ) -> dict:
     """Run preview detection using a frozen parameter snapshot."""
-    from multi_tracker.core.detectors import ObjectDetector, YOLOOBBDetector
-    from multi_tracker.utils.image_processing import apply_image_adjustments
+    from hydra_suite.core.detectors import ObjectDetector, YOLOOBBDetector
+    from hydra_suite.utils.image_processing import apply_image_adjustments
 
     frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
     detection_method = int(context.get("detection_method", 0))
@@ -2446,7 +2447,7 @@ def _run_preview_detection_job(
             label_anchors.append(_preview_label_anchor(corners, test_frame.shape))
 
             try:
-                from multi_tracker.core.canonicalization.crop import (
+                from hydra_suite.core.canonicalization.crop import (
                     compute_native_scale_affine,
                     extract_canonical_crop,
                 )
@@ -2483,10 +2484,10 @@ def _run_preview_detection_job(
 
         if filtered_corners and bool(context.get("enable_pose_extractor", False)):
             try:
-                from multi_tracker.core.canonicalization.crop import (
+                from hydra_suite.core.canonicalization.crop import (
                     invert_keypoints as _invert_kpts,
                 )
-                from multi_tracker.core.identity.pose.api import (
+                from hydra_suite.core.identity.pose.api import (
                     build_runtime_config,
                     create_pose_backend_from_config,
                 )
@@ -2559,7 +2560,7 @@ def _run_preview_detection_job(
         cnn_cfgs = context.get("cnn_classifiers", []) or []
         if filtered_corners and cnn_cfgs:
             try:
-                from multi_tracker.core.identity.classification.cnn import (
+                from hydra_suite.core.identity.classification.cnn import (
                     CNNIdentityBackend,
                     CNNIdentityConfig,
                 )
@@ -2603,11 +2604,11 @@ def _run_preview_detection_job(
 
         if filtered_corners and bool(context.get("use_apriltags", False)):
             try:
-                from multi_tracker.core.identity.classification.apriltag import (
+                from hydra_suite.core.identity.classification.apriltag import (
                     AprilTagConfig,
                     AprilTagDetector,
                 )
-                from multi_tracker.core.tracking.pose_pipeline import (
+                from hydra_suite.core.tracking.pose_pipeline import (
                     extract_one_crop as _extract_aabb_crop,
                 )
 
@@ -2814,7 +2815,7 @@ def get_models_directory() -> object:
 
 def get_models_root_directory() -> str:
     """Return user-local models/ root and create it when missing."""
-    from multi_tracker.paths import get_models_dir
+    from hydra_suite.paths import get_models_dir
 
     return str(get_models_dir())
 
@@ -3729,7 +3730,7 @@ class MainWindow(QMainWindow):
 
     def _get_ui_settings_path(self) -> Path:
         """Return the MAT UI settings path used for persistent layout preferences."""
-        config_dir = Path.home() / ".multi-animal-tracker"
+        config_dir = Path.home() / ".hydra-suite"
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir / "ui_settings.json"
 
@@ -4189,8 +4190,9 @@ class MainWindow(QMainWindow):
         logo_label.setAlignment(Qt.AlignCenter)
 
         try:
-            from multi_tracker.paths import get_brand_icon_bytes
             from PySide6.QtCore import QByteArray
+
+            from hydra_suite.paths import get_brand_icon_bytes
 
             logo_data = get_brand_icon_bytes("multianimaltracker.svg")
             if logo_data is not None:
@@ -8146,7 +8148,7 @@ class MainWindow(QMainWindow):
             self.advanced_config.get("pose_skeleton_file", "")
         ).strip()
         if not default_skeleton:
-            from multi_tracker.paths import get_skeleton_dir
+            from hydra_suite.paths import get_skeleton_dir
 
             candidate = get_skeleton_dir() / "ooceraea_biroi.json"
             if candidate.exists():
@@ -8309,7 +8311,7 @@ class MainWindow(QMainWindow):
         """
         import re
 
-        from multi_tracker.data.detection_cache import DetectionCache
+        from hydra_suite.data.detection_cache import DetectionCache
 
         detection_method = params.get("DETECTION_METHOD", "background_subtraction")
         method_tag = "yolo" if detection_method == "yolo_obb" else "bgsub"
@@ -8910,10 +8912,10 @@ class MainWindow(QMainWindow):
                 [
                     sys.executable,
                     "-m",
-                    "multi_tracker.posekit.ui.main",
+                    "hydra_suite.posekit.ui.main",
                     str(dataset_root),
                 ],
-                cwd=str(package_root.parent),  # root where multi_tracker package lives
+                cwd=str(package_root.parent),  # root where hydra_suite package lives
             )
 
             logger.info(f"Opened PoseKit Labeler for dataset: {dataset_root}")
@@ -9356,7 +9358,7 @@ class MainWindow(QMainWindow):
             self.combo_cnn_identity_model.setCurrentIndex(max(idx, 0))
             return
 
-        from multi_tracker.mat.gui.dialogs import CNNIdentityImportDialog
+        from hydra_suite.tracker.gui.dialogs import CNNIdentityImportDialog
 
         dlg = CNNIdentityImportDialog(meta, parent=self)
         if dlg.exec() != QDialog.Accepted:
@@ -10514,7 +10516,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            from multi_tracker.utils.image_processing import (
+            from hydra_suite.utils.image_processing import (
                 compute_median_color_from_frame,
             )
 
@@ -11561,7 +11563,7 @@ class MainWindow(QMainWindow):
         is_background_subtraction = detection_method == "Background Subtraction"
 
         # Apply adjustments
-        from multi_tracker.utils.image_processing import apply_image_adjustments
+        from hydra_suite.utils.image_processing import apply_image_adjustments
 
         if is_background_subtraction:
             # Background subtraction uses grayscale with adjustments
@@ -13648,8 +13650,9 @@ class MainWindow(QMainWindow):
     def _show_video_logo_placeholder(self):
         """Show MAT logo in the video panel when no video is loaded."""
         try:
-            from multi_tracker.paths import get_brand_icon_bytes
             from PySide6.QtCore import QByteArray
+
+            from hydra_suite.paths import get_brand_icon_bytes
 
             logo_data = get_brand_icon_bytes("multianimaltracker.svg")
             vw = max(640, self.scroll.viewport().width())
@@ -13851,7 +13854,7 @@ class MainWindow(QMainWindow):
 
     def show_gpu_info(self: object) -> object:
         """Display GPU and acceleration information dialog."""
-        from multi_tracker.utils.gpu_utils import get_device_info
+        from hydra_suite.utils.gpu_utils import get_device_info
 
         info = get_device_info()
 
@@ -15208,7 +15211,7 @@ class MainWindow(QMainWindow):
 
                 if csv_to_process and os.path.exists(csv_to_process):
                     # Use CSV-based processing to preserve confidence columns
-                    from multi_tracker.core.post.processing import (
+                    from hydra_suite.core.post.processing import (
                         interpolate_trajectories,
                         process_trajectories_from_csv,
                     )
@@ -15274,7 +15277,7 @@ class MainWindow(QMainWindow):
                     self.start_backward_tracking()
                 else:
                     # Forward-only mode: Apply interpolation here (no merge step)
-                    from multi_tracker.core.post.processing import (
+                    from hydra_suite.core.post.processing import (
                         interpolate_trajectories,
                     )
 
@@ -15499,7 +15502,7 @@ class MainWindow(QMainWindow):
             ).strip()
             _interp_tag_df = getattr(self, "current_interpolated_tag_df", None)
             try:
-                from multi_tracker.core.identity.properties.export import (
+                from hydra_suite.core.identity.properties.export import (
                     merge_interpolated_apriltag_df,
                 )
 
@@ -15522,7 +15525,7 @@ class MainWindow(QMainWindow):
             )
             _interp_cnn_dfs = getattr(self, "current_interpolated_cnn_dfs", {}) or {}
             try:
-                from multi_tracker.core.identity.properties.export import (
+                from hydra_suite.core.identity.properties.export import (
                     merge_interpolated_cnn_df,
                 )
 
@@ -15551,7 +15554,7 @@ class MainWindow(QMainWindow):
             ).strip()
             _interp_ht_df = getattr(self, "current_interpolated_headtail_df", None)
             try:
-                from multi_tracker.core.identity.properties.export import (
+                from hydra_suite.core.identity.properties.export import (
                     merge_interpolated_headtail_df,
                 )
 
@@ -15592,13 +15595,13 @@ class MainWindow(QMainWindow):
         if pose_labels:
             params = self.get_parameters_dict()
             # Resolve anterior/posterior indices for body-length calibration
-            from multi_tracker.core.identity.pose.features import (
+            from hydra_suite.core.identity.pose.features import (
                 resolve_pose_group_indices,
             )
 
             kpt_names = []
             try:
-                from multi_tracker.core.identity.properties.cache import (
+                from hydra_suite.core.identity.properties.cache import (
                     IndividualPropertiesCache,
                 )
 
@@ -19078,7 +19081,7 @@ class MainWindow(QMainWindow):
                 "No video is currently loaded. Please load a video first.",
             )
             return
-        cmd = [sys.executable, "-m", "multi_tracker.refinekit.app", str(video_path)]
+        cmd = [sys.executable, "-m", "hydra_suite.refinekit.app", str(video_path)]
         logger.info("Launching RefineKit: %s", " ".join(cmd))
         subprocess.Popen(cmd)
 
@@ -19223,7 +19226,7 @@ class MainWindow(QMainWindow):
 
     def _get_presets_dir(self):
         """Get the presets directory path."""
-        from multi_tracker.paths import get_presets_dir
+        from hydra_suite.paths import get_presets_dir
 
         return str(get_presets_dir())
 
@@ -19458,7 +19461,7 @@ class MainWindow(QMainWindow):
     def _load_advanced_config(self):
         """Load advanced configuration for power users."""
         # Store config in the package directory (where this file is located)
-        from multi_tracker.paths import get_advanced_config_path
+        from hydra_suite.paths import get_advanced_config_path
 
         config_path = str(get_advanced_config_path())
 
@@ -19505,7 +19508,7 @@ class MainWindow(QMainWindow):
 
     def _save_advanced_config(self):
         """Save advanced configuration."""
-        from multi_tracker.paths import get_advanced_config_path
+        from hydra_suite.paths import get_advanced_config_path
 
         config_path = str(get_advanced_config_path())
         try:

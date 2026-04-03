@@ -12,7 +12,7 @@ from .contracts import TrainingRole
 
 
 def get_models_root() -> Path:
-    from multi_tracker.paths import get_models_dir
+    from hydra_suite.paths import get_models_dir
 
     return get_models_dir()
 

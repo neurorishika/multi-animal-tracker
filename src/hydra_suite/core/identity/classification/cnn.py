@@ -203,12 +203,12 @@ class CNNIdentityBackend:
             self._infer_fn = self._infer_onnx
         else:
             if self._arch == "tinyclassifier":
-                from multi_tracker.training.tiny_model import load_tiny_classifier
+                from hydra_suite.training.tiny_model import load_tiny_classifier
 
                 self._model, _ = load_tiny_classifier(self._model_path, device=device)
             else:
                 # Requires Spec A (ClassKit Extended Training) to be implemented first
-                from multi_tracker.training.torchvision_model import (
+                from hydra_suite.training.torchvision_model import (
                     load_torchvision_classifier,
                 )
 
@@ -248,7 +248,8 @@ class CNNIdentityBackend:
             return onnx_path
         if self._arch == "tinyclassifier":
             import torch
-            from multi_tracker.training.tiny_model import load_tiny_classifier
+
+            from hydra_suite.training.tiny_model import load_tiny_classifier
 
             model, _ = load_tiny_classifier(self._model_path, device="cpu")
             h, w = self._input_size
@@ -263,7 +264,7 @@ class CNNIdentityBackend:
                 dynamic_axes={"input": {0: "batch"}, "logits": {0: "batch"}},
             )
         else:
-            from multi_tracker.training.torchvision_model import (
+            from hydra_suite.training.torchvision_model import (
                 export_torchvision_to_onnx,
                 load_torchvision_classifier,
             )

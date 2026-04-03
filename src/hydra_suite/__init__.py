@@ -19,7 +19,7 @@ Key Features:
 try:
     from importlib.metadata import version as _version
 
-    __version__ = _version("multi-animal-tracker")
+    __version__ = _version("hydra-suite")
 except Exception:
     __version__ = "1.0.0"  # Fallback for editable installs without metadata
 

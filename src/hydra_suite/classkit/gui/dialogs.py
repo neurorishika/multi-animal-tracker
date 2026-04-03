@@ -283,7 +283,7 @@ class AddSourceDialog(QDialog):
                         [
                             sys.executable,
                             "-m",
-                            "multi_tracker.filterkit.gui",
+                            "hydra_suite.filterkit.gui",
                             str(d),
                         ],
                         start_new_session=True,
@@ -526,7 +526,7 @@ class SourceManagerDialog(QDialog):
                         [
                             sys.executable,
                             "-m",
-                            "multi_tracker.filterkit.gui",
+                            "hydra_suite.filterkit.gui",
                             str(d),
                         ],
                         start_new_session=True,

@@ -9,7 +9,7 @@ from __future__ import annotations
 import shutil
 from typing import Iterable, List
 
-from multi_tracker.utils.gpu_utils import (
+from hydra_suite.utils.gpu_utils import (
     CUDA_AVAILABLE,
     MPS_AVAILABLE,
     ONNXRUNTIME_AVAILABLE,

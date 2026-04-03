@@ -459,8 +459,9 @@ class MainWindow(QMainWindow):
 
         logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignCenter)
-        from multi_tracker.paths import get_brand_icon_bytes
         from PySide6.QtCore import QByteArray
+
+        from hydra_suite.paths import get_brand_icon_bytes
 
         logo_data = get_brand_icon_bytes("classkit.svg")
         if logo_data is not None:

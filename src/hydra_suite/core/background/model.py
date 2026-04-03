@@ -9,7 +9,8 @@ from typing import Any, Dict, Optional
 
 import cv2
 import numpy as np
-from multi_tracker.utils.gpu_utils import (
+
+from hydra_suite.utils.gpu_utils import (
     CUDA_AVAILABLE,
     MPS_AVAILABLE,
     NUMBA_AVAILABLE,
@@ -19,7 +20,7 @@ from multi_tracker.utils.gpu_utils import (
     prange,
     torch,
 )
-from multi_tracker.utils.image_processing import apply_image_adjustments
+from hydra_suite.utils.image_processing import apply_image_adjustments
 
 # Provide fallback decorators if Numba not available
 if not NUMBA_AVAILABLE:

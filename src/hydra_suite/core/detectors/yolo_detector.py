@@ -70,7 +70,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
 
     def _detect_device(self):
         """Detect and configure the optimal device for inference."""
-        from multi_tracker.utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
+        from hydra_suite.utils.gpu_utils import MPS_AVAILABLE, TORCH_CUDA_AVAILABLE
 
         # Check user preference
         device_preference = self.params.get("YOLO_DEVICE", "auto")
@@ -122,7 +122,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         local_model_file = model_path.exists() and model_path.is_file()
 
         # Check if TensorRT is requested and available
-        from multi_tracker.utils.gpu_utils import (
+        from hydra_suite.utils.gpu_utils import (
             ONNXRUNTIME_AVAILABLE,
             TENSORRT_AVAILABLE,
         )
@@ -231,7 +231,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         and explicit device placement) and then injected via
         ``HeadTailAnalyzer.from_components``.
         """
-        from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
+        from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
         ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
         margin = float(
@@ -459,7 +459,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         """Batch head-tail classification across multiple frames in one GPU call.
 
         Delegates crop canonicalization and inference to
-        :class:`~multi_tracker.core.identity.headtail_analyzer.HeadTailAnalyzer`,
+        :class:`~hydra_suite.core.identity.headtail_analyzer.HeadTailAnalyzer`,
         then re-derives native-scale affines from OBB corners for downstream
         consumers.
 
@@ -506,9 +506,7 @@ class YOLOOBBDetector(OBBGeometryMixin, RuntimeArtifactMixin):
         # Vectorised: pre-compute all edge norms and canvas dims in bulk,
         # then loop only for cv2.getAffineTransform (inherently per-element).
         try:
-            from multi_tracker.core.canonicalization.crop import (
-                compute_alignment_affine,
-            )
+            from hydra_suite.core.canonicalization.crop import compute_alignment_affine
 
             ref_ar = float(self._advanced_config_value("reference_aspect_ratio", 2.0))
             padding = float(self.params.get("INDIVIDUAL_CROP_PADDING", 0.1))

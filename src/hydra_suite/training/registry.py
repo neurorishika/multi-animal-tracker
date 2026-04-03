@@ -13,7 +13,7 @@ from .contracts import TrainingRunSpec
 
 
 def get_runs_root() -> Path:
-    from multi_tracker.paths import get_training_runs_dir
+    from hydra_suite.paths import get_training_runs_dir
 
     return get_training_runs_dir()
 

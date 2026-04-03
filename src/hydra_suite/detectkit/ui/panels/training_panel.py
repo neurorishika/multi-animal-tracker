@@ -6,19 +6,6 @@ import json
 import logging
 from pathlib import Path
 
-from multi_tracker.mat.gui.widgets.loss_plot_widget import LossPlotWidget
-from multi_tracker.training import (
-    AugmentationProfile,
-    PublishPolicy,
-    SourceDataset,
-    SplitConfig,
-    TrainingHyperParams,
-    TrainingOrchestrator,
-    TrainingRole,
-    TrainingRunSpec,
-)
-from multi_tracker.training.validation import format_validation_report
-from multi_tracker.utils.gpu_utils import get_device_info
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -40,6 +27,20 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.tracker.gui.widgets.loss_plot_widget import LossPlotWidget
+from hydra_suite.training import (
+    AugmentationProfile,
+    PublishPolicy,
+    SourceDataset,
+    SplitConfig,
+    TrainingHyperParams,
+    TrainingOrchestrator,
+    TrainingRole,
+    TrainingRunSpec,
+)
+from hydra_suite.training.validation import format_validation_report
+from hydra_suite.utils.gpu_utils import get_device_info
 
 logger = logging.getLogger(__name__)
 
@@ -139,7 +140,7 @@ class TrainingPanel(QWidget):
         self._last_training_results: list[dict] = []
         self.role_dataset_dirs: dict[str, str] = {}
 
-        from multi_tracker.paths import get_training_workspace_dir
+        from hydra_suite.paths import get_training_workspace_dir
 
         self.workspace_default = get_training_workspace_dir("YOLO")
         self.orchestrator = TrainingOrchestrator(self.workspace_default)
@@ -1135,7 +1136,7 @@ class TrainingPanel(QWidget):
                 device=self.combo_device.currentText().strip() or "auto",
                 seed=self.spin_seed.value(),
             )
-            from multi_tracker.training.runner import build_ultralytics_command
+            from hydra_suite.training.runner import build_ultralytics_command
 
             ws_text = self.line_workspace.text().strip()
             ws = Path(ws_text) if ws_text else self.workspace_default
@@ -1173,7 +1174,7 @@ class TrainingPanel(QWidget):
 
     def _quick_test(self):
         """Open ModelTestDialog for the last successful training result."""
-        from multi_tracker.mat.gui.dialogs.model_test_dialog import ModelTestDialog
+        from hydra_suite.tracker.gui.dialogs.model_test_dialog import ModelTestDialog
 
         results = getattr(self, "_last_training_results", [])
         succeeded = [r for r in results if r.get("success")]
@@ -1226,7 +1227,7 @@ class TrainingPanel(QWidget):
 
     def _show_history(self):
         """Open the training run history viewer dialog."""
-        from multi_tracker.mat.gui.dialogs.run_history_dialog import RunHistoryDialog
+        from hydra_suite.tracker.gui.dialogs.run_history_dialog import RunHistoryDialog
 
         dlg = RunHistoryDialog(parent=self)
         dlg.exec()
@@ -1444,7 +1445,7 @@ class TrainingPanel(QWidget):
             )
             return
 
-        from multi_tracker.training.dataset_inspector import (
+        from hydra_suite.training.dataset_inspector import (
             DatasetInspection,
             analyze_obb_sizes,
             format_size_analysis,

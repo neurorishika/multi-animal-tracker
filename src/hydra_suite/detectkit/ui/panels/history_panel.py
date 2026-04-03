@@ -85,7 +85,7 @@ class HistoryPanel(QWidget):
 
     def _load_registry(self) -> None:
         try:
-            from multi_tracker.training.registry import get_registry_path
+            from hydra_suite.training.registry import get_registry_path
         except ImportError:
             logger.warning("Training registry module not available")
             return
@@ -93,7 +93,7 @@ class HistoryPanel(QWidget):
         registry_path = str(get_registry_path())
 
         try:
-            from multi_tracker.mat.gui.dialogs.run_history_dialog import (
+            from hydra_suite.tracker.gui.dialogs.run_history_dialog import (
                 load_run_history,
             )
         except ImportError:

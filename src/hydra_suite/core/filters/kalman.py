@@ -8,7 +8,8 @@ Features:
 """
 
 import numpy as np
-from multi_tracker.utils.gpu_utils import NUMBA_AVAILABLE, njit
+
+from hydra_suite.utils.gpu_utils import NUMBA_AVAILABLE, njit
 
 
 # --- Numba Kernels (Optimized for Large N) ---

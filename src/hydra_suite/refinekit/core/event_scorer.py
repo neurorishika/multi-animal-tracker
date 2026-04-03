@@ -14,8 +14,9 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from multi_tracker.core.tracking.confidence_density import DensityRegion
-from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
+
+from hydra_suite.core.tracking.confidence_density import DensityRegion
+from hydra_suite.refinekit.core.event_types import EventType, SuspicionEvent
 
 # ---------------------------------------------------------------------------
 # Signal weights  (pairwise swap / flicker scoring)

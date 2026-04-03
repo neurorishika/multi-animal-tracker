@@ -110,9 +110,10 @@ class MainWindow(QMainWindow):
 
         # Logo
         try:
-            from multi_tracker.paths import get_brand_icon_bytes
             from PySide6.QtCore import QByteArray
             from PySide6.QtSvgWidgets import QSvgWidget
+
+            from hydra_suite.paths import get_brand_icon_bytes
 
             logo_data = get_brand_icon_bytes("detectkit.svg")
             if logo_data:

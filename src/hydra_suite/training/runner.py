@@ -455,7 +455,7 @@ def _train_tiny_classify(
     # Auto-export ONNX alongside .pth for runtime-flexible inference (ONNX/TensorRT).
     _onnx_path: Path | None = None
     try:
-        from multi_tracker.training.tiny_model import export_tiny_to_onnx
+        from hydra_suite.training.tiny_model import export_tiny_to_onnx
 
         _onnx_candidate = out_ckpt.with_suffix(".onnx")
         export_tiny_to_onnx(model, _ckpt_dict, _onnx_candidate)

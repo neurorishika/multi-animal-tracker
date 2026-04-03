@@ -11,13 +11,6 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-from multi_tracker.core.tracking.confidence_density import load_regions
-from multi_tracker.refinekit.core.correction_writer import CorrectionWriter
-from multi_tracker.refinekit.core.event_scorer import EventScorer
-from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
-from multi_tracker.refinekit.gui.widgets.suspicion_queue import SuspicionQueueWidget
-from multi_tracker.refinekit.gui.widgets.timeline_panel import TimelinePanelWidget
-from multi_tracker.refinekit.gui.widgets.video_player import VideoPlayerWidget
 from PySide6.QtCore import QRectF, Qt, QThread, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
@@ -33,6 +26,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.core.tracking.confidence_density import load_regions
+from hydra_suite.refinekit.core.correction_writer import CorrectionWriter
+from hydra_suite.refinekit.core.event_scorer import EventScorer
+from hydra_suite.refinekit.core.event_types import EventType, SuspicionEvent
+from hydra_suite.refinekit.gui.widgets.suspicion_queue import SuspicionQueueWidget
+from hydra_suite.refinekit.gui.widgets.timeline_panel import TimelinePanelWidget
+from hydra_suite.refinekit.gui.widgets.video_player import VideoPlayerWidget
 
 logger = logging.getLogger(__name__)
 
@@ -432,8 +433,9 @@ class MainWindow(QMainWindow):
 
         logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        from multi_tracker.paths import get_brand_icon_bytes
         from PySide6.QtCore import QByteArray
+
+        from hydra_suite.paths import get_brand_icon_bytes
 
         logo_data = get_brand_icon_bytes("refinekit.svg")
         if logo_data is not None:
@@ -611,7 +613,7 @@ class MainWindow(QMainWindow):
         if self._df is None or self._video_path is None:
             return
 
-        from multi_tracker.refinekit.core.merge_candidates import (
+        from hydra_suite.refinekit.core.merge_candidates import (
             build_candidates,
             build_swap_candidates,
             extract_segments,
@@ -659,12 +661,12 @@ class MainWindow(QMainWindow):
         if self._df is None or self._video_path is None or self._writer is None:
             return
 
-        from multi_tracker.refinekit.core.merge_candidates import (
+        from hydra_suite.refinekit.core.merge_candidates import (
             build_candidates,
             build_swap_candidates,
             extract_segments,
         )
-        from multi_tracker.refinekit.gui.dialogs.merge_wizard import MergeWizardDialog
+        from hydra_suite.refinekit.gui.dialogs.merge_wizard import MergeWizardDialog
 
         if segments is None or candidates is None:
             last_frame = int(self._df["FrameID"].max())
@@ -804,7 +806,7 @@ class MainWindow(QMainWindow):
         if self._video_path is None or self._df is None:
             return
 
-        from multi_tracker.refinekit.gui.dialogs.track_editor_dialog import (
+        from hydra_suite.refinekit.gui.dialogs.track_editor_dialog import (
             TrackEditorDialog,
         )
 
@@ -886,8 +888,9 @@ class MainWindow(QMainWindow):
                 f"Region capped to {_MAX_MANUAL_REGION} frames", 3000
             )
 
-        from multi_tracker.refinekit.gui.dialogs.bbox_selector import BboxSelectorDialog
         from PySide6.QtWidgets import QDialog as _QDialog
+
+        from hydra_suite.refinekit.gui.dialogs.bbox_selector import BboxSelectorDialog
 
         mid_frame = (frame_start + frame_end) // 2
         bbox_dlg = BboxSelectorDialog(self._video_path, mid_frame, parent=self)

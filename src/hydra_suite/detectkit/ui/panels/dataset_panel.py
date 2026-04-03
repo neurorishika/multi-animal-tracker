@@ -216,7 +216,7 @@ class DatasetPanel(QWidget):
     def _validate_source(self, path: str) -> None:
         """Run validation and auto-convert xlabel JSON if needed."""
         try:
-            from multi_tracker.training.dataset_inspector import (
+            from hydra_suite.training.dataset_inspector import (
                 inspect_obb_or_detect_dataset,
             )
 
@@ -229,7 +229,7 @@ class DatasetPanel(QWidget):
         """Attempt to convert xlabel JSON labels to YOLO format via conda env."""
         env = self._selected_xal_env()
         try:
-            from multi_tracker.integrations.xanylabeling.cli import convert_project
+            from hydra_suite.integrations.xanylabeling.cli import convert_project
 
             ok, msg = convert_project(path, path, conda_env=env)
             if ok:

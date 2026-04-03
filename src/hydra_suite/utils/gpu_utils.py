@@ -8,7 +8,7 @@ that can be used throughout the codebase. Supports:
   - Automatic fallback to CPU
 
 Import this module to check GPU availability:
-    from multi_tracker.utils.gpu_utils import CUDA_AVAILABLE, MPS_AVAILABLE, GPU_AVAILABLE
+    from hydra_suite.utils.gpu_utils import CUDA_AVAILABLE, MPS_AVAILABLE, GPU_AVAILABLE
 """
 
 import logging

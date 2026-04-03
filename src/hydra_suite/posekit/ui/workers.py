@@ -6,8 +6,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-from multi_tracker.integrations.sleap.service import PoseInferenceService
 from PySide6.QtCore import QObject, Signal
+
+from hydra_suite.integrations.sleap.service import PoseInferenceService
 
 from .utils import _maybe_empty_cuda_cache
 
@@ -91,7 +92,7 @@ class PosePredictWorker(QObject):
 
             # Preferred path: shared runtime API.
             try:
-                from multi_tracker.core.identity.pose.api import (
+                from hydra_suite.core.identity.pose.api import (
                     build_runtime_config,
                     create_pose_backend_from_config,
                 )
@@ -271,7 +272,7 @@ class BulkPosePredictWorker(QObject):
 
             # Preferred path: shared runtime API with chunked image loading.
             try:
-                from multi_tracker.core.identity.pose.api import (
+                from hydra_suite.core.identity.pose.api import (
                     build_runtime_config,
                     create_pose_backend_from_config,
                 )

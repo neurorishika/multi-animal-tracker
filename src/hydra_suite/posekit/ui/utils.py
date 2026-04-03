@@ -63,7 +63,7 @@ def enhance_for_pose(
 
 def get_default_skeleton_dir() -> Optional[Path]:
     """Return the user-level skeleton config directory if available."""
-    from multi_tracker.paths import get_skeleton_dir
+    from hydra_suite.paths import get_skeleton_dir
 
     d = get_skeleton_dir()
     if d.exists() and d.is_dir():

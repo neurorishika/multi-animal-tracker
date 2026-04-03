@@ -66,7 +66,7 @@ class EvaluationPanel(QWidget):
             return
 
         try:
-            from multi_tracker.training.dataset_inspector import (
+            from hydra_suite.training.dataset_inspector import (
                 DatasetInspection,
                 analyze_obb_sizes,
                 format_size_analysis,
@@ -154,7 +154,9 @@ class EvaluationPanel(QWidget):
 
     def _quick_test(self) -> None:
         try:
-            from multi_tracker.mat.gui.dialogs.model_test_dialog import ModelTestDialog
+            from hydra_suite.tracker.gui.dialogs.model_test_dialog import (
+                ModelTestDialog,
+            )
         except ImportError:
             QMessageBox.information(
                 self,

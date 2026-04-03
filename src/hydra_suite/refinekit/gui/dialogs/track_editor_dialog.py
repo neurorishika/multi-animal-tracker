@@ -22,13 +22,6 @@ from typing import Dict, List, Tuple
 import cv2
 import numpy as np
 import pandas as pd
-from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
-from multi_tracker.refinekit.core.track_editor_model import EditOp, TrackEditorModel
-from multi_tracker.refinekit.gui.widgets.interactive_canvas import InteractiveCanvas
-from multi_tracker.refinekit.gui.widgets.timeline_editor import (
-    PALETTE_RGB,
-    TimelineEditorWidget,
-)
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
@@ -41,6 +34,14 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QVBoxLayout,
     QWidget,
+)
+
+from hydra_suite.refinekit.core.event_types import EventType, SuspicionEvent
+from hydra_suite.refinekit.core.track_editor_model import EditOp, TrackEditorModel
+from hydra_suite.refinekit.gui.widgets.interactive_canvas import InteractiveCanvas
+from hydra_suite.refinekit.gui.widgets.timeline_editor import (
+    PALETTE_RGB,
+    TimelineEditorWidget,
 )
 
 logger = logging.getLogger(__name__)

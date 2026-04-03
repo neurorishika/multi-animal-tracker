@@ -31,7 +31,7 @@ def save_ui_settings(settings):
 
 # GPU utils
 try:
-    from multi_tracker.utils.gpu_utils import (
+    from hydra_suite.utils.gpu_utils import (
         CUDA_AVAILABLE,
         MPS_AVAILABLE,
         ROCM_AVAILABLE,
@@ -47,7 +47,7 @@ logger = logging.getLogger("pose_label.dialogs.utils")
 
 # PoseInferenceService — optional; guarded at call sites
 try:
-    from multi_tracker.integrations.sleap.service import PoseInferenceService
+    from hydra_suite.integrations.sleap.service import PoseInferenceService
 except ImportError:
     PoseInferenceService = None  # type: ignore[assignment]
 

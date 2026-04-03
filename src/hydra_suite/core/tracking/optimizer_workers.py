@@ -11,27 +11,28 @@ from typing import Any, Dict
 
 import cv2
 import numpy as np
-from multi_tracker.core.assigners.hungarian import TrackAssigner
-from multi_tracker.core.detectors import DetectionFilter
-from multi_tracker.core.filters.kalman import KalmanFilterManager
-from multi_tracker.core.identity.geometry import (
+from PySide6.QtCore import QThread, Signal
+
+from hydra_suite.core.assigners.hungarian import TrackAssigner
+from hydra_suite.core.detectors import DetectionFilter
+from hydra_suite.core.filters.kalman import KalmanFilterManager
+from hydra_suite.core.identity.geometry import (
     build_detection_direction_overrides as _pf_build_direction_overrides,
 )
-from multi_tracker.core.identity.geometry import normalize_theta as _pf_normalize_theta
-from multi_tracker.core.identity.geometry import (
+from hydra_suite.core.identity.geometry import normalize_theta as _pf_normalize_theta
+from hydra_suite.core.identity.geometry import (
     resolve_detection_tracking_theta as _pf_resolve_detection_tracking_theta,
 )
-from multi_tracker.core.identity.pose.features import (
+from hydra_suite.core.identity.pose.features import (
     build_pose_detection_keypoint_map as _pf_build_keypoint_map,
 )
-from multi_tracker.core.identity.pose.features import (
+from hydra_suite.core.identity.pose.features import (
     compute_detection_pose_features as _pf_compute_det_features,
 )
-from multi_tracker.core.identity.pose.features import (
+from hydra_suite.core.identity.pose.features import (
     load_pose_context_from_params as _pf_load_pose_context,
 )
-from multi_tracker.data.detection_cache import DetectionCache
-from PySide6.QtCore import QThread, Signal
+from hydra_suite.data.detection_cache import DetectionCache
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +74,8 @@ class DetectionCacheBuilderWorker(QThread):
         import time
         from collections import deque
 
-        from multi_tracker.core.detectors import create_detector
-        from multi_tracker.utils.batch_optimizer import BatchOptimizer
+        from hydra_suite.core.detectors import create_detector
+        from hydra_suite.utils.batch_optimizer import BatchOptimizer
 
         # --- Load detector (YOLO model) ---
         try:

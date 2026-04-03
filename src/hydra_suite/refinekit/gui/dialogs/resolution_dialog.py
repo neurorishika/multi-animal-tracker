@@ -12,8 +12,9 @@ from typing import Dict, List, Tuple
 import cv2
 import numpy as np
 import pandas as pd
-from multi_tracker.refinekit.core.event_types import EventType
 from PySide6.QtCore import QThread, Signal
+
+from hydra_suite.refinekit.core.event_types import EventType
 
 _CROP_MARGIN = 80
 _CONTEXT_FRAMES = 15  # extra frames loaded before / after the event window

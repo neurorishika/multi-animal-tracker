@@ -601,7 +601,7 @@ class FilterKitWindow(QMainWindow):
 
     def _set_window_icon(self):
         try:
-            from multi_tracker.paths import get_brand_qicon
+            from hydra_suite.paths import get_brand_qicon
 
             icon = get_brand_qicon("filterkit.svg")
             if icon and not icon.isNull():
@@ -658,8 +658,9 @@ class FilterKitWindow(QMainWindow):
         logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignCenter)
         try:
-            from multi_tracker.paths import get_brand_icon_bytes
             from PySide6.QtCore import QByteArray
+
+            from hydra_suite.paths import get_brand_icon_bytes
 
             logo_data = get_brand_icon_bytes("filterkit.svg")
             renderer = (
@@ -1059,8 +1060,9 @@ class FilterKitWindow(QMainWindow):
 
     def _show_logo(self):
         try:
-            from multi_tracker.paths import get_brand_icon_bytes
             from PySide6.QtCore import QByteArray
+
+            from hydra_suite.paths import get_brand_icon_bytes
 
             logo_data = get_brand_icon_bytes("filterkit.svg")
 
@@ -1680,7 +1682,7 @@ def main():
     app.setOrganizationName("NeuroRishika")
 
     try:
-        from multi_tracker.paths import get_brand_qicon
+        from hydra_suite.paths import get_brand_qicon
 
         icon = get_brand_qicon("filterkit.svg")
         if icon and not icon.isNull():

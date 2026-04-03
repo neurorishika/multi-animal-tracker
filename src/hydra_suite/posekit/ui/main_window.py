@@ -84,17 +84,17 @@ from .workers import BulkPosePredictWorker, PosePredictWorker, SleapServiceWorke
 
 # External imports (formerly in try/except blocks in main.py)
 try:
-    from multi_tracker.integrations.sleap.service import PoseInferenceService
-    from multi_tracker.posekit.core.extensions import (
+    from hydra_suite.integrations.sleap.service import PoseInferenceService
+    from hydra_suite.posekit.core.extensions import (
         IncrementalEmbeddingCache,
         MetadataManager,
         build_yolo_pose_dataset,
         cluster_stratified_split,
     )
-    from multi_tracker.posekit.ui.dialogs.active_learning import ActiveLearningDialog
-    from multi_tracker.posekit.ui.dialogs.evaluation import EvaluationDashboardDialog
-    from multi_tracker.posekit.ui.dialogs.exploration import SmartSelectDialog
-    from multi_tracker.posekit.ui.dialogs.training import TrainingRunnerDialog
+    from hydra_suite.posekit.ui.dialogs.active_learning import ActiveLearningDialog
+    from hydra_suite.posekit.ui.dialogs.evaluation import EvaluationDashboardDialog
+    from hydra_suite.posekit.ui.dialogs.exploration import SmartSelectDialog
+    from hydra_suite.posekit.ui.dialogs.training import TrainingRunnerDialog
 except ImportError:
     # Try alternate path if running standalone script?
     # Assuming standard package structure for now
@@ -766,8 +766,9 @@ class MainWindow(QMainWindow):
 
         logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignCenter)
-        from multi_tracker.paths import get_brand_icon_bytes
         from PySide6.QtCore import QByteArray
+
+        from hydra_suite.paths import get_brand_icon_bytes
 
         logo_data = get_brand_icon_bytes("posekit.svg")
         if logo_data is not None:
@@ -1196,8 +1197,9 @@ class MainWindow(QMainWindow):
     def _show_canvas_logo_placeholder(self):
         """Show PoseKit logo in the center canvas when no frame is active."""
         try:
-            from multi_tracker.paths import get_brand_icon_bytes
             from PySide6.QtCore import QByteArray
+
+            from hydra_suite.paths import get_brand_icon_bytes
 
             logo_data = get_brand_icon_bytes("posekit.svg")
             vw = max(1000, self.canvas.viewport().width())

@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from multi_tracker.posekit.core.extensions import CrashSafeWriter, LabelVersioning
+from hydra_suite.posekit.core.extensions import CrashSafeWriter, LabelVersioning
 
 from .models import Keypoint, compute_bbox_from_kpts
 from .utils import _clamp01, _xyxy_to_cxcywh

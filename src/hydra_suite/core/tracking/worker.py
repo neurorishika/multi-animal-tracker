@@ -13,62 +13,63 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from multi_tracker.core.assigners.hungarian import TrackAssigner
-from multi_tracker.core.background.model import BackgroundModel
-from multi_tracker.core.detectors import create_detector
-from multi_tracker.core.filters.kalman import KalmanFilterManager
-from multi_tracker.core.identity.dataset.generator import IndividualDatasetGenerator
-from multi_tracker.core.identity.geometry import (
+from PySide6.QtCore import QMutex, QThread, Signal, Slot
+
+from hydra_suite.core.assigners.hungarian import TrackAssigner
+from hydra_suite.core.background.model import BackgroundModel
+from hydra_suite.core.detectors import create_detector
+from hydra_suite.core.filters.kalman import KalmanFilterManager
+from hydra_suite.core.identity.dataset.generator import IndividualDatasetGenerator
+from hydra_suite.core.identity.geometry import (
     build_detection_direction_overrides as _pf_build_direction_overrides,
 )
-from multi_tracker.core.identity.geometry import (
+from hydra_suite.core.identity.geometry import (
     resolve_detection_tracking_theta as _pf_resolve_detection_tracking_theta,
 )
-from multi_tracker.core.identity.geometry import (
+from hydra_suite.core.identity.geometry import (
     resolve_tracking_theta as _pf_resolve_tracking_theta,
 )
-from multi_tracker.core.identity.pose.features import (
+from hydra_suite.core.identity.pose.features import (
     build_pose_detection_keypoint_map as _pf_build_keypoint_map,
 )
-from multi_tracker.core.identity.pose.features import (
+from hydra_suite.core.identity.pose.features import (
     compute_pose_geometry_from_keypoints as _pf_compute_geometry,
 )
-from multi_tracker.core.identity.pose.features import (
+from hydra_suite.core.identity.pose.features import (
     normalize_pose_keypoints as _pf_normalize_keypoints,
 )
-from multi_tracker.core.identity.pose.features import (
+from hydra_suite.core.identity.pose.features import (
     resolve_pose_group_indices as _pf_resolve_indices,
 )
-from multi_tracker.core.tracking.cnn_features import (
+from hydra_suite.core.tracking.cnn_features import (
     cnn_build_association_entries as _cnn_build_association_entries,
 )
-from multi_tracker.core.tracking.cnn_features import (
+from hydra_suite.core.tracking.cnn_features import (
     cnn_update_track_history as _cnn_update_track_history,
 )
-from multi_tracker.core.tracking.density import get_density_region_flags
-from multi_tracker.core.tracking.precompute import (
+from hydra_suite.core.tracking.density import get_density_region_flags
+from hydra_suite.core.tracking.precompute import (
     AprilTagPrecomputePhase,
     CNNPrecomputePhase,
     CropConfig,
     UnifiedPrecompute,
 )
-from multi_tracker.core.tracking.profiler import TrackingProfiler
-from multi_tracker.core.tracking.tag_features import (
+from hydra_suite.core.tracking.profiler import TrackingProfiler
+from hydra_suite.core.tracking.tag_features import (
     NO_TAG,
     TrackTagHistory,
     build_detection_tag_id_list,
     build_tag_detection_map,
 )
-from multi_tracker.data.detection_cache import DetectionCache
-from multi_tracker.data.tag_observation_cache import TagObservationCache
-from multi_tracker.utils.frame_prefetcher import FramePrefetcher
-from multi_tracker.utils.geometry import estimate_detection_crop_quality
-from multi_tracker.utils.image_processing import (
+from hydra_suite.data.detection_cache import DetectionCache
+from hydra_suite.data.tag_observation_cache import TagObservationCache
+from hydra_suite.utils.frame_prefetcher import FramePrefetcher
+from hydra_suite.utils.geometry import estimate_detection_crop_quality
+from hydra_suite.utils.image_processing import (
     apply_image_adjustments,
     stabilize_lighting,
 )
-from multi_tracker.utils.video_artifacts import build_individual_properties_cache_path
-from PySide6.QtCore import QMutex, QThread, Signal, Slot
+from hydra_suite.utils.video_artifacts import build_individual_properties_cache_path
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +259,7 @@ class TrackingWorker(QThread):
         self, label: str, classify_id: str, start_frame: int, end_frame: int
     ):
         """Build an independent, hash-keyed classify cache path."""
-        from multi_tracker.utils.video_artifacts import build_classify_cache_path
+        from hydra_suite.utils.video_artifacts import build_classify_cache_path
 
         return str(
             build_classify_cache_path(
@@ -278,7 +279,7 @@ class TrackingWorker(QThread):
 
     def _build_tag_cache_path(self, apriltag_id, start_frame, end_frame):
         """Build an independent, hash-keyed AprilTag cache path."""
-        from multi_tracker.utils.video_artifacts import build_apriltag_cache_path
+        from hydra_suite.utils.video_artifacts import build_apriltag_cache_path
 
         return str(
             build_apriltag_cache_path(
@@ -320,11 +321,11 @@ class TrackingWorker(QThread):
         # --- Pose ---
         pose_enabled = bool(params.get("ENABLE_POSE_EXTRACTOR", False))
         if pose_enabled:
-            from multi_tracker.core.identity.pose.api import (
+            from hydra_suite.core.identity.pose.api import (
                 build_runtime_config,
                 create_pose_backend_from_config,
             )
-            from multi_tracker.core.identity.properties.cache import (
+            from hydra_suite.core.identity.properties.cache import (
                 IndividualPropertiesCache,
                 compute_detection_hash,
                 compute_extractor_hash,
@@ -422,7 +423,7 @@ class TrackingWorker(QThread):
             if _pre_resize <= 0 and pose_backend is not None:
                 _pre_resize = int(getattr(pose_backend, "preferred_input_size", 0) or 0)
 
-            from multi_tracker.core.tracking.pose_pipeline import PosePipeline
+            from hydra_suite.core.tracking.pose_pipeline import PosePipeline
 
             pipeline = PosePipeline(
                 pose_backend,
@@ -441,10 +442,8 @@ class TrackingWorker(QThread):
 
         # --- AprilTag ---
         if bool(params.get("USE_APRILTAGS", False)):
-            from multi_tracker.core.identity.classification.apriltag import (
-                AprilTagConfig,
-            )
-            from multi_tracker.core.identity.properties.cache import (
+            from hydra_suite.core.identity.classification.apriltag import AprilTagConfig
+            from hydra_suite.core.identity.properties.cache import (
                 compute_apriltag_cache_id,
             )
 
@@ -481,8 +480,8 @@ class TrackingWorker(QThread):
                     model_path,
                 )
                 continue
-            from multi_tracker.core.identity.classification.cnn import CNNIdentityConfig
-            from multi_tracker.core.identity.properties.cache import (
+            from hydra_suite.core.identity.classification.cnn import CNNIdentityConfig
+            from hydra_suite.core.identity.properties.cache import (
                 compute_classify_cache_id,
             )
 
@@ -522,7 +521,7 @@ class TrackingWorker(QThread):
         profiler=None,
     ):
         """Phase 1: Run batched YOLO detection and cache results."""
-        from multi_tracker.core.tracking.detection_phase import (
+        from hydra_suite.core.tracking.detection_phase import (
             run_batched_detection_phase,
         )
 
@@ -854,7 +853,7 @@ class TrackingWorker(QThread):
                 try:
                     from pathlib import Path as _Path
 
-                    from multi_tracker.core.tracking.confidence_density import (
+                    from hydra_suite.core.tracking.confidence_density import (
                         load_regions as _load_regions,
                     )
 
@@ -949,7 +948,7 @@ class TrackingWorker(QThread):
             if _regions_path.exists():
                 # Regions already computed — just load them.
                 try:
-                    from multi_tracker.core.tracking.confidence_density import (
+                    from hydra_suite.core.tracking.confidence_density import (
                         load_regions as _load_regions,
                     )
 
@@ -967,7 +966,8 @@ class TrackingWorker(QThread):
                 # Compute density map from detection cache.
                 try:
                     import cv2 as _cv2
-                    from multi_tracker.core.tracking.confidence_density import (
+
+                    from hydra_suite.core.tracking.confidence_density import (
                         compute_density_map_from_cache,
                         export_diagnostic_video,
                         save_regions,
@@ -1198,7 +1198,7 @@ class TrackingWorker(QThread):
         for cnn_cfg_dict in p.get("CNN_CLASSIFIERS", []):
             label = str(cnn_cfg_dict.get("label", "cnn_identity"))
             model_path = str(cnn_cfg_dict.get("model_path", ""))
-            from multi_tracker.core.identity.properties.cache import (
+            from hydra_suite.core.identity.properties.cache import (
                 compute_classify_cache_id,
             )
 
@@ -1211,7 +1211,7 @@ class TrackingWorker(QThread):
                 label, classify_id, start_frame, end_frame
             )
             if _path and os.path.exists(_path):
-                from multi_tracker.core.identity.classification.cnn import (
+                from hydra_suite.core.identity.classification.cnn import (
                     CNNIdentityCache,
                     TrackCNNHistory,
                 )
@@ -1254,7 +1254,7 @@ class TrackingWorker(QThread):
             and pose_cache_candidate
             and os.path.exists(pose_cache_candidate)
         ):
-            from multi_tracker.core.identity.properties.cache import (
+            from hydra_suite.core.identity.properties.cache import (
                 IndividualPropertiesCache,
             )
 
@@ -2772,7 +2772,7 @@ class TrackingWorker(QThread):
         orient_confidence=1.0,
         heading_flip_counters=None,
     ):
-        from multi_tracker.core.tracking.orientation import smooth_orientation
+        from hydra_suite.core.tracking.orientation import smooth_orientation
 
         return smooth_orientation(
             r,
@@ -2799,7 +2799,7 @@ class TrackingWorker(QThread):
         yolo_results=None,
         obb_corners=None,
     ):
-        from multi_tracker.core.tracking.visualization import draw_overlays
+        from hydra_suite.core.tracking.visualization import draw_overlays
 
         draw_overlays(
             overlay,

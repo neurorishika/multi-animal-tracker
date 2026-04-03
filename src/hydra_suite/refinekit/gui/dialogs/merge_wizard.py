@@ -18,19 +18,6 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 import cv2
 import numpy as np
 import pandas as pd
-from multi_tracker.data.detection_cache import DetectionCache
-from multi_tracker.refinekit.core.correction_writer import CorrectionWriter
-from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
-from multi_tracker.refinekit.core.merge_candidates import (
-    MergeCandidate,
-    SwapCandidate,
-    TrackSegment,
-    build_candidates,
-    build_swap_candidates,
-    extract_segments,
-    update_after_merge,
-)
-from multi_tracker.refinekit.gui.widgets.synced_video_grid import SyncedVideoGrid
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
@@ -41,6 +28,20 @@ from PySide6.QtWidgets import (
     QPushButton,
     QVBoxLayout,
 )
+
+from hydra_suite.data.detection_cache import DetectionCache
+from hydra_suite.refinekit.core.correction_writer import CorrectionWriter
+from hydra_suite.refinekit.core.event_types import EventType, SuspicionEvent
+from hydra_suite.refinekit.core.merge_candidates import (
+    MergeCandidate,
+    SwapCandidate,
+    TrackSegment,
+    build_candidates,
+    build_swap_candidates,
+    extract_segments,
+    update_after_merge,
+)
+from hydra_suite.refinekit.gui.widgets.synced_video_grid import SyncedVideoGrid
 
 # Type alias for hypotheses that can be either merge or swap
 Hypothesis = MergeCandidate | SwapCandidate

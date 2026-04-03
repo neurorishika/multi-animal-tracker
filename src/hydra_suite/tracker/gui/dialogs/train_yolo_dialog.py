@@ -6,19 +6,6 @@ import json
 import logging
 from pathlib import Path
 
-from multi_tracker.mat.gui.widgets.loss_plot_widget import LossPlotWidget
-from multi_tracker.training import (
-    AugmentationProfile,
-    PublishPolicy,
-    SourceDataset,
-    SplitConfig,
-    TrainingHyperParams,
-    TrainingOrchestrator,
-    TrainingRole,
-    TrainingRunSpec,
-)
-from multi_tracker.training.validation import format_validation_report
-from multi_tracker.utils.gpu_utils import get_device_info
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -47,6 +34,20 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.tracker.gui.widgets.loss_plot_widget import LossPlotWidget
+from hydra_suite.training import (
+    AugmentationProfile,
+    PublishPolicy,
+    SourceDataset,
+    SplitConfig,
+    TrainingHyperParams,
+    TrainingOrchestrator,
+    TrainingRole,
+    TrainingRunSpec,
+)
+from hydra_suite.training.validation import format_validation_report
+from hydra_suite.utils.gpu_utils import get_device_info
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +138,7 @@ class TrainYoloDialog(QDialog):
         self.worker = None
         self._last_training_results: list[dict] = []
 
-        from multi_tracker.paths import get_training_workspace_dir
+        from hydra_suite.paths import get_training_workspace_dir
 
         self.workspace_default = get_training_workspace_dir("YOLO")
         self.orchestrator = TrainingOrchestrator(self.workspace_default)
@@ -909,7 +910,7 @@ class TrainYoloDialog(QDialog):
             )
             return
 
-        from multi_tracker.training.dataset_inspector import (
+        from hydra_suite.training.dataset_inspector import (
             analyze_obb_sizes,
             format_size_analysis,
             inspect_obb_or_detect_dataset,
@@ -922,7 +923,7 @@ class TrainYoloDialog(QDialog):
         direct_imgsz = self.spin_imgsz_obb_direct.value()
 
         # Merge inspections from all sources.
-        from multi_tracker.training.dataset_inspector import DatasetInspection
+        from hydra_suite.training.dataset_inspector import DatasetInspection
 
         merged = DatasetInspection(root_dir="(merged)")
         for src in obb_sources:
@@ -1312,7 +1313,7 @@ class TrainYoloDialog(QDialog):
                 device=self.combo_device.currentText().strip() or "auto",
                 seed=self.spin_seed.value(),
             )
-            from multi_tracker.training.runner import build_ultralytics_command
+            from hydra_suite.training.runner import build_ultralytics_command
 
             run_dir = self.workspace_default / "runs" / ("detached_" + role.value)
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -1519,14 +1520,14 @@ class TrainYoloDialog(QDialog):
 
     def _show_history(self):
         """Open the training run history viewer dialog."""
-        from multi_tracker.mat.gui.dialogs.run_history_dialog import RunHistoryDialog
+        from hydra_suite.tracker.gui.dialogs.run_history_dialog import RunHistoryDialog
 
         dlg = RunHistoryDialog(parent=self)
         dlg.exec()
 
     def _quick_test(self):
         """Open the Quick Test dialog for the last successful training result."""
-        from multi_tracker.mat.gui.dialogs.model_test_dialog import ModelTestDialog
+        from hydra_suite.tracker.gui.dialogs.model_test_dialog import ModelTestDialog
 
         results = getattr(self, "_last_training_results", [])
         succeeded = [r for r in results if r.get("success")]

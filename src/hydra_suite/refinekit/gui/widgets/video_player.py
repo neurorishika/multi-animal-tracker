@@ -20,7 +20,6 @@ from typing import List, Optional, Set
 import cv2
 import numpy as np
 import pandas as pd
-from multi_tracker.refinekit.gui.widgets.interactive_canvas import InteractiveCanvas
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -32,6 +31,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+from hydra_suite.refinekit.gui.widgets.interactive_canvas import InteractiveCanvas
 
 # ---------------------------------------------------------------------------
 # Palette

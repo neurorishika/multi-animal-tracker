@@ -21,7 +21,7 @@ def main() -> None:
     app.setDesktopFileName("detectkit")
 
     try:
-        from multi_tracker.paths import get_brand_qicon
+        from hydra_suite.paths import get_brand_qicon
 
         icon = get_brand_qicon("detectkit.svg")
         if icon and not icon.isNull():
@@ -29,7 +29,7 @@ def main() -> None:
     except Exception:
         pass
 
-    from multi_tracker.detectkit.ui.main_window import MainWindow
+    from hydra_suite.detectkit.ui.main_window import MainWindow
 
     window = MainWindow()
     window.resize(1600, 1000)

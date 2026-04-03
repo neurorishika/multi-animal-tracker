@@ -183,7 +183,7 @@ def create_project_via_wizard(dataset_dir: Path) -> Optional[Project]:
                     [
                         sys.executable,
                         "-m",
-                        "multi_tracker.filterkit.gui",
+                        "hydra_suite.filterkit.gui",
                         str(dataset_dir),
                     ],
                     start_new_session=True,
