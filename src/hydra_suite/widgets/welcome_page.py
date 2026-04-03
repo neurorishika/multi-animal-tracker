@@ -154,7 +154,8 @@ class WelcomePage(QWidget):
     def __init__(self, config: WelcomeConfig, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._config = config
-        self.setStyleSheet(f"background-color: {_BG};")
+        self.setObjectName("welcomePage")
+        self.setStyleSheet(f"#welcomePage {{ background-color: {_BG}; }}")
 
         root = QVBoxLayout(self)
         root.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -164,6 +165,7 @@ class WelcomePage(QWidget):
         # --- Logo ---
         logo_label = QLabel()
         logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_label.setStyleSheet("background: transparent; border: none;")
         self._render_logo(logo_label, config.logo_svg, config.logo_max_height)
         root.addWidget(logo_label, alignment=Qt.AlignmentFlag.AlignHCenter)
 
