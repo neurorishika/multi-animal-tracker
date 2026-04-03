@@ -19,7 +19,7 @@ class TestKalmanThetaNormalization:
     """Verify that Kalman state theta stays within [0, 2*pi)."""
 
     def _make_kf(self, n=1):
-        from multi_tracker.core.filters.kalman import KalmanFilterManager
+        from hydra_suite.core.filters.kalman import KalmanFilterManager
 
         params = {
             "REFERENCE_BODY_SIZE": 20.0,
@@ -96,7 +96,7 @@ class TestFixHeadingFlips:
     """Test the post-processing heading flip correction."""
 
     def _fix(self, theta, max_burst=5):
-        from multi_tracker.core.post.processing import _fix_heading_flips
+        from hydra_suite.core.post.processing import _fix_heading_flips
 
         return _fix_heading_flips(np.asarray(theta, dtype=np.float64), max_burst)
 
@@ -177,7 +177,7 @@ class TestSmoothOrientationHysteresis:
         """Create a minimal mock for _smooth_orientation testing."""
         from unittest.mock import MagicMock
 
-        from multi_tracker.core.tracking.worker import TrackingWorker
+        from hydra_suite.core.tracking.worker import TrackingWorker
 
         worker = MagicMock(spec=TrackingWorker)
         worker._smooth_orientation = TrackingWorker._smooth_orientation.__get__(

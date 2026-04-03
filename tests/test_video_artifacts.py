@@ -6,7 +6,7 @@ from pathlib import Path
 from tests.helpers.module_loader import load_src_module
 
 mod = load_src_module(
-    "multi_tracker/utils/video_artifacts.py",
+    "hydra_suite/utils/video_artifacts.py",
     "video_artifacts_under_test",
 )
 

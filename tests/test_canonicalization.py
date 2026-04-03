@@ -6,8 +6,8 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from multi_tracker.core.canonicalization import MatMetadataCanonicalizer
-from multi_tracker.core.identity.dataset.generator import IndividualDatasetGenerator
+from hydra_suite.core.canonicalization import MatMetadataCanonicalizer
+from hydra_suite.core.identity.dataset.generator import IndividualDatasetGenerator
 
 
 def _write_dataset(root: Path, annotations: list[dict]) -> Path:

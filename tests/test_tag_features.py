@@ -5,7 +5,7 @@ from __future__ import annotations
 from tests.helpers.module_loader import load_src_module
 
 mod = load_src_module(
-    "multi_tracker/core/tracking/tag_features.py",
+    "hydra_suite/core/tracking/tag_features.py",
     "tag_features_under_test",
 )
 NO_TAG = mod.NO_TAG

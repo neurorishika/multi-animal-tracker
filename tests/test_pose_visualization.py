@@ -3,7 +3,7 @@ from __future__ import annotations
 from tests.helpers.module_loader import load_src_module
 
 mod = load_src_module(
-    "multi_tracker/utils/pose_visualization.py",
+    "hydra_suite/utils/pose_visualization.py",
     "pose_visualization_under_test",
 )
 

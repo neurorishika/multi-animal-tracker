@@ -7,12 +7,12 @@ import math
 import numpy as np
 import pytest
 
-from multi_tracker.core.identity.geometry import (
+from hydra_suite.core.identity.geometry import (
     build_detection_direction_overrides,
     normalize_theta,
     resolve_detection_tracking_theta,
 )
-from multi_tracker.core.identity.pose.features import (
+from hydra_suite.core.identity.pose.features import (
     build_pose_detection_keypoint_map,
     compute_detection_pose_features,
     compute_pose_geometry_from_keypoints,
@@ -20,7 +20,7 @@ from multi_tracker.core.identity.pose.features import (
     parse_pose_group_tokens,
     resolve_pose_group_indices,
 )
-from multi_tracker.utils.geometry import (
+from hydra_suite.utils.geometry import (
     apply_foreign_obb_mask,
     filter_keypoints_by_foreign_obbs,
 )

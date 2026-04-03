@@ -3,8 +3,8 @@ from __future__ import annotations
 from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
 batch_mod = load_src_module(
-    "multi_tracker/utils/batch_optimizer.py",
-    "multi_tracker.utils.batch_optimizer_under_test",
+    "hydra_suite/utils/batch_optimizer.py",
+    "hydra_suite.utils.batch_optimizer_under_test",
     stubs={"cv2": make_cv2_stub()},
 )
 BatchOptimizer = batch_mod.BatchOptimizer

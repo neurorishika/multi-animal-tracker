@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from multi_tracker.mat.gui.widgets.loss_plot_widget import parse_ultralytics_log_line
+from hydra_suite.tracker.gui.widgets.loss_plot_widget import parse_ultralytics_log_line
 
 
 def test_parse_epoch_line():

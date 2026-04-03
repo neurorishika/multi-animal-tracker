@@ -9,8 +9,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 pytest.importorskip("PySide6")
 
-from multi_tracker.core.background import model as background_model_module
-from multi_tracker.mat.gui import main_window
+from hydra_suite.core.background import model as background_model_module
+from hydra_suite.tracker.gui import main_window
 
 
 class _FakeVideoCapture:

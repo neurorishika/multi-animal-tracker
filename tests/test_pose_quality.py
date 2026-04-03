@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from multi_tracker.core.identity.pose.quality import (
+from hydra_suite.core.identity.pose.quality import (
     BodyLengthPrior,
     apply_quality_to_dataframe,
     apply_temporal_pose_postprocessing,
@@ -692,7 +692,7 @@ class TestApplyTemporalPosePostprocessing:
 # calibrate_edge_length_priors + EdgeLengthPriors in assess_pose_row
 # ---------------------------------------------------------------------------
 
-from multi_tracker.core.identity.pose.quality import (
+from hydra_suite.core.identity.pose.quality import (
     EdgeLengthPriors,
     calibrate_edge_length_priors,
 )

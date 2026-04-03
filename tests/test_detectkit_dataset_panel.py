@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from multi_tracker.detectkit.ui.utils import find_label_for_image, list_images_in_source
+from hydra_suite.detectkit.ui.utils import find_label_for_image, list_images_in_source
 
 
 def test_list_images_in_source_with_images_dir(tmp_path: Path):

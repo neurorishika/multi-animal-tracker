@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from multi_tracker.training.contracts import (
+from hydra_suite.training.contracts import (
     AugmentationProfile,
     TrainingHyperParams,
     TrainingRole,
     TrainingRunSpec,
 )
-from multi_tracker.training.runner import build_ultralytics_command
+from hydra_suite.training.runner import build_ultralytics_command
 
 
 def test_augmentation_args_passed_to_command():

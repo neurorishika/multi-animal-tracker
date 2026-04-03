@@ -10,12 +10,12 @@ for _mod in ("cv2", "torch", "torchvision"):
     if _mod not in sys.modules:
         sys.modules[_mod] = MagicMock()
 
-from multi_tracker.training.contracts import (  # noqa: E402
+from hydra_suite.training.contracts import (  # noqa: E402
     TrainingHyperParams,
     TrainingRole,
     TrainingRunSpec,
 )
-from multi_tracker.training.runner import build_ultralytics_command  # noqa: E402
+from hydra_suite.training.runner import build_ultralytics_command  # noqa: E402
 
 
 def test_auto_batch_flag():

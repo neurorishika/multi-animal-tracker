@@ -1,1 +1,1 @@
-"""Test suite for multi-animal-tracker."""
+"""Test suite for hydra-suite."""

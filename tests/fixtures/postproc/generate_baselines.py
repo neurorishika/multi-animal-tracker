@@ -17,7 +17,7 @@ BENCH_ROOT = ROOT / "benchmarks"
 
 def _load_processing_module():
     processing_path = (
-        ROOT.parents[2] / "src" / "multi_tracker" / "core" / "post" / "processing.py"
+        ROOT.parents[2] / "src" / "hydra_suite" / "core" / "post" / "processing.py"
     )
     spec = importlib.util.spec_from_file_location(
         "_post_processing_baseline_gen", processing_path

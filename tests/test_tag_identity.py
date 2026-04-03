@@ -8,7 +8,7 @@ import pandas as pd
 from tests.helpers.module_loader import load_src_module
 
 mod = load_src_module(
-    "multi_tracker/core/post/tag_identity.py",
+    "hydra_suite/core/post/tag_identity.py",
     "tag_identity_under_test",
 )
 resolve_tag_identities = mod.resolve_tag_identities

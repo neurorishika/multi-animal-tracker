@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from multi_tracker.training.dataset_inspector import DatasetItem, stratified_split_items
+from hydra_suite.training.dataset_inspector import DatasetItem, stratified_split_items
 
 
 def _write_label(path: Path, class_ids: list[int]):

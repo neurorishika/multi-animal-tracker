@@ -70,7 +70,7 @@ def _patched_modules(stubs: dict):
 
 def _load_runtime_api_module(stubs: dict):
     module_name = "runtime_api_sleap_export_test"
-    module_path = SRC_ROOT / "multi_tracker" / "core" / "identity" / "pose" / "api.py"
+    module_path = SRC_ROOT / "hydra_suite" / "core" / "identity" / "pose" / "api.py"
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load module spec: {module_path}")
@@ -88,7 +88,7 @@ def _load_sleap_backend_module(stubs: dict):
     module_name = "sleap_backend_under_test"
     module_path = (
         SRC_ROOT
-        / "multi_tracker"
+        / "hydra_suite"
         / "core"
         / "identity"
         / "pose"
@@ -147,8 +147,8 @@ def test_sleap_export_backend_onnx_predicts_canonical_output(tmp_path: Path) -> 
             return preds, ""
 
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(),
-        "multi_tracker.integrations.sleap.service": types.SimpleNamespace(
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
+        "hydra_suite.integrations.sleap.service": types.SimpleNamespace(
             PoseInferenceService=_FakePoseInferenceService
         ),
     }
@@ -234,12 +234,12 @@ def test_sleap_export_backend_falls_back_to_service_when_unavailable(
     sleap_nn_mod.export = export_mod
 
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
         "sleap_nn": sleap_nn_mod,
         "sleap_nn.export": export_mod,
         "sleap_nn.export.predictors": predictors_mod,
         "sleap_nn.export.metadata": metadata_mod,
-        "multi_tracker.integrations.sleap.service": types.SimpleNamespace(
+        "hydra_suite.integrations.sleap.service": types.SimpleNamespace(
             PoseInferenceService=_FakePoseInferenceService
         ),
     }
@@ -286,7 +286,7 @@ def test_yolo_auto_runtime_exports_onnx_and_reuses_cached_artifact(
             return str(out)
 
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(SLEAP_RUNTIME_ONNX_AVAILABLE=False),
+        "hydra_suite.utils.gpu_utils": _gpu_stub(SLEAP_RUNTIME_ONNX_AVAILABLE=False),
         "ultralytics": types.SimpleNamespace(YOLO=_FakeYOLO),
     }
     mod = _load_runtime_api_module(stubs)
@@ -335,7 +335,7 @@ def test_yolo_auto_runtime_reexports_when_model_changes(tmp_path: Path) -> None:
             return str(out)
 
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(SLEAP_RUNTIME_ONNX_AVAILABLE=False),
+        "hydra_suite.utils.gpu_utils": _gpu_stub(SLEAP_RUNTIME_ONNX_AVAILABLE=False),
         "ultralytics": types.SimpleNamespace(YOLO=_FakeYOLO),
     }
     mod = _load_runtime_api_module(stubs)
@@ -373,7 +373,7 @@ def test_yolo_backend_rejects_directory_model_path_with_clear_error(
     tmp_path: Path,
 ) -> None:
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(SLEAP_RUNTIME_ONNX_AVAILABLE=False),
+        "hydra_suite.utils.gpu_utils": _gpu_stub(SLEAP_RUNTIME_ONNX_AVAILABLE=False),
         "ultralytics": types.SimpleNamespace(YOLO=lambda *_a, **_k: None),
     }
     mod = _load_runtime_api_module(stubs)
@@ -405,7 +405,7 @@ def test_build_runtime_config_derives_sleap_export_hw_from_model_config(
     tmp_path: Path,
 ) -> None:
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
     }
     mod = _load_runtime_api_module(stubs)
 
@@ -439,7 +439,7 @@ def test_build_runtime_config_explicit_sleap_export_hw_overrides_model_config(
     tmp_path: Path,
 ) -> None:
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
     }
     mod = _load_runtime_api_module(stubs)
 
@@ -468,7 +468,7 @@ def test_attempt_sleap_cli_export_prefers_size_aware_commands_first(
     tmp_path: Path,
 ) -> None:
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
     }
     mod = _load_sleap_backend_module(stubs)
 
@@ -504,7 +504,7 @@ def test_attempt_sleap_cli_export_includes_batch_profile(
     tmp_path: Path,
 ) -> None:
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
     }
     mod = _load_sleap_backend_module(stubs)
 
@@ -538,11 +538,11 @@ def test_attempt_sleap_cli_export_includes_batch_profile(
 
 def test_coerce_prediction_batch_normalizes_out_of_range_confidences() -> None:
     stubs = {
-        "multi_tracker.utils.gpu_utils": _gpu_stub(),
+        "hydra_suite.utils.gpu_utils": _gpu_stub(),
     }
     pose_utils = importlib.util.spec_from_file_location(
         "pose_utils_under_test",
-        SRC_ROOT / "multi_tracker" / "core" / "identity" / "pose" / "utils.py",
+        SRC_ROOT / "hydra_suite" / "core" / "identity" / "pose" / "utils.py",
     )
     utils_module = importlib.util.module_from_spec(pose_utils)
     with _patched_modules(stubs):

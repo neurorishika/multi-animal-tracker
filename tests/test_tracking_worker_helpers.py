@@ -8,19 +8,19 @@ from tests.helpers.module_loader import load_src_module, make_cv2_stub
 
 
 def _load_worker_module():
-    multi_tracker_pkg = types.ModuleType("multi_tracker")
-    multi_tracker_pkg.__path__ = []
-    core_pkg = types.ModuleType("multi_tracker.core")
+    hydra_suite_pkg = types.ModuleType("hydra_suite")
+    hydra_suite_pkg.__path__ = []
+    core_pkg = types.ModuleType("hydra_suite.core")
     core_pkg.__path__ = []
-    core_tracking = types.ModuleType("multi_tracker.core.tracking")
+    core_tracking = types.ModuleType("hydra_suite.core.tracking")
     core_tracking.__path__ = []
-    utils_pkg = types.ModuleType("multi_tracker.utils")
+    utils_pkg = types.ModuleType("hydra_suite.utils")
     utils_pkg.__path__ = []
-    data_pkg = types.ModuleType("multi_tracker.data")
+    data_pkg = types.ModuleType("hydra_suite.data")
     data_pkg.__path__ = []
 
     video_artifacts = load_src_module(
-        "multi_tracker/utils/video_artifacts.py",
+        "hydra_suite/utils/video_artifacts.py",
         "video_artifacts_under_test",
     )
 
@@ -60,24 +60,24 @@ def _load_worker_module():
     pyside.QtCore = qtcore
 
     # Utility and core dependency stubs to avoid importing heavy runtime modules.
-    image_processing = types.ModuleType("multi_tracker.utils.image_processing")
+    image_processing = types.ModuleType("hydra_suite.utils.image_processing")
     image_processing.apply_image_adjustments = lambda *args, **kwargs: args[0]
     image_processing.stabilize_lighting = lambda *args, **kwargs: (args[0], None, 0.0)
 
-    geometry = types.ModuleType("multi_tracker.utils.geometry")
+    geometry = types.ModuleType("hydra_suite.utils.geometry")
     geometry.wrap_angle_degs = lambda x: x
     geometry.estimate_detection_crop_quality = lambda shape, ref: 0.0
 
-    detection_cache = types.ModuleType("multi_tracker.data.detection_cache")
+    detection_cache = types.ModuleType("hydra_suite.data.detection_cache")
     detection_cache.DetectionCache = object
 
-    tag_observation_cache = types.ModuleType("multi_tracker.data.tag_observation_cache")
+    tag_observation_cache = types.ModuleType("hydra_suite.data.tag_observation_cache")
     tag_observation_cache.TagObservationCache = object
 
-    batch_optimizer = types.ModuleType("multi_tracker.utils.batch_optimizer")
+    batch_optimizer = types.ModuleType("hydra_suite.utils.batch_optimizer")
     batch_optimizer.BatchOptimizer = object
 
-    frame_prefetcher = types.ModuleType("multi_tracker.utils.frame_prefetcher")
+    frame_prefetcher = types.ModuleType("hydra_suite.utils.frame_prefetcher")
 
     class FramePrefetcher:
         def __init__(self, cap, buffer_size=2):
@@ -97,11 +97,11 @@ def _load_worker_module():
     frame_prefetcher.FramePrefetcher = FramePrefetcher
 
     # Stub core submodules imported by worker.
-    core_filters = types.ModuleType("multi_tracker.core.filters")
-    core_background = types.ModuleType("multi_tracker.core.background")
-    core_detectors = types.ModuleType("multi_tracker.core.detectors")
-    core_assigners = types.ModuleType("multi_tracker.core.assigners")
-    core_identity = types.ModuleType("multi_tracker.core.identity")
+    core_filters = types.ModuleType("hydra_suite.core.filters")
+    core_background = types.ModuleType("hydra_suite.core.background")
+    core_detectors = types.ModuleType("hydra_suite.core.detectors")
+    core_assigners = types.ModuleType("hydra_suite.core.assigners")
+    core_identity = types.ModuleType("hydra_suite.core.identity")
 
     core_filters.__path__ = []
     core_background.__path__ = []
@@ -109,39 +109,39 @@ def _load_worker_module():
     core_assigners.__path__ = []
     core_identity.__path__ = []
 
-    kalman = types.ModuleType("multi_tracker.core.filters.kalman")
+    kalman = types.ModuleType("hydra_suite.core.filters.kalman")
     kalman.KalmanFilterManager = object
 
-    background_model = types.ModuleType("multi_tracker.core.background.model")
+    background_model = types.ModuleType("hydra_suite.core.background.model")
     background_model.BackgroundModel = object
 
     # worker.py imports create_detector from the package
     core_detectors.create_detector = lambda *_args, **_kwargs: None
 
-    assigner = types.ModuleType("multi_tracker.core.assigners.hungarian")
+    assigner = types.ModuleType("hydra_suite.core.assigners.hungarian")
     assigner.TrackAssigner = object
 
-    identity_dataset = types.ModuleType("multi_tracker.core.identity.dataset")
+    identity_dataset = types.ModuleType("hydra_suite.core.identity.dataset")
     identity_dataset_generator = types.ModuleType(
-        "multi_tracker.core.identity.dataset.generator"
+        "hydra_suite.core.identity.dataset.generator"
     )
     identity_dataset_generator.IndividualDatasetGenerator = object
 
-    tag_features = types.ModuleType("multi_tracker.core.tracking.tag_features")
+    tag_features = types.ModuleType("hydra_suite.core.tracking.tag_features")
     tag_features.NO_TAG = -1
     tag_features.TrackTagHistory = object
     tag_features.build_detection_tag_id_list = lambda *_args, **_kwargs: []
     tag_features.build_tag_detection_map = lambda *_args, **_kwargs: {}
 
     # Classification sub-package stubs
-    classification = types.ModuleType("multi_tracker.core.identity.classification")
+    classification = types.ModuleType("hydra_suite.core.identity.classification")
     classification_apriltag = types.ModuleType(
-        "multi_tracker.core.identity.classification.apriltag"
+        "hydra_suite.core.identity.classification.apriltag"
     )
     classification_apriltag.AprilTagDetector = object
     classification_apriltag.AprilTagConfig = object
     classification_cnn = types.ModuleType(
-        "multi_tracker.core.identity.classification.cnn"
+        "hydra_suite.core.identity.classification.cnn"
     )
     classification_cnn.ClassPrediction = object
     classification_cnn.CNNIdentityBackend = object
@@ -149,12 +149,12 @@ def _load_worker_module():
     classification_cnn.CNNIdentityConfig = object
     classification_cnn.apply_cnn_identity_cost = lambda *_args, **_kwargs: 0.0
     classification_headtail = types.ModuleType(
-        "multi_tracker.core.identity.classification.headtail"
+        "hydra_suite.core.identity.classification.headtail"
     )
     classification_headtail.HeadTailAnalyzer = object
 
     # Identity geometry stubs
-    identity_geometry = types.ModuleType("multi_tracker.core.identity.geometry")
+    identity_geometry = types.ModuleType("hydra_suite.core.identity.geometry")
     identity_geometry.build_detection_direction_overrides = lambda *_args, **_kwargs: (
         np.full(0, np.nan, dtype=np.float32),
         np.zeros(0, dtype=np.uint8),
@@ -164,21 +164,21 @@ def _load_worker_module():
     identity_geometry.normalize_theta = lambda x: float(x) % (2 * 3.141592653589793)
 
     # Pose sub-package stubs
-    pose_pkg = types.ModuleType("multi_tracker.core.identity.pose")
-    pose_features_new = types.ModuleType("multi_tracker.core.identity.pose.features")
+    pose_pkg = types.ModuleType("hydra_suite.core.identity.pose")
+    pose_features_new = types.ModuleType("hydra_suite.core.identity.pose.features")
     pose_features_new.build_pose_detection_keypoint_map = lambda *_args, **_kwargs: {}
     pose_features_new.compute_pose_geometry_from_keypoints = (
         lambda *_args, **_kwargs: None
     )
     pose_features_new.normalize_pose_keypoints = lambda *_args, **_kwargs: None
     pose_features_new.resolve_pose_group_indices = lambda *_args, **_kwargs: []
-    pose_api = types.ModuleType("multi_tracker.core.identity.pose.api")
+    pose_api = types.ModuleType("hydra_suite.core.identity.pose.api")
     pose_api.build_runtime_config = lambda *_args, **_kwargs: None
     pose_api.create_pose_backend_from_config = lambda *_args, **_kwargs: None
 
     # Properties sub-package stubs
-    properties_pkg = types.ModuleType("multi_tracker.core.identity.properties")
-    properties_cache = types.ModuleType("multi_tracker.core.identity.properties.cache")
+    properties_pkg = types.ModuleType("hydra_suite.core.identity.properties")
+    properties_cache = types.ModuleType("hydra_suite.core.identity.properties.cache")
     properties_cache.IndividualPropertiesCache = object
     properties_cache.compute_detection_hash = lambda *_args, **_kwargs: ""
     properties_cache.compute_extractor_hash = lambda *_args, **_kwargs: ""
@@ -186,10 +186,10 @@ def _load_worker_module():
     properties_cache.compute_individual_properties_id = lambda *_args, **_kwargs: ""
 
     # Tracking sub-module stubs for density, cnn_features, precompute
-    density = types.ModuleType("multi_tracker.core.tracking.density")
+    density = types.ModuleType("hydra_suite.core.tracking.density")
     density.get_density_region_flags = lambda *_args, **_kwargs: np.zeros(0, dtype=bool)
 
-    cnn_features = types.ModuleType("multi_tracker.core.tracking.cnn_features")
+    cnn_features = types.ModuleType("hydra_suite.core.tracking.cnn_features")
     cnn_features.cnn_build_association_entries = lambda *_args, **_kwargs: (
         None,
         None,
@@ -197,62 +197,62 @@ def _load_worker_module():
     )
     cnn_features.cnn_update_track_history = lambda *_args, **_kwargs: None
 
-    pose_pipeline = types.ModuleType("multi_tracker.core.tracking.pose_pipeline")
+    pose_pipeline = types.ModuleType("hydra_suite.core.tracking.pose_pipeline")
     pose_pipeline.extract_one_crop = lambda *_args, **_kwargs: None
-    precompute = types.ModuleType("multi_tracker.core.tracking.precompute")
+    precompute = types.ModuleType("hydra_suite.core.tracking.precompute")
     precompute.AprilTagPrecomputePhase = object
     precompute.CNNPrecomputePhase = object
     precompute.CropConfig = object
     precompute.UnifiedPrecompute = object
-    profiler = types.ModuleType("multi_tracker.core.tracking.profiler")
+    profiler = types.ModuleType("hydra_suite.core.tracking.profiler")
     profiler.TrackingProfiler = object
 
     stubs = {
         "cv2": make_cv2_stub(),
         "PySide6": pyside,
         "PySide6.QtCore": qtcore,
-        "multi_tracker": multi_tracker_pkg,
-        "multi_tracker.core": core_pkg,
-        "multi_tracker.core.tracking": core_tracking,
-        "multi_tracker.utils": utils_pkg,
-        "multi_tracker.data": data_pkg,
-        "multi_tracker.utils.image_processing": image_processing,
-        "multi_tracker.utils.geometry": geometry,
-        "multi_tracker.utils.video_artifacts": video_artifacts,
-        "multi_tracker.data.detection_cache": detection_cache,
-        "multi_tracker.data.tag_observation_cache": tag_observation_cache,
-        "multi_tracker.utils.batch_optimizer": batch_optimizer,
-        "multi_tracker.utils.frame_prefetcher": frame_prefetcher,
-        "multi_tracker.core.filters": core_filters,
-        "multi_tracker.core.background": core_background,
-        "multi_tracker.core.detectors": core_detectors,
-        "multi_tracker.core.assigners": core_assigners,
-        "multi_tracker.core.identity": core_identity,
-        "multi_tracker.core.filters.kalman": kalman,
-        "multi_tracker.core.background.model": background_model,
-        "multi_tracker.core.assigners.hungarian": assigner,
-        "multi_tracker.core.identity.dataset": identity_dataset,
-        "multi_tracker.core.identity.dataset.generator": identity_dataset_generator,
-        "multi_tracker.core.identity.classification": classification,
-        "multi_tracker.core.identity.classification.apriltag": classification_apriltag,
-        "multi_tracker.core.identity.classification.cnn": classification_cnn,
-        "multi_tracker.core.identity.classification.headtail": classification_headtail,
-        "multi_tracker.core.identity.geometry": identity_geometry,
-        "multi_tracker.core.identity.pose": pose_pkg,
-        "multi_tracker.core.identity.pose.features": pose_features_new,
-        "multi_tracker.core.identity.pose.api": pose_api,
-        "multi_tracker.core.identity.properties": properties_pkg,
-        "multi_tracker.core.identity.properties.cache": properties_cache,
-        "multi_tracker.core.tracking.density": density,
-        "multi_tracker.core.tracking.cnn_features": cnn_features,
-        "multi_tracker.core.tracking.pose_pipeline": pose_pipeline,
-        "multi_tracker.core.tracking.precompute": precompute,
-        "multi_tracker.core.tracking.profiler": profiler,
-        "multi_tracker.core.tracking.tag_features": tag_features,
+        "hydra_suite": hydra_suite_pkg,
+        "hydra_suite.core": core_pkg,
+        "hydra_suite.core.tracking": core_tracking,
+        "hydra_suite.utils": utils_pkg,
+        "hydra_suite.data": data_pkg,
+        "hydra_suite.utils.image_processing": image_processing,
+        "hydra_suite.utils.geometry": geometry,
+        "hydra_suite.utils.video_artifacts": video_artifacts,
+        "hydra_suite.data.detection_cache": detection_cache,
+        "hydra_suite.data.tag_observation_cache": tag_observation_cache,
+        "hydra_suite.utils.batch_optimizer": batch_optimizer,
+        "hydra_suite.utils.frame_prefetcher": frame_prefetcher,
+        "hydra_suite.core.filters": core_filters,
+        "hydra_suite.core.background": core_background,
+        "hydra_suite.core.detectors": core_detectors,
+        "hydra_suite.core.assigners": core_assigners,
+        "hydra_suite.core.identity": core_identity,
+        "hydra_suite.core.filters.kalman": kalman,
+        "hydra_suite.core.background.model": background_model,
+        "hydra_suite.core.assigners.hungarian": assigner,
+        "hydra_suite.core.identity.dataset": identity_dataset,
+        "hydra_suite.core.identity.dataset.generator": identity_dataset_generator,
+        "hydra_suite.core.identity.classification": classification,
+        "hydra_suite.core.identity.classification.apriltag": classification_apriltag,
+        "hydra_suite.core.identity.classification.cnn": classification_cnn,
+        "hydra_suite.core.identity.classification.headtail": classification_headtail,
+        "hydra_suite.core.identity.geometry": identity_geometry,
+        "hydra_suite.core.identity.pose": pose_pkg,
+        "hydra_suite.core.identity.pose.features": pose_features_new,
+        "hydra_suite.core.identity.pose.api": pose_api,
+        "hydra_suite.core.identity.properties": properties_pkg,
+        "hydra_suite.core.identity.properties.cache": properties_cache,
+        "hydra_suite.core.tracking.density": density,
+        "hydra_suite.core.tracking.cnn_features": cnn_features,
+        "hydra_suite.core.tracking.pose_pipeline": pose_pipeline,
+        "hydra_suite.core.tracking.precompute": precompute,
+        "hydra_suite.core.tracking.profiler": profiler,
+        "hydra_suite.core.tracking.tag_features": tag_features,
     }
 
     return load_src_module(
-        "multi_tracker/core/tracking/worker.py",
+        "hydra_suite/core/tracking/worker.py",
         "tracking_worker_under_test",
         stubs=stubs,
     )
@@ -311,7 +311,7 @@ def test_forward_frame_iterator_sync_and_prefetch_paths() -> None:
 
 def test_collapse_obb_axis_theta_chooses_nearest_branch() -> None:
     pf = load_src_module(
-        "multi_tracker/core/identity/geometry.py",
+        "hydra_suite/core/identity/geometry.py",
         "geometry_for_collapse_test",
     )
 
@@ -325,7 +325,7 @@ def test_collapse_obb_axis_theta_chooses_nearest_branch() -> None:
 
 def test_pose_heading_from_keypoints_uses_weighted_centroids() -> None:
     pf = load_src_module(
-        "multi_tracker/core/identity/pose/features.py",
+        "hydra_suite/core/identity/pose/features.py",
         "pose_features_for_heading_test",
     )
 
@@ -360,7 +360,7 @@ def test_pose_heading_from_keypoints_uses_weighted_centroids() -> None:
 
 def test_resolve_pose_group_indices_accepts_names_and_indices() -> None:
     pf = load_src_module(
-        "multi_tracker/core/identity/pose/features.py",
+        "hydra_suite/core/identity/pose/features.py",
         "pose_features_for_indices_test",
     )
 
@@ -429,7 +429,7 @@ def test_confidence_density_enabled_defaults_true_and_respects_flag() -> None:
 
 def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:
     pf = load_src_module(
-        "multi_tracker/core/identity/geometry.py",
+        "hydra_suite/core/identity/geometry.py",
         "geometry_for_orient_flip_test",
     )
 
@@ -452,7 +452,7 @@ def test_backward_orientation_flip_applies_only_to_motion_based_theta() -> None:
 
 def test_select_directed_heading_prefers_pose_by_default() -> None:
     pf = load_src_module(
-        "multi_tracker/core/identity/geometry.py",
+        "hydra_suite/core/identity/geometry.py",
         "geometry_for_heading_select_test",
     )
 
@@ -470,7 +470,7 @@ def test_select_directed_heading_prefers_pose_by_default() -> None:
 
 def test_select_directed_heading_can_prefer_headtail() -> None:
     pf = load_src_module(
-        "multi_tracker/core/identity/geometry.py",
+        "hydra_suite/core/identity/geometry.py",
         "geometry_for_headtail_test",
     )
 

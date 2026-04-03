@@ -5,7 +5,7 @@ from tests.helpers.module_loader import load_src_module
 
 def _load_worker_module():
     return load_src_module(
-        "multi_tracker/posekit/inference/worker.py",
+        "hydra_suite/posekit/inference/worker.py",
         "sleap_export_predict_worker_under_test",
     )
 

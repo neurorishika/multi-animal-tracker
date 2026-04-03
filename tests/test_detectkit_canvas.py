@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from multi_tracker.detectkit.ui.utils import parse_obb_label
+from hydra_suite.detectkit.ui.utils import parse_obb_label
 
 
 def test_parse_obb_label(tmp_path: Path):

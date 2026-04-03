@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 def test_detectkit_package_imports():
-    from multi_tracker.detectkit.ui.constants import (
+    from hydra_suite.detectkit.ui.constants import (
         DEFAULT_PROJECT_FILENAME,
         IMG_EXTS,
         OBB_LABEL_FIELDS,

@@ -4,7 +4,7 @@ import importlib
 
 
 def _load_mod():
-    return importlib.import_module("multi_tracker.runtime.compute_runtime")
+    return importlib.import_module("hydra_suite.runtime.compute_runtime")
 
 
 def test_allowed_runtimes_intersection_includes_explicit_onnx_variants(monkeypatch):

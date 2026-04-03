@@ -5,11 +5,11 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from multi_tracker.core.identity.dataset.oriented_video import (
+from hydra_suite.core.identity.dataset.oriented_video import (
     OrientedTrackVideoExporter,
     resolve_individual_dataset_dir,
 )
-from multi_tracker.data.detection_cache import DetectionCache
+from hydra_suite.data.detection_cache import DetectionCache
 
 
 def _write_video(path: Path, colors: list[tuple[int, int, int]]) -> None:

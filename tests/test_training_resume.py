@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from multi_tracker.training.contracts import (
+from hydra_suite.training.contracts import (
     TrainingHyperParams,
     TrainingRole,
     TrainingRunSpec,
 )
-from multi_tracker.training.runner import build_ultralytics_command
+from hydra_suite.training.runner import build_ultralytics_command
 
 
 def test_resume_flag_in_command():

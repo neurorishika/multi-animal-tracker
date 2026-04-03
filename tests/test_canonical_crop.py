@@ -1,4 +1,4 @@
-"""Tests for multi_tracker.core.tracking.canonical_crop module."""
+"""Tests for hydra_suite.core.tracking.canonical_crop module."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import pytest
 
-from multi_tracker.core.canonicalization.crop import (
+from hydra_suite.core.canonicalization.crop import (
     CanonicalCropResult,
     _compose_affine,
     _rotation_matrix,

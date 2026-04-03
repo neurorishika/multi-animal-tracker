@@ -16,7 +16,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from multi_tracker.utils.frame_prefetcher import (
+from hydra_suite.utils.frame_prefetcher import (
     FramePrefetcher,
     FramePrefetcherBackward,
     SequentialScanPrefetcher,

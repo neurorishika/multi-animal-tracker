@@ -7,7 +7,7 @@ from tests.helpers.module_loader import load_src_module
 
 def _load_pose_inference_module():
     return load_src_module(
-        "multi_tracker/integrations/sleap/service.py",
+        "hydra_suite/integrations/sleap/service.py",
         "pose_inference_sleap_service_under_test",
     )
 

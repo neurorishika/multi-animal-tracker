@@ -28,54 +28,54 @@ def _load_engine_module():
 
     # Load submodules in dependency order
     utils_mod = load_src_module(
-        "multi_tracker/core/detectors/_utils.py",
-        "multi_tracker.core.detectors._utils",
+        "hydra_suite/core/detectors/_utils.py",
+        "hydra_suite.core.detectors._utils",
         stubs=stubs,
     )
     # Ensure the _utils module is importable by the geometry/artifact mixins
-    sys.modules["multi_tracker.core.detectors._utils"] = utils_mod
+    sys.modules["hydra_suite.core.detectors._utils"] = utils_mod
 
     geom_mod = load_src_module(
-        "multi_tracker/core/detectors/_obb_geometry.py",
-        "multi_tracker.core.detectors._obb_geometry",
+        "hydra_suite/core/detectors/_obb_geometry.py",
+        "hydra_suite.core.detectors._obb_geometry",
         stubs=stubs,
     )
-    sys.modules["multi_tracker.core.detectors._obb_geometry"] = geom_mod
+    sys.modules["hydra_suite.core.detectors._obb_geometry"] = geom_mod
 
     art_mod = load_src_module(
-        "multi_tracker/core/detectors/_runtime_artifacts.py",
-        "multi_tracker.core.detectors._runtime_artifacts",
+        "hydra_suite/core/detectors/_runtime_artifacts.py",
+        "hydra_suite.core.detectors._runtime_artifacts",
         stubs=stubs,
     )
-    sys.modules["multi_tracker.core.detectors._runtime_artifacts"] = art_mod
+    sys.modules["hydra_suite.core.detectors._runtime_artifacts"] = art_mod
 
     bg_mod = load_src_module(
-        "multi_tracker/core/detectors/bg_detector.py",
-        "multi_tracker.core.detectors.bg_detector",
+        "hydra_suite/core/detectors/bg_detector.py",
+        "hydra_suite.core.detectors.bg_detector",
         stubs=stubs,
     )
-    sys.modules["multi_tracker.core.detectors.bg_detector"] = bg_mod
+    sys.modules["hydra_suite.core.detectors.bg_detector"] = bg_mod
 
     yolo_mod = load_src_module(
-        "multi_tracker/core/detectors/yolo_detector.py",
-        "multi_tracker.core.detectors.yolo_detector",
+        "hydra_suite/core/detectors/yolo_detector.py",
+        "hydra_suite.core.detectors.yolo_detector",
         stubs=stubs,
     )
-    sys.modules["multi_tracker.core.detectors.yolo_detector"] = yolo_mod
+    sys.modules["hydra_suite.core.detectors.yolo_detector"] = yolo_mod
 
     filter_mod = load_src_module(
-        "multi_tracker/core/detectors/detection_filter.py",
-        "multi_tracker.core.detectors.detection_filter",
+        "hydra_suite/core/detectors/detection_filter.py",
+        "hydra_suite.core.detectors.detection_filter",
         stubs=stubs,
     )
-    sys.modules["multi_tracker.core.detectors.detection_filter"] = filter_mod
+    sys.modules["hydra_suite.core.detectors.detection_filter"] = filter_mod
 
     factory_mod = load_src_module(
-        "multi_tracker/core/detectors/factory.py",
-        "multi_tracker.core.detectors.factory",
+        "hydra_suite/core/detectors/factory.py",
+        "hydra_suite.core.detectors.factory",
         stubs=stubs,
     )
-    sys.modules["multi_tracker.core.detectors.factory"] = factory_mod
+    sys.modules["hydra_suite.core.detectors.factory"] = factory_mod
 
     # Assemble combined namespace matching what the old engine.py exported
     mod = types.ModuleType("detectors_engine_under_test")
@@ -525,7 +525,7 @@ def test_sequential_stage2_obb_runs_in_batched_crop_call() -> None:
 
 def test_headtail_hint_uses_batched_classify_call() -> None:
     """Verify _compute_headtail_hints delegates to analyzer.analyze_crops."""
-    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
@@ -558,7 +558,7 @@ def test_headtail_hint_uses_batched_classify_call() -> None:
 
 
 def test_validate_headtail_class_names_accepts_five_class_schema() -> None:
-    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     normalized = HeadTailAnalyzer._validate_class_names(
         ["head_up", "head_down", "head_left", "head_right", "head_unknown"],
@@ -570,7 +570,7 @@ def test_validate_headtail_class_names_accepts_five_class_schema() -> None:
 
 
 def test_validate_headtail_class_names_rejects_partial_schema() -> None:
-    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     with pytest.raises(ValueError, match="Expected exactly"):
         HeadTailAnalyzer._validate_class_names(
@@ -580,7 +580,7 @@ def test_validate_headtail_class_names_rejects_partial_schema() -> None:
 
 def test_load_headtail_yolo_model_requires_supported_schema() -> None:
     """Loading a YOLO head-tail model populates _headtail_analyzer."""
-    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
@@ -629,7 +629,7 @@ def test_load_headtail_yolo_model_requires_supported_schema() -> None:
 
 def test_load_headtail_model_rejects_invalid_named_schema() -> None:
     """Strict validation rejects unsupported 3-class schema."""
-    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
@@ -661,7 +661,7 @@ def test_load_headtail_model_rejects_invalid_named_schema() -> None:
 
 def test_classkit_headtail_hints_abstain_on_up_down_unknown() -> None:
     """classkit_tiny backend abstains on up/down/unknown directions."""
-    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     mod = _load_engine_module()
     det = mod.YOLOOBBDetector.__new__(mod.YOLOOBBDetector)
@@ -757,7 +757,7 @@ def test_filter_overlapping_uses_precise_iou_for_all_overlaps() -> None:
 
 def test_loads_notebook_tiny_headtail_state_dict(tmp_path: Path) -> None:
     """HeadTailAnalyzer loads a notebook-style raw state_dict checkpoint."""
-    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     # Build and save a notebook-style raw state_dict checkpoint
     tiny = HeadTailAnalyzer._build_tiny_classifier(input_size=(128, 64))
@@ -779,7 +779,7 @@ def test_tiny_headtail_inference_converts_bgr_to_rgb() -> None:
     """HeadTailAnalyzer._predict converts BGR crops to RGB for tiny backend."""
     import torch.nn as nn
 
-    from multi_tracker.core.identity.classification.headtail import HeadTailAnalyzer
+    from hydra_suite.core.identity.classification.headtail import HeadTailAnalyzer
 
     class _Probe(nn.Module):
         # Logit uses channel0 - channel2. If RGB conversion is correct, BGR-red

@@ -1,11 +1,11 @@
-"""Tests for multi_tracker.paths module."""
+"""Tests for hydra_suite.paths module."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from multi_tracker.paths import (
+from hydra_suite.paths import (
     get_advanced_config_path,
     get_brand_icon_bytes,
     get_bundled_config_names,
@@ -18,7 +18,7 @@ from multi_tracker.paths import (
 
 
 def test_get_brand_icon_bytes_returns_bytes():
-    data = get_brand_icon_bytes("multianimaltracker.svg")
+    data = get_brand_icon_bytes("hydra.svg")
     assert isinstance(data, bytes)
     assert b"<svg" in data or b"<?xml" in data
 
@@ -58,11 +58,11 @@ def test_get_bundled_skeleton_names_returns_list():
 
 def test_user_config_dir_is_writable(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "multi_tracker.paths.user_config_dir",
+        "hydra_suite.paths.user_config_dir",
         lambda *a, **kw: str(tmp_path / "config"),
     )
 
-    import multi_tracker.paths as paths_mod
+    import hydra_suite.paths as paths_mod
 
     d = paths_mod._user_config_dir()
     assert d.exists()
@@ -71,11 +71,11 @@ def test_user_config_dir_is_writable(tmp_path, monkeypatch):
 
 def test_user_data_dir_is_writable(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "multi_tracker.paths.user_data_dir",
+        "hydra_suite.paths.user_data_dir",
         lambda *a, **kw: str(tmp_path / "data"),
     )
 
-    import multi_tracker.paths as paths_mod
+    import hydra_suite.paths as paths_mod
 
     d = paths_mod._user_data_dir()
     assert d.exists()
@@ -101,7 +101,7 @@ def test_get_advanced_config_path_returns_path():
 
 
 def test_get_training_workspace_dir_returns_path():
-    from multi_tracker.paths import get_training_workspace_dir
+    from hydra_suite.paths import get_training_workspace_dir
 
     p = get_training_workspace_dir("YOLO")
     assert isinstance(p, Path)
@@ -112,7 +112,7 @@ def test_mat_config_dir_env_override(tmp_path, monkeypatch):
     """MAT_CONFIG_DIR overrides the config directory."""
     custom = tmp_path / "my_config"
     monkeypatch.setenv("MAT_CONFIG_DIR", str(custom))
-    import multi_tracker.paths as paths_mod
+    import hydra_suite.paths as paths_mod
 
     d = paths_mod._user_config_dir()
     assert d == custom
@@ -123,7 +123,7 @@ def test_mat_data_dir_env_override(tmp_path, monkeypatch):
     """MAT_DATA_DIR overrides the data directory."""
     custom = tmp_path / "my_data"
     monkeypatch.setenv("MAT_DATA_DIR", str(custom))
-    import multi_tracker.paths as paths_mod
+    import hydra_suite.paths as paths_mod
 
     d = paths_mod._user_data_dir()
     assert d == custom
@@ -134,7 +134,7 @@ def test_env_override_propagates_to_models(tmp_path, monkeypatch):
     """MAT_DATA_DIR override propagates to get_models_dir()."""
     custom = tmp_path / "shared"
     monkeypatch.setenv("MAT_DATA_DIR", str(custom))
-    from multi_tracker.paths import get_models_dir
+    from hydra_suite.paths import get_models_dir
 
     models = get_models_dir()
     assert models == custom / "models"
@@ -143,8 +143,8 @@ def test_env_override_propagates_to_models(tmp_path, monkeypatch):
 
 def test_get_presets_dir_seeds_on_first_use(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
-    monkeypatch.setattr("multi_tracker.paths._user_config_dir", lambda: config_dir)
-    from multi_tracker.paths import get_presets_dir
+    monkeypatch.setattr("hydra_suite.paths._user_config_dir", lambda: config_dir)
+    from hydra_suite.paths import get_presets_dir
 
     p = get_presets_dir()
     assert (p / ".seeded").exists()
@@ -153,8 +153,8 @@ def test_get_presets_dir_seeds_on_first_use(tmp_path, monkeypatch):
 
 def test_get_skeleton_dir_seeds_on_first_use(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
-    monkeypatch.setattr("multi_tracker.paths._user_config_dir", lambda: config_dir)
-    from multi_tracker.paths import get_skeleton_dir
+    monkeypatch.setattr("hydra_suite.paths._user_config_dir", lambda: config_dir)
+    from hydra_suite.paths import get_skeleton_dir
 
     p = get_skeleton_dir()
     assert (p / ".seeded").exists()

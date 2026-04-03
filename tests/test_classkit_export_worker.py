@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from multi_tracker.classkit.jobs.task_workers import ExportWorker
+from hydra_suite.classkit.jobs.task_workers import ExportWorker
 
 
 def _run_worker_and_collect_error(worker: ExportWorker) -> list[str]:

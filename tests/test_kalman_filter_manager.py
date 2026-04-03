@@ -17,22 +17,22 @@ def _make_gpu_utils_stub() -> types.ModuleType:
 
         return _decorator
 
-    multi_tracker_pkg = types.ModuleType("multi_tracker")
-    multi_tracker_pkg.__path__ = []
-    utils_pkg = types.ModuleType("multi_tracker.utils")
+    hydra_suite_pkg = types.ModuleType("hydra_suite")
+    hydra_suite_pkg.__path__ = []
+    utils_pkg = types.ModuleType("hydra_suite.utils")
     utils_pkg.__path__ = []
-    gpu_utils_mod = types.ModuleType("multi_tracker.utils.gpu_utils")
+    gpu_utils_mod = types.ModuleType("hydra_suite.utils.gpu_utils")
     gpu_utils_mod.NUMBA_AVAILABLE = False
     gpu_utils_mod.njit = _njit
     return {
-        "multi_tracker": multi_tracker_pkg,
-        "multi_tracker.utils": utils_pkg,
-        "multi_tracker.utils.gpu_utils": gpu_utils_mod,
+        "hydra_suite": hydra_suite_pkg,
+        "hydra_suite.utils": utils_pkg,
+        "hydra_suite.utils.gpu_utils": gpu_utils_mod,
     }
 
 
 kalman_mod = load_src_module(
-    "multi_tracker/core/filters/kalman.py",
+    "hydra_suite/core/filters/kalman.py",
     "kalman_under_test",
     stubs={"cv2": make_cv2_stub(), **_make_gpu_utils_stub()},
 )

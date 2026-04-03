@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from multi_tracker.classkit.store.db import ClassKitDB
+from hydra_suite.classkit.store.db import ClassKitDB
 
 
 def _seed_model_entry(

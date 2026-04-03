@@ -7,7 +7,7 @@ import numpy as np
 from tests.helpers.module_loader import load_src_module
 
 detection_cache_mod = load_src_module(
-    "multi_tracker/data/detection_cache.py",
+    "hydra_suite/data/detection_cache.py",
     "detection_cache_under_test",
 )
 DetectionCache = detection_cache_mod.DetectionCache

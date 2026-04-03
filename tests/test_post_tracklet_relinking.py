@@ -5,7 +5,7 @@ import pandas as pd
 from tests.helpers.module_loader import load_src_module
 
 processing_mod = load_src_module(
-    "multi_tracker/core/post/processing.py",
+    "hydra_suite/core/post/processing.py",
     "post_processing_relink_under_test",
 )
 
