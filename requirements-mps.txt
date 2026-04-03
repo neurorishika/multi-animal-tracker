@@ -1,4 +1,4 @@
-# Apple Silicon (MPS) packages for multi-animal-tracker
+# Apple Silicon (MPS) packages for hydra-suite
 # Install with: uv pip install -v -r requirements-mps.txt
 #
 # Compatible with: M1, M2, M3, M4 chips (macOS 12.3+)

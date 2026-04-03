@@ -1,13 +1,13 @@
-# pyproject.toml - Project configuration for multi-animal-tracker
+# pyproject.toml - Project configuration for hydra-suite (HYDRA)
 
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "multi-animal-tracker"
+name = "hydra-suite"
 version = "1.0.0"
-description = "High-performance multi-animal tracking and pose-labeling toolkit"
+description = "HYDRA: Holistic YOLO-based Detection Recognition and Analysis Suite"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -67,7 +67,7 @@ cuda13 = [
 ]
 cuda = [
     # Alias for cuda12 (most common)
-    "multi-animal-tracker[cuda12]",
+    "hydra-suite[cuda12]",
 ]
 mps = [
     "onnxruntime>=1.16",
@@ -95,21 +95,18 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/neurorishika/multi-animal-tracker"
-Documentation = "https://github.com/neurorishika/multi-animal-tracker/tree/main/docs"
-Repository = "https://github.com/neurorishika/multi-animal-tracker"
-Issues = "https://github.com/neurorishika/multi-animal-tracker/issues"
+Homepage = "https://github.com/neurorishika/hydra-suite"
+Documentation = "https://github.com/neurorishika/hydra-suite/tree/main/docs"
+Repository = "https://github.com/neurorishika/hydra-suite"
+Issues = "https://github.com/neurorishika/hydra-suite/issues"
 
 [project.scripts]
-multi-animal-tracker = "multi_tracker.mat.app.launcher:main"
-mat = "multi_tracker.mat.app.launcher:main"
-posekit-labeler = "multi_tracker.posekit.ui.main:main"
-posekit = "multi_tracker.posekit.ui.main:main"
-filterkit = "multi_tracker.filterkit.gui:main"
-classkit-labeler = "multi_tracker.classkit.app:main"
-classkit = "multi_tracker.classkit.app:main"
-refinekit = "multi_tracker.refinekit.app:main"
-detectkit = "multi_tracker.detectkit.app:main"
+hydra = "hydra_suite.tracker.app.launcher:main"
+posekit = "hydra_suite.posekit.ui.main:main"
+filterkit = "hydra_suite.filterkit.gui:main"
+classkit = "hydra_suite.classkit.app:main"
+refinekit = "hydra_suite.refinekit.app:main"
+detectkit = "hydra_suite.detectkit.app:main"
 
 # ============================================================================
 # Black - Code formatter
@@ -182,7 +179,7 @@ filterwarnings = [
 # Coverage - Code coverage
 # ============================================================================
 [tool.coverage.run]
-source = ["src/multi_tracker"]
+source = ["src/hydra_suite"]
 omit = [
     "*/tests/*",
     "*/test_*.py",
@@ -238,7 +235,7 @@ where = ["src"]
 exclude = ["brand", "brand.*"]
 
 [tool.setuptools.package-data]
-"multi_tracker" = [
+"hydra_suite" = [
     "resources/brand/*.svg",
     "resources/brand/*.png",
     "resources/configs/*.json",

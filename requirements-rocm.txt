@@ -1,4 +1,4 @@
-# AMD ROCm GPU packages for multi-animal-tracker
+# AMD ROCm GPU packages for hydra-suite
 # Install with: uv pip install -v -r requirements-rocm.txt
 #
 # CRITICAL: System-level ROCm 6.0+ must be installed first.

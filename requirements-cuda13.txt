@@ -1,4 +1,4 @@
-# CUDA 13.x install profile for multi-animal-tracker
+# CUDA 13.x install profile for hydra-suite
 # Install with: uv pip install -v -r requirements-cuda13.txt
 
 --extra-index-url https://download.pytorch.org/whl/cu130

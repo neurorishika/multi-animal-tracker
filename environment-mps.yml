@@ -1,4 +1,4 @@
-name: multi-animal-tracker-mps
+name: hydra-mps
 channels:
 - conda-forge
 - defaults

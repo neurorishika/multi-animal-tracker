@@ -1,4 +1,4 @@
-# CPU packages for multi-animal-tracker
+# CPU packages for hydra-suite
 # Install with: uv pip install -v -r requirements.txt
 #
 # Base dependencies (numpy, scipy, PySide6, ultralytics, etc.) are declared

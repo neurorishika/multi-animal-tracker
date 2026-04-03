@@ -1,4 +1,4 @@
-name: multi-animal-tracker-base
+name: hydra-base
 channels:
 - conda-forge
 - defaults
