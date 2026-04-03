@@ -1,8 +1,8 @@
-site_name: Multi-Animal-Tracker Docs
-site_description: User and developer documentation for Multi-Animal-Tracker and PoseKit
-site_url: https://neurorishika.github.io/multi-animal-tracker/
-repo_url: https://github.com/neurorishika/multi-animal-tracker
-repo_name: neurorishika/multi-animal-tracker
+site_name: HYDRA Suite Docs
+site_description: User and developer documentation for HYDRA Suite
+site_url: https://neurorishika.github.io/hydra-suite/
+repo_url: https://github.com/neurorishika/hydra-suite
+repo_name: neurorishika/hydra-suite
 edit_uri: edit/main/docs/
 strict: true
 
@@ -91,7 +91,7 @@ nav:
   - Installation: getting-started/installation.md
   - Environments and Makefile: getting-started/environments.md
   - Integrations: getting-started/integrations.md
-  - Quickstart (MAT): getting-started/quickstart-mat.md
+  - Quickstart (MAT): getting-started/quickstart-hydra.md
   - Quickstart (PoseKit): getting-started/quickstart-posekit.md
   - Platform Notes: getting-started/platforms.md
 - User Guide:
@@ -123,7 +123,7 @@ nav:
   - Contributing: developer-guide/contributing.md
 - Reference:
   - API Index: reference/api-index.md
-  - UI Components (MAT): reference/ui-components-mat.md
+  - UI Components (MAT): reference/ui-components-hydra.md
   - UI Components (PoseKit): reference/ui-components-posekit.md
   - API (App): reference/api-app.md
   - API (Core): reference/api-core.md

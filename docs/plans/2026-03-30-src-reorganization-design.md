@@ -6,7 +6,7 @@
 
 ## Problem
 
-The `multi_tracker/` package contains 5 independent applications (MAT, PoseKit,
+The `hydra_suite/` package contains 5 independent applications (MAT, PoseKit,
 ClassKit, Afterhours, DataSieve) but MAT's code is "ambient" — its `gui/`,
 `app/` live at the package root alongside satellite apps, making it unclear what
 belongs to MAT vs. what is shared infrastructure. DataSieve is buried under a
@@ -16,7 +16,7 @@ imports from satellite app packages.
 ## Target Directory Structure
 
 ```
-multi_tracker/
+hydra_suite/
   # ── App layer (top) ──────────────────────────────────
   mat/                        # MAT main tracker app
     app/                      #   launcher, bootstrap  (moved from app/)
@@ -89,7 +89,7 @@ runtime/  data/  training/  utils/   (shared infrastructure)
 **Fix:** Move `confidence_density.py` (or the relevant functions:
 `compute_density_map_from_cache`, `export_diagnostic_video`, `save_regions`,
 `load_regions`) from `afterhours/core/` into `core/tracking/density.py`.
-Afterhours then imports from `multi_tracker.core.tracking.density`.
+Afterhours then imports from `hydra_suite.core.tracking.density`.
 
 **Rationale:** Density map computation directly influences assignment behavior
 during forward and backward tracking passes. It is core tracking pipeline logic.
@@ -101,7 +101,7 @@ during forward and backward tracking passes. It is core tracking pipeline logic.
 
 **Fix:** Move `PoseInferenceService` into `integrations/sleap/service.py`.
 Both `core/identity/pose/backends/sleap.py` and `posekit/` import from
-`multi_tracker.integrations.sleap.service`.
+`hydra_suite.integrations.sleap.service`.
 
 **Rationale:** `PoseInferenceService` manages SLEAP as an external tool
 (launching, communicating with the SLEAP process). This is integration logic,
@@ -127,16 +127,16 @@ All `[project.scripts]` in `pyproject.toml` need path updates:
 
 | Entry point | Current target | New target |
 |---|---|---|
-| `mat` | `multi_tracker.app.launcher:main` | `multi_tracker.mat.app.launcher:main` |
-| `datasieve` | `multi_tracker.tools.data_sieve.gui:main` | `multi_tracker.datasieve.gui:main` |
+| `hydra` | `hydra_suite.app.launcher:main` | `hydra_suite.tracker.app.launcher:main` |
+| `datasieve` | `hydra_suite.tools.data_sieve.gui:main` | `hydra_suite.datasieve.gui:main` |
 | `posekit-labeler` | *(unchanged)* | *(unchanged)* |
 | `classkit-labeler` | *(unchanged)* | *(unchanged)* |
 | `mat-afterhours` | *(unchanged)* | *(unchanged)* |
 
 ## Import Update Scope
 
-Every `from multi_tracker.app`, `from multi_tracker.gui`,
-`from multi_tracker.tools`, `from multi_tracker.core.runtime`, and the 4
+Every `from hydra_suite.app`, `from hydra_suite.gui`,
+`from hydra_suite.tools`, `from hydra_suite.core.runtime`, and the 4
 reverse-dependency import sites need updating. A bulk find-and-replace pass
 across `src/` and `tests/` will cover this.
 

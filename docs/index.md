@@ -1,10 +1,10 @@
-# Multi-Animal-Tracker Documentation
+# HYDRA Suite Documentation
 
-![Multi-Animal-Tracker Banner](assets/banner.png)
+![HYDRA Suite Banner](assets/banner.png)
 
 Welcome to the central documentation for:
 
-- `multianimaltracker`/ `mat` (tracking GUI)
+- `hydra`/ `hydra` (tracking GUI)
 - `posekit-labeler` / `pose` (pose labeling GUI)
 
 !!! info "Use This Site as the Source of Truth"
@@ -60,9 +60,9 @@ Welcome to the central documentation for:
 
 ```bash
 # Tracking GUI
-multianimaltracker
+hydra
 # or
-mat
+hydra
 
 # Pose labeling GUI
 posekit-labeler
@@ -90,11 +90,11 @@ pose
 
 This documentation maps to the current package layout:
 
-- `multi_tracker.app`
-- `multi_tracker.core`
-- `multi_tracker.data`
-- `multi_tracker.gui`
-- `multi_tracker.posekit`
-- `multi_tracker.utils`
+- `hydra_suite.app`
+- `hydra_suite.core`
+- `hydra_suite.data`
+- `hydra_suite.gui`
+- `hydra_suite.posekit`
+- `hydra_suite.utils`
 
 Legacy flat docs are archived under `docs/archive/legacy-flat/`.

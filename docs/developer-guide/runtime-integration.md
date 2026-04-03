@@ -18,8 +18,8 @@ No feature should require users to configure a separate runtime selector.
 
 Runtime support and translation logic are centralized in:
 
-- `src/multi_tracker/core/runtime/compute_runtime.py`
-- `src/multi_tracker/utils/gpu_utils.py`
+- `src/hydra_suite/core/runtime/compute_runtime.py`
+- `src/hydra_suite/utils/gpu_utils.py`
 
 Core public helpers:
 

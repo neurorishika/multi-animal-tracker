@@ -2,12 +2,12 @@
 
 ## Tracking App
 
-Entry: `multi_tracker.mat.app.launcher:main`
+Entry: `hydra_suite.tracker.app.launcher:main`
 
 ### Commands
 
-- `multianimaltracker`
-- `mat`
+- `hydra`
+- `hydra`
 
 ### Flags
 
@@ -18,7 +18,7 @@ Entry: `multi_tracker.mat.app.launcher:main`
 
 ## PoseKit Labeler
 
-Entry: `multi_tracker.posekit.ui.main:main`
+Entry: `hydra_suite.posekit.ui.main:main`
 
 ### Commands
 
@@ -35,7 +35,7 @@ Entry: `multi_tracker.posekit.ui.main:main`
 ## Useful Examples
 
 ```bash
-mat --log-level DEBUG
+hydra --log-level DEBUG
 posekit-labeler /path/to/images --out /path/to/project
 pose /path/to/images --new
 ```

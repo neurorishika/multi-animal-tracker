@@ -4,9 +4,9 @@
 
 **Goal:** Create DetectKit, an independent application for OBB detection model training -- dataset curation, visualization, X-AnyLabeling integration, training, and evaluation -- without requiring MAT. Replaces the Training Center dialog in MAT entirely.
 
-**Architecture:** DetectKit follows the ClassKit standalone-workspace model (own project directory, not embedded in datasets) with PoseKit's UI patterns (three-panel layout, QGraphicsView canvas, project persistence). Left panel: dataset list + image list + X-AnyLabeling launch. Center panel: read-only OBB image viewer with zoom/pan/scroll. Right panel: training config, augmentation, run controls, loss plot, history. The existing `multi_tracker.training` framework is reused as-is.
+**Architecture:** DetectKit follows the ClassKit standalone-workspace model (own project directory, not embedded in datasets) with PoseKit's UI patterns (three-panel layout, QGraphicsView canvas, project persistence). Left panel: dataset list + image list + X-AnyLabeling launch. Center panel: read-only OBB image viewer with zoom/pan/scroll. Right panel: training config, augmentation, run controls, loss plot, history. The existing `hydra_suite.training` framework is reused as-is.
 
-**Tech Stack:** Python 3.10+, PySide6 (QGraphicsView for canvas), cv2, numpy. Reuses `multi_tracker.training`, `multi_tracker.paths`, `multi_tracker.integrations.xanylabeling`.
+**Tech Stack:** Python 3.10+, PySide6 (QGraphicsView for canvas), cv2, numpy. Reuses `hydra_suite.training`, `hydra_suite.paths`, `hydra_suite.integrations.xanylabeling`.
 
 ---
 
@@ -21,7 +21,7 @@ Phase 2 (separate plan, later): advanced features (active learning, model compar
 ## File Map
 
 ```
-src/multi_tracker/detectkit/
+src/hydra_suite/detectkit/
     __init__.py                          # Package marker
     app.py                               # Entry point (QApplication + startup)
     ui/
@@ -51,7 +51,7 @@ src/multi_tracker/detectkit/
 | 7. Evaluation + history panels | `detectkit/ui/panels/evaluation_panel.py`, `detectkit/ui/panels/history_panel.py` | |
 | 8. Remove Training Center from MAT | | `mat/gui/main_window.py`, `pyproject.toml` |
 
-All paths relative to `src/multi_tracker/`. Tests in `tests/test_detectkit_*.py`.
+All paths relative to `src/hydra_suite/`. Tests in `tests/test_detectkit_*.py`.
 
 ---
 
@@ -60,39 +60,39 @@ All paths relative to `src/multi_tracker/`. Tests in `tests/test_detectkit_*.py`
 **Why:** Get `detectkit` launchable as a console command that shows an empty window.
 
 **Files:**
-- Create: `src/multi_tracker/detectkit/__init__.py`
-- Create: `src/multi_tracker/detectkit/app.py`
-- Create: `src/multi_tracker/detectkit/ui/__init__.py`
-- Create: `src/multi_tracker/detectkit/ui/panels/__init__.py`
-- Create: `src/multi_tracker/detectkit/ui/constants.py`
+- Create: `src/hydra_suite/detectkit/__init__.py`
+- Create: `src/hydra_suite/detectkit/app.py`
+- Create: `src/hydra_suite/detectkit/ui/__init__.py`
+- Create: `src/hydra_suite/detectkit/ui/panels/__init__.py`
+- Create: `src/hydra_suite/detectkit/ui/constants.py`
 - Modify: `pyproject.toml`
 - Test: `tests/test_detectkit_skeleton.py`
 
 - [ ] **Step 1: Create package directory structure**
 
 ```bash
-mkdir -p src/multi_tracker/detectkit/ui/panels
+mkdir -p src/hydra_suite/detectkit/ui/panels
 ```
 
 - [ ] **Step 2: Create __init__.py files**
 
 ```python
-# src/multi_tracker/detectkit/__init__.py
+# src/hydra_suite/detectkit/__init__.py
 """DetectKit -- OBB detection model training and dataset curation."""
 ```
 
 ```python
-# src/multi_tracker/detectkit/ui/__init__.py
+# src/hydra_suite/detectkit/ui/__init__.py
 ```
 
 ```python
-# src/multi_tracker/detectkit/ui/panels/__init__.py
+# src/hydra_suite/detectkit/ui/panels/__init__.py
 ```
 
 - [ ] **Step 3: Create constants.py**
 
 ```python
-# src/multi_tracker/detectkit/ui/constants.py
+# src/hydra_suite/detectkit/ui/constants.py
 """DetectKit constants."""
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ MAX_ANALYSIS_IMAGES = 500
 - [ ] **Step 4: Create app.py entry point**
 
 ```python
-# src/multi_tracker/detectkit/app.py
+# src/hydra_suite/detectkit/app.py
 """DetectKit application entry point."""
 from __future__ import annotations
 
@@ -142,7 +142,7 @@ def main() -> None:
     app.setDesktopFileName("detectkit")
 
     try:
-        from multi_tracker.paths import get_brand_qicon
+        from hydra_suite.paths import get_brand_qicon
 
         icon = get_brand_qicon("detectkit.svg")
         if icon and not icon.isNull():
@@ -150,7 +150,7 @@ def main() -> None:
     except Exception:
         pass
 
-    from multi_tracker.detectkit.ui.main_window import MainWindow
+    from hydra_suite.detectkit.ui.main_window import MainWindow
 
     window = MainWindow()
     window.resize(1600, 1000)
@@ -165,7 +165,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Create minimal main window placeholder** (will be replaced in Task 4)
 
 ```python
-# src/multi_tracker/detectkit/ui/main_window.py
+# src/hydra_suite/detectkit/ui/main_window.py
 """DetectKit main window -- placeholder for Task 4."""
 from __future__ import annotations
 
@@ -183,7 +183,7 @@ class MainWindow(QMainWindow):
 
 In the `[project.scripts]` section (after the `afterhours` line), add:
 ```toml
-detectkit = "multi_tracker.detectkit.app:main"
+detectkit = "hydra_suite.detectkit.app:main"
 ```
 
 - [ ] **Step 7: Write test**
@@ -195,8 +195,8 @@ from __future__ import annotations
 
 
 def test_detectkit_package_imports():
-    import multi_tracker.detectkit
-    from multi_tracker.detectkit.ui.constants import (
+    import hydra_suite.detectkit
+    from hydra_suite.detectkit.ui.constants import (
         DEFAULT_PROJECT_FILENAME,
         IMG_EXTS,
         OBB_LABEL_FIELDS,
@@ -214,7 +214,7 @@ Expected: PASS
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/multi_tracker/detectkit/ tests/test_detectkit_skeleton.py pyproject.toml
+git add src/hydra_suite/detectkit/ tests/test_detectkit_skeleton.py pyproject.toml
 git commit -m "feat(detectkit): create package skeleton and entry point"
 ```
 
@@ -225,9 +225,9 @@ git commit -m "feat(detectkit): create package skeleton and entry point"
 **Why:** DetectKit needs persistent projects that store source dataset paths, class names, training settings, and session state. Follows ClassKit standalone-workspace pattern.
 
 **Files:**
-- Create: `src/multi_tracker/detectkit/ui/models.py`
-- Create: `src/multi_tracker/detectkit/ui/project.py`
-- Create: `src/multi_tracker/detectkit/ui/utils.py`
+- Create: `src/hydra_suite/detectkit/ui/models.py`
+- Create: `src/hydra_suite/detectkit/ui/project.py`
+- Create: `src/hydra_suite/detectkit/ui/utils.py`
 - Test: `tests/test_detectkit_project.py`
 
 - [ ] **Step 1: Write test for project model**
@@ -240,7 +240,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from multi_tracker.detectkit.ui.models import DetectKitProject, OBBSource
+from hydra_suite.detectkit.ui.models import DetectKitProject, OBBSource
 
 
 def test_project_roundtrip(tmp_path: Path):
@@ -295,14 +295,14 @@ The `load()` method should iterate over known field names, type-cast based on th
 - [ ] **Step 4: Create project.py**
 
 Functions for project lifecycle:
-- `get_recent_projects_path()` -- returns path to `~/.local/share/multi-animal-tracker/detectkit/recent_projects.json`
+- `get_recent_projects_path()` -- returns path to `~/.local/share/hydra-suite/detectkit/recent_projects.json`
 - `load_recent_projects()` / `save_recent_projects(paths)` / `add_to_recent(project_dir)` -- manage recent projects list (max 20)
 - `project_file_path(project_dir)` -- returns `project_dir / DEFAULT_PROJECT_FILENAME`
 - `open_project(project_dir)` -- load existing project, add to recent
 - `create_project(project_dir, class_name)` -- create new project with defaults, save, add to recent
 - `save_project(proj)` -- save project to its directory
 
-Uses `multi_tracker.paths._user_data_dir()` for the recent projects storage path, with fallback to `~/.detectkit/`.
+Uses `hydra_suite.paths._user_data_dir()` for the recent projects storage path, with fallback to `~/.detectkit/`.
 
 - [ ] **Step 5: Create utils.py**
 
@@ -320,7 +320,7 @@ Expected: PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/multi_tracker/detectkit/ui/models.py src/multi_tracker/detectkit/ui/project.py src/multi_tracker/detectkit/ui/utils.py tests/test_detectkit_project.py
+git add src/hydra_suite/detectkit/ui/models.py src/hydra_suite/detectkit/ui/project.py src/hydra_suite/detectkit/ui/utils.py tests/test_detectkit_project.py
 git commit -m "feat(detectkit): add project model and persistence layer"
 ```
 
@@ -331,7 +331,7 @@ git commit -m "feat(detectkit): add project model and persistence layer"
 **Why:** The center panel needs a read-only image viewer that draws OBB polygons with zoom, pan, and scroll. Based on PoseKit's QGraphicsView pattern.
 
 **Files:**
-- Create: `src/multi_tracker/detectkit/ui/canvas.py`
+- Create: `src/hydra_suite/detectkit/ui/canvas.py`
 - Test: `tests/test_detectkit_canvas.py`
 
 - [ ] **Step 1: Write test for OBB label parsing** (canvas rendering is tested manually)
@@ -343,7 +343,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from multi_tracker.detectkit.ui.utils import parse_obb_label
+from hydra_suite.detectkit.ui.utils import parse_obb_label
 
 
 def test_parse_obb_label(tmp_path: Path):
@@ -397,7 +397,7 @@ Run: `python -m pytest tests/test_detectkit_canvas.py tests/test_detectkit_proje
 Expected: All PASS
 
 ```bash
-git add src/multi_tracker/detectkit/ui/canvas.py tests/test_detectkit_canvas.py
+git add src/hydra_suite/detectkit/ui/canvas.py tests/test_detectkit_canvas.py
 git commit -m "feat(detectkit): add read-only OBB canvas viewer"
 ```
 
@@ -408,7 +408,7 @@ git commit -m "feat(detectkit): add read-only OBB canvas viewer"
 **Why:** Replace the placeholder main window with the real three-panel layout: left (dataset), center (canvas), right (training). Includes welcome page, project open/create, and menu bar.
 
 **Files:**
-- Replace: `src/multi_tracker/detectkit/ui/main_window.py`
+- Replace: `src/hydra_suite/detectkit/ui/main_window.py`
 - Create: stub panels (empty QWidgets with `set_project` and `collect_state` method signatures)
 
 - [ ] **Step 1: Create stub panels for compilation**
@@ -444,13 +444,13 @@ The main window should have:
 
 - [ ] **Step 3: Verify syntax**
 
-Run: `python -c "import ast; ast.parse(open('src/multi_tracker/detectkit/ui/main_window.py').read()); print('OK')"`
+Run: `python -c "import ast; ast.parse(open('src/hydra_suite/detectkit/ui/main_window.py').read()); print('OK')"`
 Expected: OK
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add src/multi_tracker/detectkit/ui/main_window.py src/multi_tracker/detectkit/ui/panels/
+git add src/hydra_suite/detectkit/ui/main_window.py src/hydra_suite/detectkit/ui/panels/
 git commit -m "feat(detectkit): add main window with three-panel layout and welcome page"
 ```
 
@@ -461,7 +461,7 @@ git commit -m "feat(detectkit): add main window with three-panel layout and welc
 **Why:** The left panel manages source datasets: add/remove sources, save/load dataset lists, browse images, launch X-AnyLabeling. Clicking an image shows it in the center canvas with OBB overlays.
 
 **Files:**
-- Replace: `src/multi_tracker/detectkit/ui/panels/dataset_panel.py`
+- Replace: `src/hydra_suite/detectkit/ui/panels/dataset_panel.py`
 - Test: `tests/test_detectkit_dataset_panel.py`
 
 - [ ] **Step 1: Write test**
@@ -473,7 +473,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from multi_tracker.detectkit.ui.utils import find_label_for_image, list_images_in_source
+from hydra_suite.detectkit.ui.utils import find_label_for_image, list_images_in_source
 
 
 def test_list_images_in_source_with_images_dir(tmp_path: Path):
@@ -537,7 +537,7 @@ Run: `python -m pytest tests/test_detectkit_dataset_panel.py tests/test_detectki
 Expected: All PASS
 
 ```bash
-git add src/multi_tracker/detectkit/ui/panels/dataset_panel.py tests/test_detectkit_dataset_panel.py
+git add src/hydra_suite/detectkit/ui/panels/dataset_panel.py tests/test_detectkit_dataset_panel.py
 git commit -m "feat(detectkit): implement dataset panel with source management and image browser"
 ```
 
@@ -548,7 +548,7 @@ git commit -m "feat(detectkit): implement dataset panel with source management a
 **Why:** The right panel contains all training configuration -- migrated from the Training Center dialog. This is the largest panel.
 
 **Files:**
-- Replace: `src/multi_tracker/detectkit/ui/panels/training_panel.py`
+- Replace: `src/hydra_suite/detectkit/ui/panels/training_panel.py`
 
 - [ ] **Step 1: Implement training panel**
 
@@ -561,13 +561,13 @@ Organized as a scrollable vertical layout with collapsible QGroupBox sections:
 5. **Augmentation** (checkable QGroupBox with fliplr, flipud, degrees, mosaic, mixup, hsv_h/s/v spinners)
 6. **Publish** (species, model tag, auto-import, auto-select checkboxes)
 7. **Run Controls** row of buttons: Build, Train, Stop, Resume, Detach, Quick Test, Run History, Save/Load Config
-8. **Loss Plot** (import and embed `LossPlotWidget` from `multi_tracker.mat.gui.widgets.loss_plot_widget`)
+8. **Loss Plot** (import and embed `LossPlotWidget` from `hydra_suite.tracker.gui.widgets.loss_plot_widget`)
 9. **Log** (read-only QTextEdit)
 
 Key behaviors:
 - `set_project(proj, main_window)`: Populate all widgets from project fields. Store references.
 - `collect_state(proj)`: Write all widget values back to project fields.
-- Training execution: Uses `RoleTrainingWorker` and `TrainingOrchestrator` from `multi_tracker.training` -- same backend as the Training Center dialog.
+- Training execution: Uses `RoleTrainingWorker` and `TrainingOrchestrator` from `hydra_suite.training` -- same backend as the Training Center dialog.
 - Sources for training come from the project's source list (accessed via `main_window.project().sources`).
 - Build/Train/Stop/Resume/Detach: Same logic as train_yolo_dialog methods, adapted to read from project and widgets.
 - Quick Test: Opens `ModelTestDialog`.
@@ -580,13 +580,13 @@ The panel must NOT depend on MAT's main window. No `_try_auto_select_parent_mode
 
 - [ ] **Step 2: Verify syntax**
 
-Run: `python -c "import ast; ast.parse(open('src/multi_tracker/detectkit/ui/panels/training_panel.py').read()); print('OK')"`
+Run: `python -c "import ast; ast.parse(open('src/hydra_suite/detectkit/ui/panels/training_panel.py').read()); print('OK')"`
 Expected: OK
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/multi_tracker/detectkit/ui/panels/training_panel.py
+git add src/hydra_suite/detectkit/ui/panels/training_panel.py
 git commit -m "feat(detectkit): implement training panel with full config and run controls"
 ```
 
@@ -597,15 +597,15 @@ git commit -m "feat(detectkit): implement training panel with full config and ru
 **Why:** The evaluation panel shows dataset analysis results and quick-test capability. The history panel shows the run history table. Both are thin wrappers around existing code.
 
 **Files:**
-- Replace: `src/multi_tracker/detectkit/ui/panels/evaluation_panel.py`
-- Replace: `src/multi_tracker/detectkit/ui/panels/history_panel.py`
+- Replace: `src/hydra_suite/detectkit/ui/panels/evaluation_panel.py`
+- Replace: `src/hydra_suite/detectkit/ui/panels/history_panel.py`
 
 - [ ] **Step 1: Implement evaluation panel**
 
 Contains:
-1. **Analyze Dataset** button -- runs `analyze_obb_sizes()` + `format_size_analysis()` from `multi_tracker.training.dataset_inspector`, displays results in a QTextEdit, and shows crop previews in the center canvas via `main_window.canvas()`
+1. **Analyze Dataset** button -- runs `analyze_obb_sizes()` + `format_size_analysis()` from `hydra_suite.training.dataset_inspector`, displays results in a QTextEdit, and shows crop previews in the center canvas via `main_window.canvas()`
 2. **Analysis results** (read-only QTextEdit showing size stats and warnings)
-3. **Quick Test** button -- opens `ModelTestDialog` from `multi_tracker.mat.gui.dialogs.model_test_dialog`
+3. **Quick Test** button -- opens `ModelTestDialog` from `hydra_suite.tracker.gui.dialogs.model_test_dialog`
 4. **Validation report** (read-only QTextEdit)
 
 Key behavior:
@@ -614,7 +614,7 @@ Key behavior:
 
 - [ ] **Step 2: Implement history panel**
 
-Embeds `load_run_history` from `multi_tracker.mat.gui.dialogs.run_history_dialog` directly as a panel widget.
+Embeds `load_run_history` from `hydra_suite.tracker.gui.dialogs.run_history_dialog` directly as a panel widget.
 
 Contains:
 1. **Refresh** button
@@ -628,10 +628,10 @@ Key behavior:
 
 - [ ] **Step 3: Verify syntax and commit**
 
-Run: `python -c "import ast; ast.parse(open('src/multi_tracker/detectkit/ui/panels/evaluation_panel.py').read()); print('OK')"` and same for history_panel.py
+Run: `python -c "import ast; ast.parse(open('src/hydra_suite/detectkit/ui/panels/evaluation_panel.py').read()); print('OK')"` and same for history_panel.py
 
 ```bash
-git add src/multi_tracker/detectkit/ui/panels/evaluation_panel.py src/multi_tracker/detectkit/ui/panels/history_panel.py
+git add src/hydra_suite/detectkit/ui/panels/evaluation_panel.py src/hydra_suite/detectkit/ui/panels/history_panel.py
 git commit -m "feat(detectkit): implement evaluation and history panels"
 ```
 
@@ -642,7 +642,7 @@ git commit -m "feat(detectkit): implement evaluation and history panels"
 **Why:** DetectKit replaces the Training Center entirely. Remove the launch button from MAT.
 
 **Files:**
-- Modify: `src/multi_tracker/mat/gui/main_window.py`
+- Modify: `src/hydra_suite/mat/gui/main_window.py`
 
 - [ ] **Step 1: Find and remove Training Center launch code**
 
@@ -656,13 +656,13 @@ Do NOT delete `train_yolo_dialog.py` itself -- it stays as reference code and is
 
 - [ ] **Step 2: Verify MAT still parses**
 
-Run: `python -c "import ast; ast.parse(open('src/multi_tracker/mat/gui/main_window.py').read()); print('OK')"`
+Run: `python -c "import ast; ast.parse(open('src/hydra_suite/mat/gui/main_window.py').read()); print('OK')"`
 Expected: OK
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add src/multi_tracker/mat/gui/main_window.py
+git add src/hydra_suite/mat/gui/main_window.py
 git commit -m "refactor(mat): remove Training Center dialog, replaced by DetectKit app"
 ```
 

@@ -2,7 +2,7 @@
 
 ## Main Extension Surface
 
-`multi_tracker.core.identity.analysis`
+`hydra_suite.core.identity.analysis`
 
 ## Recommended Pattern
 

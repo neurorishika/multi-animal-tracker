@@ -1,4 +1,4 @@
-# Publication Strategy — Multi-Animal Tracker
+# Publication Strategy — HYDRA Suite
 
 **Date:** 2026-03-12
 **Author:** Claude Code (opinions, not facts — treat accordingly)

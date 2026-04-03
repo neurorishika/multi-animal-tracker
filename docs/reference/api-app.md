@@ -1,5 +1,5 @@
 # API: App
 
-::: multi_tracker.mat.app
+::: hydra_suite.tracker.app
 
-::: multi_tracker.mat.app.launcher
+::: hydra_suite.tracker.app.launcher

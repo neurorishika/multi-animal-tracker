@@ -254,7 +254,7 @@ window, expanded by 80px margin (same logic as `TrackEditorDialog._compute_crop`
 ### Task 1: Merge candidate scoring module (core, no Qt)
 
 **Files:**
-- Create: `src/multi_tracker/afterhours/core/merge_candidates.py`
+- Create: `src/hydra_suite/afterhours/core/merge_candidates.py`
 - Create: `tests/test_merge_candidates.py`
 
 **Implement:**
@@ -327,8 +327,8 @@ def update_after_merge(
 ### Task 2: Kalman extrapolation utility
 
 **Files:**
-- Modify: `src/multi_tracker/afterhours/core/merge_candidates.py`
-- Modify: `src/multi_tracker/core/tracking/worker.py` (add terminal state saving)
+- Modify: `src/hydra_suite/afterhours/core/merge_candidates.py`
+- Modify: `src/hydra_suite/core/tracking/worker.py` (add terminal state saving)
 
 The merge scorer needs to extrapolate "where would the dying track be N frames later?"
 
@@ -385,7 +385,7 @@ the Kalman noise model (longitudinal vs lateral).
 ### Task 3: MergeWizardDialog — comparison viewer
 
 **Files:**
-- Create: `src/multi_tracker/afterhours/gui/dialogs/merge_wizard.py`
+- Create: `src/hydra_suite/afterhours/gui/dialogs/merge_wizard.py`
 - Create: `tests/test_merge_wizard_model.py` (model-only, no Qt)
 
 **Implement a `MergeWizardDialog(QDialog)` with:**
@@ -449,7 +449,7 @@ ensures the easiest decisions come first and each merge can simplify later ones.
 ### Task 4: Integrate Phase 1 into MainWindow
 
 **Files:**
-- Modify: `src/multi_tracker/afterhours/gui/main_window.py`
+- Modify: `src/hydra_suite/afterhours/gui/main_window.py`
 
 **Changes to `_open_current_session()`:**
 
@@ -514,7 +514,7 @@ new fragments).
 ### Task 5: Extend `_detect_fragmentation` to handle overlaps
 
 **Files:**
-- Modify: `src/multi_tracker/afterhours/core/event_scorer.py`
+- Modify: `src/hydra_suite/afterhours/core/event_scorer.py`
 - Modify: `tests/test_event_scorer.py` (add overlap test cases)
 
 The existing fragmentation detector requires `gap > 0`. Extend to allow
@@ -538,7 +538,7 @@ fragments that were previously invisible.
 ### Task 6: Shared video transport widget
 
 **Files:**
-- Create: `src/multi_tracker/afterhours/gui/widgets/synced_video_grid.py`
+- Create: `src/hydra_suite/afterhours/gui/widgets/synced_video_grid.py`
 
 A reusable widget for synchronized multi-video comparison:
 
@@ -565,8 +565,8 @@ future tools (e.g., multi-hypothesis identity comparison).
 ### Task 7: Re-run merge wizard button in queue panel
 
 **Files:**
-- Modify: `src/multi_tracker/afterhours/gui/widgets/suspicion_queue.py`
-- Modify: `src/multi_tracker/afterhours/gui/main_window.py`
+- Modify: `src/hydra_suite/afterhours/gui/widgets/suspicion_queue.py`
+- Modify: `src/hydra_suite/afterhours/gui/main_window.py`
 
 Add a "Merge Wizard" button to the suspicion queue header, adjacent to the
 existing "Rescore All" button. This allows the user to re-enter Phase 1 after

@@ -1,6 +1,6 @@
 # Publishing to PyPI
 
-How to release new versions of multi-animal-tracker to PyPI.
+How to release new versions of hydra-suite to PyPI.
 
 ## Prerequisites
 
@@ -45,7 +45,7 @@ ls -lh dist/*.whl
 unzip -l dist/*.whl | grep -E "(resources/brand|resources/configs|py\.typed)"
 
 # Verify old brand/ directory is NOT included
-unzip -l dist/*.whl | grep "^.*brand/" | grep -v "multi_tracker/resources"
+unzip -l dist/*.whl | grep "^.*brand/" | grep -v "hydra_suite/resources"
 ```
 
 ### 4. Test on Test PyPI (first release or major changes)
@@ -54,11 +54,11 @@ unzip -l dist/*.whl | grep "^.*brand/" | grep -v "multi_tracker/resources"
 twine upload --repository testpypi dist/*
 
 # Test in a clean environment
-python -m venv /tmp/mat-test
-/tmp/mat-test/bin/pip install --index-url https://test.pypi.org/simple/ \
+python -m venv /tmp/hydra-test
+/tmp/hydra-test/bin/pip install --index-url https://test.pypi.org/simple/ \
     --extra-index-url https://pypi.org/simple/ \
-    multi-animal-tracker
-/tmp/mat-test/bin/python -c "from multi_tracker.paths import get_brand_icon_bytes; print('OK')"
+    hydra-suite
+/tmp/hydra-test/bin/python -c "from hydra_suite.paths import get_brand_icon_bytes; print('OK')"
 ```
 
 ### 5. Upload to PyPI
@@ -118,11 +118,11 @@ After this, creating a GitHub release auto-publishes to PyPI.
 
 The wheel includes:
 
-- All Python source under `src/multi_tracker/`
-- `multi_tracker/resources/brand/*.svg`, `*.png` — app icons
-- `multi_tracker/resources/configs/*.json` — default presets
-- `multi_tracker/resources/configs/skeletons/*.json` — skeleton definitions
-- `multi_tracker/py.typed` — type checker marker
+- All Python source under `src/hydra_suite/`
+- `hydra_suite/resources/brand/*.svg`, `*.png` — app icons
+- `hydra_suite/resources/configs/*.json` — default presets
+- `hydra_suite/resources/configs/skeletons/*.json` — skeleton definitions
+- `hydra_suite/py.typed` — type checker marker
 
 The wheel does **not** include:
 

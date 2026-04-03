@@ -1,6 +1,6 @@
 # Post-processing
 
-Post-processing is where Multi-Animal-Tracker turns raw online trajectories into something you can trust for analysis.
+Post-processing is where HYDRA Suite turns raw online trajectories into something you can trust for analysis.
 
 The current implementation is deliberately conservative: it would rather keep two defensible fragments than one polished but incorrect identity trace.
 

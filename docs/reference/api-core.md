@@ -1,17 +1,17 @@
 # API: Core
 
-::: multi_tracker.core
+::: hydra_suite.core
 
-::: multi_tracker.core.tracking.worker
+::: hydra_suite.core.tracking.worker
 
-::: multi_tracker.core.detectors
+::: hydra_suite.core.detectors
 
-::: multi_tracker.core.background.model
+::: hydra_suite.core.background.model
 
-::: multi_tracker.core.filters.kalman
+::: hydra_suite.core.filters.kalman
 
-::: multi_tracker.core.assigners.hungarian
+::: hydra_suite.core.assigners.hungarian
 
-::: multi_tracker.core.post.processing
+::: hydra_suite.core.post.processing
 
-::: multi_tracker.core.identity
+::: hydra_suite.core.identity

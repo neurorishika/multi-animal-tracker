@@ -1,6 +1,6 @@
 # Installation
 
-There are three ways to install Multi-Animal-Tracker, depending on your situation:
+There are three ways to install HYDRA Suite, depending on your situation:
 
 | Method | When to use |
 |--------|-------------|
@@ -32,14 +32,14 @@ Requires only Python 3.11+. No conda, no git clone.
 ### CPU (all platforms)
 
 ```bash
-pip install multi-animal-tracker
+pip install hydra-suite
 ```
 
 ### Apple Silicon / MPS (macOS M1-M4)
 
 ```bash
 pip install torch torchvision
-pip install "multi-animal-tracker[mps]"
+pip install "hydra-suite[mps]"
 ```
 
 MPS is built into the standard PyTorch macOS wheel. GPU acceleration works for YOLO inference and neural network operations.
@@ -50,8 +50,8 @@ MPS is built into the standard PyTorch macOS wheel. GPU acceleration works for Y
 # Step 1: Install PyTorch from PyTorch's own index
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 
-# Step 2: Install multi-animal-tracker with CUDA extras
-pip install "multi-animal-tracker[cuda]"
+# Step 2: Install hydra-suite with CUDA extras
+pip install "hydra-suite[cuda]"
 ```
 
 This installs everything: ONNX Runtime GPU, TensorRT, CuPy, ONNX export tools.
@@ -68,7 +68,7 @@ This installs everything: ONNX Runtime GPU, TensorRT, CuPy, ONNX export tools.
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
-pip install "multi-animal-tracker[cuda13]"
+pip install "hydra-suite[cuda13]"
 ```
 
 **You do not need the CUDA toolkit installed.** PyTorch's pip wheel bundles NVIDIA CUDA runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`, etc.) as pip dependencies and preloads them at import time, so ONNX Runtime and TensorRT find them automatically.
@@ -79,7 +79,7 @@ Requires [ROCm 6.0+](https://rocm.docs.amd.com/) installed system-wide first.
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
-pip install "multi-animal-tracker[rocm]"
+pip install "hydra-suite[rocm]"
 ```
 
 ### Why is GPU install two commands?
@@ -99,7 +99,7 @@ Install the latest code directly from the repository without cloning. Useful whe
 ### CPU
 
 ```bash
-pip install "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+pip install "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git"
 ```
 
 ### With GPU extras
@@ -107,36 +107,36 @@ pip install "multi-animal-tracker @ git+https://github.com/neurorishika/multi-an
 ```bash
 # MPS
 pip install torch torchvision
-pip install "multi-animal-tracker[mps] @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+pip install "hydra-suite[mps] @ git+https://github.com/neurorishika/hydra-suite.git"
 
 # CUDA
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-pip install "multi-animal-tracker[cuda] @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+pip install "hydra-suite[cuda] @ git+https://github.com/neurorishika/hydra-suite.git"
 
 # CUDA 13
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
-pip install "multi-animal-tracker[cuda13] @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+pip install "hydra-suite[cuda13] @ git+https://github.com/neurorishika/hydra-suite.git"
 
 # ROCm
 pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
-pip install "multi-animal-tracker[rocm] @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+pip install "hydra-suite[rocm] @ git+https://github.com/neurorishika/hydra-suite.git"
 ```
 
 ### Install a specific branch or tag
 
 ```bash
 # Specific branch
-pip install "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git@main"
+pip install "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git@main"
 
 # Specific tag
-pip install "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git@v1.0.0"
+pip install "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git@v1.0.0"
 ```
 
 ### Upgrading a GitHub install
 
 ```bash
 pip install --upgrade --force-reinstall --no-deps \
-    "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+    "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git"
 ```
 
 ---
@@ -148,8 +148,8 @@ For active development. Uses conda for system libraries (Qt, OpenGL) and pip for
 ### Step 1: Clone
 
 ```bash
-git clone https://github.com/neurorishika/multi-animal-tracker.git
-cd multi-animal-tracker
+git clone https://github.com/neurorishika/hydra-suite.git
+cd hydra-suite
 ```
 
 ### Step 2: Create environment and install
@@ -159,22 +159,22 @@ Pick your platform:
 ```bash
 # CPU
 make setup
-conda activate multi-animal-tracker
+conda activate hydra-suite
 make install
 
 # Apple Silicon (MPS)
 make setup-mps
-conda activate multi-animal-tracker-mps
+conda activate hydra-suite-mps
 make install-mps
 
 # NVIDIA GPU (CUDA)
 make setup-cuda
-conda activate multi-animal-tracker-cuda
+conda activate hydra-suite-cuda
 make install-cuda CUDA_MAJOR=13     # or CUDA_MAJOR=12
 
 # AMD GPU (ROCm — requires system-wide ROCm 6.0+)
 make setup-rocm
-conda activate multi-animal-tracker-rocm
+conda activate hydra-suite-rocm
 make install-rocm
 ```
 
@@ -198,7 +198,7 @@ Base dependencies (numpy, scipy, PySide6, ultralytics, etc.) are declared once i
 ### Development workflow
 
 ```bash
-conda activate multi-animal-tracker-mps   # or your env
+conda activate hydra-suite-mps   # or your env
 # Edit code — changes are live immediately (editable install)
 make pytest                               # run tests
 make format && make lint                  # format and lint before committing
@@ -211,7 +211,7 @@ make format && make lint                  # format and lint before committing
 ### Verify
 
 ```bash
-mat --help
+hydra --help
 python -c "import torch; print('CUDA:', torch.cuda.is_available(), '| MPS:', torch.backends.mps.is_available())"
 ```
 
@@ -225,7 +225,7 @@ python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 ### Launch
 
 ```bash
-mat                # Multi-Animal-Tracker GUI
+hydra              # HYDRA Suite GUI
 posekit-labeler    # PoseKit pose-labeling GUI
 filterkit           # FilterKit tool
 classkit           # ClassKit labeler
@@ -238,7 +238,7 @@ User data is stored in platform-appropriate locations (not inside the package):
 
 | Data | macOS | Linux | Windows |
 |------|-------|-------|---------|
-| Config / presets | `~/Library/Application Support/multi-animal-tracker/` | `~/.config/multi-animal-tracker/` | `%LOCALAPPDATA%\Kronauer Lab\multi-animal-tracker\` |
+| Config / presets | `~/Library/Application Support/hydra-suite/` | `~/.config/hydra-suite/` | `%LOCALAPPDATA%\Kronauer Lab\hydra-suite\` |
 | Models | same `/models/` | same `/models/` | same `\models\` |
 | Training runs | same `/training/` | same `/training/` | same `\training\` |
 
@@ -250,31 +250,31 @@ Override the default locations with environment variables:
 
 | Variable | What it overrides | Default |
 |----------|------------------|---------|
-| `MAT_DATA_DIR` | Models, training runs | `platformdirs` user data dir |
-| `MAT_CONFIG_DIR` | Presets, skeletons, advanced config | `platformdirs` user config dir |
+| `HYDRA_DATA_DIR` | Models, training runs | `platformdirs` user data dir |
+| `HYDRA_CONFIG_DIR` | Presets, skeletons, advanced config | `platformdirs` user config dir |
 
 Examples:
 
 ```bash
 # Use a shared lab network drive for models
-export MAT_DATA_DIR=/mnt/lab-shared/mat-data
-mat
+export HYDRA_DATA_DIR=/mnt/lab-shared/hydra-data
+hydra
 
 # Use a project-specific config
-MAT_CONFIG_DIR=./my-project-config mat
+HYDRA_CONFIG_DIR=./my-project-config mat
 
 # Check where everything currently points
-python -c "from multi_tracker.paths import print_paths; print_paths()"
+python -c "from hydra_suite.paths import print_paths; print_paths()"
 ```
 
-All sub-applications (MAT, PoseKit, DetectKit, ClassKit, RefineKit, FilterKit) use the same `multi_tracker.paths` module, so they all respect these overrides and share the same data directories.
+All sub-applications (MAT, PoseKit, DetectKit, ClassKit, RefineKit, FilterKit) use the same `hydra_suite.paths` module, so they all respect these overrides and share the same data directories.
 
 ### Programmatic access from other tools
 
 Scripts and notebooks can access the same paths:
 
 ```python
-from multi_tracker.paths import get_models_dir, get_presets_dir, get_skeleton_dir
+from hydra_suite.paths import get_models_dir, get_presets_dir, get_skeleton_dir
 
 print(get_models_dir())        # where trained models are stored
 print(get_presets_dir())       # where config presets live
@@ -286,8 +286,8 @@ print(get_skeleton_dir())      # where skeleton definitions live
 If you had models in `<repo>/models/` or training data in `<repo>/training/`:
 
 ```bash
-python -m multi_tracker.paths_migrate /path/to/repo --dry-run  # preview what would be copied
-python -m multi_tracker.paths_migrate /path/to/repo            # copy files
+python -m hydra_suite.paths_migrate /path/to/repo --dry-run  # preview what would be copied
+python -m hydra_suite.paths_migrate /path/to/repo            # copy files
 ```
 
 ---
@@ -297,20 +297,20 @@ python -m multi_tracker.paths_migrate /path/to/repo            # copy files
 ### pip (PyPI)
 
 ```bash
-pip install --upgrade multi-animal-tracker
+pip install --upgrade hydra-suite
 ```
 
 ### pip (GitHub)
 
 ```bash
 pip install --upgrade --force-reinstall --no-deps \
-    "multi-animal-tracker @ git+https://github.com/neurorishika/multi-animal-tracker.git"
+    "hydra-suite @ git+https://github.com/neurorishika/hydra-suite.git"
 ```
 
 ### conda + pip (developer)
 
 ```bash
-conda activate multi-animal-tracker-mps  # or your env
+conda activate hydra-suite-mps  # or your env
 git pull
 mamba env update -f environment-mps.yml --prune   # if conda deps changed
 make install-mps                                  # reinstall pip packages
@@ -349,13 +349,13 @@ sudo apt install rocm-dev rocrand rocblas rocsparse rocfft hipsparse hiprand hip
 
 ```bash
 # pip
-pip uninstall multi-animal-tracker
-pip install "multi-animal-tracker[cuda]"
+pip uninstall hydra-suite
+pip install "hydra-suite[cuda]"
 
 # conda
-conda env remove -n multi-animal-tracker-cuda
+conda env remove -n hydra-suite-cuda
 make setup-cuda
-conda activate multi-animal-tracker-cuda
+conda activate hydra-suite-cuda
 make install-cuda CUDA_MAJOR=13
 ```
 

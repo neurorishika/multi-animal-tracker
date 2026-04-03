@@ -1,6 +1,6 @@
 # Tracking Optimization System (Auto-Tuner)
 
-This document details the architecture and implementation of the Bayesian Tracking Optimization system in the Multi-Animal-Tracker (MAT).
+This document details the architecture and implementation of the Bayesian Tracking Optimization system in the HYDRA Suite (MAT).
 
 ## Overview
 
@@ -44,13 +44,13 @@ The system provides granular control over which aspects of the pipeline are opti
 ## Key Components
 
 ### `TrackingOptimizer` (Threaded)
-Located in `src/multi_tracker/core/tracking/optimizer.py`.
+Located in `src/hydra_suite/core/tracking/optimizer.py`.
 - Manages the Optuna `study`.
 - Orchestrates the `_run_tracking_pass_cached` loop.
 - Emits progress and results back to the UI.
 
 ### `ParameterHelperDialog`
-Located in `src/multi_tracker/gui/dialogs/parameter_helper.py`.
+Located in `src/hydra_suite/gui/dialogs/parameter_helper.py`.
 - Provides the selection grid for parameters.
 - Displays a ranked table of the top trials.
 - Handles the "Preview" logic.

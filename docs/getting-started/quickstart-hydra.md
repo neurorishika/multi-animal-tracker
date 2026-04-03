@@ -3,7 +3,7 @@
 ## Launch
 
 ```bash
-mat
+hydra
 ```
 
 The main window opens maximized and exposes the tabbed workflow.

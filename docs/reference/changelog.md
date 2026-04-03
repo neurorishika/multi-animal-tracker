@@ -2,7 +2,7 @@
 
 The canonical changelog is maintained in the repository root:
 
-- [CHANGELOG.md](https://github.com/neurorishika/multi-animal-tracker/blob/main/CHANGELOG.md)
+- [CHANGELOG.md](https://github.com/neurorishika/hydra-suite/blob/main/CHANGELOG.md)
 
 For documentation-specific migrations in this branch:
 

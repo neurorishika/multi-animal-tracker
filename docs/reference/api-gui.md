@@ -2,8 +2,8 @@
 
 Stable GUI-facing modules for the tracking app.
 
-::: multi_tracker.mat.gui
+::: hydra_suite.tracker.gui
 
-::: multi_tracker.mat.gui.main_window
+::: hydra_suite.tracker.gui.main_window
 
-::: multi_tracker.mat.gui.dialogs.train_yolo_dialog
+::: hydra_suite.tracker.gui.dialogs.train_yolo_dialog

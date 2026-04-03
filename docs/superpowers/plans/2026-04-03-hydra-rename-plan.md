@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rename the project from multi-animal-tracker/multi_tracker/MAT to HYDRA/hydra-suite/hydra_suite across the entire codebase.
+**Goal:** Rename the project from hydra-suite/hydra_suite/MAT to HYDRA/hydra-suite/hydra_suite across the entire codebase.
 
-**Architecture:** This is a mechanical rename with no logic changes. The directory `src/multi_tracker/` becomes `src/hydra_suite/`, the submodule `mat/` becomes `tracker/`, and all references throughout the codebase are updated to match. No migration code is added.
+**Architecture:** This is a mechanical rename with no logic changes. The directory `src/hydra_suite/` becomes `src/hydra_suite/`, the submodule `mat/` becomes `tracker/`, and all references throughout the codebase are updated to match. No migration code is added.
 
 **Tech Stack:** Python, setuptools, conda, mkdocs, flake8, pytest
 
@@ -13,14 +13,14 @@
 ### Task 1: Rename source directories
 
 **Files:**
-- Rename: `src/multi_tracker/` → `src/hydra_suite/`
+- Rename: `src/hydra_suite/` → `src/hydra_suite/`
 - Rename: `src/hydra_suite/mat/` → `src/hydra_suite/tracker/`
 
-- [ ] **Step 1: Rename multi_tracker to hydra_suite**
+- [ ] **Step 1: Rename hydra_suite to hydra_suite**
 
 ```bash
-cd /Users/neurorishika/Projects/Rockefeller/Kronauer/multi-animal-tracker
-git mv src/multi_tracker src/hydra_suite
+cd /Users/neurorishika/Projects/Rockefeller/Kronauer/hydra-suite
+git mv src/hydra_suite src/hydra_suite
 ```
 
 - [ ] **Step 2: Rename mat to tracker**
@@ -32,10 +32,10 @@ git mv src/hydra_suite/mat src/hydra_suite/tracker
 - [ ] **Step 3: Remove old brand SVGs**
 
 ```bash
-rm src/hydra_suite/resources/brand/multianimaltracker.svg
+rm src/hydra_suite/resources/brand/hydra.svg
 ```
 
-Also remove any old .png brand files that are no longer needed (classkit.png, filterkit.png, multianimaltracker.png, posekit.png, refinekit.png were already deleted per git status).
+Also remove any old .png brand files that are no longer needed (classkit.png, filterkit.png, hydra.png, posekit.png, refinekit.png were already deleted per git status).
 
 - [ ] **Step 4: Clean build directory**
 
@@ -47,7 +47,7 @@ rm -rf build/
 
 ```bash
 git add -A
-git commit -m "refactor: rename src/multi_tracker → src/hydra_suite, mat → tracker"
+git commit -m "refactor: rename src/hydra_suite → src/hydra_suite, mat → tracker"
 ```
 
 ---
@@ -59,45 +59,45 @@ git commit -m "refactor: rename src/multi_tracker → src/hydra_suite, mat → t
 
 The order of replacements matters — more specific patterns first:
 
-- [ ] **Step 1: Replace `multi_tracker.mat` → `hydra_suite.tracker` in all .py files**
+- [ ] **Step 1: Replace `hydra_suite.tracker` → `hydra_suite.tracker` in all .py files**
 
 ```bash
-find src/hydra_suite -name '*.py' -exec sed -i '' 's/multi_tracker\.mat/hydra_suite.tracker/g' {} +
+find src/hydra_suite -name '*.py' -exec sed -i '' 's/hydra_suite\.mat/hydra_suite.tracker/g' {} +
 ```
 
-- [ ] **Step 2: Replace `multi_tracker` → `hydra_suite` in all .py files**
+- [ ] **Step 2: Replace `hydra_suite` → `hydra_suite` in all .py files**
 
 ```bash
-find src/hydra_suite -name '*.py' -exec sed -i '' 's/multi_tracker/hydra_suite/g' {} +
+find src/hydra_suite -name '*.py' -exec sed -i '' 's/hydra_suite/hydra_suite/g' {} +
 ```
 
-- [ ] **Step 3: Replace `multi-animal-tracker` → `hydra-suite` in all .py files**
+- [ ] **Step 3: Replace `hydra-suite` → `hydra-suite` in all .py files**
 
 ```bash
-find src/hydra_suite -name '*.py' -exec sed -i '' 's/multi-animal-tracker/hydra-suite/g' {} +
+find src/hydra_suite -name '*.py' -exec sed -i '' 's/hydra-suite/hydra-suite/g' {} +
 ```
 
 - [ ] **Step 4: Replace MAT-specific references**
 
 In `src/hydra_suite/paths.py`:
-- `APP_NAME = "multi-animal-tracker"` → `APP_NAME = "hydra-suite"`
+- `APP_NAME = "hydra-suite"` → `APP_NAME = "hydra-suite"`
 - `MAT_CONFIG_DIR` → `HYDRA_CONFIG_DIR` (3 occurrences)
 - `MAT_DATA_DIR` → `HYDRA_DATA_DIR` (3 occurrences)
 - Docstring references to MAT_CONFIG_DIR/MAT_DATA_DIR
-- `from multi_tracker.paths import print_paths` in docstring → `from hydra_suite.paths import print_paths`
+- `from hydra_suite.paths import print_paths` in docstring → `from hydra_suite.paths import print_paths`
 
-- [ ] **Step 5: Verify no remaining multi_tracker references in source**
+- [ ] **Step 5: Verify no remaining hydra_suite references in source**
 
 ```bash
-grep -r "multi_tracker" src/hydra_suite/ --include="*.py" | head -20
-grep -r "multi-animal-tracker" src/hydra_suite/ --include="*.py" | head -20
+grep -r "hydra_suite" src/hydra_suite/ --include="*.py" | head -20
+grep -r "hydra-suite" src/hydra_suite/ --include="*.py" | head -20
 ```
 
 - [ ] **Step 6: Commit source replacements**
 
 ```bash
 git add src/
-git commit -m "refactor: update all Python imports multi_tracker → hydra_suite"
+git commit -m "refactor: update all Python imports hydra_suite → hydra_suite"
 ```
 
 ---
@@ -109,10 +109,10 @@ git commit -m "refactor: update all Python imports multi_tracker → hydra_suite
 
 - [ ] **Step 1: Update project metadata**
 
-- Line 1 comment: `multi-animal-tracker` → `hydra-suite`
+- Line 1 comment: `hydra-suite` → `hydra-suite`
 - Line 8: `name = "hydra-suite"`
 - Line 10: description update to mention HYDRA
-- Line 70: `"multi-animal-tracker[cuda12]"` → `"hydra-suite[cuda12]"`
+- Line 70: `"hydra-suite[cuda12]"` → `"hydra-suite[cuda12]"`
 
 - [ ] **Step 2: Update URLs**
 
@@ -142,7 +142,7 @@ detectkit = "hydra_suite.detectkit.app:main"
 
 - [ ] **Step 5: Update publish commands in comments if any**
 
-Replace remaining `multi-animal-tracker` references in publish-test echo.
+Replace remaining `hydra-suite` references in publish-test echo.
 
 - [ ] **Step 6: Commit**
 
@@ -173,24 +173,24 @@ Replace `_MAT_OLD_LD_LIBRARY_PATH` → `_HYDRA_OLD_LD_LIBRARY_PATH` (lines 50, 5
 
 - [ ] **Step 3: Update test target import**
 
-Line 123: `from multi_tracker.mat.app.launcher` → `from hydra_suite.tracker.app.launcher`
+Line 123: `from hydra_suite.tracker.app.launcher` → `from hydra_suite.tracker.app.launcher`
 
 - [ ] **Step 4: Update coverage paths**
 
-Lines 132-136: `src/multi_tracker` → `src/hydra_suite`
+Lines 132-136: `src/hydra_suite` → `src/hydra_suite`
 
 - [ ] **Step 5: Update dead-code/dep-graph/type-check paths**
 
-Replace all `src/multi_tracker` → `src/hydra_suite` and `multi_tracker` → `hydra_suite` in tool targets.
+Replace all `src/hydra_suite` → `src/hydra_suite` and `hydra_suite` → `hydra_suite` in tool targets.
 
 - [ ] **Step 6: Update help text**
 
-Line 492: `Multi-Animal Tracker` → `HYDRA Suite`
-All references to `multi_tracker.svg` → `hydra_suite.svg`
+Line 492: `HYDRA Suite` → `HYDRA Suite`
+All references to `hydra_suite.svg` → `hydra_suite.svg`
 
 - [ ] **Step 7: Update publish echo lines**
 
-Lines 260, 269: `multi-animal-tracker` → `hydra-suite`
+Lines 260, 269: `hydra-suite` → `hydra-suite`
 
 - [ ] **Step 8: Commit**
 
@@ -205,7 +205,7 @@ git commit -m "refactor: update Makefile for hydra-suite"
 
 **Files:**
 - Modify: `environment.yml`, `environment-cuda.yml`, `environment-mps.yml`, `environment-rocm.yml`
-- Modify: Any `requirements*.txt` that reference `multi-animal-tracker`
+- Modify: Any `requirements*.txt` that reference `hydra-suite`
 
 - [ ] **Step 1: Update environment.yml names**
 
@@ -214,10 +214,10 @@ git commit -m "refactor: update Makefile for hydra-suite"
 - `environment-mps.yml`: `name: hydra-mps`
 - `environment-rocm.yml`: `name: hydra-rocm`
 
-- [ ] **Step 2: Update any multi-animal-tracker references in requirements files**
+- [ ] **Step 2: Update any hydra-suite references in requirements files**
 
 ```bash
-grep -l "multi-animal-tracker" requirements*.txt
+grep -l "hydra-suite" requirements*.txt
 ```
 
 Replace any found references.
@@ -239,23 +239,23 @@ git commit -m "refactor: update environment and requirements files for hydra"
 - [ ] **Step 1: Replace imports in test files**
 
 ```bash
-find tests -name '*.py' -exec sed -i '' 's/multi_tracker\.mat/hydra_suite.tracker/g' {} +
-find tests -name '*.py' -exec sed -i '' 's/multi_tracker/hydra_suite/g' {} +
-find tests -name '*.py' -exec sed -i '' 's/multi-animal-tracker/hydra-suite/g' {} +
+find tests -name '*.py' -exec sed -i '' 's/hydra_suite\.mat/hydra_suite.tracker/g' {} +
+find tests -name '*.py' -exec sed -i '' 's/hydra_suite/hydra_suite/g' {} +
+find tests -name '*.py' -exec sed -i '' 's/hydra-suite/hydra-suite/g' {} +
 ```
 
 - [ ] **Step 2: Update test_packaging.py brand assertions**
 
-- Replace `"multianimaltracker.svg"` with `"hydra.svg"` in `test_brand_svgs_exist_in_package`
-- Replace `version("multi-animal-tracker")` with `version("hydra-suite")`
-- Replace `from multi_tracker import` with `from hydra_suite import`
-- Replace `files("multi_tracker.resources.brand")` with `files("hydra_suite.resources.brand")`
+- Replace `"hydra.svg"` with `"hydra.svg"` in `test_brand_svgs_exist_in_package`
+- Replace `version("hydra-suite")` with `version("hydra-suite")`
+- Replace `from hydra_suite import` with `from hydra_suite import`
+- Replace `files("hydra_suite.resources.brand")` with `files("hydra_suite.resources.brand")`
 - Similarly for configs and skeletons resource paths
 
 - [ ] **Step 3: Verify no remaining old references in tests**
 
 ```bash
-grep -r "multi_tracker\|multi-animal-tracker\|multianimaltracker" tests/ --include="*.py" | head -20
+grep -r "hydra_suite\|hydra-suite\|hydra" tests/ --include="*.py" | head -20
 ```
 
 - [ ] **Step 4: Commit**
@@ -280,16 +280,16 @@ git commit -m "refactor: update test imports and assertions for hydra-suite"
 
 ```bash
 # Order matters — specific patterns first
-find docs -name '*.md' -exec sed -i '' 's/multi_tracker\.mat/hydra_suite.tracker/g' {} +
-find docs -name '*.md' -exec sed -i '' 's/multi_tracker/hydra_suite/g' {} +
-find docs -name '*.md' -exec sed -i '' 's/multi-animal-tracker/hydra-suite/g' {} +
-find docs -name '*.md' -exec sed -i '' 's/Multi-Animal-Tracker/HYDRA Suite/g' {} +
-find docs -name '*.md' -exec sed -i '' 's/Multi-Animal Tracker/HYDRA Suite/g' {} +
+find docs -name '*.md' -exec sed -i '' 's/hydra_suite\.mat/hydra_suite.tracker/g' {} +
+find docs -name '*.md' -exec sed -i '' 's/hydra_suite/hydra_suite/g' {} +
+find docs -name '*.md' -exec sed -i '' 's/hydra-suite/hydra-suite/g' {} +
+find docs -name '*.md' -exec sed -i '' 's/HYDRA Suite/HYDRA Suite/g' {} +
+find docs -name '*.md' -exec sed -i '' 's/HYDRA Suite/HYDRA Suite/g' {} +
 ```
 
 - [ ] **Step 2: Replace MAT acronym in docs (contextual)**
 
-Replace `MAT` when used as the tracker acronym with `HYDRA` throughout docs. This requires care — only replace when it refers to the Multi-Animal Tracker app, not when part of other words.
+Replace `MAT` when used as the tracker acronym with `HYDRA` throughout docs. This requires care — only replace when it refers to the HYDRA Suite app, not when part of other words.
 
 ```bash
 # Common patterns
@@ -308,7 +308,7 @@ find docs -name '*.md' -exec sed -i '' 's/\bmat\b command/hydra command/g' {} +
 
 - [ ] **Step 4: Update README.md**
 
-Replace all `multi-animal-tracker` → `hydra-suite`, `multi_tracker` → `hydra_suite`, `MAT` → `HYDRA`, `mat` CLI → `hydra` CLI.
+Replace all `hydra-suite` → `hydra-suite`, `hydra_suite` → `hydra_suite`, `MAT` → `HYDRA`, `hydra` CLI → `hydra` CLI.
 
 - [ ] **Step 5: Update CLAUDE.md**
 
@@ -323,7 +323,7 @@ Full update: package name, imports, CLI commands, architecture table, env names,
 - [ ] **Step 7: Verify no remaining old references in docs**
 
 ```bash
-grep -r "multi_tracker\|multi-animal-tracker\|Multi-Animal" docs/ mkdocs.yml README.md CLAUDE.md .github/ | head -30
+grep -r "hydra_suite\|hydra-suite\|Multi-Animal" docs/ mkdocs.yml README.md CLAUDE.md .github/ | head -30
 ```
 
 - [ ] **Step 8: Commit**
@@ -338,14 +338,14 @@ git commit -m "docs: update all documentation for HYDRA rename"
 ### Task 8: Update remaining config files
 
 **Files:**
-- Modify: `.flake8`, `.flake8.moderate`, `.flake8.strict` (if they reference multi_tracker)
+- Modify: `.flake8`, `.flake8.moderate`, `.flake8.strict` (if they reference hydra_suite)
 - Modify: `ROCM_SETUP.md`
 - Modify: Any other files with old references
 
 - [ ] **Step 1: Check and update flake8 configs**
 
 ```bash
-grep -l "multi_tracker\|multi-animal-tracker" .flake8*
+grep -l "hydra_suite\|hydra-suite" .flake8*
 ```
 
 Update any found references.
@@ -357,7 +357,7 @@ Replace all old name references.
 - [ ] **Step 3: Check for any remaining references repo-wide**
 
 ```bash
-grep -r "multi_tracker\|multi-animal-tracker\|multianimaltracker" --include="*.py" --include="*.md" --include="*.yml" --include="*.yaml" --include="*.toml" --include="*.txt" --include="*.cfg" . | grep -v ".git/" | grep -v "build/" | grep -v "__pycache__" | head -40
+grep -r "hydra_suite\|hydra-suite\|hydra" --include="*.py" --include="*.md" --include="*.yml" --include="*.yaml" --include="*.toml" --include="*.txt" --include="*.cfg" . | grep -v ".git/" | grep -v "build/" | grep -v "__pycache__" | head -40
 ```
 
 - [ ] **Step 4: Commit any remaining changes**
@@ -374,7 +374,7 @@ git commit -m "refactor: update remaining config files for hydra-suite"
 - [ ] **Step 1: Move config/data directories**
 
 ```bash
-mv ~/Library/Application\ Support/multi-animal-tracker ~/Library/Application\ Support/hydra-suite
+mv ~/Library/Application\ Support/hydra-suite ~/Library/Application\ Support/hydra-suite
 ```
 
 (Only if the directory exists)

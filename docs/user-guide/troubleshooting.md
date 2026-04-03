@@ -18,7 +18,7 @@
 
 - Lower `resize_factor`.
 - Disable non-essential real-time overlays/histograms.
-- Verify backend detection (`multi_tracker.utils.gpu_utils`).
+- Verify backend detection (`hydra_suite.utils.gpu_utils`).
 
 ## PoseKit Issues
 

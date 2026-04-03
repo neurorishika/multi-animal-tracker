@@ -1,23 +1,23 @@
 # API: PoseKit
 
-::: multi_tracker.posekit
+::: hydra_suite.posekit
 
-::: multi_tracker.posekit.core
+::: hydra_suite.posekit.core
 
-::: multi_tracker.posekit.core.extensions
+::: hydra_suite.posekit.core.extensions
 
-::: multi_tracker.posekit.inference
+::: hydra_suite.posekit.inference
 
-::: multi_tracker.posekit.inference.worker
+::: hydra_suite.posekit.inference.worker
 
-::: multi_tracker.posekit.ui
+::: hydra_suite.posekit.ui
 
-::: multi_tracker.posekit.ui.canvas
+::: hydra_suite.posekit.ui.canvas
 
-::: multi_tracker.posekit.ui.main_window
+::: hydra_suite.posekit.ui.main_window
 
-::: multi_tracker.posekit.ui.models
+::: hydra_suite.posekit.ui.models
 
-::: multi_tracker.posekit.ui.project
+::: hydra_suite.posekit.ui.project
 
-::: multi_tracker.posekit.ui.workers
+::: hydra_suite.posekit.ui.workers

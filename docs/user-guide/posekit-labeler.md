@@ -1,6 +1,6 @@
 # PoseKit Labeler
 
-PoseKit is now organized under `multi_tracker.posekit` and launched via `posekit-labeler`.
+PoseKit is now organized under `hydra_suite.posekit` and launched via `posekit-labeler`.
 
 ## Full UI Control Reference
 

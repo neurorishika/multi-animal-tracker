@@ -4,7 +4,7 @@
 
 **Goal:** Bring the MAT Training Center from "functional" to "production-quality" with augmentation controls, post-training model testing, resume-from-checkpoint, run history browsing, live metrics, reproducible config export, auto-batch tuning, background training, and stratified dataset splitting.
 
-**Architecture:** Nine independent features, each adding to either the training dialog UI (`src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`), the training backend (`src/multi_tracker/training/`), or both. Features are ordered so each builds cleanly on the prior state. All UI work is PySide6/Qt — no matplotlib.
+**Architecture:** Nine independent features, each adding to either the training dialog UI (`src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`), the training backend (`src/hydra_suite/training/`), or both. Features are ordered so each builds cleanly on the prior state. All UI work is PySide6/Qt — no matplotlib.
 
 **Tech Stack:** Python 3.10+, PySide6, ultralytics CLI, PyTorch, numpy, cv2
 
@@ -15,16 +15,16 @@
 | Feature | Files Created | Files Modified |
 |---------|--------------|----------------|
 | 1. Augmentation controls | `tests/test_training_augmentation.py` | `train_yolo_dialog.py`, `runner.py` |
-| 2. Quick test | `src/multi_tracker/mat/gui/dialogs/model_test_dialog.py`, `tests/test_model_test_dialog.py` | `train_yolo_dialog.py` |
+| 2. Quick test | `src/hydra_suite/mat/gui/dialogs/model_test_dialog.py`, `tests/test_model_test_dialog.py` | `train_yolo_dialog.py` |
 | 3. Resume from checkpoint | `tests/test_training_resume.py` | `train_yolo_dialog.py`, `runner.py`, `contracts.py` |
-| 4. Run history viewer | `src/multi_tracker/mat/gui/dialogs/run_history_dialog.py`, `tests/test_run_history.py` | `train_yolo_dialog.py` |
-| 5. Live loss plot | `src/multi_tracker/mat/gui/widgets/loss_plot_widget.py`, `tests/test_loss_plot_widget.py` | `train_yolo_dialog.py` |
+| 4. Run history viewer | `src/hydra_suite/mat/gui/dialogs/run_history_dialog.py`, `tests/test_run_history.py` | `train_yolo_dialog.py` |
+| 5. Live loss plot | `src/hydra_suite/mat/gui/widgets/loss_plot_widget.py`, `tests/test_loss_plot_widget.py` | `train_yolo_dialog.py` |
 | 6. Export training config | `tests/test_training_config_export.py` | `train_yolo_dialog.py` |
 | 7. Auto-batch and multi-GPU | `tests/test_training_batch_gpu.py` | `train_yolo_dialog.py`, `runner.py` |
 | 8. Background training | `tests/test_training_detach.py` | `train_yolo_dialog.py`, `runner.py` |
 | 9. Stratified splitting | `tests/test_stratified_split.py` | `dataset_builders.py`, `dataset_inspector.py` |
 
-All paths relative to repo root. `train_yolo_dialog.py` = `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`.
+All paths relative to repo root. `train_yolo_dialog.py` = `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`.
 
 ---
 
@@ -33,8 +33,8 @@ All paths relative to repo root. `train_yolo_dialog.py` = `src/multi_tracker/mat
 **Why:** The `AugmentationProfile` dataclass already exists in `contracts.py` with `flipud`, `fliplr`, `rotate`, `brightness`, `contrast`, and an `args` dict for ultralytics-native params. But the training dialog creates `TrainingRunSpec` without setting any augmentation profile, so defaults silently apply (`fliplr=0.5`, rest at 0). Users cannot control augmentation or even see what is active. For animals with left/right asymmetry, `fliplr=0.5` can be harmful.
 
 **Files:**
-- Modify: `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`
-- Modify: `src/multi_tracker/training/runner.py`
+- Modify: `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`
+- Modify: `src/hydra_suite/training/runner.py`
 - Test: `tests/test_training_augmentation.py`
 
 ### Step-by-step
@@ -45,13 +45,13 @@ All paths relative to repo root. `train_yolo_dialog.py` = `src/multi_tracker/mat
 # tests/test_training_augmentation.py
 from __future__ import annotations
 
-from multi_tracker.training.contracts import (
+from hydra_suite.training.contracts import (
     AugmentationProfile,
     TrainingHyperParams,
     TrainingRole,
     TrainingRunSpec,
 )
-from multi_tracker.training.runner import build_ultralytics_command
+from hydra_suite.training.runner import build_ultralytics_command
 
 
 def test_augmentation_args_passed_to_command():
@@ -214,7 +214,7 @@ augmentation_profile=AugmentationProfile(
 ),
 ```
 
-Also add `AugmentationProfile` to the imports from `multi_tracker.training`.
+Also add `AugmentationProfile` to the imports from `hydra_suite.training`.
 
 - [ ] **Step 6: Run tests**
 
@@ -224,7 +224,7 @@ Expected: All PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-git add tests/test_training_augmentation.py src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py
+git add tests/test_training_augmentation.py src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py
 git commit -m "feat(training): add augmentation controls to Training Center dialog"
 ```
 
@@ -235,9 +235,9 @@ git commit -m "feat(training): add augmentation controls to Training Center dial
 **Why:** After training completes, users have no way to visually verify the model before deploying it. They must close the dialog, switch model paths, and start a tracking run. A "Quick Test" button that runs the trained model on a few dataset images and shows annotated results catches bad models immediately.
 
 **Files:**
-- Create: `src/multi_tracker/mat/gui/dialogs/model_test_dialog.py`
+- Create: `src/hydra_suite/mat/gui/dialogs/model_test_dialog.py`
 - Create: `tests/test_model_test_dialog.py`
-- Modify: `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`
+- Modify: `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`
 
 ### Step-by-step
 
@@ -248,7 +248,7 @@ git commit -m "feat(training): add augmentation controls to Training Center dial
 """Tests for ModelTestDialog parameter construction."""
 from __future__ import annotations
 
-from multi_tracker.mat.gui.dialogs.model_test_dialog import build_test_params
+from hydra_suite.tracker.gui.dialogs.model_test_dialog import build_test_params
 
 
 def test_build_test_params_direct_mode():
@@ -288,7 +288,7 @@ Expected: FAIL -- `model_test_dialog` module does not exist yet
 - [ ] **Step 3: Create model_test_dialog.py with parameter builder**
 
 ```python
-# src/multi_tracker/mat/gui/dialogs/model_test_dialog.py
+# src/hydra_suite/mat/gui/dialogs/model_test_dialog.py
 """Quick model test dialog -- run a trained model on sample images."""
 from __future__ import annotations
 
@@ -365,7 +365,7 @@ class _TestWorker(QThread):
 
     def run(self):
         try:
-            from multi_tracker.core.detectors import YOLOOBBDetector
+            from hydra_suite.core.detectors import YOLOOBBDetector
 
             detector = YOLOOBBDetector(dict(self.params))
             results = []
@@ -544,7 +544,7 @@ self.btn_quick_test.setEnabled(bool(succeeded))
 Add the handler:
 ```python
 def _quick_test(self):
-    from multi_tracker.mat.gui.dialogs.model_test_dialog import ModelTestDialog
+    from hydra_suite.tracker.gui.dialogs.model_test_dialog import ModelTestDialog
 
     succeeded = [r for r in self._last_training_results if r.get("success")]
     if not succeeded:
@@ -593,7 +593,7 @@ Expected: All PASS
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/multi_tracker/mat/gui/dialogs/model_test_dialog.py tests/test_model_test_dialog.py src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py
+git add src/hydra_suite/mat/gui/dialogs/model_test_dialog.py tests/test_model_test_dialog.py src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py
 git commit -m "feat(training): add Quick Test dialog for post-training model verification"
 ```
 
@@ -604,9 +604,9 @@ git commit -m "feat(training): add Quick Test dialog for post-training model ver
 **Why:** If training crashes, early-stops too aggressively, or a user wants to continue training for more epochs, they currently have to start from scratch. Ultralytics supports `resume=True` which loads `last.pt` and continues.
 
 **Files:**
-- Modify: `src/multi_tracker/training/runner.py`
-- Modify: `src/multi_tracker/training/contracts.py`
-- Modify: `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`
+- Modify: `src/hydra_suite/training/runner.py`
+- Modify: `src/hydra_suite/training/contracts.py`
+- Modify: `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`
 - Test: `tests/test_training_resume.py`
 
 ### Step-by-step
@@ -617,12 +617,12 @@ git commit -m "feat(training): add Quick Test dialog for post-training model ver
 # tests/test_training_resume.py
 from __future__ import annotations
 
-from multi_tracker.training.contracts import (
+from hydra_suite.training.contracts import (
     TrainingHyperParams,
     TrainingRole,
     TrainingRunSpec,
 )
-from multi_tracker.training.runner import build_ultralytics_command
+from hydra_suite.training.runner import build_ultralytics_command
 
 
 def test_resume_flag_in_command():
@@ -661,14 +661,14 @@ Expected: FAIL -- `resume_from` field does not exist on `TrainingRunSpec`
 
 - [ ] **Step 3: Add `resume_from` field to contracts**
 
-In `src/multi_tracker/training/contracts.py`, add to `TrainingRunSpec`:
+In `src/hydra_suite/training/contracts.py`, add to `TrainingRunSpec`:
 ```python
 resume_from: str = ""  # Path to last.pt checkpoint to resume from
 ```
 
 - [ ] **Step 4: Handle `resume_from` in runner**
 
-In `src/multi_tracker/training/runner.py`, in `build_ultralytics_command`, after the `cache` check:
+In `src/hydra_suite/training/runner.py`, in `build_ultralytics_command`, after the `cache` check:
 ```python
 if spec.resume_from:
     args.append("resume=True")
@@ -776,7 +776,7 @@ Run: `python -m pytest tests/test_training_resume.py tests/test_training_framewo
 Expected: All PASS
 
 ```bash
-git add src/multi_tracker/training/contracts.py src/multi_tracker/training/runner.py src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py tests/test_training_resume.py
+git add src/hydra_suite/training/contracts.py src/hydra_suite/training/runner.py src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py tests/test_training_resume.py
 git commit -m "feat(training): add resume-from-checkpoint support"
 ```
 
@@ -787,9 +787,9 @@ git commit -m "feat(training): add resume-from-checkpoint support"
 **Why:** The registry at `registry.json` tracks every training run with full specs, timestamps, and results, but there is no UI to browse it. Users cannot compare runs or recall what settings produced a good model.
 
 **Files:**
-- Create: `src/multi_tracker/mat/gui/dialogs/run_history_dialog.py`
+- Create: `src/hydra_suite/mat/gui/dialogs/run_history_dialog.py`
 - Create: `tests/test_run_history.py`
-- Modify: `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`
+- Modify: `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`
 
 ### Step-by-step
 
@@ -802,7 +802,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from multi_tracker.mat.gui.dialogs.run_history_dialog import load_run_history
+from hydra_suite.tracker.gui.dialogs.run_history_dialog import load_run_history
 
 
 def test_load_run_history_empty(tmp_path: Path):
@@ -855,7 +855,7 @@ Expected: FAIL -- module does not exist
 - [ ] **Step 3: Create run_history_dialog.py**
 
 ```python
-# src/multi_tracker/mat/gui/dialogs/run_history_dialog.py
+# src/hydra_suite/mat/gui/dialogs/run_history_dialog.py
 """Training run history viewer dialog."""
 from __future__ import annotations
 
@@ -903,7 +903,7 @@ class RunHistoryDialog(QDialog):
         self.setWindowTitle("Training Run History")
         self.resize(1000, 600)
 
-        from multi_tracker.training.registry import get_registry_path
+        from hydra_suite.training.registry import get_registry_path
 
         self.registry_path = str(get_registry_path())
         self.runs = load_run_history(self.registry_path)
@@ -982,7 +982,7 @@ self.btn_history.clicked.connect(self._show_history)
 Add handler:
 ```python
 def _show_history(self):
-    from multi_tracker.mat.gui.dialogs.run_history_dialog import RunHistoryDialog
+    from hydra_suite.tracker.gui.dialogs.run_history_dialog import RunHistoryDialog
     dlg = RunHistoryDialog(parent=self)
     dlg.exec()
 ```
@@ -993,7 +993,7 @@ Run: `python -m pytest tests/test_run_history.py tests/test_training_framework.p
 Expected: All PASS
 
 ```bash
-git add src/multi_tracker/mat/gui/dialogs/run_history_dialog.py tests/test_run_history.py src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py
+git add src/hydra_suite/mat/gui/dialogs/run_history_dialog.py tests/test_run_history.py src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py
 git commit -m "feat(training): add run history viewer dialog"
 ```
 
@@ -1004,9 +1004,9 @@ git commit -m "feat(training): add run history viewer dialog"
 **Why:** Training logs stream text but users cannot see if loss is converging or diverging without squinting at numbers. A simple live plot widget that parses ultralytics output and draws loss/mAP curves gives immediate feedback on training health.
 
 **Files:**
-- Create: `src/multi_tracker/mat/gui/widgets/loss_plot_widget.py`
+- Create: `src/hydra_suite/mat/gui/widgets/loss_plot_widget.py`
 - Create: `tests/test_loss_plot_widget.py`
-- Modify: `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`
+- Modify: `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`
 
 ### Step-by-step
 
@@ -1016,7 +1016,7 @@ git commit -m "feat(training): add run history viewer dialog"
 # tests/test_loss_plot_widget.py
 from __future__ import annotations
 
-from multi_tracker.mat.gui.widgets.loss_plot_widget import parse_ultralytics_log_line
+from hydra_suite.tracker.gui.widgets.loss_plot_widget import parse_ultralytics_log_line
 
 
 def test_parse_epoch_line():
@@ -1051,7 +1051,7 @@ Expected: FAIL -- module does not exist
 This widget uses only Qt QPainter -- no matplotlib dependency. It draws a simple line chart of parsed loss values.
 
 ```python
-# src/multi_tracker/mat/gui/widgets/loss_plot_widget.py
+# src/hydra_suite/mat/gui/widgets/loss_plot_widget.py
 """Live loss plot widget using Qt painting -- no matplotlib required."""
 from __future__ import annotations
 
@@ -1199,7 +1199,7 @@ Expected: PASS
 
 In `train_yolo_dialog.py`, in `_build_run_group`, add the widget between progress bar and log view:
 ```python
-from multi_tracker.mat.gui.widgets.loss_plot_widget import LossPlotWidget
+from hydra_suite.tracker.gui.widgets.loss_plot_widget import LossPlotWidget
 
 self.loss_plot = LossPlotWidget()
 self.loss_plot.setMinimumHeight(180)
@@ -1226,7 +1226,7 @@ Run: `python -m pytest tests/test_loss_plot_widget.py tests/test_training_framew
 Expected: All PASS
 
 ```bash
-git add src/multi_tracker/mat/gui/widgets/loss_plot_widget.py tests/test_loss_plot_widget.py src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py
+git add src/hydra_suite/mat/gui/widgets/loss_plot_widget.py tests/test_loss_plot_widget.py src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py
 git commit -m "feat(training): add live loss plot to Training Center"
 ```
 
@@ -1237,7 +1237,7 @@ git commit -m "feat(training): add live loss plot to Training Center"
 **Why:** Users need to share or archive training setups. The registry stores spec snapshots, but they are not easily portable. A "Save Config" button that exports a complete, re-importable JSON of all dialog settings enables reproducibility and collaboration.
 
 **Files:**
-- Modify: `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`
+- Modify: `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`
 - Test: `tests/test_training_config_export.py`
 
 ### Step-by-step
@@ -1342,7 +1342,7 @@ Run: `python -m pytest tests/test_training_config_export.py tests/test_training_
 Expected: All PASS
 
 ```bash
-git add src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py tests/test_training_config_export.py
+git add src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py tests/test_training_config_export.py
 git commit -m "feat(training): add save/load training config for reproducibility"
 ```
 
@@ -1353,8 +1353,8 @@ git commit -m "feat(training): add save/load training config for reproducibility
 **Why:** Users with powerful hardware cannot easily use auto batch sizing (`batch=-1` in Ultralytics) or multi-GPU training (`device=0,1`). The dialog only has a fixed batch spinner and single-device combo.
 
 **Files:**
-- Modify: `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`
-- Modify: `src/multi_tracker/training/runner.py`
+- Modify: `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`
+- Modify: `src/hydra_suite/training/runner.py`
 - Test: `tests/test_training_batch_gpu.py`
 
 ### Step-by-step
@@ -1365,12 +1365,12 @@ git commit -m "feat(training): add save/load training config for reproducibility
 # tests/test_training_batch_gpu.py
 from __future__ import annotations
 
-from multi_tracker.training.contracts import (
+from hydra_suite.training.contracts import (
     TrainingHyperParams,
     TrainingRole,
     TrainingRunSpec,
 )
-from multi_tracker.training.runner import build_ultralytics_command
+from hydra_suite.training.runner import build_ultralytics_command
 
 
 def test_auto_batch_flag():
@@ -1439,7 +1439,7 @@ Run: `python -m pytest tests/test_training_batch_gpu.py tests/test_training_fram
 Expected: All PASS
 
 ```bash
-git add src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py tests/test_training_batch_gpu.py
+git add src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py tests/test_training_batch_gpu.py
 git commit -m "feat(training): add auto-batch sizing and multi-GPU device support"
 ```
 
@@ -1450,8 +1450,8 @@ git commit -m "feat(training): add auto-batch sizing and multi-GPU device suppor
 **Why:** Long training runs (hours) block the Training Center dialog. Users cannot track while training. A "Detach" option launches training as a standalone subprocess that writes results to a log file, so the dialog can close.
 
 **Files:**
-- Modify: `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py`
-- Modify: `src/multi_tracker/training/runner.py`
+- Modify: `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py`
+- Modify: `src/hydra_suite/training/runner.py`
 - Test: `tests/test_training_detach.py`
 
 ### Step-by-step
@@ -1462,12 +1462,12 @@ git commit -m "feat(training): add auto-batch sizing and multi-GPU device suppor
 # tests/test_training_detach.py
 from __future__ import annotations
 
-from multi_tracker.training.contracts import (
+from hydra_suite.training.contracts import (
     TrainingHyperParams,
     TrainingRole,
     TrainingRunSpec,
 )
-from multi_tracker.training.runner import build_ultralytics_command
+from hydra_suite.training.runner import build_ultralytics_command
 
 
 def test_detached_command_is_valid():
@@ -1517,7 +1517,7 @@ Run: `python -m pytest tests/test_training_detach.py tests/test_training_framewo
 Expected: All PASS
 
 ```bash
-git add src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py tests/test_training_detach.py
+git add src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py tests/test_training_detach.py
 git commit -m "feat(training): add detached background training mode"
 ```
 
@@ -1528,8 +1528,8 @@ git commit -m "feat(training): add detached background training mode"
 **Why:** Current splitting is random shuffle -- small datasets may have all examples of a rare class end up in one split. Stratified splitting ensures proportional class representation in train/val/test.
 
 **Files:**
-- Modify: `src/multi_tracker/training/dataset_builders.py`
-- Modify: `src/multi_tracker/training/dataset_inspector.py`
+- Modify: `src/hydra_suite/training/dataset_builders.py`
+- Modify: `src/hydra_suite/training/dataset_inspector.py`
 - Test: `tests/test_stratified_split.py`
 
 ### Step-by-step
@@ -1545,7 +1545,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from multi_tracker.training.dataset_inspector import (
+from hydra_suite.training.dataset_inspector import (
     DatasetItem,
     stratified_split_items,
 )
@@ -1612,7 +1612,7 @@ Expected: FAIL -- `stratified_split_items` does not exist
 
 - [ ] **Step 3: Add `stratified_split_items` to dataset_inspector.py**
 
-Add at the end of `src/multi_tracker/training/dataset_inspector.py`:
+Add at the end of `src/hydra_suite/training/dataset_inspector.py`:
 
 ```python
 def _read_class_ids_from_label(label_path: str) -> set[int]:
@@ -1712,7 +1712,7 @@ Expected: PASS
 
 - [ ] **Step 5: Wire stratified splitting into merge_obb_sources**
 
-In `src/multi_tracker/training/dataset_builders.py`, add to imports:
+In `src/hydra_suite/training/dataset_builders.py`, add to imports:
 ```python
 from .dataset_inspector import (
     DatasetInspection,
@@ -1741,7 +1741,7 @@ Expected: All PASS (existing tests still pass since stratified splitting is back
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/multi_tracker/training/dataset_inspector.py src/multi_tracker/training/dataset_builders.py tests/test_stratified_split.py
+git add src/hydra_suite/training/dataset_inspector.py src/hydra_suite/training/dataset_builders.py tests/test_stratified_split.py
 git commit -m "feat(training): add stratified dataset splitting for class-balanced train/val"
 ```
 

@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Reorganize `src/multi_tracker/` so MAT is an explicit app, DataSieve is a peer app, `runtime/` is promoted to shared infrastructure, external integrations are centralized, and all reverse dependency violations are eliminated.
+**Goal:** Reorganize `src/hydra_suite/` so MAT is an explicit app, DataSieve is a peer app, `runtime/` is promoted to shared infrastructure, external integrations are centralized, and all reverse dependency violations are eliminated.
 
 **Architecture:** Move MAT's ambient `app/` and `gui/` under `mat/`, promote `tools/data_sieve/` to `datasieve/`, promote `core/runtime/` to `runtime/`, restructure `integrations/` with SLEAP sub-package, and fix 2 reverse dependencies (core→afterhours, core→posekit). Dependency flow: apps → integrations → core → shared infra.
 
@@ -15,21 +15,21 @@
 ## File Structure Overview
 
 ### Directories to create
-- `src/multi_tracker/mat/` (new app namespace)
-- `src/multi_tracker/mat/app/` (moved from `app/`)
-- `src/multi_tracker/mat/gui/` (moved from `gui/`)
-- `src/multi_tracker/mat/gui/dialogs/` (moved from `gui/dialogs/`)
-- `src/multi_tracker/mat/gui/widgets/` (moved from `gui/widgets/`)
-- `src/multi_tracker/datasieve/` (moved from `tools/data_sieve/`)
-- `src/multi_tracker/runtime/` (moved from `core/runtime/`)
-- `src/multi_tracker/integrations/sleap/` (new)
-- `src/multi_tracker/integrations/xanylabeling/` (new)
+- `src/hydra_suite/mat/` (new app namespace)
+- `src/hydra_suite/mat/app/` (moved from `app/`)
+- `src/hydra_suite/mat/gui/` (moved from `gui/`)
+- `src/hydra_suite/mat/gui/dialogs/` (moved from `gui/dialogs/`)
+- `src/hydra_suite/mat/gui/widgets/` (moved from `gui/widgets/`)
+- `src/hydra_suite/datasieve/` (moved from `tools/data_sieve/`)
+- `src/hydra_suite/runtime/` (moved from `core/runtime/`)
+- `src/hydra_suite/integrations/sleap/` (new)
+- `src/hydra_suite/integrations/xanylabeling/` (new)
 
 ### Directories to delete (after moves)
-- `src/multi_tracker/app/`
-- `src/multi_tracker/gui/`
-- `src/multi_tracker/tools/`
-- `src/multi_tracker/core/runtime/`
+- `src/hydra_suite/app/`
+- `src/hydra_suite/gui/`
+- `src/hydra_suite/tools/`
+- `src/hydra_suite/core/runtime/`
 
 ---
 
@@ -63,11 +63,11 @@ If there are uncommitted changes from prior work, commit them first so the reorg
 This is the largest move — MAT's ambient code gets its own namespace.
 
 **Files:**
-- Move: `src/multi_tracker/app/` → `src/multi_tracker/mat/app/`
-- Move: `src/multi_tracker/gui/` → `src/multi_tracker/mat/gui/`
-- Create: `src/multi_tracker/mat/__init__.py`
-- Modify: `src/multi_tracker/__init__.py`
-- Modify: `src/multi_tracker/mat/gui/main_window.py` (internal import)
+- Move: `src/hydra_suite/app/` → `src/hydra_suite/mat/app/`
+- Move: `src/hydra_suite/gui/` → `src/hydra_suite/mat/gui/`
+- Create: `src/hydra_suite/mat/__init__.py`
+- Modify: `src/hydra_suite/__init__.py`
+- Modify: `src/hydra_suite/mat/gui/main_window.py` (internal import)
 - Modify: `tests/test_main_window_config_persistence.py`
 - Modify: `tests/test_preview_background_cache.py`
 - Modify: `pyproject.toml`
@@ -75,14 +75,14 @@ This is the largest move — MAT's ambient code gets its own namespace.
 - [ ] **Step 1: Create `mat/` package and move directories**
 
 ```bash
-cd src/multi_tracker
+cd src/hydra_suite
 mkdir -p mat
 touch mat/__init__.py
 git mv app mat/app
 git mv gui mat/gui
 ```
 
-- [ ] **Step 2: Update `src/multi_tracker/__init__.py`**
+- [ ] **Step 2: Update `src/hydra_suite/__init__.py`**
 
 Replace the imports at the bottom of the file:
 
@@ -110,21 +110,21 @@ Find and replace:
 
 ```python
 # Old
-from multi_tracker.gui.dialogs import CNNIdentityImportDialog
+from hydra_suite.gui.dialogs import CNNIdentityImportDialog
 # New
-from multi_tracker.mat.gui.dialogs import CNNIdentityImportDialog
+from hydra_suite.tracker.gui.dialogs import CNNIdentityImportDialog
 ```
 
 - [ ] **Step 4: Update `pyproject.toml` entry points**
 
 ```toml
 # Old
-multi-animal-tracker = "multi_tracker.app.launcher:main"
-mat = "multi_tracker.app.launcher:main"
+hydra-suite = "hydra_suite.app.launcher:main"
+mat = "hydra_suite.app.launcher:main"
 
 # New
-multi-animal-tracker = "multi_tracker.mat.app.launcher:main"
-mat = "multi_tracker.mat.app.launcher:main"
+hydra-suite = "hydra_suite.tracker.app.launcher:main"
+mat = "hydra_suite.tracker.app.launcher:main"
 ```
 
 - [ ] **Step 5: Update test imports**
@@ -132,25 +132,25 @@ mat = "multi_tracker.mat.app.launcher:main"
 In `tests/test_main_window_config_persistence.py`:
 ```python
 # Old
-from multi_tracker.gui.main_window import MainWindow
+from hydra_suite.gui.main_window import MainWindow
 # New
-from multi_tracker.mat.gui.main_window import MainWindow
+from hydra_suite.tracker.gui.main_window import MainWindow
 ```
 
 In `tests/test_preview_background_cache.py`:
 ```python
 # Old
-from multi_tracker.gui import main_window
+from hydra_suite.gui import main_window
 # New
-from multi_tracker.mat.gui import main_window
+from hydra_suite.tracker.gui import main_window
 ```
 
-- [ ] **Step 6: Search for any remaining `multi_tracker.gui` or `multi_tracker.app` references**
+- [ ] **Step 6: Search for any remaining `hydra_suite.gui` or `hydra_suite.app` references**
 
 ```bash
 cd /path/to/repo
-grep -rn "multi_tracker\.gui\b" src/ tests/ --include="*.py" | grep -v "__pycache__"
-grep -rn "multi_tracker\.app\b" src/ tests/ --include="*.py" | grep -v "__pycache__"
+grep -rn "hydra_suite\.gui\b" src/ tests/ --include="*.py" | grep -v "__pycache__"
+grep -rn "hydra_suite\.app\b" src/ tests/ --include="*.py" | grep -v "__pycache__"
 ```
 
 Fix any remaining references found. Also check for string references (e.g., in mock patches or config strings).
@@ -175,16 +175,16 @@ git commit -m "refactor: move app/ and gui/ under mat/ namespace"
 ### Task 3: Promote `tools/data_sieve/` to `datasieve/`
 
 **Files:**
-- Move: `src/multi_tracker/tools/data_sieve/` → `src/multi_tracker/datasieve/`
-- Delete: `src/multi_tracker/tools/` (after move)
-- Modify: `src/multi_tracker/datasieve/gui.py` (if internal imports exist)
-- Modify: `src/multi_tracker/datasieve/main.py`
+- Move: `src/hydra_suite/tools/data_sieve/` → `src/hydra_suite/datasieve/`
+- Delete: `src/hydra_suite/tools/` (after move)
+- Modify: `src/hydra_suite/datasieve/gui.py` (if internal imports exist)
+- Modify: `src/hydra_suite/datasieve/main.py`
 - Modify: `pyproject.toml`
 
 - [ ] **Step 1: Move data_sieve and remove tools/**
 
 ```bash
-cd src/multi_tracker
+cd src/hydra_suite
 git mv tools/data_sieve datasieve
 git rm -r tools/
 ```
@@ -202,27 +202,27 @@ Then remove the empty directory if needed.
 
 ```python
 # Old
-from multi_tracker.tools.data_sieve.gui import main
+from hydra_suite.tools.data_sieve.gui import main
 # New
-from multi_tracker.datasieve.gui import main
+from hydra_suite.datasieve.gui import main
 ```
 
 - [ ] **Step 3: Update `pyproject.toml` entry points**
 
 ```toml
 # Old
-datasieve = "multi_tracker.tools.data_sieve.gui:main"
-sieve = "multi_tracker.tools.data_sieve.gui:main"
+datasieve = "hydra_suite.tools.data_sieve.gui:main"
+sieve = "hydra_suite.tools.data_sieve.gui:main"
 
 # New
-datasieve = "multi_tracker.datasieve.gui:main"
-sieve = "multi_tracker.datasieve.gui:main"
+datasieve = "hydra_suite.datasieve.gui:main"
+sieve = "hydra_suite.datasieve.gui:main"
 ```
 
-- [ ] **Step 4: Search for any remaining `multi_tracker.tools` references**
+- [ ] **Step 4: Search for any remaining `hydra_suite.tools` references**
 
 ```bash
-grep -rn "multi_tracker\.tools" src/ tests/ --include="*.py" | grep -v "__pycache__"
+grep -rn "hydra_suite\.tools" src/ tests/ --include="*.py" | grep -v "__pycache__"
 ```
 
 Fix any remaining references found.
@@ -247,16 +247,16 @@ git commit -m "refactor: promote datasieve to peer app namespace"
 ### Task 4: Promote `core/runtime/` to root-level `runtime/`
 
 **Files:**
-- Move: `src/multi_tracker/core/runtime/` → `src/multi_tracker/runtime/`
-- Modify: `src/multi_tracker/core/identity/pose/api.py`
-- Modify: `src/multi_tracker/posekit/ui/runtimes.py` (imports `core.runtime`)
+- Move: `src/hydra_suite/core/runtime/` → `src/hydra_suite/runtime/`
+- Modify: `src/hydra_suite/core/identity/pose/api.py`
+- Modify: `src/hydra_suite/posekit/ui/runtimes.py` (imports `core.runtime`)
 - Modify: `tests/test_compute_runtime.py`
 - Modify: `tools/benchmark_models.py`
 
 - [ ] **Step 1: Move runtime/ out of core/**
 
 ```bash
-cd src/multi_tracker
+cd src/hydra_suite
 git mv core/runtime runtime
 ```
 
@@ -264,18 +264,18 @@ git mv core/runtime runtime
 
 ```python
 # Old
-from multi_tracker.core.runtime.compute_runtime import derive_pose_runtime_settings
+from hydra_suite.core.runtime.compute_runtime import derive_pose_runtime_settings
 # New
-from multi_tracker.runtime.compute_runtime import derive_pose_runtime_settings
+from hydra_suite.runtime.compute_runtime import derive_pose_runtime_settings
 ```
 
 - [ ] **Step 3: Update import in `posekit/ui/runtimes.py`**
 
 ```python
 # Old
-from multi_tracker.core.runtime.compute_runtime import ...
+from hydra_suite.core.runtime.compute_runtime import ...
 # New
-from multi_tracker.runtime.compute_runtime import ...
+from hydra_suite.runtime.compute_runtime import ...
 ```
 
 Note: Verify the exact import line first — the explore agent found this file imports from `core.runtime`.
@@ -284,24 +284,24 @@ Note: Verify the exact import line first — the explore agent found this file i
 
 ```python
 # Old
-return importlib.import_module("multi_tracker.core.runtime.compute_runtime")
+return importlib.import_module("hydra_suite.core.runtime.compute_runtime")
 # New
-return importlib.import_module("multi_tracker.runtime.compute_runtime")
+return importlib.import_module("hydra_suite.runtime.compute_runtime")
 ```
 
 - [ ] **Step 5: Update `tools/benchmark_models.py`**
 
 ```python
 # Old
-from multi_tracker.core.runtime.compute_runtime import (
+from hydra_suite.core.runtime.compute_runtime import (
 # New
-from multi_tracker.runtime.compute_runtime import (
+from hydra_suite.runtime.compute_runtime import (
 ```
 
-- [ ] **Step 6: Search for any remaining `multi_tracker.core.runtime` references**
+- [ ] **Step 6: Search for any remaining `hydra_suite.core.runtime` references**
 
 ```bash
-grep -rn "multi_tracker\.core\.runtime" src/ tests/ tools/ --include="*.py" | grep -v "__pycache__"
+grep -rn "hydra_suite\.core\.runtime" src/ tests/ tools/ --include="*.py" | grep -v "__pycache__"
 ```
 
 Fix any remaining references found.
@@ -326,10 +326,10 @@ git commit -m "refactor: promote runtime/ to shared infrastructure"
 ### Task 5: Fix reverse dependency — move density computation from afterhours to core
 
 **Files:**
-- Move: `src/multi_tracker/afterhours/core/confidence_density.py` → `src/multi_tracker/core/tracking/density.py`
-- Modify: `src/multi_tracker/core/tracking/worker.py` (3 import sites: lines ~858, ~953, ~972)
-- Modify: `src/multi_tracker/afterhours/core/event_scorer.py`
-- Modify: `src/multi_tracker/afterhours/gui/main_window.py`
+- Move: `src/hydra_suite/afterhours/core/confidence_density.py` → `src/hydra_suite/core/tracking/density.py`
+- Modify: `src/hydra_suite/core/tracking/worker.py` (3 import sites: lines ~858, ~953, ~972)
+- Modify: `src/hydra_suite/afterhours/core/event_scorer.py`
+- Modify: `src/hydra_suite/afterhours/gui/main_window.py`
 - Modify: `tests/test_density_aware_assignment.py`
 - Modify: `tests/test_confidence_density_video.py`
 - Modify: `tests/test_confidence_density.py`
@@ -337,7 +337,7 @@ git commit -m "refactor: promote runtime/ to shared infrastructure"
 - [ ] **Step 1: Move confidence_density.py to core/tracking/density.py**
 
 ```bash
-cd src/multi_tracker
+cd src/hydra_suite
 git mv afterhours/core/confidence_density.py core/tracking/density.py
 ```
 
@@ -347,27 +347,27 @@ There are 3 import sites. Replace all occurrences:
 
 ```python
 # Old (appears at ~3 locations)
-from multi_tracker.afterhours.core.confidence_density import (
+from hydra_suite.afterhours.core.confidence_density import (
 # New
-from multi_tracker.core.tracking.density import (
+from hydra_suite.core.tracking.density import (
 ```
 
 - [ ] **Step 3: Update import in `afterhours/core/event_scorer.py`**
 
 ```python
 # Old
-from multi_tracker.afterhours.core.confidence_density import DensityRegion
+from hydra_suite.afterhours.core.confidence_density import DensityRegion
 # New
-from multi_tracker.core.tracking.density import DensityRegion
+from hydra_suite.core.tracking.density import DensityRegion
 ```
 
 - [ ] **Step 4: Update import in `afterhours/gui/main_window.py`**
 
 ```python
 # Old
-from multi_tracker.afterhours.core.confidence_density import load_regions
+from hydra_suite.afterhours.core.confidence_density import load_regions
 # New
-from multi_tracker.core.tracking.density import load_regions
+from hydra_suite.core.tracking.density import load_regions
 ```
 
 - [ ] **Step 5: Update test imports**
@@ -375,25 +375,25 @@ from multi_tracker.core.tracking.density import load_regions
 In `tests/test_density_aware_assignment.py`:
 ```python
 # Old
-from multi_tracker.afterhours.core.confidence_density import DensityRegion
+from hydra_suite.afterhours.core.confidence_density import DensityRegion
 # New
-from multi_tracker.core.tracking.density import DensityRegion
+from hydra_suite.core.tracking.density import DensityRegion
 ```
 
 In `tests/test_confidence_density_video.py`:
 ```python
 # Old
-from multi_tracker.afterhours.core.confidence_density import (
+from hydra_suite.afterhours.core.confidence_density import (
 # New
-from multi_tracker.core.tracking.density import (
+from hydra_suite.core.tracking.density import (
 ```
 
 In `tests/test_confidence_density.py`:
 ```python
 # Old
-from multi_tracker.afterhours.core.confidence_density import (
+from hydra_suite.afterhours.core.confidence_density import (
 # New
-from multi_tracker.core.tracking.density import (
+from hydra_suite.core.tracking.density import (
 ```
 
 - [ ] **Step 6: Search for any remaining `afterhours.core.confidence_density` references**
@@ -424,18 +424,18 @@ git commit -m "refactor: move density computation from afterhours to core/tracki
 ### Task 6: Fix reverse dependency — move SLEAP inference service to integrations
 
 **Files:**
-- Create: `src/multi_tracker/integrations/sleap/__init__.py`
-- Move: `src/multi_tracker/posekit/inference/service.py` → `src/multi_tracker/integrations/sleap/service.py`
-- Modify: `src/multi_tracker/core/identity/pose/backends/sleap.py`
-- Modify: `src/multi_tracker/posekit/ui/workers.py`
-- Modify: `src/multi_tracker/posekit/ui/main_window.py`
-- Modify: `src/multi_tracker/posekit/ui/dialogs/utils.py`
+- Create: `src/hydra_suite/integrations/sleap/__init__.py`
+- Move: `src/hydra_suite/posekit/inference/service.py` → `src/hydra_suite/integrations/sleap/service.py`
+- Modify: `src/hydra_suite/core/identity/pose/backends/sleap.py`
+- Modify: `src/hydra_suite/posekit/ui/workers.py`
+- Modify: `src/hydra_suite/posekit/ui/main_window.py`
+- Modify: `src/hydra_suite/posekit/ui/dialogs/utils.py`
 - Modify: `tests/test_runtime_api_sleap_export.py`
 
 - [ ] **Step 1: Create `integrations/sleap/` package and move service**
 
 ```bash
-cd src/multi_tracker
+cd src/hydra_suite
 mkdir -p integrations/sleap
 touch integrations/sleap/__init__.py
 git mv posekit/inference/service.py integrations/sleap/service.py
@@ -445,51 +445,51 @@ git mv posekit/inference/service.py integrations/sleap/service.py
 
 ```python
 # Old
-from multi_tracker.posekit.inference.service import PoseInferenceService
+from hydra_suite.posekit.inference.service import PoseInferenceService
 # New
-from multi_tracker.integrations.sleap.service import PoseInferenceService
+from hydra_suite.integrations.sleap.service import PoseInferenceService
 ```
 
 Also check for the legacy fallback import on the next line and update or remove if appropriate:
 ```python
 # Old fallback
-from multi_tracker.posekit_old.pose_inference import PoseInferenceService
+from hydra_suite.posekit_old.pose_inference import PoseInferenceService
 ```
 
 - [ ] **Step 3: Update import in `posekit/ui/workers.py`**
 
 ```python
 # Old
-from multi_tracker.posekit.inference.service import PoseInferenceService
+from hydra_suite.posekit.inference.service import PoseInferenceService
 # New
-from multi_tracker.integrations.sleap.service import PoseInferenceService
+from hydra_suite.integrations.sleap.service import PoseInferenceService
 ```
 
 - [ ] **Step 4: Update import in `posekit/ui/main_window.py`**
 
 ```python
 # Old
-from multi_tracker.posekit.inference.service import PoseInferenceService
+from hydra_suite.posekit.inference.service import PoseInferenceService
 # New
-from multi_tracker.integrations.sleap.service import PoseInferenceService
+from hydra_suite.integrations.sleap.service import PoseInferenceService
 ```
 
 - [ ] **Step 5: Update import in `posekit/ui/dialogs/utils.py`**
 
 ```python
 # Old
-from multi_tracker.posekit.inference.service import PoseInferenceService
+from hydra_suite.posekit.inference.service import PoseInferenceService
 # New
-from multi_tracker.integrations.sleap.service import PoseInferenceService
+from hydra_suite.integrations.sleap.service import PoseInferenceService
 ```
 
 - [ ] **Step 6: Update mock path in `tests/test_runtime_api_sleap_export.py`**
 
 ```python
 # Old
-"multi_tracker.posekit.inference.service"
+"hydra_suite.posekit.inference.service"
 # New
-"multi_tracker.integrations.sleap.service"
+"hydra_suite.integrations.sleap.service"
 ```
 
 - [ ] **Step 7: Search for any remaining `posekit.inference.service` references**
@@ -520,14 +520,14 @@ git commit -m "refactor: move SLEAP inference service to integrations/"
 ### Task 7: Restructure `integrations/` — move xanylabeling into sub-package
 
 **Files:**
-- Create: `src/multi_tracker/integrations/xanylabeling/__init__.py`
-- Move: `src/multi_tracker/integrations/xanylabeling_cli.py` → `src/multi_tracker/integrations/xanylabeling/cli.py`
-- Modify: `src/multi_tracker/integrations/__init__.py`
+- Create: `src/hydra_suite/integrations/xanylabeling/__init__.py`
+- Move: `src/hydra_suite/integrations/xanylabeling_cli.py` → `src/hydra_suite/integrations/xanylabeling/cli.py`
+- Modify: `src/hydra_suite/integrations/__init__.py`
 
 - [ ] **Step 1: Create xanylabeling sub-package and move file**
 
 ```bash
-cd src/multi_tracker
+cd src/hydra_suite
 mkdir -p integrations/xanylabeling
 touch integrations/xanylabeling/__init__.py
 git mv integrations/xanylabeling_cli.py integrations/xanylabeling/cli.py
@@ -553,7 +553,7 @@ __all__ = ["HARD_CODED_CMD", "convert_project"]
 grep -rn "xanylabeling_cli" src/ tests/ --include="*.py" | grep -v "__pycache__"
 ```
 
-Fix any remaining references. Most code should import via `multi_tracker.integrations` (the `__init__.py` re-exports), but verify.
+Fix any remaining references. Most code should import via `hydra_suite.integrations` (the `__init__.py` re-exports), but verify.
 
 - [ ] **Step 4: Run tests**
 
@@ -598,11 +598,11 @@ Expected: No new lint errors.
 - [ ] **Step 3: Verify all 5 CLI entry points resolve**
 
 ```bash
-python -c "from multi_tracker.mat.app.launcher import main; print('mat OK')"
-python -c "from multi_tracker.posekit.ui.main import main; print('posekit OK')"
-python -c "from multi_tracker.datasieve.gui import main; print('datasieve OK')"
-python -c "from multi_tracker.classkit.app import main; print('classkit OK')"
-python -c "from multi_tracker.afterhours.app import main; print('afterhours OK')"
+python -c "from hydra_suite.tracker.app.launcher import main; print('mat OK')"
+python -c "from hydra_suite.posekit.ui.main import main; print('posekit OK')"
+python -c "from hydra_suite.datasieve.gui import main; print('datasieve OK')"
+python -c "from hydra_suite.classkit.app import main; print('classkit OK')"
+python -c "from hydra_suite.afterhours.app import main; print('afterhours OK')"
 ```
 
 Expected: All 5 print OK.
@@ -611,13 +611,13 @@ Expected: All 5 print OK.
 
 ```bash
 # core/ should not import from app-layer packages
-grep -rn "from multi_tracker\.\(mat\|posekit\|classkit\|afterhours\|datasieve\)\." src/multi_tracker/core/ --include="*.py" | grep -v "__pycache__"
+grep -rn "from hydra_suite\.\(mat\|posekit\|classkit\|afterhours\|datasieve\)\." src/hydra_suite/core/ --include="*.py" | grep -v "__pycache__"
 
 # integrations/ should not import from app-layer packages
-grep -rn "from multi_tracker\.\(mat\|posekit\|classkit\|afterhours\|datasieve\)\." src/multi_tracker/integrations/ --include="*.py" | grep -v "__pycache__"
+grep -rn "from hydra_suite\.\(mat\|posekit\|classkit\|afterhours\|datasieve\)\." src/hydra_suite/integrations/ --include="*.py" | grep -v "__pycache__"
 
 # shared infra should not import upward
-grep -rn "from multi_tracker\.\(core\|mat\|posekit\|classkit\|afterhours\|datasieve\|integrations\)\." src/multi_tracker/runtime/ src/multi_tracker/utils/ src/multi_tracker/data/ src/multi_tracker/training/ --include="*.py" | grep -v "__pycache__"
+grep -rn "from hydra_suite\.\(core\|mat\|posekit\|classkit\|afterhours\|datasieve\|integrations\)\." src/hydra_suite/runtime/ src/hydra_suite/utils/ src/hydra_suite/data/ src/hydra_suite/training/ --include="*.py" | grep -v "__pycache__"
 ```
 
 Expected: No matches for any of the above.
@@ -629,28 +629,28 @@ Update the "System Layers" table to reflect new paths:
 ```markdown
 | Layer | Package | Role |
 |---|---|---|
-| MAT App | `multi_tracker.mat` | MAT launcher, GUI, dialogs, widgets |
-| PoseKit | `multi_tracker.posekit` | Pose-labeling application |
-| ClassKit | `multi_tracker.classkit` | Classification/embedding toolkit |
-| Afterhours | `multi_tracker.afterhours` | Interactive proofreading |
-| DataSieve | `multi_tracker.datasieve` | Data sieve tool |
-| Integrations | `multi_tracker.integrations` | External tool bridges (SLEAP, X-AnyLabeling) |
-| Core | `multi_tracker.core` | Detection, Kalman filter, assignment, post-processing, identity |
-| Runtime | `multi_tracker.runtime` | Compute runtime selection and GPU utilities |
-| Data | `multi_tracker.data` | CSV export, detection cache, dataset generation/merge |
-| Training | `multi_tracker.training` | Dataset builders, training runner, registry, service |
-| Utils | `multi_tracker.utils` | Geometry, image processing, batching, prefetch |
+| MAT App | `hydra_suite.tracker` | MAT launcher, GUI, dialogs, widgets |
+| PoseKit | `hydra_suite.posekit` | Pose-labeling application |
+| ClassKit | `hydra_suite.classkit` | Classification/embedding toolkit |
+| Afterhours | `hydra_suite.afterhours` | Interactive proofreading |
+| DataSieve | `hydra_suite.datasieve` | Data sieve tool |
+| Integrations | `hydra_suite.integrations` | External tool bridges (SLEAP, X-AnyLabeling) |
+| Core | `hydra_suite.core` | Detection, Kalman filter, assignment, post-processing, identity |
+| Runtime | `hydra_suite.runtime` | Compute runtime selection and GPU utilities |
+| Data | `hydra_suite.data` | CSV export, detection cache, dataset generation/merge |
+| Training | `hydra_suite.training` | Dataset builders, training runner, registry, service |
+| Utils | `hydra_suite.utils` | Geometry, image processing, batching, prefetch |
 ```
 
 Also update file path references throughout CLAUDE.md (e.g., `core/runtime/compute_runtime.py` → `runtime/compute_runtime.py`, `app.launcher` → `mat.app.launcher`).
 
 - [ ] **Step 6: Update API docs references if they exist**
 
-Check `docs/reference/api-posekit.md` for references to `multi_tracker.posekit.inference.service` and update to `multi_tracker.integrations.sleap.service`.
+Check `docs/reference/api-posekit.md` for references to `hydra_suite.posekit.inference.service` and update to `hydra_suite.integrations.sleap.service`.
 
 ```bash
 grep -rn "posekit\.inference" docs/ | grep -v "__pycache__"
-grep -rn "multi_tracker\.app\.\|multi_tracker\.gui\.\|multi_tracker\.tools\.\|multi_tracker\.core\.runtime" docs/ | grep -v "__pycache__"
+grep -rn "hydra_suite\.app\.\|hydra_suite\.gui\.\|hydra_suite\.tools\.\|hydra_suite\.core\.runtime" docs/ | grep -v "__pycache__"
 ```
 
 Fix any stale path references found.

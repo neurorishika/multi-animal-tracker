@@ -5,7 +5,7 @@
 ```bash
 # install runtime deps
 mamba env create -f environment.yml
-conda activate multi-animal-tracker-base
+conda activate hydra-suite-base
 uv pip install -r requirements.txt
 
 # docs + dev-tool deps (vulture, pydeps, pylint, mypy)
@@ -14,7 +14,7 @@ uv pip install -r requirements-docs.txt
 
 ## Documentation Requirements
 
-- Use current package paths (`multi_tracker.posekit`, new `core/*` layout).
+- Use current package paths (`hydra_suite.posekit`, new `core/*` layout).
 - Keep command names canonical (`posekit-labeler`) and avoid legacy alternate spellings.
 - Run strict docs build before opening PR:
 

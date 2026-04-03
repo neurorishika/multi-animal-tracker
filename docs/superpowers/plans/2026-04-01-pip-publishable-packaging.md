@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make `multi-animal-tracker` installable via `pip install multi-animal-tracker` with all assets bundled, user-writable data dirs, and proper dependency declarations — while preserving the existing conda+Makefile developer workflow.
+**Goal:** Make `hydra-suite` installable via `pip install hydra-suite` with all assets bundled, user-writable data dirs, and proper dependency declarations — while preserving the existing conda+Makefile developer workflow.
 
-**Architecture:** Create a `multi_tracker.resources` sub-package that bundles read-only assets (brand icons, default configs, skeletons) using `importlib.resources`. User-writable data (models, training runs, advanced config) moves to platform-appropriate directories via `platformdirs`. A central `multi_tracker.paths` module replaces all 24 `parents[N]` path-resolution patterns. `pyproject.toml` gains full dependency declarations.
+**Architecture:** Create a `hydra_suite.resources` sub-package that bundles read-only assets (brand icons, default configs, skeletons) using `importlib.resources`. User-writable data (models, training runs, advanced config) moves to platform-appropriate directories via `platformdirs`. A central `hydra_suite.paths` module replaces all 24 `parents[N]` path-resolution patterns. `pyproject.toml` gains full dependency declarations.
 
 **Tech Stack:** Python 3.11+ `importlib.resources.files()`, `platformdirs>=3.0`, setuptools `package-data`, PySide6 `QPixmap.loadFromData()`
 
@@ -16,16 +16,16 @@
 
 | File | Responsibility |
 |------|---------------|
-| `src/multi_tracker/paths.py` | Central path resolution: bundled assets via `importlib.resources`, user dirs via `platformdirs` |
-| `src/multi_tracker/resources/__init__.py` | Package marker for importlib.resources |
-| `src/multi_tracker/resources/brand/__init__.py` | Package marker |
-| `src/multi_tracker/resources/brand/*.svg` | Moved from `src/brand/` |
-| `src/multi_tracker/resources/brand/*.png` | Moved from `src/brand/` |
-| `src/multi_tracker/resources/configs/__init__.py` | Package marker |
-| `src/multi_tracker/resources/configs/default.json` | Copied from `configs/default.json` |
-| `src/multi_tracker/resources/configs/ooceraea_biroi.json` | Copied from `configs/ooceraea_biroi.json` |
-| `src/multi_tracker/resources/configs/skeletons/__init__.py` | Package marker |
-| `src/multi_tracker/resources/configs/skeletons/ooceraea_biroi.json` | Copied from `configs/skeletons/ooceraea_biroi.json` |
+| `src/hydra_suite/paths.py` | Central path resolution: bundled assets via `importlib.resources`, user dirs via `platformdirs` |
+| `src/hydra_suite/resources/__init__.py` | Package marker for importlib.resources |
+| `src/hydra_suite/resources/brand/__init__.py` | Package marker |
+| `src/hydra_suite/resources/brand/*.svg` | Moved from `src/brand/` |
+| `src/hydra_suite/resources/brand/*.png` | Moved from `src/brand/` |
+| `src/hydra_suite/resources/configs/__init__.py` | Package marker |
+| `src/hydra_suite/resources/configs/default.json` | Copied from `configs/default.json` |
+| `src/hydra_suite/resources/configs/ooceraea_biroi.json` | Copied from `configs/ooceraea_biroi.json` |
+| `src/hydra_suite/resources/configs/skeletons/__init__.py` | Package marker |
+| `src/hydra_suite/resources/configs/skeletons/ooceraea_biroi.json` | Copied from `configs/skeletons/ooceraea_biroi.json` |
 | `tests/test_paths.py` | Tests for the paths module |
 | `tests/test_packaging.py` | Tests that package-data is correctly included |
 
@@ -33,39 +33,39 @@
 
 | File | Change |
 |------|--------|
-| `src/multi_tracker/paths.py` | NEW — all path logic lives here |
-| `src/multi_tracker/__init__.py` | Fix placeholder metadata, use `importlib.metadata` for version |
+| `src/hydra_suite/paths.py` | NEW — all path logic lives here |
+| `src/hydra_suite/__init__.py` | Fix placeholder metadata, use `importlib.metadata` for version |
 | `pyproject.toml` | Add `dependencies`, `optional-dependencies`, `package-data`, remove unused `setuptools_scm` |
-| `src/multi_tracker/datasieve/gui.py` | Replace 4x `parents[3] / "brand"` with `paths.get_brand_icon()` |
-| `src/multi_tracker/afterhours/app.py` | Replace `parents[2] / "brand"` with `paths.get_brand_icon()` |
-| `src/multi_tracker/afterhours/gui/main_window.py` | Replace `parents[3] / "brand"` with `paths.get_brand_icon()` |
-| `src/multi_tracker/mat/app/launcher.py` | Replace `parents[3] / "brand"` with `paths.get_brand_icon()` |
-| `src/multi_tracker/mat/gui/main_window.py` | Replace 7 path patterns (brand, models, configs, advanced_config) |
-| `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py` | Replace `parents[5]` with `paths.get_training_dir()` |
-| `src/multi_tracker/classkit/gui/mainwindow.py` | Replace `parents[3] / "brand"` with `paths.get_brand_icon()` |
-| `src/multi_tracker/posekit/ui/main_window.py` | Replace 2x `parents[3] / "brand"` with `paths.get_brand_icon()` |
-| `src/multi_tracker/posekit/ui/main.py` | Replace `parents[3] / "brand"` with `paths.get_brand_icon()` |
-| `src/multi_tracker/posekit/ui/utils.py` | Replace `parents[4]` skeleton dir with `paths.get_skeleton_dir()` |
-| `src/multi_tracker/training/registry.py` | Replace `_project_root()` with `paths.get_training_runs_dir()` |
-| `src/multi_tracker/training/model_publish.py` | Replace `_project_root()` with `paths.get_models_dir()` |
+| `src/hydra_suite/datasieve/gui.py` | Replace 4x `parents[3] / "brand"` with `paths.get_brand_icon()` |
+| `src/hydra_suite/afterhours/app.py` | Replace `parents[2] / "brand"` with `paths.get_brand_icon()` |
+| `src/hydra_suite/afterhours/gui/main_window.py` | Replace `parents[3] / "brand"` with `paths.get_brand_icon()` |
+| `src/hydra_suite/mat/app/launcher.py` | Replace `parents[3] / "brand"` with `paths.get_brand_icon()` |
+| `src/hydra_suite/mat/gui/main_window.py` | Replace 7 path patterns (brand, models, configs, advanced_config) |
+| `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py` | Replace `parents[5]` with `paths.get_training_dir()` |
+| `src/hydra_suite/classkit/gui/mainwindow.py` | Replace `parents[3] / "brand"` with `paths.get_brand_icon()` |
+| `src/hydra_suite/posekit/ui/main_window.py` | Replace 2x `parents[3] / "brand"` with `paths.get_brand_icon()` |
+| `src/hydra_suite/posekit/ui/main.py` | Replace `parents[3] / "brand"` with `paths.get_brand_icon()` |
+| `src/hydra_suite/posekit/ui/utils.py` | Replace `parents[4]` skeleton dir with `paths.get_skeleton_dir()` |
+| `src/hydra_suite/training/registry.py` | Replace `_project_root()` with `paths.get_training_runs_dir()` |
+| `src/hydra_suite/training/model_publish.py` | Replace `_project_root()` with `paths.get_models_dir()` |
 
 ---
 
 ## Task 1: Create the `paths` module and resource sub-package structure
 
 **Files:**
-- Create: `src/multi_tracker/paths.py`
-- Create: `src/multi_tracker/resources/__init__.py`
-- Create: `src/multi_tracker/resources/brand/__init__.py`
-- Create: `src/multi_tracker/resources/configs/__init__.py`
-- Create: `src/multi_tracker/resources/configs/skeletons/__init__.py`
+- Create: `src/hydra_suite/paths.py`
+- Create: `src/hydra_suite/resources/__init__.py`
+- Create: `src/hydra_suite/resources/brand/__init__.py`
+- Create: `src/hydra_suite/resources/configs/__init__.py`
+- Create: `src/hydra_suite/resources/configs/skeletons/__init__.py`
 - Test: `tests/test_paths.py`
 
 - [ ] **Step 1: Write the failing tests for the paths module**
 
 ```python
 # tests/test_paths.py
-"""Tests for multi_tracker.paths — central path resolution."""
+"""Tests for hydra_suite.paths — central path resolution."""
 
 import json
 from pathlib import Path
@@ -75,9 +75,9 @@ import pytest
 
 def test_get_brand_icon_bytes_returns_bytes():
     """Brand icon loader returns non-empty bytes for a known icon."""
-    from multi_tracker.paths import get_brand_icon_bytes
+    from hydra_suite.paths import get_brand_icon_bytes
 
-    data = get_brand_icon_bytes("multianimaltracker.svg")
+    data = get_brand_icon_bytes("hydra.svg")
     assert isinstance(data, bytes)
     assert len(data) > 0
     assert b"<svg" in data or b"<?xml" in data
@@ -85,7 +85,7 @@ def test_get_brand_icon_bytes_returns_bytes():
 
 def test_get_brand_icon_bytes_missing_returns_none():
     """Missing brand icon returns None instead of raising."""
-    from multi_tracker.paths import get_brand_icon_bytes
+    from hydra_suite.paths import get_brand_icon_bytes
 
     result = get_brand_icon_bytes("nonexistent_icon.svg")
     assert result is None
@@ -93,7 +93,7 @@ def test_get_brand_icon_bytes_missing_returns_none():
 
 def test_get_default_config_returns_dict():
     """Loading a bundled default config returns a valid dict."""
-    from multi_tracker.paths import get_default_config
+    from hydra_suite.paths import get_default_config
 
     cfg = get_default_config("default.json")
     assert isinstance(cfg, dict)
@@ -102,7 +102,7 @@ def test_get_default_config_returns_dict():
 
 def test_get_default_config_missing_returns_none():
     """Missing config returns None."""
-    from multi_tracker.paths import get_default_config
+    from hydra_suite.paths import get_default_config
 
     result = get_default_config("nonexistent.json")
     assert result is None
@@ -110,7 +110,7 @@ def test_get_default_config_missing_returns_none():
 
 def test_get_skeleton_config_returns_dict():
     """Loading a bundled skeleton config returns a valid dict."""
-    from multi_tracker.paths import get_skeleton_config
+    from hydra_suite.paths import get_skeleton_config
 
     cfg = get_skeleton_config("ooceraea_biroi.json")
     assert isinstance(cfg, dict)
@@ -118,7 +118,7 @@ def test_get_skeleton_config_returns_dict():
 
 def test_get_bundled_config_names_returns_list():
     """Listing bundled configs returns at least default.json."""
-    from multi_tracker.paths import get_bundled_config_names
+    from hydra_suite.paths import get_bundled_config_names
 
     names = get_bundled_config_names()
     assert isinstance(names, list)
@@ -127,7 +127,7 @@ def test_get_bundled_config_names_returns_list():
 
 def test_get_bundled_skeleton_names_returns_list():
     """Listing bundled skeletons returns at least one entry."""
-    from multi_tracker.paths import get_bundled_skeleton_names
+    from hydra_suite.paths import get_bundled_skeleton_names
 
     names = get_bundled_skeleton_names()
     assert isinstance(names, list)
@@ -138,7 +138,7 @@ def test_user_config_dir_is_writable(tmp_path, monkeypatch):
     """User config dir is created and writable."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     # Re-import to pick up env change
-    from multi_tracker.paths import _user_config_dir
+    from hydra_suite.paths import _user_config_dir
 
     d = _user_config_dir()
     assert d.exists()
@@ -152,7 +152,7 @@ def test_user_config_dir_is_writable(tmp_path, monkeypatch):
 def test_user_data_dir_is_writable(tmp_path, monkeypatch):
     """User data dir is created and writable."""
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-    from multi_tracker.paths import _user_data_dir
+    from hydra_suite.paths import _user_data_dir
 
     d = _user_data_dir()
     assert d.exists()
@@ -161,7 +161,7 @@ def test_user_data_dir_is_writable(tmp_path, monkeypatch):
 
 def test_get_models_dir_returns_path():
     """Models dir returns a Path under user data dir."""
-    from multi_tracker.paths import get_models_dir
+    from hydra_suite.paths import get_models_dir
 
     d = get_models_dir()
     assert isinstance(d, Path)
@@ -170,7 +170,7 @@ def test_get_models_dir_returns_path():
 
 def test_get_training_runs_dir_returns_path():
     """Training runs dir returns a Path under user data dir."""
-    from multi_tracker.paths import get_training_runs_dir
+    from hydra_suite.paths import get_training_runs_dir
 
     d = get_training_runs_dir()
     assert isinstance(d, Path)
@@ -179,7 +179,7 @@ def test_get_training_runs_dir_returns_path():
 
 def test_get_advanced_config_path_returns_path():
     """Advanced config path is under user config dir."""
-    from multi_tracker.paths import get_advanced_config_path
+    from hydra_suite.paths import get_advanced_config_path
 
     p = get_advanced_config_path()
     assert isinstance(p, Path)
@@ -189,63 +189,63 @@ def test_get_advanced_config_path_returns_path():
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_paths.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'multi_tracker.paths'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'hydra_suite.paths'`
 
 - [ ] **Step 3: Create empty resource package directories with `__init__.py` markers**
 
 ```python
-# src/multi_tracker/resources/__init__.py
-"""Bundled read-only resources for multi-animal-tracker."""
+# src/hydra_suite/resources/__init__.py
+"""Bundled read-only resources for hydra-suite."""
 ```
 
 ```python
-# src/multi_tracker/resources/brand/__init__.py
+# src/hydra_suite/resources/brand/__init__.py
 """Brand icon assets (SVG, PNG)."""
 ```
 
 ```python
-# src/multi_tracker/resources/configs/__init__.py
+# src/hydra_suite/resources/configs/__init__.py
 """Bundled default configuration presets."""
 ```
 
 ```python
-# src/multi_tracker/resources/configs/skeletons/__init__.py
+# src/hydra_suite/resources/configs/skeletons/__init__.py
 """Bundled skeleton configuration files."""
 ```
 
 - [ ] **Step 4: Copy brand assets into the resource package**
 
 ```bash
-cp src/brand/*.svg src/multi_tracker/resources/brand/
-cp src/brand/*.png src/multi_tracker/resources/brand/
+cp src/brand/*.svg src/hydra_suite/resources/brand/
+cp src/brand/*.png src/hydra_suite/resources/brand/
 ```
 
 Verify with:
 ```bash
-ls src/multi_tracker/resources/brand/
+ls src/hydra_suite/resources/brand/
 ```
 
-Expected: `__init__.py`, `classkit.png`, `classkit.svg`, `datasieve.png`, `datasieve.svg`, `multianimaltracker.png`, `multianimaltracker.svg`, `multianimaltrackerafterhours.png`, `multianimaltrackerafterhours.svg`, `posekit.png`, `posekit.svg`
+Expected: `__init__.py`, `classkit.png`, `classkit.svg`, `datasieve.png`, `datasieve.svg`, `hydra.png`, `hydra.svg`, `hydraafterhours.png`, `hydraafterhours.svg`, `posekit.png`, `posekit.svg`
 
 - [ ] **Step 5: Copy config presets and skeletons into the resource package**
 
 ```bash
-cp configs/default.json src/multi_tracker/resources/configs/
-cp configs/ooceraea_biroi.json src/multi_tracker/resources/configs/
-cp configs/skeletons/ooceraea_biroi.json src/multi_tracker/resources/configs/skeletons/
+cp configs/default.json src/hydra_suite/resources/configs/
+cp configs/ooceraea_biroi.json src/hydra_suite/resources/configs/
+cp configs/skeletons/ooceraea_biroi.json src/hydra_suite/resources/configs/skeletons/
 ```
 
 Verify with:
 ```bash
-ls src/multi_tracker/resources/configs/
-ls src/multi_tracker/resources/configs/skeletons/
+ls src/hydra_suite/resources/configs/
+ls src/hydra_suite/resources/configs/skeletons/
 ```
 
 - [ ] **Step 6: Write the `paths.py` module**
 
 ```python
-# src/multi_tracker/paths.py
-"""Central path resolution for multi-animal-tracker.
+# src/hydra_suite/paths.py
+"""Central path resolution for hydra-suite.
 
 Bundled read-only assets are accessed via importlib.resources.
 User-writable directories (models, training, config) use platformdirs.
@@ -262,7 +262,7 @@ from platformdirs import user_config_dir, user_data_dir
 
 logger = logging.getLogger(__name__)
 
-APP_NAME = "multi-animal-tracker"
+APP_NAME = "hydra-suite"
 APP_AUTHOR = "Kronauer Lab"
 
 
@@ -354,7 +354,7 @@ def get_brand_icon_bytes(name: str) -> Optional[bytes]:
     from importlib.resources import files
 
     try:
-        return files("multi_tracker.resources.brand").joinpath(name).read_bytes()
+        return files("hydra_suite.resources.brand").joinpath(name).read_bytes()
     except (FileNotFoundError, TypeError, ModuleNotFoundError):
         return None
 
@@ -364,7 +364,7 @@ def get_default_config(name: str) -> Optional[dict]:
     from importlib.resources import files
 
     try:
-        text = files("multi_tracker.resources.configs").joinpath(name).read_text(
+        text = files("hydra_suite.resources.configs").joinpath(name).read_text(
             encoding="utf-8"
         )
         return json.loads(text)
@@ -378,7 +378,7 @@ def get_skeleton_config(name: str) -> Optional[dict]:
 
     try:
         text = (
-            files("multi_tracker.resources.configs.skeletons")
+            files("hydra_suite.resources.configs.skeletons")
             .joinpath(name)
             .read_text(encoding="utf-8")
         )
@@ -392,7 +392,7 @@ def get_bundled_config_names() -> list[str]:
     from importlib.resources import files
 
     try:
-        pkg = files("multi_tracker.resources.configs")
+        pkg = files("hydra_suite.resources.configs")
         return sorted(
             r.name for r in pkg.iterdir()
             if r.name.endswith(".json")
@@ -406,7 +406,7 @@ def get_bundled_skeleton_names() -> list[str]:
     from importlib.resources import files
 
     try:
-        pkg = files("multi_tracker.resources.configs.skeletons")
+        pkg = files("hydra_suite.resources.configs.skeletons")
         return sorted(
             r.name for r in pkg.iterdir()
             if r.name.endswith(".json")
@@ -468,7 +468,7 @@ Expected: All tests PASS (the `_user_config_dir` and `_user_data_dir` tests may 
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/multi_tracker/paths.py src/multi_tracker/resources/ tests/test_paths.py
+git add src/hydra_suite/paths.py src/hydra_suite/resources/ tests/test_paths.py
 git commit -m "feat: add paths module and bundled resources sub-package
 
 Central path resolution using importlib.resources for read-only assets
@@ -482,7 +482,7 @@ Copies brand icons and default configs into the package."
 
 **Files:**
 - Modify: `pyproject.toml`
-- Modify: `src/multi_tracker/__init__.py`
+- Modify: `src/hydra_suite/__init__.py`
 - Test: `tests/test_packaging.py`
 
 - [ ] **Step 1: Write the failing packaging test**
@@ -500,29 +500,29 @@ def test_version_matches_metadata():
     """Package version from importlib.metadata matches __init__.__version__."""
     from importlib.metadata import version
 
-    from multi_tracker import __version__
+    from hydra_suite import __version__
 
-    assert __version__ == version("multi-animal-tracker")
+    assert __version__ == version("hydra-suite")
 
 
 def test_brand_svgs_exist_in_package():
     """Brand SVG files are accessible via importlib.resources."""
     from importlib.resources import files
 
-    brand = files("multi_tracker.resources.brand")
+    brand = files("hydra_suite.resources.brand")
     names = [r.name for r in brand.iterdir()]
-    assert "multianimaltracker.svg" in names
+    assert "hydra.svg" in names
     assert "datasieve.svg" in names
     assert "classkit.svg" in names
     assert "posekit.svg" in names
-    assert "multianimaltrackerafterhours.svg" in names
+    assert "hydraafterhours.svg" in names
 
 
 def test_default_configs_exist_in_package():
     """Default config JSON files are accessible via importlib.resources."""
     from importlib.resources import files
 
-    configs = files("multi_tracker.resources.configs")
+    configs = files("hydra_suite.resources.configs")
     names = [r.name for r in configs.iterdir()]
     assert "default.json" in names
 
@@ -531,7 +531,7 @@ def test_skeleton_configs_exist_in_package():
     """Skeleton JSON files are accessible via importlib.resources."""
     from importlib.resources import files
 
-    skeletons = files("multi_tracker.resources.configs.skeletons")
+    skeletons = files("hydra_suite.resources.configs.skeletons")
     names = [r.name for r in skeletons.iterdir()]
     assert "ooceraea_biroi.json" in names
 
@@ -546,7 +546,7 @@ def test_platformdirs_importable():
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `python -m pytest tests/test_packaging.py -v`
-Expected: FAIL — `importlib.metadata.version("multi-animal-tracker")` may fail, `platformdirs` may not be installed yet
+Expected: FAIL — `importlib.metadata.version("hydra-suite")` may fail, `platformdirs` may not be installed yet
 
 - [ ] **Step 3: Update `pyproject.toml` — add dependencies, package-data, fix build-requires**
 
@@ -627,7 +627,7 @@ Add after `[tool.deadcode]` section:
 where = ["src"]
 
 [tool.setuptools.package-data]
-"multi_tracker" = [
+"hydra_suite" = [
     "resources/brand/*.svg",
     "resources/brand/*.png",
     "resources/configs/*.json",
@@ -638,11 +638,11 @@ where = ["src"]
 
 - [ ] **Step 4: Update `__init__.py` — fix metadata, use importlib.metadata for version**
 
-Replace the top of `src/multi_tracker/__init__.py`:
+Replace the top of `src/hydra_suite/__init__.py`:
 
 ```python
 """
-Multi-Animal-Tracker Package
+HYDRA Suite Package
 
 A comprehensive solution for tracking multiple animals in video recordings using computer vision techniques.
 The system combines background subtraction, Kalman filtering, and Hungarian algorithm for robust multi-object tracking.
@@ -651,7 +651,7 @@ The system combines background subtraction, Kalman filtering, and Hungarian algo
 try:
     from importlib.metadata import version as _version
 
-    __version__ = _version("multi-animal-tracker")
+    __version__ = _version("hydra-suite")
 except Exception:
     __version__ = "1.0.0"  # Fallback for editable installs without metadata
 
@@ -664,7 +664,7 @@ Keep the rest of the file unchanged.
 - [ ] **Step 5: Create `py.typed` marker**
 
 ```bash
-touch src/multi_tracker/py.typed
+touch src/hydra_suite/py.typed
 ```
 
 - [ ] **Step 6: Install platformdirs and reinstall package**
@@ -682,7 +682,7 @@ Expected: All PASS
 - [ ] **Step 8: Commit**
 
 ```bash
-git add pyproject.toml src/multi_tracker/__init__.py src/multi_tracker/py.typed tests/test_packaging.py
+git add pyproject.toml src/hydra_suite/__init__.py src/hydra_suite/py.typed tests/test_packaging.py
 git commit -m "feat: add pip dependencies, package-data, and fix metadata
 
 - Add [project.dependencies] with all common packages (torch excluded)
@@ -700,14 +700,14 @@ git commit -m "feat: add pip dependencies, package-data, and fix metadata
 This task replaces all `Path(__file__).resolve().parents[N] / "brand"` patterns with `paths.get_brand_qicon()`.
 
 **Files:**
-- Modify: `src/multi_tracker/mat/app/launcher.py:168-181`
-- Modify: `src/multi_tracker/mat/gui/main_window.py:4199,13625`
-- Modify: `src/multi_tracker/datasieve/gui.py:604,660,1057,1674`
-- Modify: `src/multi_tracker/afterhours/app.py:25`
-- Modify: `src/multi_tracker/afterhours/gui/main_window.py:437`
-- Modify: `src/multi_tracker/classkit/gui/mainwindow.py:462`
-- Modify: `src/multi_tracker/posekit/ui/main_window.py:769,1196`
-- Modify: `src/multi_tracker/posekit/ui/main.py:57`
+- Modify: `src/hydra_suite/mat/app/launcher.py:168-181`
+- Modify: `src/hydra_suite/mat/gui/main_window.py:4199,13625`
+- Modify: `src/hydra_suite/datasieve/gui.py:604,660,1057,1674`
+- Modify: `src/hydra_suite/afterhours/app.py:25`
+- Modify: `src/hydra_suite/afterhours/gui/main_window.py:437`
+- Modify: `src/hydra_suite/classkit/gui/mainwindow.py:462`
+- Modify: `src/hydra_suite/posekit/ui/main_window.py:769,1196`
+- Modify: `src/hydra_suite/posekit/ui/main.py:57`
 
 - [ ] **Step 1: Migrate `mat/app/launcher.py` — replace brand icon resolution**
 
@@ -716,7 +716,7 @@ Replace lines 168-181:
 ```python
         # OLD:
         # project_root = Path(__file__).resolve().parents[3]
-        # brand_icon = project_root / "brand" / "multianimaltracker.svg"
+        # brand_icon = project_root / "brand" / "hydra.svg"
         # fallback_icon = (
         #     Path(__file__).resolve().parent.parent / "resources" / "icon.png"
         # )
@@ -731,9 +731,9 @@ With:
 ```python
         # Set application icon if available
         try:
-            from multi_tracker.paths import get_brand_qicon
+            from hydra_suite.paths import get_brand_qicon
 
-            icon = get_brand_qicon("multianimaltracker.svg")
+            icon = get_brand_qicon("hydra.svg")
             if icon and not icon.isNull():
                 app.setWindowIcon(icon)
         except Exception:
@@ -749,19 +749,19 @@ Replace the block around line 4199:
 ```python
         # OLD:
         # project_root = Path(__file__).resolve().parents[3]
-        # logo_path = project_root / "brand" / "multianimaltracker.svg"
+        # logo_path = project_root / "brand" / "hydra.svg"
 ```
 
 With:
 
 ```python
-        from multi_tracker.paths import get_brand_icon_bytes
+        from hydra_suite.paths import get_brand_icon_bytes
 ```
 
 Then where the SVG is loaded into a `QSvgRenderer` or `QPixmap`, use:
 
 ```python
-        logo_data = get_brand_icon_bytes("multianimaltracker.svg")
+        logo_data = get_brand_icon_bytes("hydra.svg")
         if logo_data:
             # Use QSvgRenderer with byte data instead of file path
             renderer = QSvgRenderer(QByteArray(logo_data))
@@ -783,7 +783,7 @@ For each of the 4 occurrences (lines 604, 660, 1057, 1674), replace:
 With:
 
 ```python
-        from multi_tracker.paths import get_brand_qicon
+        from hydra_suite.paths import get_brand_qicon
 
         icon = get_brand_qicon("datasieve.svg")
 ```
@@ -799,21 +799,21 @@ In `afterhours/app.py` line 25, replace:
         # icon_path = (
         #     Path(__file__).resolve().parents[2]
         #     / "brand"
-        #     / "multianimaltrackerafterhours.svg"
+        #     / "hydraafterhours.svg"
         # )
 ```
 
 With:
 
 ```python
-        from multi_tracker.paths import get_brand_qicon
+        from hydra_suite.paths import get_brand_qicon
 
-        icon = get_brand_qicon("multianimaltrackerafterhours.svg")
+        icon = get_brand_qicon("hydraafterhours.svg")
         if icon and not icon.isNull():
             app.setWindowIcon(icon)
 ```
 
-In `afterhours/gui/main_window.py` line 437, same pattern — replace `parents[3] / "brand"` with `get_brand_icon_bytes("multianimaltrackerafterhours.svg")` and load via byte data.
+In `afterhours/gui/main_window.py` line 437, same pattern — replace `parents[3] / "brand"` with `get_brand_icon_bytes("hydraafterhours.svg")` and load via byte data.
 
 - [ ] **Step 5: Migrate `classkit/gui/mainwindow.py` line 462**
 
@@ -827,7 +827,7 @@ Replace:
 With:
 
 ```python
-        from multi_tracker.paths import get_brand_icon_bytes
+        from hydra_suite.paths import get_brand_icon_bytes
 
         logo_data = get_brand_icon_bytes("classkit.svg")
 ```
@@ -846,7 +846,7 @@ In `posekit/ui/main_window.py`, replace both occurrences:
 With:
 
 ```python
-        from multi_tracker.paths import get_brand_icon_bytes
+        from hydra_suite.paths import get_brand_icon_bytes
 
         logo_data = get_brand_icon_bytes("posekit.svg")
 ```
@@ -862,7 +862,7 @@ In `posekit/ui/main.py` line 57:
 With:
 
 ```python
-        from multi_tracker.paths import get_brand_qicon
+        from hydra_suite.paths import get_brand_qicon
 
         icon = get_brand_qicon("posekit.svg")
         if icon and not icon.isNull():
@@ -877,18 +877,18 @@ Expected: All existing tests PASS plus new tests PASS
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/multi_tracker/mat/app/launcher.py \
-        src/multi_tracker/mat/gui/main_window.py \
-        src/multi_tracker/datasieve/gui.py \
-        src/multi_tracker/afterhours/app.py \
-        src/multi_tracker/afterhours/gui/main_window.py \
-        src/multi_tracker/classkit/gui/mainwindow.py \
-        src/multi_tracker/posekit/ui/main_window.py \
-        src/multi_tracker/posekit/ui/main.py
+git add src/hydra_suite/mat/app/launcher.py \
+        src/hydra_suite/mat/gui/main_window.py \
+        src/hydra_suite/datasieve/gui.py \
+        src/hydra_suite/afterhours/app.py \
+        src/hydra_suite/afterhours/gui/main_window.py \
+        src/hydra_suite/classkit/gui/mainwindow.py \
+        src/hydra_suite/posekit/ui/main_window.py \
+        src/hydra_suite/posekit/ui/main.py
 git commit -m "refactor: replace all brand icon parents[N] paths with paths module
 
 Migrated 14 brand icon resolution patterns across 8 files to use
-importlib.resources via multi_tracker.paths.get_brand_qicon().
+importlib.resources via hydra_suite.paths.get_brand_qicon().
 Icons load as bytes, no filesystem path dependency."
 ```
 
@@ -897,11 +897,11 @@ Icons load as bytes, no filesystem path dependency."
 ## Task 4: Migrate models, training, and config path resolution
 
 **Files:**
-- Modify: `src/multi_tracker/training/registry.py:15-21`
-- Modify: `src/multi_tracker/training/model_publish.py:14-20`
-- Modify: `src/multi_tracker/mat/gui/main_window.py:2817-2826,8164-8172,19191-19198,19428-19490`
-- Modify: `src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py:136-138`
-- Modify: `src/multi_tracker/posekit/ui/utils.py:64-76`
+- Modify: `src/hydra_suite/training/registry.py:15-21`
+- Modify: `src/hydra_suite/training/model_publish.py:14-20`
+- Modify: `src/hydra_suite/mat/gui/main_window.py:2817-2826,8164-8172,19191-19198,19428-19490`
+- Modify: `src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py:136-138`
+- Modify: `src/hydra_suite/posekit/ui/utils.py:64-76`
 
 - [ ] **Step 1: Migrate `training/registry.py`**
 
@@ -922,7 +922,7 @@ With:
 
 ```python
 def get_runs_root() -> Path:
-    from multi_tracker.paths import get_training_runs_dir
+    from hydra_suite.paths import get_training_runs_dir
 
     return get_training_runs_dir()
 ```
@@ -948,7 +948,7 @@ With:
 
 ```python
 def get_models_root() -> Path:
-    from multi_tracker.paths import get_models_dir
+    from hydra_suite.paths import get_models_dir
 
     return get_models_dir()
 ```
@@ -977,7 +977,7 @@ With:
 ```python
 def get_models_root_directory() -> str:
     """Return user-local models/ root and create it when missing."""
-    from multi_tracker.paths import get_models_dir
+    from hydra_suite.paths import get_models_dir
 
     return str(get_models_dir())
 ```
@@ -1000,7 +1000,7 @@ Replace:
 With:
 
 ```python
-            from multi_tracker.paths import get_skeleton_dir
+            from hydra_suite.paths import get_skeleton_dir
 
             candidate = get_skeleton_dir() / "ooceraea_biroi.json"
             if candidate.exists():
@@ -1026,7 +1026,7 @@ With:
 ```python
     def _get_presets_dir(self):
         """Get the presets directory path."""
-        from multi_tracker.paths import get_presets_dir
+        from hydra_suite.paths import get_presets_dir
 
         return str(get_presets_dir())
 ```
@@ -1044,7 +1044,7 @@ Replace the path resolution in `_load_advanced_config()`:
 With:
 
 ```python
-        from multi_tracker.paths import get_advanced_config_path
+        from hydra_suite.paths import get_advanced_config_path
 
         config_path = str(get_advanced_config_path())
 ```
@@ -1064,7 +1064,7 @@ Also update `_save_advanced_config()` at line 19475 the same way:
 With:
 
 ```python
-        from multi_tracker.paths import get_advanced_config_path
+        from hydra_suite.paths import get_advanced_config_path
 
         config_path = str(get_advanced_config_path())
 ```
@@ -1081,7 +1081,7 @@ Replace:
 With:
 
 ```python
-        from multi_tracker.paths import get_training_workspace_dir
+        from hydra_suite.paths import get_training_workspace_dir
 
         self.workspace_default = get_training_workspace_dir("YOLO")
 ```
@@ -1108,7 +1108,7 @@ With:
 ```python
 def get_default_skeleton_dir() -> Optional[Path]:
     """Return the user-level skeleton config directory if available."""
-    from multi_tracker.paths import get_skeleton_dir
+    from hydra_suite.paths import get_skeleton_dir
 
     d = get_skeleton_dir()
     if d.exists() and d.is_dir():
@@ -1124,19 +1124,19 @@ Expected: All tests PASS
 - [ ] **Step 10: Commit**
 
 ```bash
-git add src/multi_tracker/training/registry.py \
-        src/multi_tracker/training/model_publish.py \
-        src/multi_tracker/mat/gui/main_window.py \
-        src/multi_tracker/mat/gui/dialogs/train_yolo_dialog.py \
-        src/multi_tracker/posekit/ui/utils.py
+git add src/hydra_suite/training/registry.py \
+        src/hydra_suite/training/model_publish.py \
+        src/hydra_suite/mat/gui/main_window.py \
+        src/hydra_suite/mat/gui/dialogs/train_yolo_dialog.py \
+        src/hydra_suite/posekit/ui/utils.py
 git commit -m "refactor: migrate models/training/config paths to paths module
 
 Replaced all remaining parents[N] and os.path.dirname chains:
-- Models dir → ~/.local/share/multi-animal-tracker/models/
-- Training runs → ~/.local/share/multi-animal-tracker/training/runs/
-- Presets → ~/.config/multi-animal-tracker/presets/ (seeded from bundled)
-- Skeletons → ~/.config/multi-animal-tracker/skeletons/ (seeded from bundled)
-- Advanced config → ~/.config/multi-animal-tracker/advanced_config.json"
+- Models dir → ~/.local/share/hydra-suite/models/
+- Training runs → ~/.local/share/hydra-suite/training/runs/
+- Presets → ~/.config/hydra-suite/presets/ (seeded from bundled)
+- Skeletons → ~/.config/hydra-suite/skeletons/ (seeded from bundled)
+- Advanced config → ~/.config/hydra-suite/advanced_config.json"
 ```
 
 ---
@@ -1184,7 +1184,7 @@ Add a new section to `docs/getting-started/installation.md` after the "Before Yo
 If you don't need GPU acceleration and want the simplest install:
 
 ```bash
-pip install multi-animal-tracker
+pip install hydra-suite
 ```
 
 For GPU support, continue with the full installation below.
@@ -1194,10 +1194,10 @@ For GPU support, continue with the full installation below.
 
 ```bash
 uv pip install -e .
-python -c "from multi_tracker.paths import get_models_dir; print(get_models_dir())"
+python -c "from hydra_suite.paths import get_models_dir; print(get_models_dir())"
 ```
 
-Expected: Prints something like `/Users/<you>/Library/Application Support/multi-animal-tracker/models`
+Expected: Prints something like `/Users/<you>/Library/Application Support/hydra-suite/models`
 
 - [ ] **Step 4: Commit**
 
@@ -1214,7 +1214,7 @@ git commit -m "chore: add platformdirs to all requirements files and document pi
 Existing developer users have models in `<repo>/models/` and training runs in `<repo>/training/`. They need a one-time migration.
 
 **Files:**
-- Create: `src/multi_tracker/paths_migrate.py`
+- Create: `src/hydra_suite/paths_migrate.py`
 - Test: `tests/test_paths_migrate.py`
 
 - [ ] **Step 1: Write the failing test**
@@ -1240,13 +1240,13 @@ def test_migrate_copies_models(tmp_path, monkeypatch):
     new_data = tmp_path / "new_data"
     monkeypatch.setenv("XDG_DATA_HOME", str(new_data))
 
-    from multi_tracker.paths_migrate import migrate_repo_data
+    from hydra_suite.paths_migrate import migrate_repo_data
 
     result = migrate_repo_data(repo_root=tmp_path / "old_repo", dry_run=False)
 
     assert result["models_copied"] >= 1
     # Verify file exists in new location
-    from multi_tracker.paths import get_models_dir
+    from hydra_suite.paths import get_models_dir
 
     assert (get_models_dir() / "test_model.pt").exists()
 
@@ -1260,12 +1260,12 @@ def test_migrate_dry_run_copies_nothing(tmp_path, monkeypatch):
     new_data = tmp_path / "new_data"
     monkeypatch.setenv("XDG_DATA_HOME", str(new_data))
 
-    from multi_tracker.paths_migrate import migrate_repo_data
+    from hydra_suite.paths_migrate import migrate_repo_data
 
     result = migrate_repo_data(repo_root=tmp_path / "old_repo", dry_run=True)
 
     assert result["models_copied"] >= 1
-    from multi_tracker.paths import get_models_dir
+    from hydra_suite.paths import get_models_dir
 
     # Nothing actually copied
     assert not (get_models_dir() / "test_model.pt").exists()
@@ -1274,17 +1274,17 @@ def test_migrate_dry_run_copies_nothing(tmp_path, monkeypatch):
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `python -m pytest tests/test_paths_migrate.py -v`
-Expected: FAIL with `ModuleNotFoundError: No module named 'multi_tracker.paths_migrate'`
+Expected: FAIL with `ModuleNotFoundError: No module named 'hydra_suite.paths_migrate'`
 
 - [ ] **Step 3: Write the migration module**
 
 ```python
-# src/multi_tracker/paths_migrate.py
+# src/hydra_suite/paths_migrate.py
 """One-time migration helper: copy models/training data from repo to user dirs.
 
 Usage:
-    python -m multi_tracker.paths_migrate /path/to/multi-animal-tracker
-    python -m multi_tracker.paths_migrate /path/to/multi-animal-tracker --dry-run
+    python -m hydra_suite.paths_migrate /path/to/hydra-suite
+    python -m hydra_suite.paths_migrate /path/to/hydra-suite --dry-run
 """
 
 from __future__ import annotations
@@ -1377,7 +1377,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Migrate data from repo to user directories"
     )
-    parser.add_argument("repo_root", help="Path to multi-animal-tracker repo root")
+    parser.add_argument("repo_root", help="Path to hydra-suite repo root")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -1403,12 +1403,12 @@ Expected: All PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/multi_tracker/paths_migrate.py tests/test_paths_migrate.py
+git add src/hydra_suite/paths_migrate.py tests/test_paths_migrate.py
 git commit -m "feat: add one-time migration helper for repo-to-user-dir data
 
 Existing users can run:
-  python -m multi_tracker.paths_migrate /path/to/repo --dry-run
-  python -m multi_tracker.paths_migrate /path/to/repo
+  python -m hydra_suite.paths_migrate /path/to/repo --dry-run
+  python -m hydra_suite.paths_migrate /path/to/repo
 
 Copies models/, training/runs/, and configs/ to platformdirs locations."
 ```
@@ -1434,16 +1434,16 @@ unzip -l dist/multi_animal_tracker-*.whl | grep -E "(brand|configs|skeletons|py\
 
 Expected output should show:
 ```
-multi_tracker/resources/brand/multianimaltracker.svg
-multi_tracker/resources/brand/datasieve.svg
-multi_tracker/resources/brand/classkit.svg
-multi_tracker/resources/brand/posekit.svg
-multi_tracker/resources/brand/multianimaltrackerafterhours.svg
-multi_tracker/resources/brand/*.png
-multi_tracker/resources/configs/default.json
-multi_tracker/resources/configs/ooceraea_biroi.json
-multi_tracker/resources/configs/skeletons/ooceraea_biroi.json
-multi_tracker/py.typed
+hydra_suite/resources/brand/hydra.svg
+hydra_suite/resources/brand/datasieve.svg
+hydra_suite/resources/brand/classkit.svg
+hydra_suite/resources/brand/posekit.svg
+hydra_suite/resources/brand/hydraafterhours.svg
+hydra_suite/resources/brand/*.png
+hydra_suite/resources/configs/default.json
+hydra_suite/resources/configs/ooceraea_biroi.json
+hydra_suite/resources/configs/skeletons/ooceraea_biroi.json
+hydra_suite/py.typed
 ```
 
 - [ ] **Step 2: Test wheel install in a clean environment**
@@ -1451,9 +1451,9 @@ multi_tracker/py.typed
 ```bash
 python -m venv /tmp/mat-test-venv
 /tmp/mat-test-venv/bin/pip install dist/multi_animal_tracker-*.whl
-/tmp/mat-test-venv/bin/python -c "from multi_tracker.paths import get_brand_icon_bytes; assert get_brand_icon_bytes('multianimaltracker.svg') is not None; print('OK: assets bundled')"
-/tmp/mat-test-venv/bin/python -c "from multi_tracker.paths import get_default_config; cfg = get_default_config('default.json'); assert cfg is not None; print('OK: configs bundled')"
-/tmp/mat-test-venv/bin/python -c "from multi_tracker.paths import get_models_dir; print('Models dir:', get_models_dir())"
+/tmp/mat-test-venv/bin/python -c "from hydra_suite.paths import get_brand_icon_bytes; assert get_brand_icon_bytes('hydra.svg') is not None; print('OK: assets bundled')"
+/tmp/mat-test-venv/bin/python -c "from hydra_suite.paths import get_default_config; cfg = get_default_config('default.json'); assert cfg is not None; print('OK: configs bundled')"
+/tmp/mat-test-venv/bin/python -c "from hydra_suite.paths import get_models_dir; print('Models dir:', get_models_dir())"
 ```
 
 Expected: All print "OK" and show the platformdirs-managed path.
@@ -1502,21 +1502,21 @@ Replace the "Install (Quick)" section:
 ### Option A: pip (CPU, simplest)
 
 ```bash
-pip install multi-animal-tracker
+pip install hydra-suite
 ```
 
 For GPU (NVIDIA), install PyTorch first:
 
 ```bash
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-pip install multi-animal-tracker[cuda]
+pip install hydra-suite[cuda]
 ```
 
 ### Option B: Full environment (GPU, recommended for development)
 
 ```bash
 mamba env create -f environment.yml          # or environment-mps.yml / environment-cuda.yml
-conda activate multi-animal-tracker          # or -mps / -cuda
+conda activate hydra-suite          # or -mps / -cuda
 uv pip install -r requirements.txt           # or requirements-mps.txt / requirements-cuda13.txt
 ```
 
@@ -1530,14 +1530,14 @@ In the Architecture section, update the System Layers table to include the new `
 Add these rows to the table after the `Utils` row:
 
 ```markdown
-| Resources | `multi_tracker.resources` | Bundled read-only assets (brand icons, default configs, skeletons) |
-| Paths | `multi_tracker.paths` | Central path resolution: bundled assets via `importlib.resources`, user dirs via `platformdirs` |
+| Resources | `hydra_suite.resources` | Bundled read-only assets (brand icons, default configs, skeletons) |
+| Paths | `hydra_suite.paths` | Central path resolution: bundled assets via `importlib.resources`, user dirs via `platformdirs` |
 ```
 
 Add to the **Key boundary rules** section:
 
 ```markdown
-- All path resolution must go through `multi_tracker.paths`. No module should use `Path(__file__).parents[N]` to navigate to repo root.
+- All path resolution must go through `hydra_suite.paths`. No module should use `Path(__file__).parents[N]` to navigate to repo root.
 - Bundled read-only assets are accessed via `importlib.resources` through the `paths` module.
 - User-writable data (models, training, config) goes to platform-appropriate directories via `platformdirs`.
 ```
@@ -1548,7 +1548,7 @@ Update the **Build & Environment Setup** section to include the pip install opti
 ## Quick Install (pip, CPU only)
 
 ```bash
-pip install multi-animal-tracker
+pip install hydra-suite
 ```
 
 For GPU variants:
@@ -1556,17 +1556,17 @@ For GPU variants:
 ```bash
 # NVIDIA GPU
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-pip install multi-animal-tracker[cuda]
+pip install hydra-suite[cuda]
 
 # Apple Silicon
-pip install multi-animal-tracker[mps]
+pip install hydra-suite[mps]
 ```
 ```
 
 Update the **Key Source Files for Auditing Behavior** list to add:
 
 ```markdown
-- `src/multi_tracker/paths.py` — central path resolution (all asset/data paths)
+- `src/hydra_suite/paths.py` — central path resolution (all asset/data paths)
 ```
 
 - [ ] **Step 3: Update `docs/getting-started/installation.md` — comprehensive install rewrite**
@@ -1579,10 +1579,10 @@ Add a new section after "Before You Start" and before "Choose Your Installation 
 If you want the simplest install without GPU acceleration:
 
 ```bash
-pip install multi-animal-tracker
+pip install hydra-suite
 ```
 
-This installs all dependencies and bundled assets. Launch with `mat` or `posekit-labeler`.
+This installs all dependencies and bundled assets. Launch with `hydra` or `posekit-labeler`.
 
 ### GPU via pip
 
@@ -1591,22 +1591,22 @@ Install the correct PyTorch variant first, then install the package with GPU ext
 ```bash
 # NVIDIA CUDA 12.8
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
-pip install multi-animal-tracker[cuda]
+pip install hydra-suite[cuda]
 
 # NVIDIA CUDA 13.0
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
-pip install multi-animal-tracker[cuda]
+pip install hydra-suite[cuda]
 
 # Apple Silicon (MPS) — torch includes MPS by default
 pip install torch torchvision
-pip install multi-animal-tracker[mps]
+pip install hydra-suite[mps]
 
 # AMD ROCm
 pip install torch torchvision --index-url https://download.pytorch.org/whl/rocm6.2
-pip install multi-animal-tracker[rocm]
+pip install hydra-suite[rocm]
 ```
 
-> **Note:** PyTorch GPU builds are not hosted on PyPI. You must install torch from PyTorch's own index first. The `pip install multi-animal-tracker` step will not overwrite your existing torch installation.
+> **Note:** PyTorch GPU builds are not hosted on PyPI. You must install torch from PyTorch's own index first. The `pip install hydra-suite` step will not overwrite your existing torch installation.
 
 ### Data directories
 
@@ -1614,9 +1614,9 @@ After installation, user data is stored in platform-appropriate locations:
 
 | Data | macOS | Linux |
 |------|-------|-------|
-| Config | `~/Library/Application Support/multi-animal-tracker/` | `~/.config/multi-animal-tracker/` |
-| Models | `~/Library/Application Support/multi-animal-tracker/models/` | `~/.local/share/multi-animal-tracker/models/` |
-| Training | `~/Library/Application Support/multi-animal-tracker/training/` | `~/.local/share/multi-animal-tracker/training/` |
+| Config | `~/Library/Application Support/hydra-suite/` | `~/.config/hydra-suite/` |
+| Models | `~/Library/Application Support/hydra-suite/models/` | `~/.local/share/hydra-suite/models/` |
+| Training | `~/Library/Application Support/hydra-suite/training/` | `~/.local/share/hydra-suite/training/` |
 
 Default config presets and skeleton definitions are bundled with the package and automatically seeded to your config directory on first run.
 
@@ -1625,8 +1625,8 @@ Default config presets and skeleton definitions are bundled with the package and
 If you previously used a cloned repo with models in `<repo>/models/` and training data in `<repo>/training/`, migrate with:
 
 ```bash
-python -m multi_tracker.paths_migrate /path/to/multi-animal-tracker --dry-run  # preview
-python -m multi_tracker.paths_migrate /path/to/multi-animal-tracker            # copy
+python -m hydra_suite.paths_migrate /path/to/hydra-suite --dry-run  # preview
+python -m hydra_suite.paths_migrate /path/to/hydra-suite            # copy
 ```
 ```
 
@@ -1647,26 +1647,26 @@ Replace the System Layers section:
 ```markdown
 ## System Layers
 
-- `multi_tracker.mat`: MAT launcher, GUI, dialogs, widgets.
-- `multi_tracker.posekit`: pose-labeling application and related dialogs/inference flows.
-- `multi_tracker.classkit`: classification/embedding toolkit.
-- `multi_tracker.afterhours`: interactive proofreading.
-- `multi_tracker.datasieve`: data sieve tool.
-- `multi_tracker.integrations`: external tool bridges (SLEAP, X-AnyLabeling).
-- `multi_tracker.core`: detection, filtering, assignment, post-processing, worker orchestration.
-- `multi_tracker.runtime`: compute runtime selection and GPU utilities.
-- `multi_tracker.data`: CSV/cache/dataset generation and merging.
-- `multi_tracker.training`: dataset builders, training runner, registry, model publishing.
-- `multi_tracker.utils`: shared helpers (GPU detection, geometry, image processing, batching, prefetch).
-- `multi_tracker.paths`: central path resolution — bundled assets via `importlib.resources`, user dirs via `platformdirs`.
-- `multi_tracker.resources`: bundled read-only assets (brand icons, default configs, skeletons).
+- `hydra_suite.tracker`: MAT launcher, GUI, dialogs, widgets.
+- `hydra_suite.posekit`: pose-labeling application and related dialogs/inference flows.
+- `hydra_suite.classkit`: classification/embedding toolkit.
+- `hydra_suite.afterhours`: interactive proofreading.
+- `hydra_suite.datasieve`: data sieve tool.
+- `hydra_suite.integrations`: external tool bridges (SLEAP, X-AnyLabeling).
+- `hydra_suite.core`: detection, filtering, assignment, post-processing, worker orchestration.
+- `hydra_suite.runtime`: compute runtime selection and GPU utilities.
+- `hydra_suite.data`: CSV/cache/dataset generation and merging.
+- `hydra_suite.training`: dataset builders, training runner, registry, model publishing.
+- `hydra_suite.utils`: shared helpers (GPU detection, geometry, image processing, batching, prefetch).
+- `hydra_suite.paths`: central path resolution — bundled assets via `importlib.resources`, user dirs via `platformdirs`.
+- `hydra_suite.resources`: bundled read-only assets (brand icons, default configs, skeletons).
 ```
 
 Add to "Key Operational Boundaries":
 
 ```markdown
-- All path resolution goes through `multi_tracker.paths`. No module uses `Path(__file__).parents[N]` to navigate to repo root.
-- Bundled read-only assets are in `multi_tracker.resources` and accessed via `importlib.resources`.
+- All path resolution goes through `hydra_suite.paths`. No module uses `Path(__file__).parents[N]` to navigate to repo root.
+- Bundled read-only assets are in `hydra_suite.resources` and accessed via `importlib.resources`.
 - User-writable data (models, training runs, config) lives in platform directories (`~/.config/`, `~/.local/share/`), never inside the installed package.
 ```
 
@@ -1677,12 +1677,12 @@ Add new sections after "Integrations and Utils":
 ```markdown
 ## Paths and Resources
 
-- `multi_tracker.paths` — central path resolver (brand icons, configs, models dir, training dir)
-- `multi_tracker.paths_migrate` — one-time migration helper for repo-to-user-dir data
-- `multi_tracker.resources` — bundled read-only assets package
-- `multi_tracker.resources.brand` — SVG/PNG brand icons
-- `multi_tracker.resources.configs` — default config presets
-- `multi_tracker.resources.configs.skeletons` — skeleton keypoint definitions
+- `hydra_suite.paths` — central path resolver (brand icons, configs, models dir, training dir)
+- `hydra_suite.paths_migrate` — one-time migration helper for repo-to-user-dir data
+- `hydra_suite.resources` — bundled read-only assets package
+- `hydra_suite.resources.brand` — SVG/PNG brand icons
+- `hydra_suite.resources.configs` — default config presets
+- `hydra_suite.resources.configs.skeletons` — skeleton keypoint definitions
 ```
 
 - [ ] **Step 6: Run docs build to verify no broken links**
@@ -1715,20 +1715,20 @@ git commit -m "docs: update documentation for pip-publishable packaging
 
 ### Before
 ```
-multi-animal-tracker/
+hydra-suite/
   src/brand/                    ← icons, outside package
   configs/                      ← presets, outside package
   models/                       ← user data, in repo root
   training/                     ← user data, in repo root
-  src/multi_tracker/            ← no resources/, no paths.py
+  src/hydra_suite/            ← no resources/, no paths.py
 ```
 
 ### After
 ```
-multi-animal-tracker/
+hydra-suite/
   src/brand/                    ← kept for development reference (not deleted)
   configs/                      ← kept for development reference (not deleted)
-  src/multi_tracker/
+  src/hydra_suite/
     paths.py                    ← central path resolution
     paths_migrate.py            ← one-time migration helper
     py.typed                    ← type checker marker
@@ -1738,11 +1738,11 @@ multi-animal-tracker/
       configs/skeletons/*.json  ← copied from configs/skeletons/
 
 User home (created at runtime):
-  ~/.config/multi-animal-tracker/
+  ~/.config/hydra-suite/
     advanced_config.json
     presets/                    ← seeded from bundled configs
     skeletons/                  ← seeded from bundled skeletons
-  ~/.local/share/multi-animal-tracker/
+  ~/.local/share/hydra-suite/
     models/                     ← user-trained models
     training/runs/              ← training run registry
 ```

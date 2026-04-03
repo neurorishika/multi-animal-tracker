@@ -4,7 +4,7 @@
 
 ### Which command should I use for tracking?
 
-Use `mat` (shortcut) or `multi-animal-tracker`.
+Use `hydra` (shortcut) or `hydra-suite`.
 
 ### Which command should I use for pose labeling?
 

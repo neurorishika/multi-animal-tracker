@@ -6,7 +6,7 @@ This page documents frequently used runtime keys from the MAT GUI and saved conf
 
 For a complete, control-by-control interface reference (question labels, value guidance, defaults, and failure modes), see:
 
-- `/reference/ui-components-mat/`
+- `/reference/ui-components-hydra/`
 
 ## Setup
 

@@ -528,7 +528,7 @@ fields.
 ## New Module: `canonical_crop.py`
 
 A single module owns all crop geometry.  Proposed location:
-`src/multi_tracker/core/tracking/canonical_crop.py`
+`src/hydra_suite/core/tracking/canonical_crop.py`
 
 ### Public API
 

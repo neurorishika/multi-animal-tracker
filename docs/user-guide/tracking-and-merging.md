@@ -1,6 +1,6 @@
 # Tracking, Identity Continuity, and Merging
 
-This page explains how the current Multi-Animal-Tracker pipeline turns raw video into stable trajectories.
+This page explains how the current HYDRA Suite pipeline turns raw video into stable trajectories.
 
 It is written in two layers:
 
