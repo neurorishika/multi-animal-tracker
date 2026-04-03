@@ -12,18 +12,13 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QInputDialog,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
     QMainWindow,
     QMenu,
     QMessageBox,
-    QPushButton,
     QSplitter,
     QStackedWidget,
     QStatusBar,
     QTabWidget,
-    QVBoxLayout,
     QWidget,
 )
 
@@ -33,14 +28,7 @@ from .panels.dataset_panel import DatasetPanel
 from .panels.evaluation_panel import EvaluationPanel
 from .panels.history_panel import HistoryPanel
 from .panels.training_panel import TrainingPanel
-from .project import (
-    add_to_recent,
-    create_project,
-    load_recent_projects,
-    open_project,
-    project_file_path,
-    save_project,
-)
+from .project import create_project, open_project, project_file_path, save_project
 from .utils import find_label_for_image, parse_obb_label
 
 logger = logging.getLogger(__name__)
@@ -104,91 +92,49 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _build_welcome_page(self) -> None:
-        page = QWidget()
-        outer = QVBoxLayout(page)
-        outer.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # Logo
-        try:
-            from PySide6.QtCore import QByteArray
-            from PySide6.QtSvgWidgets import QSvgWidget
-
-            from hydra_suite.paths import get_brand_icon_bytes
-
-            logo_data = get_brand_icon_bytes("detectkit.svg")
-            if logo_data:
-                svg_widget = QSvgWidget()
-                svg_widget.renderer().load(QByteArray(logo_data))
-                svg_widget.setFixedSize(120, 120)
-                outer.addWidget(svg_widget, alignment=Qt.AlignmentFlag.AlignCenter)
-        except Exception:
-            pass
-
-        # Title
-        title = QLabel("DetectKit")
-        title.setStyleSheet("font-size: 28px; font-weight: bold; color: #eee;")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer.addWidget(title)
-
-        # Subtitle
-        subtitle = QLabel("OBB Detection Model Training & Dataset Curation")
-        subtitle.setStyleSheet("font-size: 14px; color: #aaa;")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer.addWidget(subtitle)
-
-        outer.addSpacing(20)
-
-        # New Project button
-        btn_new = QPushButton("New Project")
-        btn_new.setFixedWidth(250)
-        btn_new.clicked.connect(self.new_project)
-        outer.addWidget(btn_new, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        # Open Project button
-        btn_open = QPushButton("Open Project")
-        btn_open.setFixedWidth(250)
-        btn_open.clicked.connect(self.open_project_dialog)
-        outer.addWidget(btn_open, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        outer.addSpacing(16)
-
-        # Recent projects
-        lbl_recent = QLabel("Recent Projects")
-        lbl_recent.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        outer.addWidget(lbl_recent, alignment=Qt.AlignmentFlag.AlignCenter)
-
-        self._welcome_recent_list = QListWidget()
-        self._welcome_recent_list.setFixedWidth(400)
-        self._welcome_recent_list.setMaximumHeight(200)
-        self._welcome_recent_list.itemDoubleClicked.connect(
-            self._on_recent_double_clicked
-        )
-        outer.addWidget(
-            self._welcome_recent_list, alignment=Qt.AlignmentFlag.AlignCenter
+        from hydra_suite.widgets import (
+            ButtonDef,
+            RecentItemsStore,
+            WelcomeConfig,
+            WelcomePage,
         )
 
-        self._refresh_welcome_recent()
-        self._stack.addWidget(page)  # index 0
+        store = RecentItemsStore("detectkit")
+        self._recents_store = store
 
-    def _refresh_welcome_recent(self) -> None:
-        self._welcome_recent_list.clear()
-        for p in load_recent_projects():
-            item = QListWidgetItem(p)
-            item.setData(Qt.ItemDataRole.UserRole, p)
-            self._welcome_recent_list.addItem(item)
+        config = WelcomeConfig(
+            logo_svg="detectkit.svg",
+            tagline="OBB Detection Model Training & Dataset Curation",
+            buttons=[
+                ButtonDef(label="New Project", callback=self.new_project),
+                ButtonDef(label="Open Project", callback=self.open_project_dialog),
+            ],
+            recents_label="Recent Projects",
+            recents_store=store,
+            on_recent_clicked=self._open_recent_project,
+        )
+        self._welcome_page = WelcomePage(config)
+        self._stack.addWidget(self._welcome_page)  # index 0
 
-    def _on_recent_double_clicked(self, item: QListWidgetItem) -> None:
-        path_str = item.data(Qt.ItemDataRole.UserRole)
-        if path_str:
-            proj = open_project(Path(path_str))
+    def _open_recent_project(self, path: str):
+        """Open a project from the recent items list."""
+        project_dir = Path(path)
+        if project_dir.exists():
+            proj = open_project(project_dir)
             if proj is not None:
                 self._load_project(proj)
             else:
                 QMessageBox.warning(
                     self,
                     "Open Failed",
-                    f"Could not open project at:\n{path_str}",
+                    f"Could not open project at:\n{path}",
                 )
+        else:
+            QMessageBox.warning(self, "Not Found", f"Project not found:\n{path}")
+            if hasattr(self, "_recents_store"):
+                self._recents_store.remove(path)
+                if hasattr(self, "_welcome_page"):
+                    self._welcome_page.refresh_recents()
 
     # ------------------------------------------------------------------
     # Workspace page
@@ -269,10 +215,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_recent_menu(self) -> None:
         self._recent_menu.clear()
-        for p in load_recent_projects():
-            action = self._recent_menu.addAction(p)
-            action.setData(p)
-            action.triggered.connect(self._on_recent_menu_action)
+        if hasattr(self, "_recents_store"):
+            for p in self._recents_store.load():
+                action = self._recent_menu.addAction(p)
+                action.setData(p)
+                action.triggered.connect(self._on_recent_menu_action)
 
     def _on_recent_menu_action(self) -> None:
         action = self.sender()
@@ -360,8 +307,10 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(1)
 
         # Refresh recent lists
-        add_to_recent(str(proj.project_dir))
-        self._refresh_welcome_recent()
+        if hasattr(self, "_recents_store"):
+            self._recents_store.add(str(proj.project_dir))
+            if hasattr(self, "_welcome_page"):
+                self._welcome_page.refresh_recents()
         self._refresh_recent_menu()
 
         self.statusBar().showMessage(f"Loaded project: {proj.project_dir}", 5000)
