@@ -227,9 +227,9 @@ python -c "import onnxruntime as ort; print(ort.get_available_providers())"
 ```bash
 mat                # Multi-Animal-Tracker GUI
 posekit-labeler    # PoseKit pose-labeling GUI
-datasieve          # DataSieve tool
+filterkit          # FilterKit tool
 classkit           # ClassKit labeler
-afterhours         # Afterhours proofreading
+refinekit          # RefineKit proofreading
 ```
 
 ### Data directories
@@ -267,7 +267,7 @@ MAT_CONFIG_DIR=./my-project-config mat
 python -c "from multi_tracker.paths import print_paths; print_paths()"
 ```
 
-All sub-applications (MAT, PoseKit, DetectKit, ClassKit, Afterhours, DataSieve) use the same `multi_tracker.paths` module, so they all respect these overrides and share the same data directories.
+All sub-applications (MAT, PoseKit, DetectKit, ClassKit, RefineKit, FilterKit) use the same `multi_tracker.paths` module, so they all respect these overrides and share the same data directories.
 
 ### Programmatic access from other tools
 

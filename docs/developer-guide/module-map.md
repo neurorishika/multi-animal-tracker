@@ -4,9 +4,9 @@
 
 - `multi_tracker.mat.app.launcher`
 - `multi_tracker.posekit.ui.main`
-- `multi_tracker.datasieve.gui`
+- `multi_tracker.filterkit.gui`
 - `multi_tracker.classkit.app`
-- `multi_tracker.afterhours.app`
+- `multi_tracker.refinekit.app`
 
 ## Core
 

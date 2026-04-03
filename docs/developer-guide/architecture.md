@@ -5,8 +5,8 @@
 - `multi_tracker.mat`: MAT launcher, GUI, dialogs, widgets.
 - `multi_tracker.posekit`: pose-labeling application and related dialogs/inference flows.
 - `multi_tracker.classkit`: classification/embedding toolkit.
-- `multi_tracker.afterhours`: interactive proofreading.
-- `multi_tracker.datasieve`: data sieve tool.
+- `multi_tracker.refinekit`: interactive proofreading.
+- `multi_tracker.filterkit`: FilterKit tool.
 - `multi_tracker.integrations`: external tool bridges (SLEAP, X-AnyLabeling).
 - `multi_tracker.core`: detection, filtering, assignment, post-processing, worker orchestration.
 - `multi_tracker.runtime`: compute runtime selection and GPU utilities.
@@ -26,9 +26,9 @@
 
 - MAT: `multi_tracker.mat.app.launcher:main`
 - PoseKit: `multi_tracker.posekit.ui.main:main`
-- DataSieve: `multi_tracker.datasieve.gui:main`
+- FilterKit: `multi_tracker.filterkit.gui:main`
 - ClassKit: `multi_tracker.classkit.app:main`
-- Afterhours: `multi_tracker.afterhours.app:main`
+- RefineKit: `multi_tracker.refinekit.app:main`
 
 ## Key Operational Boundaries
 
