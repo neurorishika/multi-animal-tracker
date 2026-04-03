@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Main entry point for the Multi-Animal-Tracker application.
+Main entry point for the HYDRA Suite tracker application.
 
 This module provides the command-line interface and GUI launcher for the
-multi-animal tracking system.
+HYDRA tracking system.
 """
 
 import argparse
@@ -40,7 +40,7 @@ def setup_logging(
 
     # Log startup info
     logger = logging.getLogger(__name__)
-    logger.info("Multi-Animal-Tracker starting up...")
+    logger.info("HYDRA starting up...")
     logger.info(f"Python version: {sys.version}")
     logger.info(f"Working directory: {os.getcwd()}")
 
@@ -48,7 +48,7 @@ def setup_logging(
 def parse_arguments() -> object:
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(
-        description="Multi-Animal-Tracker - Real-time animal tracking with circular ROI",
+        description="HYDRA - Real-time animal tracking with circular ROI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -75,9 +75,7 @@ Examples:
         help="Directory for log files (default: current directory)",
     )
 
-    parser.add_argument(
-        "--version", action="version", version="Multi-Animal-Tracker 1.0.0"
-    )
+    parser.add_argument("--version", action="version", version="HYDRA Suite 1.0.0")
 
     return parser.parse_args()
 
@@ -157,8 +155,8 @@ def main() -> object:
 
         # Create Qt application
         app = QApplication(sys.argv)
-        app.setApplicationName("MultiAnimalTracker")
-        app.setApplicationDisplayName("Multi-Animal-Tracker")
+        app.setApplicationName("HYDRA")
+        app.setApplicationDisplayName("HYDRA Suite")
         app.setApplicationVersion("1.0.0")
         app.setOrganizationName("NeuroRishika")
         app.setDesktopFileName("hydra-suite")
@@ -167,7 +165,7 @@ def main() -> object:
         try:
             from hydra_suite.paths import get_brand_qicon
 
-            icon = get_brand_qicon("multianimaltracker.svg")
+            icon = get_brand_qicon("hydra.svg")
             if icon and not icon.isNull():
                 app.setWindowIcon(icon)
         except Exception:
@@ -177,13 +175,13 @@ def main() -> object:
         logger.info("Initializing main window...")
         main_window = MainWindow()
         try:
-            # Ensure taskbar/dock uses MAT icon on platforms honoring window icon.
+            # Ensure taskbar/dock uses HYDRA icon on platforms honoring window icon.
             main_window.setWindowIcon(app.windowIcon())
         except Exception:
             pass
         main_window.showMaximized()
 
-        logger.info("Multi-Animal-Tracker GUI launched successfully")
+        logger.info("HYDRA GUI launched successfully")
 
         # Start Qt event loop
         exit_code = app.exec()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Main application window for the Multi-Animal-Tracker.
+Main application window for the HYDRA.
 
 Refactored for improved UX with Tabbed interface and logical grouping.
 """
@@ -3406,7 +3406,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         """Initialize the main application window and UI components."""
         super().__init__()
-        self.setWindowTitle("Multi-Animal-Tracker")
+        self.setWindowTitle("HYDRA")
         self.resize(1360, 850)
 
         # Apply consistent VSCode dark theme (matches PoseKit and ClassKit)
@@ -3729,13 +3729,13 @@ class MainWindow(QMainWindow):
         self._apply_ui_state("no_video")
 
     def _get_ui_settings_path(self) -> Path:
-        """Return the MAT UI settings path used for persistent layout preferences."""
+        """Return the HYDRA UI settings path used for persistent layout preferences."""
         config_dir = Path.home() / ".hydra-suite"
         config_dir.mkdir(parents=True, exist_ok=True)
         return config_dir / "ui_settings.json"
 
     def _load_ui_settings(self) -> dict:
-        """Load persistent MAT UI settings."""
+        """Load persistent HYDRA UI settings."""
         path = self._get_ui_settings_path()
         if not path.exists():
             return {}
@@ -3746,7 +3746,7 @@ class MainWindow(QMainWindow):
             return {}
 
     def _queue_ui_state_save(self) -> None:
-        """Debounce MAT UI settings writes while the user resizes or switches tabs."""
+        """Debounce HYDRA UI settings writes while the user resizes or switches tabs."""
         if hasattr(self, "_ui_state_save_timer"):
             self._ui_state_save_timer.start()
 
@@ -3763,7 +3763,7 @@ class MainWindow(QMainWindow):
         )
 
     def _restore_ui_state(self) -> None:
-        """Apply persisted MAT UI layout preferences after construction."""
+        """Apply persisted HYDRA UI layout preferences after construction."""
         settings = self._ui_settings or {}
 
         detection_index = settings.get("detection_method_index")
@@ -3788,7 +3788,7 @@ class MainWindow(QMainWindow):
             self.splitter.setSizes(splitter_sizes)
 
     def _save_ui_settings(self) -> None:
-        """Persist MAT UI layout preferences without touching tracking configs."""
+        """Persist HYDRA UI layout preferences without touching tracking configs."""
         if not hasattr(self, "tabs") or not hasattr(self, "splitter"):
             return
 
@@ -3812,7 +3812,7 @@ class MainWindow(QMainWindow):
             path.write_text(json.dumps(settings, indent=2), encoding="utf-8")
             self._ui_settings = settings
         except Exception:
-            logger.debug("Failed to save MAT UI settings", exc_info=True)
+            logger.debug("Failed to save HYDRA UI settings", exc_info=True)
 
     def _set_compact_scroll_layout(self, layout: QLayout) -> None:
         """Prevent scroll-area content layouts from stretching sparse sections vertically."""
@@ -4178,7 +4178,7 @@ class MainWindow(QMainWindow):
         self._load_default_preset_on_startup()
 
     def _make_welcome_page(self):
-        """Create startup splash page with primary MAT session actions."""
+        """Create startup splash page with primary HYDRA session actions."""
         page = QWidget()
         page.setStyleSheet("background-color: #121212;")
         layout = QVBoxLayout(page)
@@ -4194,7 +4194,7 @@ class MainWindow(QMainWindow):
 
             from hydra_suite.paths import get_brand_icon_bytes
 
-            logo_data = get_brand_icon_bytes("multianimaltracker.svg")
+            logo_data = get_brand_icon_bytes("hydra.svg")
             if logo_data is not None:
                 renderer = QSvgRenderer(QByteArray(logo_data))
             else:
@@ -4227,12 +4227,12 @@ class MainWindow(QMainWindow):
                 painter.end()
                 logo_label.setPixmap(canvas)
             else:
-                logo_label.setText("Multi-Animal-Tracker")
+                logo_label.setText("HYDRA")
                 logo_label.setStyleSheet(
                     "color: #ffffff; font-size: 28px; font-weight: bold;"
                 )
         except Exception:
-            logo_label.setText("Multi-Animal-Tracker")
+            logo_label.setText("HYDRA")
             logo_label.setStyleSheet(
                 "color: #ffffff; font-size: 28px; font-weight: bold;"
             )
@@ -4295,7 +4295,7 @@ class MainWindow(QMainWindow):
         return page
 
     def _show_workspace(self):
-        """Switch to the main MAT workspace view."""
+        """Switch to the main HYDRA workspace view."""
         if hasattr(self, "main_stack") and hasattr(self, "_workspace_page_index"):
             self.main_stack.setCurrentIndex(self._workspace_page_index)
 
@@ -10764,7 +10764,7 @@ class MainWindow(QMainWindow):
         self._init_video_player(fp)
 
         # Update window title
-        self.setWindowTitle(f"Multi-Animal-Tracker - {os.path.basename(fp)}")
+        self.setWindowTitle(f"HYDRA - {os.path.basename(fp)}")
 
         # Update Start/End frame spins
         self.spin_start_frame.setValue(0)
@@ -13648,13 +13648,13 @@ class MainWindow(QMainWindow):
             self.video_label.setStyleSheet("color: #9a9a9a; font-size: 14px;")
 
     def _show_video_logo_placeholder(self):
-        """Show MAT logo in the video panel when no video is loaded."""
+        """Show HYDRA logo in the video panel when no video is loaded."""
         try:
             from PySide6.QtCore import QByteArray
 
             from hydra_suite.paths import get_brand_icon_bytes
 
-            logo_data = get_brand_icon_bytes("multianimaltracker.svg")
+            logo_data = get_brand_icon_bytes("hydra.svg")
             vw = max(640, self.scroll.viewport().width())
             vh = max(420, self.scroll.viewport().height())
             canvas = QPixmap(vw, vh)
@@ -13694,7 +13694,7 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         self.video_label.setPixmap(QPixmap())
-        self.video_label.setText("Multi-Animal-Tracker\n\nLoad a video to begin...")
+        self.video_label.setText("HYDRA\n\nLoad a video to begin...")
 
     def _is_visualization_enabled(self) -> bool:
         # Preview should always render frames regardless of visualization-free toggle

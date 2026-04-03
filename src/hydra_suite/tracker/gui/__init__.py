@@ -1,5 +1,5 @@
 """
-GUI module for Multi-Animal-Tracker.
+GUI module for HYDRA Suite.
 
 This module contains the graphical user interface components including the main window.
 """
