@@ -1,4 +1,4 @@
-"""Event type taxonomy for MAT-afterhours.
+"""Event type taxonomy for RefineKit.
 
 Defines the :class:`EventType` enum and the generalised
 :class:`SuspicionEvent` dataclass.  All detectors produce

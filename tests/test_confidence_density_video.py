@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 
-from multi_tracker.afterhours.core.confidence_density import (
+from multi_tracker.refinekit.core.confidence_density import (
     DensityRegion,
     export_diagnostic_video,
 )

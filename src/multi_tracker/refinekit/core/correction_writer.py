@@ -18,7 +18,7 @@ from typing import List
 
 import pandas as pd
 
-from multi_tracker.afterhours.core.track_editor_model import EditOp, OpKind
+from multi_tracker.refinekit.core.track_editor_model import EditOp, OpKind
 
 logger = logging.getLogger(__name__)
 

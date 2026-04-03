@@ -8,24 +8,20 @@ from PySide6.QtWidgets import QApplication
 
 def main():
     ap = argparse.ArgumentParser(
-        description="MAT Afterhours — Interactive Identity Proofreading"
+        description="RefineKit — Interactive Identity Proofreading"
     )
     ap.add_argument("video", nargs="?", default=None, help="Path to video file to open")
     args, qt_args = ap.parse_known_args()
 
     app = QApplication(qt_args)
-    app.setApplicationName("MATAfterhours")
-    app.setApplicationDisplayName("MAT Afterhours")
+    app.setApplicationName("RefineKit")
+    app.setApplicationDisplayName("RefineKit")
     app.setApplicationVersion("1.0.0")
     app.setOrganizationName("NeuroRishika")
-    app.setDesktopFileName("mat-afterhours")
+    app.setDesktopFileName("refinekit")
 
     try:
-        icon_path = (
-            Path(__file__).resolve().parents[2]
-            / "brand"
-            / "multianimaltrackerafterhours.svg"
-        )
+        icon_path = Path(__file__).resolve().parents[2] / "brand" / "refinekit.svg"
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))
     except Exception:

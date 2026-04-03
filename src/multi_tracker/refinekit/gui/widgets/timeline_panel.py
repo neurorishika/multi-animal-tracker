@@ -1,4 +1,4 @@
-"""Per-animal timeline panel for MAT-afterhours.
+"""Per-animal timeline panel for RefineKit.
 
 Draws one horizontal bar per trajectory with a label column on the left.
 Clicking on a bar emits ``split_requested(track_id, frame)``.

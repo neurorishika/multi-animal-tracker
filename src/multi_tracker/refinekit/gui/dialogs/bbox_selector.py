@@ -1,4 +1,4 @@
-"""Bounding-box selector dialog for MAT-afterhours.
+"""Bounding-box selector dialog for RefineKit.
 
 Shows a single video frame and lets the user drag a rectangle to choose
 a spatial region of interest before the track editor opens.

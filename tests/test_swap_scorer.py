@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from multi_tracker.afterhours.core.swap_scorer import SwapScorer, SwapSuspicionEvent
+from multi_tracker.refinekit.core.swap_scorer import SwapScorer, SwapSuspicionEvent
 
 
 def _make_df(track_id, frames, xs, ys, thetas=None, pose_quality=None):

@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from multi_tracker.afterhours.core.confidence_density import DensityRegion
 from multi_tracker.core.tracking.worker import get_density_region_flags
+from multi_tracker.refinekit.core.confidence_density import DensityRegion
 
 
 def _make_region(frame_start=0, frame_end=100, bbox=(10, 10, 50, 50)):

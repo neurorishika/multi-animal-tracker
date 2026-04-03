@@ -6281,25 +6281,25 @@ class MainWindow(QMainWindow):
         self.spin_video_pose_line_thickness.setVisible(False)
         self.lbl_video_pose_disabled_hint.setVisible(False)
 
-        # MAT-afterhours launch button
-        g_afterhours = QGroupBox("Interactive Proofreading")
-        self._set_compact_section_widget(g_afterhours)
-        vl_afterhours = QVBoxLayout(g_afterhours)
-        vl_afterhours.addWidget(
+        # RefineKit launch button
+        g_refinekit = QGroupBox("Interactive Proofreading")
+        self._set_compact_section_widget(g_refinekit)
+        vl_refinekit = QVBoxLayout(g_refinekit)
+        vl_refinekit.addWidget(
             self._create_help_label(
-                "Open completed tracking results in MAT-afterhours for "
+                "Open completed tracking results in RefineKit for "
                 "interactive identity proofreading and swap correction."
             )
         )
-        self._btn_open_afterhours = QPushButton("Open in MAT-afterhours")
-        self._btn_open_afterhours.setToolTip(
-            "Open completed tracking results in MAT-afterhours for "
+        self._btn_open_refinekit = QPushButton("Open in RefineKit")
+        self._btn_open_refinekit.setToolTip(
+            "Open completed tracking results in RefineKit for "
             "interactive proofreading"
         )
-        self._btn_open_afterhours.setEnabled(False)
-        self._btn_open_afterhours.clicked.connect(self._open_afterhours)
-        vl_afterhours.addWidget(self._btn_open_afterhours)
-        vbox.addWidget(g_afterhours)
+        self._btn_open_refinekit.setEnabled(False)
+        self._btn_open_refinekit.clicked.connect(self._open_refinekit)
+        vl_refinekit.addWidget(self._btn_open_refinekit)
+        vbox.addWidget(g_refinekit)
 
         scroll.setWidget(content)
         layout.addWidget(scroll)
@@ -17468,22 +17468,22 @@ class MainWindow(QMainWindow):
 
         QMessageBox.information(self, "Tracking Complete", "\n".join(lines))
 
-        # Offer to open MAT-afterhours for interactive proofreading
-        self._btn_open_afterhours.setEnabled(bool(self.current_video_path))
+        # Offer to open RefineKit for interactive proofreading
+        self._btn_open_refinekit.setEnabled(bool(self.current_video_path))
         if self.current_video_path:
             reply = QMessageBox.question(
                 self,
-                "Open MAT-afterhours?",
-                "Tracking complete. Open in MAT-afterhours for "
+                "Open RefineKit?",
+                "Tracking complete. Open in RefineKit for "
                 "interactive identity proofreading?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
-                self._open_afterhours()
+                self._open_refinekit()
 
-    def _open_afterhours(self):
-        """Launch MAT-afterhours as a subprocess pointing at the current video."""
+    def _open_refinekit(self):
+        """Launch RefineKit as a subprocess pointing at the current video."""
         import subprocess
         import sys
 
@@ -17495,8 +17495,8 @@ class MainWindow(QMainWindow):
                 "No video is currently loaded. Please load a video first.",
             )
             return
-        cmd = [sys.executable, "-m", "multi_tracker.afterhours.app", str(video_path)]
-        logger.info("Launching MAT-afterhours: %s", " ".join(cmd))
+        cmd = [sys.executable, "-m", "multi_tracker.refinekit.app", str(video_path)]
+        logger.info("Launching RefineKit: %s", " ".join(cmd))
         subprocess.Popen(cmd)
 
     def _on_dataset_worker_thread_finished(self):

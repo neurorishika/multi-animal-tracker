@@ -1,4 +1,4 @@
-"""Main window for MAT-afterhours.
+"""Main window for RefineKit.
 
 Provides the review interface for correcting identity issues
 detected in multi-animal tracking trajectories.
@@ -27,13 +27,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.afterhours.core.confidence_density import load_regions
-from multi_tracker.afterhours.core.correction_writer import CorrectionWriter
-from multi_tracker.afterhours.core.event_scorer import EventScorer
-from multi_tracker.afterhours.core.event_types import EventType, SuspicionEvent
-from multi_tracker.afterhours.gui.widgets.suspicion_queue import SuspicionQueueWidget
-from multi_tracker.afterhours.gui.widgets.timeline_panel import TimelinePanelWidget
-from multi_tracker.afterhours.gui.widgets.video_player import VideoPlayerWidget
+from multi_tracker.refinekit.core.confidence_density import load_regions
+from multi_tracker.refinekit.core.correction_writer import CorrectionWriter
+from multi_tracker.refinekit.core.event_scorer import EventScorer
+from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
+from multi_tracker.refinekit.gui.widgets.suspicion_queue import SuspicionQueueWidget
+from multi_tracker.refinekit.gui.widgets.timeline_panel import TimelinePanelWidget
+from multi_tracker.refinekit.gui.widgets.video_player import VideoPlayerWidget
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +66,11 @@ class _ScorerWorker(QThread):
 
 
 class MainWindow(QMainWindow):
-    """MAT-afterhours main window."""
+    """RefineKit main window."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("MAT Afterhours")
+        self.setWindowTitle("RefineKit")
 
         self._sessions: List[str] = []
         self._session_idx: int = -1
@@ -84,7 +84,7 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self.apply_stylesheet()
-        self.statusBar().showMessage("MAT Afterhours — ready", 4000)
+        self.statusBar().showMessage("RefineKit — ready", 4000)
 
     # ------------------------------------------------------------------
     # Stylesheet
@@ -433,11 +433,7 @@ class MainWindow(QMainWindow):
 
         logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_path = (
-            Path(__file__).resolve().parents[3]
-            / "brand"
-            / "multianimaltrackerafterhours.svg"
-        )
+        logo_path = Path(__file__).resolve().parents[3] / "brand" / "refinekit.svg"
         if logo_path.exists():
             renderer = QSvgRenderer(str(logo_path))
             if renderer.isValid():
@@ -613,7 +609,7 @@ class MainWindow(QMainWindow):
         if self._df is None or self._video_path is None:
             return
 
-        from multi_tracker.afterhours.core.merge_candidates import (
+        from multi_tracker.refinekit.core.merge_candidates import (
             build_candidates,
             build_swap_candidates,
             extract_segments,
@@ -661,12 +657,12 @@ class MainWindow(QMainWindow):
         if self._df is None or self._video_path is None or self._writer is None:
             return
 
-        from multi_tracker.afterhours.core.merge_candidates import (
+        from multi_tracker.refinekit.core.merge_candidates import (
             build_candidates,
             build_swap_candidates,
             extract_segments,
         )
-        from multi_tracker.afterhours.gui.dialogs.merge_wizard import MergeWizardDialog
+        from multi_tracker.refinekit.gui.dialogs.merge_wizard import MergeWizardDialog
 
         if segments is None or candidates is None:
             last_frame = int(self._df["FrameID"].max())
@@ -806,7 +802,7 @@ class MainWindow(QMainWindow):
         if self._video_path is None or self._df is None:
             return
 
-        from multi_tracker.afterhours.gui.dialogs.track_editor_dialog import (
+        from multi_tracker.refinekit.gui.dialogs.track_editor_dialog import (
             TrackEditorDialog,
         )
 
@@ -890,9 +886,7 @@ class MainWindow(QMainWindow):
 
         from PySide6.QtWidgets import QDialog as _QDialog
 
-        from multi_tracker.afterhours.gui.dialogs.bbox_selector import (
-            BboxSelectorDialog,
-        )
+        from multi_tracker.refinekit.gui.dialogs.bbox_selector import BboxSelectorDialog
 
         mid_frame = (frame_start + frame_end) // 2
         bbox_dlg = BboxSelectorDialog(self._video_path, mid_frame, parent=self)

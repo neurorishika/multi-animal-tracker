@@ -1,4 +1,4 @@
-"""Suspicion event scorer for MAT-afterhours.
+"""Suspicion event scorer for RefineKit.
 
 Scores trajectory data for identity anomalies: pairwise swaps, flicker
 (swap + immediate swap-back), track fragmentation, absorption (two become
@@ -15,8 +15,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from multi_tracker.afterhours.core.confidence_density import DensityRegion
-from multi_tracker.afterhours.core.event_types import EventType, SuspicionEvent
+from multi_tracker.refinekit.core.confidence_density import DensityRegion
+from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
 
 # ---------------------------------------------------------------------------
 # Signal weights  (pairwise swap / flicker scoring)

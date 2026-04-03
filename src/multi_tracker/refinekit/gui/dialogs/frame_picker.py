@@ -1,4 +1,4 @@
-"""Frame picker dialog for MAT-afterhours.
+"""Frame picker dialog for RefineKit.
 
 Lets the user choose a split frame within a swap suspicion event's frame
 range. All frames in the range are pre-decoded in a background thread so

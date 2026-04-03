@@ -1,4 +1,4 @@
-"""Interactive timeline editor widget for MAT-afterhours.
+"""Interactive timeline editor widget for RefineKit.
 
 Renders one horizontal lane per track.  Each contiguous fragment is drawn
 as a coloured bar.  The user can:
@@ -22,12 +22,12 @@ from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QColor, QKeyEvent, QMouseEvent, QPen
 from PySide6.QtWidgets import QLabel, QMenu, QScrollArea, QToolTip, QVBoxLayout, QWidget
 
-from multi_tracker.afterhours.core.track_editor_model import (
+from multi_tracker.refinekit.core.track_editor_model import (
     TrackEditorModel,
     TrackFragment,
 )
 
-# Colour palette (RGB) — canonical source for all afterhours views.
+# Colour palette (RGB) — canonical source for all RefineKit views.
 # Import this from other modules to keep colours consistent.
 PALETTE_RGB: List[Tuple[int, int, int]] = [
     (255, 100, 100),

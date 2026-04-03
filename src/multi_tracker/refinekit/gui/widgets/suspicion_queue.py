@@ -1,4 +1,4 @@
-"""Suspicion queue widget for MAT-afterhours.
+"""Suspicion queue widget for RefineKit.
 
 Displays a scrollable list of :class:`SuspicionEvent` cards organised
 by tiered score thresholds.  Each click on a card emits
@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.afterhours.core.event_types import EventType, SuspicionEvent
+from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
 
 # ---------------------------------------------------------------------------
 # Event-type display helpers

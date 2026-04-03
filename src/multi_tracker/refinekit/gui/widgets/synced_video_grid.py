@@ -26,7 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.afterhours.gui.widgets.interactive_canvas import InteractiveCanvas
+from multi_tracker.refinekit.gui.widgets.interactive_canvas import InteractiveCanvas
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-"""Unified event resolution dialog for MAT-afterhours.
+"""Unified event resolution dialog for RefineKit.
 
 Handles all event types: swap, flicker, fragmentation, absorption,
 phantom, multi-shuffle.  Embeds a frame picker, event info header,
@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 from PySide6.QtCore import QThread, Signal
 
-from multi_tracker.afterhours.core.event_types import EventType
+from multi_tracker.refinekit.core.event_types import EventType
 
 _CROP_MARGIN = 80
 _CONTEXT_FRAMES = 15  # extra frames loaded before / after the event window

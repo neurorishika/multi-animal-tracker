@@ -1,4 +1,4 @@
-"""Identity assignment dialog for MAT-afterhours.
+"""Identity assignment dialog for RefineKit.
 
 Shows "before" and "after" thumbnails around the split frame and asks the
 user whether the post-split identities should be swapped.

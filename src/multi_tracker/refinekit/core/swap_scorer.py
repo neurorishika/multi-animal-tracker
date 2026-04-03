@@ -5,9 +5,9 @@ for new code; this module exists so that old tests and downstream
 modules keep working.
 """
 
-from multi_tracker.afterhours.core.event_scorer import (  # noqa: F401
+from multi_tracker.refinekit.core.event_scorer import (  # noqa: F401
     EventScorer as SwapScorer,
 )
-from multi_tracker.afterhours.core.event_scorer import SwapSuspicionEvent
+from multi_tracker.refinekit.core.event_scorer import SwapSuspicionEvent
 
 __all__ = ["SwapScorer", "SwapSuspicionEvent"]

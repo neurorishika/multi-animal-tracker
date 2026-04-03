@@ -1,4 +1,4 @@
-"""Fragment Merge Wizard dialog for MAT-afterhours.
+"""Fragment Merge Wizard dialog for RefineKit.
 
 Presents merge hypotheses side-by-side with synchronized video playback,
 allowing the user to accept, reject, or skip merge decisions.
@@ -29,9 +29,10 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from multi_tracker.afterhours.core.correction_writer import CorrectionWriter
-from multi_tracker.afterhours.core.event_types import EventType, SuspicionEvent
-from multi_tracker.afterhours.core.merge_candidates import (
+from multi_tracker.data.detection_cache import DetectionCache
+from multi_tracker.refinekit.core.correction_writer import CorrectionWriter
+from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
+from multi_tracker.refinekit.core.merge_candidates import (
     MergeCandidate,
     SwapCandidate,
     TrackSegment,
@@ -40,8 +41,7 @@ from multi_tracker.afterhours.core.merge_candidates import (
     extract_segments,
     update_after_merge,
 )
-from multi_tracker.afterhours.gui.widgets.synced_video_grid import SyncedVideoGrid
-from multi_tracker.data.detection_cache import DetectionCache
+from multi_tracker.refinekit.gui.widgets.synced_video_grid import SyncedVideoGrid
 
 # Type alias for hypotheses that can be either merge or swap
 Hypothesis = MergeCandidate | SwapCandidate
@@ -492,7 +492,7 @@ class _FrameDetections:
     Pre-computes per-detection semi-axes from the cached ``shapes`` array so
     that drawing is cheap at render time.  Coordinates are scaled from the
     *resized* space stored in the cache to the *original* pixel space used by
-    the afterhours CSV.
+    the RefineKit CSV.
     """
 
     def __init__(self, cache: DetectionCache, inv_resize: float):

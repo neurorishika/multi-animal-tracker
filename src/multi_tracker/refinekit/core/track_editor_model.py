@@ -1,4 +1,4 @@
-"""Track editor data model for MAT-afterhours.
+"""Track editor data model for RefineKit.
 
 Provides a *fragment*-based editing model that powers the timeline editor.
 Every trajectory in the visible region is split into one or more

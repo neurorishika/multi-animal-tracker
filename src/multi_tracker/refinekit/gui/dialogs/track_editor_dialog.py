@@ -1,4 +1,4 @@
-"""Track editor dialog for MAT-afterhours.
+"""Track editor dialog for RefineKit.
 
 Replaces the old ``ResolutionDialog`` / ``FramePickerDialog`` pair with a
 single **timeline-based** editor.  The user sees:
@@ -36,10 +36,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from multi_tracker.afterhours.core.event_types import EventType, SuspicionEvent
-from multi_tracker.afterhours.core.track_editor_model import EditOp, TrackEditorModel
-from multi_tracker.afterhours.gui.widgets.interactive_canvas import InteractiveCanvas
-from multi_tracker.afterhours.gui.widgets.timeline_editor import (
+from multi_tracker.refinekit.core.event_types import EventType, SuspicionEvent
+from multi_tracker.refinekit.core.track_editor_model import EditOp, TrackEditorModel
+from multi_tracker.refinekit.gui.widgets.interactive_canvas import InteractiveCanvas
+from multi_tracker.refinekit.gui.widgets.timeline_editor import (
     PALETTE_RGB,
     TimelineEditorWidget,
 )

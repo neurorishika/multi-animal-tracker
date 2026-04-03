@@ -1,8 +1,8 @@
-"""Shared interactive video-frame canvas for MAT-afterhours.
+"""Shared interactive video-frame canvas for RefineKit.
 
 Provides zoom (Ctrl+wheel, pinch, slider), drag-pan, and double-click-fit
 interaction identical to the MAT main window.  All video-viewing surfaces
-in afterhours (main player, frame-picker dialog, identity-assignment dialog)
+in RefineKit (main player, frame-picker dialog, identity-assignment dialog)
 embed this widget so the behaviour is consistent everywhere.
 
 Public API
