@@ -795,6 +795,16 @@ class MainWindow(QMainWindow):
             proj = open_project_from_path(project_path)
             if proj is not None:
                 self._switch_project_window(proj)
+            else:
+                from PySide6.QtWidgets import QMessageBox
+
+                QMessageBox.warning(
+                    self, "Open Failed", f"Could not open project at:\n{path}"
+                )
+                if hasattr(self, "_recents_store"):
+                    self._recents_store.remove(path)
+                    if hasattr(self, "_welcome_page"):
+                        self._welcome_page.refresh_recents()
         else:
             from PySide6.QtWidgets import QMessageBox
 

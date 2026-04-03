@@ -109,6 +109,7 @@ class _RecentItemRow(QWidget):
         super().__init__(parent)
         self._full_path = full_path
         self._on_click = on_click
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         self.setStyleSheet(
             f"_RecentItemRow {{ background: transparent; border-radius: 4px; }}"

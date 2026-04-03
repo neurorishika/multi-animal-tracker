@@ -129,6 +129,10 @@ class MainWindow(QMainWindow):
                     "Open Failed",
                     f"Could not open project at:\n{path}",
                 )
+                if hasattr(self, "_recents_store"):
+                    self._recents_store.remove(path)
+                    if hasattr(self, "_welcome_page"):
+                        self._welcome_page.refresh_recents()
         else:
             QMessageBox.warning(self, "Not Found", f"Project not found:\n{path}")
             if hasattr(self, "_recents_store"):

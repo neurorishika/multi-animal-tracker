@@ -1,4 +1,4 @@
-# ROCm Setup Guide for Multi-Animal-Tracker
+# ROCm Setup Guide for HYDRA suite
 
 This guide provides detailed instructions for setting up AMD GPU acceleration with ROCm.
 

@@ -1,5 +1,5 @@
 """
-Utility functions for image processing in multi-animal tracking.
+Utility functions for image processing in the HYDRA Suite.
 
 Optimized with Numba JIT and GPU acceleration (CuPy/PyTorch) where available.
 """

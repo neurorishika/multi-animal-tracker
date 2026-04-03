@@ -1,5 +1,5 @@
 """
-Pose quality assessment and post-processing for the multi-animal tracker.
+Pose quality assessment and post-processing for the HYDRA suite.
 
 All functions are pure (stateless) and can be imported from both the GUI
 and any script-based pipeline.

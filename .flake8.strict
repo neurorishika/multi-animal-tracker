@@ -34,7 +34,7 @@ max-complexity = 10
 # Per-file ignores (only essentials)
 per-file-ignores =
     __init__.py:F401
-    src/multi_tracker/core/background/model.py:F811
+    src/hydra_suite/core/background/model.py:F811
     tests/*:S101
 
 # Enable comprehensive checks

@@ -4,7 +4,7 @@
 
 The repository provides two user-facing UIs:
 
-- **MAT GUI** (`hydra`): multi-animal tracking from video to cleaned trajectories.
+- **HYDRA GUI** (`hydra`): multi-animal tracking from video to cleaned trajectories.
 - **PoseKit Labeler** (`posekit-labeler`): pose annotation and dataset workflow.
 
 ## High-Level Flow

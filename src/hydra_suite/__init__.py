@@ -6,7 +6,7 @@ A comprehensive solution for tracking multiple animals in video recordings using
 The system combines background subtraction, Kalman filtering, and Hungarian algorithm for robust multi-object tracking.
 
 Key Features:
-- Real-time multi-animal tracking (up to 20 targets)
+- Real-time multi-animal tracking
 - Circular Region of Interest (ROI) definition for arena-based experiments
 - Kalman filter-based motion prediction and state estimation
 - Hungarian algorithm for optimal target-detection assignment

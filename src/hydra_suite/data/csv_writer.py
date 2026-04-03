@@ -1,5 +1,5 @@
 """
-Utility functions for asynchronous CSV writing in multi-animal tracking.
+Utility functions for asynchronous CSV writing in the HYDRA Suite.
 """
 
 import csv

@@ -1,5 +1,5 @@
 """
-Utility functions for geometry operations in multi-animal tracking.
+Utility functions for geometry operations in the HYDRA Suite.
 """
 
 import math
@@ -89,7 +89,7 @@ def estimate_detection_crop_quality(shape, reference_body_size):
 
 
 # ---------------------------------------------------------------------------
-# Multi-animal crop contamination utilities
+# HYDRA suite crop contamination utilities
 # ---------------------------------------------------------------------------
 
 

@@ -67,6 +67,16 @@ def _user_data_dir() -> Path:
 # ---------------------------------------------------------------------------
 
 
+def get_app_data_dir(app_name: str) -> Path:
+    """Return (and create) a per-app subdirectory under the data directory.
+
+    Respects the ``HYDRA_DATA_DIR`` environment variable override.
+    """
+    p = _user_data_dir() / app_name
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def get_models_dir() -> Path:
     """Return (and create) the models directory."""
     p = _user_data_dir() / "models"

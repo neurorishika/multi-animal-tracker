@@ -1,6 +1,6 @@
 # Tracking System Technical Reference
 
-This directory contains a standalone LaTeX reference for the current Multi-Animal-Tracker pipeline.
+This directory contains a standalone LaTeX reference for the current HYDRA tracking pipeline.
 
 ## Build
 

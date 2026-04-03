@@ -1,4 +1,4 @@
-"""Canonical crop extraction for multi-animal tracking.
+"""Canonical crop extraction for HYDRA tracking.
 
 Provides a single affine-warped crop per detection where:
 - The animal's major axis is horizontal.

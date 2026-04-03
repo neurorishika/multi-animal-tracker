@@ -492,8 +492,10 @@ class MainWindow(QMainWindow):
                     "This directory does not contain a valid ClassKit project.\n\n"
                     "Expected file: classkit.db",
                 )
-                self._recents_store.remove(path)
-                self._welcome_page.refresh_recents()
+                if hasattr(self, "_recents_store"):
+                    self._recents_store.remove(path)
+                    if hasattr(self, "_welcome_page"):
+                        self._welcome_page.refresh_recents()
         else:
             from PySide6.QtWidgets import QMessageBox
 

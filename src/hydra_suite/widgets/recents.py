@@ -21,9 +21,9 @@ class RecentItemsStore:
         self._app_name = app_name
 
     def _json_path(self) -> Path:
-        from hydra_suite.paths import _user_data_dir
+        from hydra_suite.paths import get_app_data_dir
 
-        return _user_data_dir() / self._app_name / "recents.json"
+        return get_app_data_dir(self._app_name) / "recents.json"
 
     def load(self) -> list[str]:
         """Return recent items, most-recent first."""

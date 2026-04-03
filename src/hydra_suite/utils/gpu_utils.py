@@ -1,5 +1,5 @@
 """
-GPU utilities and device detection for the multi-animal tracker.
+GPU utilities and device detection for the HYDRA Suite.
 
 This module provides centralized GPU availability detection and utilities
 that can be used throughout the codebase. Supports:

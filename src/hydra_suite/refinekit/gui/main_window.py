@@ -1,7 +1,7 @@
 """Main window for RefineKit.
 
 Provides the review interface for correcting identity issues
-detected in multi-animal tracking trajectories.
+detected in HYDRA Suite tracking trajectories.
 """
 
 from __future__ import annotations

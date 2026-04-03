@@ -3398,7 +3398,7 @@ class CompactHelpLabel(QWidget):
 
 class MainWindow(QMainWindow):
     """
-    Main application window providing GUI interface for multi-animal tracking.
+    Main application window providing GUI interface for HYDRA configuration, model management, and execution.
     """
 
     parameters_changed = Signal(dict)
@@ -3675,7 +3675,6 @@ class MainWindow(QMainWindow):
 
         # UI interaction state
         self._video_interactions_enabled = True
-        self._splash_buttons = []
         self._saved_widget_enabled_states = {}
         self._pending_finish_after_interp = False
         self._stop_all_requested = False
@@ -13655,12 +13654,9 @@ class MainWindow(QMainWindow):
                 self.btn_open_xanylabeling,
                 self.btn_open_pose_label,
             ]
-            splash_allowed = list(getattr(self, "_splash_buttons", []))
             self._set_interactive_widgets_enabled(
                 False,
-                allowlist=[self.btn_file, self.btn_load_config]
-                + extra_allowed
-                + splash_allowed,
+                allowlist=[self.btn_file, self.btn_load_config] + extra_allowed,
                 remember_state=False,
             )
             self.btn_start.setEnabled(False)
