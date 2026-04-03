@@ -446,76 +446,62 @@ class MainWindow(QMainWindow):
 
     def _make_welcome_page(self) -> QWidget:
         """Logo/welcome screen shown before any project is opened."""
-        from PySide6.QtCore import QRectF
-        from PySide6.QtGui import QColor, QPainter
-        from PySide6.QtSvg import QSvgRenderer
-
-        page = QWidget()
-        page.setStyleSheet("background-color: #121212;")
-        v = QVBoxLayout(page)
-        v.setAlignment(Qt.AlignCenter)
-        v.setSpacing(0)
-        v.addStretch(1)
-
-        logo_lbl = QLabel()
-        logo_lbl.setAlignment(Qt.AlignCenter)
-        from PySide6.QtCore import QByteArray
-
-        from hydra_suite.paths import get_brand_icon_bytes
-
-        logo_data = get_brand_icon_bytes("classkit.svg")
-        if logo_data is not None:
-            renderer = QSvgRenderer(QByteArray(logo_data))
-            if renderer.isValid():
-                vb = renderer.viewBoxF()
-                if vb.isEmpty():
-                    ds = renderer.defaultSize()
-                    vb = QRectF(0, 0, max(1, ds.width()), max(1, ds.height()))
-                max_w, max_h = 560, 300
-                scale = min(max_w / max(vb.width(), 1), max_h / max(vb.height(), 1))
-                lw = max(1, int(vb.width() * scale))
-                lh = max(1, int(vb.height() * scale))
-                canvas = QPixmap(lw, lh)
-                canvas.fill(QColor(0, 0, 0, 0))
-                painter = QPainter(canvas)
-                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-                renderer.render(painter, QRectF(0, 0, lw, lh))
-                painter.end()
-                logo_lbl.setPixmap(canvas)
-        v.addWidget(logo_lbl)
-
-        sub = QLabel("Active Learning Dataset Builder")
-        sub.setAlignment(Qt.AlignCenter)
-        sub.setStyleSheet(
-            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        from hydra_suite.widgets import (
+            ButtonDef,
+            RecentItemsStore,
+            WelcomeConfig,
+            WelcomePage,
         )
-        v.addWidget(sub)
-        v.addSpacing(40)
 
-        btn_row = QHBoxLayout()
-        btn_row.setAlignment(Qt.AlignCenter)
-        btn_row.setSpacing(16)
+        store = RecentItemsStore("classkit")
+        self._recents_store = store
 
-        btn_n = QPushButton("New Project\u2026")
-        btn_n.setFixedWidth(180)
-        btn_n.clicked.connect(self.new_project)
-        btn_row.addWidget(btn_n)
+        config = WelcomeConfig(
+            logo_svg="classkit.svg",
+            tagline="Active Learning Dataset Builder",
+            buttons=[
+                ButtonDef(label="New Project\u2026", callback=self.new_project),
+                ButtonDef(label="Open Project\u2026", callback=self.open_project),
+                ButtonDef(label="Quit", callback=self.close),
+            ],
+            recents_label="Recent Projects",
+            recents_store=store,
+            on_recent_clicked=self._open_recent_project,
+        )
+        self._welcome_page = WelcomePage(config)
+        return self._welcome_page
 
-        btn_o = QPushButton("Open Project\u2026")
-        btn_o.setFixedWidth(180)
-        btn_o.clicked.connect(self.open_project)
-        btn_row.addWidget(btn_o)
+    def _open_recent_project(self, path: str):
+        """Open a project from the recent items list."""
+        from pathlib import Path
 
-        btn_q = QPushButton("Quit")
-        btn_q.setFixedWidth(140)
-        btn_q.clicked.connect(self.close)
-        btn_row.addWidget(btn_q)
+        project_path = Path(path)
+        if project_path.exists():
+            self.project_path = project_path
+            self.db_path = project_path / "classkit.db"
+            if self.db_path.exists():
+                self.load_project_data()
+                self.update_context_panel()
+                self.status.showMessage(f"Opened project: {self.project_path.name}")
+            else:
+                from PySide6.QtWidgets import QMessageBox
 
-        ctr = QWidget()
-        ctr.setLayout(btn_row)
-        v.addWidget(ctr)
-        v.addStretch(1)
-        return page
+                QMessageBox.warning(
+                    self,
+                    "Invalid Project",
+                    "This directory does not contain a valid ClassKit project.\n\n"
+                    "Expected file: classkit.db",
+                )
+                self._recents_store.remove(path)
+                self._welcome_page.refresh_recents()
+        else:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Not Found", f"Project not found:\n{path}")
+            if hasattr(self, "_recents_store"):
+                self._recents_store.remove(path)
+                if hasattr(self, "_welcome_page"):
+                    self._welcome_page.refresh_recents()
 
     def setup_central_widget(self):
         """Setup main UI layout for UMAP exploration and fast labeling."""
@@ -1066,6 +1052,8 @@ class MainWindow(QMainWindow):
 
                 # Always prompt to add sources after a brand new project
                 QTimer.singleShot(100, self._prompt_adjust_sources_if_empty)
+                if hasattr(self, "_recents_store"):
+                    self._recents_store.add(str(self.project_path))
                 if hasattr(self, "_stacked"):
                     self._stacked.setCurrentIndex(1)  # reveal working UI
         except Exception as e:
@@ -1176,6 +1164,8 @@ class MainWindow(QMainWindow):
             self.status.showMessage(
                 f"Loaded {len(self.image_paths):,} images from database"
             )
+            if hasattr(self, "_recents_store"):
+                self._recents_store.add(str(self.project_path))
             if hasattr(self, "_stacked"):
                 self._stacked.setCurrentIndex(1)  # reveal working UI
         except Exception as e:
