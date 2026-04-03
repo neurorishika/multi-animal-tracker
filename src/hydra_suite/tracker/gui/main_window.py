@@ -3724,8 +3724,8 @@ class MainWindow(QMainWindow):
         # Restore persisted layout preferences after widgets are fully built.
         QTimer.singleShot(0, self._restore_ui_state)
 
-        # Default to "no video loaded" state
-        self._apply_ui_state("no_video")
+        # Welcome page is visible at startup — workspace UI state is applied
+        # when the user loads a video and _show_workspace() is called.
 
     def _get_ui_settings_path(self) -> Path:
         """Return the HYDRA UI settings path used for persistent layout preferences."""
@@ -13525,9 +13525,14 @@ class MainWindow(QMainWindow):
             QDoubleSpinBox,
             QSlider,
         )
+        # Exclude welcome-page widgets — they are managed by WelcomePage itself
+        welcome = getattr(self, "_welcome_page", None)
         widgets = []
         for widget_type in interactive_types:
-            widgets.extend(self.findChildren(widget_type))
+            for w in self.findChildren(widget_type):
+                if welcome is not None and welcome.isAncestorOf(w):
+                    continue
+                widgets.append(w)
 
         if enabled and remember_state and self._saved_widget_enabled_states:
             for widget in widgets:
@@ -15136,13 +15141,13 @@ class MainWindow(QMainWindow):
                     # Forward-only mode: use base path
                     csv_to_process = raw_csv_path
 
+                from hydra_suite.core.post.processing import (
+                    interpolate_trajectories,
+                    process_trajectories_from_csv,
+                )
+
                 if csv_to_process and os.path.exists(csv_to_process):
                     # Use CSV-based processing to preserve confidence columns
-                    from hydra_suite.core.post.processing import (
-                        interpolate_trajectories,
-                        process_trajectories_from_csv,
-                    )
-
                     processed_trajectories, stats = process_trajectories_from_csv(
                         csv_to_process, params
                     )
@@ -15204,10 +15209,6 @@ class MainWindow(QMainWindow):
                     self.start_backward_tracking()
                 else:
                     # Forward-only mode: Apply interpolation here (no merge step)
-                    from hydra_suite.core.post.processing import (
-                        interpolate_trajectories,
-                    )
-
                     interp_method = (
                         self.combo_interpolation_method.currentText().lower()
                     )
@@ -19106,13 +19107,6 @@ class MainWindow(QMainWindow):
             logger.warning(
                 f"Failed to clean {len(failed)} file(s): {', '.join(failed)}"
             )
-
-    def _disable_spinbox_wheel_events(self):
-        """Disable wheel events on all spinboxes to prevent accidental value changes."""
-        # Find all QSpinBox and QDoubleSpinBox widgets
-        spinboxes = self.findChildren(QSpinBox) + self.findChildren(QDoubleSpinBox)
-        for spinbox in spinboxes:
-            spinbox.wheelEvent = lambda event: None
 
     def _disable_spinbox_wheel_events(self):
         """Disable wheel events on all spinboxes to prevent accidental value changes."""
