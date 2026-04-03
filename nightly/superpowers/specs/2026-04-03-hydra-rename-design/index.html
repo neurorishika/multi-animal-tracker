@@ -6,28 +6,28 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="User and developer documentation for Multi-Animal-Tracker and PoseKit">
+        <meta name="description" content="User and developer documentation for HYDRA Suite">
       
       
       
-        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-30-src-reorganization-design/">
+        <link rel="canonical" href="https://neurorishika.github.io/hydra-suite/nightly/superpowers/specs/2026-04-03-hydra-rename-design/">
       
       
       
       
-      <link rel="icon" href="../../assets/images/favicon.png">
+      <link rel="icon" href="../../../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.43">
     
     
       
-        <title>Source Reorganization Design - Multi-Animal-Tracker Docs</title>
+        <title>HYDRA Rename Design Spec - HYDRA Suite Docs</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.0253249f.min.css">
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.0253249f.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
       
       
 
@@ -46,9 +46,9 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../../../assets/_mkdocstrings.css">
     
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#source-reorganization-design" class="md-skip">
+        <a href="#hydra-rename-design-spec" class="md-skip">
           Skip to content
         </a>
       
@@ -92,7 +92,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-header__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+    <a href="../../.." title="HYDRA Suite Docs" class="md-header__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -106,13 +106,13 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            Multi-Animal-Tracker Docs
+            HYDRA Suite Docs
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Source Reorganization Design
+              HYDRA Rename Design Spec
             
           </span>
         </div>
@@ -191,13 +191,13 @@
     
     
       <div class="md-header__source">
-        <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+        <a href="https://github.com/neurorishika/hydra-suite" title="Go to repository" class="md-source" data-md-component="source">
   <div class="md-source__icon md-icon">
     
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
   </div>
   <div class="md-source__repository">
-    neurorishika/multi-animal-tracker
+    neurorishika/hydra-suite
   </div>
 </a>
       </div>
@@ -221,7 +221,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../.." class="md-tabs__link">
+      <a href="../../.." class="md-tabs__link">
         
   
     
@@ -240,7 +240,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../getting-started/installation/" class="md-tabs__link">
+        <a href="../../../getting-started/installation/" class="md-tabs__link">
           
   
   Getting Started
@@ -258,7 +258,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../user-guide/overview/" class="md-tabs__link">
+        <a href="../../../user-guide/overview/" class="md-tabs__link">
           
   
   User Guide
@@ -276,7 +276,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../developer-guide/architecture/" class="md-tabs__link">
+        <a href="../../../developer-guide/architecture/" class="md-tabs__link">
           
   
   Developer Guide
@@ -294,7 +294,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../reference/api-index/" class="md-tabs__link">
+        <a href="../../../reference/api-index/" class="md-tabs__link">
           
   
   Reference
@@ -327,23 +327,23 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-nav__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+    <a href="../../.." title="HYDRA Suite Docs" class="md-nav__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
 
     </a>
-    Multi-Animal-Tracker Docs
+    HYDRA Suite Docs
   </label>
   
     <div class="md-nav__source">
-      <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+      <a href="https://github.com/neurorishika/hydra-suite" title="Go to repository" class="md-source" data-md-component="source">
   <div class="md-source__icon md-icon">
     
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
   </div>
   <div class="md-source__repository">
-    neurorishika/multi-animal-tracker
+    neurorishika/hydra-suite
   </div>
 </a>
     </div>
@@ -357,7 +357,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../.." class="md-nav__link">
+      <a href="../../.." class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -419,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/installation/" class="md-nav__link">
+      <a href="../../../getting-started/installation/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -440,7 +440,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/environments/" class="md-nav__link">
+      <a href="../../../getting-started/environments/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -461,7 +461,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/integrations/" class="md-nav__link">
+      <a href="../../../getting-started/integrations/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -482,11 +482,11 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/quickstart-mat/" class="md-nav__link">
+      <a href="../../../getting-started/quickstart-hydra/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    Quickstart (MAT)
+    Quickstart (HYDRA)
   </span>
   
 
@@ -503,7 +503,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/quickstart-posekit/" class="md-nav__link">
+      <a href="../../../getting-started/quickstart-posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -524,7 +524,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/platforms/" class="md-nav__link">
+      <a href="../../../getting-started/platforms/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -594,7 +594,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/overview/" class="md-nav__link">
+      <a href="../../../user-guide/overview/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -615,7 +615,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/workflow/" class="md-nav__link">
+      <a href="../../../user-guide/workflow/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -636,7 +636,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/detection-modes/" class="md-nav__link">
+      <a href="../../../user-guide/detection-modes/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -657,7 +657,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/tracking-and-merging/" class="md-nav__link">
+      <a href="../../../user-guide/tracking-and-merging/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -678,7 +678,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/post-processing/" class="md-nav__link">
+      <a href="../../../user-guide/post-processing/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -699,7 +699,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/configuration-reference/" class="md-nav__link">
+      <a href="../../../user-guide/configuration-reference/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -720,7 +720,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/compute-runtimes/" class="md-nav__link">
+      <a href="../../../user-guide/compute-runtimes/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -741,7 +741,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/outputs-and-csv-schema/" class="md-nav__link">
+      <a href="../../../user-guide/outputs-and-csv-schema/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -762,7 +762,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/dataset-generation/" class="md-nav__link">
+      <a href="../../../user-guide/dataset-generation/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -783,7 +783,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/individual-analysis/" class="md-nav__link">
+      <a href="../../../user-guide/individual-analysis/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -804,7 +804,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/posekit-labeler/" class="md-nav__link">
+      <a href="../../../user-guide/posekit-labeler/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -825,7 +825,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/troubleshooting/" class="md-nav__link">
+      <a href="../../../user-guide/troubleshooting/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -895,7 +895,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/architecture/" class="md-nav__link">
+      <a href="../../../developer-guide/architecture/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -916,7 +916,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/module-map/" class="md-nav__link">
+      <a href="../../../developer-guide/module-map/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -937,7 +937,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/data-flow/" class="md-nav__link">
+      <a href="../../../developer-guide/data-flow/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -958,7 +958,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
+      <a href="../../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -979,7 +979,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/gpu-backends/" class="md-nav__link">
+      <a href="../../../developer-guide/gpu-backends/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1000,7 +1000,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/runtime-integration/" class="md-nav__link">
+      <a href="../../../developer-guide/runtime-integration/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1021,7 +1021,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
+      <a href="../../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1042,7 +1042,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/performance-tuning/" class="md-nav__link">
+      <a href="../../../developer-guide/performance-tuning/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1063,7 +1063,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/confidence-metrics/" class="md-nav__link">
+      <a href="../../../developer-guide/confidence-metrics/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1084,7 +1084,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/extending-detection/" class="md-nav__link">
+      <a href="../../../developer-guide/extending-detection/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1105,7 +1105,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/extending-identity/" class="md-nav__link">
+      <a href="../../../developer-guide/extending-identity/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1126,7 +1126,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/code-health/" class="md-nav__link">
+      <a href="../../../developer-guide/code-health/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1147,7 +1147,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/contributing/" class="md-nav__link">
+      <a href="../../../developer-guide/contributing/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1217,7 +1217,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-index/" class="md-nav__link">
+      <a href="../../../reference/api-index/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1238,11 +1238,11 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/ui-components-mat/" class="md-nav__link">
+      <a href="../../../reference/ui-components-hydra/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    UI Components (MAT)
+    UI Components (HYDRA)
   </span>
   
 
@@ -1259,7 +1259,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/ui-components-posekit/" class="md-nav__link">
+      <a href="../../../reference/ui-components-posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1280,7 +1280,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-app/" class="md-nav__link">
+      <a href="../../../reference/api-app/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1301,7 +1301,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-core/" class="md-nav__link">
+      <a href="../../../reference/api-core/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1322,7 +1322,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-data/" class="md-nav__link">
+      <a href="../../../reference/api-data/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1343,7 +1343,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-gui/" class="md-nav__link">
+      <a href="../../../reference/api-gui/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1364,7 +1364,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-posekit/" class="md-nav__link">
+      <a href="../../../reference/api-posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1385,7 +1385,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-utils/" class="md-nav__link">
+      <a href="../../../reference/api-utils/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1406,7 +1406,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/cli-reference/" class="md-nav__link">
+      <a href="../../../reference/cli-reference/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1427,7 +1427,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/technical-reference/" class="md-nav__link">
+      <a href="../../../reference/technical-reference/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1448,7 +1448,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/changelog/" class="md-nav__link">
+      <a href="../../../reference/changelog/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1469,7 +1469,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/faq/" class="md-nav__link">
+      <a href="../../../reference/faq/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1517,105 +1517,63 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#problem" class="md-nav__link">
+  <a href="#naming-map" class="md-nav__link">
     <span class="md-ellipsis">
-      Problem
+      Naming Map
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#target-directory-structure" class="md-nav__link">
+  <a href="#cli-entry-points" class="md-nav__link">
     <span class="md-ellipsis">
-      Target Directory Structure
+      CLI Entry Points
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#dependency-rules" class="md-nav__link">
+  <a href="#directory-structure" class="md-nav__link">
     <span class="md-ellipsis">
-      Dependency Rules
+      Directory Structure
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#reverse-dependency-fixes" class="md-nav__link">
+  <a href="#brand-assets" class="md-nav__link">
     <span class="md-ellipsis">
-      Reverse Dependency Fixes
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Reverse Dependency Fixes">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#fix-1-density-computation-core-afterhours" class="md-nav__link">
-    <span class="md-ellipsis">
-      Fix 1: Density computation (core -&gt; afterhours)
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#fix-2-sleap-inference-service-core-posekit" class="md-nav__link">
-    <span class="md-ellipsis">
-      Fix 2: SLEAP inference service (core -&gt; posekit)
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#moves-summary" class="md-nav__link">
-    <span class="md-ellipsis">
-      Moves Summary
+      Brand Assets
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#entry-point-updates" class="md-nav__link">
+  <a href="#data-directory-migration" class="md-nav__link">
     <span class="md-ellipsis">
-      Entry Point Updates
+      Data Directory Migration
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#import-update-scope" class="md-nav__link">
+  <a href="#scope-summary" class="md-nav__link">
     <span class="md-ellipsis">
-      Import Update Scope
+      Scope Summary
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#what-does-not-move" class="md-nav__link">
+  <a href="#execution-order" class="md-nav__link">
     <span class="md-ellipsis">
-      What Does NOT Move
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#testing-strategy" class="md-nav__link">
-    <span class="md-ellipsis">
-      Testing Strategy
+      Execution Order
     </span>
   </a>
   
@@ -1636,7 +1594,7 @@
                   
 
   
-    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/plans/2026-03-30-src-reorganization-design.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/neurorishika/hydra-suite/edit/main/docs/superpowers/specs/2026-04-03-hydra-rename-design.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1644,206 +1602,143 @@
   
 
 
-<h1 id="source-reorganization-design">Source Reorganization Design<a class="headerlink" href="#source-reorganization-design" title="Permanent link">&para;</a></h1>
-<p><strong>Date:</strong> 2026-03-30
-<strong>Status:</strong> Approved
-<strong>Scope:</strong> Structural reorganization + boundary cleanup (option B)</p>
-<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
-<p>The <code>multi_tracker/</code> package contains 5 independent applications (MAT, PoseKit,
-ClassKit, Afterhours, DataSieve) but MAT's code is "ambient" — its <code>gui/</code>,
-<code>app/</code> live at the package root alongside satellite apps, making it unclear what
-belongs to MAT vs. what is shared infrastructure. DataSieve is buried under a
-generic <code>tools/</code> namespace. Two reverse dependency violations exist where <code>core/</code>
-imports from satellite app packages.</p>
-<h2 id="target-directory-structure">Target Directory Structure<a class="headerlink" href="#target-directory-structure" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>multi_tracker/
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  # ── App layer (top) ──────────────────────────────────
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  mat/                        # MAT main tracker app
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    app/                      #   launcher, bootstrap  (moved from app/)
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    gui/                      #   main_window, dialogs, widgets  (moved from gui/)
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  posekit/                    # PoseKit app  (stays)
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    core/
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    inference/
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    ui/
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  classkit/                   # ClassKit app  (stays)
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    ...
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  afterhours/                 # Afterhours app  (stays)
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    core/
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    gui/
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>  datasieve/                  # DataSieve app  (promoted from tools/data_sieve/)
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    gui.py
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>  # ── Integrations layer ──────────────────────────────
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>  integrations/               # External tool bridges
-</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    sleap/                    #   formats, launcher, PoseInferenceService
-</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>    xanylabeling/             #   X-AnyLabeling CLI adapter  (moved from integrations/)
-</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>
-</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>  # ── Core layer ──────────────────────────────────────
-</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>  core/                       # Shared tracking pipeline
-</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    assigners/
-</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>    background/
-</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>    canonicalization/
-</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>    detectors/
-</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>    filters/
-</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>    identity/
-</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>      pose/backends/          #   SLEAP + YOLO runtime inference
-</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>    post/
-</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>    tracking/
-</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>
-</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>  # ── Shared infrastructure (bottom) ──────────────────
-</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>  runtime/                    # Compute runtime  (promoted from core/runtime/)
-</span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>  data/                       # CSV, caches  (stays)
-</span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>  training/                   # Model training  (stays)
-</span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>  utils/                      # Geometry, GPU, image processing  (stays)
-</span></code></pre></div>
-<h2 id="dependency-rules">Dependency Rules<a class="headerlink" href="#dependency-rules" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>apps  (mat, posekit, classkit, afterhours, datasieve)
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  |
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  v
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>integrations/
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>  |
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>  v
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>core/
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>  |
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>  v
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>runtime/  data/  training/  utils/   (shared infrastructure)
-</span></code></pre></div>
-<ul>
-<li><strong>Apps</strong> may import from any layer below.</li>
-<li><strong>Integrations</strong> may import from core + shared infrastructure. Never from apps.</li>
-<li><strong>Core</strong> may import from shared infrastructure. Never from integrations or apps.</li>
-<li><strong>Shared infrastructure</strong> packages may not import from each other except
-  <code>utils/</code> which is a leaf dependency available to all.</li>
-<li><strong>No cross-imports between apps.</strong> Each app is independent.</li>
-</ul>
-<h2 id="reverse-dependency-fixes">Reverse Dependency Fixes<a class="headerlink" href="#reverse-dependency-fixes" title="Permanent link">&para;</a></h2>
-<h3 id="fix-1-density-computation-core-afterhours">Fix 1: Density computation  (<code>core</code> -&gt; <code>afterhours</code>)<a class="headerlink" href="#fix-1-density-computation-core-afterhours" title="Permanent link">&para;</a></h3>
-<p><strong>Current:</strong> <code>core/tracking/worker.py</code> imports from
-<code>afterhours.core.confidence_density</code> at 3 call sites (lines 858, 953, 972).</p>
-<p><strong>Fix:</strong> Move <code>confidence_density.py</code> (or the relevant functions:
-<code>compute_density_map_from_cache</code>, <code>export_diagnostic_video</code>, <code>save_regions</code>,
-<code>load_regions</code>) from <code>afterhours/core/</code> into <code>core/tracking/density.py</code>.
-Afterhours then imports from <code>multi_tracker.core.tracking.density</code>.</p>
-<p><strong>Rationale:</strong> Density map computation directly influences assignment behavior
-during forward and backward tracking passes. It is core tracking pipeline logic.</p>
-<h3 id="fix-2-sleap-inference-service-core-posekit">Fix 2: SLEAP inference service  (<code>core</code> -&gt; <code>posekit</code>)<a class="headerlink" href="#fix-2-sleap-inference-service-core-posekit" title="Permanent link">&para;</a></h3>
-<p><strong>Current:</strong> <code>core/identity/pose/backends/sleap.py:302</code> imports
-<code>PoseInferenceService</code> from <code>posekit.inference.service</code>.</p>
-<p><strong>Fix:</strong> Move <code>PoseInferenceService</code> into <code>integrations/sleap/service.py</code>.
-Both <code>core/identity/pose/backends/sleap.py</code> and <code>posekit/</code> import from
-<code>multi_tracker.integrations.sleap.service</code>.</p>
-<p><strong>Rationale:</strong> <code>PoseInferenceService</code> manages SLEAP as an external tool
-(launching, communicating with the SLEAP process). This is integration logic,
-not pose estimation pipeline logic. The SLEAP <em>backend</em> in <code>core/</code> calls the
-service but shouldn't own its implementation.</p>
-<h2 id="moves-summary">Moves Summary<a class="headerlink" href="#moves-summary" title="Permanent link">&para;</a></h2>
+<h1 id="hydra-rename-design-spec">HYDRA Rename Design Spec<a class="headerlink" href="#hydra-rename-design-spec" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-04-03
+<strong>Branch:</strong> <code>refactor/src-reorganization</code>
+<strong>Scope:</strong> Rename project from "hydra-suite" / "MAT" / "hydra_suite" to "HYDRA" (Holistic YOLO-based Detection Recognition and Analysis Suite)</p>
+<h2 id="naming-map">Naming Map<a class="headerlink" href="#naming-map" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Current location</th>
-<th>New location</th>
-<th>Reason</th>
+<th>Old</th>
+<th>New</th>
+<th>Context</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>app/</code></td>
-<td><code>mat/app/</code></td>
-<td>Make MAT explicit</td>
+<td><code>hydra-suite</code></td>
+<td><code>hydra-suite</code></td>
+<td>pip package name, conda env base, GitHub repo, platformdirs app name</td>
 </tr>
 <tr>
-<td><code>gui/</code></td>
-<td><code>mat/gui/</code></td>
-<td>Make MAT explicit</td>
+<td><code>hydra_suite</code></td>
+<td><code>hydra_suite</code></td>
+<td>Python package (imports)</td>
 </tr>
 <tr>
-<td><code>tools/data_sieve/</code></td>
-<td><code>datasieve/</code></td>
-<td>Promote to peer app</td>
+<td><code>hydra_suite.tracker</code></td>
+<td><code>hydra_suite.tracker</code></td>
+<td>Main tracker app module</td>
 </tr>
 <tr>
-<td><code>tools/</code></td>
-<td><em>(deleted)</em></td>
-<td>Empty after datasieve promotion</td>
+<td><code>hydra</code></td>
+<td><code>hydra</code></td>
+<td>CLI entry point</td>
 </tr>
 <tr>
-<td><code>core/runtime/</code></td>
-<td><code>runtime/</code></td>
-<td>Shared by multiple apps</td>
+<td><code>MAT</code></td>
+<td><code>HYDRA</code></td>
+<td>Acronym in docs/comments</td>
 </tr>
 <tr>
-<td><code>integrations/xanylabeling_cli.py</code></td>
-<td><code>integrations/xanylabeling/cli.py</code></td>
-<td>Organized sub-package</td>
+<td><code>MAT_DATA_DIR</code> / <code>MAT_CONFIG_DIR</code></td>
+<td><code>HYDRA_DATA_DIR</code> / <code>HYDRA_CONFIG_DIR</code></td>
+<td>Env var overrides</td>
 </tr>
 <tr>
-<td><code>afterhours/core/confidence_density.py</code></td>
-<td><code>core/tracking/density.py</code></td>
-<td>Fix reverse dependency</td>
+<td><code>hydra-suite</code> (conda)</td>
+<td><code>hydra</code> / <code>hydra-mps</code> / <code>hydra-cuda</code> / <code>hydra-rocm</code></td>
+<td>Conda environment names</td>
 </tr>
 <tr>
-<td><code>posekit/inference/service.py</code></td>
-<td><code>integrations/sleap/service.py</code></td>
-<td>Fix reverse dependency</td>
+<td><code>neurorishika/hydra-suite</code></td>
+<td><code>neurorishika/hydra-suite</code></td>
+<td>GitHub repo URL</td>
+</tr>
+<tr>
+<td><code>~/...hydra-suite/</code></td>
+<td><code>~/...hydra-suite/</code></td>
+<td>User data/config dirs</td>
 </tr>
 </tbody>
 </table>
-<h2 id="entry-point-updates">Entry Point Updates<a class="headerlink" href="#entry-point-updates" title="Permanent link">&para;</a></h2>
-<p>All <code>[project.scripts]</code> in <code>pyproject.toml</code> need path updates:</p>
+<h2 id="cli-entry-points">CLI Entry Points<a class="headerlink" href="#cli-entry-points" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Entry point</th>
-<th>Current target</th>
-<th>New target</th>
+<th>Command</th>
+<th>Target</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>mat</code></td>
-<td><code>multi_tracker.app.launcher:main</code></td>
-<td><code>multi_tracker.mat.app.launcher:main</code></td>
+<td><code>hydra</code></td>
+<td><code>hydra_suite.tracker.app.launcher:main</code></td>
 </tr>
 <tr>
-<td><code>datasieve</code></td>
-<td><code>multi_tracker.tools.data_sieve.gui:main</code></td>
-<td><code>multi_tracker.datasieve.gui:main</code></td>
+<td><code>posekit</code></td>
+<td><code>hydra_suite.posekit.ui.main:main</code></td>
 </tr>
 <tr>
-<td><code>posekit-labeler</code></td>
-<td><em>(unchanged)</em></td>
-<td><em>(unchanged)</em></td>
+<td><code>detectkit</code></td>
+<td><code>hydra_suite.detectkit.app:main</code></td>
 </tr>
 <tr>
-<td><code>classkit-labeler</code></td>
-<td><em>(unchanged)</em></td>
-<td><em>(unchanged)</em></td>
+<td><code>classkit</code></td>
+<td><code>hydra_suite.classkit.app:main</code></td>
 </tr>
 <tr>
-<td><code>mat-afterhours</code></td>
-<td><em>(unchanged)</em></td>
-<td><em>(unchanged)</em></td>
+<td><code>filterkit</code></td>
+<td><code>hydra_suite.filterkit.gui:main</code></td>
+</tr>
+<tr>
+<td><code>refinekit</code></td>
+<td><code>hydra_suite.refinekit.app:main</code></td>
 </tr>
 </tbody>
 </table>
-<h2 id="import-update-scope">Import Update Scope<a class="headerlink" href="#import-update-scope" title="Permanent link">&para;</a></h2>
-<p>Every <code>from multi_tracker.app</code>, <code>from multi_tracker.gui</code>,
-<code>from multi_tracker.tools</code>, <code>from multi_tracker.core.runtime</code>, and the 4
-reverse-dependency import sites need updating. A bulk find-and-replace pass
-across <code>src/</code> and <code>tests/</code> will cover this.</p>
-<h2 id="what-does-not-move">What Does NOT Move<a class="headerlink" href="#what-does-not-move" title="Permanent link">&para;</a></h2>
+<p>No aliases. One command per tool.</p>
+<h2 id="directory-structure">Directory Structure<a class="headerlink" href="#directory-structure" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>src/hydra_suite/     --&gt;  src/hydra_suite/
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>src/hydra_suite/mat/ --&gt;  src/hydra_suite/tracker/
+</span></code></pre></div>
+<p>All other subdirectories (core, posekit, classkit, filterkit, refinekit, detectkit, runtime, data, training, utils, resources, paths, integrations) keep their names, just move under <code>hydra_suite/</code>.</p>
+<h2 id="brand-assets">Brand Assets<a class="headerlink" href="#brand-assets" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>posekit/</code> — already self-contained</li>
-<li><code>classkit/</code> — already self-contained</li>
-<li><code>afterhours/</code> — already self-contained (only loses <code>confidence_density.py</code>)</li>
-<li><code>core/</code> — stays at root (minus <code>runtime/</code>)</li>
-<li><code>data/</code>, <code>training/</code>, <code>utils/</code> — stay at root</li>
+<li>Remove obsolete SVGs: <code>hydra.svg</code> and any other old brand files</li>
+<li><code>hydra.svg</code> already exists and is the new primary brand asset</li>
+<li>Update tests that assert on old brand file names</li>
 </ul>
-<h2 id="testing-strategy">Testing Strategy<a class="headerlink" href="#testing-strategy" title="Permanent link">&para;</a></h2>
+<h2 id="data-directory-migration">Data Directory Migration<a class="headerlink" href="#data-directory-migration" title="Permanent link">&para;</a></h2>
+<p>No migration code in the runtime. Data dirs on the developer's machine are moved manually during implementation. Other users have an existing migration script in the repo.</p>
+<h2 id="scope-summary">Scope Summary<a class="headerlink" href="#scope-summary" title="Permanent link">&para;</a></h2>
+<ul>
+<li>~3,350 import/reference changes across ~185 .py files</li>
+<li>~149 occurrences of <code>hydra-suite</code> in config/docs</li>
+<li>~138 <code>MAT</code> acronym references across ~60 files</li>
+<li>~22 brand-related references</li>
+<li>8 entry points in pyproject.toml</li>
+<li>4 conda environment definitions</li>
+<li>4 environment*.yml files</li>
+<li>~25 GitHub URLs</li>
+<li>~41 documentation .md files</li>
+</ul>
+<h2 id="execution-order">Execution Order<a class="headerlink" href="#execution-order" title="Permanent link">&para;</a></h2>
 <ol>
-<li>Run full test suite after each logical move to catch broken imports early.</li>
-<li>Verify all 5 CLI entry points launch successfully.</li>
-<li>Run <code>make lint</code> to catch any stale imports.</li>
+<li>Rename directory <code>src/hydra_suite/</code> to <code>src/hydra_suite/</code> (including <code>mat/</code> to <code>tracker/</code>)</li>
+<li>Remove old brand SVGs (<code>hydra.svg</code>, etc.)</li>
+<li>Global find-replace across all .py files: <code>hydra_suite.tracker</code> to <code>hydra_suite.tracker</code>, then <code>hydra_suite</code> to <code>hydra_suite</code></li>
+<li>Update <code>pyproject.toml</code> (package name, entry points, URLs, coverage, package data)</li>
+<li>Update <code>Makefile</code> (env names, variable prefixes)</li>
+<li>Update <code>environment*.yml</code> (env names)</li>
+<li>Update all docs (.md files, mkdocs.yml, README)</li>
+<li>Update <code>CLAUDE.md</code></li>
+<li>Update test files (imports, hardcoded string assertions)</li>
+<li>Update <code>.flake8.strict</code> and other config referencing old names</li>
+<li>Move data dirs on dev machine</li>
+<li>Run <code>make format</code> and <code>make lint</code></li>
+<li>Run tests to validate</li>
 </ol>
 
 
@@ -1897,10 +1792,10 @@ across <code>src/</code> and <code>tests/</code> will cover this.</p>
     </div>
     
     
-    <script id="__config" type="application/json">{"base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    <script id="__config" type="application/json">{"base": "../../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.83f73b43.min.js"></script>
+      <script src="../../../assets/javascripts/bundle.83f73b43.min.js"></script>
       
     
   </body>

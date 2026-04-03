@@ -1,223 +1,219 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/architecture/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/architecture/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/code-health/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/code-health/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/confidence-metrics/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/confidence-metrics/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/contributing/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/contributing/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/data-flow/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/data-flow/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/dependency-cuda-updates/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/dependency-cuda-updates/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/extending-detection/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/extending-detection/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/extending-identity/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/extending-identity/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/gpu-backends/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/gpu-backends/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/module-map/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/module-map/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/performance-tuning/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/performance-tuning/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/publishing/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/publishing/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/runtime-integration/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/runtime-integration/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/tracking-algorithm-deep-dive/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/tracking-algorithm-deep-dive/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/developer-guide/tracking-optimization/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/developer-guide/tracking-optimization/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/getting-started/environments/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/getting-started/environments/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/getting-started/installation/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/getting-started/installation/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/getting-started/integrations/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/getting-started/integrations/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/getting-started/platforms/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/getting-started/platforms/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/getting-started/quickstart-mat/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/getting-started/quickstart-hydra/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/getting-started/quickstart-posekit/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/getting-started/quickstart-posekit/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-11-fragment-merge-proofreading-plan/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/api-app/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-12-publication-strategy/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/api-core/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-26-true-canonicalization-plan/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/api-data/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-30-src-reorganization-design/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/api-gui/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-31-src-reorganization-plan/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/api-index/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/api-app/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/api-posekit/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/api-core/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/api-utils/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/api-data/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/changelog/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/api-gui/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/cli-reference/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/api-index/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/faq/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/api-posekit/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/technical-reference/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/api-utils/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/ui-components-hydra/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/changelog/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/reference/ui-components-posekit/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/cli-reference/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/superpowers/plans/2026-04-01-detectkit-app/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/faq/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/superpowers/plans/2026-04-01-pip-publishable-packaging/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/technical-reference/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/superpowers/plans/2026-04-01-training-system-improvements/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/ui-components-mat/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/superpowers/plans/2026-04-03-hydra-rename-plan/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/reference/ui-components-posekit/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/superpowers/plans/2026-04-03-unified-splash-pages/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/superpowers/plans/2026-04-01-detectkit-app/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/superpowers/specs/2026-04-03-hydra-rename-design/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/superpowers/plans/2026-04-01-pip-publishable-packaging/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/technical-reference/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/superpowers/plans/2026-04-01-training-system-improvements/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/compute-runtimes/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/compute-runtimes/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/configuration-reference/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/configuration-reference/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/dataset-generation/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/dataset-generation/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/detection-modes/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/detection-modes/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/individual-analysis/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/individual-analysis/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/outputs-and-csv-schema/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/outputs-and-csv-schema/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/overview/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/overview/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/posekit-labeler/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/posekit-labeler/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/post-processing/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/post-processing/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/tracking-and-merging/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/tracking-and-merging/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/troubleshooting/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
     <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/troubleshooting/</loc>
-         <lastmod>2026-04-03</lastmod>
-    </url>
-    <url>
-         <loc>https://neurorishika.github.io/multi-animal-tracker/nightly/user-guide/workflow/</loc>
+         <loc>https://neurorishika.github.io/hydra-suite/nightly/user-guide/workflow/</loc>
          <lastmod>2026-04-03</lastmod>
     </url>
 </urlset>

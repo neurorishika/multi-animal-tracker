@@ -6,28 +6,28 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="User and developer documentation for Multi-Animal-Tracker and PoseKit">
+        <meta name="description" content="User and developer documentation for HYDRA Suite">
       
       
       
-        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-12-publication-strategy/">
+        <link rel="canonical" href="https://neurorishika.github.io/hydra-suite/nightly/technical-reference/">
       
       
       
       
-      <link rel="icon" href="../../assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.43">
     
     
       
-        <title>Publication Strategy — Multi-Animal Tracker - Multi-Animal-Tracker Docs</title>
+        <title>Tracking System Technical Reference - HYDRA Suite Docs</title>
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.0253249f.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.0253249f.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
       
       
 
@@ -46,9 +46,9 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
     
-    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#publication-strategy-multi-animal-tracker" class="md-skip">
+        <a href="#tracking-system-technical-reference" class="md-skip">
           Skip to content
         </a>
       
@@ -92,7 +92,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-header__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+    <a href=".." title="HYDRA Suite Docs" class="md-header__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -106,13 +106,13 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            Multi-Animal-Tracker Docs
+            HYDRA Suite Docs
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Publication Strategy — Multi-Animal Tracker
+              Tracking System Technical Reference
             
           </span>
         </div>
@@ -191,13 +191,13 @@
     
     
       <div class="md-header__source">
-        <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+        <a href="https://github.com/neurorishika/hydra-suite" title="Go to repository" class="md-source" data-md-component="source">
   <div class="md-source__icon md-icon">
     
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
   </div>
   <div class="md-source__repository">
-    neurorishika/multi-animal-tracker
+    neurorishika/hydra-suite
   </div>
 </a>
       </div>
@@ -221,7 +221,7 @@
   
   
     <li class="md-tabs__item">
-      <a href="../.." class="md-tabs__link">
+      <a href=".." class="md-tabs__link">
         
   
     
@@ -240,7 +240,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../getting-started/installation/" class="md-tabs__link">
+        <a href="../getting-started/installation/" class="md-tabs__link">
           
   
   Getting Started
@@ -258,7 +258,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../user-guide/overview/" class="md-tabs__link">
+        <a href="../user-guide/overview/" class="md-tabs__link">
           
   
   User Guide
@@ -276,7 +276,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../developer-guide/architecture/" class="md-tabs__link">
+        <a href="../developer-guide/architecture/" class="md-tabs__link">
           
   
   Developer Guide
@@ -294,7 +294,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../reference/api-index/" class="md-tabs__link">
+        <a href="../reference/api-index/" class="md-tabs__link">
           
   
   Reference
@@ -327,23 +327,23 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="../.." title="Multi-Animal-Tracker Docs" class="md-nav__button md-logo" aria-label="Multi-Animal-Tracker Docs" data-md-component="logo">
+    <a href=".." title="HYDRA Suite Docs" class="md-nav__button md-logo" aria-label="HYDRA Suite Docs" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
 
     </a>
-    Multi-Animal-Tracker Docs
+    HYDRA Suite Docs
   </label>
   
     <div class="md-nav__source">
-      <a href="https://github.com/neurorishika/multi-animal-tracker" title="Go to repository" class="md-source" data-md-component="source">
+      <a href="https://github.com/neurorishika/hydra-suite" title="Go to repository" class="md-source" data-md-component="source">
   <div class="md-source__icon md-icon">
     
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
   </div>
   <div class="md-source__repository">
-    neurorishika/multi-animal-tracker
+    neurorishika/hydra-suite
   </div>
 </a>
     </div>
@@ -357,7 +357,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../.." class="md-nav__link">
+      <a href=".." class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -419,7 +419,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/installation/" class="md-nav__link">
+      <a href="../getting-started/installation/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -440,7 +440,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/environments/" class="md-nav__link">
+      <a href="../getting-started/environments/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -461,7 +461,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/integrations/" class="md-nav__link">
+      <a href="../getting-started/integrations/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -482,11 +482,11 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/quickstart-mat/" class="md-nav__link">
+      <a href="../getting-started/quickstart-hydra/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    Quickstart (MAT)
+    Quickstart (HYDRA)
   </span>
   
 
@@ -503,7 +503,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/quickstart-posekit/" class="md-nav__link">
+      <a href="../getting-started/quickstart-posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -524,7 +524,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../getting-started/platforms/" class="md-nav__link">
+      <a href="../getting-started/platforms/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -594,7 +594,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/overview/" class="md-nav__link">
+      <a href="../user-guide/overview/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -615,7 +615,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/workflow/" class="md-nav__link">
+      <a href="../user-guide/workflow/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -636,7 +636,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/detection-modes/" class="md-nav__link">
+      <a href="../user-guide/detection-modes/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -657,7 +657,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/tracking-and-merging/" class="md-nav__link">
+      <a href="../user-guide/tracking-and-merging/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -678,7 +678,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/post-processing/" class="md-nav__link">
+      <a href="../user-guide/post-processing/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -699,7 +699,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/configuration-reference/" class="md-nav__link">
+      <a href="../user-guide/configuration-reference/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -720,7 +720,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/compute-runtimes/" class="md-nav__link">
+      <a href="../user-guide/compute-runtimes/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -741,7 +741,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/outputs-and-csv-schema/" class="md-nav__link">
+      <a href="../user-guide/outputs-and-csv-schema/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -762,7 +762,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/dataset-generation/" class="md-nav__link">
+      <a href="../user-guide/dataset-generation/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -783,7 +783,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/individual-analysis/" class="md-nav__link">
+      <a href="../user-guide/individual-analysis/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -804,7 +804,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/posekit-labeler/" class="md-nav__link">
+      <a href="../user-guide/posekit-labeler/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -825,7 +825,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../user-guide/troubleshooting/" class="md-nav__link">
+      <a href="../user-guide/troubleshooting/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -895,7 +895,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/architecture/" class="md-nav__link">
+      <a href="../developer-guide/architecture/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -916,7 +916,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/module-map/" class="md-nav__link">
+      <a href="../developer-guide/module-map/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -937,7 +937,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/data-flow/" class="md-nav__link">
+      <a href="../developer-guide/data-flow/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -958,7 +958,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
+      <a href="../developer-guide/tracking-algorithm-deep-dive/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -979,7 +979,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/gpu-backends/" class="md-nav__link">
+      <a href="../developer-guide/gpu-backends/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1000,7 +1000,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/runtime-integration/" class="md-nav__link">
+      <a href="../developer-guide/runtime-integration/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1021,7 +1021,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/dependency-cuda-updates/" class="md-nav__link">
+      <a href="../developer-guide/dependency-cuda-updates/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1042,7 +1042,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/performance-tuning/" class="md-nav__link">
+      <a href="../developer-guide/performance-tuning/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1063,7 +1063,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/confidence-metrics/" class="md-nav__link">
+      <a href="../developer-guide/confidence-metrics/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1084,7 +1084,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/extending-detection/" class="md-nav__link">
+      <a href="../developer-guide/extending-detection/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1105,7 +1105,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/extending-identity/" class="md-nav__link">
+      <a href="../developer-guide/extending-identity/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1126,7 +1126,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/code-health/" class="md-nav__link">
+      <a href="../developer-guide/code-health/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1147,7 +1147,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../developer-guide/contributing/" class="md-nav__link">
+      <a href="../developer-guide/contributing/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1217,7 +1217,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-index/" class="md-nav__link">
+      <a href="../reference/api-index/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1238,11 +1238,11 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/ui-components-mat/" class="md-nav__link">
+      <a href="../reference/ui-components-hydra/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
-    UI Components (MAT)
+    UI Components (HYDRA)
   </span>
   
 
@@ -1259,7 +1259,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/ui-components-posekit/" class="md-nav__link">
+      <a href="../reference/ui-components-posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1280,7 +1280,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-app/" class="md-nav__link">
+      <a href="../reference/api-app/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1301,7 +1301,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-core/" class="md-nav__link">
+      <a href="../reference/api-core/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1322,7 +1322,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-data/" class="md-nav__link">
+      <a href="../reference/api-data/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1343,7 +1343,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-gui/" class="md-nav__link">
+      <a href="../reference/api-gui/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1364,7 +1364,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-posekit/" class="md-nav__link">
+      <a href="../reference/api-posekit/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1385,7 +1385,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/api-utils/" class="md-nav__link">
+      <a href="../reference/api-utils/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1406,7 +1406,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/cli-reference/" class="md-nav__link">
+      <a href="../reference/cli-reference/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1427,7 +1427,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/technical-reference/" class="md-nav__link">
+      <a href="../reference/technical-reference/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1448,7 +1448,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/changelog/" class="md-nav__link">
+      <a href="../reference/changelog/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1469,7 +1469,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/faq/" class="md-nav__link">
+      <a href="../reference/faq/" class="md-nav__link">
         
   
   <span class="md-ellipsis">
@@ -1517,147 +1517,27 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#summary-opinion" class="md-nav__link">
+  <a href="#build" class="md-nav__link">
     <span class="md-ellipsis">
-      Summary Opinion
+      Build
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#journal-opinions" class="md-nav__link">
+  <a href="#contents" class="md-nav__link">
     <span class="md-ellipsis">
-      Journal Opinions
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Journal Opinions">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#my-first-choice-target-nature-methods" class="md-nav__link">
-    <span class="md-ellipsis">
-      My first-choice target: Nature Methods
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#my-second-choice-target-elife-tools-and-resources" class="md-nav__link">
-    <span class="md-ellipsis">
-      My second-choice target: eLife Tools and Resources
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#safe-harbor-methods-in-ecology-and-evolution" class="md-nav__link">
-    <span class="md-ellipsis">
-      Safe harbor: Methods in Ecology and Evolution
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-narrative-i-find-most-compelling" class="md-nav__link">
-    <span class="md-ellipsis">
-      The Narrative I Find Most Compelling
+      Contents
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#innovations-i-think-are-most-publication-critical" class="md-nav__link">
+  <a href="#intended-use" class="md-nav__link">
     <span class="md-ellipsis">
-      Innovations I Think Are Most Publication-Critical
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="Innovations I Think Are Most Publication-Critical">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#1-a-ground-truth-benchmark-dataset-highest-priority" class="md-nav__link">
-    <span class="md-ellipsis">
-      1. A ground-truth benchmark dataset (highest priority)
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#2-quantified-id-swap-rate-vs-existing-tools" class="md-nav__link">
-    <span class="md-ellipsis">
-      2. Quantified ID swap rate vs. existing tools
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#3-proofreading-precisionrecall" class="md-nav__link">
-    <span class="md-ellipsis">
-      3. Proofreading precision/recall
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#4-imm-transition-matrix-as-a-biological-measurement" class="md-nav__link">
-    <span class="md-ellipsis">
-      4. IMM transition matrix as a biological measurement
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#5-a-false-conclusion-demonstration" class="md-nav__link">
-    <span class="md-ellipsis">
-      5. A false-conclusion demonstration
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#what-i-think-is-overrated-as-a-publication-angle" class="md-nav__link">
-    <span class="md-ellipsis">
-      What I Think Is Overrated as a Publication Angle
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#timeline-opinion" class="md-nav__link">
-    <span class="md-ellipsis">
-      Timeline Opinion
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#one-concern-i-want-to-flag" class="md-nav__link">
-    <span class="md-ellipsis">
-      One Concern I Want to Flag
+      Intended Use
     </span>
   </a>
   
@@ -1678,7 +1558,7 @@
                   
 
   
-    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/plans/2026-03-12-publication-strategy.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/neurorishika/hydra-suite/edit/main/docs/technical-reference/README.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1686,126 +1566,30 @@
   
 
 
-<h1 id="publication-strategy-multi-animal-tracker">Publication Strategy — Multi-Animal Tracker<a class="headerlink" href="#publication-strategy-multi-animal-tracker" title="Permanent link">&para;</a></h1>
-<p><strong>Date:</strong> 2026-03-12
-<strong>Author:</strong> Claude Code (opinions, not facts — treat accordingly)</p>
-<hr />
-<h2 id="summary-opinion">Summary Opinion<a class="headerlink" href="#summary-opinion" title="Permanent link">&para;</a></h2>
-<p>MAT is currently a sophisticated engineering achievement that is not yet a publishable scientific paper. The gap is not the software — the gap is the <em>evidence</em>. Every claim the paper would make (better tracking, fewer errors, meaningful behavioral output) needs quantitative backing against a baseline. The good news: the evidence is achievable, and the architecture already supports the most compelling story.</p>
-<p>The single highest-leverage investment is validating the IMM transition matrix as a biologically meaningful quantity. If that works, Nature Methods is a realistic target. If it doesn't pan out, eLife is strong and MEE is safe.</p>
-<hr />
-<h2 id="journal-opinions">Journal Opinions<a class="headerlink" href="#journal-opinions" title="Permanent link">&para;</a></h2>
-<h3 id="my-first-choice-target-nature-methods">My first-choice target: Nature Methods<a class="headerlink" href="#my-first-choice-target-nature-methods" title="Permanent link">&para;</a></h3>
-<p><strong>Why:</strong> This is where the field expects landmark tracking tools. DeepLabCut, SLEAP, idtracker.ai, and DANNCE all landed here or in adjacent Nature-family journals. MAT's scope — the first system to integrate identity tracking, pose quality, motion model learning, and interactive proofreading — is broader than any of those. If the validation is rigorous, the scope alone justifies Nature Methods consideration.</p>
-<p><strong>What makes me hesitant:</strong> Nature Methods reviewers will demand a quantitative benchmark with ground-truth annotations, a clear comparison against ≥2 existing tools, and a biological finding that changes a conclusion. None of those exist yet. Submitting without them would waste a submission slot.</p>
-<p><strong>My honest assessment:</strong> Aim here, but only after the IMM biological validation is done. Without it, the paper reads as "a better GUI wrapper around existing methods," which is not Nature Methods territory.</p>
-<hr />
-<h3 id="my-second-choice-target-elife-tools-and-resources">My second-choice target: eLife Tools and Resources<a class="headerlink" href="#my-second-choice-target-elife-tools-and-resources" title="Permanent link">&para;</a></h3>
-<p><strong>Why:</strong> eLife's Tools and Resources article type is the best fit for what MAT currently is — infrastructure that enables biology rather than a primary biological discovery. The editorial culture values accessibility, reproducibility, and demonstrated utility over methodological novelty. The afterhours proofreading system and the multi-runtime pipeline are exactly the kind of contributions eLife appreciates.</p>
-<p><strong>Why I'd pick this over Nature Methods for a faster publication:</strong> The benchmarking burden is lower. You don't need to beat every existing tool on every metric — you need to show you work, show the proofreading step matters, and show a real biological example. That's achievable in roughly a year.</p>
-<p><strong>My honest assessment:</strong> This is the realistic target for a first submission if the IMM biological validation takes longer than expected. Don't treat it as a fallback — eLife is a strong journal and animal behavior tools published here get widely cited.</p>
-<hr />
-<h3 id="safe-harbor-methods-in-ecology-and-evolution">Safe harbor: Methods in Ecology and Evolution<a class="headerlink" href="#safe-harbor-methods-in-ecology-and-evolution" title="Permanent link">&para;</a></h3>
-<p><strong>Why it fits:</strong> MEE specifically publishes software tools for ecologists and ethologists. It has a dedicated Applications article type, a welcoming editorial culture toward software papers, and the right citation network for MAT's target audience. Several landmark ecological computing tools live here.</p>
-<p><strong>When I'd go here:</strong> If the timeline pressure is high (e.g., need a publication for a grant renewal) and the full benchmark dataset is ready but the IMM biological story is still developing. MEE with a strong benchmark dataset and worked biological example is a defensible, citable contribution that doesn't require the IMM work to be complete.</p>
-<p><strong>My honest assessment:</strong> Don't aim here first. The package is bigger than MEE's typical submissions. Use it as the floor, not the ceiling.</p>
-<hr />
-<h2 id="the-narrative-i-find-most-compelling">The Narrative I Find Most Compelling<a class="headerlink" href="#the-narrative-i-find-most-compelling" title="Permanent link">&para;</a></h2>
-<p><strong>"Joint identity tracking and behavioral state classification from video"</strong></p>
-<p>The key insight is that the IMM filter produces behavioral state probabilities (stationary / cruising / maneuvering) at every frame as a <em>byproduct of tracking</em> — not as a post-hoc classifier applied to trajectories. The transition matrix learned by EM is a compact, physically grounded ethogram.</p>
-<p>This reframes MAT from "a better tracker" to "a tracker that simultaneously measures behavior." That is a qualitatively different claim, and it's defensible if the IMM work validates.</p>
-<p>The full narrative arc I'd pitch:</p>
-<ol>
-<li>
-<p><strong>The problem:</strong> Multi-animal tracking errors are pervasive, inconsistently corrected, and rarely reported. Downstream behavioral analyses inherit these errors silently.</p>
-</li>
-<li>
-<p><strong>The approach:</strong> A unified pipeline that treats tracking and its verification as a single problem. Detection, assignment, motion modeling, pose quality, and interactive proofreading are first-class components — not afterthoughts.</p>
-</li>
-<li>
-<p><strong>The methodological contribution:</strong> An IMM filter with EM-calibrated per-regime noise matrices provides both accurate state estimation and moment-to-moment behavioral regime probabilities. The regime transition matrix is a novel, reproducible behavioral measurement.</p>
-</li>
-<li>
-<p><strong>The validation:</strong> The afterhours suspicion scoring system has measurable precision and recall against ground-truth swap annotations. Reviewing the top-N events by suspicion score catches the majority of consequential errors in sub-linear time.</p>
-</li>
-<li>
-<p><strong>The biological claim:</strong> Tracking errors in naive pipelines produce measurably different behavioral conclusions from MAT-corrected trajectories. The IMM transition matrix is sensitive to experimentally relevant perturbations.</p>
-</li>
-</ol>
-<hr />
-<h2 id="innovations-i-think-are-most-publication-critical">Innovations I Think Are Most Publication-Critical<a class="headerlink" href="#innovations-i-think-are-most-publication-critical" title="Permanent link">&para;</a></h2>
-<p>Listed in order of impact-to-effort ratio:</p>
-<h3 id="1-a-ground-truth-benchmark-dataset-highest-priority">1. A ground-truth benchmark dataset (highest priority)<a class="headerlink" href="#1-a-ground-truth-benchmark-dataset-highest-priority" title="Permanent link">&para;</a></h3>
-<p>Without this, every quantitative claim in the paper is unverifiable. Three to five videos across different species — ants, fish, rodents, flies — with manually annotated ground-truth identities for several hundred frames each. Publish on Zenodo. This is unglamorous work but it is the single biggest blocker.</p>
-<h3 id="2-quantified-id-swap-rate-vs-existing-tools">2. Quantified ID swap rate vs. existing tools<a class="headerlink" href="#2-quantified-id-swap-rate-vs-existing-tools" title="Permanent link">&para;</a></h3>
-<p>Run idtracker.ai and TRex on the benchmark dataset. Report ID swap rate, fragmentation rate, trajectory completeness. Even a tie on some metrics is fine — the story is that MAT matches quality while doing substantially more (pose, proofreading, multi-runtime). The comparison is not "we're best at tracking" but "we're equally good at tracking and uniquely good at everything else."</p>
-<h3 id="3-proofreading-precisionrecall">3. Proofreading precision/recall<a class="headerlink" href="#3-proofreading-precisionrecall" title="Permanent link">&para;</a></h3>
-<p>The afterhours suspicion queue is the most novel contribution in the package and the one I'm least confident will be recognized without formal validation. Measure it: what fraction of ground-truth swap events does the suspicion scorer rank in the top 10%? What is the precision at rank 20? This is the first formal treatment of "when is tracking good enough?" in the literature and it would be genuinely novel.</p>
-<h3 id="4-imm-transition-matrix-as-a-biological-measurement">4. IMM transition matrix as a biological measurement<a class="headerlink" href="#4-imm-transition-matrix-as-a-biological-measurement" title="Permanent link">&para;</a></h3>
-<p>This is the high-risk, high-reward experiment. If the transition matrix (stationary→cruising, cruising→maneuvering probabilities) changes detectably under a biological manipulation — hungry vs. sated animals, day vs. night, social vs. isolated — then MAT is not just a tracking tool but a behavioral measurement instrument. That distinction is what separates a Nature Methods paper from an eLife paper in my opinion.</p>
-<h3 id="5-a-false-conclusion-demonstration">5. A false-conclusion demonstration<a class="headerlink" href="#5-a-false-conclusion-demonstration" title="Permanent link">&para;</a></h3>
-<p>Record or locate a dataset where identity swaps are present. Show that naive behavioral analysis of the swapped trajectories produces a wrong result (e.g., inflated social interaction counts, incorrect dominance hierarchy, wrong spatial preference). Then show MAT + afterhours recovers the correct result. Reviewers remember this kind of demonstration because it makes the stakes concrete.</p>
-<hr />
-<h2 id="what-i-think-is-overrated-as-a-publication-angle">What I Think Is Overrated as a Publication Angle<a class="headerlink" href="#what-i-think-is-overrated-as-a-publication-angle" title="Permanent link">&para;</a></h2>
-<p><strong>The multi-runtime support (CPU/MPS/CUDA/ROCm).</strong>
-This is a real engineering achievement and users will appreciate it, but reviewers at Nature Methods or eLife will not be impressed by it. It is expected infrastructure, not a scientific contribution. Mention it in the methods section, not the abstract.</p>
-<p><strong>The GUI design.</strong>
-Again, users will love it, reviewers will not cite it. It supports the accessibility claim but is not itself a contribution.</p>
-<p><strong>The Optuna auto-tuning.</strong>
-Bayesian hyperparameter optimization is not novel. It's a useful feature but shouldn't be a headline contribution.</p>
-<p><strong>"One-stop-shop for behavioral tracking."</strong>
-This framing reads as a product pitch, not a scientific contribution. Reviewers will ask "compared to what?" Replace it with specific, quantified claims.</p>
-<hr />
-<h2 id="timeline-opinion">Timeline Opinion<a class="headerlink" href="#timeline-opinion" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Milestone</th>
-<th>My Time Estimate</th>
-<th>Unlocks</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Benchmark dataset + ground-truth annotations</td>
-<td>2–3 months</td>
-<td>MEE submission immediately</td>
-</tr>
-<tr>
-<td>Comparison vs. idtracker.ai / TRex</td>
-<td>1 month (on top of dataset)</td>
-<td>MEE submission immediately</td>
-</tr>
-<tr>
-<td>Proofreading precision/recall analysis</td>
-<td>2 months</td>
-<td>eLife submission</td>
-</tr>
-<tr>
-<td>Biological worked example (proofreading changes a result)</td>
-<td>1–2 months</td>
-<td>eLife submission</td>
-</tr>
-<tr>
-<td>IMM transition matrix biological validation</td>
-<td>3–6 months (uncertain)</td>
-<td>Nature Methods submission</td>
-</tr>
-<tr>
-<td>Multi-lab adoption study</td>
-<td>6–12 months</td>
-<td>Nature Methods submission</td>
-</tr>
-</tbody>
-</table>
-<p><strong>My recommendation:</strong> Start the benchmark dataset immediately — it is the rate-limiting step for everything else and the work is straightforward even if time-consuming. Run the IMM biological validation in parallel. If the IMM story comes together in 6 months, target Nature Methods. If it takes longer or doesn't pan out, submit to eLife with the proofreading and comparison results.</p>
-<p>Do not wait for everything to be perfect before submitting. The MEE bar is achievable in roughly 6 months of focused experimental work, and having a published version of the tool — even at MEE — creates the citation anchor that makes a follow-up Nature Methods paper easier to justify.</p>
-<hr />
-<h2 id="one-concern-i-want-to-flag">One Concern I Want to Flag<a class="headerlink" href="#one-concern-i-want-to-flag" title="Permanent link">&para;</a></h2>
-<p>The afterhours interactive proofreading system is the most genuinely novel contribution in the package. But it is also the contribution most at risk of being undervalued in a paper that tries to cover everything. If the paper attempts to describe MAT as a whole — all six applications, all runtimes, all features — the proofreading system will get one paragraph and reviewers will treat it as a minor feature.</p>
-<p>Consider whether a short companion paper (or even a separate Methods paper) focused specifically on the proofreading framework — the suspicion scoring model, the precision/recall analysis, the formal definition of "tracking quality" — might have higher impact than burying it in a software overview paper. Some of the most-cited methods papers are tightly scoped contributions that solve one well-defined problem. The afterhours suspicion model could be that paper.</p>
-<hr />
-<p><em>These are opinions based on familiarity with the codebase and general knowledge of the publication landscape. They should be treated as a starting point for discussion, not as authoritative advice.</em></p>
+<h1 id="tracking-system-technical-reference">Tracking System Technical Reference<a class="headerlink" href="#tracking-system-technical-reference" title="Permanent link">&para;</a></h1>
+<p>This directory contains a standalone LaTeX reference for the current HYDRA tracking pipeline.</p>
+<h2 id="build">Build<a class="headerlink" href="#build" title="Permanent link">&para;</a></h2>
+<p>From the repository root:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>make<span class="w"> </span>techref-build
+</span></code></pre></div>
+<p>From this directory:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>latexmk<span class="w"> </span>-pdf<span class="w"> </span>-interaction<span class="o">=</span>nonstopmode<span class="w"> </span>-halt-on-error<span class="w"> </span>main.tex
+</span></code></pre></div>
+<p>Clean auxiliary files:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>make<span class="w"> </span>techref-clean
+</span></code></pre></div>
+<h2 id="contents">Contents<a class="headerlink" href="#contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>main.tex</code>: main manuscript</li>
+<li><code>figures/</code>: TikZ schematics used by the manuscript</li>
+</ul>
+<h2 id="intended-use">Intended Use<a class="headerlink" href="#intended-use" title="Permanent link">&para;</a></h2>
+<p>Use this document when you need:</p>
+<ul>
+<li>a publication-style methods reference,</li>
+<li>a review-friendly PDF for collaborators,</li>
+<li>or a stable technical narrative that stays closer to the code than a lightweight README.</li>
+</ul>
 
 
 
@@ -1858,10 +1642,10 @@ This framing reads as a product pitch, not a scientific contribution. Reviewers 
     </div>
     
     
-    <script id="__config" type="application/json">{"base": "../..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
+    <script id="__config" type="application/json">{"base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.expand", "navigation.top", "content.code.copy", "content.action.edit", "search.suggest", "search.highlight"], "search": "../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"default": "latest", "provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.83f73b43.min.js"></script>
+      <script src="../assets/javascripts/bundle.83f73b43.min.js"></script>
       
     
   </body>

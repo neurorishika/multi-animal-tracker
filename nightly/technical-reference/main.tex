@@ -1,0 +1,1297 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=0.95in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{setspace}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{ragged2e}
+\usepackage{tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{capt-of}
+\usepackage{fancyhdr}
+\usepackage{float}
+\usepackage[section]{placeins}
+\usepackage{titlesec}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc,matrix,backgrounds}
+
+\definecolor{HYDRABlue}{HTML}{5B8BC7}
+\definecolor{MATGreen}{HTML}{89B04F}
+\definecolor{MATSand}{HTML}{ECD99D}
+\definecolor{PoseBlue}{HTML}{25578C}
+\definecolor{PoseGreen}{HTML}{5EA486}
+\definecolor{PoseGold}{HTML}{E4D04F}
+\definecolor{ClassBlue}{HTML}{4067A6}
+\definecolor{ClassRed}{HTML}{BD4A39}
+\definecolor{ClassGold}{HTML}{F2CC3A}
+\definecolor{ClassGreen}{HTML}{B2CF68}
+\definecolor{SieveBlue}{HTML}{337CBA}
+\definecolor{SieveCyan}{HTML}{60C7CB}
+\definecolor{SieveOrange}{HTML}{F19033}
+\definecolor{Ink}{HTML}{203040}
+\definecolor{Slate}{HTML}{4A5A6A}
+\definecolor{Mist}{HTML}{EEF3F7}
+\definecolor{Cloud}{HTML}{F8FAFC}
+\definecolor{Rule}{HTML}{D8E2EA}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=PoseBlue,
+  urlcolor=SieveBlue,
+  pdftitle={HYDRA Suite Technical Reference},
+  pdfauthor={OpenAI Codex for the HYDRA Suite project}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\textcolor{Ink}{HYDRA Suite Reference}}
+\fancyhead[R]{\textcolor{Slate}{Current Tracking System}}
+\fancyfoot[C]{\textcolor{Slate}{\thepage}}
+\setlength{\headheight}{14pt}
+
+\setstretch{1.08}
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+\setlist[itemize]{leftmargin=1.4em}
+\setlist[enumerate]{leftmargin=1.6em}
+
+\titleformat{\section}
+  {\Large\sffamily\bfseries\color{HYDRABlue}}
+  {\thesection}
+  {0.7em}
+  {}
+\titlespacing*{\section}{0pt}{1.4em}{0.65em}
+
+\titleformat{\subsection}
+  {\large\sffamily\bfseries\color{Ink}}
+  {\thesubsection}
+  {0.7em}
+  {}
+\titlespacing*{\subsection}{0pt}{1.0em}{0.45em}
+
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\newcommand{\brandchip}[2]{%
+  \tikz[baseline=-0.6ex]\node[
+    fill=#1!14,
+    draw=#1!70!black,
+    rounded corners=2.5pt,
+    inner xsep=6pt,
+    inner ysep=2.3pt,
+    text=#1!45!black,
+    font=\sffamily\bfseries\footnotesize
+  ] {#2};%
+}
+
+\newcommand{\runtimekey}[1]{\texttt{#1}}
+\newcommand{\codepath}[1]{\path{#1}}
+
+\begin{document}
+\pagenumbering{gobble}
+
+\begin{titlepage}
+\begin{tikzpicture}[remember picture,overlay]
+  \fill[Cloud] (current page.south west) rectangle (current page.north east);
+  \fill[HYDRABlue] ([yshift=-1.6cm]current page.north west) rectangle ([xshift=0.76\paperwidth]current page.north east);
+  \fill[PoseGreen] ([xshift=0.76\paperwidth,yshift=-1.6cm]current page.north west) rectangle (current page.north east);
+  \fill[MATGreen] ([yshift=-3.7cm]current page.north west) rectangle ([xshift=0.22\paperwidth,yshift=-1.6cm]current page.north west);
+  \fill[ClassGold] ([xshift=0.22\paperwidth,yshift=-3.7cm]current page.north west) rectangle ([xshift=0.54\paperwidth,yshift=-1.6cm]current page.north west);
+  \fill[SieveOrange] ([xshift=0.54\paperwidth,yshift=-3.7cm]current page.north west) rectangle ([xshift=0.76\paperwidth,yshift=-1.6cm]current page.north west);
+  \fill[SieveBlue] ([xshift=0.76\paperwidth,yshift=-3.7cm]current page.north west) rectangle ([yshift=-1.6cm]current page.north east);
+\end{tikzpicture}
+
+\vspace*{1.2cm}
+
+\begin{tikzpicture}
+  \node[
+    fill=Ink!96,
+    rounded corners=10pt,
+    inner sep=16pt,
+    text width=0.9\linewidth,
+    align=left
+  ] {
+    {\color{white}\sffamily\bfseries\Large HYDRA Suite\par}
+    \vspace{0.35cm}
+    {\color{white}\sffamily\bfseries\fontsize{23}{28}\selectfont Technical Reference for the Current Tracking System\par}
+    \vspace{0.35cm}
+    {\color{Mist}\sffamily\large Detection, state estimation, assignment, identity continuity, ecosystem integration, and UI-to-runtime parameter mapping\par}
+  };
+\end{tikzpicture}
+
+\vspace{2.2cm}
+
+\brandchip{HYDRABlue}{HYDRA Suite}\hspace{0.6em}
+\brandchip{PoseGreen}{PoseKit}\hspace{0.6em}
+\brandchip{ClassRed}{ClassKit}\hspace{0.6em}
+\brandchip{SieveBlue}{FilterKit}
+
+\vspace{1.1cm}
+
+\begin{minipage}{0.92\linewidth}
+\color{Ink}
+\large
+This manuscript documents the current implementation of the tracking system in the repository as of March 4, 2026. It is meant to do four things at once:
+
+\begin{itemize}
+  \item explain the algorithmic design to technically fluent readers,
+  \item remain understandable to collaborators who are not tracking specialists,
+  \item map runtime behavior back to the actual user interface controls,
+  \item and situate tracking within the broader MAT ecosystem that also includes PoseKit, ClassKit, and FilterKit.
+\end{itemize}
+\end{minipage}
+
+\vfill
+
+\begin{tikzpicture}
+  \node[
+    fill=white,
+    draw=Rule,
+    rounded corners=6pt,
+    inner sep=12pt,
+    text width=0.93\linewidth
+  ] {
+    \small\color{Slate}
+    Primary implementation surfaces described in this reference include
+    \codepath{hydra_suite.core.tracking.worker},
+    \codepath{hydra_suite.core.filters.kalman},
+    \codepath{hydra_suite.core.assigners.hungarian},
+    \codepath{hydra_suite.core.post.processing},
+    \codepath{hydra_suite.core.identity.runtime_api},
+    plus the associated GUI parameter derivation in
+    \codepath{hydra_suite.gui.main_window}.
+  };
+\end{tikzpicture}
+
+\end{titlepage}
+
+\clearpage
+\pagenumbering{arabic}
+\tableofcontents
+\clearpage
+
+\section{Executive Overview}
+
+HYDRA Suite (MAT) is not a single monolithic algorithm. The current system is a staged evidence-integration pipeline whose online and offline phases intentionally serve different purposes.
+
+\begin{itemize}
+  \item The online phase answers: which detections belong to which tracks right now?
+  \item The offline phase answers: after seeing the full video, which continuity claims are still defensible?
+\end{itemize}
+
+The present implementation therefore combines:
+
+\begin{itemize}
+  \item per-frame object detection using either background subtraction or YOLO OBB,
+  \item a vectorized Kalman state estimator with heading-aware process noise,
+  \item weighted association over motion, orientation, geometry, and optional pose-shape cues,
+  \item explicit lifecycle states for \texttt{active}, \texttt{occluded}, and \texttt{lost} tracks,
+  \item an optional backward replay over the same cached detections,
+  \item and a conservative post-processing stack for merge resolution, relinking, and interpolation.
+\end{itemize}
+
+The design bias is deliberate: when certainty is low, the system prefers fragmentation over a polished but wrong identity history.
+
+\section{Product Ecosystem}
+
+The tracking algorithm does not live alone. The repository is now a small ecosystem of tightly related tools.
+
+\begin{center}
+  \resizebox{\linewidth}{!}{\input{figures/ecosystem}}
+  \captionof{figure}{Relationship between MAT and the adjacent tools in the repository.}
+  \label{fig:ecosystem}
+\end{center}
+
+\subsection{HYDRA Suite}
+
+\brandchip{HYDRABlue}{MAT}
+
+MAT is the tracking workbench. It handles:
+
+\begin{itemize}
+  \item video ingest and preview,
+  \item detection and tracking,
+  \item backward replay,
+  \item post-processing,
+  \item export of CSV trajectories,
+  \item and export of crops or frame subsets for downstream workflows.
+\end{itemize}
+
+\subsection{PoseKit}
+
+\brandchip{PoseGreen}{PoseKit}
+
+PoseKit is the repository's pose-labeling and pose-inference application. From the current code it serves at least four roles:
+
+\begin{itemize}
+  \item project-based keypoint annotation over image datasets,
+  \item runtime-driven pose prediction using YOLO pose or SLEAP backends,
+  \item embedding- and clustering-based smart frame selection,
+  \item and downstream training / evaluation loops for pose datasets.
+\end{itemize}
+
+In practical workflow terms, MAT often feeds PoseKit by exporting individual crops or curated datasets for keypoint annotation. PoseKit then feeds back richer body geometry that MAT can use for directed heading and pose-aware association.
+
+\subsection{ClassKit}
+
+\brandchip{ClassRed}{ClassKit}
+
+ClassKit is the image-classification sister framework. The current codebase positions it as an active learning dataset builder with:
+
+\begin{itemize}
+  \item image ingestion into a SQLite-backed project store,
+  \item embedding extraction through timm models,
+  \item FAISS-based clustering of visual modes,
+  \item uncertainty, diversity, representativeness, and audit sampling,
+  \item and export / curation flows for image classification.
+\end{itemize}
+
+ClassKit is especially relevant when tracking outputs are later used to create behavior, morphology, or identity classification datasets.
+
+\subsection{FilterKit}
+
+\brandchip{SieveBlue}{FilterKit}
+
+FilterKit is the dataset subsampling and deduplication tool. Its current core includes:
+
+\begin{itemize}
+  \item perceptual hash deduplication with pHash, dHash, and aHash,
+  \item histogram-based similarity checks,
+  \item color-signature comparisons,
+  \item temporal subsampling,
+  \item and clustering-based diversity sampling.
+\end{itemize}
+
+For large crop sets or frame corpora, FilterKit is the practical pre-filter before annotation in PoseKit or active learning in ClassKit.
+
+\section{Pipeline Topology}
+
+Figure~\ref{fig:pipeline} summarizes the current tracking flow.
+
+\begin{center}
+  \resizebox{\linewidth}{!}{\input{figures/pipeline}}
+  \captionof{figure}{Operational flow of the current tracking pipeline.}
+  \label{fig:pipeline}
+\end{center}
+
+The top-level worker performs the following broad stages:
+
+\begin{enumerate}
+  \item read or replay the requested frame range,
+  \item detect candidate animals,
+  \item predict track states,
+  \item score and assign detections to tracks,
+  \item update lifecycle state and memory,
+  \item optionally run backward replay on the cached detections,
+  \item and finally resolve, relink, and interpolate trajectory outputs.
+\end{enumerate}
+
+\subsection{Per-frame execution order}
+
+The diagram above is the coarse view. At the level of one frame, the worker effectively executes the following inner loop:
+
+\begin{enumerate}
+  \item acquire the resized frame and apply ROI / preprocessing decisions relevant to the chosen detector,
+  \item load cached detections or run the detector and then apply post-detection geometric filtering,
+  \item attach optional pose-side properties such as directed heading, keypoint visibility, and normalized pose prototypes,
+  \item predict every live Kalman slot in a vectorized batch,
+  \item construct candidate detection sets using cheap motion-and-geometry gates,
+  \item solve established-track assignment first, unstable-track assignment second, and guarded respawn last,
+  \item update Kalman state, lifecycle counters, heading memory, shape memory, and pose-feature EMAs,
+  \item write frame-level trajectory rows and any selected online exports,
+  \item and finally cache sufficient evidence for replay, post-processing, or later dataset extraction.
+\end{enumerate}
+
+This ordering matters because the design intentionally spends cheap evidence first and expensive evidence later. Motion culling happens before detailed pose comparison; lifecycle transitions happen after assignment rather than before it; interpolation does not participate in the online identity decision at all.
+
+The important architectural detail is that detection can be decoupled from tracking through the detection cache. That is what makes two-phase YOLO execution, backward replay, and reproducible tuning practical.
+
+\section{Formal Objects and Data Representations}
+
+\subsection{State vector}
+
+Each track slot is modeled with the 5-dimensional state
+\begin{equation}
+  \mathbf{x}_t = \begin{bmatrix}
+    x_t & y_t & \theta_t & v_{x,t} & v_{y,t}
+  \end{bmatrix}^{\!\top}.
+\end{equation}
+
+The first two coordinates are center position in resized-frame coordinates. The angle $\theta_t$ is stored in radians. Velocity is measured in pixels per frame in the resized coordinate system.
+
+\subsection{Measurement vector}
+
+The online measurement update operates in the lower-dimensional space
+\begin{equation}
+  \mathbf{z}_t = \begin{bmatrix}
+    x_t & y_t & \theta_t
+  \end{bmatrix}^{\!\top}.
+\end{equation}
+
+\subsection{Detection-side attributes}
+
+In the current implementation, association does not only consume $\mathbf{z}_t$. It also consumes parallel attributes:
+
+\begin{itemize}
+  \item area,
+  \item aspect ratio,
+  \item confidence,
+  \item OBB corners,
+  \item deterministic \runtimekey{DetectionID},
+  \item optional pose-derived heading,
+  \item optional normalized pose keypoints,
+  \item optional pose visibility,
+  \item and a crop-quality heuristic.
+\end{itemize}
+
+\subsection{Deterministic detection identifiers}
+
+The tracker constructs IDs of the form
+\begin{equation}
+  \texttt{DetectionID} = 10000 \cdot f + d,
+\end{equation}
+where $f$ is the absolute video frame index and $d$ is the within-frame detection index. This simple encoding lets downstream tools recover frame identity from crop filenames and cache records.
+
+\section{Detection Layer}
+
+\subsection{Background-subtraction branch}
+
+The background-subtraction branch is most useful in controlled scenes with stable backgrounds. The worker:
+
+\begin{enumerate}
+  \item converts the frame to grayscale,
+  \item applies brightness, contrast, and gamma adjustments,
+  \item optionally performs lighting stabilization,
+  \item updates the adaptive background model,
+  \item generates a foreground mask,
+  \item applies ROI masking,
+  \item optionally applies conservative split morphology,
+  \item and extracts connected-component measurements.
+\end{enumerate}
+
+This path is computationally cheap but scene-dependent.
+
+\subsection{YOLO OBB branch}
+
+The YOLO OBB branch emits oriented bounding boxes directly from the RGB/BGR frame. After inference, the system still performs downstream filtering, because inference and filtering are intentionally separated.
+
+This separation matters operationally:
+
+\begin{itemize}
+  \item the raw detections can be cached,
+  \item ROI and size-filter choices can be changed without rerunning inference,
+  \item and pose-property precompute can reuse the raw stream.
+\end{itemize}
+
+\subsection{Detection cache}
+
+The detection cache is a first-class artifact in the current architecture. It is used for:
+
+\begin{itemize}
+  \item forward replay without re-inference,
+  \item backward replay,
+  \item pose-property precompute,
+  \item and reproducibility across parameter retuning.
+\end{itemize}
+
+Backward mode refuses to run without a compatible cache, which is a sensible integrity check rather than an implementation inconvenience.
+
+\subsection{Detection-to-track handoff}
+
+The detector does not hand the Kalman layer a bare centroid. The worker passes a richer detection record containing center position, orientation, area, aspect ratio, confidence, oriented corners, deterministic detection identity, and any optional pose descriptors.
+
+That packaging choice is central to the current tracker design for two reasons:
+
+\begin{itemize}
+  \item association can mix several weak cues rather than overcommitting to position alone,
+  \item and offline stages such as merge resolution and relinking can reuse the same richer per-detection record without rerunning inference.
+\end{itemize}
+
+In other words, the current architecture is not just ``detect then Kalman.'' It is ``detect, annotate, cache, and only then decide identity.''
+
+\section{State Estimation}
+
+\subsection{Transition model}
+
+The current Kalman manager uses a constant-velocity-like state model with damping:
+\begin{equation}
+  \mathbf{x}_{t+1} = \mathbf{F}\mathbf{x}_t + \mathbf{w}_t,
+\end{equation}
+with
+\begin{equation}
+  \mathbf{F} =
+  \begin{bmatrix}
+    1 & 0 & 0 & d & 0 \\
+    0 & 1 & 0 & 0 & d \\
+    0 & 0 & 1 & 0 & 0 \\
+    0 & 0 & 0 & d & 0 \\
+    0 & 0 & 0 & 0 & d
+  \end{bmatrix},
+\end{equation}
+where $d = \runtimekey{KALMAN\_DAMPING}$.
+
+The system therefore allows velocity to persist, but only through a damped memory rather than an unconstrained ballistic extrapolation.
+
+\subsection{Observation model}
+
+Measurement projection is standard:
+\begin{equation}
+  \mathbf{z}_t = \mathbf{H}\mathbf{x}_t + \mathbf{v}_t,
+  \qquad
+  \mathbf{H} =
+  \begin{bmatrix}
+    1 & 0 & 0 & 0 & 0 \\
+    0 & 1 & 0 & 0 & 0 \\
+    0 & 0 & 1 & 0 & 0
+  \end{bmatrix}.
+\end{equation}
+
+\subsection{Heading-aware process noise}
+
+The process-noise model is one of the most important biological specializations in the current tracker. Longitudinal and lateral velocity noise are rotated by the current heading:
+\begin{equation}
+  \mathbf{R}(\theta) =
+  \begin{bmatrix}
+    \cos\theta & -\sin\theta \\
+    \sin\theta & \cos\theta
+  \end{bmatrix},
+\end{equation}
+and the 2D velocity-noise block is
+\begin{equation}
+  \mathbf{Q}_{v}(\theta) =
+  \mathbf{R}(\theta)
+  \begin{bmatrix}
+    q_{\text{long}} & 0 \\
+    0 & q_{\text{lat}}
+  \end{bmatrix}
+  \mathbf{R}(\theta)^\top.
+\end{equation}
+
+The code realizes this directly in component form rather than building a dense symbolic rotation matrix. The practical interpretation is straightforward:
+
+\begin{itemize}
+  \item uncertainty is larger along the likely direction of travel,
+  \item uncertainty is smaller sideways,
+  \item and the filter becomes less likely to overreact laterally during straight motion.
+\end{itemize}
+
+\subsection{Prediction and correction}
+
+Prediction follows the standard form
+\begin{equation}
+  \hat{\mathbf{x}}_{t|t-1} = \mathbf{F}\hat{\mathbf{x}}_{t-1|t-1},
+  \qquad
+  \mathbf{P}_{t|t-1} = \mathbf{F}\mathbf{P}_{t-1|t-1}\mathbf{F}^\top + \mathbf{Q}_t.
+\end{equation}
+
+Correction uses the innovation
+\begin{equation}
+  \mathbf{y}_t = \mathbf{z}_t - \mathbf{H}\hat{\mathbf{x}}_{t|t-1},
+\end{equation}
+with angle wrap logic applied to the orientation component so that $359^\circ \rightarrow 1^\circ$ is treated as a small change rather than a catastrophic one.
+
+The innovation covariance is
+\begin{equation}
+  \mathbf{S}_t = \mathbf{H}\mathbf{P}_{t|t-1}\mathbf{H}^\top + \mathbf{R},
+\end{equation}
+and the gain is
+\begin{equation}
+  \mathbf{K}_t = \mathbf{P}_{t|t-1}\mathbf{H}^\top \mathbf{S}_t^{-1}.
+\end{equation}
+
+The implementation uses the Joseph-form covariance update
+\begin{equation}
+  \mathbf{P}_{t|t} =
+  (\mathbf{I} - \mathbf{K}_t\mathbf{H})\mathbf{P}_{t|t-1}(\mathbf{I} - \mathbf{K}_t\mathbf{H})^\top
+  + \mathbf{K}_t \mathbf{R}\mathbf{K}_t^\top,
+\end{equation}
+which is more numerically stable than the naive covariance update.
+
+\subsection{Maturity and speed limits}
+
+The present implementation uses two operational safeguards beyond textbook Kalman logic:
+
+\begin{enumerate}
+  \item \textbf{Age-dependent velocity retention.} Young tracks retain only a fraction of their predicted velocity until they reach \runtimekey{KALMAN\_MATURITY\_AGE}.
+  \item \textbf{Velocity clipping.} The corrected speed is clipped using \runtimekey{KALMAN\_MAX\_VELOCITY\_MULTIPLIER} times \runtimekey{REFERENCE\_BODY\_SIZE}.
+\end{enumerate}
+
+These two choices reduce explosive behavior from newly spawned or weakly supported tracks.
+
+\section{Orientation and Pose Handling}
+
+\subsection{Directed versus axis-aligned orientation}
+
+The worker distinguishes between two orientation regimes:
+
+\begin{itemize}
+  \item \textbf{Axis-aligned OBB orientation.} $\theta$ and $\theta + \pi$ represent the same body axis.
+  \item \textbf{Directed pose-derived heading.} Pose keypoints identify an anterior and posterior side, so the angle is no longer ambiguous under a 180-degree flip.
+\end{itemize}
+
+\subsection{Axis collapse}
+
+When pose does not provide a directed heading, the tracker resolves the OBB ambiguity by comparing
+\begin{equation}
+  \theta_0 = \theta \bmod 2\pi,
+  \qquad
+  \theta_1 = (\theta + \pi) \bmod 2\pi,
+\end{equation}
+and keeping whichever is closer to the previous reliable track orientation.
+
+\subsection{Pose-derived heading}
+
+If anterior and posterior keypoint groups are defined and visible above \runtimekey{POSE\_MIN\_KPT\_CONF\_VALID}, the worker computes centroids for both groups and forms
+\begin{equation}
+  \theta_{\text{pose}} = \operatorname{atan2}(y_{\text{ant}} - y_{\text{post}},\,
+  x_{\text{ant}} - x_{\text{post}}).
+\end{equation}
+
+That direction is then normalized into $[0,2\pi)$ and can override OBB orientation in the track update step.
+
+\subsection{Normalized pose prototypes}
+
+The worker also builds normalized pose prototypes by:
+
+\begin{enumerate}
+  \item filtering invalid or ignored keypoints,
+  \item computing a weighted center,
+  \item centering the visible keypoints,
+  \item scaling by a robust median radius,
+  \item and storing a normalized $\left(x,y,\text{conf}\right)$ array.
+\end{enumerate}
+
+These prototypes are central to pose-aware association and later relinking.
+
+\section{Association and Online Identity Maintenance}
+
+\subsection{Base positional uncertainty}
+
+For each active track, the worker derives an innovation covariance
+\begin{equation}
+  \mathbf{S}_i = \mathbf{H}\mathbf{P}_i\mathbf{H}^\top + \mathbf{R},
+\end{equation}
+and the assigner caches $\mathbf{S}_i^{-1}$ for cost computation.
+
+This matters because when \runtimekey{USE\_MAHALANOBIS} is active, the positional term is
+\begin{equation}
+  D^{\text{pos}}_{ij} =
+  \sqrt{
+    (\mathbf{m}_j - \mathbf{p}_i)^\top
+    \mathbf{S}_{i,xy}^{-1}
+    (\mathbf{m}_j - \mathbf{p}_i)
+  }.
+\end{equation}
+
+If Mahalanobis mode is disabled, the tracker falls back to ordinary Euclidean distance.
+
+\subsection{Orientation distance}
+
+For directed headings, the current orientation difference is the circular distance
+\begin{equation}
+  D^{\text{ori-dir}}(a,b) = \min\left(|a-b|,\, 2\pi - |a-b|\right).
+\end{equation}
+
+For axis-aligned headings, a 180-degree equivalence is allowed:
+\begin{equation}
+  D^{\text{ori-axis}}(a,b) =
+  \min\left(D^{\text{ori-dir}}(a,b),\, \pi - D^{\text{ori-dir}}(a,b)\right).
+\end{equation}
+
+\subsection{Stage-2 association cost}
+
+The online cost for track $i$ and detection $j$ is
+\begin{equation}
+  C_{ij} =
+  w_p D^{\text{pos}}_{ij}
+  + w_o D^{\text{ori}}_{ij}
+  + w_a \left|A_j - \bar{A}_i\right|
+  + w_r \left|R_j - \bar{R}_i\right|,
+\end{equation}
+where:
+
+\begin{itemize}
+  \item $A_j$ is detection area,
+  \item $\bar{A}_i$ is the track's last remembered area,
+  \item $R_j$ is detection aspect ratio,
+  \item $\bar{R}_i$ is the track's last remembered aspect ratio,
+  \item and the weights are \runtimekey{W\_POSITION}, \runtimekey{W\_ORIENTATION}, \runtimekey{W\_AREA}, and \runtimekey{W\_ASPECT}.
+\end{itemize}
+
+\subsection{Stage-1 gating}
+
+Before full advanced costing, the current implementation applies a track-specific candidate gate. Let
+\begin{equation}
+  d_{\text{cull}} = \max\!\left(
+    \frac{\runtimekey{MAX\_DISTANCE\_THRESHOLD}}{\max(\runtimekey{W\_POSITION}, \varepsilon)},
+    50
+  \right).
+\end{equation}
+
+For track $i$, define
+\begin{equation}
+  \begin{aligned}
+    u_i &= \min\!\left(2,\,
+    \frac{\text{position uncertainty}_i}{\max(1,\runtimekey{REFERENCE\_BODY\_SIZE}^2)}
+    \right), \\
+    q_i &= \min\!\left(2,\,
+    \frac{\text{avg step}_i}{\max(1,\runtimekey{REFERENCE\_BODY\_SIZE})}
+    \right).
+  \end{aligned}
+\end{equation}
+
+Then the local motion gate is
+\begin{equation}
+  g_i =
+  d_{\text{cull}}
+  \cdot \runtimekey{ASSOCIATION\_STAGE1\_MOTION\_GATE\_MULTIPLIER}
+  \cdot \left(1 + 0.5u_i + 0.35q_i\right).
+\end{equation}
+
+A candidate pair is rejected before full scoring if any of the following hold:
+
+\begin{itemize}
+  \item $D^{\text{pos}}_{ij} > g_i$,
+  \item area ratio exceeds \runtimekey{ASSOCIATION\_STAGE1\_MAX\_AREA\_RATIO},
+  \item aspect-ratio change exceeds \runtimekey{ASSOCIATION\_STAGE1\_MAX\_ASPECT\_DIFF}.
+\end{itemize}
+
+\subsection{Pose-shape rejection}
+
+If normalized pose prototypes exist for both the detection and the track, the assigner computes keypoint-wise distances on shared valid points. The current implementation then:
+
+\begin{enumerate}
+  \item computes a median distance,
+  \item performs MAD-based outlier trimming,
+  \item trims the worst 20\% if at least five distances remain,
+  \item and averages the retained distances.
+\end{enumerate}
+
+The resulting scalar $D^{\text{pose}}_{ij}$ is then used as a veto: if visibility is high enough and
+\begin{equation}
+  D^{\text{pose}}_{ij} >
+  \runtimekey{POSE\_REJECTION\_THRESHOLD},
+\end{equation}
+the candidate is discarded outright.
+
+\subsection{Assignment phases}
+
+The assigner uses three phases rather than a single matching call.
+
+\begin{enumerate}
+  \item \textbf{Established tracks.} Tracks with continuity above \runtimekey{CONTINUITY\_THRESHOLD} get first access to detections and are solved globally using Hungarian assignment or greedily if requested.
+  \item \textbf{Unstable tracks.} Lower-continuity tracks are greedily filled from the remaining detections.
+  \item \textbf{Lost-slot respawn.} Free detections may be assigned to lost slots if they lie far enough from all non-lost track predictions.
+\end{enumerate}
+
+\begin{center}
+  \resizebox{\linewidth}{!}{\input{figures/lifecycle}}
+  \captionof{figure}{Association phases and lifecycle transitions in the current worker.}
+  \label{fig:lifecycle}
+\end{center}
+
+\subsection{Respawn guard}
+
+Let $d_{j,\text{active}}$ be the minimum distance from free detection $j$ to any non-lost predicted track position. Respawn is allowed only if
+\begin{equation}
+  d_{j,\text{active}} \geq \runtimekey{MIN\_RESPAWN\_DISTANCE}.
+\end{equation}
+
+This is a critical duplicate-suppression mechanism.
+
+\subsection{Track memory updates}
+
+The worker keeps more than Kalman state. It maintains:
+
+\begin{itemize}
+  \item last trusted orientation,
+  \item last shape information,
+  \item a recent-position deque for speed estimation,
+  \item an exponential moving average of track step size,
+  \item and an exponential moving average of pose prototypes.
+\end{itemize}
+
+If the matched detection confidence is above \runtimekey{ASSOCIATION\_HIGH\_CONFIDENCE\_THRESHOLD}, the average step is updated as
+\begin{equation}
+  \bar{s}_i \leftarrow
+  \alpha \bar{s}_i + (1-\alpha)s_i,
+\end{equation}
+with $\alpha = \runtimekey{TRACK\_FEATURE\_EMA\_ALPHA}$.
+
+Pose prototypes are updated keypoint-wise using the same EMA logic when both track and detection have valid coordinates.
+
+\subsection{Why the worker prefers fragmentation}
+
+The worker's staged design makes a specific tradeoff: when two candidate identity explanations are similarly plausible, the system is biased toward splitting a trajectory rather than forcing a confident-looking but poorly supported continuation.
+
+That bias appears in multiple places:
+
+\begin{itemize}
+  \item stage-1 gating rejects impossible or weakly plausible pairs before the global solver sees them,
+  \item pose rejection operates as a hard veto rather than a soft bonus,
+  \item lost-slot reuse is guarded by explicit separation from live predictions,
+  \item and forward/backward merge requires actual frame agreement rather than simple temporal adjacency.
+\end{itemize}
+
+For non-technical operators, this is the key interpretation rule: a fragmented result is often evidence that the tracker remained conservative under ambiguity, not evidence that the software ``gave up.''
+
+\subsection{Current limitations of pose and appearance cues}
+
+The present implementation can ingest pose-derived structure and can maintain lightweight appearance-adjacent memories such as shape, crop quality, and optional downstream identity artifacts. However, those cues are not yet reliable enough to serve as strong global assignment evidence inside the main Hungarian stage.
+
+The limitation is empirical rather than philosophical. In the current tracker, pose and appearance fail for different reasons:
+
+\begin{itemize}
+  \item \textbf{Pose is often incomplete at the exact frames where identity is hardest.} Crossings, overlaps, fast turns, motion blur, and partial occlusions are exactly the regimes that reduce keypoint visibility and destabilize anterior/posterior direction.
+  \item \textbf{Appearance is weak for visually similar animals.} In many experiments, coat pattern, illumination, orientation, crop scale, and blur variation dominate any identity-specific visual signature available in a single short-term crop.
+  \item \textbf{The assignment stage is high leverage and high risk.} A weak cue used inside a global solver can contaminate multiple pairings in one frame, which is more damaging than using the same cue later as a conservative veto or offline tie-breaker.
+\end{itemize}
+
+For that reason, the current system treats pose primarily as a direction cue and a rejection cue, not as a trusted identity embedding. Likewise, appearance-like signals are presently better viewed as downstream analysis inputs than as core online assignment evidence.
+
+\section{Backward Replay and Consensus Resolution}
+
+Backward replay is not a separate detector and not a separate learned model. It is a reverse-order pass over the same cached detections. Its value is epistemic: it provides a second trajectory hypothesis in scenes where crossings and occlusions create asymmetric ambiguity in forward time.
+
+The current system therefore treats forward and backward outputs as peer hypotheses rather than forcing one to dominate the other.
+
+\subsection{Replay decision ladder}
+
+The replay stage is easiest to understand as a sequence of increasingly strict questions:
+
+\begin{enumerate}
+  \item if the video were read in reverse, which detections would each identity claim?
+  \item where do the forward and backward fragments overlap in time?
+  \item on those shared frames, how often do both hypotheses place the same animal in nearly the same location?
+  \item if they disagree, is the disagreement localized enough that the safe action is to keep both fragments separate?
+  \item only after those tests pass, which fragments may be merged, stitched, or relinked?
+\end{enumerate}
+
+This is why backward replay improves difficult scenes without acting like a magical correction step. It does not hallucinate new evidence; it only contributes a second interpretation of the same evidence stream.
+
+\section{Post-Processing and Trajectory Resolution}
+
+\begin{center}
+  \resizebox{\linewidth}{!}{\input{figures/postprocessing}}
+  \captionof{figure}{Current post-processing stack. The order is intentionally conservative.}
+  \label{fig:post}
+\end{center}
+
+\subsection{Cleaning and breaks}
+
+The cleaning stage can:
+
+\begin{itemize}
+  \item discard fragments shorter than \runtimekey{MIN\_TRAJECTORY\_LENGTH},
+  \item split at excessive absolute velocity using \runtimekey{MAX\_VELOCITY\_BREAK},
+  \item split at abnormal velocity z-scores,
+  \item and split across long occlusion runs using \runtimekey{MAX\_OCCLUSION\_GAP}.
+\end{itemize}
+
+\subsection{Forward/backward agreement}
+
+For a forward fragment $F$ and backward fragment $B$, define the set of common frames
+\begin{equation}
+  \Omega(F,B) = \{t \mid t \in F \cap B\}.
+\end{equation}
+
+The agreement count is
+\begin{equation}
+  A(F,B) = \sum_{t \in \Omega(F,B)}
+  \mathbf{1}\!\left[\lVert \mathbf{p}_F(t) - \mathbf{p}_B(t) \rVert_2
+  \leq \runtimekey{AGREEMENT\_DISTANCE}\right].
+\end{equation}
+
+The pair is a merge candidate only if
+\begin{equation}
+  A(F,B) \geq \runtimekey{MIN\_OVERLAP\_FRAMES}.
+\end{equation}
+
+The implementation then performs conservative segment merging, redundancy removal, overlap-aware merge cleanup, and short-gap stitching.
+
+\subsection{Offline resolution ladder}
+
+The offline resolver can be read as a conservative ladder:
+
+\begin{enumerate}
+  \item remove fragments that are too short or dynamically implausible,
+  \item search for forward/backward overlaps that agree spatially for enough frames,
+  \item merge only the overlaps that meet that agreement test,
+  \item relink nearby residual fragments only when motion and optional pose continuity remain credible,
+  \item and interpolate only after the identity boundaries have already been chosen.
+\end{enumerate}
+
+That order is important. If interpolation or aggressive relinking were moved earlier, the tracker would be able to cosmetically hide identity uncertainty instead of exposing it.
+
+\subsection{Motion-and-pose relinking}
+
+The relinking stage summarizes each fragment by:
+
+\begin{itemize}
+  \item start and end frame,
+  \item start and end position,
+  \item start and end heading,
+  \item short-window velocity,
+  \item and optional pose prototypes at the fragment ends.
+\end{itemize}
+
+For a source fragment $a$ and destination fragment $b$, with temporal gap $g$, the algorithm predicts
+\begin{equation}
+  \hat{\mathbf{p}}_{a \rightarrow b} =
+  \mathbf{p}^{\text{end}}_a + \mathbf{v}^{\text{end}}_a (g+1),
+\end{equation}
+and requires
+\begin{equation}
+  \left\lVert
+  \hat{\mathbf{p}}_{a \rightarrow b} - \mathbf{p}^{\text{start}}_b
+  \right\rVert_2
+  \leq
+  \max\!\left(
+    \runtimekey{AGREEMENT\_DISTANCE},
+    \runtimekey{MAX\_VELOCITY\_BREAK}(g+1)
+  \right).
+\end{equation}
+
+If both fragments have informative motion, the heading difference must also satisfy
+\begin{equation}
+  \Delta\theta \leq \frac{\pi}{3}.
+\end{equation}
+
+If both fragments have pose prototypes, the relinker also requires
+\begin{equation}
+  D^{\text{pose}}_{\text{relink}} \leq \runtimekey{RELINK\_POSE\_MAX\_DISTANCE}.
+\end{equation}
+
+The candidate score used for greedy relinking is
+\begin{equation}
+  \text{score}(a,b) =
+  \frac{d_{\text{motion}}}{d_{\text{allowed}}}
+  + 0.25\frac{g}{g_{\max}}
+  + 0.35 h_{\text{norm}}
+  + 0.75 p_{\text{norm}},
+\end{equation}
+where $h_{\text{norm}}$ is normalized heading disagreement and $p_{\text{norm}}$ is normalized pose disagreement.
+
+\subsection{Interpolation}
+
+Interpolation is the final polish stage, not the identity engine. The current system:
+
+\begin{itemize}
+  \item reindexes each trajectory onto a complete frame range,
+  \item fills missing state labels as \texttt{occluded},
+  \item interpolates $x$ and $y$ using the selected method,
+  \item and interpolates $\theta$ with circular logic.
+\end{itemize}
+
+This prevents wrap-around artifacts around $0$ and $2\pi$.
+
+\section{Limitations and Future Directions}
+
+The current tracker is already strong as a conservative motion-and-geometry system, but the present implementation also makes its own ceiling visible. The strongest next gains are likely to come from better identity evidence and better post-experiment fusion, not from simply forcing today's weakest cues harder inside the online solver.
+
+\subsection{Why pose and appearance are not dominant Hungarian terms yet}
+
+One useful way to frame the current design is to distinguish the \emph{implemented} online cost from the \emph{tempting but not yet trustworthy} augmented cost. Today the main solver effectively works with
+\begin{equation}
+  C^{\text{online}}_{ij}
+  =
+  C_{ij}
+  +
+  \lambda_{\text{pose-veto}} \,\mathbf{1}\!\left[D^{\text{pose}}_{ij} > \tau_{\text{pose}}\right],
+\end{equation}
+where $C_{ij}$ is the motion-and-geometry mixture from the online stage and the pose contribution behaves as a rejection rule rather than a soft identity attraction.
+
+A more ambitious future formulation would look like
+\begin{equation}
+  C^{\text{future}}_{ij}
+  =
+  C_{ij}
+  + w_{\text{tag}} D^{\text{tag}}_{ij}
+  + w_{\text{cls}} D^{\text{class}}_{ij}
+  + w_{\text{emb}} D^{\text{embed}}_{ij},
+\end{equation}
+but the current system effectively runs with $w_{\text{cls}} \approx 0$ and $w_{\text{emb}} \approx 0$ in the online Hungarian stage because those signals are not yet robust enough across occlusion, blur, pose collapse, and visually similar animals.
+
+This matters for three practical reasons:
+
+\begin{itemize}
+  \item \textbf{Pose degrades at the worst moments.} Keypoints disappear or flip precisely during overlap, self-occlusion, and fast orientation change, which are also the frames where assignment has the highest leverage.
+  \item \textbf{Appearance remains weak for many cohorts.} Lighting, viewpoint, crop scale, blur, and animal similarity often dominate any stable identity signature in a short crop.
+  \item \textbf{Global assignment amplifies weak evidence.} A small but wrong identity preference in one frame's cost matrix can misallocate several tracks simultaneously.
+\end{itemize}
+
+That is why the current UI exposes pose mainly as conservative control points rather than as a large family of identity-embedding weights. In practice the operator-facing hooks are:
+\begin{itemize}
+  \item \runtimekey{ENABLE\_POSE\_REJECTION},
+  \item \runtimekey{POSE\_REJECTION\_THRESHOLD},
+  \item \runtimekey{POSE\_REJECTION\_MIN\_VISIBILITY},
+  \item and the heading-definition controls for anterior and posterior keypoints.
+\end{itemize}
+
+The system is conservative here on purpose.
+
+\subsection{Marker-mediated identity channels}
+
+The strongest near-term direction is explicit identity evidence that is externally readable and experimentally grounded rather than inferred from subtle visual similarity.
+
+\begin{itemize}
+  \item \textbf{AprilTag-based identity.} When tags are visible and decoding is reliable, they provide a near-discrete identity observation.
+  \item \textbf{Color-marker identity.} Deliberate color markers can play a similar role when printed tags are impractical for the assay geometry.
+\end{itemize}
+
+In a future marker-aware assigner, the safest use would be to treat tag or marker information first as a hard incompatibility gate and only second as a soft score bonus. One simple formulation is
+\begin{equation}
+  D^{\text{tag}}_{ij} =
+  \begin{cases}
+    0, & \text{marker agrees or is absent},\\
+    +\infty, & \text{marker contradicts the track identity}.
+  \end{cases}
+\end{equation}
+
+That is a much better fit than simply increasing pose or appearance weights, because it upgrades the evidence quality itself. The UI already contains footholds for this direction:
+\begin{itemize}
+  \item \runtimekey{COLOR\_TAG\_MODEL\_PATH} and \runtimekey{COLOR\_TAG\_CONFIDENCE},
+  \item \runtimekey{APRILTAG\_FAMILY} and \runtimekey{APRILTAG\_DECIMATE},
+  \item plus identity-workflow controls such as \runtimekey{ENABLE\_IDENTITY\_ANALYSIS} and \runtimekey{IDENTITY\_METHOD}.
+\end{itemize}
+
+\subsection{Post-experiment identity fusion with contrastive learning}
+
+Another promising direction is post-experiment fusion using contrastive learning. The intended role is not to replace the online tracker with an embedding-only black box, but to operate \emph{after} tracking when the full experiment and all exported crops are available.
+
+One useful abstraction is to learn an embedding map
+\begin{equation}
+  \phi(\mathcal{I}) \in \mathbb{R}^d
+\end{equation}
+for crop or short-tracklet image sets $\mathcal{I}$, and then define an offline fragment affinity
+\begin{equation}
+  S(a,b) =
+  \alpha S_{\text{motion}}(a,b)
+  + \beta S_{\text{time}}(a,b)
+  + \gamma \cos\!\bigl(\phi(\mathcal{I}_a), \phi(\mathcal{I}_b)\bigr).
+\end{equation}
+
+The current architecture is already a good host for this idea because MAT can export crops, ClassKit can curate identity-relevant image sets, and FilterKit can deduplicate or diversity-filter those sets before training. In practice:
+\begin{itemize}
+  \item MAT remains conservative online,
+  \item PoseKit and ClassKit help build structured post hoc training data,
+  \item FilterKit trims redundant crop corpora,
+  \item and the learned fusion model can operate only on residual fragments that survive the conservative motion pipeline.
+\end{itemize}
+
+\subsection{Faster hybrid detection}
+
+Detection speed is another active direction. A practical next step is a two-stage detector that combines full-frame coarse localization with crop-level orientation refinement:
+\begin{align}
+  \mathcal{B}_{\text{coarse}} &= f_{\text{YOLO-det}}(I_t), \\
+  \mathcal{O}_{\text{refined}} &= \bigcup_{b \in \mathcal{B}_{\text{coarse}}}
+  f_{\text{YOLO-OBB}}\!\left(I_t[b + \delta]\right),
+\end{align}
+where $I_t[b + \delta]$ denotes a padded crop around coarse box $b$.
+
+The intended benefit is to run a fast detector once on the whole frame, spend OBB compute only on likely animal regions, preserve orientation-aware geometry for association, and keep the cache/replay architecture unchanged. This direction also maps well onto the current runtime surface: \runtimekey{YOLO\_MODEL\_PATH}, class filters, backend selection, TensorRT controls, and batching controls remain relevant, while likely extensions would add crop padding, coarse-detection thresholds, and refinement policy.
+
+\subsection{Current UI footholds for future work}
+
+\begingroup
+\renewcommand{\runtimekey}[1]{\ifmmode\text{\path{#1}}\else\path{#1}\fi}
+\setlength{\tabcolsep}{4pt}
+\setlength{\LTleft}{0pt}
+\setlength{\LTright}{0pt}
+\renewcommand{\arraystretch}{1.08}
+\footnotesize
+\begin{longtable}{L{0.22\linewidth} L{0.22\linewidth} L{0.34\linewidth}}
+\caption{Future directions mapped to today's UI/runtime surface.}\label{tab:future-ui-crosswalk}\\
+\toprule
+\textbf{Future direction} & \textbf{Existing UI/runtime footholds} & \textbf{Expected next extension} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Future direction} & \textbf{Existing UI/runtime footholds} & \textbf{Expected next extension} \\
+\midrule
+\endhead
+Marker-mediated online identity & \runtimekey{ENABLE\_IDENTITY\_ANALYSIS}, \runtimekey{IDENTITY\_METHOD}, \runtimekey{COLOR\_TAG\_MODEL\_PATH}, \runtimekey{COLOR\_TAG\_CONFIDENCE}, \runtimekey{APRILTAG\_FAMILY}, \runtimekey{APRILTAG\_DECIMATE} & add marker-to-track compatibility gating and confidence-aware identity carryover inside the assigner \\
+Pose-informed but still conservative assignment & \runtimekey{ENABLE\_POSE\_REJECTION}, \runtimekey{POSE\_REJECTION\_THRESHOLD}, \runtimekey{POSE\_REJECTION\_MIN\_VISIBILITY}, heading-definition controls & keep pose as a veto or directional cue until keypoint reliability supports a stronger identity term \\
+Post-experiment contrastive fusion & crop export controls, \runtimekey{ENABLE\_INDIVIDUAL\_DATASET}, \runtimekey{ENABLE\_INDIVIDUAL\_IMAGE\_SAVE}, relinking and merge controls & add an offline fragment-affinity model that scores residual fragments after tracking and before final export \\
+Hybrid YOLO-detect + YOLO-OBB & \runtimekey{YOLO\_MODEL\_PATH}, runtime dropdowns, TensorRT and batching controls, class filters & add coarse-detector thresholding, crop padding, and crop-refinement scheduling without changing downstream association logic \\
+Dataset curation for identity models & dataset generation controls plus FilterKit / ClassKit workflows & build tighter export loops for deduplication, hard-negative mining, and identity-balanced sampling \\
+\bottomrule
+\end{longtable}
+\normalsize
+\endgroup
+
+\subsection{Longer-horizon roadmap}
+
+Beyond the immediate work above, the technical roadmap suggested by the current system is:
+
+\begin{enumerate}
+  \item keep the online tracker conservative and interpretable,
+  \item add stronger explicit identity channels such as tags or color markers when the experiment permits them,
+  \item use richer learned fusion only after the experiment, where whole-trajectory evidence is available,
+  \item accelerate the detection front-end so the identity stack can spend compute where uncertainty is highest rather than everywhere uniformly,
+  \item and keep tightening the handoff among MAT, PoseKit, ClassKit, and FilterKit so downstream model-building workflows become part of the tracking loop rather than a manual afterthought.
+\end{enumerate}
+
+This direction preserves the strongest property of the current tracker: it exposes uncertainty instead of hiding it. Future improvements should therefore increase evidence quality and speed without turning the core assignment stage into a black box that is hard to audit.
+
+\section{UI-to-Runtime Parameter Mapping}
+
+The GUI does not pass all values to the worker in raw user-entered form. Several controls are scaled into resized-coordinate pixel units. The mapping is implemented in \codepath{hydra_suite.gui.main_window:get\_parameters\_dict}.
+
+\subsection{Primary derived quantities}
+
+Let
+\begin{equation}
+  s_{\text{ref}} = \runtimekey{REFERENCE\_BODY\_SIZE} \cdot \runtimekey{RESIZE\_FACTOR},
+\end{equation}
+and
+\begin{equation}
+  a_{\text{ref}} = \pi\left(\frac{\runtimekey{REFERENCE\_BODY\_SIZE}}{2}\right)^2
+  \cdot \runtimekey{RESIZE\_FACTOR}^2.
+\end{equation}
+
+Then the GUI derives several runtime values:
+\begin{align}
+  \runtimekey{MIN\_OBJECT\_SIZE} &= \text{UI min size multiplier} \cdot a_{\text{ref}}, \\
+  \runtimekey{MAX\_OBJECT\_SIZE} &= \text{UI max size multiplier} \cdot a_{\text{ref}}, \\
+  \runtimekey{MAX\_DISTANCE\_THRESHOLD} &= \text{UI max assignment distance multiplier} \cdot s_{\text{ref}}, \\
+  \runtimekey{CONTINUITY\_THRESHOLD} &= \text{UI recovery-search multiplier} \cdot s_{\text{ref}}, \\
+  \runtimekey{MIN\_RESPAWN\_DISTANCE} &= \text{UI respawn multiplier} \cdot s_{\text{ref}}, \\
+  \runtimekey{VELOCITY\_THRESHOLD} &= \text{UI velocity threshold} \cdot s_{\text{ref}} / \runtimekey{FPS}, \\
+  \runtimekey{MAX\_VELOCITY\_BREAK} &= \text{UI max velocity break} \cdot s_{\text{ref}} / \runtimekey{FPS}, \\
+  \runtimekey{VELOCITY\_ZSCORE\_MIN\_VELOCITY} &= \text{UI z-score min velocity} \cdot s_{\text{ref}} / \runtimekey{FPS}, \\
+  \runtimekey{AGREEMENT\_DISTANCE} &= \text{UI merge agreement multiplier} \cdot s_{\text{ref}}.
+\end{align}
+
+\subsection{Crosswalk tables}
+
+The following tables group runtime parameters by the user-facing UI areas that feed them.
+
+\begingroup
+\renewcommand{\runtimekey}[1]{\ifmmode\text{\path{#1}}\else\path{#1}\fi}
+\setlength{\tabcolsep}{4pt}
+\setlength{\LTleft}{0pt}
+\setlength{\LTright}{0pt}
+\renewcommand{\arraystretch}{1.08}
+\footnotesize
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
+\caption{Reference scaling, frame range, and runtime fan-out.}\label{tab:ui-scaling}\\
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endhead
+Video file + frame range & \runtimekey{START\_FRAME}, \runtimekey{END\_FRAME} & direct pass-through & \codepath{tracking.worker} frame iteration and cache coverage checks \\
+Acquisition FPS & \runtimekey{FPS} & direct pass-through & velocity scaling, visualization, export interpretation \\
+Reference body size & \runtimekey{REFERENCE\_BODY\_SIZE} & direct pass-through & scaling anchor for motion, geometry, crop quality, and relinking \\
+Resize factor & \runtimekey{RESIZE\_FACTOR} & direct pass-through & frame resize, scaled body size, scaled area, visualization geometry \\
+Compute runtime dropdown & \runtimekey{COMPUTE\_RUNTIME}, \runtimekey{YOLO\_DEVICE}, \runtimekey{ENABLE\_TENSORRT}, \runtimekey{ENABLE\_ONNX\_RUNTIME}, \runtimekey{POSE\_RUNTIME\_FLAVOR}, \runtimekey{POSE\_SLEAP\_DEVICE} & canonical runtime is translated into backend-specific fields & detection runtime, pose runtime, export behavior, UI option gating \\
+TensorRT / batch controls & \runtimekey{TENSORRT\_MAX\_BATCH\_SIZE}, \runtimekey{ADVANCED\_CONFIG.enable\_yolo\_batching}, \runtimekey{ADVANCED\_CONFIG.yolo\_batch\_size\_mode}, \runtimekey{ADVANCED\_CONFIG.yolo\_manual\_batch\_size} & direct or derived from runtime requirements & two-phase YOLO batching and engine sizing \\
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
+\caption{Detection and preprocessing controls.}\label{tab:ui-detection}\\
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endhead
+Detection method selector & \runtimekey{DETECTION\_METHOD} & enum pass-through & chooses background subtraction versus YOLO OBB branches \\
+YOLO model + classes & \runtimekey{YOLO\_MODEL\_PATH}, \runtimekey{YOLO\_TARGET\_CLASSES} & model path resolution + optional class parsing & detector construction and inference filtering \\
+YOLO confidence / IoU & \runtimekey{YOLO\_CONFIDENCE\_THRESHOLD}, \runtimekey{YOLO\_IOU\_THRESHOLD}, \runtimekey{USE\_CUSTOM\_OBB\_IOU\_FILTERING} & direct pass-through & YOLO raw filtering before association \\
+Background threshold and morphology & \runtimekey{THRESHOLD\_VALUE}, \runtimekey{MORPH\_KERNEL\_SIZE}, \runtimekey{MIN\_CONTOUR\_AREA}, \runtimekey{MAX\_CONTOUR\_MULTIPLIER} & direct pass-through & foreground segmentation and contour candidate extraction \\
+Size filtering & \runtimekey{ENABLE\_SIZE\_FILTERING}, \runtimekey{MIN\_OBJECT\_SIZE}, \runtimekey{MAX\_OBJECT\_SIZE} & multipliers converted to scaled pixel area & background and YOLO post-filtering \\
+Lighting stabilization & \runtimekey{ENABLE\_LIGHTING\_STABILIZATION}, \runtimekey{LIGHTING\_SMOOTH\_FACTOR}, \runtimekey{LIGHTING\_MEDIAN\_WINDOW} & direct pass-through & grayscale preprocessing in background mode \\
+Adaptive background & \runtimekey{BACKGROUND\_PRIME\_FRAMES}, \runtimekey{ENABLE\_ADAPTIVE\_BACKGROUND}, \runtimekey{BACKGROUND\_LEARNING\_RATE} & direct pass-through & \codepath{core.background.model} \\
+Image adjustments & \runtimekey{BRIGHTNESS}, \runtimekey{CONTRAST}, \runtimekey{GAMMA}, \runtimekey{DARK\_ON\_LIGHT\_BACKGROUND} & slider normalization for contrast and gamma & preprocessing helpers \\
+Conservative split / dilation & \runtimekey{ENABLE\_CONSERVATIVE\_SPLIT}, \runtimekey{MERGE\_AREA\_THRESHOLD}, \runtimekey{CONSERVATIVE\_KERNEL\_SIZE}, \runtimekey{CONSERVATIVE\_ERODE\_ITER}, \runtimekey{ENABLE\_ADDITIONAL\_DILATION}, \runtimekey{DILATION\_ITERATIONS}, \runtimekey{DILATION\_KERNEL\_SIZE} & direct pass-through & blob separation in crowded background-subtraction scenes \\
+ROI editor & \runtimekey{ROI\_MASK} & binary mask generated in UI and passed directly & detection masking and overlay drawing \\
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
+\caption{Tracking, Kalman, and association controls.}\label{tab:ui-tracking}\\
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endhead
+Max targets & \runtimekey{MAX\_TARGETS} & direct pass-through & Kalman slot count, trajectory buffers, color generation \\
+Assignment distance multiplier & \runtimekey{MAX\_DISTANCE\_THRESHOLD} & multiplier $\times s_{\text{ref}}$ & assignment acceptance ceiling and cull threshold derivation \\
+Recovery search multiplier & \runtimekey{CONTINUITY\_THRESHOLD} & multiplier $\times s_{\text{ref}}$ & established-versus-unstable track split \\
+Lost / respawn controls & \runtimekey{LOST\_THRESHOLD\_FRAMES}, \runtimekey{MIN\_RESPAWN\_DISTANCE} & respawn multiplier $\times s_{\text{ref}}$ & lifecycle transitions and duplicate suppression \\
+Start and stabilization counts & \runtimekey{MIN\_DETECTIONS\_TO\_START}, \runtimekey{MIN\_DETECTION\_COUNTS}, \runtimekey{MIN\_TRACKING\_COUNTS} & direct pass-through & worker initialization and stabilization gating \\
+Velocity threshold & \runtimekey{VELOCITY\_THRESHOLD} & body-lengths per second $\rightarrow$ pixels per frame & orientation smoothing and flip logic \\
+Orientation behavior & \runtimekey{INSTANT\_FLIP\_ORIENTATION}, \runtimekey{MAX\_ORIENT\_DELTA\_STOPPED} & direct pass-through & \codepath{tracking.worker:\_smooth\_orientation} \\
+Kalman process and measurement noise & \runtimekey{KALMAN\_NOISE\_COVARIANCE}, \runtimekey{KALMAN\_MEASUREMENT\_NOISE\_COVARIANCE} & direct pass-through & Kalman $Q$ and $R$ magnitude \\
+Kalman damping and maturity & \runtimekey{KALMAN\_DAMPING}, \runtimekey{KALMAN\_MATURITY\_AGE}, \runtimekey{KALMAN\_INITIAL\_VELOCITY\_RETENTION} & direct pass-through & prediction damping and young-track restraint \\
+Kalman velocity caps and anisotropy & \runtimekey{KALMAN\_MAX\_VELOCITY\_MULTIPLIER}, \runtimekey{KALMAN\_LONGITUDINAL\_NOISE\_MULTIPLIER}, \runtimekey{KALMAN\_LATERAL\_NOISE\_MULTIPLIER} & direct pass-through & speed clipping and rotated process-noise design \\
+Association weights & \runtimekey{W\_POSITION}, \runtimekey{W\_ORIENTATION}, \runtimekey{W\_AREA}, \runtimekey{W\_ASPECT} & direct pass-through & cost matrix assembly \\
+Distance metric and solver & \runtimekey{USE\_MAHALANOBIS}, \runtimekey{ENABLE\_GREEDY\_ASSIGNMENT}, \runtimekey{ENABLE\_SPATIAL\_OPTIMIZATION} & direct pass-through & cost metric and solver behavior \\
+Stage-1 advanced gate & \runtimekey{ASSOCIATION\_STAGE1\_MOTION\_GATE\_MULTIPLIER}, \runtimekey{ASSOCIATION\_STAGE1\_MAX\_AREA\_RATIO}, \runtimekey{ASSOCIATION\_STAGE1\_MAX\_ASPECT\_DIFF} & direct pass-through & candidate pruning before advanced costing \\
+Pose-aware assignment & \runtimekey{ENABLE\_POSE\_REJECTION}, \runtimekey{POSE\_REJECTION\_THRESHOLD}, \runtimekey{POSE\_REJECTION\_MIN\_VISIBILITY}, \runtimekey{TRACK\_FEATURE\_EMA\_ALPHA}, \runtimekey{ASSOCIATION\_HIGH\_CONFIDENCE\_THRESHOLD} & direct pass-through & pose vetoing and track-memory EMA update \\
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
+\caption{Post-processing, merge resolution, and diagnostics controls.}\label{tab:ui-post}\\
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endhead
+Enable post-processing & \runtimekey{ENABLE\_POSTPROCESSING} & direct pass-through & post-run pipeline activation \\
+Fragment cleanup & \runtimekey{MIN\_TRAJECTORY\_LENGTH} & direct pass-through & pre-merge fragment removal \\
+Velocity break & \runtimekey{MAX\_VELOCITY\_BREAK} & body-lengths per second $\rightarrow$ pixels per frame & split on implausible motion \\
+Occlusion split & \runtimekey{MAX\_OCCLUSION\_GAP} & direct pass-through & split and relink max-gap logic \\
+Tracklet relinking & \runtimekey{ENABLE\_TRACKLET\_RELINKING}, \runtimekey{RELINK\_POSE\_MAX\_DISTANCE} & direct pass-through & motion-and-pose fragment reconnection \\
+Velocity z-score logic & \runtimekey{MAX\_VELOCITY\_ZSCORE}, \runtimekey{VELOCITY\_ZSCORE\_WINDOW}, \runtimekey{VELOCITY\_ZSCORE\_MIN\_VELOCITY} & minimum velocity scaled by $s_{\text{ref}}/\runtimekey{FPS}$ & adaptive split detection \\
+Forward/backward merge & \runtimekey{AGREEMENT\_DISTANCE}, \runtimekey{MIN\_OVERLAP\_FRAMES} & agreement multiplier $\times s_{\text{ref}}$ plus integer overlap threshold & conservative consensus merge \\
+Interpolation & \runtimekey{INTERPOLATION\_METHOD}, \runtimekey{INTERPOLATION\_MAX\_GAP} & direct pass-through & short-gap fill after identity decisions \\
+Visualization-free and stats & \runtimekey{VISUALIZATION\_FREE\_MODE}, \runtimekey{ENABLE\_HISTOGRAMS}, \runtimekey{HISTOGRAM\_HISTORY\_FRAMES}, \runtimekey{TRAJECTORY\_HISTORY\_SECONDS} & direct pass-through & throughput mode, telemetry, and overlay history \\
+Overlay toggles & \runtimekey{SHOW\_FG}, \runtimekey{SHOW\_BG}, \runtimekey{SHOW\_CIRCLES}, \runtimekey{SHOW\_ORIENTATION}, \runtimekey{SHOW\_YOLO\_OBB}, \runtimekey{SHOW\_TRAJECTORIES}, \runtimekey{SHOW\_LABELS}, \runtimekey{SHOW\_STATE}, \runtimekey{SHOW\_KALMAN\_UNCERTAINTY} & direct pass-through & live preview and rendered-video overlays \\
+\bottomrule
+\end{longtable}
+
+\begin{longtable}{L{0.16\linewidth} L{0.21\linewidth} L{0.18\linewidth} L{0.25\linewidth}}
+\caption{Pose, identity, and downstream dataset controls.}\label{tab:ui-pose}\\
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{UI area / control} & \textbf{Runtime keys} & \textbf{Transformation} & \textbf{Primary consumers} \\
+\midrule
+\endhead
+Dataset generation toggles & \runtimekey{ENABLE\_DATASET\_GENERATION}, \runtimekey{DATASET\_NAME}, \runtimekey{DATASET\_CLASS\_NAME}, \runtimekey{DATASET\_OUTPUT\_DIR}, \runtimekey{DATASET\_MAX\_FRAMES}, \runtimekey{DATASET\_CONF\_THRESHOLD} & direct pass-through & frame export for active-learning datasets \\
+Dataset sampling metrics & \runtimekey{DATASET\_DIVERSITY\_WINDOW}, \runtimekey{DATASET\_INCLUDE\_CONTEXT}, \runtimekey{DATASET\_PROBABILISTIC\_SAMPLING}, \runtimekey{METRIC\_LOW\_CONFIDENCE}, \runtimekey{METRIC\_COUNT\_MISMATCH}, \runtimekey{METRIC\_HIGH\_ASSIGNMENT\_COST}, \runtimekey{METRIC\_TRACK\_LOSS}, \runtimekey{METRIC\_HIGH\_UNCERTAINTY} & direct pass-through & dataset export scoring and frame selection \\
+Identity / individual analysis & \runtimekey{ENABLE\_IDENTITY\_ANALYSIS}, \runtimekey{ENABLE\_INDIVIDUAL\_PIPELINE}, \runtimekey{IDENTITY\_METHOD}, \runtimekey{IDENTITY\_CROP\_SIZE\_MULTIPLIER}, \runtimekey{IDENTITY\_CROP\_MIN\_SIZE}, \runtimekey{IDENTITY\_CROP\_MAX\_SIZE} & direct pass-through & crop extraction and downstream identity workflows \\
+Tag-based identity options & \runtimekey{COLOR\_TAG\_MODEL\_PATH}, \runtimekey{COLOR\_TAG\_CONFIDENCE}, \runtimekey{APRILTAG\_FAMILY}, \runtimekey{APRILTAG\_DECIMATE} & direct pass-through & tag-based identity extensions \\
+Pose extractor enablement & \runtimekey{ENABLE\_POSE\_EXTRACTOR}, \runtimekey{POSE\_MODEL\_TYPE}, \runtimekey{POSE\_MODEL\_DIR}, \runtimekey{POSE\_RUNTIME\_FLAVOR}, \runtimekey{POSE\_EXPORTED\_MODEL\_PATH} & model path resolution + runtime derivation & pose backend creation and precompute \\
+Pose geometry definition & \runtimekey{POSE\_MIN\_KPT\_CONF\_VALID}, \runtimekey{POSE\_SKELETON\_FILE}, \runtimekey{POSE\_IGNORE\_KEYPOINTS}, \runtimekey{POSE\_DIRECTION\_ANTERIOR\_KEYPOINTS}, \runtimekey{POSE\_DIRECTION\_POSTERIOR\_KEYPOINTS} & direct pass-through from project controls & heading derivation and normalized pose prototype generation \\
+Pose backend batching and env & \runtimekey{POSE\_YOLO\_BATCH}, \runtimekey{POSE\_BATCH\_SIZE}, \runtimekey{POSE\_SLEAP\_ENV}, \runtimekey{POSE\_SLEAP\_DEVICE}, \runtimekey{POSE\_SLEAP\_BATCH}, \runtimekey{POSE\_SLEAP\_MAX\_INSTANCES}, \runtimekey{POSE\_SLEAP\_EXPERIMENTAL\_FEATURES} & direct or runtime-derived & pose inference service and export mode selection \\
+Pose cache handoff & \runtimekey{INDIVIDUAL\_PROPERTIES\_CACHE\_PATH} & path passed directly from UI state & pose direction override and association cues during tracking \\
+Real-time crop export & \runtimekey{ENABLE\_INDIVIDUAL\_DATASET}, \runtimekey{ENABLE\_INDIVIDUAL\_IMAGE\_SAVE}, \runtimekey{INDIVIDUAL\_DATASET\_NAME}, \runtimekey{INDIVIDUAL\_DATASET\_OUTPUT\_DIR}, \runtimekey{INDIVIDUAL\_OUTPUT\_FORMAT}, \runtimekey{INDIVIDUAL\_SAVE\_INTERVAL}, \runtimekey{INDIVIDUAL\_INTERPOLATE\_OCCLUSIONS}, \runtimekey{INDIVIDUAL\_CROP\_PADDING}, \runtimekey{INDIVIDUAL\_BACKGROUND\_COLOR} & direct pass-through & crop extraction for PoseKit, ClassKit, or manual review \\
+\bottomrule
+\end{longtable}
+
+\subsection{How operator controls move the math}
+
+The crosswalk tables above are comprehensive, but operators usually need a more causal reading: if a control moves, which mathematical object moves with it, and what does the tracker do differently?
+
+\begin{longtable}{L{0.19\linewidth} L{0.19\linewidth} L{0.42\linewidth}}
+\caption{High-value UI controls and their mathematical effect.}\label{tab:ui-math-impact}\\
+\toprule
+\textbf{UI control family} & \textbf{Mathematical target} & \textbf{Runtime effect} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{UI control family} & \textbf{Mathematical target} & \textbf{Runtime effect} \\
+\midrule
+\endhead
+Reference body size and resize factor & $s_{\text{ref}}$ and $a_{\text{ref}}$ & They set the length and area scales used to derive \runtimekey{MAX\_DISTANCE\_THRESHOLD}, \runtimekey{CONTINUITY\_THRESHOLD}, \runtimekey{MIN\_RESPAWN\_DISTANCE}, \runtimekey{AGREEMENT\_DISTANCE}, \runtimekey{MIN\_OBJECT\_SIZE}, and \runtimekey{MAX\_OBJECT\_SIZE}. Doubling either control doubles most distance-like gates and quadruples area-like gates. \\
+Assignment distance multiplier & $d_{\text{cull}}$ and the accepted positional radius & This widens or tightens the candidate set before advanced costing. Large values reduce fragmentation but increase the chance of cross-animal confusion in dense scenes. \\
+Recovery search multiplier & established-track split threshold & This changes which tracks are treated as established in the first assignment phase. Raising it makes the solver more conservative about giving tracks privileged first access to detections. \\
+Kalman noise covariance & $\mathbf{Q}_t$ magnitude & Increasing it tells the filter to trust motion memory less and tolerate more maneuvering. That broadens the prediction cloud and makes association less brittle, but can also admit more false matches. \\
+Kalman measurement noise covariance & $\mathbf{R}$ magnitude & Increasing it tells the filter to trust detections less. The state then moves more slowly toward each measurement, which can smooth noisy detections but can lag behind abrupt real motion. \\
+Kalman damping and initial velocity retention & $\mathbf{F}$ and young-track velocity state & These determine how far a prediction coasts when recent detections are missing. Strong damping and low early retention reduce overshoot but make tracks easier to fragment during brief dropouts. \\
+Longitudinal and lateral noise multipliers & $\mathbf{Q}_v(\theta)$ anisotropy & These reshape the predicted uncertainty ellipse around the current body heading. Raising the longitudinal multiplier makes forward motion easier to absorb; raising the lateral multiplier makes sideways reassignments easier to accept. \\
+Association weights & $C_{ij}$ mixture weights & These decide whether motion, orientation, area, or aspect dominates the online score. For example, increasing \runtimekey{W\_ORIENTATION} makes the tracker care more about heading consistency during crossings. \\
+Pose rejection threshold and visibility floor & pose veto inequality & Lower thresholds make the pose-shape veto more aggressive; higher visibility floors require cleaner keypoint evidence before the veto is allowed to reject a candidate. \\
+Respawn multiplier & respawn exclusion radius & This sets how far a free detection must be from every non-lost prediction before a lost slot may be reused. Raising it suppresses duplicate track creation around crowded animals. \\
+Merge agreement multiplier and overlap frames & forward/backward consensus test & These determine how much spatial and temporal agreement forward and backward fragments need before being merged. Conservative values reduce false merges at the cost of more residual fragments. \\
+Velocity break and z-score controls & fragment split tests & These control when a track is judged dynamically implausible and cut into smaller fragments. They should be loosened only after detection and association are already credible. \\
+Relink pose distance and interpolation gap & offline repair acceptance & These only act after primary identity decisions. Tight relink thresholds preserve conservative identity boundaries; larger interpolation gaps improve visual continuity but can hide uncertainty if used too early. \\
+\bottomrule
+\end{longtable}
+\normalsize
+\endgroup
+
+\section{Operational Guidance}
+
+For non-specialist operators, the most important practical sequence remains:
+
+\begin{enumerate}
+  \item validate detections before touching identity parameters,
+  \item set a realistic reference body size,
+  \item tune assignment and lifecycle thresholds next,
+  \item use backward replay and post-processing to resolve residual ambiguity,
+  \item and only then treat relinking and interpolation as refinement tools.
+\end{enumerate}
+
+Three common failure classes map cleanly onto three intervention orders:
+
+\begin{itemize}
+  \item \textbf{Frequent merges into one animal.} Improve detection and morphology first; do not just widen assignment gates.
+  \item \textbf{Excessive fragmentation.} Relax loss tolerance and candidate gating modestly; verify that pose rejection is not too strict.
+  \item \textbf{Identity swaps at crossings.} Enable backward replay, keep merge thresholds conservative, and use pose-derived direction only when the keypoints are genuinely reliable; otherwise prefer explicit marker identity if available.
+\end{itemize}
+
+\section{Implementation Surface}
+
+The following code paths are the highest-value audit points for the current behavior:
+
+\begin{longtable}{L{0.36\linewidth} L{0.56\linewidth}}
+\caption{Primary implementation modules.}\label{tab:modules}\\
+\toprule
+\textbf{Module} & \textbf{Primary responsibility} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Module} & \textbf{Primary responsibility} \\
+\midrule
+\endhead
+\codepath{src/hydra_suite/core/tracking/worker.py} & run orchestration, detector control, detection-cache usage, frame iteration, lifecycle state updates, overlays, and signal emission \\
+\codepath{src/hydra_suite/core/filters/kalman.py} & vectorized Kalman prediction / correction with anisotropic process noise, maturity damping, and Joseph-form updates \\
+\codepath{src/hydra_suite/core/assigners/hungarian.py} & cost matrix construction, advanced gating, pose rejection, staged assignment, and lost-slot respawn logic \\
+\codepath{src/hydra_suite/core/post/processing.py} & fragment cleaning, conservative forward/backward resolution, relinking, and interpolation \\
+\codepath{src/hydra_suite/core/identity/runtime_api.py} & pose runtime construction shared across MAT and PoseKit \\
+\codepath{src/hydra_suite/gui/main_window.py} & UI control collection, scaling from user multipliers to runtime values, and config compatibility logic \\
+\codepath{src/hydra_suite/posekit/ui/main_window.py} & project-driven pose annotation, prediction, smart selection, and evaluation flows \\
+\codepath{src/hydra_suite/classkit/gui/mainwindow.py} & active-learning classification workbench built on embeddings and persistent project state \\
+\codepath{src/hydra_suite/tools/filterkit/core.py} & deduplication, temporal subsampling, and diversity-oriented dataset filtering \\
+\codepath{tests/test_tracking_pipeline_synthetic.py} & synthetic regression for motion, assignment, and post-run resolve/interpolate behavior \\
+\codepath{tests/test_post_tracklet_relinking.py} & targeted regression checks for motion-and-pose relinking \\
+\bottomrule
+\end{longtable}
+
+\section{Summary}
+
+The current MAT tracker is best described as a conservative, modular tracking system rather than a single closed-form tracker. It deliberately combines:
+
+\begin{itemize}
+  \item online motion prediction,
+  \item geometry-aware and pose-aware association,
+  \item lifecycle state transitions,
+  \item replay-based hypothesis comparison,
+  \item and offline continuity repair.
+\end{itemize}
+
+That architecture is more operationally complex than a minimal tracker, but it is also why the present codebase can bridge from raw video to tracking, pose labeling, classification dataset construction, and dataset curation without treating those downstream tasks as an afterthought.
+
+The next major gains are likely to come from stronger explicit identity channels, better offline fusion, and faster staged detection, not from simply increasing the weight of today's pose or appearance cues inside the online Hungarian assignment.
+
+\end{document}
