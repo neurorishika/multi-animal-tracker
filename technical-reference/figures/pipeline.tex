@@ -34,7 +34,7 @@
   \node[stage=MATGreen, below=of export] (offline) {\textbf{7. Offline resolve}\\Backward replay, conservative merge, relink, and interpolate.};
 
   \node[support=SieveBlue, left=18mm of detect] (cache) {\textbf{Detection cache}\\Raw detections are written once and later reused for replay, retuning, and pose-property precompute.};
-  \node[support=ClassRed, right=18mm of offline] (downstream) {\textbf{Downstream use}\\PoseKit, ClassKit, and DataSieve consume trajectories, crops, and derived datasets.};
+  \node[support=ClassRed, right=18mm of offline] (downstream) {\textbf{Downstream use}\\PoseKit, ClassKit, and FilterKit consume trajectories, crops, and derived datasets.};
 
   \draw[arrow] (ingest) -- (detect);
   \draw[arrow] (detect) -- (pose);

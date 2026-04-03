@@ -134,7 +134,7 @@
 \brandchip{MATBlue}{Multi-Animal-Tracker}\hspace{0.6em}
 \brandchip{PoseGreen}{PoseKit}\hspace{0.6em}
 \brandchip{ClassRed}{ClassKit}\hspace{0.6em}
-\brandchip{SieveBlue}{DataSieve}
+\brandchip{SieveBlue}{FilterKit}
 
 \vspace{1.1cm}
 
@@ -147,7 +147,7 @@ This manuscript documents the current implementation of the tracking system in t
   \item explain the algorithmic design to technically fluent readers,
   \item remain understandable to collaborators who are not tracking specialists,
   \item map runtime behavior back to the actual user interface controls,
-  \item and situate tracking within the broader MAT ecosystem that also includes PoseKit, ClassKit, and DataSieve.
+  \item and situate tracking within the broader MAT ecosystem that also includes PoseKit, ClassKit, and FilterKit.
 \end{itemize}
 \end{minipage}
 
@@ -258,11 +258,11 @@ ClassKit is the image-classification sister framework. The current codebase posi
 
 ClassKit is especially relevant when tracking outputs are later used to create behavior, morphology, or identity classification datasets.
 
-\subsection{DataSieve}
+\subsection{FilterKit}
 
-\brandchip{SieveBlue}{DataSieve}
+\brandchip{SieveBlue}{FilterKit}
 
-DataSieve is the dataset subsampling and deduplication tool. Its current core includes:
+FilterKit is the dataset subsampling and deduplication tool. Its current core includes:
 
 \begin{itemize}
   \item perceptual hash deduplication with pHash, dHash, and aHash,
@@ -272,7 +272,7 @@ DataSieve is the dataset subsampling and deduplication tool. Its current core in
   \item and clustering-based diversity sampling.
 \end{itemize}
 
-For large crop sets or frame corpora, DataSieve is the practical pre-filter before annotation in PoseKit or active learning in ClassKit.
+For large crop sets or frame corpora, FilterKit is the practical pre-filter before annotation in PoseKit or active learning in ClassKit.
 
 \section{Pipeline Topology}
 
@@ -981,11 +981,11 @@ for crop or short-tracklet image sets $\mathcal{I}$, and then define an offline 
   + \gamma \cos\!\bigl(\phi(\mathcal{I}_a), \phi(\mathcal{I}_b)\bigr).
 \end{equation}
 
-The current architecture is already a good host for this idea because MAT can export crops, ClassKit can curate identity-relevant image sets, and DataSieve can deduplicate or diversity-filter those sets before training. In practice:
+The current architecture is already a good host for this idea because MAT can export crops, ClassKit can curate identity-relevant image sets, and FilterKit can deduplicate or diversity-filter those sets before training. In practice:
 \begin{itemize}
   \item MAT remains conservative online,
   \item PoseKit and ClassKit help build structured post hoc training data,
-  \item DataSieve trims redundant crop corpora,
+  \item FilterKit trims redundant crop corpora,
   \item and the learned fusion model can operate only on residual fragments that survive the conservative motion pipeline.
 \end{itemize}
 
@@ -1024,7 +1024,7 @@ Marker-mediated online identity & \runtimekey{ENABLE\_IDENTITY\_ANALYSIS}, \runt
 Pose-informed but still conservative assignment & \runtimekey{ENABLE\_POSE\_REJECTION}, \runtimekey{POSE\_REJECTION\_THRESHOLD}, \runtimekey{POSE\_REJECTION\_MIN\_VISIBILITY}, heading-definition controls & keep pose as a veto or directional cue until keypoint reliability supports a stronger identity term \\
 Post-experiment contrastive fusion & crop export controls, \runtimekey{ENABLE\_INDIVIDUAL\_DATASET}, \runtimekey{ENABLE\_INDIVIDUAL\_IMAGE\_SAVE}, relinking and merge controls & add an offline fragment-affinity model that scores residual fragments after tracking and before final export \\
 Hybrid YOLO-detect + YOLO-OBB & \runtimekey{YOLO\_MODEL\_PATH}, runtime dropdowns, TensorRT and batching controls, class filters & add coarse-detector thresholding, crop padding, and crop-refinement scheduling without changing downstream association logic \\
-Dataset curation for identity models & dataset generation controls plus DataSieve / ClassKit workflows & build tighter export loops for deduplication, hard-negative mining, and identity-balanced sampling \\
+Dataset curation for identity models & dataset generation controls plus FilterKit / ClassKit workflows & build tighter export loops for deduplication, hard-negative mining, and identity-balanced sampling \\
 \bottomrule
 \end{longtable}
 \normalsize
@@ -1039,7 +1039,7 @@ Beyond the immediate work above, the technical roadmap suggested by the current 
   \item add stronger explicit identity channels such as tags or color markers when the experiment permits them,
   \item use richer learned fusion only after the experiment, where whole-trajectory evidence is available,
   \item accelerate the detection front-end so the identity stack can spend compute where uncertainty is highest rather than everywhere uniformly,
-  \item and keep tightening the handoff among MAT, PoseKit, ClassKit, and DataSieve so downstream model-building workflows become part of the tracking loop rather than a manual afterthought.
+  \item and keep tightening the handoff among MAT, PoseKit, ClassKit, and FilterKit so downstream model-building workflows become part of the tracking loop rather than a manual afterthought.
 \end{enumerate}
 
 This direction preserves the strongest property of the current tracker: it exposes uncertainty instead of hiding it. Future improvements should therefore increase evidence quality and speed without turning the core assignment stage into a black box that is hard to audit.
@@ -1272,7 +1272,7 @@ The following code paths are the highest-value audit points for the current beha
 \codepath{src/multi_tracker/gui/main_window.py} & UI control collection, scaling from user multipliers to runtime values, and config compatibility logic \\
 \codepath{src/multi_tracker/posekit/ui/main_window.py} & project-driven pose annotation, prediction, smart selection, and evaluation flows \\
 \codepath{src/multi_tracker/classkit/gui/mainwindow.py} & active-learning classification workbench built on embeddings and persistent project state \\
-\codepath{src/multi_tracker/tools/data_sieve/core.py} & deduplication, temporal subsampling, and diversity-oriented dataset filtering \\
+\codepath{src/multi_tracker/filterkit/core.py} & deduplication, temporal subsampling, and diversity-oriented dataset filtering \\
 \codepath{tests/test_tracking_pipeline_synthetic.py} & synthetic regression for motion, assignment, and post-run resolve/interpolate behavior \\
 \codepath{tests/test_post_tracklet_relinking.py} & targeted regression checks for motion-and-pose relinking \\
 \bottomrule
