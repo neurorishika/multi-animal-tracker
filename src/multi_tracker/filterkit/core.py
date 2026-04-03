@@ -1,5 +1,5 @@
 """
-Core logic for Data Sieve tool.
+Core logic for FilterKit.
 Includes perceptual hashing, duplicate removal, and diversity sampling.
 """
 
@@ -13,7 +13,7 @@ import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 
 
-class DataSieveCore:
+class FilterKitCore:
     def available_dedup_methods(self) -> List[str]:
         return ["phash", "dhash", "ahash", "histogram"]
 

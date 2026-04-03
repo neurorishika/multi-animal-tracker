@@ -1,4 +1,4 @@
-"""GUI for Data Sieve."""
+"""GUI for FilterKit."""
 
 import argparse
 import json
@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .core import DataSieveCore
+from .core import FilterKitCore
 
 
 class SieveWorker(QThread):
@@ -47,7 +47,7 @@ class SieveWorker(QThread):
         super().__init__()
         self.dataset_path = dataset_path
         self.config = config
-        self.core = DataSieveCore()
+        self.core = FilterKitCore()
         self._is_running = True
         self.temp_dir = None
 
@@ -141,9 +141,9 @@ class SieveWorker(QThread):
             if self.config.get("canonicalize_enabled"):
                 import tempfile
 
-                from ...core.canonicalization import get_canon_transform
+                from ..core.canonicalization import get_canon_transform
 
-                self.temp_dir = tempfile.mkdtemp(prefix="datasieve_canon_")
+                self.temp_dir = tempfile.mkdtemp(prefix="filterkit_canon_")
                 self.progress.emit(10, "Step 2/7: Applying canonicalization")
                 self.status.emit("Applying canonicalization...")
 
@@ -514,13 +514,13 @@ class DuplicateClusterExplorer(QDialog):
             self._refresh()
 
 
-class DataSieveWindow(QMainWindow):
-    TRANSACTION_FILE = ".datasieve_last_transaction.json"
+class FilterKitWindow(QMainWindow):
+    TRANSACTION_FILE = ".filterkit_last_transaction.json"
 
     def __init__(self):
         super().__init__()
         self.apply_stylesheet()
-        self.setWindowTitle("DataSieve - Dataset Subsampling")
+        self.setWindowTitle("FilterKit - Dataset Subsampling")
         self.resize(1400, 950)
         self.setMinimumSize(1300, 900)
 
@@ -669,8 +669,8 @@ class DataSieveWindow(QMainWindow):
 
     def _set_window_icon(self):
         try:
-            project_root = Path(__file__).resolve().parents[3]
-            icon_path = project_root / "brand" / "datasieve.svg"
+            project_root = Path(__file__).resolve().parents[2]
+            icon_path = project_root / "brand" / "filterkit.svg"
             if icon_path.exists():
                 self.setWindowIcon(QIcon(str(icon_path)))
         except Exception:
@@ -725,8 +725,8 @@ class DataSieveWindow(QMainWindow):
         logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignCenter)
         try:
-            project_root = Path(__file__).resolve().parents[3]
-            logo_path = project_root / "brand" / "datasieve.svg"
+            project_root = Path(__file__).resolve().parents[2]
+            logo_path = project_root / "brand" / "filterkit.svg"
             renderer = QSvgRenderer(str(logo_path))
             if renderer.isValid():
                 view_box = renderer.viewBoxF()
@@ -799,7 +799,7 @@ class DataSieveWindow(QMainWindow):
         layout.addWidget(btn_load)
 
         self.lbl_load_help = QLabel(
-            "Pick your dataset root folder. If it contains an images/ folder, DataSieve uses it automatically."
+            "Pick your dataset root folder. If it contains an images/ folder, FilterKit uses it automatically."
         )
         self.lbl_load_help.setWordWrap(True)
         self.lbl_load_help.setStyleSheet("color: #6a6a6a;")
@@ -1130,8 +1130,8 @@ class DataSieveWindow(QMainWindow):
 
     def _show_logo(self):
         try:
-            project_root = Path(__file__).resolve().parents[3]
-            logo_path = project_root / "brand" / "datasieve.svg"
+            project_root = Path(__file__).resolve().parents[2]
+            logo_path = project_root / "brand" / "filterkit.svg"
 
             canvas_w = max(500, self.logo_label.width() or 800)
             canvas_h = max(320, self.logo_label.height() or 520)
@@ -1169,7 +1169,7 @@ class DataSieveWindow(QMainWindow):
         except Exception:
             pass
 
-        self.logo_label.setText("DataSieve")
+        self.logo_label.setText("FilterKit")
         self.logo_label.setStyleSheet(
             "color: white; font-size: 28px; font-weight: 700;"
         )
@@ -1217,7 +1217,7 @@ class DataSieveWindow(QMainWindow):
         self.dataset_root = root
         self.lbl_path.setText(f"{root.name}/images")
 
-        self.loaded_count = len(DataSieveCore().load_dataset(self.dataset_path))
+        self.loaded_count = len(FilterKitCore().load_dataset(self.dataset_path))
         self.lbl_status.setText(
             f"Dataset loaded. Found {self.loaded_count} image(s). Configure strategy and run sieve."
         )
@@ -1670,7 +1670,7 @@ class DataSieveWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Rollback",
-                "Load a dataset first so DataSieve can locate transaction files.",
+                "Load a dataset first so FilterKit can locate transaction files.",
             )
             return
 
@@ -1731,7 +1731,7 @@ class DataSieveWindow(QMainWindow):
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="DataSieve dataset subsampling UI")
+    ap = argparse.ArgumentParser(description="FilterKit dataset subsampling UI")
     ap.add_argument(
         "dataset",
         nargs="?",
@@ -1744,19 +1744,19 @@ def parse_args():
 def main():
     args = parse_args()
     app = QApplication(sys.argv)
-    app.setApplicationName("DataSieve")
-    app.setApplicationDisplayName("Data Sieve")
+    app.setApplicationName("FilterKit")
+    app.setApplicationDisplayName("FilterKit")
     app.setOrganizationName("NeuroRishika")
 
     try:
-        project_root = Path(__file__).resolve().parents[3]
-        icon_path = project_root / "brand" / "datasieve.svg"
+        project_root = Path(__file__).resolve().parents[2]
+        icon_path = project_root / "brand" / "filterkit.svg"
         if icon_path.exists():
             app.setWindowIcon(QIcon(str(icon_path)))
     except Exception:
         pass
 
-    window = DataSieveWindow()
+    window = FilterKitWindow()
     if args.dataset:
         window.load_dataset_root(Path(args.dataset), show_errors=True)
     window.show()

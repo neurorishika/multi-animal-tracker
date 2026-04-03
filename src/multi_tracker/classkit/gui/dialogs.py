@@ -152,7 +152,7 @@ CLASSKIT_SIEVE_THRESHOLD = 5000
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Add-source dialog (pick a folder of images, optionally run DataSieve)
+# Add-source dialog (pick a folder of images, optionally run FilterKit)
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -164,7 +164,7 @@ class AddSourceDialog(QDialog):
     used — matching the PoseKit convention.
 
     If a folder contains more images than ``CLASSKIT_SIEVE_THRESHOLD``, the
-    dialog offers to open DataSieve before continuing.
+    dialog offers to open FilterKit before continuing.
     """
 
     def __init__(self, existing_sources: Optional[List[Path]] = None, parent=None):
@@ -259,20 +259,20 @@ class AddSourceDialog(QDialog):
             )
             return
 
-        # DataSieve check
+        # FilterKit check
         if count > CLASSKIT_SIEVE_THRESHOLD:
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Warning)
             msg.setWindowTitle("Large Dataset Detected")
             msg.setText(
                 f"This folder contains {count:,} images — that is a lot to label.\n\n"
-                "DataSieve can reduce near-duplicates and create a smaller "
+                "FilterKit can reduce near-duplicates and create a smaller "
                 "representative subset before labeling."
             )
             msg.setInformativeText(
-                "Open this folder in DataSieve now, or add it as-is?"
+                "Open this folder in FilterKit now, or add it as-is?"
             )
-            btn_sieve = msg.addButton("Open in DataSieve", QMessageBox.AcceptRole)
+            btn_sieve = msg.addButton("Open in FilterKit", QMessageBox.AcceptRole)
             btn_add = msg.addButton("Add Anyway", QMessageBox.DestructiveRole)
             msg.addButton(QMessageBox.Cancel)
             msg.exec()
@@ -283,14 +283,14 @@ class AddSourceDialog(QDialog):
                         [
                             sys.executable,
                             "-m",
-                            "multi_tracker.tools.data_sieve.gui",
+                            "multi_tracker.filterkit.gui",
                             str(d),
                         ],
                         start_new_session=True,
                     )
                 except Exception as exc:
                     QMessageBox.warning(
-                        self, "Launch Failed", f"Could not launch DataSieve:\n{exc}"
+                        self, "Launch Failed", f"Could not launch FilterKit:\n{exc}"
                     )
                 return
             if clicked != btn_add:
@@ -502,20 +502,20 @@ class SourceManagerDialog(QDialog):
             )
             return
 
-        # DataSieve check
+        # FilterKit check
         if count > CLASSKIT_SIEVE_THRESHOLD:
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Warning)
             msg.setWindowTitle("Large Dataset Detected")
             msg.setText(
                 f"This folder contains {count:,} images — that is a lot to label.\n\n"
-                "DataSieve can reduce near-duplicates and create a smaller "
+                "FilterKit can reduce near-duplicates and create a smaller "
                 "representative subset before labeling."
             )
             msg.setInformativeText(
-                "Open this folder in DataSieve now, or add it as-is?"
+                "Open this folder in FilterKit now, or add it as-is?"
             )
-            btn_sieve = msg.addButton("Open in DataSieve", QMessageBox.AcceptRole)
+            btn_sieve = msg.addButton("Open in FilterKit", QMessageBox.AcceptRole)
             btn_add = msg.addButton("Add Anyway", QMessageBox.DestructiveRole)
             msg.addButton(QMessageBox.Cancel)
             msg.exec()
@@ -526,14 +526,14 @@ class SourceManagerDialog(QDialog):
                         [
                             sys.executable,
                             "-m",
-                            "multi_tracker.tools.data_sieve.gui",
+                            "multi_tracker.filterkit.gui",
                             str(d),
                         ],
                         start_new_session=True,
                     )
                 except Exception as exc:
                     QMessageBox.warning(
-                        self, "Launch Failed", f"Could not launch DataSieve:\n{exc}"
+                        self, "Launch Failed", f"Could not launch FilterKit:\n{exc}"
                     )
                 return
             if clicked != btn_add:
