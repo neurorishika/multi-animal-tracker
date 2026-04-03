@@ -11,9 +11,8 @@ from pathlib import Path
 from typing import List, Optional
 
 import pandas as pd
-from PySide6.QtCore import QRectF, Qt, QThread, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QPainter, QPixmap
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
@@ -424,74 +423,56 @@ class MainWindow(QMainWindow):
 
     def _make_welcome_page(self) -> QWidget:
         """Logo/welcome screen shown before any session is loaded."""
-        page = QWidget()
-        page.setStyleSheet("background-color: #121212;")
-        v = QVBoxLayout(page)
-        v.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        v.setSpacing(0)
-        v.addStretch(1)
-
-        logo_lbl = QLabel()
-        logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        from PySide6.QtCore import QByteArray
-
-        from hydra_suite.paths import get_brand_icon_bytes
-
-        logo_data = get_brand_icon_bytes("refinekit.svg")
-        if logo_data is not None:
-            renderer = QSvgRenderer(QByteArray(logo_data))
-            if renderer.isValid():
-                vb = renderer.viewBoxF()
-                if vb.isEmpty():
-                    ds = renderer.defaultSize()
-                    vb = QRectF(0, 0, max(1, ds.width()), max(1, ds.height()))
-                max_w, max_h = 560, 300
-                scale = min(max_w / max(vb.width(), 1), max_h / max(vb.height(), 1))
-                lw = max(1, int(vb.width() * scale))
-                lh = max(1, int(vb.height() * scale))
-                canvas = QPixmap(lw, lh)
-                canvas.fill(QColor(0, 0, 0, 0))
-                painter = QPainter(canvas)
-                painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-                renderer.render(painter, QRectF(0, 0, lw, lh))
-                painter.end()
-                logo_lbl.setPixmap(canvas)
-        v.addWidget(logo_lbl)
-
-        sub = QLabel("Review  \u00b7  Correct  \u00b7  Verify")
-        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setStyleSheet(
-            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        from hydra_suite.widgets import (
+            ButtonDef,
+            RecentItemsStore,
+            WelcomeConfig,
+            WelcomePage,
         )
-        v.addWidget(sub)
-        v.addSpacing(40)
 
-        btn_row = QHBoxLayout()
-        btn_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        btn_row.setSpacing(16)
+        store = RecentItemsStore("refinekit")
+        self._recents_store = store
 
-        btn_v = QPushButton("Load Video\u2026")
-        btn_v.setFixedWidth(180)
-        btn_v.setToolTip("Open a single video file for review")
-        btn_v.clicked.connect(self._load_single_video)
-        btn_row.addWidget(btn_v)
+        config = WelcomeConfig(
+            logo_svg="refinekit.svg",
+            tagline="Review  \u00b7  Correct  \u00b7  Verify",
+            buttons=[
+                ButtonDef(
+                    label="Load Video\u2026",
+                    callback=self._load_single_video,
+                    tooltip="Open a single video file for review",
+                ),
+                ButtonDef(
+                    label="Load Video List\u2026",
+                    callback=self._load_video_list,
+                    tooltip="Open a .txt file listing one video path per line",
+                ),
+                ButtonDef(label="Quit", callback=self.close),
+            ],
+            recents_label="Recent Videos",
+            recents_store=store,
+            on_recent_clicked=self._open_recent_video,
+        )
+        self._welcome_page = WelcomePage(config)
+        return self._welcome_page
 
-        btn_l = QPushButton("Load Video List\u2026")
-        btn_l.setFixedWidth(180)
-        btn_l.setToolTip("Open a .txt file listing one video path per line")
-        btn_l.clicked.connect(self._load_video_list)
-        btn_row.addWidget(btn_l)
+    def _open_recent_video(self, path: str):
+        """Open a video from the recent items list."""
+        from pathlib import Path
 
-        btn_q = QPushButton("Quit")
-        btn_q.setFixedWidth(140)
-        btn_q.clicked.connect(self.close)
-        btn_row.addWidget(btn_q)
+        video_path = Path(path)
+        if video_path.exists():
+            self._sessions = [str(video_path)]
+            self._session_idx = 0
+            self._open_current_session()
+        else:
+            from PySide6.QtWidgets import QMessageBox
 
-        ctr = QWidget()
-        ctr.setLayout(btn_row)
-        v.addWidget(ctr)
-        v.addStretch(1)
-        return page
+            QMessageBox.warning(self, "Not Found", f"Video not found:\n{path}")
+            if hasattr(self, "_recents_store"):
+                self._recents_store.remove(path)
+                if hasattr(self, "_welcome_page"):
+                    self._welcome_page.refresh_recents()
 
     # ------------------------------------------------------------------
     # Session management
@@ -582,6 +563,8 @@ class MainWindow(QMainWindow):
         self._maybe_run_merge_wizard()
 
         self._run_scorer()
+        if hasattr(self, "_recents_store"):
+            self._recents_store.add(video_path)
         self._content_stack.setCurrentIndex(1)  # reveal main view
         self._update_nav_state()
         logger.info(
