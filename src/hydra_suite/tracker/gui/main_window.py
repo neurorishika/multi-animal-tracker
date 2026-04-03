@@ -4179,120 +4179,49 @@ class MainWindow(QMainWindow):
 
     def _make_welcome_page(self):
         """Create startup splash page with primary HYDRA session actions."""
-        page = QWidget()
-        page.setStyleSheet("background-color: #121212;")
-        layout = QVBoxLayout(page)
-        layout.setAlignment(Qt.AlignCenter)
-        layout.setSpacing(0)
-        layout.addStretch(1)
-
-        logo_label = QLabel()
-        logo_label.setAlignment(Qt.AlignCenter)
-
-        try:
-            from PySide6.QtCore import QByteArray
-
-            from hydra_suite.paths import get_brand_icon_bytes
-
-            logo_data = get_brand_icon_bytes("hydra.svg")
-            if logo_data is not None:
-                renderer = QSvgRenderer(QByteArray(logo_data))
-            else:
-                renderer = QSvgRenderer()
-            if renderer.isValid():
-                view_box = renderer.viewBoxF()
-                if view_box.isEmpty():
-                    default_size = renderer.defaultSize()
-                    view_box = QRectF(
-                        0,
-                        0,
-                        max(1, default_size.width()),
-                        max(1, default_size.height()),
-                    )
-
-                max_w, max_h = 560, 300
-                scale = min(
-                    max_w / max(view_box.width(), 1),
-                    max_h / max(view_box.height(), 1),
-                )
-                logo_w = max(1, int(view_box.width() * scale))
-                logo_h = max(1, int(view_box.height() * scale))
-                canvas = QPixmap(logo_w, logo_h)
-                canvas.fill(QColor(0, 0, 0, 0))
-
-                painter = QPainter(canvas)
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                renderer.render(painter, QRectF(0, 0, logo_w, logo_h))
-                painter.end()
-                logo_label.setPixmap(canvas)
-            else:
-                logo_label.setText("HYDRA")
-                logo_label.setStyleSheet(
-                    "color: #ffffff; font-size: 28px; font-weight: bold;"
-                )
-        except Exception:
-            logo_label.setText("HYDRA")
-            logo_label.setStyleSheet(
-                "color: #ffffff; font-size: 28px; font-weight: bold;"
-            )
-
-        subtitle = QLabel("Track  |  Analyze  |  Refine")
-        subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet(
-            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        from hydra_suite.widgets import (
+            ButtonDef,
+            RecentItemsStore,
+            WelcomeConfig,
+            WelcomePage,
         )
 
-        layout.addWidget(logo_label, alignment=Qt.AlignHCenter)
-        layout.addWidget(subtitle, alignment=Qt.AlignHCenter)
-        layout.addSpacing(24)
+        store = RecentItemsStore("tracker")
+        self._recents_store = store
 
-        row_one = QHBoxLayout()
-        row_one.setAlignment(Qt.AlignCenter)
-        row_one.setSpacing(16)
+        config = WelcomeConfig(
+            logo_svg="hydra.svg",
+            tagline="Track  |  Analyze  |  Refine",
+            buttons=[
+                ButtonDef(label="Load Video\u2026", callback=self.select_file),
+                ButtonDef(
+                    label="Load Video List\u2026", callback=self._import_batch_list
+                ),
+                ButtonDef(label="Load Config\u2026", callback=self.load_config),
+                ButtonDef(label="Quit", callback=self.close),
+            ],
+            recents_label="Recent Videos",
+            recents_store=store,
+            on_recent_clicked=self._open_recent_video,
+        )
+        self._welcome_page = WelcomePage(config)
+        return self._welcome_page
 
-        btn_load_video = QPushButton("Load Video...")
-        btn_load_video.setFixedWidth(176)
-        btn_load_video.clicked.connect(self.select_file)
-        row_one.addWidget(btn_load_video)
+    def _open_recent_video(self, path: str):
+        """Open a video file from the recent items list."""
+        from pathlib import Path
 
-        btn_load_list = QPushButton("Load Video List...")
-        btn_load_list.setFixedWidth(176)
-        btn_load_list.clicked.connect(self._import_batch_list)
-        row_one.addWidget(btn_load_list)
+        video_path = Path(path)
+        if video_path.exists():
+            self._setup_video_file(str(video_path))
+        else:
+            from PySide6.QtWidgets import QMessageBox
 
-        row_two = QHBoxLayout()
-        row_two.setAlignment(Qt.AlignCenter)
-        row_two.setSpacing(16)
-
-        btn_load_config = QPushButton("Load Config...")
-        btn_load_config.setFixedWidth(176)
-        btn_load_config.clicked.connect(self.load_config)
-        row_two.addWidget(btn_load_config)
-
-        btn_quit = QPushButton("Quit")
-        btn_quit.setFixedWidth(176)
-        btn_quit.clicked.connect(self.close)
-        row_two.addWidget(btn_quit)
-
-        self._splash_buttons = [
-            btn_load_video,
-            btn_load_list,
-            btn_load_config,
-            btn_quit,
-        ]
-
-        button_container = QWidget()
-        button_layout = QVBoxLayout(button_container)
-        button_layout.setContentsMargins(0, 0, 0, 0)
-        button_layout.setSpacing(8)
-        button_layout.addLayout(row_one)
-        button_layout.addLayout(row_two)
-
-        layout.addWidget(button_container, alignment=Qt.AlignHCenter)
-        layout.addStretch(1)
-
-        return page
+            QMessageBox.warning(self, "File Not Found", f"Video not found:\n{path}")
+            if hasattr(self, "_recents_store"):
+                self._recents_store.remove(path)
+                if hasattr(self, "_welcome_page"):
+                    self._welcome_page.refresh_recents()
 
     def _show_workspace(self):
         """Switch to the main HYDRA workspace view."""
@@ -10788,6 +10717,8 @@ class MainWindow(QMainWindow):
 
         # Enable controls
         self._apply_ui_state("idle")
+        if hasattr(self, "_recents_store"):
+            self._recents_store.add(fp)
         self._show_workspace()
 
     def _on_batch_mode_toggled(self, checked):
