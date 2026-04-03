@@ -66,3 +66,114 @@ class TestRecentItemsStore:
         # Corrupt the file
         store._json_path().write_text("NOT JSON", encoding="utf-8")
         assert store.load() == []
+
+
+import sys
+
+# Guard Qt tests — skip if display not available
+pytest.importorskip("PySide6")
+
+
+@pytest.fixture()
+def qapp():
+    """Provide a QApplication for widget tests."""
+    from PySide6.QtWidgets import QApplication
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    return app
+
+
+class TestWelcomePage:
+    def test_creates_with_minimal_config(self, qapp, store):
+        from hydra_suite.widgets.welcome_page import (
+            ButtonDef,
+            WelcomeConfig,
+            WelcomePage,
+        )
+
+        config = WelcomeConfig(
+            logo_svg="hydra.svg",
+            tagline="Test Tagline",
+            buttons=[ButtonDef(label="Test", callback=lambda: None)],
+            recents_label="Recent Items",
+            recents_store=store,
+            on_recent_clicked=lambda p: None,
+        )
+        page = WelcomePage(config)
+        assert page is not None
+        page.close()
+
+    def test_buttons_rendered(self, qapp, store):
+        from PySide6.QtWidgets import QPushButton
+
+        from hydra_suite.widgets.welcome_page import (
+            ButtonDef,
+            WelcomeConfig,
+            WelcomePage,
+        )
+
+        clicked = []
+        config = WelcomeConfig(
+            logo_svg="hydra.svg",
+            tagline="Test",
+            buttons=[
+                ButtonDef(label="Alpha", callback=lambda: clicked.append("a")),
+                ButtonDef(label="Beta", callback=lambda: clicked.append("b")),
+                ButtonDef(label="Gamma", callback=lambda: clicked.append("c")),
+            ],
+            recents_label="Recent",
+            recents_store=store,
+            on_recent_clicked=lambda p: None,
+        )
+        page = WelcomePage(config)
+        btns = page.findChildren(QPushButton)
+        labels = [b.text() for b in btns]
+        assert "Alpha" in labels
+        assert "Beta" in labels
+        assert "Gamma" in labels
+        page.close()
+
+    def test_recents_displayed(self, qapp, store):
+        from hydra_suite.widgets.welcome_page import (
+            ButtonDef,
+            WelcomeConfig,
+            WelcomePage,
+        )
+
+        store.add("/data/videos/experiment1.mp4")
+        store.add("/data/videos/experiment2.mp4")
+
+        config = WelcomeConfig(
+            logo_svg="hydra.svg",
+            tagline="Test",
+            buttons=[ButtonDef(label="Open", callback=lambda: None)],
+            recents_label="Recent Videos",
+            recents_store=store,
+            on_recent_clicked=lambda p: None,
+        )
+        page = WelcomePage(config)
+        all_text = page.grab()  # Just verify it renders without error
+        assert all_text is not None
+        page.close()
+
+    def test_refresh_recents(self, qapp, store):
+        from hydra_suite.widgets.welcome_page import (
+            ButtonDef,
+            WelcomeConfig,
+            WelcomePage,
+        )
+
+        config = WelcomeConfig(
+            logo_svg="hydra.svg",
+            tagline="Test",
+            buttons=[ButtonDef(label="Open", callback=lambda: None)],
+            recents_label="Recent",
+            recents_store=store,
+            on_recent_clicked=lambda p: None,
+        )
+        page = WelcomePage(config)
+        store.add("/new/path")
+        page.refresh_recents()
+        page.close()
