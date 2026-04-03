@@ -38,7 +38,7 @@
 - All path resolution goes through `hydra_suite.paths`. No module uses `Path(__file__).parents[N]` to navigate to repo root.
 - Bundled read-only assets are in `hydra_suite.resources` and accessed via `importlib.resources`.
 - User-writable data (models, training runs, config) lives in platform directories, never inside the installed package.
-- Users can override directories with `MAT_DATA_DIR` and `MAT_CONFIG_DIR` environment variables.
+- Users can override directories with `HYDRA_DATA_DIR` and `HYDRA_CONFIG_DIR` environment variables.
 
 ## Data and Config Directories
 
@@ -62,7 +62,7 @@ All apps share paths via `hydra_suite.paths`. This module resolves user-writable
 
 | Variable | Overrides | Default |
 |----------|-----------|---------|
-| `MAT_DATA_DIR` | Models, training runs | `platformdirs.user_data_dir()` |
-| `MAT_CONFIG_DIR` | Presets, skeletons, advanced config | `platformdirs.user_config_dir()` |
+| `HYDRA_DATA_DIR` | Models, training runs | `platformdirs.user_data_dir()` |
+| `HYDRA_CONFIG_DIR` | Presets, skeletons, advanced config | `platformdirs.user_config_dir()` |
 
 When adding a new module that needs to read models, configs, or assets, always import from `hydra_suite.paths` — never construct paths relative to `__file__`.

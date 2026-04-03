@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Documentation quality audit for src/multi_tracker.
+"""Documentation quality audit for src/hydra_suite.
 
 Checks:
 - Module docstring coverage
@@ -169,7 +169,7 @@ def rounded(metrics: Metrics) -> dict[str, float | int]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Audit documentation quality in code")
-    parser.add_argument("--src", default="src/multi_tracker", help="source root")
+    parser.add_argument("--src", default="src/hydra_suite", help="source root")
     parser.add_argument("--baseline", default="docs/doc-quality-baseline.json")
     parser.add_argument("--write-baseline", action="store_true")
     parser.add_argument("--min-module-doc", type=float, default=90.0)

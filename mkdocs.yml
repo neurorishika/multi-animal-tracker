@@ -91,7 +91,7 @@ nav:
   - Installation: getting-started/installation.md
   - Environments and Makefile: getting-started/environments.md
   - Integrations: getting-started/integrations.md
-  - Quickstart (MAT): getting-started/quickstart-hydra.md
+  - Quickstart (HYDRA): getting-started/quickstart-hydra.md
   - Quickstart (PoseKit): getting-started/quickstart-posekit.md
   - Platform Notes: getting-started/platforms.md
 - User Guide:
@@ -123,7 +123,7 @@ nav:
   - Contributing: developer-guide/contributing.md
 - Reference:
   - API Index: reference/api-index.md
-  - UI Components (MAT): reference/ui-components-hydra.md
+  - UI Components (HYDRA): reference/ui-components-hydra.md
   - UI Components (PoseKit): reference/ui-components-posekit.md
   - API (App): reference/api-app.md
   - API (Core): reference/api-core.md

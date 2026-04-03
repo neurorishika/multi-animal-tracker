@@ -1,4 +1,4 @@
-#!/home/tracking/miniforge3/envs/multi-animal-tracker-cuda/bin/python
+#!/home/tracking/miniforge3/envs/hydra-suite-cuda/bin/python
 """Benchmark MAT model inference across different runtimes.
 
 Measures latency and throughput for each model type (OBB detection, pose
@@ -56,14 +56,14 @@ sys.path.insert(0, str(_REPO_ROOT / "src"))
 os.environ.setdefault("YOLO_AUTOINSTALL", "false")
 os.environ.setdefault("ULTRALYTICS_SKIP_REQUIREMENTS_CHECKS", "1")
 
-from multi_tracker.runtime.compute_runtime import (
+from hydra_suite.runtime.compute_runtime import (
     CANONICAL_RUNTIMES,
     _normalize_runtime,
     allowed_runtimes_for_pipelines,
     runtime_label,
     supported_runtimes_for_pipeline,
 )
-from multi_tracker.utils.gpu_utils import get_device_info
+from hydra_suite.utils.gpu_utils import get_device_info
 
 logger = logging.getLogger("mat_benchmark")
 
@@ -312,7 +312,7 @@ def bench_obb(
     )
 
     try:
-        from multi_tracker.core.detectors import YOLOOBBDetector
+        from hydra_suite.core.detectors import YOLOOBBDetector
 
         params = _runtime_to_obb_params(
             runtime,
@@ -393,7 +393,7 @@ def bench_obb_compile(
     effective_imgsz = imgsz if imgsz is not None else max(frame_size)
 
     try:
-        from multi_tracker.core.detectors import YOLOOBBDetector
+        from hydra_suite.core.detectors import YOLOOBBDetector
 
         params = _runtime_to_obb_params(
             runtime,
@@ -458,11 +458,11 @@ def bench_pose(
     )
 
     try:
-        from multi_tracker.core.identity.pose.backends.yolo import (
+        from hydra_suite.core.identity.pose.backends.yolo import (
             YoloNativeBackend,
             auto_export_yolo_model,
         )
-        from multi_tracker.core.identity.pose.types import PoseRuntimeConfig
+        from hydra_suite.core.identity.pose.types import PoseRuntimeConfig
 
         flavor, device = _runtime_to_pose_flavor(runtime)
 
@@ -540,10 +540,8 @@ def bench_pose_compile(
         return result
 
     try:
-        from multi_tracker.core.identity.pose.backends.yolo import (
-            auto_export_yolo_model,
-        )
-        from multi_tracker.core.identity.pose.types import PoseRuntimeConfig
+        from hydra_suite.core.identity.pose.backends.yolo import auto_export_yolo_model
+        from hydra_suite.core.identity.pose.types import PoseRuntimeConfig
 
         flavor, device = _runtime_to_pose_flavor(runtime)
         artifact_path = _resolve_pose_artifact_path(model_path, runtime)
@@ -598,7 +596,7 @@ def bench_classify(
     )
 
     try:
-        from multi_tracker.core.identity.classification.cnn import (
+        from hydra_suite.core.identity.classification.cnn import (
             CNNIdentityBackend,
             CNNIdentityConfig,
         )

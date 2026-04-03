@@ -25,7 +25,7 @@
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta,positioning,fit,calc,matrix,backgrounds}
 
-\definecolor{MATBlue}{HTML}{5B8BC7}
+\definecolor{HYDRABlue}{HTML}{5B8BC7}
 \definecolor{MATGreen}{HTML}{89B04F}
 \definecolor{MATSand}{HTML}{ECD99D}
 \definecolor{PoseBlue}{HTML}{25578C}
@@ -48,13 +48,13 @@
   colorlinks=true,
   linkcolor=PoseBlue,
   urlcolor=SieveBlue,
-  pdftitle={Multi-Animal-Tracker Technical Reference},
-  pdfauthor={OpenAI Codex for the Multi-Animal-Tracker project}
+  pdftitle={HYDRA Suite Technical Reference},
+  pdfauthor={OpenAI Codex for the HYDRA Suite project}
 }
 
 \pagestyle{fancy}
 \fancyhf{}
-\fancyhead[L]{\textcolor{Ink}{Multi-Animal-Tracker Reference}}
+\fancyhead[L]{\textcolor{Ink}{HYDRA Suite Reference}}
 \fancyhead[R]{\textcolor{Slate}{Current Tracking System}}
 \fancyfoot[C]{\textcolor{Slate}{\thepage}}
 \setlength{\headheight}{14pt}
@@ -66,7 +66,7 @@
 \setlist[enumerate]{leftmargin=1.6em}
 
 \titleformat{\section}
-  {\Large\sffamily\bfseries\color{MATBlue}}
+  {\Large\sffamily\bfseries\color{HYDRABlue}}
   {\thesection}
   {0.7em}
   {}
@@ -103,7 +103,7 @@
 \begin{titlepage}
 \begin{tikzpicture}[remember picture,overlay]
   \fill[Cloud] (current page.south west) rectangle (current page.north east);
-  \fill[MATBlue] ([yshift=-1.6cm]current page.north west) rectangle ([xshift=0.76\paperwidth]current page.north east);
+  \fill[HYDRABlue] ([yshift=-1.6cm]current page.north west) rectangle ([xshift=0.76\paperwidth]current page.north east);
   \fill[PoseGreen] ([xshift=0.76\paperwidth,yshift=-1.6cm]current page.north west) rectangle (current page.north east);
   \fill[MATGreen] ([yshift=-3.7cm]current page.north west) rectangle ([xshift=0.22\paperwidth,yshift=-1.6cm]current page.north west);
   \fill[ClassGold] ([xshift=0.22\paperwidth,yshift=-3.7cm]current page.north west) rectangle ([xshift=0.54\paperwidth,yshift=-1.6cm]current page.north west);
@@ -121,7 +121,7 @@
     text width=0.9\linewidth,
     align=left
   ] {
-    {\color{white}\sffamily\bfseries\Large Multi-Animal-Tracker\par}
+    {\color{white}\sffamily\bfseries\Large HYDRA Suite\par}
     \vspace{0.35cm}
     {\color{white}\sffamily\bfseries\fontsize{23}{28}\selectfont Technical Reference for the Current Tracking System\par}
     \vspace{0.35cm}
@@ -131,7 +131,7 @@
 
 \vspace{2.2cm}
 
-\brandchip{MATBlue}{Multi-Animal-Tracker}\hspace{0.6em}
+\brandchip{HYDRABlue}{HYDRA Suite}\hspace{0.6em}
 \brandchip{PoseGreen}{PoseKit}\hspace{0.6em}
 \brandchip{ClassRed}{ClassKit}\hspace{0.6em}
 \brandchip{SieveBlue}{FilterKit}
@@ -163,13 +163,13 @@ This manuscript documents the current implementation of the tracking system in t
   ] {
     \small\color{Slate}
     Primary implementation surfaces described in this reference include
-    \codepath{multi_tracker.core.tracking.worker},
-    \codepath{multi_tracker.core.filters.kalman},
-    \codepath{multi_tracker.core.assigners.hungarian},
-    \codepath{multi_tracker.core.post.processing},
-    \codepath{multi_tracker.core.identity.runtime_api},
+    \codepath{hydra_suite.core.tracking.worker},
+    \codepath{hydra_suite.core.filters.kalman},
+    \codepath{hydra_suite.core.assigners.hungarian},
+    \codepath{hydra_suite.core.post.processing},
+    \codepath{hydra_suite.core.identity.runtime_api},
     plus the associated GUI parameter derivation in
-    \codepath{multi_tracker.gui.main_window}.
+    \codepath{hydra_suite.gui.main_window}.
   };
 \end{tikzpicture}
 
@@ -182,7 +182,7 @@ This manuscript documents the current implementation of the tracking system in t
 
 \section{Executive Overview}
 
-Multi-Animal-Tracker (MAT) is not a single monolithic algorithm. The current system is a staged evidence-integration pipeline whose online and offline phases intentionally serve different purposes.
+HYDRA Suite (MAT) is not a single monolithic algorithm. The current system is a staged evidence-integration pipeline whose online and offline phases intentionally serve different purposes.
 
 \begin{itemize}
   \item The online phase answers: which detections belong to which tracks right now?
@@ -212,9 +212,9 @@ The tracking algorithm does not live alone. The repository is now a small ecosys
   \label{fig:ecosystem}
 \end{center}
 
-\subsection{Multi-Animal-Tracker}
+\subsection{HYDRA Suite}
 
-\brandchip{MATBlue}{MAT}
+\brandchip{HYDRABlue}{MAT}
 
 MAT is the tracking workbench. It handles:
 
@@ -1046,7 +1046,7 @@ This direction preserves the strongest property of the current tracker: it expos
 
 \section{UI-to-Runtime Parameter Mapping}
 
-The GUI does not pass all values to the worker in raw user-entered form. Several controls are scaled into resized-coordinate pixel units. The mapping is implemented in \codepath{multi_tracker.gui.main_window:get\_parameters\_dict}.
+The GUI does not pass all values to the worker in raw user-entered form. Several controls are scaled into resized-coordinate pixel units. The mapping is implemented in \codepath{hydra_suite.gui.main_window:get\_parameters\_dict}.
 
 \subsection{Primary derived quantities}
 
@@ -1264,15 +1264,15 @@ The following code paths are the highest-value audit points for the current beha
 \textbf{Module} & \textbf{Primary responsibility} \\
 \midrule
 \endhead
-\codepath{src/multi_tracker/core/tracking/worker.py} & run orchestration, detector control, detection-cache usage, frame iteration, lifecycle state updates, overlays, and signal emission \\
-\codepath{src/multi_tracker/core/filters/kalman.py} & vectorized Kalman prediction / correction with anisotropic process noise, maturity damping, and Joseph-form updates \\
-\codepath{src/multi_tracker/core/assigners/hungarian.py} & cost matrix construction, advanced gating, pose rejection, staged assignment, and lost-slot respawn logic \\
-\codepath{src/multi_tracker/core/post/processing.py} & fragment cleaning, conservative forward/backward resolution, relinking, and interpolation \\
-\codepath{src/multi_tracker/core/identity/runtime_api.py} & pose runtime construction shared across MAT and PoseKit \\
-\codepath{src/multi_tracker/gui/main_window.py} & UI control collection, scaling from user multipliers to runtime values, and config compatibility logic \\
-\codepath{src/multi_tracker/posekit/ui/main_window.py} & project-driven pose annotation, prediction, smart selection, and evaluation flows \\
-\codepath{src/multi_tracker/classkit/gui/mainwindow.py} & active-learning classification workbench built on embeddings and persistent project state \\
-\codepath{src/multi_tracker/tools/filterkit/core.py} & deduplication, temporal subsampling, and diversity-oriented dataset filtering \\
+\codepath{src/hydra_suite/core/tracking/worker.py} & run orchestration, detector control, detection-cache usage, frame iteration, lifecycle state updates, overlays, and signal emission \\
+\codepath{src/hydra_suite/core/filters/kalman.py} & vectorized Kalman prediction / correction with anisotropic process noise, maturity damping, and Joseph-form updates \\
+\codepath{src/hydra_suite/core/assigners/hungarian.py} & cost matrix construction, advanced gating, pose rejection, staged assignment, and lost-slot respawn logic \\
+\codepath{src/hydra_suite/core/post/processing.py} & fragment cleaning, conservative forward/backward resolution, relinking, and interpolation \\
+\codepath{src/hydra_suite/core/identity/runtime_api.py} & pose runtime construction shared across MAT and PoseKit \\
+\codepath{src/hydra_suite/gui/main_window.py} & UI control collection, scaling from user multipliers to runtime values, and config compatibility logic \\
+\codepath{src/hydra_suite/posekit/ui/main_window.py} & project-driven pose annotation, prediction, smart selection, and evaluation flows \\
+\codepath{src/hydra_suite/classkit/gui/mainwindow.py} & active-learning classification workbench built on embeddings and persistent project state \\
+\codepath{src/hydra_suite/tools/filterkit/core.py} & deduplication, temporal subsampling, and diversity-oriented dataset filtering \\
 \codepath{tests/test_tracking_pipeline_synthetic.py} & synthetic regression for motion, assignment, and post-run resolve/interpolate behavior \\
 \codepath{tests/test_post_tracklet_relinking.py} & targeted regression checks for motion-and-pose relinking \\
 \bottomrule

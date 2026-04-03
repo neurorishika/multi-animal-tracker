@@ -1,10 +1,10 @@
 .PHONY: env-create env-create-cuda env-create-mps env-create-rocm env-update env-update-cuda env-update-mps env-update-rocm env-remove env-remove-cuda env-remove-mps env-remove-rocm install install-cuda install-mps install-rocm install-dev setup setup-cuda setup-mps setup-rocm test pytest test-cov test-cov-html verify-rocm clean docs-install docs-serve docs-build docs-quality docs-check techref-build techref-clean pre-commit-install pre-commit-autopep8 pre-commit-run pre-commit-update format format-check lint lint-fix lint-strict lint-report dead-code dead-code-fix dep-graph dep-graph-text type-check audit benchmark benchmark-quick benchmark-obb benchmark-pose benchmark-classify build publish publish-test help
 
 # Environment names for different platforms
-ENV_NAME = multi-animal-tracker
-ENV_NAME_GPU = multi-animal-tracker-cuda
-ENV_NAME_MPS = multi-animal-tracker-mps
-ENV_NAME_ROCM = multi-animal-tracker-rocm
+ENV_NAME = hydra
+ENV_NAME_GPU = hydra-cuda
+ENV_NAME_MPS = hydra-mps
+ENV_NAME_ROCM = hydra-rocm
 CUDA_MAJOR ?= 13
 
 # =============================================================================
@@ -47,13 +47,13 @@ install-cuda:
 	fi
 	@mkdir -p "$$CONDA_PREFIX/etc/conda/activate.d" "$$CONDA_PREFIX/etc/conda/deactivate.d"
 	@printf '%s\n' \
-		'export _MAT_OLD_LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}"' \
+		'export _HYDRA_OLD_LD_LIBRARY_PATH="$${LD_LIBRARY_PATH:-}"' \
 		'export LD_LIBRARY_PATH="$$CONDA_PREFIX/targets/x86_64-linux/lib:$$CONDA_PREFIX/lib$${LD_LIBRARY_PATH:+:$$LD_LIBRARY_PATH}"' \
 		> "$$CONDA_PREFIX/etc/conda/activate.d/onnxruntime-cuda12-paths.sh"
 	@printf '%s\n' \
-		'if [ -n "$${_MAT_OLD_LD_LIBRARY_PATH+x}" ]; then' \
-		'  export LD_LIBRARY_PATH="$$_MAT_OLD_LD_LIBRARY_PATH"' \
-		'  unset _MAT_OLD_LD_LIBRARY_PATH' \
+		'if [ -n "$${_HYDRA_OLD_LD_LIBRARY_PATH+x}" ]; then' \
+		'  export LD_LIBRARY_PATH="$$_HYDRA_OLD_LD_LIBRARY_PATH"' \
+		'  unset _HYDRA_OLD_LD_LIBRARY_PATH' \
 		'else' \
 		'  unset LD_LIBRARY_PATH' \
 		'fi' \
@@ -120,7 +120,7 @@ env-remove-rocm:
 
 test:
 	@echo "Testing package installation..."
-	python -c "from multi_tracker.mat.app.launcher import main; print('✅ Import successful')"
+	python -c "from hydra_suite.tracker.app.launcher import main; print('✅ Import successful')"
 	@echo "✅ All tests passed!"
 
 pytest:
@@ -129,11 +129,11 @@ pytest:
 
 test-cov:
 	@echo "🧪 Running pytest with coverage..."
-	python -m pytest --cov=src/multi_tracker --cov-report=term
+	python -m pytest --cov=src/hydra_suite --cov-report=term
 
 test-cov-html:
 	@echo "🧪 Running pytest with HTML coverage report..."
-	python -m pytest --cov=src/multi_tracker --cov-report=html --cov-report=term
+	python -m pytest --cov=src/hydra_suite --cov-report=html --cov-report=term
 	@echo "📊 Coverage report generated in htmlcov/index.html"
 
 verify-rocm:
@@ -257,7 +257,7 @@ publish-test: build
 	twine upload --repository testpypi dist/*
 	@echo ""
 	@echo "✅ Uploaded to Test PyPI."
-	@echo "   Test with: pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ multi-animal-tracker"
+	@echo "   Test with: pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ hydra-suite"
 
 publish: build
 	@echo "📤 Uploading to PyPI..."
@@ -266,7 +266,7 @@ publish: build
 	twine upload dist/*
 	@echo ""
 	@echo "✅ Published to PyPI."
-	@echo "   Install with: pip install multi-animal-tracker"
+	@echo "   Install with: pip install hydra-suite"
 
 # =============================================================================
 # DOCUMENTATION
@@ -414,27 +414,27 @@ lint-report:
 dead-code:
 	@echo "🔍 Scanning for dead / orphaned code (vulture, ≥80% confidence)..."
 	@echo ""
-	vulture src/multi_tracker --min-confidence 80
+	vulture src/hydra_suite --min-confidence 80
 	@echo ""
 	@echo "� Cross-checking with deadcode..."
 	@echo ""
-	deadcode src/multi_tracker
+	deadcode src/hydra_suite
 	@echo ""
 	@echo "💡 To whitelist false positives (vulture):"
-	@echo "   vulture src/multi_tracker --make-whitelist > vulture_whitelist.py"
-	@echo "   vulture src/multi_tracker vulture_whitelist.py"
+	@echo "   vulture src/hydra_suite --make-whitelist > vulture_whitelist.py"
+	@echo "   vulture src/hydra_suite vulture_whitelist.py"
 	@echo "💡 To auto-remove confirmed dead code: make dead-code-fix"
 
 # Automatically remove dead code (caution: modifies source files — commit first!)
 dead-code-fix:
-	@echo "🗑️  Running deadcode --fix on src/multi_tracker ..."
+	@echo "🗑️  Running deadcode --fix on src/hydra_suite ..."
 	@echo "   ⚠️  This will MODIFY source files. Commit or stash changes first."
-	deadcode src/multi_tracker --fix
+	deadcode src/hydra_suite --fix
 	@echo "✅ Done. Review with: git diff"
 
-# Generate visual dependency graph (renders to multi_tracker.svg in cwd)
+# Generate visual dependency graph (renders to hydra_suite.svg in cwd)
 dep-graph:
-	@echo "🗺️  Generating dependency graph (pydeps) → multi_tracker.svg ..."
+	@echo "🗺️  Generating dependency graph (pydeps) → hydra_suite.svg ..."
 	@if ! command -v dot >/dev/null 2>&1; then \
 		echo ""; \
 		echo "ERROR: 'dot' (graphviz) not found on PATH."; \
@@ -445,34 +445,34 @@ dep-graph:
 		echo ""; \
 		exit 1; \
 	 fi
-	pydeps src/multi_tracker \
+	pydeps src/hydra_suite \
 		--max-bacon=4 \
 		--cluster \
 		--rankdir LR \
 		--noshow \
-		-o multi_tracker.svg
-	@echo "✅ Graph written to multi_tracker.svg"
+		-o hydra_suite.svg
+	@echo "✅ Graph written to hydra_suite.svg"
 	@echo "   Open it in a browser or SVG viewer."
 
 # Text-based module dependency list (no graphviz required)
 dep-graph-text:
 	@echo "🗺️  Module dependency map (pyreverse / pylint) ..."
 	@mkdir -p .audit
-	pyreverse -o dot -p multi_tracker src/multi_tracker -d .audit/ 2>/dev/null || true
-	@if [ -f .audit/packages_multi_tracker.dot ]; then \
+	pyreverse -o dot -p hydra_suite src/hydra_suite -d .audit/ 2>/dev/null || true
+	@if [ -f .audit/packages_hydra_suite.dot ]; then \
 		echo ""; \
-		echo "--- packages_multi_tracker.dot (raw DOT source) ---"; \
-		cat .audit/packages_multi_tracker.dot; \
+		echo "--- packages_hydra_suite.dot (raw DOT source) ---"; \
+		cat .audit/packages_hydra_suite.dot; \
 	else \
 		echo "ℹ️  pyreverse produced no output – check pylint/graphviz installation."; \
 		echo "   Falling back to pydeps text mode ..."; \
-		pydeps src/multi_tracker --max-bacon=4 --noshow --nodot 2>/dev/null || true; \
+		pydeps src/hydra_suite --max-bacon=4 --noshow --nodot 2>/dev/null || true; \
 	fi
 
 # Static type checking with mypy
 type-check:
 	@echo "🔎 Running mypy static type check..."
-	mypy src/multi_tracker --ignore-missing-imports --no-error-summary
+	mypy src/hydra_suite --ignore-missing-imports --no-error-summary
 	@echo "✅ mypy check complete."
 
 # Full code-health audit: dead code + dep graph + type check + coverage
@@ -480,7 +480,7 @@ audit: dead-code dep-graph type-check test-cov
 	@echo ""
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo "✅ Full audit complete."
-	@echo "   Artifacts: multi_tracker.svg  htmlcov/index.html"
+	@echo "   Artifacts: hydra_suite.svg  htmlcov/index.html"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # =============================================================================
@@ -489,7 +489,7 @@ audit: dead-code dep-graph type-check test-cov
 
 help:
 	@echo "╔════════════════════════════════════════════════════════════════════════╗"
-	@echo "║         Multi-Animal Tracker - Development Commands                   ║"
+	@echo "║         HYDRA Suite - Development Commands                   ║"
 	@echo "╚════════════════════════════════════════════════════════════════════════╝"
 	@echo ""
 	@echo "🚀 QUICK START  (choose your platform, then follow printed instructions)"
@@ -528,7 +528,7 @@ help:
 	@echo "🩺 CODE HEALTH  (requires: make install-dev)"
 	@echo "  make dead-code       - Find unused code (vulture)"
 	@echo "  make dead-code-fix   - ⚠️  Auto-remove dead code in-place (commit first!)"
-	@echo "  make dep-graph       - Visual SVG dependency graph → multi_tracker.svg"
+	@echo "  make dep-graph       - Visual SVG dependency graph → hydra_suite.svg"
 	@echo "  make dep-graph-text  - Text module map (pyreverse, no graphviz needed)"
 	@echo "  make type-check      - Static type checking (mypy)"
 	@echo "  make audit           - Full sweep: dead-code + dep-graph + types + coverage"

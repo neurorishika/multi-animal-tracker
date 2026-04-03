@@ -109,9 +109,9 @@ def test_get_training_workspace_dir_returns_path():
 
 
 def test_mat_config_dir_env_override(tmp_path, monkeypatch):
-    """MAT_CONFIG_DIR overrides the config directory."""
+    """HYDRA_CONFIG_DIR overrides the config directory."""
     custom = tmp_path / "my_config"
-    monkeypatch.setenv("MAT_CONFIG_DIR", str(custom))
+    monkeypatch.setenv("HYDRA_CONFIG_DIR", str(custom))
     import hydra_suite.paths as paths_mod
 
     d = paths_mod._user_config_dir()
@@ -120,9 +120,9 @@ def test_mat_config_dir_env_override(tmp_path, monkeypatch):
 
 
 def test_mat_data_dir_env_override(tmp_path, monkeypatch):
-    """MAT_DATA_DIR overrides the data directory."""
+    """HYDRA_DATA_DIR overrides the data directory."""
     custom = tmp_path / "my_data"
-    monkeypatch.setenv("MAT_DATA_DIR", str(custom))
+    monkeypatch.setenv("HYDRA_DATA_DIR", str(custom))
     import hydra_suite.paths as paths_mod
 
     d = paths_mod._user_data_dir()
@@ -131,9 +131,9 @@ def test_mat_data_dir_env_override(tmp_path, monkeypatch):
 
 
 def test_env_override_propagates_to_models(tmp_path, monkeypatch):
-    """MAT_DATA_DIR override propagates to get_models_dir()."""
+    """HYDRA_DATA_DIR override propagates to get_models_dir()."""
     custom = tmp_path / "shared"
-    monkeypatch.setenv("MAT_DATA_DIR", str(custom))
+    monkeypatch.setenv("HYDRA_DATA_DIR", str(custom))
     from hydra_suite.paths import get_models_dir
 
     models = get_models_dir()

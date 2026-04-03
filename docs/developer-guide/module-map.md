@@ -54,7 +54,7 @@
   - `get_models_dir()`, `get_presets_dir()`, `get_skeleton_dir()`, `get_training_runs_dir()`
   - `get_brand_icon_bytes(name)`, `get_brand_qicon(name)`
   - `print_paths()` — debug helper to show all resolved paths
-  - Respects `MAT_DATA_DIR` and `MAT_CONFIG_DIR` environment variable overrides
+  - Respects `HYDRA_DATA_DIR` and `HYDRA_CONFIG_DIR` environment variable overrides
 - `hydra_suite.paths_migrate` — one-time migration helper for repo-to-user-dir data
 - `hydra_suite.resources` — bundled read-only assets package
 - `hydra_suite.resources.brand` — SVG/PNG brand icons
