@@ -134,20 +134,20 @@ class AddSourceDialog(QDialog):
                 )
                 return
 
-        # Warn when the folder is very large and offer to open DataSieve instead.
+        # Warn when the folder is very large and offer to open FilterKit instead.
         if count > LARGE_DATASET_SIEVE_THRESHOLD:
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Warning)
             msg.setWindowTitle("Large Dataset Detected")
             msg.setText(
                 f"This folder contains {count:,} images — that is a lot to label by hand.\n\n"
-                "DataSieve can reduce near-duplicates and create a smaller representative "
+                "FilterKit can reduce near-duplicates and create a smaller representative "
                 "subset before labeling."
             )
             msg.setInformativeText(
-                "Open this folder in DataSieve now, or continue adding it as-is?"
+                "Open this folder in FilterKit now, or continue adding it as-is?"
             )
-            btn_sieve = msg.addButton("Open in DataSieve", QMessageBox.AcceptRole)
+            btn_sieve = msg.addButton("Open in FilterKit", QMessageBox.AcceptRole)
             btn_add = msg.addButton("Add Anyway", QMessageBox.DestructiveRole)
             msg.addButton(QMessageBox.Cancel)
             msg.exec()
@@ -159,7 +159,7 @@ class AddSourceDialog(QDialog):
                         [
                             sys.executable,
                             "-m",
-                            "multi_tracker.datasieve.gui",
+                            "multi_tracker.filterkit.gui",
                             str(d),
                         ],
                         start_new_session=True,
@@ -168,7 +168,7 @@ class AddSourceDialog(QDialog):
                     QMessageBox.warning(
                         self,
                         "Launch Failed",
-                        f"Could not launch DataSieve:\n{exc}",
+                        f"Could not launch FilterKit:\n{exc}",
                     )
                 return
             if clicked != btn_add:

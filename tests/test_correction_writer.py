@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from multi_tracker.afterhours.core.correction_writer import (
+from multi_tracker.refinekit.core.correction_writer import (
     CorrectionWriter,
     apply_split_and_swap,
 )

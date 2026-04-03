@@ -17,10 +17,10 @@ def test_brand_svgs_exist_in_package():
     brand = files("multi_tracker.resources.brand")
     names = [r.name for r in brand.iterdir()]
     assert "multianimaltracker.svg" in names
-    assert "datasieve.svg" in names
+    assert "filterkit.svg" in names
     assert "classkit.svg" in names
     assert "posekit.svg" in names
-    assert "multianimaltrackerafterhours.svg" in names
+    assert "refinekit.svg" in names
 
 
 def test_default_configs_exist_in_package():

@@ -159,7 +159,7 @@ def create_project_via_wizard(dataset_dir: Path) -> Optional[Project]:
         )
         return None
 
-    # Suggest DataSieve preprocessing for very large datasets.
+    # Suggest FilterKit preprocessing for very large datasets.
     image_count = len(list_images(images_dir))
     if image_count > LARGE_DATASET_SIEVE_THRESHOLD:
         msg = QMessageBox(None)
@@ -167,11 +167,11 @@ def create_project_via_wizard(dataset_dir: Path) -> Optional[Project]:
         msg.setWindowTitle("Large Dataset Detected")
         msg.setText(
             f"This dataset has {image_count:,} images.\n\n"
-            "For large datasets, DataSieve can reduce near-duplicates and create "
+            "For large datasets, FilterKit can reduce near-duplicates and create "
             "a smaller representative subset before labeling."
         )
-        msg.setInformativeText("Open this dataset in DataSieve now?")
-        btn_open = msg.addButton("Open in DataSieve", QMessageBox.AcceptRole)
+        msg.setInformativeText("Open this dataset in FilterKit now?")
+        btn_open = msg.addButton("Open in FilterKit", QMessageBox.AcceptRole)
         btn_continue = msg.addButton("Continue in PoseKit", QMessageBox.DestructiveRole)
         msg.addButton(QMessageBox.Cancel)
         msg.exec()
@@ -183,7 +183,7 @@ def create_project_via_wizard(dataset_dir: Path) -> Optional[Project]:
                     [
                         sys.executable,
                         "-m",
-                        "multi_tracker.tools.data_sieve.gui",
+                        "multi_tracker.filterkit.gui",
                         str(dataset_dir),
                     ],
                     start_new_session=True,
@@ -192,7 +192,7 @@ def create_project_via_wizard(dataset_dir: Path) -> Optional[Project]:
                 QMessageBox.warning(
                     None,
                     "Launch Failed",
-                    f"Could not launch DataSieve:\n{exc}",
+                    f"Could not launch FilterKit:\n{exc}",
                 )
             return None
         if clicked != btn_continue:

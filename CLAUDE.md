@@ -61,7 +61,7 @@ pytest is configured in `pyproject.toml`. Test files are in `tests/`. Benchmarks
 ```bash
 mat                    # Multi-Animal Tracker GUI
 posekit-labeler        # PoseKit pose-labeling GUI
-datasieve              # DataSieve tool
+filterkit               # FilterKit tool
 classkit-labeler       # ClassKit labeler
 ```
 
@@ -120,8 +120,8 @@ See `to_fix.md` for known dead-code findings and the rationale for false-positiv
 | MAT App | `multi_tracker.mat` | MAT launcher, GUI, dialogs, widgets |
 | PoseKit | `multi_tracker.posekit` | Pose-labeling application |
 | ClassKit | `multi_tracker.classkit` | Classification/embedding toolkit |
-| Afterhours | `multi_tracker.afterhours` | Interactive proofreading |
-| DataSieve | `multi_tracker.datasieve` | Data sieve tool |
+| RefineKit | `multi_tracker.refinekit` | Interactive proofreading |
+| FilterKit | `multi_tracker.filterkit` | FilterKit tool |
 | Integrations | `multi_tracker.integrations` | External tool bridges (SLEAP, X-AnyLabeling) |
 | Core | `multi_tracker.core` | Detection, Kalman filter, assignment, post-processing, identity |
 | Runtime | `multi_tracker.runtime` | Compute runtime selection and GPU utilities |
@@ -132,11 +132,11 @@ See `to_fix.md` for known dead-code findings and the rationale for false-positiv
 | Paths | `multi_tracker.paths` | Central path resolution: bundled assets via `importlib.resources`, user dirs via `platformdirs` |
 
 **Key boundary rules:**
-- Dependency flows downward: App layers (MAT, PoseKit, ClassKit, Afterhours, DataSieve) may import from Core, Runtime, Data, Training, and Utils, but never the reverse.
+- Dependency flows downward: App layers (MAT, PoseKit, ClassKit, RefineKit, FilterKit) may import from Core, Runtime, Data, Training, and Utils, but never the reverse.
 - Core, Runtime, Data, Training, and Utils must not import from any app-layer package or from Integrations.
 - Integrations bridges external tools and may import from Core/Runtime/Data/Utils but not from app layers.
 - Data layer must be reusable from both GUI and scripts.
-- Each app (MAT, PoseKit, ClassKit, Afterhours, DataSieve) is a separate surface with its own workflow.
+- Each app (MAT, PoseKit, ClassKit, RefineKit, FilterKit) is a separate surface with its own workflow.
 - All path resolution must go through `multi_tracker.paths`. No module should use `Path(__file__).parents[N]` to navigate to repo root.
 - Bundled read-only assets are accessed via `importlib.resources` through the `paths` module.
 - User-writable data (models, training, config) goes to platform-appropriate directories via `platformdirs`.
@@ -144,7 +144,7 @@ See `to_fix.md` for known dead-code findings and the rationale for false-positiv
 
 ### Data and Config Directories
 
-All apps (MAT, PoseKit, DetectKit, ClassKit, Afterhours, DataSieve) share the same data directories via `multi_tracker.paths`:
+All apps (MAT, PoseKit, DetectKit, ClassKit, RefineKit, FilterKit) share the same data directories via `multi_tracker.paths`:
 
 ```python
 from multi_tracker.paths import get_models_dir, get_presets_dir, get_skeleton_dir

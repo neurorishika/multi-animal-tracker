@@ -1,4 +1,4 @@
-"""Confidence density map core module for MAT-afterhours.
+"""Confidence density map core module for RefineKit.
 
 This module accumulates per-frame confidence density grids from detection
 measurements, smooths them temporally, binarizes, and finds 3D connected
