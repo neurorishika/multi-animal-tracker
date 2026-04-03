@@ -648,81 +648,47 @@ class FilterKitWindow(QMainWindow):
 
     def _make_welcome_page(self):
         """Logo/welcome screen shown before a dataset is loaded."""
-        page = QWidget()
-        page.setStyleSheet("background-color: #121212;")
-        v = QVBoxLayout(page)
-        v.setAlignment(Qt.AlignCenter)
-        v.setSpacing(0)
-        v.addStretch(1)
-
-        logo_lbl = QLabel()
-        logo_lbl.setAlignment(Qt.AlignCenter)
-        try:
-            from PySide6.QtCore import QByteArray
-
-            from hydra_suite.paths import get_brand_icon_bytes
-
-            logo_data = get_brand_icon_bytes("filterkit.svg")
-            renderer = (
-                QSvgRenderer(QByteArray(logo_data)) if logo_data else QSvgRenderer()
-            )
-            if renderer.isValid():
-                view_box = renderer.viewBoxF()
-                if view_box.isEmpty():
-                    default_size = renderer.defaultSize()
-                    view_box = QRectF(
-                        0,
-                        0,
-                        max(1, default_size.width()),
-                        max(1, default_size.height()),
-                    )
-
-                max_w, max_h = 560, 300
-                scale = min(
-                    max_w / max(view_box.width(), 1),
-                    max_h / max(view_box.height(), 1),
-                )
-                draw_w = max(1, int(view_box.width() * scale))
-                draw_h = max(1, int(view_box.height() * scale))
-                canvas = QPixmap(draw_w, draw_h)
-                canvas.fill(QColor(0, 0, 0, 0))
-                painter = QPainter(canvas)
-                painter.setRenderHint(QPainter.Antialiasing, True)
-                painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-                renderer.render(painter, QRectF(0, 0, draw_w, draw_h))
-                painter.end()
-                logo_lbl.setPixmap(canvas)
-        except Exception:
-            pass
-        v.addWidget(logo_lbl)
-
-        sub = QLabel("Dataset Subsampling Workspace")
-        sub.setAlignment(Qt.AlignCenter)
-        sub.setStyleSheet(
-            "color: #444444; font-size: 13px; letter-spacing: 2px; margin-top: 10px;"
+        from hydra_suite.widgets import (
+            ButtonDef,
+            RecentItemsStore,
+            WelcomeConfig,
+            WelcomePage,
         )
-        v.addWidget(sub)
-        v.addSpacing(40)
 
-        btn_row = QHBoxLayout()
-        btn_row.setAlignment(Qt.AlignCenter)
-        btn_row.setSpacing(16)
+        store = RecentItemsStore("filterkit")
+        self._recents_store = store
 
-        btn_load = QPushButton("Load Dataset Folder…")
-        btn_load.setFixedWidth(220)
-        btn_load.clicked.connect(self.load_dataset_dialog)
-        btn_row.addWidget(btn_load)
+        config = WelcomeConfig(
+            logo_svg="filterkit.svg",
+            tagline="Dataset Subsampling Workspace",
+            buttons=[
+                ButtonDef(
+                    label="Load Dataset Folder\u2026", callback=self.load_dataset_dialog
+                ),
+                ButtonDef(label="Quit", callback=self.close),
+            ],
+            recents_label="Recent Datasets",
+            recents_store=store,
+            on_recent_clicked=self._open_recent_dataset,
+        )
+        self._welcome_page = WelcomePage(config)
+        return self._welcome_page
 
-        btn_quit = QPushButton("Quit")
-        btn_quit.setFixedWidth(120)
-        btn_quit.clicked.connect(self.close)
-        btn_row.addWidget(btn_quit)
+    def _open_recent_dataset(self, path: str):
+        """Open a dataset folder from the recent items list."""
+        from pathlib import Path
 
-        ctr = QWidget()
-        ctr.setLayout(btn_row)
-        v.addWidget(ctr)
-        v.addStretch(1)
-        return page
+        dataset_path = Path(path)
+        if dataset_path.exists():
+            self.load_dataset_root(dataset_path)
+        else:
+            from PySide6.QtWidgets import QMessageBox
+
+            QMessageBox.warning(self, "Not Found", f"Dataset not found:\n{path}")
+            if hasattr(self, "_recents_store"):
+                self._recents_store.remove(path)
+                if hasattr(self, "_welcome_page"):
+                    self._welcome_page.refresh_recents()
 
     def _build_load_group(self, parent_layout):
         group = QGroupBox("1) Load Dataset")
@@ -1162,6 +1128,8 @@ class FilterKitWindow(QMainWindow):
         self.lbl_progress_details.setText("Waiting to start...")
         self.update_live_estimate()
         self._update_rollback_availability()
+        if hasattr(self, "_recents_store"):
+            self._recents_store.add(str(root))
         if hasattr(self, "_content_stack"):
             self._content_stack.setCurrentIndex(1)
         return True
