@@ -1526,6 +1526,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label=" correct">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.KalmanFilterManager.correct--parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parameters
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -1565,24 +1580,6 @@
   <a href="#multi_tracker.core.IndividualDatasetGenerator.__init__" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;__init__
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.IndividualDatasetGenerator.compute_median_color_from_frame" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;compute_median_color_from_frame
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.IndividualDatasetGenerator.ellipse_to_obb_corners" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;ellipse_to_obb_corners
     </span>
   </a>
   
@@ -1809,56 +1806,23 @@
   
 </li>
         
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;get_density_region_flags
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label=" get_density_region_flags">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags--parameters" class="md-nav__link">
-    <span class="md-ellipsis">
-      Parameters
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags--returns" class="md-nav__link">
-    <span class="md-ellipsis">
-      Returns
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
       </ul>
     </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors" class="md-nav__link">
     <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-module"></code>&nbsp;engine
+      <code class="doc-symbol doc-symbol-toc doc-symbol-module"></code>&nbsp;detectors
     </span>
   </a>
   
-    <nav class="md-nav" aria-label=" engine">
+    <nav class="md-nav" aria-label=" detectors">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.ObjectDetector" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.ObjectDetector" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;ObjectDetector
     </span>
@@ -1868,7 +1832,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.ObjectDetector.apply_conservative_split" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.ObjectDetector.apply_conservative_split" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;apply_conservative_split
     </span>
@@ -1877,7 +1841,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.ObjectDetector.detect_objects" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.ObjectDetector.detect_objects" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;detect_objects
     </span>
@@ -1891,7 +1855,16 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.DetectionFilter" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;DetectionFilter
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.detectors.YOLOOBBDetector" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;YOLOOBBDetector
     </span>
@@ -1901,16 +1874,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.filter_raw_detections" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;filter_raw_detections
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.detect_objects" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.YOLOOBBDetector.detect_objects" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;detect_objects
     </span>
@@ -1919,7 +1883,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.detect_objects_batched" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.YOLOOBBDetector.detect_objects_batched" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;detect_objects_batched
     </span>
@@ -1928,7 +1892,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.apply_conservative_split" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.YOLOOBBDetector.apply_conservative_split" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;apply_conservative_split
     </span>
@@ -1942,16 +1906,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.DetectionFilter" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;DetectionFilter
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.create_detector" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.create_detector" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;create_detector
     </span>
@@ -2074,6 +2029,21 @@
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;correct
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label=" correct">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.filters.kalman.KalmanFilterManager.correct--parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parameters
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -2223,17 +2193,266 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis" class="md-nav__link">
+  <a href="#multi_tracker.core.identity" class="md-nav__link">
     <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-module"></code>&nbsp;analysis
+      <code class="doc-symbol doc-symbol-toc doc-symbol-module"></code>&nbsp;identity
     </span>
   </a>
   
-    <nav class="md-nav" aria-label=" analysis">
+    <nav class="md-nav" aria-label=" identity">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.AprilTagConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;AprilTagConfig
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" AprilTagConfig">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagConfig.from_params" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_params
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagDetector" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;AprilTagDetector
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" AprilTagDetector">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagDetector.detect_in_crops" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;detect_in_crops
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" detect_in_crops">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagDetector.detect_in_crops--parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parameters
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagDetector.close" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;close
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.ClassPrediction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;ClassPrediction
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityBackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;CNNIdentityBackend
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" CNNIdentityBackend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityBackend.predict_batch" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;predict_batch
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityCache" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;CNNIdentityCache
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" CNNIdentityCache">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityCache.save" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;save
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityCache.flush" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;flush
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityCache.load" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;load
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;CNNIdentityConfig
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;TrackCNNHistory
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" TrackCNNHistory">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.resize" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;resize
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.record" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;record
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.majority_class" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;majority_class
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.clear_track" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;clear_track
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.build_track_identity_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_track_identity_list
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.HeadTailAnalyzer" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;HeadTailAnalyzer
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" HeadTailAnalyzer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.HeadTailAnalyzer.from_components" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_components
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.HeadTailAnalyzer.analyze_crops" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;analyze_crops
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;IndividualDatasetGenerator
     </span>
@@ -2243,7 +2462,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.__init__" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator.__init__" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;__init__
     </span>
@@ -2252,25 +2471,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.compute_median_color_from_frame" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;compute_median_color_from_frame
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.ellipse_to_obb_corners" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;ellipse_to_obb_corners
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.process_frame" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator.process_frame" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;process_frame
     </span>
@@ -2279,7 +2480,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.save_interpolated_crop" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator.save_interpolated_crop" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;save_interpolated_crop
     </span>
@@ -2288,7 +2489,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.finalize" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator.finalize" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;finalize
     </span>
@@ -2298,6 +2499,171 @@
         
       </ul>
     </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.OrientedTrackVideoExporter" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;OrientedTrackVideoExporter
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;PoseInferenceBackend
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" PoseInferenceBackend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend.preferred_input_size" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;preferred_input_size
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend.warmup" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;warmup
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend.predict_batch" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;predict_batch
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend.close" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;close
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseResult" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;PoseResult
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseRuntimeConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;PoseRuntimeConfig
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.RuntimeMetrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;RuntimeMetrics
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualPropertiesCache" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;IndividualPropertiesCache
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" IndividualPropertiesCache">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualPropertiesCache.add_frame" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;add_frame
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualPropertiesCache.get_frame" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_frame
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualPropertiesCache.get_detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_detection
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.apply_cnn_identity_cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;apply_cnn_identity_cost
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.ellipse_axes_from_area" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;ellipse_axes_from_area
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.ellipse_to_obb_corners" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;ellipse_to_obb_corners
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.resolve_directed_angle" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;resolve_directed_angle
+    </span>
+  </a>
   
 </li>
         
@@ -2687,6 +3053,21 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label=" correct">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.KalmanFilterManager.correct--parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parameters
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
         
           <li class="md-nav__item">
@@ -2726,24 +3107,6 @@
   <a href="#multi_tracker.core.IndividualDatasetGenerator.__init__" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;__init__
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.IndividualDatasetGenerator.compute_median_color_from_frame" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;compute_median_color_from_frame
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.IndividualDatasetGenerator.ellipse_to_obb_corners" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;ellipse_to_obb_corners
     </span>
   </a>
   
@@ -2970,56 +3333,23 @@
   
 </li>
         
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;get_density_region_flags
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label=" get_density_region_flags">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags--parameters" class="md-nav__link">
-    <span class="md-ellipsis">
-      Parameters
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.tracking.worker.get_density_region_flags--returns" class="md-nav__link">
-    <span class="md-ellipsis">
-      Returns
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-        
       </ul>
     </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors" class="md-nav__link">
     <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-module"></code>&nbsp;engine
+      <code class="doc-symbol doc-symbol-toc doc-symbol-module"></code>&nbsp;detectors
     </span>
   </a>
   
-    <nav class="md-nav" aria-label=" engine">
+    <nav class="md-nav" aria-label=" detectors">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.ObjectDetector" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.ObjectDetector" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;ObjectDetector
     </span>
@@ -3029,7 +3359,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.ObjectDetector.apply_conservative_split" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.ObjectDetector.apply_conservative_split" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;apply_conservative_split
     </span>
@@ -3038,7 +3368,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.ObjectDetector.detect_objects" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.ObjectDetector.detect_objects" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;detect_objects
     </span>
@@ -3052,7 +3382,16 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.DetectionFilter" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;DetectionFilter
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.detectors.YOLOOBBDetector" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;YOLOOBBDetector
     </span>
@@ -3062,16 +3401,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.filter_raw_detections" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;filter_raw_detections
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.detect_objects" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.YOLOOBBDetector.detect_objects" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;detect_objects
     </span>
@@ -3080,7 +3410,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.detect_objects_batched" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.YOLOOBBDetector.detect_objects_batched" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;detect_objects_batched
     </span>
@@ -3089,7 +3419,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.apply_conservative_split" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.YOLOOBBDetector.apply_conservative_split" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;apply_conservative_split
     </span>
@@ -3103,16 +3433,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.DetectionFilter" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;DetectionFilter
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.detectors.engine.create_detector" class="md-nav__link">
+  <a href="#multi_tracker.core.detectors.create_detector" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;create_detector
     </span>
@@ -3235,6 +3556,21 @@
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;correct
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label=" correct">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.filters.kalman.KalmanFilterManager.correct--parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parameters
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
         
@@ -3384,17 +3720,266 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis" class="md-nav__link">
+  <a href="#multi_tracker.core.identity" class="md-nav__link">
     <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-module"></code>&nbsp;analysis
+      <code class="doc-symbol doc-symbol-toc doc-symbol-module"></code>&nbsp;identity
     </span>
   </a>
   
-    <nav class="md-nav" aria-label=" analysis">
+    <nav class="md-nav" aria-label=" identity">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.AprilTagConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;AprilTagConfig
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" AprilTagConfig">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagConfig.from_params" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_params
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagDetector" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;AprilTagDetector
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" AprilTagDetector">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagDetector.detect_in_crops" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;detect_in_crops
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" detect_in_crops">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagDetector.detect_in_crops--parameters" class="md-nav__link">
+    <span class="md-ellipsis">
+      Parameters
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.AprilTagDetector.close" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;close
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.ClassPrediction" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;ClassPrediction
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityBackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;CNNIdentityBackend
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" CNNIdentityBackend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityBackend.predict_batch" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;predict_batch
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityCache" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;CNNIdentityCache
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" CNNIdentityCache">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityCache.save" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;save
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityCache.flush" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;flush
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityCache.load" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;load
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.CNNIdentityConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;CNNIdentityConfig
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;TrackCNNHistory
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" TrackCNNHistory">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.resize" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;resize
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.record" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;record
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.majority_class" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;majority_class
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.clear_track" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;clear_track
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.TrackCNNHistory.build_track_identity_list" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;build_track_identity_list
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.HeadTailAnalyzer" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;HeadTailAnalyzer
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" HeadTailAnalyzer">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.HeadTailAnalyzer.from_components" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_components
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.HeadTailAnalyzer.analyze_crops" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;analyze_crops
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;IndividualDatasetGenerator
     </span>
@@ -3404,7 +3989,7 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.__init__" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator.__init__" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;__init__
     </span>
@@ -3413,25 +3998,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.compute_median_color_from_frame" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;compute_median_color_from_frame
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.ellipse_to_obb_corners" class="md-nav__link">
-    <span class="md-ellipsis">
-      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;ellipse_to_obb_corners
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.process_frame" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator.process_frame" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;process_frame
     </span>
@@ -3440,7 +4007,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.save_interpolated_crop" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator.save_interpolated_crop" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;save_interpolated_crop
     </span>
@@ -3449,7 +4016,7 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.finalize" class="md-nav__link">
+  <a href="#multi_tracker.core.identity.IndividualDatasetGenerator.finalize" class="md-nav__link">
     <span class="md-ellipsis">
       <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;finalize
     </span>
@@ -3459,6 +4026,171 @@
         
       </ul>
     </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.OrientedTrackVideoExporter" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;OrientedTrackVideoExporter
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;PoseInferenceBackend
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" PoseInferenceBackend">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend.preferred_input_size" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;preferred_input_size
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend.warmup" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;warmup
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend.predict_batch" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;predict_batch
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseInferenceBackend.close" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;close
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseResult" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;PoseResult
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.PoseRuntimeConfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;PoseRuntimeConfig
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.RuntimeMetrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;RuntimeMetrics
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualPropertiesCache" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;IndividualPropertiesCache
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label=" IndividualPropertiesCache">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualPropertiesCache.add_frame" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;add_frame
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualPropertiesCache.get_frame" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_frame
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.IndividualPropertiesCache.get_detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;get_detection
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.apply_cnn_identity_cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;apply_cnn_identity_cost
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.ellipse_axes_from_area" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;ellipse_axes_from_area
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.ellipse_to_obb_corners" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;ellipse_to_obb_corners
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multi_tracker.core.identity.resolve_directed_angle" class="md-nav__link">
+    <span class="md-ellipsis">
+      <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;resolve_directed_angle
+    </span>
+  </a>
   
 </li>
         
@@ -3897,7 +4629,7 @@ detection replays).</p>
 
 
 <h4 id="multi_tracker.core.KalmanFilterManager.correct" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">correct</span><span class="p">(</span><span class="n">track_idx</span><span class="p">,</span> <span class="n">measurement</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">correct</span><span class="p">(</span><span class="n">track_idx</span><span class="p">,</span> <span class="n">measurement</span><span class="p">,</span> <span class="n">theta_r_scale</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.KalmanFilterManager.correct" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -3905,6 +4637,12 @@ detection replays).</p>
     <div class="doc doc-contents ">
 
         <p>Correct a track with one measurement update.</p>
+<h6 id="multi_tracker.core.KalmanFilterManager.correct--parameters">Parameters<a class="headerlink" href="#multi_tracker.core.KalmanFilterManager.correct--parameters" title="Permanent link">&para;</a></h6>
+<p>theta_r_scale : float
+    Multiplier applied to R[2,2] (theta measurement noise) for this
+    correction.  Values &gt; 1 make the filter trust its own heading
+    prediction more than the measurement; used when heading confidence
+    is low.</p>
 
     </div>
 
@@ -4019,65 +4757,8 @@ clean, isolated training data for individual-level analysis.</p>
 <div class="doc doc-object doc-function">
 
 
-<h4 id="multi_tracker.core.IndividualDatasetGenerator.compute_median_color_from_frame" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">compute_median_color_from_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
-
-<a href="#multi_tracker.core.IndividualDatasetGenerator.compute_median_color_from_frame" class="headerlink" title="Permanent link">&para;</a></h4>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Compute the median color (BGR) from a frame.</p>
-<p>DEPRECATED: Use compute_median_color_from_frame from image_processing utils instead.
-This method is kept for backward compatibility.</p>
-<p>Args:
-    frame: Input frame (BGR, shape: H x W x 3)</p>
-<p>Returns:
-    Tuple of (B, G, R) median values</p>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="multi_tracker.core.IndividualDatasetGenerator.ellipse_to_obb_corners" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">ellipse_to_obb_corners</span><span class="p">(</span><span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">major_axis</span><span class="p">,</span> <span class="n">minor_axis</span><span class="p">,</span> <span class="n">theta</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
-
-<a href="#multi_tracker.core.IndividualDatasetGenerator.ellipse_to_obb_corners" class="headerlink" title="Permanent link">&para;</a></h4>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Convert ellipse parameters to OBB corner points.</p>
-<p>The OBB is the oriented bounding box that exactly fits the ellipse,
-which is a rotated rectangle with dimensions (major_axis × minor_axis).</p>
-<p>Args:
-    cx, cy: Center coordinates of the ellipse
-    major_axis: Full length of the major axis (not semi-axis)
-    minor_axis: Full length of the minor axis (not semi-axis)
-    theta: Rotation angle in radians (orientation of major axis)</p>
-<p>Returns:
-    corners: numpy array of shape (4, 2) with corner coordinates</p>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
 <h4 id="multi_tracker.core.IndividualDatasetGenerator.process_frame" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">process_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ellipse_params</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">confidences</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">track_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trajectory_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">coord_scale_factor</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">velocities</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">process_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ellipse_params</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">confidences</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">track_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trajectory_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">coord_scale_factor</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">velocities</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_affines</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_canvas_dims</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_M_inverse</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.IndividualDatasetGenerator.process_frame" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -4104,7 +4785,11 @@ in the tracking pipeline - no additional filtering needed.</p>
     detection_ids: Optional list of unique Detection IDs for each detection
     heading_hints: Optional directed heading angles (radians) per detection from head-tail model.
     directed_mask: Optional boolean mask (0/1) per detection indicating whether heading_hints is valid.
-    velocities: Optional (vx, vy) tuples per detection for motion-based fallback orientation.</p>
+    velocities: Optional (vx, vy) tuples per detection for motion-based fallback orientation.
+    canonical_affines: Optional M_canonical (2x3) affine matrices per detection.
+        When provided and canonical crop dimensions &gt; 0, extract rotation-normalised
+        canonical crops instead of AABB-masked crops.  Falls back to legacy AABB
+        extraction when None or when a specific detection has no affine.</p>
 <p>Returns:
     num_saved: Number of crops saved from this frame</p>
 
@@ -4116,7 +4801,7 @@ in the tracking pipeline - no additional filtering needed.</p>
 
 
 <h4 id="multi_tracker.core.IndividualDatasetGenerator.save_interpolated_crop" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">save_interpolated_crop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">w</span><span class="p">,</span> <span class="n">h</span><span class="p">,</span> <span class="n">theta</span><span class="p">,</span> <span class="n">traj_id</span><span class="p">,</span> <span class="n">interp_from</span><span class="p">,</span> <span class="n">interp_index</span><span class="p">,</span> <span class="n">interp_total</span><span class="p">,</span> <span class="n">heading_angle</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_directed</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">save_interpolated_crop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">w</span><span class="p">,</span> <span class="n">h</span><span class="p">,</span> <span class="n">theta</span><span class="p">,</span> <span class="n">traj_id</span><span class="p">,</span> <span class="n">interp_from</span><span class="p">,</span> <span class="n">interp_index</span><span class="p">,</span> <span class="n">interp_total</span><span class="p">,</span> <span class="n">heading_angle</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_directed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">canonical_affine</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.IndividualDatasetGenerator.save_interpolated_crop" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -4309,7 +4994,7 @@ identical to the original monolithic implementation.</p>
 
 
 <h3 id="multi_tracker.core.interpolate_trajectories" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">interpolate_trajectories</span><span class="p">(</span><span class="n">trajectories_df</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s1">&#39;linear&#39;</span><span class="p">,</span> <span class="n">max_gap</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">interpolate_trajectories</span><span class="p">(</span><span class="n">trajectories_df</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s1">&#39;linear&#39;</span><span class="p">,</span> <span class="n">max_gap</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">heading_flip_max_burst</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.interpolate_trajectories" class="headerlink" title="Permanent link">&para;</a></h3>
 
@@ -4320,7 +5005,9 @@ identical to the original monolithic implementation.</p>
 <p>Args:
     trajectories_df: DataFrame with trajectory data (must have X, Y, Theta, FrameID columns)
     method: Interpolation method - 'linear', 'cubic', 'spline', or 'none'
-    max_gap: Maximum gap size to interpolate (frames). Larger gaps are left as NaN.</p>
+    max_gap: Maximum gap size to interpolate (frames). Larger gaps are left as NaN.
+    heading_flip_max_burst: Maximum length of an isolated heading-flip burst to
+        correct in post-processing.  Longer segments are assumed genuine.</p>
 <p>Returns:
     DataFrame with interpolated values</p>
 
@@ -4602,35 +5289,6 @@ identical to the original monolithic implementation.</p>
 </div>
 
 
-<div class="doc doc-object doc-function">
-
-
-<h3 id="multi_tracker.core.tracking.worker.get_density_region_flags" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">get_density_region_flags</span><span class="p">(</span><span class="n">meas</span><span class="p">,</span> <span class="n">regions</span><span class="p">,</span> <span class="n">frame_idx</span><span class="p">)</span></code>
-
-<a href="#multi_tracker.core.tracking.worker.get_density_region_flags" class="headerlink" title="Permanent link">&para;</a></h3>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Return a boolean mask indicating which detections fall inside a density region.</p>
-<h5 id="multi_tracker.core.tracking.worker.get_density_region_flags--parameters">Parameters<a class="headerlink" href="#multi_tracker.core.tracking.worker.get_density_region_flags--parameters" title="Permanent link">&para;</a></h5>
-<p>meas:
-    List/array of detection measurements.  Each element must be indexable
-    with <code>[0]</code> (x) and <code>[1]</code> (y).
-regions:
-    List of :class:<code>DensityRegion</code> to test against.
-frame_idx:
-    Current frame index.</p>
-<h5 id="multi_tracker.core.tracking.worker.get_density_region_flags--returns">Returns<a class="headerlink" href="#multi_tracker.core.tracking.worker.get_density_region_flags--returns" title="Permanent link">&para;</a></h5>
-<p>np.ndarray
-    Shape <code>(M,)</code> bool array — <code>True</code> for detections inside a flagged
-    region.</p>
-
-    </div>
-
-</div>
-
 
 
   </div>
@@ -4643,16 +5301,15 @@ frame_idx:
 
 
 
-<h2 id="multi_tracker.core.detectors.engine" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-module"></code>            <code>multi_tracker.core.detectors.engine</code>
+<h2 id="multi_tracker.core.detectors" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-module"></code>            <code>multi_tracker.core.detectors</code>
 
 
-<a href="#multi_tracker.core.detectors.engine" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#multi_tracker.core.detectors" class="headerlink" title="Permanent link">&para;</a></h2>
 
     <div class="doc doc-contents first">
 
-        <p>Object detection utilities for multi-object tracking.
-Supports both background subtraction and YOLO OBB detection methods.</p>
+        <p>Object detection engines.</p>
 
 
 
@@ -4674,11 +5331,11 @@ Supports both background subtraction and YOLO OBB detection methods.</p>
 
 
 
-<h3 id="multi_tracker.core.detectors.engine.ObjectDetector" class="doc doc-heading">
+<h3 id="multi_tracker.core.detectors.ObjectDetector" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>ObjectDetector</code>
 
 
-<a href="#multi_tracker.core.detectors.engine.ObjectDetector" class="headerlink" title="Permanent link">&para;</a></h3>
+<a href="#multi_tracker.core.detectors.ObjectDetector" class="headerlink" title="Permanent link">&para;</a></h3>
 
 
     <div class="doc doc-contents ">
@@ -4707,10 +5364,10 @@ Supports both background subtraction and YOLO OBB detection methods.</p>
 <div class="doc doc-object doc-function">
 
 
-<h4 id="multi_tracker.core.detectors.engine.ObjectDetector.apply_conservative_split" class="doc doc-heading">
+<h4 id="multi_tracker.core.detectors.ObjectDetector.apply_conservative_split" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">apply_conservative_split</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">,</span> <span class="n">gray</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">background</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
-<a href="#multi_tracker.core.detectors.engine.ObjectDetector.apply_conservative_split" class="headerlink" title="Permanent link">&para;</a></h4>
+<a href="#multi_tracker.core.detectors.ObjectDetector.apply_conservative_split" class="headerlink" title="Permanent link">&para;</a></h4>
 
 
     <div class="doc doc-contents ">
@@ -4729,10 +5386,10 @@ detection replays).</p>
 <div class="doc doc-object doc-function">
 
 
-<h4 id="multi_tracker.core.detectors.engine.ObjectDetector.detect_objects" class="doc doc-heading">
+<h4 id="multi_tracker.core.detectors.ObjectDetector.detect_objects" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">detect_objects</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">,</span> <span class="n">frame_count</span><span class="p">)</span></code>
 
-<a href="#multi_tracker.core.detectors.engine.ObjectDetector.detect_objects" class="headerlink" title="Permanent link">&para;</a></h4>
+<a href="#multi_tracker.core.detectors.ObjectDetector.detect_objects" class="headerlink" title="Permanent link">&para;</a></h4>
 
 
     <div class="doc doc-contents ">
@@ -4761,147 +5418,16 @@ detection replays).</p>
 
 
 
-<h3 id="multi_tracker.core.detectors.engine.YOLOOBBDetector" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>YOLOOBBDetector</code>
-
-
-<a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector" class="headerlink" title="Permanent link">&para;</a></h3>
-
-
-    <div class="doc doc-contents ">
-
-
-        <p>Detects objects using a pretrained YOLO OBB (Oriented Bounding Box) model.
-Compatible interface with ObjectDetector for seamless integration.</p>
-
-
-
-
-
-
-
-
-
-  <div class="doc doc-children">
-
-
-
-
-
-
-
-
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="multi_tracker.core.detectors.engine.YOLOOBBDetector.filter_raw_detections" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">filter_raw_detections</span><span class="p">(</span><span class="n">meas</span><span class="p">,</span> <span class="n">sizes</span><span class="p">,</span> <span class="n">shapes</span><span class="p">,</span> <span class="n">confidences</span><span class="p">,</span> <span class="n">obb_corners_list</span><span class="p">,</span> <span class="n">roi_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
-
-<a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.filter_raw_detections" class="headerlink" title="Permanent link">&para;</a></h4>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Apply vectorized confidence/size/ROI filtering, then custom OBB IOU suppression.
-This is shared by live detection and cached-raw detection paths.</p>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="multi_tracker.core.detectors.engine.YOLOOBBDetector.detect_objects" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">detect_objects</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_count</span><span class="p">,</span> <span class="n">return_raw</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
-
-<a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.detect_objects" class="headerlink" title="Permanent link">&para;</a></h4>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Detects objects in a frame using YOLO OBB.</p>
-<p>Args:
-    frame: Input frame (grayscale or BGR)
-    frame_count: Current frame number for logging</p>
-<p>Returns:
-    Default mode:
-        meas, sizes, shapes, yolo_results, confidences
-    If return_raw=True:
-        raw_meas, raw_sizes, raw_shapes, yolo_results, raw_confidences,
-        raw_obb_corners, raw_heading_hints, raw_directed_mask</p>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="multi_tracker.core.detectors.engine.YOLOOBBDetector.detect_objects_batched" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">detect_objects_batched</span><span class="p">(</span><span class="n">frames</span><span class="p">,</span> <span class="n">start_frame_idx</span><span class="p">,</span> <span class="n">progress_callback</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">return_raw</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
-
-<a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.detect_objects_batched" class="headerlink" title="Permanent link">&para;</a></h4>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Detect objects in a batch of frames using YOLO OBB.</p>
-<p>Args:
-    frames: List of frames (numpy arrays)
-    start_frame_idx: Starting frame index for this batch
-    progress_callback: Optional callback(current, total, message) for progress updates</p>
-<p>Returns:
-    List of tuples per frame:
-      - return_raw=False: (meas, sizes, shapes, confidences, obb_corners)
-      - return_raw=True:  (
-            raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners,
-            raw_heading_hints, raw_directed_mask
-        )</p>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="multi_tracker.core.detectors.engine.YOLOOBBDetector.apply_conservative_split" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">apply_conservative_split</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">,</span> <span class="n">gray</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">background</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
-
-<a href="#multi_tracker.core.detectors.engine.YOLOOBBDetector.apply_conservative_split" class="headerlink" title="Permanent link">&para;</a></h4>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Placeholder method for compatibility with ObjectDetector interface.
-YOLO doesn't use foreground masks, so this is a no-op.</p>
-
-    </div>
-
-</div>
-
-
-
-  </div>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-class">
-
-
-
-<h3 id="multi_tracker.core.detectors.engine.DetectionFilter" class="doc doc-heading">
+<h3 id="multi_tracker.core.detectors.DetectionFilter" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>DetectionFilter</code>
 
 
-<a href="#multi_tracker.core.detectors.engine.DetectionFilter" class="headerlink" title="Permanent link">&para;</a></h3>
+<a href="#multi_tracker.core.detectors.DetectionFilter" class="headerlink" title="Permanent link">&para;</a></h3>
 
 
     <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="multi_tracker.core.detectors._obb_geometry.OBBGeometryMixin">OBBGeometryMixin</span></code></p>
 
 
         <p>Lightweight post-hoc filter for cached raw YOLO detections.</p>
@@ -4941,14 +5467,132 @@ meas, sizes, shapes, confs, corners, *_ = filt.filter_raw_detections(
 
 </div>
 
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.detectors.YOLOOBBDetector" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>YOLOOBBDetector</code>
+
+
+<a href="#multi_tracker.core.detectors.YOLOOBBDetector" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="multi_tracker.core.detectors._obb_geometry.OBBGeometryMixin">OBBGeometryMixin</span></code>, <code><span title="multi_tracker.core.detectors._runtime_artifacts.RuntimeArtifactMixin">RuntimeArtifactMixin</span></code></p>
+
+
+        <p>Detects objects using a pretrained YOLO OBB (Oriented Bounding Box) model.
+Compatible interface with ObjectDetector for seamless integration.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
 
 <div class="doc doc-object doc-function">
 
 
-<h3 id="multi_tracker.core.detectors.engine.create_detector" class="doc doc-heading">
+<h4 id="multi_tracker.core.detectors.YOLOOBBDetector.detect_objects" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">detect_objects</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_count</span><span class="p">,</span> <span class="n">return_raw</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">profiler</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.detectors.YOLOOBBDetector.detect_objects" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Detects objects in a frame using YOLO OBB.</p>
+<p>Args:
+    frame: Input frame (grayscale or BGR)
+    frame_count: Current frame number for logging</p>
+<p>Returns:
+    Default mode:
+        meas, sizes, shapes, yolo_results, confidences
+    If return_raw=True:
+        raw_meas, raw_sizes, raw_shapes, yolo_results, raw_confidences,
+        raw_obb_corners, raw_heading_hints, raw_directed_mask,
+        raw_canonical_affines</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.detectors.YOLOOBBDetector.detect_objects_batched" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">detect_objects_batched</span><span class="p">(</span><span class="n">frames</span><span class="p">,</span> <span class="n">start_frame_idx</span><span class="p">,</span> <span class="n">progress_callback</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">return_raw</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">profiler</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.detectors.YOLOOBBDetector.detect_objects_batched" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Detect objects in a batch of frames using YOLO OBB.</p>
+<p>Args:
+    frames: List of frames (numpy arrays)
+    start_frame_idx: Starting frame index for this batch
+    progress_callback: Optional callback(current, total, message) for progress updates</p>
+<p>Returns:
+    List of tuples per frame:
+      - return_raw=False: (meas, sizes, shapes, confidences, obb_corners)
+      - return_raw=True:  (
+            raw_meas, raw_sizes, raw_shapes, raw_confidences, raw_obb_corners,
+            raw_heading_hints, raw_directed_mask, raw_canonical_affines
+        )</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.detectors.YOLOOBBDetector.apply_conservative_split" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">apply_conservative_split</span><span class="p">(</span><span class="n">fg_mask</span><span class="p">,</span> <span class="n">gray</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">background</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.detectors.YOLOOBBDetector.apply_conservative_split" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Placeholder method for compatibility with ObjectDetector interface.
+YOLO doesn't use foreground masks, so this is a no-op.</p>
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="multi_tracker.core.detectors.create_detector" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">create_detector</span><span class="p">(</span><span class="n">params</span><span class="p">)</span></code>
 
-<a href="#multi_tracker.core.detectors.engine.create_detector" class="headerlink" title="Permanent link">&para;</a></h3>
+<a href="#multi_tracker.core.detectors.create_detector" class="headerlink" title="Permanent link">&para;</a></h3>
 
 
     <div class="doc doc-contents ">
@@ -5236,7 +5880,7 @@ Features:
 
 
 <h4 id="multi_tracker.core.filters.kalman.KalmanFilterManager.correct" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">correct</span><span class="p">(</span><span class="n">track_idx</span><span class="p">,</span> <span class="n">measurement</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">correct</span><span class="p">(</span><span class="n">track_idx</span><span class="p">,</span> <span class="n">measurement</span><span class="p">,</span> <span class="n">theta_r_scale</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.filters.kalman.KalmanFilterManager.correct" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -5244,6 +5888,12 @@ Features:
     <div class="doc doc-contents ">
 
         <p>Correct a track with one measurement update.</p>
+<h6 id="multi_tracker.core.filters.kalman.KalmanFilterManager.correct--parameters">Parameters<a class="headerlink" href="#multi_tracker.core.filters.kalman.KalmanFilterManager.correct--parameters" title="Permanent link">&para;</a></h6>
+<p>theta_r_scale : float
+    Multiplier applied to R[2,2] (theta measurement noise) for this
+    correction.  Values &gt; 1 make the filter trust its own heading
+    prediction more than the measurement; used when heading confidence
+    is low.</p>
 
     </div>
 
@@ -5561,7 +6211,7 @@ Compatible with kf_manager.X state access.</p>
 
 
 <h3 id="multi_tracker.core.post.processing.interpolate_trajectories" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">interpolate_trajectories</span><span class="p">(</span><span class="n">trajectories_df</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s1">&#39;linear&#39;</span><span class="p">,</span> <span class="n">max_gap</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">interpolate_trajectories</span><span class="p">(</span><span class="n">trajectories_df</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s1">&#39;linear&#39;</span><span class="p">,</span> <span class="n">max_gap</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span> <span class="n">heading_flip_max_burst</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.core.post.processing.interpolate_trajectories" class="headerlink" title="Permanent link">&para;</a></h3>
 
@@ -5572,7 +6222,9 @@ Compatible with kf_manager.X state access.</p>
 <p>Args:
     trajectories_df: DataFrame with trajectory data (must have X, Y, Theta, FrameID columns)
     method: Interpolation method - 'linear', 'cubic', 'spline', or 'none'
-    max_gap: Maximum gap size to interpolate (frames). Larger gaps are left as NaN.</p>
+    max_gap: Maximum gap size to interpolate (frames). Larger gaps are left as NaN.
+    heading_flip_max_burst: Maximum length of an isolated heading-flip burst to
+        correct in post-processing.  Longer segments are assumed genuine.</p>
 <p>Returns:
     DataFrame with interpolated values</p>
 
@@ -5609,16 +6261,20 @@ Compatible with kf_manager.X state access.</p>
 
 
 
-<h2 id="multi_tracker.core.identity.analysis" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-module"></code>            <code>multi_tracker.core.identity.analysis</code>
+<h2 id="multi_tracker.core.identity" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-module"></code>            <code>multi_tracker.core.identity</code>
 
 
-<a href="#multi_tracker.core.identity.analysis" class="headerlink" title="Permanent link">&para;</a></h2>
+<a href="#multi_tracker.core.identity" class="headerlink" title="Permanent link">&para;</a></h2>
 
     <div class="doc doc-contents first">
 
-        <p>Individual-level analysis for identity classification and pose tracking.
-Extracts regions around detections for downstream processing.</p>
+        <p>Identity and individual-level analysis.</p>
+<p>Sub-packages:
+    pose/           — Pose inference backends, types, utilities, quality
+    classification/ — Per-detection classifiers (AprilTag, CNN, head-tail)
+    properties/     — Properties caching and CSV export aggregation
+    dataset/        — Crop generation and video export</p>
 
 
 
@@ -5640,11 +6296,637 @@ Extracts regions around detections for downstream processing.</p>
 
 
 
-<h3 id="multi_tracker.core.identity.analysis.IndividualDatasetGenerator" class="doc doc-heading">
+<h3 id="multi_tracker.core.identity.AprilTagConfig" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>AprilTagConfig</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#multi_tracker.core.identity.AprilTagConfig" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>All tunables for the AprilTag detection step.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.AprilTagConfig.from_params" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">from_params</span><span class="p">(</span><span class="n">params</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#multi_tracker.core.identity.AprilTagConfig.from_params" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Build from the MAT tracking-parameters dictionary.</p>
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.AprilTagDetector" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>AprilTagDetector</code>
+
+
+<a href="#multi_tracker.core.identity.AprilTagDetector" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Detect AprilTags inside OBB/bbox crops using composite-strip decoding.</p>
+<p>Usage::</p>
+<div class="language-text highlight"><pre><span></span><code>detector = AprilTagDetector(AprilTagConfig.from_params(params))
+observations = detector.detect_in_crops(frame, crops, offsets)
+detector.close()   # optional, releases C resources
+</code></pre></div>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.AprilTagDetector.detect_in_crops" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">detect_in_crops</span><span class="p">(</span><span class="n">crops</span><span class="p">,</span> <span class="n">offsets_xy</span><span class="p">,</span> <span class="n">det_indices</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.AprilTagDetector.detect_in_crops" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Detect tags in pre-extracted crops.</p>
+<h6 id="multi_tracker.core.identity.AprilTagDetector.detect_in_crops--parameters">Parameters<a class="headerlink" href="#multi_tracker.core.identity.AprilTagDetector.detect_in_crops--parameters" title="Permanent link">&para;</a></h6>
+<p>crops:
+    List of BGR crops already cut from the frame.
+offsets_xy:
+    <code>(x_offset, y_offset)</code> of each crop's top-left corner in the
+    original frame.
+det_indices:
+    Explicit detection-index per crop.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.AprilTagDetector.close" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">close</span><span class="p">()</span></code>
+
+<a href="#multi_tracker.core.identity.AprilTagDetector.close" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Release native detector resources.</p>
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.ClassPrediction" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>ClassPrediction</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#multi_tracker.core.identity.ClassPrediction" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Per-detection CNN classification result for one frame.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.CNNIdentityBackend" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>CNNIdentityBackend</code>
+
+
+<a href="#multi_tracker.core.identity.CNNIdentityBackend" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Wraps model loading and batch inference for CNN identity classification.</p>
+<p>Supports:
+- .pth checkpoints (TinyClassifier or torchvision — detected via 'arch' field)
+- YOLO .pt checkpoints (ultralytics)
+Runtime selection via compute_runtime (cpu/mps/cuda). ONNX artifacts are
+derived lazily from .pth and cached alongside the source file.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.CNNIdentityBackend.predict_batch" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">predict_batch</span><span class="p">(</span><span class="n">crops</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.CNNIdentityBackend.predict_batch" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Run inference on <em>crops</em>. Returns one ClassPrediction per crop.</p>
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.CNNIdentityCache" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>CNNIdentityCache</code>
+
+
+<a href="#multi_tracker.core.identity.CNNIdentityCache" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Persistent .npz cache of per-frame CNN identity predictions.</p>
+<p>Data is accumulated in memory via <code>save()</code> and written to disk in a
+single compressed write via <code>flush()</code>.  Call <code>load()</code> during the
+tracking loop to retrieve per-frame predictions.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.CNNIdentityCache.save" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">save</span><span class="p">(</span><span class="n">frame_idx</span><span class="p">,</span> <span class="n">predictions</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.CNNIdentityCache.save" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Update in-memory cache for <em>frame_idx</em>. Call flush() when done.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.CNNIdentityCache.flush" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">flush</span><span class="p">()</span></code>
+
+<a href="#multi_tracker.core.identity.CNNIdentityCache.flush" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Write all in-memory predictions to disk.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.CNNIdentityCache.load" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">load</span><span class="p">(</span><span class="n">frame_idx</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.CNNIdentityCache.load" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return saved predictions for <em>frame_idx</em>, or [] if not found.</p>
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.CNNIdentityConfig" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>CNNIdentityConfig</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#multi_tracker.core.identity.CNNIdentityConfig" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Configuration for CNN Classifier identity method.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.TrackCNNHistory" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>TrackCNNHistory</code>
+
+
+<a href="#multi_tracker.core.identity.TrackCNNHistory" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Maintains a sliding-window CNN identity history for every track slot.</p>
+<p>Follows the same pattern as TrackTagHistory in tag_features.py.
+The majority class across the window is the track's assigned identity.
+Returns <code>None</code> when no majority exists (empty window or exact tie).</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.TrackCNNHistory.resize" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">resize</span><span class="p">(</span><span class="n">n_tracks</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.TrackCNNHistory.resize" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Grow (never shrink) the history to accommodate <em>n_tracks</em>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.TrackCNNHistory.record" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">record</span><span class="p">(</span><span class="n">track_idx</span><span class="p">,</span> <span class="n">frame_idx</span><span class="p">,</span> <span class="n">class_name</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.TrackCNNHistory.record" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Record a confident CNN prediction for <em>track_idx</em> on <em>frame_idx</em>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.TrackCNNHistory.majority_class" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">majority_class</span><span class="p">(</span><span class="n">track_idx</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.TrackCNNHistory.majority_class" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return majority-vote class for <em>track_idx</em>, or None if no clear winner.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.TrackCNNHistory.clear_track" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">clear_track</span><span class="p">(</span><span class="n">track_idx</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.TrackCNNHistory.clear_track" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Clear history for a track slot (e.g., after identity loss).</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.TrackCNNHistory.build_track_identity_list" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">build_track_identity_list</span><span class="p">(</span><span class="n">n_tracks</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.TrackCNNHistory.build_track_identity_list" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Return list of length <em>n_tracks</em>: majority class per slot (or None).</p>
+<p>This is what goes into <code>association_data["track_cnn_identities"]</code>.</p>
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.HeadTailAnalyzer" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>HeadTailAnalyzer</code>
+
+
+<a href="#multi_tracker.core.identity.HeadTailAnalyzer" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Run head-tail direction classification without a full YOLO detector.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.HeadTailAnalyzer.from_components" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">from_components</span><span class="p">(</span><span class="n">model</span><span class="p">,</span> <span class="n">backend</span><span class="p">,</span> <span class="n">class_names</span><span class="p">,</span> <span class="n">input_size</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s1">&#39;cpu&#39;</span><span class="p">,</span> <span class="n">conf_threshold</span><span class="o">=</span><span class="mf">0.5</span><span class="p">,</span> <span class="n">reference_aspect_ratio</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span> <span class="n">canonical_margin</span><span class="o">=</span><span class="mf">1.3</span><span class="p">,</span> <span class="n">predict_device</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-classmethod"><code>classmethod</code></small>
+  </span>
+
+<a href="#multi_tracker.core.identity.HeadTailAnalyzer.from_components" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Create from a pre-loaded model, skipping file-based loading.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.HeadTailAnalyzer.analyze_crops" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">analyze_crops</span><span class="p">(</span><span class="n">frames</span><span class="p">,</span> <span class="n">per_frame_obb_corners</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.HeadTailAnalyzer.analyze_crops" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Run head-tail analysis on multiple frames.</p>
+<p>Args:
+    frames: BGR video frames.
+    per_frame_obb_corners: For each frame, a list of (4,2) OBB corners.</p>
+<p>Returns:
+    Per-frame list of <code>(heading_radians, confidence, directed_flag)</code>
+    tuples.  <code>heading_radians</code> is <code>nan</code> when direction is ambiguous.
+    <code>directed_flag</code> is 1 when classifier was confident, 0 otherwise.</p>
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.IndividualDatasetGenerator" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>IndividualDatasetGenerator</code>
 
 
-<a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator" class="headerlink" title="Permanent link">&para;</a></h3>
+<a href="#multi_tracker.core.identity.IndividualDatasetGenerator" class="headerlink" title="Permanent link">&para;</a></h3>
 
 
     <div class="doc doc-contents ">
@@ -5681,10 +6963,10 @@ clean, isolated training data for individual-level analysis.</p>
 <div class="doc doc-object doc-function">
 
 
-<h4 id="multi_tracker.core.identity.analysis.IndividualDatasetGenerator.__init__" class="doc doc-heading">
+<h4 id="multi_tracker.core.identity.IndividualDatasetGenerator.__init__" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="fm">__init__</span><span class="p">(</span><span class="n">params</span><span class="p">,</span> <span class="n">output_dir</span><span class="p">,</span> <span class="n">video_name</span><span class="p">,</span> <span class="n">dataset_name</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
-<a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.__init__" class="headerlink" title="Permanent link">&para;</a></h4>
+<a href="#multi_tracker.core.identity.IndividualDatasetGenerator.__init__" class="headerlink" title="Permanent link">&para;</a></h4>
 
 
     <div class="doc doc-contents ">
@@ -5703,67 +6985,10 @@ clean, isolated training data for individual-level analysis.</p>
 <div class="doc doc-object doc-function">
 
 
-<h4 id="multi_tracker.core.identity.analysis.IndividualDatasetGenerator.compute_median_color_from_frame" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">compute_median_color_from_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">)</span></code>
+<h4 id="multi_tracker.core.identity.IndividualDatasetGenerator.process_frame" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">process_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ellipse_params</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">confidences</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">track_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trajectory_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">coord_scale_factor</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">velocities</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_affines</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_canvas_dims</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_M_inverse</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
-
-<a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.compute_median_color_from_frame" class="headerlink" title="Permanent link">&para;</a></h4>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Compute the median color (BGR) from a frame.</p>
-<p>DEPRECATED: Use compute_median_color_from_frame from image_processing utils instead.
-This method is kept for backward compatibility.</p>
-<p>Args:
-    frame: Input frame (BGR, shape: H x W x 3)</p>
-<p>Returns:
-    Tuple of (B, G, R) median values</p>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="multi_tracker.core.identity.analysis.IndividualDatasetGenerator.ellipse_to_obb_corners" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">ellipse_to_obb_corners</span><span class="p">(</span><span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">major_axis</span><span class="p">,</span> <span class="n">minor_axis</span><span class="p">,</span> <span class="n">theta</span><span class="p">)</span></code>
-
-  <span class="doc doc-labels">
-      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
-  </span>
-
-<a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.ellipse_to_obb_corners" class="headerlink" title="Permanent link">&para;</a></h4>
-
-
-    <div class="doc doc-contents ">
-
-        <p>Convert ellipse parameters to OBB corner points.</p>
-<p>The OBB is the oriented bounding box that exactly fits the ellipse,
-which is a rotated rectangle with dimensions (major_axis × minor_axis).</p>
-<p>Args:
-    cx, cy: Center coordinates of the ellipse
-    major_axis: Full length of the major axis (not semi-axis)
-    minor_axis: Full length of the minor axis (not semi-axis)
-    theta: Rotation angle in radians (orientation of major axis)</p>
-<p>Returns:
-    corners: numpy array of shape (4, 2) with corner coordinates</p>
-
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h4 id="multi_tracker.core.identity.analysis.IndividualDatasetGenerator.process_frame" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">process_frame</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">ellipse_params</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">confidences</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">track_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">trajectory_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">coord_scale_factor</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">velocities</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
-
-<a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.process_frame" class="headerlink" title="Permanent link">&para;</a></h4>
+<a href="#multi_tracker.core.identity.IndividualDatasetGenerator.process_frame" class="headerlink" title="Permanent link">&para;</a></h4>
 
 
     <div class="doc doc-contents ">
@@ -5788,7 +7013,11 @@ in the tracking pipeline - no additional filtering needed.</p>
     detection_ids: Optional list of unique Detection IDs for each detection
     heading_hints: Optional directed heading angles (radians) per detection from head-tail model.
     directed_mask: Optional boolean mask (0/1) per detection indicating whether heading_hints is valid.
-    velocities: Optional (vx, vy) tuples per detection for motion-based fallback orientation.</p>
+    velocities: Optional (vx, vy) tuples per detection for motion-based fallback orientation.
+    canonical_affines: Optional M_canonical (2x3) affine matrices per detection.
+        When provided and canonical crop dimensions &gt; 0, extract rotation-normalised
+        canonical crops instead of AABB-masked crops.  Falls back to legacy AABB
+        extraction when None or when a specific detection has no affine.</p>
 <p>Returns:
     num_saved: Number of crops saved from this frame</p>
 
@@ -5799,10 +7028,10 @@ in the tracking pipeline - no additional filtering needed.</p>
 <div class="doc doc-object doc-function">
 
 
-<h4 id="multi_tracker.core.identity.analysis.IndividualDatasetGenerator.save_interpolated_crop" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">save_interpolated_crop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">w</span><span class="p">,</span> <span class="n">h</span><span class="p">,</span> <span class="n">theta</span><span class="p">,</span> <span class="n">traj_id</span><span class="p">,</span> <span class="n">interp_from</span><span class="p">,</span> <span class="n">interp_index</span><span class="p">,</span> <span class="n">interp_total</span><span class="p">,</span> <span class="n">heading_angle</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_directed</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span></code>
+<h4 id="multi_tracker.core.identity.IndividualDatasetGenerator.save_interpolated_crop" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">save_interpolated_crop</span><span class="p">(</span><span class="n">frame</span><span class="p">,</span> <span class="n">frame_id</span><span class="p">,</span> <span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">w</span><span class="p">,</span> <span class="n">h</span><span class="p">,</span> <span class="n">theta</span><span class="p">,</span> <span class="n">traj_id</span><span class="p">,</span> <span class="n">interp_from</span><span class="p">,</span> <span class="n">interp_index</span><span class="p">,</span> <span class="n">interp_total</span><span class="p">,</span> <span class="n">heading_angle</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_directed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">canonical_affine</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
-<a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.save_interpolated_crop" class="headerlink" title="Permanent link">&para;</a></h4>
+<a href="#multi_tracker.core.identity.IndividualDatasetGenerator.save_interpolated_crop" class="headerlink" title="Permanent link">&para;</a></h4>
 
 
     <div class="doc doc-contents ">
@@ -5816,10 +7045,10 @@ in the tracking pipeline - no additional filtering needed.</p>
 <div class="doc doc-object doc-function">
 
 
-<h4 id="multi_tracker.core.identity.analysis.IndividualDatasetGenerator.finalize" class="doc doc-heading">
+<h4 id="multi_tracker.core.identity.IndividualDatasetGenerator.finalize" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">finalize</span><span class="p">()</span></code>
 
-<a href="#multi_tracker.core.identity.analysis.IndividualDatasetGenerator.finalize" class="headerlink" title="Permanent link">&para;</a></h4>
+<a href="#multi_tracker.core.identity.IndividualDatasetGenerator.finalize" class="headerlink" title="Permanent link">&para;</a></h4>
 
 
     <div class="doc doc-contents ">
@@ -5841,6 +7070,494 @@ Called when tracking completes.</p>
 
 </div>
 
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.OrientedTrackVideoExporter" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>OrientedTrackVideoExporter</code>
+
+
+<a href="#multi_tracker.core.identity.OrientedTrackVideoExporter" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Build per-track orientation-fixed videos directly from cached geometry.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.PoseInferenceBackend" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>PoseInferenceBackend</code>
+
+
+<a href="#multi_tracker.core.identity.PoseInferenceBackend" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.Protocol">Protocol</span></code></p>
+
+
+        <p>Protocol for all runtime backends.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h4 id="multi_tracker.core.identity.PoseInferenceBackend.preferred_input_size" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <code class="highlight language-python"><span class="n">preferred_input_size</span></code>
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+<a href="#multi_tracker.core.identity.PoseInferenceBackend.preferred_input_size" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Preferred max input dimension for pre-resize (0 = no preference).</p>
+    </div>
+
+</div>
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.PoseInferenceBackend.warmup" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">warmup</span><span class="p">()</span></code>
+
+<a href="#multi_tracker.core.identity.PoseInferenceBackend.warmup" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Warm runtime (optional no-op for unsupported backends).</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.PoseInferenceBackend.predict_batch" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">predict_batch</span><span class="p">(</span><span class="n">crops</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.PoseInferenceBackend.predict_batch" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Run inference for a list of crops.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.PoseInferenceBackend.close" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">close</span><span class="p">()</span></code>
+
+<a href="#multi_tracker.core.identity.PoseInferenceBackend.close" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Release backend resources.</p>
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.PoseResult" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>PoseResult</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#multi_tracker.core.identity.PoseResult" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Canonical pose output for one crop.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.PoseRuntimeConfig" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>PoseRuntimeConfig</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#multi_tracker.core.identity.PoseRuntimeConfig" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Configuration for pose runtime backend selection.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.RuntimeMetrics" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>RuntimeMetrics</code>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-dataclass"><code>dataclass</code></small>
+  </span>
+
+<a href="#multi_tracker.core.identity.RuntimeMetrics" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>Timing metrics for pose runtime lifecycle.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h3 id="multi_tracker.core.identity.IndividualPropertiesCache" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <code>IndividualPropertiesCache</code>
+
+
+<a href="#multi_tracker.core.identity.IndividualPropertiesCache" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+
+        <p>NPZ-backed cache for per-detection properties keyed by frame and detection ID.</p>
+
+
+
+
+
+
+
+
+
+  <div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.IndividualPropertiesCache.add_frame" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">add_frame</span><span class="p">(</span><span class="n">frame_idx</span><span class="p">,</span> <span class="n">detection_ids</span><span class="p">,</span> <span class="n">pose_mean_conf</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pose_valid_fraction</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pose_num_valid</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pose_num_keypoints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">pose_keypoints</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.IndividualPropertiesCache.add_frame" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Add a frame of detection data to cache.</p>
+<p>Note: pose_mean_conf, pose_valid_fraction, pose_num_valid, and pose_num_keypoints
+are deprecated and ignored. Only raw keypoints are stored.
+Summary statistics are computed on-demand when reading.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.IndividualPropertiesCache.get_frame" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">get_frame</span><span class="p">(</span><span class="n">frame_idx</span><span class="p">,</span> <span class="n">min_valid_conf</span><span class="o">=</span><span class="mf">0.2</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.IndividualPropertiesCache.get_frame" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Get frame data with summary statistics computed on-demand.</p>
+<p>Args:
+    frame_idx: Frame index to retrieve
+    min_valid_conf: Minimum confidence threshold for keypoint validity (default: 0.2)</p>
+<p>Returns:
+    Dict with detection_ids, pose_mean_conf, pose_valid_fraction,
+    pose_num_valid, pose_num_keypoints, and pose_keypoints</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h4 id="multi_tracker.core.identity.IndividualPropertiesCache.get_detection" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">get_detection</span><span class="p">(</span><span class="n">frame_idx</span><span class="p">,</span> <span class="n">detection_id</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.IndividualPropertiesCache.get_detection" class="headerlink" title="Permanent link">&para;</a></h4>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Get per-detection data for a specific detection ID in a frame.</p>
+<p>Returns a dict of pose properties for the matching detection, or None
+if the detection ID is not found in that frame.</p>
+
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="multi_tracker.core.identity.apply_cnn_identity_cost" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">apply_cnn_identity_cost</span><span class="p">(</span><span class="n">cost</span><span class="p">,</span> <span class="n">det_class</span><span class="p">,</span> <span class="n">track_identity</span><span class="p">,</span> <span class="n">match_bonus</span><span class="p">,</span> <span class="n">mismatch_penalty</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.apply_cnn_identity_cost" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Apply CNN identity match bonus / mismatch penalty to a cost value.</p>
+<p>Returns cost unchanged when either side is uncertain (None).</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="multi_tracker.core.identity.ellipse_axes_from_area" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">ellipse_axes_from_area</span><span class="p">(</span><span class="n">area</span><span class="p">,</span> <span class="n">aspect_ratio</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.ellipse_axes_from_area" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Compute ellipse major/minor axes from area and aspect ratio.</p>
+<p>Returns:
+    (major_axis, minor_axis)</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="multi_tracker.core.identity.ellipse_to_obb_corners" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">ellipse_to_obb_corners</span><span class="p">(</span><span class="n">cx</span><span class="p">,</span> <span class="n">cy</span><span class="p">,</span> <span class="n">major_axis</span><span class="p">,</span> <span class="n">minor_axis</span><span class="p">,</span> <span class="n">theta</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.ellipse_to_obb_corners" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Convert ellipse parameters to OBB corner points.</p>
+<p>The OBB is the oriented bounding box that exactly fits the ellipse,
+which is a rotated rectangle with dimensions (major_axis x minor_axis).</p>
+<p>Args:
+    cx, cy: Center coordinates of the ellipse
+    major_axis: Full length of the major axis (not semi-axis)
+    minor_axis: Full length of the minor axis (not semi-axis)
+    theta: Rotation angle in radians (orientation of major axis)</p>
+<p>Returns:
+    corners: numpy array of shape (4, 2) with corner coordinates</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="multi_tracker.core.identity.resolve_directed_angle" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <code class="highlight language-python"><span class="n">resolve_directed_angle</span><span class="p">(</span><span class="n">theta</span><span class="p">,</span> <span class="n">heading_hint</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_directed</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">vx</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">vy</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+
+<a href="#multi_tracker.core.identity.resolve_directed_angle" class="headerlink" title="Permanent link">&para;</a></h3>
+
+
+    <div class="doc doc-contents ">
+
+        <p>Resolve the best directed orientation angle for a crop.</p>
+<p>Priority:
+1. Head-tail model heading (heading_directed=True and finite heading_hint).
+2. Motion velocity (vx, vy non-negligible) — disambiguates theta ± π.
+3. OBB axis angle (undirected, 180° ambiguity retained).</p>
+<p>The returned angle points tail → head so that the affine-warp canonicalization
+places the head on the right side (+x) of the canonical crop.</p>
+<p>Returns:
+    (angle_rad, is_directed, source_str)</p>
+
+    </div>
+
+</div>
 
 
 

@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-09-mat-afterhours-design/">
+        <link rel="canonical" href="https://neurorishika.github.io/multi-animal-tracker/nightly/plans/2026-03-30-src-reorganization-design/">
       
       
       
@@ -20,7 +20,7 @@
     
     
       
-        <title>MAT-afterhours: Interactive Identity Proofreading — Design Document - Multi-Animal-Tracker Docs</title>
+        <title>Source Reorganization Design - Multi-Animal-Tracker Docs</title>
       
     
     
@@ -74,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#mat-afterhours-interactive-identity-proofreading-design-document" class="md-skip">
+        <a href="#source-reorganization-design" class="md-skip">
           Skip to content
         </a>
       
@@ -112,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              MAT-afterhours: Interactive Identity Proofreading — Design Document
+              Source Reorganization Design
             
           </span>
         </div>
@@ -1526,46 +1526,46 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#solution-overview" class="md-nav__link">
+  <a href="#target-directory-structure" class="md-nav__link">
     <span class="md-ellipsis">
-      Solution Overview
+      Target Directory Structure
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#component-1-confidence-density-map" class="md-nav__link">
+  <a href="#dependency-rules" class="md-nav__link">
     <span class="md-ellipsis">
-      Component 1: Confidence Density Map
+      Dependency Rules
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Component 1: Confidence Density Map">
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reverse-dependency-fixes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reverse Dependency Fixes
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reverse Dependency Fixes">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#location" class="md-nav__link">
+  <a href="#fix-1-density-computation-core-afterhours" class="md-nav__link">
     <span class="md-ellipsis">
-      Location
+      Fix 1: Density computation (core -&gt; afterhours)
     </span>
   </a>
   
 </li>
         
           <li class="md-nav__item">
-  <a href="#algorithm" class="md-nav__link">
+  <a href="#fix-2-sleap-inference-service-core-posekit" class="md-nav__link">
     <span class="md-ellipsis">
-      Algorithm
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#config-keys-new" class="md-nav__link">
-    <span class="md-ellipsis">
-      Config keys (new)
+      Fix 2: SLEAP inference service (core -&gt; posekit)
     </span>
   </a>
   
@@ -1577,102 +1577,45 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#component-2-density-aware-assignment" class="md-nav__link">
+  <a href="#moves-summary" class="md-nav__link">
     <span class="md-ellipsis">
-      Component 2: Density-Aware Assignment
+      Moves Summary
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Component 2: Density-Aware Assignment">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#insertion-point" class="md-nav__link">
-    <span class="md-ellipsis">
-      Insertion point
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#mechanism" class="md-nav__link">
-    <span class="md-ellipsis">
-      Mechanism
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#component-3-mat-afterhours-application" class="md-nav__link">
+  <a href="#entry-point-updates" class="md-nav__link">
     <span class="md-ellipsis">
-      Component 3: MAT-afterhours Application
+      Entry Point Updates
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Component 3: MAT-afterhours Application">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#application-structure" class="md-nav__link">
-    <span class="md-ellipsis">
-      Application structure
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#ui-layout" class="md-nav__link">
-    <span class="md-ellipsis">
-      UI Layout
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#swap-suspicion-scoring" class="md-nav__link">
-    <span class="md-ellipsis">
-      Swap Suspicion Scoring
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#review-workflow-swap-review-tab" class="md-nav__link">
-    <span class="md-ellipsis">
-      Review Workflow (Swap Review tab)
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#session-persistence" class="md-nav__link">
-    <span class="md-ellipsis">
-      Session Persistence
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#architecture-boundaries" class="md-nav__link">
+  <a href="#import-update-scope" class="md-nav__link">
     <span class="md-ellipsis">
-      Architecture Boundaries
+      Import Update Scope
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-does-not-move" class="md-nav__link">
+    <span class="md-ellipsis">
+      What Does NOT Move
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing Strategy
     </span>
   </a>
   
@@ -1693,7 +1636,7 @@
                   
 
   
-    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/plans/2026-03-09-mat-afterhours-design.md" title="Edit this page" class="md-content__button md-icon">
+    <a href="https://github.com/neurorishika/multi-animal-tracker/edit/main/docs/plans/2026-03-30-src-reorganization-design.md" title="Edit this page" class="md-content__button md-icon">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -1701,314 +1644,207 @@
   
 
 
-<h1 id="mat-afterhours-interactive-identity-proofreading-design-document">MAT-afterhours: Interactive Identity Proofreading — Design Document<a class="headerlink" href="#mat-afterhours-interactive-identity-proofreading-design-document" title="Permanent link">&para;</a></h1>
-<p><strong>Date:</strong> 2026-03-09
+<h1 id="source-reorganization-design">Source Reorganization Design<a class="headerlink" href="#source-reorganization-design" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-03-30
 <strong>Status:</strong> Approved
-<strong>Branch:</strong> mat-pose-integration</p>
-<hr />
+<strong>Scope:</strong> Structural reorganization + boundary cleanup (option B)</p>
 <h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
-<p>Identity swaps occur when social animals cluster together. The tracker already employs conservative merging, velocity z-score breaks, pose quality gating, and DetectionID confirmation — but swaps still occur in high-density, low-confidence regions. The key failure modes are:</p>
+<p>The <code>multi_tracker/</code> package contains 5 independent applications (MAT, PoseKit,
+ClassKit, Afterhours, DataSieve) but MAT's code is "ambient" — its <code>gui/</code>,
+<code>app/</code> live at the package root alongside satellite apps, making it unclear what
+belongs to MAT vs. what is shared infrastructure. DataSieve is buried under a
+generic <code>tools/</code> namespace. Two reverse dependency violations exist where <code>core/</code>
+imports from satellite app packages.</p>
+<h2 id="target-directory-structure">Target Directory Structure<a class="headerlink" href="#target-directory-structure" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>multi_tracker/
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  # ── App layer (top) ──────────────────────────────────
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  mat/                        # MAT main tracker app
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    app/                      #   launcher, bootstrap  (moved from app/)
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    gui/                      #   main_window, dialogs, widgets  (moved from gui/)
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  posekit/                    # PoseKit app  (stays)
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    core/
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    inference/
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    ui/
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  classkit/                   # ClassKit app  (stays)
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    ...
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>  afterhours/                 # Afterhours app  (stays)
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    core/
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    gui/
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>  datasieve/                  # DataSieve app  (promoted from tools/data_sieve/)
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    gui.py
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>  # ── Integrations layer ──────────────────────────────
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>  integrations/               # External tool bridges
+</span><span id="__span-0-20"><a id="__codelineno-0-20" name="__codelineno-0-20" href="#__codelineno-0-20"></a>    sleap/                    #   formats, launcher, PoseInferenceService
+</span><span id="__span-0-21"><a id="__codelineno-0-21" name="__codelineno-0-21" href="#__codelineno-0-21"></a>    xanylabeling/             #   X-AnyLabeling CLI adapter  (moved from integrations/)
+</span><span id="__span-0-22"><a id="__codelineno-0-22" name="__codelineno-0-22" href="#__codelineno-0-22"></a>
+</span><span id="__span-0-23"><a id="__codelineno-0-23" name="__codelineno-0-23" href="#__codelineno-0-23"></a>  # ── Core layer ──────────────────────────────────────
+</span><span id="__span-0-24"><a id="__codelineno-0-24" name="__codelineno-0-24" href="#__codelineno-0-24"></a>  core/                       # Shared tracking pipeline
+</span><span id="__span-0-25"><a id="__codelineno-0-25" name="__codelineno-0-25" href="#__codelineno-0-25"></a>    assigners/
+</span><span id="__span-0-26"><a id="__codelineno-0-26" name="__codelineno-0-26" href="#__codelineno-0-26"></a>    background/
+</span><span id="__span-0-27"><a id="__codelineno-0-27" name="__codelineno-0-27" href="#__codelineno-0-27"></a>    canonicalization/
+</span><span id="__span-0-28"><a id="__codelineno-0-28" name="__codelineno-0-28" href="#__codelineno-0-28"></a>    detectors/
+</span><span id="__span-0-29"><a id="__codelineno-0-29" name="__codelineno-0-29" href="#__codelineno-0-29"></a>    filters/
+</span><span id="__span-0-30"><a id="__codelineno-0-30" name="__codelineno-0-30" href="#__codelineno-0-30"></a>    identity/
+</span><span id="__span-0-31"><a id="__codelineno-0-31" name="__codelineno-0-31" href="#__codelineno-0-31"></a>      pose/backends/          #   SLEAP + YOLO runtime inference
+</span><span id="__span-0-32"><a id="__codelineno-0-32" name="__codelineno-0-32" href="#__codelineno-0-32"></a>    post/
+</span><span id="__span-0-33"><a id="__codelineno-0-33" name="__codelineno-0-33" href="#__codelineno-0-33"></a>    tracking/
+</span><span id="__span-0-34"><a id="__codelineno-0-34" name="__codelineno-0-34" href="#__codelineno-0-34"></a>
+</span><span id="__span-0-35"><a id="__codelineno-0-35" name="__codelineno-0-35" href="#__codelineno-0-35"></a>  # ── Shared infrastructure (bottom) ──────────────────
+</span><span id="__span-0-36"><a id="__codelineno-0-36" name="__codelineno-0-36" href="#__codelineno-0-36"></a>  runtime/                    # Compute runtime  (promoted from core/runtime/)
+</span><span id="__span-0-37"><a id="__codelineno-0-37" name="__codelineno-0-37" href="#__codelineno-0-37"></a>  data/                       # CSV, caches  (stays)
+</span><span id="__span-0-38"><a id="__codelineno-0-38" name="__codelineno-0-38" href="#__codelineno-0-38"></a>  training/                   # Model training  (stays)
+</span><span id="__span-0-39"><a id="__codelineno-0-39" name="__codelineno-0-39" href="#__codelineno-0-39"></a>  utils/                      # Geometry, GPU, image processing  (stays)
+</span></code></pre></div>
+<h2 id="dependency-rules">Dependency Rules<a class="headerlink" href="#dependency-rules" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>apps  (mat, posekit, classkit, afterhours, datasieve)
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>  |
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>  v
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>integrations/
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>  |
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>  v
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>core/
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>  |
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>  v
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>runtime/  data/  training/  utils/   (shared infrastructure)
+</span></code></pre></div>
 <ul>
-<li>Animals coming close and exchanging identity post-separation</li>
-<li>Detection flickering in crowds causing jumps between animals</li>
-<li>No structured way for users to find, review, or correct suspected swaps</li>
+<li><strong>Apps</strong> may import from any layer below.</li>
+<li><strong>Integrations</strong> may import from core + shared infrastructure. Never from apps.</li>
+<li><strong>Core</strong> may import from shared infrastructure. Never from integrations or apps.</li>
+<li><strong>Shared infrastructure</strong> packages may not import from each other except
+  <code>utils/</code> which is a leaf dependency available to all.</li>
+<li><strong>No cross-imports between apps.</strong> Each app is independent.</li>
 </ul>
-<hr />
-<h2 id="solution-overview">Solution Overview<a class="headerlink" href="#solution-overview" title="Permanent link">&para;</a></h2>
-<p>Three coordinated components:</p>
-<ol>
-<li><strong>Confidence density map</strong> — computed during pre-tracking detection, characterises where tracking is hard</li>
-<li><strong>Density-aware assignment</strong> — forward and backward passes use the density map to prefer fragmentation over risky identity maintenance in ambiguous zones</li>
-<li><strong>MAT-afterhours</strong> — a standalone Qt application (fifth app in the suite) for interactive post-hoc proofreading of swap events</li>
-</ol>
-<hr />
-<h2 id="component-1-confidence-density-map">Component 1: Confidence Density Map<a class="headerlink" href="#component-1-confidence-density-map" title="Permanent link">&para;</a></h2>
-<h3 id="location">Location<a class="headerlink" href="#location" title="Permanent link">&para;</a></h3>
-<p><code>src/multi_tracker/afterhours/core/confidence_density.py</code>
-Called from the pre-tracking detection phase (made default for all runs).</p>
-<h3 id="algorithm">Algorithm<a class="headerlink" href="#algorithm" title="Permanent link">&para;</a></h3>
-<p><strong>Accumulation (per frame, during pre-detection):</strong></p>
-<p>For each detection at position <code>(x, y)</code> with confidence <code>c</code>:
-- Place a 2D Gaussian at <code>(x, y)</code> with sigma proportional to <code>bbox_diagonal</code> (body-size-scaled)
-- Gaussian is normalised; amplitude = <code>(1 - c)</code>
-- Low confidence → strong signal; high confidence → near-zero; empty space → zero
-- Accumulated into a per-frame float32 density frame stored in the detection cache <code>.npz</code></p>
-<p><strong>Post-detection processing:</strong></p>
-<ol>
-<li>Load all per-frame density frames from cache</li>
-<li>Apply temporal Gaussian smoothing across frames</li>
-<li>Binarize at a configurable threshold</li>
-<li>Run 3D connected-components (<code>scipy.ndimage.label</code>) on the <code>(H, W, T)</code> volume</li>
-<li>Extract each component's bounding box (pixel coords + frame range) → <code>Region-N</code></li>
-<li>Tag each detection in cache with its region label (<code>open_field</code> or <code>region-N</code>)</li>
-<li>Write <code>&lt;name&gt;_confidence_regions.json</code></li>
-</ol>
-<p><strong>Diagnostic video export (<code>&lt;name&gt;_confidence_map.mp4</code>):</strong></p>
-<p>Generated automatically as part of the standard MAT post-processing artifact set:
-- Original video frames with semi-transparent red heatmap overlay on low-confidence zones
-- Animal IDs drawn in warning colour inside flagged regions
-- Region labels (<code>Region-1 [frames 240–310]</code>) annotated in frame corners
-- Exported at original resolution</p>
-<h3 id="config-keys-new">Config keys (new)<a class="headerlink" href="#config-keys-new" title="Permanent link">&para;</a></h3>
+<h2 id="reverse-dependency-fixes">Reverse Dependency Fixes<a class="headerlink" href="#reverse-dependency-fixes" title="Permanent link">&para;</a></h2>
+<h3 id="fix-1-density-computation-core-afterhours">Fix 1: Density computation  (<code>core</code> -&gt; <code>afterhours</code>)<a class="headerlink" href="#fix-1-density-computation-core-afterhours" title="Permanent link">&para;</a></h3>
+<p><strong>Current:</strong> <code>core/tracking/worker.py</code> imports from
+<code>afterhours.core.confidence_density</code> at 3 call sites (lines 858, 953, 972).</p>
+<p><strong>Fix:</strong> Move <code>confidence_density.py</code> (or the relevant functions:
+<code>compute_density_map_from_cache</code>, <code>export_diagnostic_video</code>, <code>save_regions</code>,
+<code>load_regions</code>) from <code>afterhours/core/</code> into <code>core/tracking/density.py</code>.
+Afterhours then imports from <code>multi_tracker.core.tracking.density</code>.</p>
+<p><strong>Rationale:</strong> Density map computation directly influences assignment behavior
+during forward and backward tracking passes. It is core tracking pipeline logic.</p>
+<h3 id="fix-2-sleap-inference-service-core-posekit">Fix 2: SLEAP inference service  (<code>core</code> -&gt; <code>posekit</code>)<a class="headerlink" href="#fix-2-sleap-inference-service-core-posekit" title="Permanent link">&para;</a></h3>
+<p><strong>Current:</strong> <code>core/identity/pose/backends/sleap.py:302</code> imports
+<code>PoseInferenceService</code> from <code>posekit.inference.service</code>.</p>
+<p><strong>Fix:</strong> Move <code>PoseInferenceService</code> into <code>integrations/sleap/service.py</code>.
+Both <code>core/identity/pose/backends/sleap.py</code> and <code>posekit/</code> import from
+<code>multi_tracker.integrations.sleap.service</code>.</p>
+<p><strong>Rationale:</strong> <code>PoseInferenceService</code> manages SLEAP as an external tool
+(launching, communicating with the SLEAP process). This is integration logic,
+not pose estimation pipeline logic. The SLEAP <em>backend</em> in <code>core/</code> calls the
+service but shouldn't own its implementation.</p>
+<h2 id="moves-summary">Moves Summary<a class="headerlink" href="#moves-summary" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Key</th>
-<th>Default</th>
-<th>Description</th>
+<th>Current location</th>
+<th>New location</th>
+<th>Reason</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>density_gaussian_sigma_scale</code></td>
-<td>1.0</td>
-<td>Gaussian sigma as multiple of bbox_diagonal</td>
+<td><code>app/</code></td>
+<td><code>mat/app/</code></td>
+<td>Make MAT explicit</td>
 </tr>
 <tr>
-<td><code>density_temporal_sigma</code></td>
-<td>2.0</td>
-<td>Frames for temporal Gaussian smoothing</td>
+<td><code>gui/</code></td>
+<td><code>mat/gui/</code></td>
+<td>Make MAT explicit</td>
 </tr>
 <tr>
-<td><code>density_binarize_threshold</code></td>
-<td>0.3</td>
-<td>Threshold after normalisation</td>
+<td><code>tools/data_sieve/</code></td>
+<td><code>datasieve/</code></td>
+<td>Promote to peer app</td>
+</tr>
+<tr>
+<td><code>tools/</code></td>
+<td><em>(deleted)</em></td>
+<td>Empty after datasieve promotion</td>
+</tr>
+<tr>
+<td><code>core/runtime/</code></td>
+<td><code>runtime/</code></td>
+<td>Shared by multiple apps</td>
+</tr>
+<tr>
+<td><code>integrations/xanylabeling_cli.py</code></td>
+<td><code>integrations/xanylabeling/cli.py</code></td>
+<td>Organized sub-package</td>
+</tr>
+<tr>
+<td><code>afterhours/core/confidence_density.py</code></td>
+<td><code>core/tracking/density.py</code></td>
+<td>Fix reverse dependency</td>
+</tr>
+<tr>
+<td><code>posekit/inference/service.py</code></td>
+<td><code>integrations/sleap/service.py</code></td>
+<td>Fix reverse dependency</td>
 </tr>
 </tbody>
 </table>
-<hr />
-<h2 id="component-2-density-aware-assignment">Component 2: Density-Aware Assignment<a class="headerlink" href="#component-2-density-aware-assignment" title="Permanent link">&para;</a></h2>
-<h3 id="insertion-point">Insertion point<a class="headerlink" href="#insertion-point" title="Permanent link">&para;</a></h3>
-<p>Pre-tracking detection is made the <strong>default</strong> for all runs (currently default only for batched runs). This ensures the density map is always available before both the forward and backward tracking passes.</p>
-<h3 id="mechanism">Mechanism<a class="headerlink" href="#mechanism" title="Permanent link">&para;</a></h3>
-<p>During assignment in flagged regions (<code>region-N</code> detections):
-- <strong>Tighter max assignment distance</strong> — search radius reduced to discourage long-distance matches
-- <strong>Lower acceptance threshold</strong> — prefer "no assignment → new fragment" over risky match
-- <strong>Occlusion preference</strong> — in flagged zones, prefer marking as occluded over forcing an assignment through a crowd</p>
-<p>This shifts the outcome in hard zones from <em>noisy identity maintenance</em> to <em>clean fragments awaiting proofreading</em> — exactly what MAT-afterhours is designed to handle.</p>
-<hr />
-<h2 id="component-3-mat-afterhours-application">Component 3: MAT-afterhours Application<a class="headerlink" href="#component-3-mat-afterhours-application" title="Permanent link">&para;</a></h2>
-<h3 id="application-structure">Application structure<a class="headerlink" href="#application-structure" title="Permanent link">&para;</a></h3>
-<p>Follows the ClassKit pattern exactly:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>src/multi_tracker/
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>└── afterhours/
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    ├── __init__.py
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    ├── app.py                          # main() entry point
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    ├── core/
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    │   ├── __init__.py
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    │   ├── confidence_density.py       # Density map + diagnostic video
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    │   ├── swap_scorer.py              # Suspicion scoring engine
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    │   └── correction_writer.py        # Edits _proofread.csv atomically
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    └── gui/
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>        ├── __init__.py
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>        ├── main_window.py              # MainWindow(QMainWindow)
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>        ├── widgets/
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>        │   ├── suspicion_queue.py      # Ranked queue panel
-</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>        │   ├── video_player.py         # Video + trajectory overlay
-</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>        │   └── timeline_panel.py       # Per-animal horizontal timeline
-</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>        └── dialogs/
-</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>            ├── frame_picker.py         # Step 1: pick split frame
-</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a>            └── identity_assignment.py  # Step 2: before/after thumbnail reassignment
-</span></code></pre></div>
-<p><strong>Entry points (pyproject.toml):</strong>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">mat-afterhours</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;multi_tracker.afterhours.app:main&quot;</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">afterhours</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;multi_tracker.afterhours.app:main&quot;</span>
-</span></code></pre></div></p>
-<p><strong>MAT integration:</strong>
-- Post-processing tab gets an "Open in MAT-afterhours" button
-- After a full tracking run, a <code>QMessageBox</code> prompts "Open in MAT-afterhours?"</p>
-<hr />
-<h3 id="ui-layout">UI Layout<a class="headerlink" href="#ui-layout" title="Permanent link">&para;</a></h3>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>┌──────────────────────────────────────────────────────────────────────┐
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>│  MAT-afterhours  |  [◀ prev]  fly_run_01  (2/8)  [next ▶]  [⊕ load] │
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>├──────────────────────────────────────────────────────────────────────┤
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>│  [Swap Review] [Merge Review] [Manual Edit] [...]                    │
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>├──────────────────┬───────────────────────────────────────────────────┤
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>│  SUSPICION QUEUE │  VIDEO PLAYER + OVERLAY                          │
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>│                  │                                                   │
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>│  ● 0.91  Cr+Hd   │  [video frame with trajectory overlays]          │
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>│    T214–T231     │  colored dots + ID labels                        │
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>│    tracks 2 &amp; 5  │  flagged tracks: pulsing highlight ring          │
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>│    open_field    │  low-conf zones: semi-transparent red tint        │
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>│                  │                                                   │
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>│  ● 0.78  Pr+Hd   │  [scrub bar]  ◀ ▶  frame 214 / 3200             │
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>│    T445–T461     │                                                   │
-</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>│    tracks 1 &amp; 3  ├───────────────────────────────────────────────────┤
-</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>│    region-2      │  TIMELINE PANEL                                   │
-</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>│                  │                                                   │
-</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>│  ○ 0.61  Pr      │  track 2  ━━━━━━╋━━━━━━━━━━━━━━━━━━━━━━━━━      │
-</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>│    T892–T910     │  track 5  ━━━━━━╋━━━━━━━━━━━━━━━━━━━━━━━━━      │
-</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>│    tracks 4 &amp; 2  │           ↑ flagged zone highlighted             │
-</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>│                  │  [all tracks, click to split, drag to reassign]  │
-</span><span id="__span-2-22"><a id="__codelineno-2-22" name="__codelineno-2-22" href="#__codelineno-2-22"></a>│  [show more ↓]   │                                                   │
-</span><span id="__span-2-23"><a id="__codelineno-2-23" name="__codelineno-2-23" href="#__codelineno-2-23"></a>└──────────────────┴───────────────────────────────────────────────────┘
-</span></code></pre></div>
-<p><strong>Top bar — Session navigator:</strong>
-- <code>[⊕ load]</code>: pick single video+CSV pair, or load a <code>.txt</code> file (one video path per line; matching CSV auto-discovered)
-- <code>[◀ prev]</code> / <code>[next ▶]</code>: step through loaded list
-- Session counter <code>(2/8)</code> shows position
-- Unsaved changes prompt on navigation</p>
-<p><strong>Content tabs (extensible):</strong>
-- <code>Swap Review</code> — ranked queue + frame-picker + identity assignment (v1)
-- <code>Merge Review</code> — future: review over-split fragments
-- <code>Manual Edit</code> — future: free-form editing without a queue
-- <code>[...]</code> — additional tabs without window restructuring</p>
-<p>Video player and timeline panel are <strong>shared across all tabs</strong>.</p>
-<hr />
-<h3 id="swap-suspicion-scoring">Swap Suspicion Scoring<a class="headerlink" href="#swap-suspicion-scoring" title="Permanent link">&para;</a></h3>
-<p><strong><code>SwapSuspicionEvent</code> dataclass:</strong>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nd">@dataclass</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">SwapSuspicionEvent</span><span class="p">:</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">track_a</span><span class="p">:</span> <span class="nb">int</span>           <span class="c1"># TrajectoryID</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">track_b</span><span class="p">:</span> <span class="nb">int</span>           <span class="c1"># TrajectoryID (None for single-track anomaly)</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">frame_peak</span><span class="p">:</span> <span class="nb">int</span>        <span class="c1"># Frame of highest suspicion</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">frame_range</span><span class="p">:</span> <span class="nb">tuple</span>     <span class="c1"># (start, end) for clip extraction</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="n">score</span><span class="p">:</span> <span class="nb">float</span>           <span class="c1"># 0–1</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="n">signals</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>     <span class="c1"># signals fired: &#39;Cr&#39;, &#39;Pr&#39;, &#39;Hd&#39;, &#39;Pq&#39;</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="n">region_label</span><span class="p">:</span> <span class="nb">str</span>      <span class="c1"># &#39;open_field&#39; or &#39;region-N&#39;</span>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="n">region_boundary</span><span class="p">:</span> <span class="nb">bool</span>  <span class="c1"># True if event is at region edge</span>
-</span></code></pre></div></p>
-<p><strong>Signals:</strong></p>
+<h2 id="entry-point-updates">Entry Point Updates<a class="headerlink" href="#entry-point-updates" title="Permanent link">&para;</a></h2>
+<p>All <code>[project.scripts]</code> in <code>pyproject.toml</code> need path updates:</p>
 <table>
 <thead>
 <tr>
-<th>Signal</th>
-<th>Abbrev</th>
-<th>Description</th>
-<th>Weight</th>
+<th>Entry point</th>
+<th>Current target</th>
+<th>New target</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Crossing / position exchange</td>
-<td><code>Cr</code></td>
-<td>Tracks swap relative position within T frames</td>
-<td>High</td>
+<td><code>mat</code></td>
+<td><code>multi_tracker.app.launcher:main</code></td>
+<td><code>multi_tracker.mat.app.launcher:main</code></td>
 </tr>
 <tr>
-<td>Close approach + separation</td>
-<td><code>Pr</code></td>
-<td>Tracks come within D_close px then diverge, no exchange required</td>
-<td>~40–50% of Cr</td>
+<td><code>datasieve</code></td>
+<td><code>multi_tracker.tools.data_sieve.gui:main</code></td>
+<td><code>multi_tracker.datasieve.gui:main</code></td>
 </tr>
 <tr>
-<td>Heading discontinuity</td>
-<td><code>Hd</code></td>
-<td>Sudden heading reversal (&gt;120°) coinciding with nearby track</td>
-<td>Medium</td>
+<td><code>posekit-labeler</code></td>
+<td><em>(unchanged)</em></td>
+<td><em>(unchanged)</em></td>
 </tr>
 <tr>
-<td>Pose quality drop</td>
-<td><code>Pq</code></td>
-<td>PoseQualityScore z-score drop near crossing event; gated on pose availability</td>
-<td>Amplifier</td>
+<td><code>classkit-labeler</code></td>
+<td><em>(unchanged)</em></td>
+<td><em>(unchanged)</em></td>
 </tr>
 <tr>
-<td>Confidence region discount</td>
-<td>—</td>
-<td>Event inside low-confidence zone → score reduced</td>
-<td>Negative</td>
-</tr>
-<tr>
-<td>Region boundary bonus</td>
-<td>—</td>
-<td>Event at zone boundary (entering/leaving crowd) → score increased</td>
-<td>Positive</td>
+<td><code>mat-afterhours</code></td>
+<td><em>(unchanged)</em></td>
+<td><em>(unchanged)</em></td>
 </tr>
 </tbody>
 </table>
-<p><strong>Combined score:</strong>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>score = w1a * crossing_signal
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>      + w1b * proximity_signal
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>      + w2  * heading_discontinuity
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>      + w3  * pose_quality_drop        # 0 if no pose
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>      - w4  * confidence_region_discount
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>      + w5  * region_boundary_bonus
-</span></code></pre></div></p>
-<p>Normalised 0–1. Events below ~0.15 hidden by default, surfaced via "Show more."</p>
-<p><strong>Queue behaviour:</strong>
-- Scored events shown highest-first (most obvious swaps)
-- "Show more" button at bottom expands with next threshold tier
-- User works until satisfied and stops — no forced completion
-- Scoring runs in background <code>QThread</code>, queue populates progressively</p>
-<hr />
-<h3 id="review-workflow-swap-review-tab">Review Workflow (Swap Review tab)<a class="headerlink" href="#review-workflow-swap-review-tab" title="Permanent link">&para;</a></h3>
-<p><strong>Per-event flow:</strong></p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Click queue card
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>      ↓
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>Video seeks to frame_peak; flagged tracks highlighted
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>      ↓
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>User: [Review]  [Skip]  [Mark OK]
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>      ↓ Review
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>FramePickerDialog
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>  Cropped clip of the two tracks ±margin, in-memory frame cache
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>  User scrubs, clicks exact split frame N
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>      ↓
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>IdentityAssignmentDialog
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>  Before: thumbnail grid of frames N-T ... N
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>  After:  thumbnail grid of frames N ... N+T
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>  User clicks to assign &quot;track A before = track B after&quot;
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>      ↓
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>correction_writer.py:
-</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>  1. Break track A at frame N → two new TrajectoryID segments
-</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>  2. Break track B at frame N → two new TrajectoryID segments
-</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>  3. Swap post-split segment IDs per user assignment
-</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>  4. Re-interpolate any gaps created
-</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>  5. Atomic write (_proofread.csv.tmp → rename)
-</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a>      ↓
-</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>Queue card checkmarked; timeline panel refreshes
-</span></code></pre></div>
-<p><strong>Skip:</strong> card stays in queue unresolved
-<strong>Mark OK:</strong> written to <code>_proofread_dismissed.json</code>, never re-surfaced</p>
-<p><strong>Manual timeline edits:</strong>
-- Click track bar at frame → Force split (skips FramePickerDialog, frame already known) → IdentityAssignmentDialog
-- Drag segment to another track row → reassign identity
-- Right-click → context menu: "Force split here", "Mark as reviewed", "Ignore segment"</p>
-<hr />
-<h3 id="session-persistence">Session Persistence<a class="headerlink" href="#session-persistence" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>File</th>
-<th>Contents</th>
-<th>Mutability</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>&lt;name&gt;_proofread.csv</code></td>
-<td>Corrected trajectory data</td>
-<td>Edited in place by MAT-afterhours</td>
-</tr>
-<tr>
-<td><code>&lt;name&gt;_proofread_dismissed.json</code></td>
-<td>Events marked OK</td>
-<td>Written by MAT-afterhours</td>
-</tr>
-<tr>
-<td><code>&lt;name&gt;_confidence_regions.json</code></td>
-<td>Density region definitions</td>
-<td>Read-only (from MAT)</td>
-</tr>
-<tr>
-<td><code>&lt;name&gt;_confidence_map.mp4</code></td>
-<td>Diagnostic overlay video</td>
-<td>Read-only (from MAT)</td>
-</tr>
-</tbody>
-</table>
-<p>On session re-open:
-- Dismissed events excluded from queue
-- Already-corrected segments shown in distinct timeline colour
-- Scoring re-runs only on uncorrected regions</p>
-<hr />
-<h2 id="architecture-boundaries">Architecture Boundaries<a class="headerlink" href="#architecture-boundaries" title="Permanent link">&para;</a></h2>
+<h2 id="import-update-scope">Import Update Scope<a class="headerlink" href="#import-update-scope" title="Permanent link">&para;</a></h2>
+<p>Every <code>from multi_tracker.app</code>, <code>from multi_tracker.gui</code>,
+<code>from multi_tracker.tools</code>, <code>from multi_tracker.core.runtime</code>, and the 4
+reverse-dependency import sites need updating. A bulk find-and-replace pass
+across <code>src/</code> and <code>tests/</code> will cover this.</p>
+<h2 id="what-does-not-move">What Does NOT Move<a class="headerlink" href="#what-does-not-move" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>afterhours/core/</code> modules are pure Python — no Qt dependencies, fully testable</li>
-<li><code>afterhours/gui/</code> imports from <code>afterhours/core/</code> and <code>multi_tracker.core.*</code></li>
-<li><code>confidence_density.py</code> is called from MAT's existing post-processing pipeline; <code>afterhours/</code> does not import from <code>gui/</code></li>
-<li>Correction writer edits only <code>_proofread.csv</code> — never the original processed CSV</li>
+<li><code>posekit/</code> — already self-contained</li>
+<li><code>classkit/</code> — already self-contained</li>
+<li><code>afterhours/</code> — already self-contained (only loses <code>confidence_density.py</code>)</li>
+<li><code>core/</code> — stays at root (minus <code>runtime/</code>)</li>
+<li><code>data/</code>, <code>training/</code>, <code>utils/</code> — stay at root</li>
 </ul>
+<h2 id="testing-strategy">Testing Strategy<a class="headerlink" href="#testing-strategy" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Run full test suite after each logical move to catch broken imports early.</li>
+<li>Verify all 5 CLI entry points launch successfully.</li>
+<li>Run <code>make lint</code> to catch any stale imports.</li>
+</ol>
 
 
 

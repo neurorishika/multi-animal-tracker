@@ -985,6 +985,15 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#data-and-config-directories" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data and Config Directories
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1637,6 +1646,15 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#data-and-config-directories" class="md-nav__link">
+    <span class="md-ellipsis">
+      Data and Config Directories
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1663,12 +1681,19 @@
 <h1 id="architecture">Architecture<a class="headerlink" href="#architecture" title="Permanent link">&para;</a></h1>
 <h2 id="system-layers">System Layers<a class="headerlink" href="#system-layers" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>multi_tracker.app</code>: launcher/CLI/bootstrap.</li>
-<li><code>multi_tracker.gui</code>: tracking GUI, dialogs, widgets.</li>
-<li><code>multi_tracker.core</code>: detection, filtering, assignment, post-processing, worker orchestration.</li>
-<li><code>multi_tracker.data</code>: CSV/cache/dataset generation and merging.</li>
+<li><code>multi_tracker.mat</code>: MAT launcher, GUI, dialogs, widgets.</li>
 <li><code>multi_tracker.posekit</code>: pose-labeling application and related dialogs/inference flows.</li>
+<li><code>multi_tracker.classkit</code>: classification/embedding toolkit.</li>
+<li><code>multi_tracker.afterhours</code>: interactive proofreading.</li>
+<li><code>multi_tracker.datasieve</code>: data sieve tool.</li>
+<li><code>multi_tracker.integrations</code>: external tool bridges (SLEAP, X-AnyLabeling).</li>
+<li><code>multi_tracker.core</code>: detection, filtering, assignment, post-processing, worker orchestration.</li>
+<li><code>multi_tracker.runtime</code>: compute runtime selection and GPU utilities.</li>
+<li><code>multi_tracker.data</code>: CSV/cache/dataset generation and merging.</li>
+<li><code>multi_tracker.training</code>: dataset builders, training runner, registry, model publishing.</li>
 <li><code>multi_tracker.utils</code>: shared helpers (GPU detection, geometry, image processing, batching, prefetch).</li>
+<li><code>multi_tracker.paths</code>: central path resolution — bundled assets via <code>importlib.resources</code>, user dirs via <code>platformdirs</code>.</li>
+<li><code>multi_tracker.resources</code>: bundled read-only assets (brand icons, default configs, skeletons).</li>
 </ul>
 <h2 id="design-intent">Design Intent<a class="headerlink" href="#design-intent" title="Permanent link">&para;</a></h2>
 <ul>
@@ -1678,15 +1703,94 @@
 </ul>
 <h2 id="runtime-entry-paths">Runtime Entry Paths<a class="headerlink" href="#runtime-entry-paths" title="Permanent link">&para;</a></h2>
 <ul>
-<li>MAT: <code>multi_tracker.app.launcher:main</code></li>
-<li>PoseKit: <code>multi_tracker.posekit.pose_label:main</code></li>
+<li>MAT: <code>multi_tracker.mat.app.launcher:main</code></li>
+<li>PoseKit: <code>multi_tracker.posekit.ui.main:main</code></li>
+<li>DataSieve: <code>multi_tracker.datasieve.gui:main</code></li>
+<li>ClassKit: <code>multi_tracker.classkit.app:main</code></li>
+<li>Afterhours: <code>multi_tracker.afterhours.app:main</code></li>
 </ul>
 <h2 id="key-operational-boundaries">Key Operational Boundaries<a class="headerlink" href="#key-operational-boundaries" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Core tracking should not depend on GUI widget internals.</li>
 <li>Data layer should stay reusable from both GUI and scripts.</li>
 <li>PoseKit is a separate app surface with its own workflow but shared environment/tooling.</li>
+<li>All path resolution goes through <code>multi_tracker.paths</code>. No module uses <code>Path(__file__).parents[N]</code> to navigate to repo root.</li>
+<li>Bundled read-only assets are in <code>multi_tracker.resources</code> and accessed via <code>importlib.resources</code>.</li>
+<li>User-writable data (models, training runs, config) lives in platform directories, never inside the installed package.</li>
+<li>Users can override directories with <code>MAT_DATA_DIR</code> and <code>MAT_CONFIG_DIR</code> environment variables.</li>
 </ul>
+<h2 id="data-and-config-directories">Data and Config Directories<a class="headerlink" href="#data-and-config-directories" title="Permanent link">&para;</a></h2>
+<p>All apps share paths via <code>multi_tracker.paths</code>. This module resolves user-writable directories (models, training, presets, skeletons) and bundled read-only assets (brand icons, default configs).</p>
+<p><strong>Key functions:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Returns</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_models_dir()</code></td>
+<td><code>&lt;data&gt;/models/</code> — trained model storage</td>
+</tr>
+<tr>
+<td><code>get_training_runs_dir()</code></td>
+<td><code>&lt;data&gt;/training/runs/</code> — training run registry</td>
+</tr>
+<tr>
+<td><code>get_training_workspace_dir(subdir)</code></td>
+<td><code>&lt;data&gt;/training/&lt;subdir&gt;/</code> — training workspace</td>
+</tr>
+<tr>
+<td><code>get_presets_dir()</code></td>
+<td><code>&lt;config&gt;/presets/</code> — config presets (seeded from bundled defaults)</td>
+</tr>
+<tr>
+<td><code>get_skeleton_dir()</code></td>
+<td><code>&lt;config&gt;/skeletons/</code> — skeleton definitions (seeded from bundled defaults)</td>
+</tr>
+<tr>
+<td><code>get_advanced_config_path()</code></td>
+<td><code>&lt;config&gt;/advanced_config.json</code></td>
+</tr>
+<tr>
+<td><code>get_brand_icon_bytes(name)</code></td>
+<td>Bytes of a bundled SVG/PNG icon</td>
+</tr>
+<tr>
+<td><code>get_brand_qicon(name)</code></td>
+<td><code>QIcon</code> from bundled icon (lazy Qt import)</td>
+</tr>
+<tr>
+<td><code>print_paths()</code></td>
+<td>Prints all resolved paths to stdout</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Environment variable overrides:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Variable</th>
+<th>Overrides</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MAT_DATA_DIR</code></td>
+<td>Models, training runs</td>
+<td><code>platformdirs.user_data_dir()</code></td>
+</tr>
+<tr>
+<td><code>MAT_CONFIG_DIR</code></td>
+<td>Presets, skeletons, advanced config</td>
+<td><code>platformdirs.user_config_dir()</code></td>
+</tr>
+</tbody>
+</table>
+<p>When adding a new module that needs to read models, configs, or assets, always import from <code>multi_tracker.paths</code> — never construct paths relative to <code>__file__</code>.</p>
 
 
 

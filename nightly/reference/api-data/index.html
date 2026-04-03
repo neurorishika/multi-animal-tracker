@@ -3120,7 +3120,7 @@ during backward pass, minimizing memory footprint while enabling detection reuse
 
 
 <h4 id="multi_tracker.data.DetectionCache.add_frame" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">add_frame</span><span class="p">(</span><span class="n">frame_idx</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">sizes</span><span class="p">,</span> <span class="n">shapes</span><span class="p">,</span> <span class="n">confidences</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">add_frame</span><span class="p">(</span><span class="n">frame_idx</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">sizes</span><span class="p">,</span> <span class="n">shapes</span><span class="p">,</span> <span class="n">confidences</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_affines</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_canvas_dims</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_M_inverse</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.data.DetectionCache.add_frame" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -3137,7 +3137,10 @@ during backward pass, minimizing memory footprint while enabling detection reuse
     obb_corners: Optional list of OBB corner arrays for YOLO
     detection_ids: Optional list of detection IDs (FrameID * 10000 + detection_index)
     heading_hints: Optional list of directed heading hints (radians).
-    directed_mask: Optional list indicating whether heading_hints are directed.</p>
+    directed_mask: Optional list indicating whether heading_hints are directed.
+    canonical_affines: Optional list of (2, 3) affine matrices (M_align per detection).
+    canonical_canvas_dims: Optional list of (width, height) int tuples per detection.
+    canonical_M_inverse: Optional list of (2, 3) inverse affine matrices per detection.</p>
 
     </div>
 
@@ -3732,7 +3735,7 @@ during backward pass, minimizing memory footprint while enabling detection reuse
 
 
 <h4 id="multi_tracker.data.detection_cache.DetectionCache.add_frame" class="doc doc-heading">
-<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">add_frame</span><span class="p">(</span><span class="n">frame_idx</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">sizes</span><span class="p">,</span> <span class="n">shapes</span><span class="p">,</span> <span class="n">confidences</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <code class="highlight language-python"><span class="n">add_frame</span><span class="p">(</span><span class="n">frame_idx</span><span class="p">,</span> <span class="n">meas</span><span class="p">,</span> <span class="n">sizes</span><span class="p">,</span> <span class="n">shapes</span><span class="p">,</span> <span class="n">confidences</span><span class="p">,</span> <span class="n">obb_corners</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">detection_ids</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">heading_hints</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">directed_mask</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_affines</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_canvas_dims</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span> <span class="n">canonical_M_inverse</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span></code>
 
 <a href="#multi_tracker.data.detection_cache.DetectionCache.add_frame" class="headerlink" title="Permanent link">&para;</a></h4>
 
@@ -3749,7 +3752,10 @@ during backward pass, minimizing memory footprint while enabling detection reuse
     obb_corners: Optional list of OBB corner arrays for YOLO
     detection_ids: Optional list of detection IDs (FrameID * 10000 + detection_index)
     heading_hints: Optional list of directed heading hints (radians).
-    directed_mask: Optional list indicating whether heading_hints are directed.</p>
+    directed_mask: Optional list indicating whether heading_hints are directed.
+    canonical_affines: Optional list of (2, 3) affine matrices (M_align per detection).
+    canonical_canvas_dims: Optional list of (width, height) int tuples per detection.
+    canonical_M_inverse: Optional list of (2, 3) inverse affine matrices per detection.</p>
 
     </div>
 
